@@ -5,7 +5,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react'
-import { Clock, Plus, Check, X, Trash2, Calendar, User } from 'lucide-react'
+import { Clock, Plus, Check, X, Trash2, Calendar, User, Sparkles, Loader2 } from 'lucide-react'
 import { useFollowUpStore } from '../stores/followUpStore'
 import type { FollowUpTask } from '../stores/followUpStore'
 import './FollowUpPage.scss'
@@ -37,6 +37,8 @@ export default function FollowUpPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newDue, setNewDue] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState<string | null>(null)
 
   useEffect(() => {
     loadTasks(filter === 'all' ? undefined : { status: filter })
@@ -51,6 +53,24 @@ export default function FollowUpPage() {
     setNewDue('')
     setShowCreate(false)
   }, [newTitle, newDue, createTask])
+
+  const handleScan = useCallback(async () => {
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const result = await window.electronAPI.sales.todoScan()
+      if (result.success && result.tasks) {
+        setScanResult(result.tasks.length > 0 ? `AI 识别到 ${result.tasks.length} 条待办` : '未发现需要跟进的事项')
+        await loadTasks(filter === 'all' ? undefined : { status: filter })
+      } else {
+        setScanResult(result.error || 'AI 扫描失败')
+      }
+    } catch (e) {
+      setScanResult(String(e))
+    } finally {
+      setScanning(false)
+    }
+  }, [loadTasks, filter])
 
   const handleDone = useCallback((id: number) => {
     updateTask(id, { status: 'done' })
@@ -78,6 +98,10 @@ export default function FollowUpPage() {
               </button>
             ))}
           </div>
+          <button className="fu-create-btn fu-scan-btn" onClick={handleScan} disabled={scanning}>
+            {scanning ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
+            {scanning ? '扫描中...' : 'AI 扫描'}
+          </button>
           <button className="fu-create-btn" onClick={() => setShowCreate(!showCreate)}>
             <Plus size={14} /> 新建
           </button>
@@ -111,6 +135,7 @@ export default function FollowUpPage() {
       )}
 
       {error && <div className="fu-error">{error}</div>}
+      {scanResult && <div className="fu-scan-result">{scanResult}</div>}
 
       {/* 任务列表 */}
       <div className="fu-list">

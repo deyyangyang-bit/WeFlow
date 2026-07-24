@@ -64,6 +64,11 @@
       cursor: pointer;
 
       &:hover { opacity: 0.9; }
+      &:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      &.fu-scan-btn {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      }
     }
   }
 
@@ -116,6 +121,15 @@
       cursor: pointer;
       color: var(--text-secondary, #666);
     }
+  }
+
+  .fu-scan-result {
+    padding: 8px 12px;
+    background: rgba(102, 126, 234, 0.08);
+    color: #667eea;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 12px;
   }
 
   .fu-error {

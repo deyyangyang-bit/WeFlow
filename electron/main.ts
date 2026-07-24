@@ -34,6 +34,7 @@ import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
+import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesAlertService } from './services/salesAlertService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -4742,6 +4743,14 @@ function registerIpcHandlers() {
       const task = salesDbService.todoUpdate(id, updates)
       if (!task) return { success: false, error: '待办不存在' }
       return { success: true, task }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:todo:scan', async () => {
+    try {
+      return await salesFollowUpService.scanForFollowUps(configService)
     } catch (e) {
       return { success: false, error: String(e) }
     }
