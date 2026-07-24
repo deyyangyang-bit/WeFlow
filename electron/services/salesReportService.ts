@@ -112,15 +112,15 @@ class SalesReportService {
 
       // 过滤掉群聊、公众号和系统会话，只保留真实单聊
       const SYSTEM_ACCOUNTS = new Set([
-        'filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote',
+        'filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'medianote',
         'floatbottle', 'shakeapp', 'lbsapp', 'voicevoipapp', 'feedsapp',
-        'voip', 'blogapp', 'qmessage', 'qqsync', 'mphelper', 'weixinguanhaozhuli'
+        'voip', 'blogapp', 'qmessage', 'qqsync', 'mphelper', 'weixinguanhaozhuli',
+        'weixin', 'weixin_team', 'weixinguanhaozhuli'
       ])
       const privateSessions = sessionsResult.sessions.filter(
         (s: any) => s.username
           && !s.username.endsWith('@chatroom')
           && !s.username.startsWith('gh_')
-          && !s.username.startsWith('weixin')
           && !SYSTEM_ACCOUNTS.has(s.username)
       )
 
