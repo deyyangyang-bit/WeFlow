@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -372,6 +372,16 @@ function Sidebar({ collapsed }: SidebarProps) {
           >
             <span className="nav-icon"><BarChart3 size={20} /></span>
             <span className="nav-label">销售报表</span>
+          </NavLink>
+
+          {/* 跟进待办 */}
+          <NavLink
+            to="/follow-up"
+            className={`nav-item ${isActive('/follow-up') ? 'active' : ''}`}
+            title={collapsed ? '跟进待办' : undefined}
+          >
+            <span className="nav-icon"><Clock size={20} /></span>
+            <span className="nav-label">跟进待办</span>
           </NavLink>
 
           {/* 通讯录 */}

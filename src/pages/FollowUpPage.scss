@@ -1,0 +1,244 @@
+.follow-up-page {
+  padding: 24px;
+  max-width: 720px;
+  margin: 0 auto;
+  height: 100%;
+  overflow-y: auto;
+
+  .fu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+
+    h2 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary, #333);
+      margin: 0;
+    }
+
+    .fu-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .fu-filter {
+      display: flex;
+      gap: 2px;
+      background: var(--stat-bg, #f0f0f0);
+      border-radius: 6px;
+      padding: 2px;
+
+      .fu-filter-btn {
+        padding: 4px 10px;
+        border: none;
+        background: none;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        color: var(--text-secondary, #666);
+
+        &.active {
+          background: var(--card-bg, #fff);
+          color: var(--text-primary, #333);
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+      }
+    }
+
+    .fu-create-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 12px;
+      border: none;
+      background: var(--primary-color, #4a9eff);
+      color: #fff;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+
+      &:hover { opacity: 0.9; }
+    }
+  }
+
+  .fu-create-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 12px;
+    background: var(--stat-bg, #f8f9fa);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+
+    .fu-input {
+      flex: 1;
+      min-width: 200px;
+      padding: 7px 10px;
+      border: 1px solid var(--border-color, #ddd);
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      background: var(--input-bg, #fff);
+      color: var(--text-primary, #333);
+
+      &:focus { border-color: var(--primary-color, #4a9eff); }
+
+      &.fu-input-date {
+        flex: 0 0 auto;
+        min-width: 160px;
+      }
+    }
+
+    .fu-submit-btn {
+      padding: 7px 14px;
+      border: none;
+      background: var(--primary-color, #4a9eff);
+      color: #fff;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      &:disabled { opacity: 0.5; cursor: not-allowed; }
+    }
+
+    .fu-cancel-btn {
+      padding: 7px 10px;
+      border: 1px solid var(--border-color, #ddd);
+      background: none;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--text-secondary, #666);
+    }
+  }
+
+  .fu-error {
+    padding: 8px 12px;
+    background: rgba(231, 76, 60, 0.06);
+    color: #e74c3c;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+
+  .fu-list {
+    .fu-loading, .fu-empty {
+      text-align: center;
+      padding: 40px 0;
+      color: var(--text-tertiary, #bbb);
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .fu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border: 1px solid var(--border-color, #eee);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: var(--card-bg, #fff);
+      transition: opacity 0.2s;
+
+      &.done {
+        opacity: 0.6;
+        .fu-item-title { text-decoration: line-through; }
+      }
+
+      &.dismissed { opacity: 0.4; }
+
+      &.overdue {
+        border-color: rgba(231, 76, 60, 0.3);
+        background: rgba(231, 76, 60, 0.02);
+      }
+
+      .fu-item-left {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        flex: 1;
+
+        .fu-check-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 20px;
+          height: 20px;
+          border: none;
+          background: none;
+          cursor: pointer;
+          color: var(--primary-color, #4a9eff);
+          padding: 0;
+          margin-top: 1px;
+
+          .fu-circle {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border-color, #ccc);
+            border-radius: 50%;
+          }
+
+          &:hover .fu-circle { border-color: var(--primary-color, #4a9eff); }
+          &:disabled { cursor: default; }
+        }
+
+        .fu-item-content {
+          flex: 1;
+
+          .fu-item-title {
+            font-size: 13px;
+            color: var(--text-primary, #333);
+            line-height: 1.4;
+          }
+
+          .fu-item-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 3px;
+            font-size: 11px;
+            color: var(--text-secondary, #999);
+
+            .fu-trigger {
+              padding: 0 4px;
+              background: var(--stat-bg, #f0f0f0);
+              border-radius: 3px;
+            }
+
+            .fu-due {
+              display: flex;
+              align-items: center;
+              gap: 2px;
+              &.overdue { color: #e74c3c; }
+            }
+          }
+        }
+      }
+
+      .fu-dismiss-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: var(--text-tertiary, #bbb);
+        border-radius: 4px;
+
+        &:hover { color: #e74c3c; background: rgba(231,76,60,0.06); }
+      }
+    }
+  }
+}

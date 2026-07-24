@@ -34,6 +34,7 @@ import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
+import { salesAlertService } from './services/salesAlertService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4851,6 +4852,7 @@ app.whenReady().then(async () => {
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)
     insightService.handleDbMonitorChange(type, json)
+    salesAlertService.handleDbMonitorChange(type, json)
   })
 
   // 提前创建主窗口（隐藏），让渲染进程加载与数据库预热并行进行
@@ -4968,6 +4970,8 @@ app.whenReady().then(async () => {
     await salesDbService.initialize(app.getPath('userData'))
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
+    salesAlertService.setConfig(configService)
+    salesAlertService.start()
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)
   }

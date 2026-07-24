@@ -6,7 +6,7 @@ interface RouteGuardProps {
   children: React.ReactNode
 }
 
-const PUBLIC_ROUTES = ['/', '/home', '/settings', '/account-management', '/knowledge-base', '/sales-report']
+const PUBLIC_ROUTES = ['/', '/home', '/settings', '/account-management', '/knowledge-base', '/sales-report', '/follow-up']
 
 function RouteGuard({ children }: RouteGuardProps) {
   const navigate = useNavigate()
