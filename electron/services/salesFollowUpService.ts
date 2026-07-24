@@ -34,16 +34,16 @@ const MAX_CONTEXT_CHARS = 1200
 
 const SYSTEM_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销售跟进助手。
 
-分析聊天记录，识别需要跟进的场景。只关注以下类型：
+分析最近的聊天记录，主动识别所有值得跟进的事项。包括但不限于：
 1. promise_contact: 约定了具体时间联系（如"下周给你报价""周三来看样机"）
 2. unanswered_quote: 客户问了价格/方案但我方未回复
-3. ai_detected: 其他需要跟进的信号（如客户表达兴趣但有顾虑、需要确认需求、等待反馈等）
+3. ai_detected: 其他跟进机会（客户表达兴趣、提到需求、有顾虑待解决、长时间未互动需维护关系、客户提到竞品、客户询问售后等）
 
 要求：
 1. 只返回 JSON 数组，不要其他文字
 2. 格式：[{"title": "待办描述(15字内)", "trigger_type": "类型", "due_days": 天数或null}]
-3. due_days: 建议几天内跟进（1-14），不确定则 null
-4. 只输出确实需要跟进的条目，不要凑数
+3. due_days: 建议几天内跟进（1-14），不确定则 3
+4. 积极识别跟进机会，宁可多提不要遗漏
 5. 如果没有需要跟进的内容，返回空数组 []
 6. 最多返回 3 条`
 
@@ -155,14 +155,16 @@ class SalesFollowUpService {
           const msgResult = await wcdbService.getMessages(sessionId, SCAN_MESSAGE_LIMIT, 0)
           if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) continue
 
-          // 只保留日期范围内的消息
+          // 只保留日期范围内的消息（兼容多种字段名）
           const filteredMsgs = msgResult.messages.filter((m: any) => {
-            const ts = m.createTime || m.create_time || 0
+            const ts = Number(m.createTime || m.create_time || m.msg_time || m.msgTime || m.time || 0)
             return ts >= rangeStartSec
           })
-          if (filteredMsgs.length === 0) continue  // 该联系人在此期间无消息
+          // 如果日期过滤后为空但原始消息不为空，可能是时间戳单位问题，fallback 用全部消息
+          const msgsToUse = filteredMsgs.length > 0 ? filteredMsgs : msgResult.messages
+          if (msgsToUse.length === 0) continue
 
-          const chatText = formatMessages(filteredMsgs, displayName)
+          const chatText = formatMessages(msgsToUse, displayName)
           if (chatText.length < 20) continue  // 太短跳过
 
           // 调用 AI 分析
