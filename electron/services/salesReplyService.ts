@@ -6,6 +6,7 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { chatService } from './chatService'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -118,6 +119,7 @@ class SalesReplyService {
         const msgResult = await wcdbService.getMessages(sessionId, MAX_CONTEXT_MESSAGES, 0)
         if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
           return { success: false, error: '没有可用的聊天记录' }
+        const messages = chatService.mapRowsToMessagesLiteForApi(msgResult.messages as Record<string, any>[])
         }
 
         try {
@@ -127,7 +129,7 @@ class SalesReplyService {
           }
         } catch { /* ignore */ }
 
-        chatText = formatMessages(msgResult.messages, peerName)
+        chatText = formatMessages(messages, peerName)
       }
 
       if (!chatText.trim()) {

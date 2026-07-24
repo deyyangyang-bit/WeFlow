@@ -110,9 +110,18 @@ class SalesReportService {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 过滤掉群聊和系统会话，只保留单聊
+      // 过滤掉群聊、公众号和系统会话，只保留真实单聊
+      const SYSTEM_ACCOUNTS = new Set([
+        'filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote',
+        'floatbottle', 'shakeapp', 'lbsapp', 'voicevoipapp', 'feedsapp',
+        'voip', 'blogapp', 'qmessage', 'qqsync', 'mphelper', 'weixinguanhaozhuli'
+      ])
       const privateSessions = sessionsResult.sessions.filter(
-        (s: any) => s.username && !s.username.endsWith('@chatroom') && !s.username.startsWith('gh_') && !s.username.startsWith('filehelper')
+        (s: any) => s.username
+          && !s.username.endsWith('@chatroom')
+          && !s.username.startsWith('gh_')
+          && !s.username.startsWith('weixin')
+          && !SYSTEM_ACCOUNTS.has(s.username)
       )
 
       const sessionIds = privateSessions.map((s: any) => s.username)

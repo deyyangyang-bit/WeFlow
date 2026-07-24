@@ -6,6 +6,7 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { chatService } from './chatService'
 import { salesDbService, type IntentTagLog } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -119,6 +120,8 @@ class SalesIntentService {
       const msgResult = await wcdbService.getMessages(sessionId, MAX_MESSAGES, 0)
       if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
         return { success: false, error: '没有可用的聊天记录' }
+      // 通过 chatService 解析原始消息（提取 parsedContent 等字段）
+      const messages = chatService.mapRowsToMessagesLiteForApi(msgResult.messages as Record<string, any>[])
       }
 
       // 4. 获取联系人显示名
@@ -131,13 +134,13 @@ class SalesIntentService {
       } catch { /* ignore */ }
 
       // 5. 格式化对话文本
-      const chatText = formatMessagesForPrompt(msgResult.messages, peerName)
+      const chatText = formatMessagesForPrompt(messages, peerName)
       if (!chatText.trim()) {
         return { success: false, error: '聊天记录中没有有效的文本消息' }
       }
 
       // 6. 调用 AI
-      const userMessage = `以下是与"${peerName}"的最近聊天记录（共${msgResult.messages.length}条）：\n\n${chatText}\n\n请分析该客户的采购意向阶段。`
+      const userMessage = `以下是与"${peerName}"的最近聊天记录（共${messages.length}条）：\n\n${chatText}\n\n请分析该客户的采购意向阶段。`
 
       const aiResponse = await simpleCompletion(
         config,
