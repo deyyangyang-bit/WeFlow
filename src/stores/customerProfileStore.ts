@@ -58,6 +58,7 @@ interface CustomerProfileState {
   intentHistory: IntentTagRecord[]
   todos: TodoRecord[]
   error: string | null
+  analyzing: boolean
 
   // actions
   loadDetail: (sessionId: string) => Promise<void>
@@ -66,6 +67,7 @@ interface CustomerProfileState {
   updateNotes: (sessionId: string, notes: string) => Promise<void>
   toggleTodo: (id: number, currentStatus: string) => Promise<void>
   reset: () => void
+  analyzeIntent: (sessionId: string) => Promise<void>
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ export const useCustomerProfileStore = create<CustomerProfileState>((set, get) =
   intentHistory: [],
   todos: [],
   error: null,
+  analyzing: false,
 
   loadDetail: async (sessionId: string) => {
     const current = get().sessionId
@@ -156,6 +159,22 @@ export const useCustomerProfileStore = create<CustomerProfileState>((set, get) =
     }
   },
 
+  analyzeIntent: async (sessionId: string) => {
+    set({ analyzing: true, error: null })
+    try {
+      const result = await window.electronAPI.sales.intentAnalyze(sessionId)
+      if (!result.success) {
+        set({ analyzing: false, error: result.error || 'AI 分析失败' })
+        return
+      }
+      // 刷新数据
+      set({ sessionId: null, analyzing: false })
+      await get().loadDetail(sessionId)
+    } catch (e) {
+      set({ analyzing: false, error: String(e) })
+    }
+  },
+
   reset: () => {
     set({
       loading: false,
@@ -166,7 +185,8 @@ export const useCustomerProfileStore = create<CustomerProfileState>((set, get) =
       aiProfileMeta: null,
       intentHistory: [],
       todos: [],
-      error: null
+      error: null,
+      analyzing: false
     })
   }
 }))

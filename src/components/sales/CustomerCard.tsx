@@ -150,6 +150,9 @@ export default function CustomerCard({ sessionId }: CustomerCardProps) {
     updateTags,
     updateNotes,
     toggleTodo,
+    analyzing,
+    error,
+    analyzeIntent,
     reset
   } = useCustomerProfileStore()
 
@@ -241,6 +244,7 @@ export default function CustomerCard({ sessionId }: CustomerCardProps) {
 
       {!mainCollapsed && (
         <div className="cc-body">
+          {error && <div className="cc-error">{error}</div>}
           {/* 意向阶段选择 */}
           <div className="cc-field">
             <label className="cc-label">
@@ -352,12 +356,23 @@ export default function CustomerCard({ sessionId }: CustomerCardProps) {
 
           {/* 意向记录 */}
           <div className="cc-section">
-            <SectionHeader
-              title={`意向记录 (${intentHistory.length})`}
-              icon={<TrendingUp size={13} />}
-              collapsed={intentCollapsed}
-              onToggle={() => setIntentCollapsed(!intentCollapsed)}
-            />
+            <div className="cc-section-header cc-intent-header">
+              <span className="cc-section-icon"><TrendingUp size={13} /></span>
+              <span className="cc-section-title" onClick={() => setIntentCollapsed(!intentCollapsed)}>
+                意向记录 ({intentHistory.length})
+              </span>
+              <button
+                className="cc-ai-analyze-btn"
+                onClick={(e) => { e.stopPropagation(); analyzeIntent(sessionId) }}
+                disabled={analyzing}
+                title="AI 分析客户意向"
+              >
+                {analyzing ? '分析中...' : <><Sparkles size={11} /> AI 分析</>}
+              </button>
+              <span onClick={() => setIntentCollapsed(!intentCollapsed)}>
+                {intentCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+              </span>
+            </div>
             {!intentCollapsed && <IntentTimeline history={intentHistory} />}
           </div>
 

@@ -32,6 +32,7 @@ import { cloudControlService } from './services/cloudControlService'
 import { salesDbService } from './services/salesDbService'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
+import { salesIntentService } from './services/salesIntentService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4676,8 +4677,11 @@ function registerIpcHandlers() {
 
   // 意向标签
   ipcMain.handle('sales:intent:analyze', async (_, sessionId: string) => {
-    // TODO: 第三阶段实现 salesIntentService
-    return { success: false, error: '意向分析功能尚未实现' }
+    try {
+      return await salesIntentService.analyzeIntent(sessionId, configService)
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
   })
 
   ipcMain.handle('sales:intent:correct', async (_, payload: { session_id: string; stage: string; reason?: string }) => {
