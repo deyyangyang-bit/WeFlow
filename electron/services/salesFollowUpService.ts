@@ -108,15 +108,14 @@ class SalesFollowUpService {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 计算日期范围
-      const now = Date.now()
+      // 计算日期范围（秒级时间戳，与会话 sortTimestamp 单位一致）
       let rangeStart: number
       if (period === 'day') {
-        const d = new Date(); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+        const d = new Date(); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
       } else if (period === 'month') {
-        const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+        const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
       } else { // week
-        const d = new Date(); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+        const d = new Date(); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
       }
 
       // 过滤：只保留单聊、非系统账号、在日期范围内有消息的
