@@ -45,6 +45,7 @@ import {
 import '../styles/batchTranscribe.scss'
 import './ChatPage.scss'
 import CustomerCard from '../components/sales/CustomerCard'
+import ReplySuggestion from '../components/sales/ReplySuggestion'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -8572,6 +8573,11 @@ function ChatPage(props: ChatPageProps) {
                 </div>
               )}
 
+
+              {/* AI 回复建议 - 仅非群聊显示 */}
+              {!isCurrentSessionGroup && currentSession.username && (
+                <ReplySuggestion sessionId={currentSession.username} />
+              )}
               {/* 会话详情面板 */}
               {showDetailPanel && (
                 <div className="detail-panel session-detail-panel">

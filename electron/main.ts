@@ -33,6 +33,7 @@ import { salesDbService } from './services/salesDbService'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
+import { salesReplyService } from './services/salesReplyService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4710,8 +4711,11 @@ function registerIpcHandlers() {
 
   // 回复建议
   ipcMain.handle('sales:reply:suggest', async (_, payload) => {
-    // TODO: 第三阶段实现 salesReplyService
-    return { success: false, error: '回复建议功能尚未实现' }
+    try {
+      return await salesReplyService.suggestReplies(payload.session_id, configService, payload.context_messages)
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
   })
 
   // 待办
