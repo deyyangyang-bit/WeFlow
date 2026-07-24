@@ -6,7 +6,6 @@
  */
 
 import { wcdbService } from './wcdbService'
-import { chatService } from './chatService'
 import { salesDbService, type IntentTagLog } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -45,17 +44,35 @@ const SYSTEM_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
+function extractContent(msg: any): string {
+  // 兼容 parsedContent（chatService 格式）和 message_content（WCDB 原始格式）
+  const raw = String(msg.parsedContent || msg.rawContent || msg.message_content || msg.content || '').trim()
+  if (!raw) return ''
+  // 跳过 XML/系统消息
+  if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(raw)) return ''
+  // 尝试从 XML 中提取纯文本
+  const textMatch = raw.match(/<content[^>]*>([^<]+)<\/content>/i)
+  if (textMatch) return textMatch[1].trim()
+  if (raw.startsWith('<')) return ''
+  return raw
+}
+
+function getIsSend(msg: any): number {
+  if (msg.isSend !== undefined && msg.isSend !== null) return Number(msg.isSend)
+  if (msg.computed_is_send !== undefined) return Number(msg.computed_is_send)
+  if (msg.is_send !== undefined) return Number(msg.is_send)
+  return 0
+}
+
 function formatMessagesForPrompt(messages: any[], peerName: string): string {
   const lines: string[] = []
   let totalLen = 0
 
   for (const msg of messages) {
-    const content = String(msg.parsedContent || msg.rawContent || '').trim()
+    const content = extractContent(msg)
     if (!content) continue
-    // 跳过 XML/系统消息
-    if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(content)) continue
 
-    const sender = msg.isSend === 1 ? '我' : peerName
+    const sender = getIsSend(msg) === 1 ? '我' : peerName
     const line = `${sender}：${content.slice(0, 200)}`
     
     if (totalLen + line.length > MAX_CONTEXT_CHARS) break
@@ -120,8 +137,7 @@ class SalesIntentService {
       const msgResult = await wcdbService.getMessages(sessionId, MAX_MESSAGES, 0)
       if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
         return { success: false, error: '没有可用的聊天记录' }
-      // 通过 chatService 解析原始消息（提取 parsedContent 等字段）
-      const messages = chatService.mapRowsToMessagesLiteForApi(msgResult.messages as Record<string, any>[])
+      const messages = msgResult.messages
       }
 
       // 4. 获取联系人显示名

@@ -6,7 +6,6 @@
  */
 
 import { wcdbService } from './wcdbService'
-import { chatService } from './chatService'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -39,16 +38,32 @@ const SYSTEM_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
+function extractMsgContent(msg: any): string {
+  const raw = String(msg.parsedContent || msg.rawContent || msg.message_content || msg.content || '').trim()
+  if (!raw) return ''
+  if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(raw)) return ''
+  const textMatch = raw.match(/<content[^>]*>([^<]+)<\/content>/i)
+  if (textMatch) return textMatch[1].trim()
+  if (raw.startsWith('<')) return ''
+  return raw
+}
+
+function getMsgIsSend(msg: any): number {
+  if (msg.isSend !== undefined && msg.isSend !== null) return Number(msg.isSend)
+  if (msg.computed_is_send !== undefined) return Number(msg.computed_is_send)
+  if (msg.is_send !== undefined) return Number(msg.is_send)
+  return 0
+}
+
 function formatMessages(messages: any[], peerName: string): string {
   const lines: string[] = []
   let totalLen = 0
 
   for (const msg of messages) {
-    const content = String(msg.parsedContent || msg.rawContent || '').trim()
+    const content = extractMsgContent(msg)
     if (!content) continue
-    if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(content)) continue
 
-    const sender = msg.isSend === 1 ? '我' : peerName
+    const sender = getMsgIsSend(msg) === 1 ? '我' : peerName
     const line = `${sender}：${content.slice(0, 150)}`
 
     if (totalLen + line.length > MAX_CONTEXT_CHARS) break
@@ -119,7 +134,7 @@ class SalesReplyService {
         const msgResult = await wcdbService.getMessages(sessionId, MAX_CONTEXT_MESSAGES, 0)
         if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
           return { success: false, error: '没有可用的聊天记录' }
-        const messages = chatService.mapRowsToMessagesLiteForApi(msgResult.messages as Record<string, any>[])
+        const messages = msgResult.messages
         }
 
         try {
