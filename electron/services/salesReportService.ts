@@ -130,31 +130,37 @@ class SalesReportService {
         return { success: false, error: '没有可用的单聊会话' }
       }
 
-      // 2. 批量获取每日消息统计
-      const dateCountsResult = await wcdbService.getSessionMessageDateCountsBatch(sessionIds)
-      if (!dateCountsResult.success || !dateCountsResult.data) {
-        return { success: false, error: '无法获取消息统计' }
+      // 2. 使用 getAnnualReportStats 获取周期内统计（与年度报告同一原生 API）
+      const startSec = Math.floor(range.start / 1000)
+      const endSec = Math.floor(range.end / 1000)
+      const statsResult = await wcdbService.getAnnualReportStats(sessionIds, startSec, endSec)
+      if (!statsResult.success || !statsResult.data) {
+        return { success: false, error: '无法获取消息统计: ' + (statsResult.error || '未知错误') }
       }
 
-      // 3. 按周期过滤并汇总
-      const startStr = tsToDateStr(range.start)
-      const endStr = tsToDateStr(range.end)
-
-      let totalMessages = 0
+      // 3. 从统计结果中提取数据
+      const d = statsResult.data
+      const totalMessages = d.total || 0
       const contactMessages: Map<string, number> = new Map()
       const dailyCounts: Map<string, number> = new Map()
 
-      for (const [sessionId, dateMap] of Object.entries(dateCountsResult.data)) {
-        let sessionTotal = 0
-        for (const [dateStr, count] of Object.entries(dateMap as Record<string, number>)) {
-          if (dateStr >= startStr && dateStr <= endStr) {
-            sessionTotal += count
-            totalMessages += count
-            dailyCounts.set(dateStr, (dailyCounts.get(dateStr) ?? 0) + count)
+      // 提取每个会话的消息数
+      if (d.sessions) {
+        for (const [sid, stat] of Object.entries(d.sessions)) {
+          const s = stat as any
+          const msgCount = (s.sent || 0) + (s.received || 0)
+          if (msgCount > 0) {
+            contactMessages.set(sid, msgCount)
           }
         }
-        if (sessionTotal > 0) {
-          contactMessages.set(sessionId, sessionTotal)
+      }
+
+      // 提取每日消息分布
+      if (d.daily) {
+        for (const [dayKey, count] of Object.entries(d.daily)) {
+          if (Number(count) > 0) {
+            dailyCounts.set(String(dayKey), Number(count))
+          }
         }
       }
 
