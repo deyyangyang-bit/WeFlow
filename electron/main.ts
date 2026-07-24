@@ -4544,7 +4544,6 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:report:generate', async (_, payload) => {
     return salesReportService.generate(payload)
   })
-  })
 
   ipcMain.handle('sales:report:list', async (_, limit?: number) => {
     try {
