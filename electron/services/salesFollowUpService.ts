@@ -108,25 +108,28 @@ class SalesFollowUpService {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 计算日期范围（秒级时间戳，与会话 sortTimestamp 单位一致）
-      let rangeStart: number
+      // 计算日期范围（秒级时间戳，用于消息层过滤）
+      let rangeStartSec: number
       if (period === 'day') {
-        const d = new Date(); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
+        const d = new Date(); d.setHours(0, 0, 0, 0); rangeStartSec = Math.floor(d.getTime() / 1000)
       } else if (period === 'month') {
-        const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
+        const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); rangeStartSec = Math.floor(d.getTime() / 1000)
       } else { // week
-        const d = new Date(); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); d.setHours(0, 0, 0, 0); rangeStart = Math.floor(d.getTime() / 1000)
+        const d = new Date(); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); d.setHours(0, 0, 0, 0); rangeStartSec = Math.floor(d.getTime() / 1000)
       }
 
-      // 过滤：只保留单聊、非系统账号、在日期范围内有消息的
+      // 过滤：只保留单聊、非系统账号，按最近活跃排序
       const SYSTEM = new Set(['filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote', 'mphelper', 'weixinguanhaozhuli', 'notifymessage'])
       const candidates = sessionsResult.sessions
         .filter((s: any) => s.username
           && !s.username.endsWith('@chatroom')
           && !s.username.startsWith('gh_')
-          && !SYSTEM.has(s.username)
-          && (s.sortTimestamp || s.lastTimestamp || 0) >= rangeStart)
-        .sort((a: any, b: any) => (b.sortTimestamp || b.lastTimestamp || 0) - (a.sortTimestamp || a.lastTimestamp || 0))
+          && !SYSTEM.has(s.username))
+        .sort((a: any, b: any) => {
+          const ta = a.sortTimestamp || a.sort_timestamp || a.lastTimestamp || a.last_timestamp || 0
+          const tb = b.sortTimestamp || b.sort_timestamp || b.lastTimestamp || b.last_timestamp || 0
+          return tb - ta
+        })
         .slice(0, SCAN_SESSION_LIMIT)
 
       if (candidates.length === 0) {
@@ -152,7 +155,14 @@ class SalesFollowUpService {
           const msgResult = await wcdbService.getMessages(sessionId, SCAN_MESSAGE_LIMIT, 0)
           if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) continue
 
-          const chatText = formatMessages(msgResult.messages, displayName)
+          // 只保留日期范围内的消息
+          const filteredMsgs = msgResult.messages.filter((m: any) => {
+            const ts = m.createTime || m.create_time || 0
+            return ts >= rangeStartSec
+          })
+          if (filteredMsgs.length === 0) continue  // 该联系人在此期间无消息
+
+          const chatText = formatMessages(filteredMsgs, displayName)
           if (chatText.length < 20) continue  // 太短跳过
 
           // 调用 AI 分析
