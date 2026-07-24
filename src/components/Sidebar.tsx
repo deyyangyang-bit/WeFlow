@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -352,6 +352,26 @@ function Sidebar({ collapsed }: SidebarProps) {
           >
             <span className="nav-icon"><Sparkles size={20} /></span>
             <span className="nav-label">灵感信箱</span>
+          </NavLink>
+
+          {/* 知识库 */}
+          <NavLink
+            to="/knowledge-base"
+            className={`nav-item ${isActive('/knowledge-base') ? 'active' : ''}`}
+            title={collapsed ? '知识库' : undefined}
+          >
+            <span className="nav-icon"><BookOpen size={20} /></span>
+            <span className="nav-label">知识库</span>
+          </NavLink>
+
+          {/* 销售报表 */}
+          <NavLink
+            to="/sales-report"
+            className={`nav-item ${isActive('/sales-report') ? 'active' : ''}`}
+            title={collapsed ? '销售报表' : undefined}
+          >
+            <span className="nav-icon"><BarChart3 size={20} /></span>
+            <span className="nav-label">销售报表</span>
           </NavLink>
 
           {/* 通讯录 */}

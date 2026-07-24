@@ -40,6 +40,8 @@ const NotificationWindow = lazy(() => import('./pages/NotificationWindow'))
 const AccountManagementPage = lazy(() => import('./pages/AccountManagementPage'))
 const BackupPage = lazy(() => import('./pages/BackupPage'))
 const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
+const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
+const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
 const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
@@ -794,6 +796,8 @@ function App() {
                 <Route path="/export" element={<div className="export-route-anchor" aria-hidden="true" />} />
                 <Route path="/sns" element={<SnsPage />} />
                 <Route path="/insight-inbox" element={<InsightInboxPage />} />
+                <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
+                <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/biz" element={<BizPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />

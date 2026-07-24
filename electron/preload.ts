@@ -679,6 +679,55 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }) => ipcRenderer.invoke('groupSummary:triggerDay', payload)
   },
 
+  // ─── 销售助手 ───────────────────────────────────────────────────────────────
+
+  sales: {
+    // 知识库
+    kbList: (filters?: { category?: string; product_line?: string; scene?: string }) =>
+      ipcRenderer.invoke('sales:kb:list', filters),
+    kbGet: (id: number) => ipcRenderer.invoke('sales:kb:get', id),
+    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) =>
+      ipcRenderer.invoke('sales:kb:create', payload),
+    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) =>
+      ipcRenderer.invoke('sales:kb:update', id, payload),
+    kbDelete: (id: number) => ipcRenderer.invoke('sales:kb:delete', id),
+    kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) =>
+      ipcRenderer.invoke('sales:kb:search', payload),
+
+    // 报表
+    reportGenerate: (payload: { period_type: string; period_start: number; period_end: number }) =>
+      ipcRenderer.invoke('sales:report:generate', payload),
+    reportList: (limit?: number) => ipcRenderer.invoke('sales:report:list', limit),
+    reportGet: (id: number) => ipcRenderer.invoke('sales:report:get', id),
+    reportDelete: (id: number) => ipcRenderer.invoke('sales:report:delete', id),
+
+    // 客户画像
+    customerGet: (sessionId: string) => ipcRenderer.invoke('sales:customer:get', sessionId),
+    customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) =>
+      ipcRenderer.invoke('sales:customer:upsert', data),
+    customerList: (filters?: { stage?: string; limit?: number }) =>
+      ipcRenderer.invoke('sales:customer:list', filters),
+
+    // 意向标签
+    intentAnalyze: (sessionId: string) => ipcRenderer.invoke('sales:intent:analyze', sessionId),
+    intentCorrect: (payload: { session_id: string; stage: string; reason?: string }) =>
+      ipcRenderer.invoke('sales:intent:correct', payload),
+    intentHistory: (sessionId: string, limit?: number) =>
+      ipcRenderer.invoke('sales:intent:history', sessionId, limit),
+
+    // 回复建议
+    replySuggest: (payload: { session_id: string; context_messages: Array<{ role: string; content: string }> }) =>
+      ipcRenderer.invoke('sales:reply:suggest', payload),
+
+    // 待办
+    todoList: (filters?: { status?: string; limit?: number }) =>
+      ipcRenderer.invoke('sales:todo:list', filters),
+    todoCreate: (payload: { session_id?: string; trigger_type: string; title: string; due_at?: number }) =>
+      ipcRenderer.invoke('sales:todo:create', payload),
+    todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number }) =>
+      ipcRenderer.invoke('sales:todo:update', id, updates)
+  },
+
   social: {
     saveWeiboCookie: (rawInput: string) => ipcRenderer.invoke('social:saveWeiboCookie', rawInput),
     validateWeiboUid: (uid: string) => ipcRenderer.invoke('social:validateWeiboUid', uid)

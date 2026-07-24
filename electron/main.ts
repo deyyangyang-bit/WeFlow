@@ -27,6 +27,11 @@ import { windowsHelloService } from './services/windowsHelloService'
 import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
 import { cloudControlService } from './services/cloudControlService'
 
+
+// ─── 销售助手模块 ─────────────────────────────────────────────────────────────
+import { salesDbService } from './services/salesDbService'
+import { salesKnowledgeService } from './services/salesKnowledgeService'
+import { salesReportService } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4507,6 +4512,157 @@ function registerIpcHandlers() {
   ipcMain.handle('image:getAutoDownloadStatus', async () => {
     return await imageDownloadService.getStatus()
   })
+
+  // ─── 销售助手 IPC Handlers ──────────────────────────────────────────────────
+
+  // 知识库
+  ipcMain.handle('sales:kb:list', async (_, filters?) => {
+    return salesKnowledgeService.list(filters)
+  })
+
+  ipcMain.handle('sales:kb:get', async (_, id: number) => {
+    return salesKnowledgeService.get(id)
+  })
+
+  ipcMain.handle('sales:kb:create', async (_, payload) => {
+    return salesKnowledgeService.create(payload)
+  })
+
+  ipcMain.handle('sales:kb:update', async (_, id: number, payload) => {
+    return salesKnowledgeService.update(id, payload)
+  })
+
+  ipcMain.handle('sales:kb:delete', async (_, id: number) => {
+    return salesKnowledgeService.delete(id)
+  })
+
+  ipcMain.handle('sales:kb:search', async (_, payload) => {
+    return salesKnowledgeService.search(payload)
+  })
+
+  // 报表
+  ipcMain.handle('sales:report:generate', async (_, payload) => {
+    return salesReportService.generate(payload)
+  })
+  })
+
+  ipcMain.handle('sales:report:list', async (_, limit?: number) => {
+    try {
+      return { success: true, reports: salesDbService.reportList(limit ?? 20) }
+    } catch (e) {
+      return { success: false, reports: [], error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:report:get', async (_, id: number) => {
+    try {
+      const report = salesDbService.reportGet(id)
+      if (!report) return { success: false, error: '报表不存在' }
+      return { success: true, report }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:report:delete', async (_, id: number) => {
+    try {
+      const deleted = salesDbService.reportDelete(id)
+      return { success: deleted }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // 客户画像
+  ipcMain.handle('sales:customer:get', async (_, sessionId: string) => {
+    try {
+      const profile = salesDbService.customerGetBySession(sessionId)
+      return { success: true, profile: profile ?? null }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:customer:upsert', async (_, data) => {
+    try {
+      const profile = salesDbService.customerUpsert(data)
+      return { success: true, profile }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:customer:list', async (_, filters?) => {
+    try {
+      return { success: true, customers: salesDbService.customerList(filters) }
+    } catch (e) {
+      return { success: false, customers: [], error: String(e) }
+    }
+  })
+
+  // 意向标签
+  ipcMain.handle('sales:intent:analyze', async (_, sessionId: string) => {
+    // TODO: 第三阶段实现 salesIntentService
+    return { success: false, error: '意向分析功能尚未实现' }
+  })
+
+  ipcMain.handle('sales:intent:correct', async (_, payload: { session_id: string; stage: string; reason?: string }) => {
+    try {
+      const tag = salesDbService.intentCreate({
+        session_id: payload.session_id,
+        stage: payload.stage,
+        source: 'manual',
+        reason: payload.reason
+      })
+      // 同步更新客户画像的 stage
+      salesDbService.customerUpsert({ session_id: payload.session_id, stage: payload.stage })
+      return { success: true, tag }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:intent:history', async (_, sessionId: string, limit?: number) => {
+    try {
+      return { success: true, tags: salesDbService.intentHistory(sessionId, limit ?? 20) }
+    } catch (e) {
+      return { success: false, tags: [], error: String(e) }
+    }
+  })
+
+  // 回复建议
+  ipcMain.handle('sales:reply:suggest', async (_, payload) => {
+    // TODO: 第三阶段实现 salesReplyService
+    return { success: false, error: '回复建议功能尚未实现' }
+  })
+
+  // 待办
+  ipcMain.handle('sales:todo:list', async (_, filters?) => {
+    try {
+      return { success: true, tasks: salesDbService.todoList(filters) }
+    } catch (e) {
+      return { success: false, tasks: [], error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:todo:create', async (_, payload) => {
+    try {
+      const task = salesDbService.todoCreate(payload)
+      return { success: true, task }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:todo:update', async (_, id: number, updates) => {
+    try {
+      const task = salesDbService.todoUpdate(id, updates)
+      if (!task) return { success: false, error: '待办不存在' }
+      return { success: true, task }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
 }
 
 // 主窗口引用
@@ -4724,6 +4880,16 @@ app.whenReady().then(async () => {
 
   // 依赖数据库的后台服务在窗口显示后再启动，避免与启动预热争抢数据库 worker
   messagePushService.start()
+
+  // 初始化销售助手数据库
+  try {
+    await salesDbService.initialize(app.getPath('userData'))
+    console.log('[Sales] 数据库初始化成功')
+    salesReportService.setConfig(configService)
+  } catch (e) {
+    console.error('[Sales] 数据库初始化失败:', e)
+  }
+
   insightService.start()
   groupSummaryService.start()
   if (configService.get('autoDownloadHighRes')) {
@@ -4779,6 +4945,8 @@ const shutdownAppServices = async (): Promise<void> => {
     // 停止 HTTP 服务器，释放 TCP 端口占用，避免进程无法退出
     try { await httpService.stop() } catch {}
     // 终止 wcdb Worker 线程，避免线程阻止进程退出
+    // 关闭销售助手数据库
+    try { salesDbService.close() } catch {}
     try { await wcdbService.shutdown() } catch {}
   })()
   return shutdownPromise

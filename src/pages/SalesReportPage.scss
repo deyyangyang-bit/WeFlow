@@ -1,0 +1,353 @@
+// SalesReportPage.scss
+
+.sr-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px 24px;
+  overflow: hidden;
+}
+
+.sr-page-header {
+  flex-shrink: 0;
+  margin-bottom: 16px;
+}
+
+.sr-page-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  h2 { font-size: 20px; font-weight: 600; margin: 0; }
+}
+
+.sr-page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sr-period-toggle {
+  display: flex;
+  background: var(--bg-secondary, #f5f5f5);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.sr-period-btn {
+  padding: 6px 16px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-secondary, #666);
+  transition: all 0.2s;
+  &.active {
+    background: var(--bg-primary, #fff);
+    color: var(--text-primary, #333);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+}
+
+.sr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+.sr-btn-primary {
+  background: var(--accent-color, #007aff);
+  color: #fff;
+  &:hover:not(:disabled) { opacity: 0.9; }
+}
+
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+// ─── 错误提示 ────────────────────────────────────────────────────────────────
+
+.sr-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fff3cd;
+  color: #856404;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+// ─── 内容区 ──────────────────────────────────────────────────────────────────
+
+.sr-page-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+// ─── 当前报表 ────────────────────────────────────────────────────────────────
+
+.sr-current-report {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sr-report-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-secondary, #666);
+  .sr-report-time {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-tertiary, #999);
+  }
+}
+
+// ─── 统计卡片 ────────────────────────────────────────────────────────────────
+
+.sr-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.sr-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e8e8e8);
+  border-radius: 12px;
+}
+
+.sr-stat-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--stat-color, #007aff) 12%, transparent);
+  color: var(--stat-color, #007aff);
+}
+
+.sr-stat-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.sr-stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary, #333);
+}
+
+.sr-stat-label {
+  font-size: 12px;
+  color: var(--text-tertiary, #999);
+}
+
+// ─── AI 摘要 ─────────────────────────────────────────────────────────────────
+
+.sr-ai-summary {
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(0,122,255,0.05), rgba(52,199,89,0.05));
+  border: 1px solid rgba(0,122,255,0.15);
+  border-radius: 12px;
+
+  .sr-ai-summary-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-color, #007aff);
+    margin-bottom: 8px;
+  }
+
+  p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary, #333);
+  }
+}
+
+// ─── 图表 ────────────────────────────────────────────────────────────────────
+
+.sr-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.sr-chart-card {
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e8e8e8);
+  border-radius: 12px;
+  padding: 16px;
+
+  h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: var(--text-primary, #333);
+  }
+}
+
+// ─── Top 列表 ────────────────────────────────────────────────────────────────
+
+.sr-top-list {
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e8e8e8);
+  border-radius: 12px;
+  padding: 16px;
+
+  h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 12px;
+  }
+}
+
+.sr-top-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sr-top-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  transition: background 0.15s;
+  &:hover { background: var(--bg-secondary, #f5f5f5); }
+}
+
+.sr-top-rank {
+  width: 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary, #999);
+}
+
+.sr-top-name {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-primary, #333);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-top-count {
+  font-size: 13px;
+  color: var(--text-secondary, #666);
+  font-weight: 500;
+}
+
+// ─── 历史报表 ────────────────────────────────────────────────────────────────
+
+.sr-history {
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 0 12px;
+  }
+}
+
+.sr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: var(--text-tertiary, #999);
+  font-size: 14px;
+}
+
+.sr-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sr-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e8e8e8);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover { border-color: var(--accent-color, #007aff); }
+  &.active { border-color: var(--accent-color, #007aff); background: rgba(0,122,255,0.03); }
+}
+
+.sr-history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sr-history-period {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary, #333);
+}
+
+.sr-history-meta {
+  font-size: 12px;
+  color: var(--text-tertiary, #999);
+}
+
+.sr-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sr-history-time {
+  font-size: 12px;
+  color: var(--text-tertiary, #999);
+}
+
+.sr-history-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-tertiary, #999);
+  opacity: 0;
+  transition: all 0.15s;
+
+  .sr-history-item:hover & { opacity: 1; }
+  &:hover { background: #fee; color: #e53e3e; }
+}

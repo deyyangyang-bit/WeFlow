@@ -1706,6 +1706,41 @@ export interface ElectronAPI {
       date: string
     }) => Promise<{ success: boolean; message: string; generated: number; skipped: number; records: GroupSummaryRecordSummary[] }>
   }
+
+  // ─── 销售助手 ─────────────────────────────────────────────────────────────
+  sales: {
+    // 知识库
+    kbList: (filters?: { category?: string; product_line?: string; scene?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>
+    kbGet: (id: number) => Promise<{ success: boolean; entry?: any; error?: string }>
+    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    kbDelete: (id: number) => Promise<{ success: boolean; error?: string }>
+    kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>
+
+    // 报表
+    reportGenerate: (payload: { period_type: string; period_start?: number; period_end?: number }) => Promise<{ success: boolean; report?: any; error?: string }>
+    reportList: (limit?: number) => Promise<{ success: boolean; reports: any[]; error?: string }>
+    reportGet: (id: number) => Promise<{ success: boolean; report?: any; error?: string }>
+    reportDelete: (id: number) => Promise<{ success: boolean; error?: string }>
+
+    // 客户画像
+    customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
+    customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
+    customerList: (filters?: { stage?: string; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
+
+    // 意向标签
+    intentAnalyze: (sessionId: string) => Promise<{ success: boolean; tag?: any; error?: string }>
+    intentCorrect: (payload: { session_id: string; stage: string; reason?: string }) => Promise<{ success: boolean; tag?: any; error?: string }>
+    intentHistory: (sessionId: string, limit?: number) => Promise<{ success: boolean; tags: any[]; error?: string }>
+
+    // 回复建议
+    replySuggest: (payload: { session_id: string; context_messages: Array<{ role: string; content: string }> }) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>
+
+    // 待办
+    todoList: (filters?: { status?: string; limit?: number }) => Promise<{ success: boolean; tasks: any[]; error?: string }>
+    todoCreate: (payload: { session_id?: string; trigger_type: string; title: string; due_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
+    todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
+  }
 }
 
 export interface ExportOptions {
