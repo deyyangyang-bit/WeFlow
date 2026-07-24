@@ -433,13 +433,22 @@ class SalesDbService {
 
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
 
-  todoList(filters?: { status?: string; limit?: number }): FollowUpTask[] {
+  todoList(filters?: { status?: string; session_id?: string; limit?: number }): FollowUpTask[] {
     let sql = 'SELECT * FROM follow_up_task'
     const params: unknown[] = []
-    if (filters?.status) { sql += ' WHERE status = ?'; params.push(filters.status) }
+    const conditions: string[] = []
+    if (filters?.status) { conditions.push('status = ?'); params.push(filters.status) }
+    if (filters?.session_id) { conditions.push('session_id = ?'); params.push(filters.session_id) }
+    if (conditions.length > 0) { sql += ' WHERE ' + conditions.join(' AND ') }
     sql += ' ORDER BY created_at DESC'
     if (filters?.limit) { sql += ' LIMIT ?'; params.push(filters.limit) }
     return this.all<FollowUpTask>(sql, params)
+
+
+
+
+
+
   }
 
   todoCreate(task: Omit<FollowUpTask, 'id' | 'created_at' | 'completed_at'>): FollowUpTask {

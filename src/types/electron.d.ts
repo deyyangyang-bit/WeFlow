@@ -1727,6 +1727,18 @@ export interface ElectronAPI {
     customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
     customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
+    customerDetail: (sessionId: string) => Promise<{
+      success: boolean;
+      data?: {
+        profile: { id: number; session_id: string; display_name?: string; customer_id?: string; stage: string; tags: string; notes?: string; last_contact_at?: number; created_at: number; updated_at: number };
+        messageStats: { total: number; firstContactAt: number | null; lastContactAt: number | null };
+        aiProfile: string;
+        aiProfileMeta: { rangeStart?: number; rangeEnd?: number; updatedAt?: number } | null;
+        intentHistory: Array<{ id: number; session_id: string; stage: string; confidence?: number; source: string; reason?: string; created_at: number }>;
+        todos: Array<{ id: number; session_id?: string; trigger_type: string; title: string; due_at?: number; status: string; created_at: number }>;
+      };
+      error?: string;
+    }>
 
     // 意向标签
     intentAnalyze: (sessionId: string) => Promise<{ success: boolean; tag?: any; error?: string }>

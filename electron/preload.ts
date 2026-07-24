@@ -707,6 +707,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:customer:upsert', data),
     customerList: (filters?: { stage?: string; limit?: number }) =>
       ipcRenderer.invoke('sales:customer:list', filters),
+    customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
 
     // 意向标签
     intentAnalyze: (sessionId: string) => ipcRenderer.invoke('sales:intent:analyze', sessionId),

@@ -4600,6 +4600,81 @@ function registerIpcHandlers() {
     }
   })
 
+  // 客户画像聚合接口
+  ipcMain.handle('sales:customer:detail', async (_, sessionId: string) => {
+    try {
+      if (!sessionId) return { success: false, error: 'sessionId 不能为空' }
+
+      // 1. 获取或自动创建 customer_profile
+      let profile = salesDbService.customerGetBySession(sessionId)
+      if (!profile) {
+        // 尝试从 wcdb 获取 display_name
+        let displayName = sessionId
+        try {
+          const sessions = await wcdbService.getSessions()
+          if (sessions.success && sessions.sessions) {
+            const found = sessions.sessions.find((s: any) => s.sessionId === sessionId || s.userName === sessionId)
+            if (found) displayName = found.remark || found.nickName || found.displayName || sessionId
+          }
+        } catch { /* ignore */ }
+        profile = salesDbService.customerUpsert({ session_id: sessionId, display_name: displayName })
+      }
+
+      // 2. 消息统计
+      let messageStats: { total: number; firstContactAt: number | null; lastContactAt: number | null } = { total: 0, firstContactAt: null, lastContactAt: null }
+      try {
+        const countResult = await wcdbService.getMessageCount(sessionId)
+        if (countResult.success && countResult.count) {
+          messageStats.total = countResult.count
+          // 取最新一条
+          const latest = await wcdbService.getMessages(sessionId, 1, 0)
+          if (latest.success && latest.messages && latest.messages.length > 0) {
+            messageStats.lastContactAt = latest.messages[0].createTime ?? null
+          }
+          // 取最早一条
+          if (countResult.count > 1) {
+            const earliest = await wcdbService.getMessages(sessionId, 1, countResult.count - 1)
+            if (earliest.success && earliest.messages && earliest.messages.length > 0) {
+              messageStats.firstContactAt = earliest.messages[0].createTime ?? null
+            }
+          } else if (countResult.count === 1) {
+            messageStats.firstContactAt = messageStats.lastContactAt
+          }
+        }
+      } catch { /* wcdb 未打开时忽略 */ }
+
+      // 3. AI 画像文本
+      let aiProfile = ''
+      let aiProfileMeta: { rangeStart?: number; rangeEnd?: number; updatedAt?: number } | null = null
+      try {
+        const record = insightProfileService.getProfileRecord(sessionId)
+        if (record?.finalProfile) {
+          aiProfile = record.finalProfile
+          aiProfileMeta = { rangeStart: record.rangeStart, rangeEnd: record.rangeEnd, updatedAt: record.updatedAt }
+        }
+      } catch { /* ignore */ }
+
+      // 4. 意向变更记录
+      let intentHistory: any[] = []
+      try {
+        intentHistory = salesDbService.intentHistory(sessionId, 10)
+      } catch { /* ignore */ }
+
+      // 5. 跟进待办
+      let todos: any[] = []
+      try {
+        todos = salesDbService.todoList({ session_id: sessionId })
+      } catch { /* ignore */ }
+
+      return {
+        success: true,
+        data: { profile, messageStats, aiProfile, aiProfileMeta, intentHistory, todos }
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 意向标签
   ipcMain.handle('sales:intent:analyze', async (_, sessionId: string) => {
     // TODO: 第三阶段实现 salesIntentService

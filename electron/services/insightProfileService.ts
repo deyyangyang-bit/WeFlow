@@ -520,6 +520,11 @@ class InsightProfileService {
     ].join('\n')
   }
 
+  /** 获取指定联系人的最新 AI 画像完整记录（供销售画像聚合接口使用） */
+  getProfileRecord(sessionId: string): InsightProfileRecord | null {
+    return this.findLatestRecord(sessionId)
+  }
+
   cancelProfile(sessionId?: string): { success: boolean; message: string } {
     const normalizedSessionId = String(sessionId || '').trim()
     if (!this.activeTask) return { success: true, message: '当前没有画像任务' }

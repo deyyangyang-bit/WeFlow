@@ -44,6 +44,7 @@ import {
 } from './Chat/sharedMessageEvents'
 import '../styles/batchTranscribe.scss'
 import './ChatPage.scss'
+import CustomerCard from '../components/sales/CustomerCard'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -8846,6 +8847,11 @@ function ChatPage(props: ChatPageProps) {
                           </div>
                         )}
                       </div>
+
+                      {/* 销售画像卡片 - 仅非群聊显示 */}
+                      {!sessionDetail.wxid.includes('@chatroom') && (
+                        <CustomerCard sessionId={sessionDetail.wxid} />
+                      )}
                     </div>
                   ) : (
                     <div className="detail-empty">暂无详情</div>
