@@ -137,8 +137,8 @@ class SalesReplyService {
         const msgResult = await wcdbService.getMessages(sessionId, MAX_CONTEXT_MESSAGES, 0)
         if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
           return { success: false, error: '没有可用的聊天记录' }
-        const messages = msgResult.messages
         }
+        const messages = msgResult.messages
 
         try {
           const namesResult = await wcdbService.getDisplayNames([sessionId])

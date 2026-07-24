@@ -144,9 +144,9 @@ class SalesIntentService {
       const msgResult = await wcdbService.getMessages(sessionId, MAX_MESSAGES, 0)
       if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
         return { success: false, error: '没有可用的聊天记录' }
+      }
       const messages = msgResult.messages
       console.log('[SalesIntent] 获取消息:', messages.length, '条')
-      }
 
       // 4. 获取联系人显示名
       let peerName = '客户'
