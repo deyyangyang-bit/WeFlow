@@ -112,11 +112,16 @@ function parseAiResponse(text: string): { stage: string; confidence: number; rea
 // ─── 服务 ────────────────────────────────────────────────────────────────────
 
 class SalesIntentService {
+  private analyzing = false
 
   /**
    * AI 分析客户意向
    */
   async analyzeIntent(sessionId: string, config: ConfigService): Promise<IntentAnalyzeResult> {
+    if (this.analyzing) {
+      return { success: false, error: '正在分析中，请稍候' }
+    }
+    this.analyzing = true
     try {
       // 1. 检查 AI 配置
       if (!isAiConfigured(config)) {
@@ -126,6 +131,8 @@ class SalesIntentService {
       if (!sessionId?.trim()) {
         return { success: false, error: 'sessionId 不能为空' }
       }
+
+      console.log('[SalesIntent] 开始分析, sessionId:', sessionId)
 
       // 2. 检查 WCDB 连接
       const connected = await wcdbService.isConnected()
@@ -138,6 +145,7 @@ class SalesIntentService {
       if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
         return { success: false, error: '没有可用的聊天记录' }
       const messages = msgResult.messages
+      console.log('[SalesIntent] 获取消息:', messages.length, '条')
       }
 
       // 4. 获取联系人显示名
@@ -151,6 +159,7 @@ class SalesIntentService {
 
       // 5. 格式化对话文本
       const chatText = formatMessagesForPrompt(messages, peerName)
+      console.log('[SalesIntent] 格式化文本长度:', chatText.length, '前100字:', chatText.slice(0, 100))
       if (!chatText.trim()) {
         return { success: false, error: '聊天记录中没有有效的文本消息' }
       }
@@ -186,6 +195,8 @@ class SalesIntentService {
       return { success: true, tag }
     } catch (e) {
       return { success: false, error: String(e) }
+    } finally {
+      this.analyzing = false
     }
   }
 }

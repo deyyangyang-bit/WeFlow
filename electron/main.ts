@@ -4788,6 +4788,25 @@ function checkForUpdatesOnStartup() {
   }, 3000)
 }
 
+// 禁用 GPU 硬件加速，防止渲染进程崩溃（3011 会话大数据量场景）
+app.disableHardwareAcceleration()
+
+// ─── 进程级崩溃诊断 ─────────────────────────────────────────────────────────
+process.on('exit', (code) => {
+  console.error('[PROCESS EXIT] code:', code)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err.message, err.stack?.slice(0, 300))
+})
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[UNHANDLED REJECTION]', String(reason).slice(0, 300))
+})
+
+// ─── 崩溃诊断监听器 ─────────────────────────────────────────────────────────
+app.on('child-process-gone', (_event, details) => {
+  console.error('[CRASH] CHILD PROCESS GONE:', JSON.stringify(details))
+})
+
 app.whenReady().then(async () => {
   // 先初始化配置，以便在启动早期判定是否需要静默启动
   configService = new ConfigService()
@@ -4852,13 +4871,16 @@ app.whenReady().then(async () => {
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)
     insightService.handleDbMonitorChange(type, json)
-    salesAlertService.handleDbMonitorChange(type, json)
+    // salesAlertService.handleDbMonitorChange(type, json) // 禁用：自动触发会与手动操作并发调用 WCDB 导致段错误
   })
 
   // 提前创建主窗口（隐藏），让渲染进程加载与数据库预热并行进行
   updateSplashProgress(20, '正在准备主窗口...')
   ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[CRASH] RENDERER GONE:', details.reason, 'exitCode:', details.exitCode)
+  })
 
   const resolvedTrayIcon = resolveAppIconPath()
 

@@ -98,12 +98,15 @@ function parseSuggestions(text: string): string[] | null {
 // ─── 服务 ────────────────────────────────────────────────────────────────────
 
 class SalesReplyService {
+  private processing = false
 
   async suggestReplies(
     sessionId: string,
     config: ConfigService,
     contextMessages?: Array<{ role: string; content: string }>
   ): Promise<ReplySuggestResult> {
+    if (this.processing) return { success: false, error: '正在生成中，请稍候' }
+    this.processing = true
     try {
       // 1. 检查 AI 配置
       if (!isAiConfigured(config)) {
@@ -179,6 +182,8 @@ class SalesReplyService {
       return { success: true, suggestions }
     } catch (e) {
       return { success: false, error: String(e) }
+    } finally {
+      this.processing = false
     }
   }
 }
