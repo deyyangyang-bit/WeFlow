@@ -66,6 +66,17 @@
       &:hover { opacity: 0.9; }
       &:disabled { opacity: 0.5; cursor: not-allowed; }
 
+      &.fu-period-select {
+        background: var(--card-bg, #fff);
+        color: var(--text-primary, #333);
+        border: 1px solid var(--border-color, #ddd);
+        padding: 5px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+        outline: none;
+      }
+
       &.fu-scan-btn {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       }

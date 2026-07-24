@@ -38,6 +38,7 @@ export default function FollowUpPage() {
   const [newTitle, setNewTitle] = useState('')
   const [newDue, setNewDue] = useState('')
   const [scanning, setScanning] = useState(false)
+  const [scanPeriod, setScanPeriod] = useState<'day' | 'week' | 'month'>('week')
   const [scanResult, setScanResult] = useState<string | null>(null)
 
   useEffect(() => {
@@ -58,7 +59,7 @@ export default function FollowUpPage() {
     setScanning(true)
     setScanResult(null)
     try {
-      const result = await window.electronAPI.sales.todoScan()
+      const result = await window.electronAPI.sales.todoScan(scanPeriod)
       if (result.success && result.tasks) {
         setScanResult(result.tasks.length > 0 ? `AI 识别到 ${result.tasks.length} 条待办` : '未发现需要跟进的事项')
         await loadTasks(filter === 'all' ? undefined : { status: filter })
@@ -70,7 +71,7 @@ export default function FollowUpPage() {
     } finally {
       setScanning(false)
     }
-  }, [loadTasks, filter])
+  }, [loadTasks, filter, scanPeriod])
 
   const handleDone = useCallback((id: number) => {
     updateTask(id, { status: 'done' })
@@ -98,6 +99,15 @@ export default function FollowUpPage() {
               </button>
             ))}
           </div>
+          <select
+            className="fu-period-select"
+            value={scanPeriod}
+            onChange={(e) => setScanPeriod(e.target.value as 'day' | 'week' | 'month')}
+          >
+            <option value="day">今天</option>
+            <option value="week">本周</option>
+            <option value="month">本月</option>
+          </select>
           <button className="fu-create-btn fu-scan-btn" onClick={handleScan} disabled={scanning}>
             {scanning ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
             {scanning ? '扫描中...' : 'AI 扫描'}

@@ -727,7 +727,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:todo:create', payload),
     todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number }) =>
       ipcRenderer.invoke('sales:todo:update', id, updates),
-    todoScan: () => ipcRenderer.invoke('sales:todo:scan')
+    todoScan: (period?: string) => ipcRenderer.invoke('sales:todo:scan', period)
   },
 
   social: {

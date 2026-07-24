@@ -86,7 +86,7 @@ function formatMessages(messages: any[], peerName: string): string {
 class SalesFollowUpService {
   private scanning = false
 
-  async scanForFollowUps(config: ConfigService): Promise<FollowUpScanResult> {
+  async scanForFollowUps(config: ConfigService, period: string = 'week'): Promise<FollowUpScanResult> {
     if (this.scanning) {
       return { success: false, error: '正在扫描中，请稍候' }
     }
@@ -108,13 +108,25 @@ class SalesFollowUpService {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 过滤：只保留单聊、非系统账号、按时间排序取最近的
+      // 计算日期范围
+      const now = Date.now()
+      let rangeStart: number
+      if (period === 'day') {
+        const d = new Date(); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+      } else if (period === 'month') {
+        const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+      } else { // week
+        const d = new Date(); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); d.setHours(0, 0, 0, 0); rangeStart = d.getTime()
+      }
+
+      // 过滤：只保留单聊、非系统账号、在日期范围内有消息的
       const SYSTEM = new Set(['filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote', 'mphelper', 'weixinguanhaozhuli', 'notifymessage'])
       const candidates = sessionsResult.sessions
         .filter((s: any) => s.username
           && !s.username.endsWith('@chatroom')
           && !s.username.startsWith('gh_')
-          && !SYSTEM.has(s.username))
+          && !SYSTEM.has(s.username)
+          && (s.sortTimestamp || s.lastTimestamp || 0) >= rangeStart)
         .sort((a: any, b: any) => (b.sortTimestamp || b.lastTimestamp || 0) - (a.sortTimestamp || a.lastTimestamp || 0))
         .slice(0, SCAN_SESSION_LIMIT)
 
