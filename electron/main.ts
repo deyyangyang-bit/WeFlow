@@ -4788,9 +4788,6 @@ function checkForUpdatesOnStartup() {
   }, 3000)
 }
 
-// 禁用 GPU 硬件加速，防止渲染进程崩溃（3011 会话大数据量场景）
-app.disableHardwareAcceleration()
-
 // ─── 进程级崩溃诊断 ─────────────────────────────────────────────────────────
 process.on('exit', (code) => {
   console.error('[PROCESS EXIT] code:', code)
