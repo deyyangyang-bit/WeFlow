@@ -2442,7 +2442,10 @@ export class ImageDecryptService {
       return staticPath
     }
 
-    // 回退到系统 ffmpeg
+    // 回退：检查 ~/bin/ffmpeg
+    const homeBinFfmpeg = join(app.getPath('home'), 'bin', 'ffmpeg')
+    if (existsSync(homeBinFfmpeg)) return homeBinFfmpeg
+    // 最终回退到系统 ffmpeg
     return 'ffmpeg'
   }
 
