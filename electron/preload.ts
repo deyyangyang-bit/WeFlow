@@ -705,9 +705,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     customerGet: (sessionId: string) => ipcRenderer.invoke('sales:customer:get', sessionId),
     customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) =>
       ipcRenderer.invoke('sales:customer:upsert', data),
-    customerList: (filters?: { stage?: string; limit?: number }) =>
+    customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) =>
       ipcRenderer.invoke('sales:customer:list', filters),
     customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
+    dashboardStats: () => ipcRenderer.invoke('sales:dashboard:stats'),
 
     // 意向标签
     intentAnalyze: (sessionId: string) => ipcRenderer.invoke('sales:intent:analyze', sessionId),

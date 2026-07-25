@@ -427,13 +427,75 @@ class SalesDbService {
     return this.customerGetBySession(data.session_id)!
   }
 
-  customerList(filters?: { stage?: string; limit?: number }): CustomerProfile[] {
+  customerList(filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }): CustomerProfile[] {
     let sql = 'SELECT * FROM customer_profile'
     const params: unknown[] = []
-    if (filters?.stage) { sql += ' WHERE stage = ?'; params.push(filters.stage) }
-    sql += ' ORDER BY updated_at DESC'
+    const conditions: string[] = []
+    if (filters?.stage) { conditions.push('stage = ?'); params.push(filters.stage) }
+    if (filters?.search && filters.search.trim()) {
+      conditions.push('display_name LIKE ?')
+      params.push('%' + filters.search.trim() + '%')
+    }
+    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
+    // 排序：stage 用权重 CASE，其它按字段 DESC
+    if (filters?.sortBy === 'stage') {
+      sql += " ORDER BY CASE stage WHEN '决策' THEN 0 WHEN '比价' THEN 1 WHEN '了解' THEN 2 WHEN '成交' THEN 3 WHEN '流失' THEN 4 ELSE 5 END, updated_at DESC"
+    } else if (filters?.sortBy === 'last_contact_at') {
+      sql += ' ORDER BY COALESCE(last_contact_at, 0) DESC'
+    } else {
+      sql += ' ORDER BY updated_at DESC'
+    }
     if (filters?.limit) { sql += ' LIMIT ?'; params.push(filters.limit) }
     return this.all<CustomerProfile>(sql, params)
+  }
+
+  /**
+   * 仪表盘聚合统计（纯本地 COUNT/GROUP BY，无 WCDB/AI 调用）
+   */
+  getDashboardStats(): {
+    stageCounts: Record<string, number>
+    highIntentCount: number
+    totalCustomers: number
+    newCustomersThisWeek: number
+    pendingTodos: number
+    overdueTodos: number
+    suspectedTodos: number
+  } {
+    // 本周一 0 点（毫秒），逻辑同周报
+    const d = new Date()
+    const day = d.getDay() || 7
+    d.setDate(d.getDate() - day + 1)
+    d.setHours(0, 0, 0, 0)
+    const weekStartMs = d.getTime()
+
+    const stageCounts: Record<string, number> = {}
+    try {
+      const rows = this.all<{ stage: string; cnt: number }>(
+        'SELECT stage, COUNT(*) as cnt FROM customer_profile GROUP BY stage', []
+      )
+      for (const r of rows) stageCounts[r.stage || 'unknown'] = Number(r.cnt) || 0
+    } catch { /* ignore */ }
+
+    const highIntentCount = Number(this.get<{ c: number }>(
+      "SELECT COUNT(*) as c FROM customer_profile WHERE stage IN ('比价','决策')", []
+    )?.c || 0)
+    const totalCustomers = Number(this.get<{ c: number }>(
+      'SELECT COUNT(*) as c FROM customer_profile', []
+    )?.c || 0)
+    const newCustomersThisWeek = Number(this.get<{ c: number }>(
+      'SELECT COUNT(*) as c FROM customer_profile WHERE created_at >= ?', [weekStartMs]
+    )?.c || 0)
+    const pendingTodos = Number(this.get<{ c: number }>(
+      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'pending'", []
+    )?.c || 0)
+    const overdueTodos = Number(this.get<{ c: number }>(
+      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'overdue'", []
+    )?.c || 0)
+    const suspectedTodos = Number(this.get<{ c: number }>(
+      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'suspected'", []
+    )?.c || 0)
+
+    return { stageCounts, highIntentCount, totalCustomers, newCustomersThisWeek, pendingTodos, overdueTodos, suspectedTodos }
   }
 
   // ─── 意向标签 ─────────────────────────────────────────────────────────────

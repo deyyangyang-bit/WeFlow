@@ -384,6 +384,16 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">跟进待办</span>
           </NavLink>
 
+          {/* 客户管理 */}
+          <NavLink
+            to="/customers"
+            className={`nav-item ${isActive('/customers') ? 'active' : ''}`}
+            title={collapsed ? '客户' : undefined}
+          >
+            <span className="nav-icon"><Users size={20} /></span>
+            <span className="nav-label">客户</span>
+          </NavLink>
+
           {/* 通讯录 */}
           <NavLink
             to="/contacts"

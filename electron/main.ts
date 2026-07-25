@@ -35,7 +35,6 @@ import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
-import { salesAlertService } from './services/salesAlertService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4603,6 +4602,15 @@ function registerIpcHandlers() {
     }
   })
 
+  // 仪表盘聚合统计
+  ipcMain.handle('sales:dashboard:stats', async () => {
+    try {
+      return { success: true, stats: salesDbService.getDashboardStats() }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 客户画像聚合接口
   ipcMain.handle('sales:customer:detail', async (_, sessionId: string) => {
     try {
@@ -4668,6 +4676,13 @@ function registerIpcHandlers() {
       try {
         todos = salesDbService.todoList({ session_id: sessionId })
       } catch { /* ignore */ }
+
+      // 6. 回填 last_contact_at（供客户列表沉默天数使用）
+      if (messageStats.lastContactAt) {
+        try {
+          salesDbService.customerUpsert({ session_id: sessionId, last_contact_at: messageStats.lastContactAt })
+        } catch { /* ignore */ }
+      }
 
       return {
         success: true,
@@ -4889,7 +4904,6 @@ app.whenReady().then(async () => {
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)
     insightService.handleDbMonitorChange(type, json)
-    // salesAlertService.handleDbMonitorChange(type, json) // 禁用：自动触发会与手动操作并发调用 WCDB 导致段错误
   })
 
   // 提前创建主窗口（隐藏），让渲染进程加载与数据库预热并行进行
@@ -5010,8 +5024,6 @@ app.whenReady().then(async () => {
     await salesDbService.initialize(app.getPath('userData'))
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
-    salesAlertService.setConfig(configService)
-    salesAlertService.start()
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)
   }

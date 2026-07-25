@@ -43,6 +43,8 @@ const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
 const FollowUpPage = lazy(() => import('./pages/FollowUpPage'))
+const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
+const CustomerListPage = lazy(() => import('./pages/CustomerListPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
 const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
@@ -777,8 +779,9 @@ function App() {
 
             <Suspense fallback={null}>
               <Routes location={routeLocation}>
-                <Route path="/" element={<HomePage />} />
-                <Route path="/home" element={<HomePage />} />
+                <Route path="/" element={<SalesDashboardPage />} />
+                <Route path="/home" element={<SalesDashboardPage />} />
+                <Route path="/welcome" element={<HomePage />} />
                 <Route path="/account-management" element={<AccountManagementPage />} />
                 <Route path="/chat" element={<ChatPage />} />
 
@@ -800,6 +803,7 @@ function App() {
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/follow-up" element={<FollowUpPage />} />
+                <Route path="/customers" element={<CustomerListPage />} />
                 <Route path="/biz" element={<BizPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />

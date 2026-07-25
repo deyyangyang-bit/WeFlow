@@ -63,6 +63,8 @@ const DEFAULT_FOOTPRINT_SYSTEM_PROMPT = `你是“我的微信足迹”模块的
 
 /** 沉默天数阈值默认值 */
 const DEFAULT_SILENCE_DAYS = 3
+/** 高意向预警冷却（毫秒），同一客户在此窗口内不重复弹预警 */
+const ALERT_COOLDOWN_MS = 6 * 3600 * 1000
 const INSIGHT_CONFIG_KEYS = new Set([
   'aiInsightEnabled',
   'aiInsightScanIntervalHours',
@@ -1459,6 +1461,19 @@ ${afterText}
           salesStage: candidate.salesStage
         })
         generatedCount++
+        // 高意向沉默预警：比价/决策阶段客户沉默时弹窗（受冷却控制）
+        if (candidate.salesStage === '比价' || candidate.salesStage === '决策') {
+          if (this.shouldAlert(candidate.sessionId, candidate.salesStage)) {
+            insightLog('INFO', `高意向沉默预警：${candidate.displayName}（${candidate.salesStage}）沉默 ${candidate.silentDays} 天`)
+            void showNotification({
+              sessionId: candidate.sessionId,
+              channel: 'sales-alert',
+              title: '🔥 高意向客户沉默',
+              content: `${candidate.displayName}（${candidate.salesStage}）已沉默 ${candidate.silentDays} 天，建议尽快跟进`,
+              avatarUrl: undefined
+            })
+          }
+        }
       }
       insightLog('INFO', `沉默扫描完成，共生成 ${generatedCount} 条见解（候选 ${candidates.length} 个）`)
 
@@ -1750,6 +1765,17 @@ ${afterText}
             insightLog('INFO', `自动更新画像：${resolvedDisplayName} → ${parsedStage}`)
           } catch { /* salesDb 未初始化时忽略 */ }
         }
+        // 高意向活跃预警：本次解析出比价/决策阶段时弹窗（受冷却控制）
+        if ((parsedStage === '比价' || parsedStage === '决策') && this.shouldAlert(sessionId, parsedStage)) {
+          insightLog('INFO', `高意向活跃预警：${resolvedDisplayName} → ${parsedStage}`)
+          void showNotification({
+            sessionId,
+            channel: 'sales-alert',
+            title: '🔥 高意向客户提醒',
+            content: `${resolvedDisplayName}（${parsedStage}）刚表达决策意向，建议尽快跟进`,
+            avatarUrl: resolvedAvatarUrl
+          })
+        }
       }
       const finalSalesStage = parsedStage && parsedStage !== '未知' ? parsedStage : salesStage
       const notifTitle = `见解 · ${resolvedDisplayName}`
@@ -1877,10 +1903,22 @@ ${afterText}
 
   // ── 批量画像 ─────────────────────────────────────────────────────────────────
 
+  /** 高意向预警冷却记录：sessionId -> 上次预警时间 */
+  private alertCooldown = new Map<string, number>()
+
   private batchRunning = false
   private batchProgress = { total: 0, done: 0, running: false }
 
   getBatchProgress() { return { ...this.batchProgress } }
+
+  /** 高意向预警冷却判断：命中冷却返回 false，否则记录时间返回 true */
+  private shouldAlert(sessionId: string, _stage: string): boolean {
+    const now = Date.now()
+    const last = this.alertCooldown.get(sessionId) || 0
+    if (now - last < ALERT_COOLDOWN_MS) return false
+    this.alertCooldown.set(sessionId, now)
+    return true
+  }
 
   /**
    * 批量画像：遍历活跃客户，逐个调用 generateInsightForSession 提取阶段
