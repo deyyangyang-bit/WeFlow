@@ -1649,45 +1649,30 @@ ${afterText}
 3. 输出纯文本，不使用 Markdown。
 4. 只有在完全没有任何可说的内容时（比如对话只有一条"嗯"），才回复"SKIP"。绝大多数情况下你应该输出见解。`
 
-    // 销售场景 prompt（当有客户阶段信息时使用）
-    const SALES_SILENCE_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销售顾问。你的任务是分析客户沉默原因并给出重新接触建议。
-
-要求：
-1. 输出纯文本，80字以内，不要标题或列表。
-2. 第1句判断客户沉默的可能原因。
-3. 第2句给出一个自然的重新接触话术建议。
-4. 不要编造信息，不确定时用谨慎表述。`
-
-    const SALES_ACTIVITY_PROMPT = `你是一个 B2B 工业设备销售顾问。分析客户最近的聊天动态，关注：购买意向变化、价格敏感、竞品对比、决策时间线等销售信号。
-
-要求：
-1. 输出纯文本，80字以内。
-2. 如果发现明确销售信号，在末尾标注【信号：xxx】。
-3. 给出一个可执行的跟进建议。`
-
-    // 优先使用用户自定义 prompt，为空则根据场景选择默认值
+    // 统一 system prompt（保持不变以命中 API 缓存）
+    // 销售/通用场景的差异化指令全部放在 user prompt 中
     const customPrompt = (this.config.get('aiInsightSystemPrompt') as string) || ''
-    let systemPrompt: string
-    if (customPrompt.trim()) {
-      systemPrompt = customPrompt.trim()
-    } else if (salesStage && triggerReason === 'silence') {
-      systemPrompt = SALES_SILENCE_PROMPT
-    } else if (salesStage) {
-      systemPrompt = SALES_ACTIVITY_PROMPT
-    } else {
-      systemPrompt = DEFAULT_SYSTEM_PROMPT
-    }
+    const systemPrompt = customPrompt.trim() || DEFAULT_SYSTEM_PROMPT
 
-    const stageInfo = salesStage ? `客户「${resolvedDisplayName}」当前阶段：${salesStage}。` : ''
+    // 销售上下文（放在 user prompt 中，不影响 system prompt 缓存命中）
+    let salesInstruction = ''
+    if (salesStage) {
+      if (triggerReason === 'silence' && silentDays) {
+        salesInstruction = `【销售场景】客户「${resolvedDisplayName}」当前阶段：${salesStage}，已 ${silentDays} 天未联系。请从销售角度分析：判断沉默原因（1句）+ 给出自然的重新接触话术（1句）。输出≤80字纯文本。`
+      } else {
+        salesInstruction = `【销售场景】客户「${resolvedDisplayName}」当前阶段：${salesStage}。请关注购买意向、价格敏感、竞品对比等信号，发现信号在末尾标注【信号：xxx】，并给出跟进建议。输出≤80字纯文本。`
+      }
+    }
     const userPromptBase = [
-      triggerReason === 'silence' && silentDays
-        ? `${stageInfo}已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
-        : stageInfo,
+      triggerReason === 'silence' && silentDays && !salesStage
+        ? `已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
+        : '',
+      salesInstruction,
       contextSection,
       profileContextSection,
       momentsContextSection,
       socialContextSection,
-      salesStage ? '请给出销售跟进建议（≤80字）：' : '请给出你的见解（≤80字）：'
+      salesStage ? '' : '请给出你的见解（≤80字）：'
     ].filter(Boolean).join('\n\n')
     const userPrompt = appendPromptCurrentTime(userPromptBase)
 
