@@ -306,6 +306,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiModelApiModel, setAiModelApiModel] = useState('gpt-4o-mini')
   const [aiModelApiMaxTokens, setAiModelApiMaxTokens] = useState(1024)
   const [aiInsightSilenceDays, setAiInsightSilenceDays] = useState(3)
+  const [aiInsightSilenceMaxDays, setAiInsightSilenceMaxDays] = useState(30)
+  const [aiInsightScanLimit, setAiInsightScanLimit] = useState(50)
   const [aiInsightAllowContext, setAiInsightAllowContext] = useState(false)
   const [aiInsightAllowMomentsContext, setAiInsightAllowMomentsContext] = useState(false)
   const [aiInsightMomentsContextCount, setAiInsightMomentsContextCount] = useState(5)
@@ -3527,6 +3529,46 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             const val = Math.max(1, parseInt(e.target.value, 10) || 3)
             setAiInsightSilenceDays(val)
             scheduleConfigSave('aiInsightSilenceDays', () => configService.setAiInsightSilenceDays(val))
+          }}
+          style={{ width: 100 }}
+        />
+      </div>
+
+      <div className="form-group">
+        <label>沉默上限（天）</label>
+        <span className="form-hint">
+          超过此天数的沉默联系人不再提醒（视为已流失）。建议 30 天。
+        </span>
+        <input
+          type="number"
+          className="field-input"
+          value={aiInsightSilenceMaxDays}
+          min={7}
+          max={180}
+          onChange={(e) => {
+            const val = Math.max(7, Math.min(180, parseInt(e.target.value, 10) || 30))
+            setAiInsightSilenceMaxDays(val)
+            scheduleConfigSave('aiInsightSilenceMaxDays', () => configService.setAiInsightSilenceMaxDays(val))
+          }}
+          style={{ width: 100 }}
+        />
+      </div>
+
+      <div className="form-group">
+        <label>每次扫描上限（条）</label>
+        <span className="form-hint">
+          每次沉默扫描最多生成几条见解。高意向客户优先。建议 50 条。
+        </span>
+        <input
+          type="number"
+          className="field-input"
+          value={aiInsightScanLimit}
+          min={1}
+          max={200}
+          onChange={(e) => {
+            const val = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 50))
+            setAiInsightScanLimit(val)
+            scheduleConfigSave('aiInsightScanLimit', () => configService.setAiInsightScanLimit(val))
           }}
           style={{ width: 100 }}
         />

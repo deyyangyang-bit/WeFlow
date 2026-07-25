@@ -99,6 +99,8 @@ export const CONFIG_KEYS = {
   AI_INSIGHT_API_KEY: 'aiInsightApiKey',
   AI_INSIGHT_API_MODEL: 'aiInsightApiModel',
   AI_INSIGHT_SILENCE_DAYS: 'aiInsightSilenceDays',
+  AI_INSIGHT_SILENCE_MAX_DAYS: 'aiInsightSilenceMaxDays',
+  AI_INSIGHT_SCAN_LIMIT: 'aiInsightScanLimit',
   AI_INSIGHT_ALLOW_CONTEXT: 'aiInsightAllowContext',
   AI_INSIGHT_ALLOW_MOMENTS_CONTEXT: 'aiInsightAllowMomentsContext',
   AI_INSIGHT_MOMENTS_CONTEXT_COUNT: 'aiInsightMomentsContextCount',
@@ -2023,6 +2025,14 @@ export async function getAiInsightSilenceDays(): Promise<number> {
 
 export async function setAiInsightSilenceDays(days: number): Promise<void> {
   await config.set(CONFIG_KEYS.AI_INSIGHT_SILENCE_DAYS, days)
+}
+
+export async function setAiInsightSilenceMaxDays(days: number): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_SILENCE_MAX_DAYS, days)
+}
+
+export async function setAiInsightScanLimit(limit: number): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_SCAN_LIMIT, limit)
 }
 
 export async function getAiInsightAllowContext(): Promise<boolean> {

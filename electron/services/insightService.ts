@@ -1368,10 +1368,13 @@ ${afterText}
     insightLog('INFO', '开始沉默联系人扫描...')
     try {
       const silenceDays = (this.config.get('aiInsightSilenceDays') as number) || DEFAULT_SILENCE_DAYS
+      const silenceMaxDays = (this.config.get('aiInsightSilenceMaxDays') as number) || 30
+      const scanLimit = (this.config.get('aiInsightScanLimit') as number) || 50
       const thresholdMs = silenceDays * 24 * 60 * 60 * 1000
+      const maxThresholdMs = silenceMaxDays * 24 * 60 * 60 * 1000
       const now = Date.now()
 
-      insightLog('INFO', `沉默阈值：${silenceDays} 天`)
+      insightLog('INFO', `沉默阈值：${silenceDays}-${silenceMaxDays} 天，每次上限 ${scanLimit} 条`)
 
       // 沉默扫描间隔较长，强制刷新缓存以获取最新数据
       const sessions = await this.getSessionsCached(true)
@@ -1382,9 +1385,17 @@ ${afterText}
 
       insightLog('INFO', `共 ${sessions.length} 个会话，开始过滤...`)
 
-      let silentCount = 0
+      // 第一阶段：收集所有符合条件的沉默联系人
+      interface SilentCandidate {
+        sessionId: string
+        displayName: string
+        silentDays: number
+        salesStage?: string
+        stageWeight: number
+      }
+      const candidates: SilentCandidate[] = []
+
       for (const session of sessions) {
-        if (!this.isEnabled()) return
         const sessionId = session.username?.trim() || ''
         if (!sessionId || sessionId.endsWith('@chatroom')) continue
         if (sessionId.toLowerCase().includes('placeholder')) continue
@@ -1395,37 +1406,61 @@ ${afterText}
 
         const silentMs = now - lastTimestamp
 
-        // 查询客户画像阶段，动态调整沉默阈值
+        // 查询客户画像阶段
         let salesStage: string | undefined
         let effectiveThresholdMs = thresholdMs
+        let stageWeight = 3  // 默认最低优先级
         try {
           const profile = salesDbService.customerGetBySession(sessionId)
           if (profile?.stage) {
             salesStage = profile.stage
-            if (profile.stage === '决策') effectiveThresholdMs = 1 * 24 * 60 * 60 * 1000
-            else if (profile.stage === '比价') effectiveThresholdMs = 2 * 24 * 60 * 60 * 1000
+            // 流失客户直接跳过
+            if (profile.stage === '流失') continue
+            // 动态阈值
+            if (profile.stage === '决策') { effectiveThresholdMs = 1 * 24 * 60 * 60 * 1000; stageWeight = 0 }
+            else if (profile.stage === '比价') { effectiveThresholdMs = 2 * 24 * 60 * 60 * 1000; stageWeight = 1 }
+            else if (profile.stage === '了解') { stageWeight = 2 }
           }
         } catch { /* salesDb 未初始化时忽略 */ }
 
+        // 下限：未达到沉默阈值
         if (silentMs < effectiveThresholdMs) continue
+        // 上限：超过最大沉默天数，不再提醒
+        if (silentMs > maxThresholdMs) continue
 
-        silentCount++
-        const silentDays = Math.floor(silentMs / (24 * 60 * 60 * 1000))
+        const silentDaysCalc = Math.floor(silentMs / (24 * 60 * 60 * 1000))
         const displayName = typeof session.displayName === 'string' && session.displayName.length > 0
           ? (session.displayName.trim() || session.displayName)
           : sessionId
-        const stageLabel = salesStage ? `（${salesStage}阶段）` : ''
-        insightLog('INFO', `发现沉默联系人：${displayName}${stageLabel}，已沉默 ${silentDays} 天`)
+
+        candidates.push({ sessionId, displayName, silentDays: silentDaysCalc, salesStage, stageWeight })
+      }
+
+      // 第二阶段：按优先级排序（阶段权重升序 → 沉默天数升序）
+      candidates.sort((a, b) => {
+        if (a.stageWeight !== b.stageWeight) return a.stageWeight - b.stageWeight
+        return a.silentDays - b.silentDays
+      })
+
+      insightLog('INFO', `符合条件 ${candidates.length} 个，取前 ${scanLimit} 个生成见解`)
+
+      // 第三阶段：按上限生成见解
+      let generatedCount = 0
+      for (const candidate of candidates.slice(0, scanLimit)) {
+        if (!this.isEnabled()) return
+        const stageLabel = candidate.salesStage ? `（${candidate.salesStage}阶段）` : ''
+        insightLog('INFO', `生成沉默见解：${candidate.displayName}${stageLabel}，已沉默 ${candidate.silentDays} 天`)
 
         await this.generateInsightForSession({
-          sessionId,
-          displayName,
+          sessionId: candidate.sessionId,
+          displayName: candidate.displayName,
           triggerReason: 'silence',
-          silentDays,
-          salesStage
+          silentDays: candidate.silentDays,
+          salesStage: candidate.salesStage
         })
+        generatedCount++
       }
-      insightLog('INFO', `沉默扫描完成，共发现 ${silentCount} 个沉默联系人`)
+      insightLog('INFO', `沉默扫描完成，共生成 ${generatedCount} 条见解（候选 ${candidates.length} 个）`)
     } catch (e) {
       insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
     } finally {
