@@ -22,6 +22,7 @@ import { snsService } from './snsService'
 import { weiboService } from './social/weiboService'
 import { showNotification } from '../windows/notificationWindow'
 import { insightProfileService } from './insightProfileService'
+import { salesDbService } from './salesDbService'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -1393,20 +1394,35 @@ ${afterText}
         if (!lastTimestamp || lastTimestamp <= 0) continue
 
         const silentMs = now - lastTimestamp
-        if (silentMs < thresholdMs) continue
+
+        // 查询客户画像阶段，动态调整沉默阈值
+        let salesStage: string | undefined
+        let effectiveThresholdMs = thresholdMs
+        try {
+          const profile = salesDbService.customerGetBySession(sessionId)
+          if (profile?.stage) {
+            salesStage = profile.stage
+            if (profile.stage === '决策') effectiveThresholdMs = 1 * 24 * 60 * 60 * 1000
+            else if (profile.stage === '比价') effectiveThresholdMs = 2 * 24 * 60 * 60 * 1000
+          }
+        } catch { /* salesDb 未初始化时忽略 */ }
+
+        if (silentMs < effectiveThresholdMs) continue
 
         silentCount++
         const silentDays = Math.floor(silentMs / (24 * 60 * 60 * 1000))
         const displayName = typeof session.displayName === 'string' && session.displayName.length > 0
           ? (session.displayName.trim() || session.displayName)
           : sessionId
-        insightLog('INFO', `发现沉默联系人：${displayName}，已沉默 ${silentDays} 天`)
+        const stageLabel = salesStage ? `（${salesStage}阶段）` : ''
+        insightLog('INFO', `发现沉默联系人：${displayName}${stageLabel}，已沉默 ${silentDays} 天`)
 
         await this.generateInsightForSession({
           sessionId,
           displayName,
           triggerReason: 'silence',
-          silentDays
+          silentDays,
+          salesStage
         })
       }
       insightLog('INFO', `沉默扫描完成，共发现 ${silentCount} 个沉默联系人`)
@@ -1544,8 +1560,9 @@ ${afterText}
     displayName: string
     triggerReason: InsightRecordTriggerReason
     silentDays?: number
+    salesStage?: string
   }): Promise<SessionInsightTriggerResult> {
-    const { sessionId, displayName, triggerReason, silentDays } = params
+    const { sessionId, displayName, triggerReason, silentDays, salesStage } = params
     if (!sessionId) return { success: false, message: '会话无效，无法生成见解' }
     if (!this.isEnabled()) return { success: false, message: '请先在设置中开启「AI 见解」' }
 
@@ -1597,19 +1614,45 @@ ${afterText}
 3. 输出纯文本，不使用 Markdown。
 4. 只有在完全没有任何可说的内容时（比如对话只有一条"嗯"），才回复"SKIP"。绝大多数情况下你应该输出见解。`
 
-    // 优先使用用户自定义 prompt，为空则使用默认值
-    const customPrompt = (this.config.get('aiInsightSystemPrompt') as string) || ''
-    const systemPrompt = customPrompt.trim() || DEFAULT_SYSTEM_PROMPT
+    // 销售场景 prompt（当有客户阶段信息时使用）
+    const SALES_SILENCE_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销售顾问。你的任务是分析客户沉默原因并给出重新接触建议。
 
+要求：
+1. 输出纯文本，80字以内，不要标题或列表。
+2. 第1句判断客户沉默的可能原因。
+3. 第2句给出一个自然的重新接触话术建议。
+4. 不要编造信息，不确定时用谨慎表述。`
+
+    const SALES_ACTIVITY_PROMPT = `你是一个 B2B 工业设备销售顾问。分析客户最近的聊天动态，关注：购买意向变化、价格敏感、竞品对比、决策时间线等销售信号。
+
+要求：
+1. 输出纯文本，80字以内。
+2. 如果发现明确销售信号，在末尾标注【信号：xxx】。
+3. 给出一个可执行的跟进建议。`
+
+    // 优先使用用户自定义 prompt，为空则根据场景选择默认值
+    const customPrompt = (this.config.get('aiInsightSystemPrompt') as string) || ''
+    let systemPrompt: string
+    if (customPrompt.trim()) {
+      systemPrompt = customPrompt.trim()
+    } else if (salesStage && triggerReason === 'silence') {
+      systemPrompt = SALES_SILENCE_PROMPT
+    } else if (salesStage) {
+      systemPrompt = SALES_ACTIVITY_PROMPT
+    } else {
+      systemPrompt = DEFAULT_SYSTEM_PROMPT
+    }
+
+    const stageInfo = salesStage ? `客户「${resolvedDisplayName}」当前阶段：${salesStage}。` : ''
     const userPromptBase = [
       triggerReason === 'silence' && silentDays
-        ? `已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
-        : '',
+        ? `${stageInfo}已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
+        : stageInfo,
       contextSection,
       profileContextSection,
       momentsContextSection,
       socialContextSection,
-      '请给出你的见解（≤80字）：'
+      salesStage ? '请给出销售跟进建议（≤80字）：' : '请给出你的见解（≤80字）：'
     ].filter(Boolean).join('\n\n')
     const userPrompt = appendPromptCurrentTime(userPromptBase)
 
@@ -1684,7 +1727,8 @@ ${afterText}
         avatarUrl: resolvedAvatarUrl,
         triggerReason,
         insight,
-        log: recordLog
+        log: recordLog,
+        salesStage
       })
 
       const insightNotificationEnabled = this.config.get('aiInsightNotificationEnabled') !== false

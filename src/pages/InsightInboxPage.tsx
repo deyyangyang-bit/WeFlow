@@ -344,6 +344,9 @@ export default function InsightInboxPage() {
                       <div className="insight-card-actions">
                         <span className={`insight-source-pill ${record.sourceType || 'insight'}`}>{getSourceLabel(record.sourceType)}</span>
                         <span className={`insight-trigger-pill ${record.triggerReason}`}>{getTriggerLabel(record.triggerReason)}</span>
+                        {record.salesStage && (
+                          <span className={`insight-stage-pill stage-${record.salesStage}`}>{record.salesStage}</span>
+                        )}
                         <span className="insight-time">{formatRecordTime(record.createdAt)}</span>
                         <button className="insight-action-btn" onClick={() => openChat(record)} title="打开聊天">
                           <MessageSquare size={14} />

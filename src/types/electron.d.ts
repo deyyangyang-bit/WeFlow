@@ -83,6 +83,7 @@ export interface InsightRecordSummary {
   triggerReason: InsightRecordTriggerReason
   insight: string
   read: boolean
+  salesStage?: string
   messageInsight?: MessageInsightTarget
 }
 

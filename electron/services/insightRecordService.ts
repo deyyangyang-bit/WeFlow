@@ -202,6 +202,7 @@ class InsightRecordService {
     insight: string
     messageInsight?: MessageInsightTarget
     log: InsightRecordLog
+    salesStage?: string
   }): InsightRecord {
     this.ensureLoaded()
     const scope = this.getCurrentAccountScope()
@@ -218,7 +219,8 @@ class InsightRecordService {
       insight: input.insight,
       read: false,
       messageInsight: input.messageInsight,
-      log: input.log
+      log: input.log,
+      salesStage: input.salesStage
     }
 
     this.records.push(record)

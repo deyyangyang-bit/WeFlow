@@ -272,6 +272,19 @@
   }
 }
 
+.insight-stage-pill {
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  &.stage-决策 { color: #dc2626; background: rgba(220, 38, 38, 0.1); }
+  &.stage-比价 { color: #d97706; background: rgba(217, 119, 6, 0.1); }
+  &.stage-了解 { color: #2563eb; background: rgba(37, 99, 235, 0.1); }
+  &.stage-成交 { color: #16a34a; background: rgba(22, 163, 74, 0.1); }
+  &.stage-流失 { color: #6b7280; background: rgba(107, 114, 128, 0.1); }
+}
+
 .insight-source-pill {
   padding: 5px 8px;
   border-radius: 999px;
