@@ -62,10 +62,18 @@ export interface FollowUpTask {
   id?: number
   session_id?: string | null
   customer_profile_id?: number | null
+  display_name?: string | null
+  source_message_id?: string | null
+  promise_summary?: string | null
+  action_type?: string
   trigger_type: string
   title: string
   due_at?: number | null
   status?: string
+  priority_score?: number
+  created_by?: string
+  confidence?: number | null
+  feedback_log?: string
   created_at?: number
   completed_at?: number | null
 }
@@ -123,10 +131,18 @@ CREATE TABLE IF NOT EXISTS follow_up_task (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT,
   customer_profile_id INTEGER,
-  trigger_type TEXT NOT NULL,
+  display_name TEXT,
+  source_message_id TEXT,
+  promise_summary TEXT,
+  action_type TEXT DEFAULT 'reply_customer',
+  trigger_type TEXT NOT NULL DEFAULT 'ai_detected',
   title TEXT NOT NULL,
   due_at INTEGER,
   status TEXT DEFAULT 'pending',
+  priority_score REAL DEFAULT 0,
+  created_by TEXT DEFAULT 'ai',
+  confidence REAL,
+  feedback_log TEXT DEFAULT '[]',
   created_at INTEGER NOT NULL,
   completed_at INTEGER
 );
@@ -135,6 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
 CREATE INDEX IF NOT EXISTS idx_customer_session ON customer_profile(session_id);
+CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status);
+CREATE INDEX IF NOT EXISTS idx_todo_due ON follow_up_task(due_at);
 CREATE INDEX IF NOT EXISTS idx_intent_session ON intent_tag_log(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status, due_at);
 `
@@ -174,6 +192,20 @@ class SalesDbService {
 
     // 执行建表
     this.db.run(SCHEMA_SQL)
+    // Migration: 为旧表添加新列（如果不存在）
+    const migrationCols: Array<[string, string]> = [
+      ['display_name', 'TEXT'],
+      ['source_message_id', 'TEXT'],
+      ['promise_summary', 'TEXT'],
+      ['action_type', "TEXT DEFAULT 'reply_customer'"],
+      ['priority_score', 'REAL DEFAULT 0'],
+      ['created_by', "TEXT DEFAULT 'ai'"],
+      ['confidence', 'REAL'],
+      ['feedback_log', "TEXT DEFAULT '[]'"],
+    ]
+    for (const [col, type] of migrationCols) {
+      try { this.db.run(`ALTER TABLE follow_up_task ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
     this.persist()
   }
 
@@ -454,15 +486,15 @@ class SalesDbService {
   todoCreate(task: Omit<FollowUpTask, 'id' | 'created_at' | 'completed_at'>): FollowUpTask {
     const now = Date.now()
     this.run(
-      `INSERT INTO follow_up_task (session_id, customer_profile_id, trigger_type, title, due_at, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [task.session_id ?? null, task.customer_profile_id ?? null, task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', now]
+      `INSERT INTO follow_up_task (session_id, customer_profile_id, display_name, source_message_id, promise_summary, action_type, trigger_type, title, due_at, status, priority_score, created_by, confidence, feedback_log, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', now]
     )
     const id = this.lastInsertRowId()
     return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])!
   }
 
-  todoUpdate(id: number, updates: { status?: string; title?: string; due_at?: number }): FollowUpTask | undefined {
+  todoUpdate(id: number, updates: { status?: string; title?: string; due_at?: number; priority_score?: number; feedback_log?: string; completed_at?: number }): FollowUpTask | undefined {
     const fields: string[] = []
     const params: unknown[] = []
 

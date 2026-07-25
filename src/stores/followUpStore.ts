@@ -10,10 +10,18 @@ export interface FollowUpTask {
   id: number
   session_id?: string
   customer_profile_id?: number
+  display_name?: string
+  source_message_id?: string
+  promise_summary?: string
+  action_type?: string
   trigger_type: string
   title: string
   due_at?: number
   status: string
+  priority_score?: number
+  created_by?: string
+  confidence?: number
+  feedback_log?: string
   created_at: number
   completed_at?: number
 }

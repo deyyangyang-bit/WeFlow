@@ -4750,7 +4750,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sales:todo:scan', async (_, period?: string) => {
     try {
-      return await salesFollowUpService.scanForFollowUps(configService, period || 'week')
+      return await salesFollowUpService.scan(configService, period || 'week')
     } catch (e) {
       return { success: false, error: String(e) }
     }
