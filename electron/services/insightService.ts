@@ -21,6 +21,7 @@ import { chatService, ChatSession, Message } from './chatService'
 import { snsService } from './snsService'
 import { weiboService } from './social/weiboService'
 import { showNotification } from '../windows/notificationWindow'
+import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
 import { enqueueSalesTask } from './salesQueue'
@@ -144,7 +145,7 @@ function insightDebugSection(_level: InsightLogLevel, _title: string, _payload: 
 }
 
 /**
- * 仅输出到 console，不落盘到文件。
+ * 输出到 console，并落盘到 weflow-sales.log（便于打包版排查销售 AI/扫描/预警问题）。
  */
 function insightLog(level: InsightLogLevel, message: string): void {
   if (level === 'ERROR' || level === 'WARN') {
@@ -153,6 +154,7 @@ function insightLog(level: InsightLogLevel, message: string): void {
     console.log(`[InsightService] ${message}`)
   }
   insightDebugLine(level, message)
+  salesLog(level, `[InsightService] ${message}`)
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────

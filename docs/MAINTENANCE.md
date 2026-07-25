@@ -84,3 +84,22 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
 
 ## 9. 后续路线图
 P1 话术自动提炼 · 客户列表「打开聊天」跳转 · P2 知识库向量化（仅当知识量超过全量塞上下文时）· 回复建议增强（若未来 WeFlow 增加发送能力）。
+
+## 10. 安全与发布红线（上传/分发前必读）
+- **无硬编码密钥**：代码里没有数据库密码、API key、解密 hex key 的字面量。`config.ts` 里的 `decryptKey`/`aiModelApiKey` 等只是**配置键名**；真实密钥值在用户本机 `userData/WeFlow-config.json`（`safe:` 加密存储，**不在 git 仓库**）。
+- **`auth` 模块是"本地应用锁"，不是付费激活**：`enableLock/unlock/changePassword` 给 app 加本地密码防他人查看，纯本地、不联网、无 license/注册码/付费墙。**不存在付费激活逻辑**，无需担心上传泄露。
+- **`resources/key/*.{dll,dylib}` 是解密微信库的原生二进制程序**（wx_key 等），**不是密钥文本**，是 win/mac 解密微信数据库所必需，**必须保留在仓库**，切勿当"密钥"误删。
+- **`.gitignore` 已护住** `node_modules`/`dist`/`release`/`*.db`/`.env`/`*.log`；销售库与配置在 userData，本就不进仓库 → push 安全。
+- **🚨 已删除 `build.publish` 上游配置**：原 `package.json` 的 `build.publish` 指向上游作者 `hicccc77/WeFlow`，已移除。**严禁运行 `electron-builder --publish`**（无 publish 目标，手滑也推不出去）。若将来要自动更新，请配置**自己的**私人仓库并加 `"private": true`。
+- **`origin` 是上游 fork，禁止 `git push origin`**；备份只用独立 remote（见 §8）。
+
+## 11. 版本号规则
+- 二创采用**独立版本线**，与上游 WeFlow 的 5.0.0 脱钩，当前 **1.0.0**。
+- **改版本只改一处**：`package.json` 顶层 `"version"`。改后：设置页"关于"与启动闪屏自动显示 `v{version}`（读 `app.getVersion()`，无需改 UI）；产物文件名自动变 `WeFlow-{version}-Setup.{exe|dmg|zip}`。
+- 遵循 semver：修 bug → patch（1.0.0→1.0.1）；加功能 → minor（1.0.0→1.1.0）；不兼容大改 → major。用户报问题先核对版本，确认其是否已更新。
+- 改版本后**必须重打包**两平台，新版本号才进安装包与界面。
+
+## 12. 日志与配置文件
+- **配置文件**：`userData/WeFlow-config.json`（ConfigService 持久化，设置页可改，**不进 git**）。销售相关配置项复用其机制：`aiInsightSilenceMaxDays`/`aiInsightScanLimit`/`aiInsightCooldownMinutes` 等（详见 §5）。配置已写好，无需新增存储。
+- **销售日志**：`userData/logs/weflow-sales.log`（`salesLogger.ts`），**2MB 单备份轮转**（超限翻成 `.old`）。`insightLog` 双写 console+文件，故销售 AI 调用、沉默扫描、高意向预警、自动回填、催办识别的 INFO/WARN/ERROR 均落盘，打包版可查。日志**不记录密钥与聊天原文全文**，仅记操作摘要。
+- WeFlow 主流程日志在 `userData/logs/wcdb.log`（`log:getPath`，设置页可查看/清空）。

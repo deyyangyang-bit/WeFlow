@@ -1,6 +1,6 @@
 {
   "name": "weflow",
-  "version": "5.0.0",
+  "version": "1.0.0",
   "description": "WeFlow",
   "main": "dist-electron/main.js",
   "author": {
@@ -78,12 +78,6 @@
   },
   "build": {
     "appId": "com.WeFlow.app",
-    "publish": {
-      "provider": "github",
-      "owner": "hicccc77",
-      "repo": "WeFlow",
-      "releaseType": "release"
-    },
     "productName": "WeFlow",
     "artifactName": "${productName}-${version}-Setup.${ext}",
     "directories": {
