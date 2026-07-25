@@ -154,9 +154,9 @@ class SalesReplyService {
         return { success: false, error: '没有有效的对话内容' }
       }
 
-      // 3. 检索知识库
-      const lastUserMsg = chatText.split('\n').filter(l => l.startsWith(peerName) || l.startsWith('客户')).pop() || ''
-      const knowledgeContext = salesKnowledgeService.retrieveForPrompt(lastUserMsg.replace(/^(客户|[^：]+)：/, ''), 3)
+      // 3. 知识库注入：小库全量喂入（让模型自挑相关条目），大库走 n-gram 检索兜底
+      const lastUserMsg = (chatText.split('\n').filter(l => l.startsWith(peerName) || l.startsWith('客户')).pop() || '').replace(/^(客户|[^：]+)：/, '')
+      const knowledgeContext = salesKnowledgeService.buildKnowledgeContext(lastUserMsg)
 
       // 4. 组装 prompt
       let userMessage = `对话上下文（与"${peerName}"的最近聊天）：\n${chatText}`

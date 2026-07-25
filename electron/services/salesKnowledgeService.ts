@@ -144,42 +144,62 @@ class SalesKnowledgeService {
   }
 
   /**
-   * 为 AI 回复建议检索相关知识条目。
-   * 根据用户消息关键词匹配，返回最相关的条目内容（拼接为文本）。
+   * 为 AI 检索相关知识条目（中文友好的 n-gram 内存打分，零外部依赖）。
+   * 一次拉全表，在内存里用 2/3-gram 命中数打分，过滤停用字组合，避免整句 LIKE 匹配失败。
    */
   retrieveForPrompt(userMessage: string, maxEntries: number = 3): string {
     try {
-      // 提取关键词（简单分词：按空格和标点拆分，取 2 字以上的词）
-      const keywords = userMessage
-        .replace(/[？?！!。，,、\s]+/g, ' ')
-        .split(' ')
-        .filter(w => w.length >= 2)
-        .slice(0, 5)
+      const msg = (userMessage || '').trim()
+      if (!msg) return ''
+      const all = salesDbService.kbList()
+      if (all.length === 0) return ''
 
-      if (keywords.length === 0) return ''
-
-      const allResults: KnowledgeEntry[] = []
-      const seenIds = new Set<number>()
-
-      for (const kw of keywords) {
-        const results = salesDbService.kbSearch(kw)
-        for (const r of results) {
-          if (!seenIds.has(r.id!)) {
-            seenIds.add(r.id!)
-            allResults.push(r)
-          }
-        }
-        if (allResults.length >= maxEntries * 2) break
+      // 停用字组合（避免"的是""了吗"等让所有条目都高分）
+      const STOP = new Set(['的是','了是','是在','在我','的你','我的','你的','吗呢','呢吧','吧啊','和与','与或','不是','有了','这个','那个','什么','怎么','多少','可以','一下','一个','你们','我们','他们','么什','么怎','会能','能为'])
+      const grams = new Set<string>()
+      for (let i = 0; i < msg.length - 1; i++) {
+        const g2 = msg.slice(i, i + 2)
+        if (!STOP.has(g2)) grams.add('2:' + g2)
+        if (i < msg.length - 2) grams.add('3:' + msg.slice(i, i + 3))
       }
+      if (grams.size === 0) return ''
 
-      // 取前 N 条
-      const topEntries = allResults.slice(0, maxEntries)
-      if (topEntries.length === 0) return ''
+      const scored = all.map(e => {
+        const hay = `${e.title || ''} ${e.content || ''} ${e.tags || ''}`
+        let score = 0
+        for (const g of grams) {
+          const token = g.slice(2)
+          if (g.startsWith('3:')) { if (hay.includes(token)) score += 3 }
+          else if (hay.includes(token)) score += 1
+        }
+        // 标题被整句包含 → 强相关
+        if (e.title && e.title.length >= 2 && msg.includes(e.title)) score += 100
+        return { e, score }
+      }).filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxEntries)
 
-      // 拼接为 prompt 可用的文本
-      return topEntries.map((e, i) =>
-        `【参考${i + 1}】${e.title}\n${e.content}`
-      ).join('\n\n')
+      if (scored.length === 0) return ''
+      return scored.map((s, i) => `【参考${i + 1}】${s.e.title}\n${s.e.content}`).join('\n\n')
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 为 AI 构建知识库上下文（产品种类有限场景的最优策略，无需向量库）。
+   * 知识量小（全量文本在预算内）→ 全量喂入，让模型自行挑选相关条目，零检索误差；
+   * 知识量大（超预算）→ 退回 n-gram 检索兜底。
+   */
+  buildKnowledgeContext(userMessage: string, fullBudget: number = 2500, maxRetrieve: number = 3): string {
+    try {
+      const all = salesDbService.kbList()
+      if (all.length === 0) return ''
+      const fullText = all
+        .map(e => `- [${e.category}${e.product_line ? '/' + e.product_line : ''}] ${e.title}：${e.content}`)
+        .join('\n')
+      if (fullText.length <= fullBudget) return fullText
+      return this.retrieveForPrompt(userMessage, maxRetrieve)
     } catch {
       return ''
     }
