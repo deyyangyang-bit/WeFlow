@@ -727,7 +727,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:todo:create', payload),
     todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number }) =>
       ipcRenderer.invoke('sales:todo:update', id, updates),
-    todoScan: (period?: string) => ipcRenderer.invoke('sales:todo:scan', period)
+    todoScan: (period?: string) => ipcRenderer.invoke('sales:todo:scan', period),
+    profileBatch: (limit?: number, monthsBack?: number) => ipcRenderer.invoke('sales:profile:batch', limit, monthsBack),
+    profileProgress: () => ipcRenderer.invoke('sales:profile:progress')
   },
 
   social: {

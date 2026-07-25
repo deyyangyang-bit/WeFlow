@@ -4755,6 +4755,18 @@ function registerIpcHandlers() {
       return { success: false, error: String(e) }
     }
   })
+
+  ipcMain.handle('sales:profile:batch', async (_, limit?: number, monthsBack?: number) => {
+    try {
+      return await insightService.batchProfile(limit || 50, monthsBack || 6)
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:profile:progress', async () => {
+    return insightService.getBatchProgress()
+  })
 }
 
 // 主窗口引用

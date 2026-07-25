@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react'
-import { Clock, Plus, Check, X, Calendar, Sparkles, Loader2, AlertTriangle, CheckCircle2, HelpCircle } from 'lucide-react'
+import { Clock, Plus, Check, X, Calendar, Sparkles, Loader2, AlertTriangle, CheckCircle2, HelpCircle, Users } from 'lucide-react'
 import { useFollowUpStore } from '../stores/followUpStore'
 import type { FollowUpTask } from '../stores/followUpStore'
 import './FollowUpPage.scss'
@@ -53,6 +53,8 @@ export default function FollowUpPage() {
   const [scanning, setScanning] = useState(false)
   const [scanPeriod, setScanPeriod] = useState<'day' | 'week' | 'month'>('week')
   const [scanResult, setScanResult] = useState<string | null>(null)
+  const [batchRunning, setBatchRunning] = useState(false)
+  const [batchResult, setBatchResult] = useState<string | null>(null)
 
   useEffect(() => {
     if (filter === 'active') {
@@ -99,6 +101,23 @@ export default function FollowUpPage() {
     }
   }, [loadTasks, scanPeriod])
 
+  const handleBatchProfile = useCallback(async () => {
+    setBatchRunning(true)
+    setBatchResult(null)
+    try {
+      const result = await window.electronAPI.sales.profileBatch(50, 6)
+      if (result.success) {
+        setBatchResult(`批量画像完成，已分析 ${result.processed || 0} 个客户`)
+      } else {
+        setBatchResult(result.error || '批量画像失败')
+      }
+    } catch (e) {
+      setBatchResult(String(e))
+    } finally {
+      setBatchRunning(false)
+    }
+  }, [])
+
   const handleCreate = useCallback(async () => {
     const title = newTitle.trim()
     if (!title) return
@@ -132,6 +151,10 @@ export default function FollowUpPage() {
             {scanning ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
             {scanning ? '扫描中...' : 'AI 扫描'}
           </button>
+          <button className="fu-create-btn fu-batch-btn" onClick={handleBatchProfile} disabled={batchRunning}>
+            {batchRunning ? <Loader2 size={14} className="spin" /> : <Users size={14} />}
+            {batchRunning ? '画像中...' : '批量画像'}
+          </button>
           <button className="fu-create-btn" onClick={() => setShowCreate(!showCreate)}>
             <Plus size={14} /> 新建
           </button>
@@ -158,6 +181,7 @@ export default function FollowUpPage() {
 
       {error && <div className="fu-error">{error}</div>}
       {scanResult && <div className="fu-scan-result">{scanResult}</div>}
+      {batchResult && <div className="fu-scan-result">{batchResult}</div>}
 
       <div className="fu-list">
         {loading && <div className="fu-loading">加载中...</div>}

@@ -1754,6 +1754,8 @@ export interface ElectronAPI {
     todoCreate: (payload: { session_id?: string; trigger_type: string; title: string; due_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
     todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number; priority_score?: number; feedback_log?: string; completed_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
     todoScan: (period?: string) => Promise<{ success: boolean; newTasks?: number; verifiedTasks?: Array<{ todo_id: number; judgment: string; reason: string }>; error?: string }>
+    profileBatch: (limit?: number, monthsBack?: number) => Promise<{ success: boolean; processed?: number; error?: string }>
+    profileProgress: () => Promise<{ total: number; done: number; running: boolean }>
   }
 }
 

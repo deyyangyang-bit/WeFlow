@@ -1461,6 +1461,16 @@ ${afterText}
         generatedCount++
       }
       insightLog('INFO', `沉默扫描完成，共生成 ${generatedCount} 条见解（候选 ${candidates.length} 个）`)
+
+      // 自动回填：每次扫描额外处理 10 个从未分析过的老客户
+      if (!this.batchRunning) {
+        try {
+          const backfillResult = await this.batchProfile(10, 12)
+          if (backfillResult.success && backfillResult.processed) {
+            insightLog('INFO', `自动回填：本次处理 ${backfillResult.processed} 个老客户画像`)
+          }
+        } catch { /* 回填失败不影响主流程 */ }
+      }
     } catch (e) {
       insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
     } finally {
@@ -1672,7 +1682,8 @@ ${afterText}
       profileContextSection,
       momentsContextSection,
       socialContextSection,
-      salesStage ? '' : '请给出你的见解（≤80字）：'
+      salesStage ? '' : '请给出你的见解（≤80字）：',
+      '另外，根据聊天内容判断该客户当前采购阶段，在最后一行单独输出：【阶段：了解/比价/决策/成交/流失/未知】（只选一个，不确定就输出"未知"）'
     ].filter(Boolean).join('\n\n')
     const userPrompt = appendPromptCurrentTime(userPromptBase)
 
@@ -1724,7 +1735,23 @@ ${afterText}
       }
       if (!this.isEnabled()) return { success: false, message: 'AI 见解已关闭，生成结果未保存' }
 
-      const insight = result.trim()
+      // 解析阶段标签并自动更新客户画像
+      let parsedStage: string | undefined
+      let insight = result.trim()
+      const stageMatch = insight.match(/【阶段[：:]\s*(了解|比价|决策|成交|流失|未知)\s*】/)
+      if (stageMatch) {
+        parsedStage = stageMatch[1]
+        insight = insight.replace(/\s*【阶段[：:]\s*(了解|比价|决策|成交|流失|未知)\s*】\s*/, '').trim()
+        // 自动更新 customer_profile（未知阶段不覆盖已有值）
+        if (parsedStage !== '未知') {
+          try {
+            salesDbService.customerUpsert({ session_id: sessionId, display_name: resolvedDisplayName, stage: parsedStage })
+            salesDbService.intentCreate({ session_id: sessionId, stage: parsedStage, source: 'ai', confidence: 0.7, reason: '见解扫描自动识别' })
+            insightLog('INFO', `自动更新画像：${resolvedDisplayName} → ${parsedStage}`)
+          } catch { /* salesDb 未初始化时忽略 */ }
+        }
+      }
+      const finalSalesStage = parsedStage && parsedStage !== '未知' ? parsedStage : salesStage
       const notifTitle = `见解 · ${resolvedDisplayName}`
       const recordLog: InsightRecordLog = {
         endpoint,
@@ -1748,7 +1775,7 @@ ${afterText}
         triggerReason,
         insight,
         log: recordLog,
-        salesStage
+        salesStage: finalSalesStage
       })
 
       const insightNotificationEnabled = this.config.get('aiInsightNotificationEnabled') !== false
@@ -1846,6 +1873,75 @@ ${afterText}
       req.write(body)
       req.end()
     })
+  }
+}
+
+
+  // ── 批量画像 ─────────────────────────────────────────────────────────────────
+
+  private batchRunning = false
+  private batchProgress = { total: 0, done: 0, running: false }
+
+  getBatchProgress() { return { ...this.batchProgress } }
+
+  /**
+   * 批量画像：遍历活跃客户，逐个调用 generateInsightForSession 提取阶段
+   * @param limit 每次处理数量（默认 50）
+   * @param monthsBack 回溯几个月内的活跃客户（默认 6）
+   */
+  async batchProfile(limit: number = 50, monthsBack: number = 6): Promise<{ success: boolean; processed?: number; error?: string }> {
+    if (this.batchRunning) return { success: false, error: '批量画像正在运行中' }
+    if (!this.isEnabled()) return { success: false, error: '请先开启 AI 见解' }
+
+    this.batchRunning = true
+    this.batchProgress = { total: 0, done: 0, running: true }
+
+    try {
+      const sessions = await this.getSessionsCached(true)
+      const cutoffMs = Date.now() - monthsBack * 30 * 24 * 60 * 60 * 1000
+
+      // 过滤：单聊、非系统、最近 N 月有消息、尚未分析过的
+      const candidates = sessions.filter((s: any) => {
+        const sid = s.username?.trim() || ''
+        if (!sid || sid.endsWith('@chatroom') || sid.startsWith('gh_')) return false
+        const lastTs = (s.lastTimestamp || 0) * 1000
+        if (lastTs < cutoffMs) return false  // 超过 N 月没消息的跳过
+        // 检查是否已有画像（stage 非 unknown）
+        try {
+          const profile = salesDbService.customerGetBySession(sid)
+          if (profile && profile.stage && profile.stage !== 'unknown') return false
+        } catch { /* ignore */ }
+        return true
+      })
+
+      this.batchProgress.total = Math.min(candidates.length, limit)
+      let processed = 0
+
+      for (const session of candidates.slice(0, limit)) {
+        if (!this.isEnabled()) break
+        const sessionId = session.username?.trim() || ''
+        const displayName = session.displayName?.trim() || sessionId
+
+        try {
+          await this.generateInsightForSession({
+            sessionId,
+            displayName,
+            triggerReason: 'activity',
+            salesStage: undefined  // 让 AI 自动判断
+          })
+          processed++
+          this.batchProgress.done = processed
+        } catch { /* 单个失败不影响整体 */ }
+      }
+
+      this.batchProgress.running = false
+      return { success: true, processed }
+    } catch (e) {
+      this.batchProgress.running = false
+      return { success: false, error: String(e) }
+    } finally {
+      this.batchRunning = false
+    }
   }
 }
 
