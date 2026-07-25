@@ -4886,21 +4886,6 @@ function checkForUpdatesOnStartup() {
   }, 3000)
 }
 
-// ─── 进程级崩溃诊断 ─────────────────────────────────────────────────────────
-process.on('exit', (code) => {
-  console.error('[PROCESS EXIT] code:', code)
-})
-process.on('uncaughtException', (err) => {
-  console.error('[UNCAUGHT EXCEPTION]', err.message, err.stack?.slice(0, 300))
-})
-process.on('unhandledRejection', (reason: any) => {
-  console.error('[UNHANDLED REJECTION]', String(reason).slice(0, 300))
-})
-
-// ─── 崩溃诊断监听器 ─────────────────────────────────────────────────────────
-app.on('child-process-gone', (_event, details) => {
-  console.error('[CRASH] CHILD PROCESS GONE:', JSON.stringify(details))
-})
 
 app.whenReady().then(async () => {
   // 先初始化配置，以便在启动早期判定是否需要静默启动
@@ -4972,9 +4957,6 @@ app.whenReady().then(async () => {
   updateSplashProgress(20, '正在准备主窗口...')
   ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('[CRASH] RENDERER GONE:', details.reason, 'exitCode:', details.exitCode)
-  })
 
   const resolvedTrayIcon = resolveAppIconPath()
 

@@ -130,7 +130,6 @@ class SalesIntentService {
         return { success: false, error: 'sessionId 不能为空' }
       }
 
-      console.log('[SalesIntent] 开始分析, sessionId:', sessionId)
 
       // 2. 检查 WCDB 连接
       const connected = await wcdbService.isConnected()
@@ -144,7 +143,6 @@ class SalesIntentService {
         return { success: false, error: '没有可用的聊天记录' }
       }
       const messages = msgResult.messages
-      console.log('[SalesIntent] 获取消息:', messages.length, '条')
 
       // 4. 获取联系人显示名
       let peerName = '客户'
@@ -157,7 +155,6 @@ class SalesIntentService {
 
       // 5. 格式化对话文本
       const chatText = formatMessagesForPrompt(messages, peerName)
-      console.log('[SalesIntent] 格式化文本长度:', chatText.length, '前100字:', chatText.slice(0, 100))
       if (!chatText.trim()) {
         return { success: false, error: '聊天记录中没有有效的文本消息' }
       }
