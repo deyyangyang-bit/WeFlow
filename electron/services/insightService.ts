@@ -23,6 +23,7 @@ import { weiboService } from './social/weiboService'
 import { showNotification } from '../windows/notificationWindow'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
+import { enqueueSalesTask } from './salesQueue'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -554,7 +555,7 @@ class InsightService {
     }
     this.dbDebounceTimer = setTimeout(() => {
       this.dbDebounceTimer = null
-      void this.analyzeRecentActivity()
+      void enqueueSalesTask(() => this.analyzeRecentActivity())
     }, DB_CHANGE_DEBOUNCE_MS)
   }
 
@@ -1345,14 +1346,14 @@ ${afterText}
       insightLog('INFO', `下次沉默扫描将在 ${intervalHours} 小时后执行`)
       this.silenceScanTimer = setTimeout(async () => {
         this.silenceScanTimer = null
-        await this.runSilenceScan()
+        await enqueueSalesTask(() => this.runSilenceScan())
         scheduleNext()
       }, intervalMs)
     }
 
     this.silenceInitialDelayTimer = setTimeout(async () => {
       this.silenceInitialDelayTimer = null
-      await this.runSilenceScan()
+      await enqueueSalesTask(() => this.runSilenceScan())
       scheduleNext()
     }, SILENCE_SCAN_INITIAL_DELAY_MS)
   }
@@ -1477,15 +1478,21 @@ ${afterText}
       }
       insightLog('INFO', `沉默扫描完成，共生成 ${generatedCount} 条见解（候选 ${candidates.length} 个）`)
 
-      // 自动回填：每次扫描额外处理 10 个从未分析过的老客户
+      // 自动回填：每次扫描额外处理 10 个从未分析过的老客户（调内核，不重入队列）
       if (!this.batchRunning) {
         try {
-          const backfillResult = await this.batchProfile(10, 12)
+          const backfillResult = await this.batchProfileCore(10, 12)
           if (backfillResult.success && backfillResult.processed) {
             insightLog('INFO', `自动回填：本次处理 ${backfillResult.processed} 个老客户画像`)
           }
         } catch { /* 回填失败不影响主流程 */ }
       }
+
+      // 催办自动识别：我方发完消息客户没回 → 生成催办待办（零 AI 调用，不重入队列）
+      try {
+        const urgeCreated = await this.scanUrgeFollowUps()
+        if (urgeCreated > 0) insightLog('INFO', `催办扫描：本次生成 ${urgeCreated} 条催办待办`)
+      } catch { /* 催办失败不影响主流程 */ }
     } catch (e) {
       insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
     } finally {
@@ -1921,12 +1928,78 @@ ${afterText}
   }
 
   /**
+   * 催办自动识别：检测"我方发完消息、客户超过 N 天没回"的会话，生成 urge_customer 待办。
+   * 零 AI 调用、零外部依赖；粗筛沉默区间 + 去重 + 取最新消息判 isSend。
+   * 仅在 runSilenceScan 的队列任务内被调用，不 enqueue，避免死锁。
+   */
+  private async scanUrgeFollowUps(): Promise<number> {
+    const URGE_MIN_MS = 2 * 86400000
+    const URGE_MAX_MS = 30 * 86400000
+    const URGE_LIMIT = 40
+    const now = Date.now()
+    let created = 0
+    try {
+      const sessions = await this.getSessionsCached(false)
+      const SYSTEM = new Set(['filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote', 'mphelper', 'weixinguanhaozhuli', 'notifymessage'])
+      const candidates = sessions.filter((s: any) => {
+        const sid = String(s.username || '').trim()
+        if (!sid || sid.endsWith('@chatroom') || sid.startsWith('gh_') || SYSTEM.has(sid)) return false
+        const silent = now - (s.lastTimestamp || 0) * 1000
+        return silent >= URGE_MIN_MS && silent <= URGE_MAX_MS
+      }).slice(0, URGE_LIMIT * 3)
+
+      for (const s of candidates) {
+        if (created >= URGE_LIMIT) break
+        const sid = String(s.username).trim()
+        // 去重：已有 pending/suspected 的催办待办则跳过
+        try {
+          const existing = salesDbService.todoList({ session_id: sid })
+          if (existing.some((t: any) => t.trigger_type === 'urge_customer' && (t.status === 'pending' || t.status === 'suspected'))) continue
+        } catch { continue }
+        // 取最新一条消息，判断是否我方发出
+        let lastIsSend = -1
+        try {
+          const r = await chatService.getLatestMessages(sid, 1)
+          if (!r.success || !r.messages || r.messages.length === 0) continue
+          const last = r.messages.reduce((a: any, b: any) => ((Number(b.createTime) || 0) > (Number(a.createTime) || 0) ? b : a), r.messages[0])
+          lastIsSend = Number(last.isSend)
+        } catch { continue }
+        if (lastIsSend !== 1) continue  // 最后一条非我方发出 → 非催办场景
+        const name = (typeof s.displayName === 'string' && s.displayName.trim()) ? s.displayName.trim() : sid
+        try {
+          salesDbService.todoCreate({
+            session_id: sid,
+            display_name: name,
+            trigger_type: 'urge_customer',
+            action_type: 'urge_customer',
+            title: `[${name}] 你发的消息还没收到回复，可考虑跟进一下`,
+            status: 'pending',
+            created_by: 'ai',
+            confidence: 0.6,
+            priority_score: 0.5,
+            due_at: null
+          })
+          created++
+          insightLog('INFO', `催办待办生成：${name}`)
+        } catch { /* ignore */ }
+      }
+    } catch (e) {
+      insightLog('ERROR', `催办扫描出错: ${(e as Error).message}`)
+    }
+    return created
+  }
+
+  /**
    * 批量画像：遍历活跃客户，逐个调用 generateInsightForSession 提取阶段
    * @param limit 每次处理数量（默认 50）
    * @param monthsBack 回溯几个月内的活跃客户（默认 6）
    */
   async batchProfile(limit: number = 50, monthsBack: number = 6): Promise<{ success: boolean; processed?: number; error?: string }> {
-    if (this.batchRunning) return { success: false, error: '批量画像正在运行中' }
+    return enqueueSalesTask(() => this.batchProfileCore(limit, monthsBack))
+  }
+
+  /** 批量画像内核（不 enqueue，供 runSilenceScan 内部回填直接调用，避免队列内重入死锁） */
+  private async batchProfileCore(limit: number = 50, monthsBack: number = 6): Promise<{ success: boolean; processed?: number; error?: string }> {
     if (!this.isEnabled()) return { success: false, error: '请先开启 AI 见解' }
 
     this.batchRunning = true

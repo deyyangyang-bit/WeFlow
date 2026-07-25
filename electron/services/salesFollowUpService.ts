@@ -10,6 +10,7 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { enqueueSalesTask } from './salesQueue'
 import { salesDbService, type FollowUpTask } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -162,9 +163,7 @@ class SalesFollowUpService {
    * 主入口：AI 扫描（提取 + 核验）
    */
   async scan(config: ConfigService, period: string = 'week'): Promise<ScanResult> {
-    if (this.scanning) return { success: false, error: '正在扫描中，请稍候' }
-    this.scanning = true
-
+    return enqueueSalesTask(async () => {
     try {
       if (!isAiConfigured(config)) return { success: false, error: 'AI 未配置' }
       const connected = await wcdbService.isConnected()
@@ -179,9 +178,8 @@ class SalesFollowUpService {
       return { success: true, newTasks: newCount, verifiedTasks: verified }
     } catch (e) {
       return { success: false, error: String(e) }
-    } finally {
-      this.scanning = false
     }
+    })
   }
 
   /**

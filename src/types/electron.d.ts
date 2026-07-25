@@ -1729,6 +1729,7 @@ export interface ElectronAPI {
     customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
     dashboardStats: () => Promise<{ success: boolean; stats?: DashboardStats; error?: string }>
+    customerExport: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
     customerDetail: (sessionId: string) => Promise<{
       success: boolean;
       data?: {

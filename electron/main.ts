@@ -4611,6 +4611,68 @@ function registerIpcHandlers() {
     }
   })
 
+  // 客户数据导出 Excel（exceljs 运行时加载，弹保存对话框）
+  ipcMain.handle('sales:customer:export', async () => {
+    try {
+      const { dialog } = await import('electron')
+      const dlg = await dialog.showSaveDialog({
+        defaultPath: `客户数据_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      })
+      if (dlg.canceled || !dlg.filePath) return { success: false, error: '已取消' }
+
+      const customers = salesDbService.customerList()
+      const ExcelJSMod = await import('exceljs')
+      const ExcelJS = (ExcelJSMod as any).default || ExcelJSMod
+      const wb = new ExcelJS.Workbook()
+      wb.creator = 'WeFlow AI 销售助手'
+      const ws = wb.addWorksheet('客户数据')
+      ws.columns = [
+        { header: '客户名', key: 'name', width: 26 },
+        { header: '阶段', key: 'stage', width: 10 },
+        { header: '沉默天数', key: 'silence', width: 10 },
+        { header: '待跟进待办', key: 'todos', width: 12 },
+        { header: '标签', key: 'tags', width: 22 },
+        { header: '备注', key: 'notes', width: 32 },
+        { header: 'AI 画像摘要', key: 'profile', width: 60 },
+        { header: '最后联系', key: 'last', width: 18 }
+      ]
+      ws.getRow(1).font = { bold: true }
+
+      const now = Date.now()
+      for (const cu of customers) {
+        const silence = cu.last_contact_at ? Math.floor((now - cu.last_contact_at) / 86400000) : ''
+        let todoCount = 0
+        try {
+          todoCount = salesDbService.todoList({ session_id: cu.session_id })
+            .filter((t: any) => t.status === 'pending' || t.status === 'suspected' || t.status === 'overdue').length
+        } catch { /* ignore */ }
+        let tagsStr = ''
+        try { const arr = JSON.parse(cu.tags || '[]'); tagsStr = Array.isArray(arr) ? arr.join(', ') : '' } catch { /* ignore */ }
+        let profileSummary = ''
+        try {
+          const rec = insightProfileService.getProfileRecord(cu.session_id)
+          if (rec?.finalProfile) profileSummary = rec.finalProfile.slice(0, 200)
+        } catch { /* ignore */ }
+        ws.addRow({
+          name: cu.display_name || cu.session_id,
+          stage: cu.stage === 'unknown' ? '未知' : (cu.stage || ''),
+          silence,
+          todos: todoCount,
+          tags: tagsStr,
+          notes: (cu.notes || '').slice(0, 200),
+          profile: profileSummary,
+          last: cu.last_contact_at ? new Date(cu.last_contact_at).toLocaleString('zh-CN') : ''
+        })
+      }
+
+      await wb.xlsx.writeFile(dlg.filePath)
+      return { success: true, filePath: dlg.filePath, count: customers.length }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 客户画像聚合接口
   ipcMain.handle('sales:customer:detail', async (_, sessionId: string) => {
     try {

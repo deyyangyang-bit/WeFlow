@@ -6,6 +6,7 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { enqueueSalesTask } from './salesQueue'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -105,8 +106,7 @@ class SalesReplyService {
     config: ConfigService,
     contextMessages?: Array<{ role: string; content: string }>
   ): Promise<ReplySuggestResult> {
-    if (this.processing) return { success: false, error: '正在生成中，请稍候' }
-    this.processing = true
+    return enqueueSalesTask(async () => {
     try {
       // 1. 检查 AI 配置
       if (!isAiConfigured(config)) {
@@ -182,9 +182,8 @@ class SalesReplyService {
       return { success: true, suggestions }
     } catch (e) {
       return { success: false, error: String(e) }
-    } finally {
-      this.processing = false
     }
+    })
   }
 }
 

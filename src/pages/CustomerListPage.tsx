@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, X, Users } from 'lucide-react'
+import { Search, X, Users, Download } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import CustomerCard from '../components/sales/CustomerCard'
 import { useCustomerListStore } from '../stores/customerListStore'
@@ -40,7 +40,23 @@ export default function CustomerListPage() {
   const { customers, loading, filters, loadCustomers, setFilter } = useCustomerListStore()
   const [searchInput, setSearchInput] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleExport = useCallback(async () => {
+    setExporting(true)
+    setExportMsg(null)
+    try {
+      const r = await window.electronAPI.sales.customerExport()
+      if (r.success) setExportMsg(`已导出 ${r.count ?? 0} 位客户到 Excel`)
+      else if (r.error && r.error !== '已取消') setExportMsg('导出失败：' + r.error)
+    } catch (e) {
+      setExportMsg(String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [])
 
   // 初始化：读 URL ?stage=
   useEffect(() => {
@@ -89,8 +105,13 @@ export default function CustomerListPage() {
           <select className="cl-sort" value={filters.sortBy || 'updated_at'} onChange={(e) => handleSort(e.target.value as any)}>
             {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
+          <button className="cl-export" onClick={handleExport} disabled={exporting || customers.length === 0} title="导出全部客户为 Excel">
+            <Download size={14} /> {exporting ? '导出中...' : '导出 Excel'}
+          </button>
         </div>
       </div>
+
+      {exportMsg && <div className="cl-export-msg">{exportMsg}</div>}
 
       <div className="cl-tabs">
         {STAGE_TABS.map((tab) => (

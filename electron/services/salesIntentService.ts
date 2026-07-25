@@ -6,6 +6,7 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { enqueueSalesTask } from './salesQueue'
 import { salesDbService, type IntentTagLog } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
@@ -118,10 +119,7 @@ class SalesIntentService {
    * AI 分析客户意向
    */
   async analyzeIntent(sessionId: string, config: ConfigService): Promise<IntentAnalyzeResult> {
-    if (this.analyzing) {
-      return { success: false, error: '正在分析中，请稍候' }
-    }
-    this.analyzing = true
+    return enqueueSalesTask(async () => {
     try {
       // 1. 检查 AI 配置
       if (!isAiConfigured(config)) {
@@ -195,9 +193,8 @@ class SalesIntentService {
       return { success: true, tag }
     } catch (e) {
       return { success: false, error: String(e) }
-    } finally {
-      this.analyzing = false
     }
+    })
   }
 }
 

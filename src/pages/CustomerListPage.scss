@@ -28,6 +28,19 @@
     }
   }
 
+
+  .cl-export {
+    display: flex; align-items: center; gap: 4px; padding: 7px 12px; border: none;
+    background: linear-gradient(135deg, #27ae60 0%, #16a34a 100%); color: #fff;
+    border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    &:hover { opacity: 0.9; } &:disabled { opacity: 0.5; cursor: not-allowed; }
+  }
+
+  .cl-export-msg {
+    padding: 7px 12px; margin-bottom: 12px; background: rgba(39, 174, 96, 0.1);
+    color: #16a34a; border-radius: 8px; font-size: 12px;
+  }
+
   .cl-tabs {
     display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;
     .cl-tab {
