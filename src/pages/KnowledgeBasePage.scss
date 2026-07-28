@@ -399,3 +399,28 @@
   padding: 16px 24px 20px;
   border-top: 1px solid var(--border-color, #e8e8e8);
 }
+
+// ─── 批量导入 toast ─────────────────────────────────────────────────────────
+.kb-import-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 8px 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #065f46;
+
+  button {
+    margin-left: auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #065f46;
+    padding: 2px;
+    border-radius: 4px;
+    &:hover { background: #d1fae5; }
+  }
+}

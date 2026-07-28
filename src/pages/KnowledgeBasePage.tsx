@@ -3,8 +3,8 @@
  * 话术/产品知识库管理页面
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
 import './KnowledgeBasePage.scss'
 
@@ -284,6 +284,44 @@ export default function KnowledgeBasePage() {
     return () => clearTimeout(timer)
   }, [search, setSearchKeyword, fetchList, filterCategory])
 
+  // ─── CSV 批量导入 ─────────────────────────────────────────────────────────
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click()
+  }, [])
+
+  const handleFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // 重置 input 以允许重复选择同一文件
+    e.target.value = ''
+
+    try {
+      const csvContent = await file.text()
+      if (!csvContent.trim()) {
+        alert('CSV 文件为空')
+        return
+      }
+
+      setImporting(true)
+      setImportResult(null)
+      const res = await (window as any).electronAPI.sales.kbImportCsv(csvContent)
+      if (res?.success) {
+        setImportResult({ imported: res.imported, skipped: res.skipped })
+        fetchList({ category: filterCategory || undefined })
+      } else {
+        alert('导入失败: ' + (res?.error || '未知错误'))
+      }
+    } catch (err: any) {
+      alert('导入出错: ' + (err?.message || String(err)))
+    } finally {
+      setImporting(false)
+    }
+  }, [fetchList, filterCategory])
+
   return (
     <div className="kb-page">
       <div className="kb-page-header">
@@ -323,12 +361,32 @@ export default function KnowledgeBasePage() {
             ))}
           </select>
 
+          <button className="kb-btn kb-btn-secondary" onClick={handleImportClick} disabled={importing}>
+            <Upload size={16} />
+            {importing ? '导入中...' : '批量导入'}
+          </button>
+
           <button className="kb-btn kb-btn-primary" onClick={() => openForm()}>
             <Plus size={16} />
             新增
           </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            style={{ display: 'none' }}
+            onChange={handleFileSelected}
+          />
         </div>
       </div>
+
+      {importResult && (
+        <div className="kb-import-toast">
+          ✅ 导入完成：成功 {importResult.imported} 条，跳过 {importResult.skipped} 条
+          <button onClick={() => setImportResult(null)}><X size={12} /></button>
+        </div>
+      )}
 
       <div className="kb-page-body">
         {loading ? (
