@@ -230,7 +230,6 @@ class SalesReportService {
       return { success: false, error: String(e) }
     }
   }
-}
 
   /**
    * 生成周复盘（PRD v2 P1）：不只是统计，重点是"谁热了/谁冷了/谁该放弃/下周重点"

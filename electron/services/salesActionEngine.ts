@@ -13,7 +13,7 @@
 
 import { ConfigService } from '../config'
 import { salesDbService, type CustomerProfile, type FollowUpTask } from './salesDbService'
-import { salesLogger } from './salesLogger'
+import { salesLog } from './salesLogger'
 import { wcdbService } from './wcdbService'
 import { enqueueSalesTask } from './salesQueue'
 import { classifyStage, toMessageSnippets, persistClassification, type CustomerStage } from './salesStageClassifier'
@@ -175,9 +175,9 @@ export function startActionEngineScheduler(): void {
       const todayStart = new Date(now)
       todayStart.setHours(0, 0, 0, 0)
       if (lastFullScanAt < todayStart.getTime()) {
-        salesLogger.info('[ActionEngine] 触发每日全量扫描')
+        salesLog('INFO', '[ActionEngine] 触发每日全量扫描')
         enqueueSalesTask(() => runFullScan()).catch(e => {
-          salesLogger.error(`[ActionEngine] 全量扫描失败: ${e}`)
+          salesLog('ERROR', `[ActionEngine] 全量扫描失败: ${e}`)
         })
       }
     }
@@ -198,7 +198,7 @@ export async function runFullScan(): Promise<{ generated: number }> {
   const customers = salesDbService.customerAll()
   let generated = 0
 
-  salesLogger.info(`[ActionEngine] 全量扫描开始，客户数: ${customers.length}`)
+  salesLog('INFO', `[ActionEngine] 全量扫描开始，客户数: ${customers.length}`)
 
   for (const customer of customers) {
     if (generated >= DAILY_LIMIT) break
@@ -228,13 +228,13 @@ export async function runFullScan(): Promise<{ generated: number }> {
         })
         generated++
       } catch (e) {
-        salesLogger.warn(`[ActionEngine] 规则 ${rule.id} 对客户 ${customer.session_id} 执行失败: ${e}`)
+        salesLog('WARN', `[ActionEngine] 规则 ${rule.id} 对客户 ${customer.session_id} 执行失败: ${e}`)
       }
     }
   }
 
   lastFullScanAt = nowMs
-  salesLogger.info(`[ActionEngine] 全量扫描完成，生成 ${generated} 条任务`)
+  salesLog('INFO', `[ActionEngine] 全量扫描完成，生成 ${generated} 条任务`)
   return { generated }
 }
 
@@ -280,11 +280,11 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
             priority_score: PRIORITY_WEIGHT[r3.priority] + 10,
             created_by: 'action_engine'
           })
-          salesLogger.info(`[ActionEngine] 增量触发 R3: ${displayName}`)
+          salesLog('INFO', `[ActionEngine] 增量触发 R3: ${displayName}`)
         }
       }
     } catch (e) {
-      salesLogger.warn(`[ActionEngine] onNewMessage 处理失败 ${sessionId}: ${e}`)
+      salesLog('WARN', `[ActionEngine] onNewMessage 处理失败 ${sessionId}: ${e}`)
     }
   })
 }

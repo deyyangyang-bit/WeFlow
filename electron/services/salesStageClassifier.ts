@@ -12,7 +12,7 @@
 import { ConfigService } from '../config'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
-import { salesLogger } from './salesLogger'
+import { salesLog } from './salesLogger'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ export async function classifyStage(
 
     return parseClassification(raw)
   } catch (e) {
-    salesLogger.warn(`[StageClassifier] AI 调用失败: ${e instanceof Error ? e.message : String(e)}`)
+    salesLog('WARN', `[StageClassifier] AI 调用失败: ${e instanceof Error ? e.message : String(e)}`)
     return null
   }
 }
@@ -161,7 +161,7 @@ export function persistClassification(
     reason: result.reason
   })
 
-  salesLogger.info(`[StageClassifier] ${displayName || sessionId}: ${prevStage} → ${result.stage} (${result.reason})`)
+  salesLog('INFO', `[StageClassifier] ${displayName || sessionId}: ${prevStage} → ${result.stage} (${result.reason})`)
   return true
 }
 
