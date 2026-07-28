@@ -126,17 +126,25 @@ function ActionCard({ item }: { item: ActionItem }) {
 
 export default function TodayActionPage() {
   const { items, stats, loading, error, fetchToday } = useTodayActionStore()
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     fetchToday()
+  }, [fetchToday])
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true)
+    await fetchToday()
+    // 保证旋转动画至少转 800ms，让用户看到反馈
+    setTimeout(() => setRefreshing(false), 800)
   }, [fetchToday])
 
   return (
     <div className="today-action-page">
       <div className="today-action-page__header">
         <h1 className="today-action-page__title">今日行动</h1>
-        <button className="today-action-page__refresh" onClick={fetchToday} disabled={loading}>
-          <RefreshCw size={16} className={loading ? 'spinning' : ''} />
+        <button className="today-action-page__refresh" onClick={handleRefresh} disabled={refreshing}>
+          <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
         </button>
       </div>
 

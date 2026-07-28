@@ -24,9 +24,12 @@
     border: none;
     cursor: pointer;
     color: var(--text-secondary, #666);
-    padding: 4px;
-    border-radius: 6px;
-    &:hover { background: var(--bg-hover, #f0f0f0); }
+    padding: 8px;
+    border-radius: 8px;
+    transition: background 0.15s, color 0.15s;
+    &:hover { background: var(--bg-hover, #f0f0f0); color: var(--text-primary, #333); }
+    &:active { background: #e5e7eb; }
+    &:disabled { opacity: 0.5; cursor: default; }
   }
 
   &__stats {
