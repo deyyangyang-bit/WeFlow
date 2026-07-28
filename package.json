@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@hicccc77/electron-liquid-glass": "^0.3.0",
+    "@koromix/koffi-win32-x64": "^3.1.2",
     "@vscode/sudo-prompt": "^9.3.2",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.2",
@@ -261,7 +262,9 @@
       "node_modules/sherpa-onnx-*/**/*",
       "node_modules/ffmpeg-static/**/*",
       "node_modules/@hicccc77/electron-liquid-glass/**/*",
-      "resources/wedecrypt/**/*.node"
+      "resources/wedecrypt/**/*.node",
+      "node_modules/koffi/**/*",
+      "node_modules/@koromix/koffi-*/**/*"
     ],
     "icon": "resources/icons/macos/icon.icns"
   },

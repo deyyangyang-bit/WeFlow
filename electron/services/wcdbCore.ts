@@ -1358,7 +1358,21 @@ export class WcdbCore {
       const errorMsg = e instanceof Error ? e.message : String(e)
       console.error('WCDB 初始化异常:', errorMsg)
       this.writeLog(`WCDB 初始化异常: ${errorMsg}`, true)
-      lastDllInitError = this.formatInitProtectionError(-2302)
+      // 将真实异常信息附加到错误提示中，帮助用户定位问题
+      let hint = ''
+      const lower = errorMsg.toLowerCase()
+      if (lower.includes('vc') || lower.includes('visual c++') || lower.includes('vcruntime') || lower.includes('msvcp')) {
+        hint = '请安装 Visual C++ Redistributable（VC++ 运行库）后重试。下载地址：https://aka.ms/vs/17/release/vc_redist.x64.exe'
+      } else if (lower.includes('not find') || lower.includes('not found') || lower.includes('enoent') || lower.includes('cannot find')) {
+        hint = '动态库文件缺失或路径不正确，请确认安装完整。'
+      } else if (lower.includes('access') || lower.includes('denied') || lower.includes('eperm')) {
+        hint = '权限不足，请尝试以管理员身份运行。'
+      } else if (lower.includes('%1') || lower.includes('bad image') || lower.includes('not a valid win32')) {
+        hint = 'DLL 架构不匹配（可能需要 x64 版本的 Windows）。'
+      } else {
+        hint = `详细信息: ${errorMsg}`
+      }
+      lastDllInitError = `WCDB 初始化异常（错误码: -2302）。${hint}`
       return false
     }
   }

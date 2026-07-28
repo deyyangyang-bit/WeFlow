@@ -1,5 +1,6 @@
 import { join, basename } from 'path'
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
+import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { createDecipheriv } from 'crypto'
 import { expandHomePath } from '../utils/pathUtils'
@@ -86,6 +87,52 @@ export class DbPathService {
   }
 
 
+
+  /**
+   * 通过 Windows 注册表查询微信数据存储路径
+   * 支持微信3.x（WeChat）和4.x（Weixin）的自定义存储位置
+   */
+  private getWeChatDataPathsFromRegistry(): string[] {
+    if (process.platform !== 'win32') return []
+    const paths: string[] = []
+
+    const regQueries: Array<{ key: string; value: string }> = [
+      // 微信4.x 数据目录
+      { key: 'HKCU\\Software\\Tencent\\Weixin', value: 'FileSavePath' },
+      { key: 'HKCU\\Software\\Tencent\\Weixin', value: 'DataSavePath' },
+      // 微信3.x 数据目录
+      { key: 'HKCU\\Software\\Tencent\\WeChat', value: 'FileSavePath' },
+      { key: 'HKCU\\Software\\Tencent\\WeChat', value: 'DataSavePath' },
+      // WOW6432Node（32位微信在64位系统上）
+      { key: 'HKCU\\Software\\WOW6432Node\\Tencent\\WeChat', value: 'FileSavePath' },
+      { key: 'HKCU\\Software\\WOW6432Node\\Tencent\\Weixin', value: 'FileSavePath' },
+    ]
+
+    for (const { key, value } of regQueries) {
+      try {
+        const output = execSync(
+          `reg query "${key}" /v "${value}"`,
+          { encoding: 'utf-8', timeout: 3000, windowsHide: true }
+        )
+        // 解析 reg query 输出格式: "    FileSavePath    REG_SZ    D:\\WeChatFiles"
+        const match = output.match(/REG_SZ\s+(.+)/i)
+        if (match) {
+          const regPath = match[1].trim()
+          if (regPath && existsSync(regPath)) {
+            paths.push(regPath)
+            // 如果注册表路径下还有 xwechat_files 子目录，也加上
+            const subXwechat = join(regPath, 'xwechat_files')
+            if (existsSync(subXwechat)) paths.push(subXwechat)
+          }
+        }
+      } catch {
+        // 注册表项不存在，跳过
+      }
+    }
+
+    return paths
+  }
+
   /**
    * 自动检测微信数据库根目录
    */
@@ -111,8 +158,23 @@ export class DbPathService {
         // macOS 旧路径兜底
         possiblePaths.push(join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Documents', 'xwechat_files'))
       } else {
-        // Windows 微信4.x 数据目录
+        // Windows 微信4.x 数据目录（默认路径）
         possiblePaths.push(join(home, 'Documents', 'xwechat_files'))
+        // Windows 微信3.x 数据目录
+        possiblePaths.push(join(home, 'Documents', 'WeChat Files'))
+        // 通过注册表查询用户自定义的微信数据存储路径
+        const regPaths = this.getWeChatDataPathsFromRegistry()
+        for (const rp of regPaths) {
+          if (!possiblePaths.includes(rp)) {
+            possiblePaths.push(rp)
+          }
+        }
+        // 常见非默认盘符路径兜底
+        const drives = ['D', 'E', 'F']
+        for (const drive of drives) {
+          possiblePaths.push(join(drive + ':\\', 'xwechat_files'))
+          possiblePaths.push(join(drive + ':\\', 'WeChat Files'))
+        }
       }
 
       for (const path of possiblePaths) {
@@ -445,7 +507,12 @@ export class DbPathService {
       // 旧版本路径兜底
       return join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Documents', 'xwechat_files')
     }
-    return join(home, 'Documents', 'xwechat_files')
+    // Windows: 优先4.x路径，兜底3.x路径
+    const win4Path = join(home, 'Documents', 'xwechat_files')
+    if (existsSync(win4Path)) return win4Path
+    const win3Path = join(home, 'Documents', 'WeChat Files')
+    if (existsSync(win3Path)) return win3Path
+    return win4Path
   }
 }
 
