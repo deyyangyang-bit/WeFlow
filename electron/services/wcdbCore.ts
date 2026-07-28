@@ -1361,7 +1361,7 @@ export class WcdbCore {
       // 将真实异常信息附加到错误提示中，帮助用户定位问题
       let hint = ''
       const lower = errorMsg.toLowerCase()
-      if (lower.includes('vc') || lower.includes('visual c++') || lower.includes('vcruntime') || lower.includes('msvcp')) {
+      if (lower.includes('vcruntime') || lower.includes('visual c++') || lower.includes('msvcp') || lower.includes('msvcr') || lower.includes('api-ms-win-crt')) {
         hint = '请安装 Visual C++ Redistributable（VC++ 运行库）后重试。下载地址：https://aka.ms/vs/17/release/vc_redist.x64.exe'
       } else if (lower.includes('not find') || lower.includes('not found') || lower.includes('enoent') || lower.includes('cannot find')) {
         hint = '动态库文件缺失或路径不正确，请确认安装完整。'

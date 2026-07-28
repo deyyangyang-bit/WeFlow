@@ -24,7 +24,6 @@
   },
   "dependencies": {
     "@hicccc77/electron-liquid-glass": "^0.3.0",
-    "@koromix/koffi-win32-x64": "^3.1.2",
     "@vscode/sudo-prompt": "^9.3.2",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.2",
@@ -36,7 +35,7 @@
     "html2canvas": "^1.4.1",
     "jieba-wasm": "^2.2.0",
     "jszip": "^3.10.1",
-    "koffi": "^3.1.0",
+    "koffi": "3.1.0",
     "lucide-react": "^1.23.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.7",
@@ -284,5 +283,8 @@
     "tar": "^7.5.19",
     "tmp": "^0.2.7",
     "immutable": "^5.1.5"
+  },
+  "optionalDependencies": {
+    "@koromix/koffi-win32-x64": "3.1.0"
   }
 }
