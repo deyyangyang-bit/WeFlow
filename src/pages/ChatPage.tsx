@@ -46,6 +46,7 @@ import '../styles/batchTranscribe.scss'
 import './ChatPage.scss'
 import CustomerCard from '../components/sales/CustomerCard'
 import ReplySuggestion from '../components/sales/ReplySuggestion'
+import SalesContextStrip from '../components/sales/SalesContextStrip'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -8574,6 +8575,10 @@ function ChatPage(props: ChatPageProps) {
               )}
 
 
+              {/* 销售上下文条 - 仅非群聊显示（PRD v2 P2） */}
+              {!isCurrentSessionGroup && currentSession.username && (
+                <SalesContextStrip sessionId={currentSession.username} />
+              )}
               {/* AI 回复建议 - 仅非群聊显示 */}
               {!isCurrentSessionGroup && currentSession.username && (
                 <ReplySuggestion sessionId={currentSession.username} />
