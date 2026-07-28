@@ -53,6 +53,17 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
   ```
   版本必须与 `koffi` 主包**精确一致**（当前 3.1.0），否则运行时报 `Mismatched native Koffi modules`。若漏装则报 `Cannot find the native Koffi module`。`package.json` 的 `asarUnpack` 已含 `node_modules/@koromix/koffi-*/**/*`，无需额外配置。
 - **一套源码、两个产物**，无法一个包通吃两平台。
+- **⚠️ 在 Codex/沙箱环境内打包会"死锁"在 packaging 阶段（2 分钟 0 字节）——根因与解法**：
+  - **根因**：沙箱的 `writable_roots` 白名单**不含本项目路径** `/Users/yang/weflow优化/`（只含 `数据分析`/visualizations/`/tmp`/tmpdir）。electron-builder 往 `release/` 写文件被静默拒绝（`Operation not permitted`），表现为卡死。**不是** OS 挂载/overlay/配额问题（`mount`/`df` 已证伪：同文件系统、空间充足），也**不是** symlink/xattr 限制。验证命令：`touch release/.t` → `Operation not permitted`，而 `touch /tmp/.t` 成功。
+  - **解法**：把输出目录改到白名单内的 `/tmp`，打完再拷回：
+    ```bash
+    CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64 --config.directories.output=/tmp/weflow-release
+    # 完成后拷回（release/ 在沙箱内不可写，需 escalation/提权）
+    cp /tmp/weflow-release/WeFlow-*-Setup.exe release/
+    ```
+    Mac 同理加 `--config.directories.output=/tmp/weflow-release`。
+  - **为什么不把 `/tmp` 写死进 `package.json` 的 `build.directories.output`**：该限制只在沙箱内存在；在你自己的终端（非沙箱）跑时 `release/` 完全可写且更符合直觉，`/tmp` 重启还会清空。故保持默认 `release/`，仅沙箱内手动加参数。若你长期在沙箱内打包且嫌每次加参数麻烦，可自行在 `package.json` 加 `"directories": {"output": "/tmp/weflow-release"}`，但须知正常终端也会跟着输出到 `/tmp`。
+
 - **打包后必查 asar 含新接口**（吸取过 preload 漏打包的亏）：
   `grep -a -o "<新ipc或方法名>" release/*/WeFlow.app/Contents/Resources/app.asar`
 
