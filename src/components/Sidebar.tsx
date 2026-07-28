@@ -322,7 +322,7 @@ function Sidebar({ collapsed }: SidebarProps) {
             title={collapsed ? '首页' : undefined}
           >
             <span className="nav-icon"><Home size={20} /></span>
-            <span className="nav-label">首页</span>
+            <span className="nav-label">今日行动</span>
           </NavLink>
 
           {/* 聊天 */}
@@ -335,24 +335,25 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">聊天</span>
           </NavLink>
 
-          {/* 朋友圈 */}
-          <NavLink
+          {/* 朋友圈 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/sns"
             className={`nav-item ${isActive('/sns') ? 'active' : ''}`}
             title={collapsed ? '朋友圈' : undefined}
           >
             <span className="nav-icon"><Aperture size={20} /></span>
             <span className="nav-label">朋友圈</span>
-          </NavLink>
+          </NavLink>}
 
-          <NavLink
+          {/* 灵感信箱 - PRD v2 隐藏（合并入首页通知） */}
+          {false && <NavLink
             to="/insight-inbox"
             className={`nav-item ${isActive('/insight-inbox') ? 'active' : ''}`}
             title={collapsed ? '灵感信箱' : undefined}
           >
             <span className="nav-icon"><Sparkles size={20} /></span>
             <span className="nav-label">灵感信箱</span>
-          </NavLink>
+          </NavLink>}
 
           {/* 知识库 */}
           <NavLink
@@ -371,18 +372,18 @@ function Sidebar({ collapsed }: SidebarProps) {
             title={collapsed ? '销售报表' : undefined}
           >
             <span className="nav-icon"><BarChart3 size={20} /></span>
-            <span className="nav-label">销售报表</span>
+            <span className="nav-label">复盘</span>
           </NavLink>
 
-          {/* 跟进待办 */}
-          <NavLink
+          {/* 跟进待办 - PRD v2 隐藏（合并入今日行动） */}
+          {false && <NavLink
             to="/follow-up"
             className={`nav-item ${isActive('/follow-up') ? 'active' : ''}`}
             title={collapsed ? '跟进待办' : undefined}
           >
             <span className="nav-icon"><Clock size={20} /></span>
             <span className="nav-label">跟进待办</span>
-          </NavLink>
+          </NavLink>}
 
           {/* 客户管理 */}
           <NavLink
@@ -404,48 +405,48 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">通讯录</span>
           </NavLink>
 
-          {/* 资源浏览 */}
-          <NavLink
+          {/* 资源浏览 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/resources"
             className={`nav-item ${isActive('/resources') ? 'active' : ''}`}
             title={collapsed ? '资源浏览' : undefined}
           >
             <span className="nav-icon"><FolderClosed size={20} /></span>
             <span className="nav-label">资源浏览</span>
-          </NavLink>
+          </NavLink>}
 
-          {/* 聊天分析 */}
-          <NavLink
+          {/* 聊天分析 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/analytics"
             className={`nav-item ${isActive('/analytics') ? 'active' : ''}`}
             title={collapsed ? '聊天分析' : undefined}
           >
             <span className="nav-icon"><BarChart3 size={20} /></span>
             <span className="nav-label">聊天分析</span>
-          </NavLink>
+          </NavLink>}
 
-          {/* 年度报告 */}
-          <NavLink
+          {/* 年度报告 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/annual-report"
             className={`nav-item ${isActive('/annual-report') ? 'active' : ''}`}
             title={collapsed ? '年度报告' : undefined}
           >
             <span className="nav-icon"><FileText size={20} /></span>
             <span className="nav-label">年度报告</span>
-          </NavLink>
+          </NavLink>}
 
-          {/* 我的足迹 */}
-          <NavLink
+          {/* 我的足迹 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/footprint"
             className={`nav-item ${isActive('/footprint') ? 'active' : ''}`}
             title={collapsed ? '我的足迹' : undefined}
           >
             <span className="nav-icon"><Footprints size={20} /></span>
             <span className="nav-label">我的足迹</span>
-          </NavLink>
+          </NavLink>}
 
-          {/* 导出 */}
-          <NavLink
+          {/* 导出 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/export"
             className={`nav-item ${isActive('/export') ? 'active' : ''}`}
             title={collapsed ? '导出' : undefined}
@@ -460,18 +461,19 @@ function Sidebar({ collapsed }: SidebarProps) {
             {!collapsed && activeExportTaskCount > 0 && (
               <span className="nav-badge">{exportTaskBadge}</span>
             )}
-          </NavLink>
+          </NavLink>}
 
 
 
-          <NavLink
+          {/* 数据库备份 - PRD v2 隐藏 */}
+          {false && <NavLink
             to="/backup"
             className={`nav-item ${isActive('/backup') ? 'active' : ''}`}
             title={collapsed ? '数据库备份' : undefined}
           >
             <span className="nav-icon"><ArchiveRestore size={20} /></span>
             <span className="nav-label">数据库备份</span>
-          </NavLink>
+          </NavLink>}
 
 
         </nav>

@@ -44,6 +44,7 @@ const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
 const FollowUpPage = lazy(() => import('./pages/FollowUpPage'))
 const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
+const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
 const CustomerListPage = lazy(() => import('./pages/CustomerListPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
@@ -779,8 +780,9 @@ function App() {
 
             <Suspense fallback={null}>
               <Routes location={routeLocation}>
-                <Route path="/" element={<SalesDashboardPage />} />
-                <Route path="/home" element={<SalesDashboardPage />} />
+                <Route path="/" element={<TodayActionPage />} />
+                <Route path="/home" element={<TodayActionPage />} />
+                <Route path="/dashboard" element={<SalesDashboardPage />} />
                 <Route path="/welcome" element={<HomePage />} />
                 <Route path="/account-management" element={<AccountManagementPage />} />
                 <Route path="/chat" element={<ChatPage />} />

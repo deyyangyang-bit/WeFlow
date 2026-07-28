@@ -206,6 +206,8 @@ class SalesDbService {
     for (const [col, type] of migrationCols) {
       try { this.db.run(`ALTER TABLE follow_up_task ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: customer_profile 增加 last_stage_change_at
+    try { this.db.run('ALTER TABLE customer_profile ADD COLUMN last_stage_change_at INTEGER') } catch { /* 列已存在 */ }
     this.persist()
   }
 
@@ -583,6 +585,31 @@ class SalesDbService {
       this.db.close()
       this.db = null
     }
+  }
+
+  /**
+   * 更新客户阶段变更时间（供 salesStageClassifier 调用）
+   */
+  updateStageChangeTime(sessionId: string, timestampMs: number): void {
+    this.run('UPDATE customer_profile SET last_stage_change_at = ? WHERE session_id = ?', [timestampMs, sessionId])
+  }
+
+  /**
+   * 获取所有客户（供 actionEngine 全量扫描）
+   */
+  customerAll(): CustomerProfile[] {
+    return this.all<CustomerProfile>('SELECT * FROM customer_profile', [])
+  }
+
+  /**
+   * 检查某客户某规则在指定时间窗口内是否已生成过任务（去重）
+   */
+  hasRecentTask(sessionId: string, triggerType: string, sinceMs: number): boolean {
+    const row = this.get<{ c: number }>(
+      'SELECT COUNT(*) as c FROM follow_up_task WHERE session_id = ? AND trigger_type = ? AND created_at >= ?',
+      [sessionId, triggerType, sinceMs]
+    )
+    return (row?.c ?? 0) > 0
   }
 
   getDbPath(): string | null {

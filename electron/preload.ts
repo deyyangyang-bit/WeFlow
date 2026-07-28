@@ -731,7 +731,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:todo:update', id, updates),
     todoScan: (period?: string) => ipcRenderer.invoke('sales:todo:scan', period),
     profileBatch: (limit?: number, monthsBack?: number) => ipcRenderer.invoke('sales:profile:batch', limit, monthsBack),
-    profileProgress: () => ipcRenderer.invoke('sales:profile:progress')
+    profileProgress: () => ipcRenderer.invoke('sales:profile:progress'),
+
+    // 今日行动引擎
+    actionGetToday: () => ipcRenderer.invoke('sales:action:getToday'),
+    actionComplete: (taskId: number, action: 'done' | 'skipped') =>
+      ipcRenderer.invoke('sales:action:complete', taskId, action),
+    actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item)
   },
 
   social: {

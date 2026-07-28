@@ -25,7 +25,6 @@ import { videoService } from './services/videoService'
 import { snsService, isVideoUrl } from './services/snsService'
 import { windowsHelloService } from './services/windowsHelloService'
 import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
-import { cloudControlService } from './services/cloudControlService'
 
 
 // ─── 销售助手模块 ─────────────────────────────────────────────────────────────
@@ -35,6 +34,7 @@ import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, onNewMessage as actionOnNewMessage } from './services/salesActionEngine'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -2334,18 +2334,10 @@ function registerIpcHandlers() {
     return exportCardDiagnosticsService.exportCombinedLogs(filePath, payload?.frontendLogs || [])
   })
 
-  // 数据收集服务
-  ipcMain.handle('cloud:init', async () => {
-    await cloudControlService.init()
-  })
-
-  ipcMain.handle('cloud:recordPage', (_, pageName: string) => {
-    cloudControlService.recordPage(pageName)
-  })
-
-  ipcMain.handle('cloud:getLogs', async () => {
-    return cloudControlService.getLogs()
-  })
+  // 数据收集服务 - PRD v2 已移除 cloudControlService（隐私风险）
+  ipcMain.handle('cloud:init', async () => { /* removed */ })
+  ipcMain.handle('cloud:recordPage', () => { /* removed */ })
+  ipcMain.handle('cloud:getLogs', async () => { return [] })
 
   ipcMain.handle('app:checkForUpdates', async () => {
     if (!AUTO_UPDATE_ENABLED) {
@@ -4844,6 +4836,21 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:profile:progress', async () => {
     return insightService.getBatchProgress()
   })
+
+  // ─── 今日行动引擎 IPC ───────────────────────────────────────────────────────
+  ipcMain.handle('sales:action:getToday', async () => {
+    return getTodayActions()
+  })
+
+  ipcMain.handle('sales:action:complete', async (_, taskId: number, action: 'done' | 'skipped') => {
+    completeAction(taskId, action)
+    return { success: true }
+  })
+
+  ipcMain.handle('sales:action:suggest', async (_, item: any) => {
+    const suggestion = await generateSuggestion(item)
+    return { success: true, suggestion }
+  })
 }
 
 // 主窗口引用
@@ -5068,6 +5075,10 @@ app.whenReady().then(async () => {
     await salesDbService.initialize(app.getPath('userData'))
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
+    // 启动今日行动引擎
+    setActionEngineConfig(configService)
+    startActionEngineScheduler()
+    console.log('[Sales] 今日行动引擎已启动')
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)
   }
@@ -5119,7 +5130,7 @@ const shutdownAppServices = async (): Promise<void> => {
       app.exit(0)
     }, 5000)
     forceExitTimer.unref()
-    try { await cloudControlService.stop() } catch {}
+    // cloudControlService removed (PRD v2)
     // 停止自动下载服务
     try { await imageDownloadService.stopAutoDownload() } catch {}
     // 停止 chatService（内部会关闭 cursor 与 DB），避免退出阶段仍触发监控回调
