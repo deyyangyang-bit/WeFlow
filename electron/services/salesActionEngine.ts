@@ -80,6 +80,7 @@ const RULES: Rule[] = [
     match: (p, now) => {
       if (p.stage !== 'new') return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false  // 未记录互动时间，跳过
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 1
     },
@@ -91,6 +92,7 @@ const RULES: Rule[] = [
     match: (p, now) => {
       if (p.stage !== 'quoted') return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 3
     },
@@ -102,6 +104,7 @@ const RULES: Rule[] = [
     match: (p, now) => {
       if (p.stage !== 'negotiating') return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 2
     },
@@ -113,6 +116,7 @@ const RULES: Rule[] = [
     match: (p, now) => {
       if (p.stage !== 'contacted') return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 7
     },
@@ -124,6 +128,7 @@ const RULES: Rule[] = [
     match: (p, now) => {
       if (p.stage !== 'dormant') return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 30 && silentDays <= 90
     },
@@ -322,7 +327,9 @@ export async function getTodayActions(): Promise<TodayActionResult> {
       const nowSec = Math.floor(nowMs / 1000)
       const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
       const lastContact = profile?.last_contact_at ?? 0
-      const silentDays = Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC))
+      // 容错：last_contact_at 为 0 表示从未记录，用 created_at 代替；都没有则为 0 天
+      const effectiveContact = lastContact > 0 ? lastContact : (profile?.created_at ? Math.floor((profile.created_at) / 1000) : nowSec)
+      const silentDays = Math.max(0, Math.floor((nowSec - effectiveContact) / DAY_SEC))
 
       return {
         id: task.id,
