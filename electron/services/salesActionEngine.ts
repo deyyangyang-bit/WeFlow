@@ -296,6 +296,11 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
  * 如果今天还没生成过任务，先触发一次全量扫描。
  */
 export async function getTodayActions(): Promise<TodayActionResult> {
+  // 容错：数据库尚未初始化时返回空结果（启动时序竞争）
+  if (!salesDbService.isInitialized()) {
+    return { items: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0 }, generatedAt: Date.now() }
+  }
+
   const nowMs = Date.now()
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)

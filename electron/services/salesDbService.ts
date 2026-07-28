@@ -241,6 +241,13 @@ class SalesDbService {
     }
   }
 
+  /**
+   * 检查数据库是否已初始化（供 actionEngine 容错调用）
+   */
+  isInitialized(): boolean {
+    return this.db !== null
+  }
+
   private getDb(): SqlJsDatabase {
     if (!this.db) throw new Error('SalesDbService 未初始化')
     return this.db

@@ -56,8 +56,26 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
         generatedAt: result.generatedAt || Date.now(),
         loading: false
       })
+      // 如果返回空且无错误，可能是启动时序问题，2秒后重试一次
+      if ((!result.items || result.items.length === 0) && !result.error) {
+        setTimeout(async () => {
+          try {
+            const retry = await (window as any).electronAPI.sales.actionGetToday()
+            if (retry.items?.length > 0) {
+              set({ items: retry.items, stats: retry.stats, generatedAt: retry.generatedAt })
+            }
+          } catch { /* ignore retry errors */ }
+        }, 2000)
+      }
     } catch (e: any) {
-      set({ error: e?.message || '加载失败', loading: false })
+      // 启动时序竞争：SalesDbService 未初始化，3秒后重试
+      const msg = e?.message || '加载失败'
+      if (msg.includes('未初始化')) {
+        set({ loading: false })
+        setTimeout(() => get().fetchToday(), 3000)
+      } else {
+        set({ error: msg, loading: false })
+      }
     }
   },
 
