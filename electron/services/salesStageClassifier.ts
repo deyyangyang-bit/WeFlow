@@ -65,7 +65,8 @@ const SYSTEM_PROMPT = `你是一个叉车/仓储设备销售场景的客户阶�
  */
 export async function classifyStage(
   config: ConfigService,
-  messages: MessageSnippet[]
+  messages: MessageSnippet[],
+  sessionId: string = ''
 ): Promise<StageClassification | null> {
   if (!isAiConfigured(config)) return null
   if (!messages || messages.length === 0) return null
@@ -81,7 +82,7 @@ export async function classifyStage(
   try {
     const raw = await simpleCompletion(config, SYSTEM_PROMPT, userPrompt, {
       temperature: 0.1,
-      maxTokens: 100,
+      maxTokens: 300,
       disableThinking: true,
       responseFormatJson: true,
       timeoutMs: 15_000
@@ -89,7 +90,8 @@ export async function classifyStage(
 
     return parseClassification(raw)
   } catch (e) {
-    salesLog('WARN', `[StageClassifier] AI 调用失败: ${e instanceof Error ? e.message : String(e)}`)
+    const msg = e instanceof Error ? e.message : String(e)
+    salesLog('ERROR', `[StageClassifier] 分类失败 ${sessionId || '?'}: ${msg}`)
     return null
   }
 }

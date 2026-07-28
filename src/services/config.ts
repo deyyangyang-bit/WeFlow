@@ -86,8 +86,6 @@ export const CONFIG_KEYS = {
   WORD_CLOUD_EXCLUDE_WORDS: 'wordCloudExcludeWords',
 
   // 数据收集
-  ANALYTICS_CONSENT: 'analyticsConsent',
-  ANALYTICS_DENY_COUNT: 'analyticsDenyCount',
 
   // AI 见解
   AI_MODEL_API_BASE_URL: 'aiModelApiBaseUrl',
@@ -1876,30 +1874,6 @@ export async function getWordCloudExcludeWords(): Promise<string[]> {
 export async function setWordCloudExcludeWords(words: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.WORD_CLOUD_EXCLUDE_WORDS, words)
 }
-
-// 获取数据收集同意状态
-export async function getAnalyticsConsent(): Promise<boolean | null> {
-  const value = await config.get(CONFIG_KEYS.ANALYTICS_CONSENT)
-  if (typeof value === 'boolean') return value
-  return null
-}
-
-// 设置数据收集同意状态
-export async function setAnalyticsConsent(consent: boolean): Promise<void> {
-  await config.set(CONFIG_KEYS.ANALYTICS_CONSENT, consent)
-}
-
-// 获取数据收集拒绝次数
-export async function getAnalyticsDenyCount(): Promise<number> {
-  const value = await config.get(CONFIG_KEYS.ANALYTICS_DENY_COUNT)
-  return typeof value === 'number' ? value : 0
-}
-
-// 设置数据收集拒绝次数
-export async function setAnalyticsDenyCount(count: number): Promise<void> {
-  await config.set(CONFIG_KEYS.ANALYTICS_DENY_COUNT, count)
-}
-
 
 // 获取 HTTP API 自动启动状态
 export async function getHttpApiEnabled(): Promise<boolean> {

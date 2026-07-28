@@ -599,12 +599,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
 
-  // 数据收集
-  cloud: {
-    init: () => ipcRenderer.invoke('cloud:init'),
-    recordPage: (pageName: string) => ipcRenderer.invoke('cloud:recordPage', pageName),
-    getLogs: () => ipcRenderer.invoke('cloud:getLogs')
-  },
 
   // HTTP API 服务
   http: {

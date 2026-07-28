@@ -463,10 +463,10 @@ const applyAutoUpdateChannel = (reason: 'startup' | 'settings' = 'startup') => {
 }
 
 applyAutoUpdateChannel('startup')
-const AUTO_UPDATE_ENABLED =
-  process.env.AUTO_UPDATE_ENABLED === 'true' ||
-  process.env.AUTO_UPDATE_ENABLED === '1' ||
-  (process.env.AUTO_UPDATE_ENABLED == null && !process.env.VITE_DEV_SERVER_URL)
+// 二创私人工具：恒禁用自动更新。原 feed 指向上游 hicccc77/WeFlow/releases，
+// 启动时会偷偷连上游，点更新会用上游原版覆盖二创（功能性自毁）。
+// 此常量是 checkForUpdatesOnStartup / app:checkForUpdates / 下载 IPC 的共同守卫，置 false 后全部早返回。
+const AUTO_UPDATE_ENABLED = false
 
 const getLaunchAtStartupUnsupportedReason = (): string | null => {
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
@@ -2334,11 +2334,6 @@ function registerIpcHandlers() {
     }
     return exportCardDiagnosticsService.exportCombinedLogs(filePath, payload?.frontendLogs || [])
   })
-
-  // 数据收集服务 - PRD v2 已移除 cloudControlService（隐私风险）
-  ipcMain.handle('cloud:init', async () => { /* removed */ })
-  ipcMain.handle('cloud:recordPage', () => { /* removed */ })
-  ipcMain.handle('cloud:getLogs', async () => { return [] })
 
   ipcMain.handle('app:checkForUpdates', async () => {
     if (!AUTO_UPDATE_ENABLED) {
@@ -4849,8 +4844,8 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('sales:action:suggest', async (_, item: any) => {
-    const suggestion = await generateSuggestion(item)
-    return { success: true, suggestion }
+    const r = await generateSuggestion(item)
+    return { success: true, suggestion: r.suggestion, error: r.error, notConfigured: r.notConfigured }
   })
 
   // ─── 周复盘 IPC ─────────────────────────────────────────────────────────────

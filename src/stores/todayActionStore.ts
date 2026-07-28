@@ -13,6 +13,8 @@ export interface ActionItem {
   title: string
   reason: string
   suggestion: string
+  suggestionError?: string
+  notConfigured?: boolean
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'info'
   priorityScore: number
   silentDays: number
@@ -94,15 +96,19 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   fetchSuggestion: async (item: ActionItem) => {
     try {
       const result = await (window as any).electronAPI.sales.actionSuggest(item)
-      if (result?.suggestion) {
-        set(state => ({
-          items: state.items.map(i =>
-            i.id === item.id ? { ...i, suggestion: result.suggestion } : i
-          )
-        }))
-      }
-    } catch (e) {
-      console.error('获取建议失败:', e)
+      set(state => ({
+        items: state.items.map(i =>
+          i.id === item.id
+            ? { ...i, suggestion: result?.suggestion || '', suggestionError: result?.error, notConfigured: result?.notConfigured }
+            : i
+        )
+      }))
+    } catch (e: any) {
+      set(state => ({
+        items: state.items.map(i =>
+          i.id === item.id ? { ...i, suggestionError: e?.message || '请求失败' } : i
+        )
+      }))
     }
   }
 }))

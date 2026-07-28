@@ -44,21 +44,10 @@ function ActionCard({ item }: { item: ActionItem }) {
     } catch { /* ignore */ }
   }, [item.suggestion])
 
-  const [suggestError, setSuggestError] = useState('')
-
   const handleSuggest = useCallback(async () => {
     setLoadingSuggestion(true)
-    setSuggestError('')
     await fetchSuggestion(item)
     setLoadingSuggestion(false)
-    // 如果点击后仍然没有 suggestion，说明 AI 未配置或返回空
-    // 延迟检查（等 store 更新）
-    setTimeout(() => {
-      const current = useTodayActionStore.getState().items.find(i => i.id === item.id)
-      if (current && !current.suggestion) {
-        setSuggestError('AI 未配置或暂无建议，请在设置中配置 AI 模型')
-      }
-    }, 500)
   }, [item, fetchSuggestion])
 
   return (
@@ -101,8 +90,11 @@ function ActionCard({ item }: { item: ActionItem }) {
             {loadingSuggestion ? '生成中...' : 'AI 话术'}
           </button>
         )}
-        {suggestError && (
-          <span className="action-card__suggest-error">{suggestError}</span>
+        {item.notConfigured && (
+          <span className="action-card__suggest-error">请在 设置 → AI 设置 中配置模型</span>
+        )}
+        {!item.notConfigured && item.suggestionError && (
+          <span className="action-card__suggest-error">AI 调用失败：{item.suggestionError}</span>
         )}
         <div className="action-card__spacer" />
         <button

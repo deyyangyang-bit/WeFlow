@@ -116,7 +116,8 @@ export function callChatCompletion(
     }
 
     if (options.disableThinking) {
-      payload.thinking = { type: 'disabled' }
+      // thinking:{type:'disabled'} 属 /responses 接口格式，注入 /chat/completions 会被
+      // deepseek 等通用兼容接口判 400；关思考在 chat-completions 只用 enable_thinking:false
       payload.enable_thinking = false
     }
 

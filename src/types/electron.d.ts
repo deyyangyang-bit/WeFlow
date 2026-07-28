@@ -1630,11 +1630,6 @@ export interface ElectronAPI {
       currentItemLabel?: string
     }) => void) => () => void
   }
-  cloud: {
-    init: () => Promise<void>
-    recordPage: (pageName: string) => Promise<void>
-    getLogs: () => Promise<string[]>
-  }
   http: {
     start: (port?: number, host?: string) => Promise<{ success: boolean; port?: number; error?: string }>
     stop: () => Promise<{ success: boolean }>

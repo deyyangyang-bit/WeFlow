@@ -260,7 +260,7 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
       const snippets = toMessageSnippets(msgResult.messages)
       if (snippets.length === 0) return
 
-      const classification = await classifyStage(configRef!, snippets)
+      const classification = await classifyStage(configRef!, snippets, sessionId)
       if (!classification) return
 
       // 3. 持久化（阶段变化时写入）
@@ -364,8 +364,10 @@ export async function getTodayActions(): Promise<TodayActionResult> {
 /**
  * 为行动项生成 AI 建议话术（异步，可选）。
  */
-export async function generateSuggestion(actionItem: ActionItem): Promise<string> {
-  if (!configRef || !isAiConfigured(configRef)) return ''
+export interface SuggestionResult { suggestion: string; error?: string; notConfigured?: boolean }
+
+export async function generateSuggestion(actionItem: ActionItem): Promise<SuggestionResult> {
+  if (!configRef || !isAiConfigured(configRef)) return { suggestion: '', notConfigured: true, error: 'AI 模型未配置' }
 
   try {
     // 从知识库检索相关产品/话术上下文
@@ -384,14 +386,17 @@ export async function generateSuggestion(actionItem: ActionItem): Promise<string
 
 请用1-2句话给出一条跟进建议话术（直接可以发给客户的），口语化，不要太正式。如果有相关产品参数可以自然带入。`
 
-    return await simpleCompletion(configRef, '你是一个销售话术助手，输出简短实用的跟进话术。', prompt, {
+    const text = await simpleCompletion(configRef, '你是一个销售话术助手，输出简短实用的跟进话术。', prompt, {
       temperature: 0.7,
-      maxTokens: 200,
+      maxTokens: 500,
       disableThinking: true,
       timeoutMs: 15_000
     })
-  } catch {
-    return ''
+    return { suggestion: text || '' }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    salesLog('ERROR', `[ActionEngine] generateSuggestion 失败: ${msg}`)
+    return { suggestion: '', error: msg.slice(0, 80) }
   }
 }
 
