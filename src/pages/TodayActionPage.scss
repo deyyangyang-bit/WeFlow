@@ -280,8 +280,8 @@
   to { transform: rotate(360deg); }
 }
 
-  &__suggest-error {
-    font-size: 11px;
-    color: #dc2626;
-    margin-left: 4px;
-  }
+.action-card__suggest-error {
+  font-size: 11px;
+  color: #dc2626;
+  margin-left: 4px;
+}
