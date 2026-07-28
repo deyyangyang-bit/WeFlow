@@ -356,15 +356,27 @@ export async function generateSuggestion(actionItem: ActionItem): Promise<string
   if (!configRef || !isAiConfigured(configRef)) return ''
 
   try {
+    // 从知识库检索相关产品/话术上下文
+    const knowledgeContext = salesKnowledgeService.buildKnowledgeContext(
+      `${actionItem.title} ${actionItem.displayName} ${actionItem.stage}`,
+      1500,
+      2
+    )
+
+    const knowledgeSection = knowledgeContext
+      ? `\n\n相关产品信息（可引用）：\n${knowledgeContext}`
+      : ''
+
     const prompt = `你是叉车/仓储设备销售顾问。客户"${actionItem.displayName}"当前阶段：${actionItem.stage}，已沉默${actionItem.silentDays}天。
-任务：${actionItem.title}
-请用1-2句话给出一条跟进建议话术（直接可以发给客户的），口语化，不要太正式。`
+任务：${actionItem.title}${knowledgeSection}
+
+请用1-2句话给出一条跟进建议话术（直接可以发给客户的），口语化，不要太正式。如果有相关产品参数可以自然带入。`
 
     return await simpleCompletion(configRef, '你是一个销售话术助手，输出简短实用的跟进话术。', prompt, {
       temperature: 0.7,
-      maxTokens: 150,
+      maxTokens: 200,
       disableThinking: true,
-      timeoutMs: 10_000
+      timeoutMs: 15_000
     })
   } catch {
     return ''

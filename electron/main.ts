@@ -35,6 +35,7 @@ import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, onNewMessage as actionOnNewMessage } from './services/salesActionEngine'
+import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -4851,6 +4852,16 @@ function registerIpcHandlers() {
     const suggestion = await generateSuggestion(item)
     return { success: true, suggestion }
   })
+
+  // ─── 周复盘 IPC ─────────────────────────────────────────────────────────────
+  ipcMain.handle('sales:review:generate', async () => {
+    return salesReportService.generateWeeklyReview()
+  })
+
+  // ─── 知识库批量导入 IPC ─────────────────────────────────────────────────────
+  ipcMain.handle('sales:kb:importCsv', async (_, csvContent: string) => {
+    return salesKnowledgeService.importFromCsv(csvContent)
+  })
 }
 
 // 主窗口引用
@@ -5078,7 +5089,9 @@ app.whenReady().then(async () => {
     // 启动今日行动引擎
     setActionEngineConfig(configService)
     startActionEngineScheduler()
-    console.log('[Sales] 今日行动引擎已启动')
+    // 启动周复盘定时器（每周日 20:00）
+    startWeeklyReviewScheduler(configService)
+    console.log('[Sales] 今日行动引擎 + 周复盘定时器已启动')
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)
   }

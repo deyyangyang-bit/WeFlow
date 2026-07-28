@@ -737,7 +737,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     actionGetToday: () => ipcRenderer.invoke('sales:action:getToday'),
     actionComplete: (taskId: number, action: 'done' | 'skipped') =>
       ipcRenderer.invoke('sales:action:complete', taskId, action),
-    actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item)
+    actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item),
+
+    // 周复盘
+    reviewGenerate: () => ipcRenderer.invoke('sales:review:generate'),
+
+    // 知识库批量导入
+    kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent)
   },
 
   social: {

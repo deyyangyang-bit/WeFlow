@@ -204,6 +204,97 @@ class SalesKnowledgeService {
       return ''
     }
   }
+
+  /**
+   * 从 CSV 内容批量导入知识库条目（PRD v2 P1）。
+   * CSV 格式：category,product_line,title,content,tags,scene
+   * 第一行为表头，自动跳过。支持带 BOM 的 UTF-8。
+   */
+  importFromCsv(csvContent: string): { success: boolean; imported: number; skipped: number; error?: string } {
+    try {
+      // 去除 BOM
+      const clean = csvContent.replace(/^\uFEFF/, '').trim()
+      if (!clean) return { success: false, imported: 0, skipped: 0, error: 'CSV 内容为空' }
+
+      const lines = clean.split(/\r?\n/)
+      if (lines.length < 2) return { success: false, imported: 0, skipped: 0, error: 'CSV 至少需要表头+1行数据' }
+
+      // 解析表头
+      const header = this.parseCsvLine(lines[0])
+      const colMap: Record<string, number> = {}
+      header.forEach((h, i) => { colMap[h.trim().toLowerCase()] = i })
+
+      // 必须有 title 和 content 列
+      if (colMap['title'] === undefined || colMap['content'] === undefined) {
+        return { success: false, imported: 0, skipped: 0, error: 'CSV 必须包含 title 和 content 列' }
+      }
+
+      let imported = 0
+      let skipped = 0
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim()
+        if (!line) { skipped++; continue }
+
+        const cols = this.parseCsvLine(line)
+        const title = (cols[colMap['title']] || '').trim()
+        const contentVal = (cols[colMap['content']] || '').trim()
+
+        if (!title || !contentVal) { skipped++; continue }
+
+        const category = (cols[colMap['category']] || 'product').trim() || 'product'
+        const productLine = colMap['product_line'] !== undefined ? (cols[colMap['product_line']] || '').trim() : ''
+        const tags = colMap['tags'] !== undefined ? (cols[colMap['tags']] || '').trim() : ''
+        const scene = colMap['scene'] !== undefined ? (cols[colMap['scene']] || '').trim() : ''
+
+        // 去重：同 title 不重复导入
+        const existing = salesDbService.kbList()
+        if (existing.some(e => e.title === title)) { skipped++; continue }
+
+        salesDbService.kbCreate({
+          category,
+          product_line: productLine || null,
+          title,
+          content: contentVal,
+          tags: tags ? JSON.stringify(tags.split(/[,，]/).map(t => t.trim()).filter(Boolean)) : '[]',
+          scene: scene || null
+        })
+        imported++
+      }
+
+      return { success: true, imported, skipped }
+    } catch (e) {
+      return { success: false, imported: 0, skipped: 0, error: String(e) }
+    }
+  }
+
+  /**
+   * 解析 CSV 行（支持引号内逗号）
+   */
+  private parseCsvLine(line: string): string[] {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"'
+          i++
+        } else {
+          inQuotes = !inQuotes
+        }
+      } else if (ch === ',' && !inQuotes) {
+        result.push(current)
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+    result.push(current)
+    return result
+  }
 }
 
 export const salesKnowledgeService = new SalesKnowledgeService()

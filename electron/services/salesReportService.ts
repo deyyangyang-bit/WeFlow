@@ -232,4 +232,149 @@ class SalesReportService {
   }
 }
 
+  /**
+   * 生成周复盘（PRD v2 P1）：不只是统计，重点是"谁热了/谁冷了/谁该放弃/下周重点"
+   */
+  async generateWeeklyReview(): Promise<GenerateReportResult> {
+    try {
+      if (!this.config || !isAiConfigured(this.config)) {
+        return { success: false, error: 'AI 未配置' }
+      }
+
+      const range = getWeekRange()
+      const nowSec = Math.floor(Date.now() / 1000)
+      const weekStartSec = Math.floor(range.start / 1000)
+
+      // 获取所有客户及其阶段
+      const customers = salesDbService.customerAll()
+      if (customers.length === 0) {
+        return { success: false, error: '暂无客户数据，请先连接微信数据库' }
+      }
+
+      // 分类统计
+      const stageCounts: Record<string, number> = {}
+      const hotCustomers: string[] = []  // 阶段前进
+      const coldCustomers: string[] = [] // 阶段后退/进入 dormant
+      const dropCandidates: string[] = [] // 建议放弃
+      const activeThisWeek: string[] = []
+
+      for (const c of customers) {
+        const stage = c.stage || 'unknown'
+        stageCounts[stage] = (stageCounts[stage] || 0) + 1
+
+        const lastContact = c.last_contact_at ?? 0
+        const silentDays = (nowSec - lastContact) / 86400
+
+        // 本周有互动的
+        if (lastContact >= weekStartSec) {
+          activeThisWeek.push(c.display_name || c.session_id)
+        }
+
+        // 沉默超 30 天的 contacted/negotiating → 变冷了
+        if (['contacted', 'negotiating', 'quoted'].includes(stage) && silentDays > 30) {
+          coldCustomers.push(`${c.display_name || c.session_id}(${stage},${Math.floor(silentDays)}天)`)
+        }
+
+        // 沉默超 60 天 → 建议放弃
+        if (silentDays > 60 && !['won', 'lost'].includes(stage)) {
+          dropCandidates.push(c.display_name || c.session_id)
+        }
+
+        // 本周阶段变化（通过 intent_tag_log 判断）
+        const latestIntent = salesDbService.intentGetLatest(c.session_id)
+        if (latestIntent && latestIntent.created_at >= range.start) {
+          if (['quoted', 'negotiating', 'won'].includes(latestIntent.stage)) {
+            hotCustomers.push(`${c.display_name || c.session_id}→${latestIntent.stage}`)
+          }
+        }
+      }
+
+      // 构建 AI prompt
+      const pipelineTotal = customers.filter(c => !['won', 'lost'].includes(c.stage || '')).length
+      const prompt = `你是叉车/仓储设备销售顾问。以下是本周管道数据：
+
+管道中客户总数：${pipelineTotal}
+阶段分布：${JSON.stringify(stageCounts)}
+本周活跃客户(${activeThisWeek.length}人)：${activeThisWeek.slice(0, 10).join('、') || '无'}
+阶段前进(热了)：${hotCustomers.slice(0, 5).join('、') || '无'}
+变冷(>30天无互动)：${coldCustomers.slice(0, 5).join('、') || '无'}
+建议放弃(>60天)：${dropCandidates.slice(0, 5).join('、') || '无'}
+
+请生成本周复盘，格式：
+1. 一句话总结本周状态
+2. 谁热了（建议下一步动作）
+3. 谁冷了（是否值得救）
+4. 建议放弃的（果断释放精力）
+5. 下周重点（最多3件事）
+
+用简洁口语化中文，每条1-2句。不要 markdown 标题符号。`
+
+      const aiReview = await simpleCompletion(
+        this.config,
+        '你是一个 B2B 销售教练，帮销售员做周复盘。输出简洁可执行的建议，不要废话。',
+        prompt,
+        { temperature: 0.7, maxTokens: 600, disableThinking: true, timeoutMs: 30_000 }
+      )
+
+      // 持久化为 report_snapshot（period_type = 'weekly_review'）
+      const stats = {
+        pipelineTotal,
+        stageCounts,
+        activeCount: activeThisWeek.length,
+        hotCount: hotCustomers.length,
+        coldCount: coldCustomers.length,
+        dropCount: dropCandidates.length
+      }
+
+      const report = salesDbService.reportCreate({
+        period_type: 'weekly_review',
+        period_start: range.start,
+        period_end: range.end,
+        stats: JSON.stringify(stats),
+        ai_summary: aiReview
+      })
+
+      return { success: true, report }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+}
+
+// ─── 周复盘定时器 ─────────────────────────────────────────────────────────────
+
+let reviewTimer: NodeJS.Timeout | null = null
+let lastReviewWeekStart = 0
+
+/**
+ * 启动周复盘定时器：每周日 20:00 自动生成
+ */
+export function startWeeklyReviewScheduler(config: ConfigService): void {
+  if (reviewTimer) return
+  salesReportService.setConfig(config)
+
+  // 每 30 分钟检查一次
+  reviewTimer = setInterval(async () => {
+    const now = new Date()
+    // 周日 = 0, 20:00-20:30 窗口
+    if (now.getDay() === 0 && now.getHours() === 20 && now.getMinutes() < 30) {
+      const weekRange = getWeekRange()
+      if (lastReviewWeekStart < weekRange.start) {
+        console.log('[SalesReport] 触发周复盘生成')
+        const result = await salesReportService.generateWeeklyReview()
+        if (result.success) {
+          lastReviewWeekStart = weekRange.start
+          console.log('[SalesReport] 周复盘生成成功')
+        } else {
+          console.warn('[SalesReport] 周复盘生成失败:', result.error)
+        }
+      }
+    }
+  }, 30 * 60 * 1000)
+}
+
+export function stopWeeklyReviewScheduler(): void {
+  if (reviewTimer) { clearInterval(reviewTimer); reviewTimer = null }
+}
+
 export const salesReportService = new SalesReportService()
