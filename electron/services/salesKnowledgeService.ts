@@ -249,6 +249,7 @@ class SalesKnowledgeService {
 
       // 拼接对话文本（脱敏前保留原始内容给用户对照）
       const myWxid = config.getMyWxidCleaned()
+      let selfCount = 0
       const conversationLines = messages.map((m: any) => {
         const ts = m.createTime || m.create_time || m.msg_time || 0
         const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
@@ -256,9 +257,11 @@ class SalesKnowledgeService {
         // 用 talker 字段比对当前用户 wxid 判断说话人（WCDB 原始消息无 isSelf 字段）
         const talker = m.talker || m.senderUsername || ''
         const isSelf = myWxid ? talker === myWxid : false
+        if (isSelf) selfCount++
         const speaker = isSelf ? '我' : '客户'
         return `[${timeStr}] ${speaker}: ${content}`
       }).join('\n')
+      salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}`)
 
       // 2. AI 提炼
       const systemPrompt = `你是销售话术提炼助手。从微信聊天记录中识别销售人员（标注为"我"）的有效话术，提取为可复用的知识库条目。
@@ -293,6 +296,7 @@ class SalesKnowledgeService {
 
       const rawScripts: any[] = parsed?.scripts || []
       if (!Array.isArray(rawScripts) || rawScripts.length === 0) {
+        salesLog('INFO', `[ExtractScripts] ${sessionId}: AI returned 0 scripts. Raw response preview: ${(aiText || '').slice(0, 200)}`)
         return { success: true, candidates: [] }
       }
 

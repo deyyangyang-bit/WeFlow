@@ -5004,10 +5004,15 @@ function registerIpcHandlers() {
                 sourceContact: t.displayName
               })
             }
-          } else if (!result.success) {
+          } else if (result.success) {
+            // AI 返回了空数组（没找到可提炼的话术），记录但不计为失败
+            salesLog('INFO', `[ExtractAll] ${t.displayName}: 0 scripts (AI returned empty)`)
+          } else {
+            salesLog('WARN', `[ExtractAll] ${t.displayName}: FAILED — ${result.error}`)
             skipped++
           }
-        } catch {
+        } catch (e: any) {
+          salesLog('WARN', `[ExtractAll] ${t.displayName}: CRASH — ${e?.message || e}`)
           skipped++
         }
       }
