@@ -9,6 +9,7 @@ import { salesDbService, type KnowledgeEntry } from './salesDbService'
 import { wcdbService } from './wcdbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import type { ConfigService } from './config'
+import { salesLog } from './salesLogger'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
