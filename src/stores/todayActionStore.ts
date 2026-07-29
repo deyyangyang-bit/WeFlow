@@ -43,6 +43,7 @@ interface TodayActionState {
   loading: boolean
   error: string | null
   generatedAt: number | null
+  _retryTimer: ReturnType<typeof setTimeout> | null
 
   fetchToday: () => Promise<void>
   completeItem: (taskId: number, action: 'done' | 'skipped') => Promise<void>
@@ -56,8 +57,13 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   loading: false,
   error: null,
   generatedAt: null,
+  _retryTimer: null as ReturnType<typeof setTimeout> | null,
 
   fetchToday: async () => {
+    // 清理上一次的延迟重试，防止旧 timer 覆写新数据
+    const prev = get()._retryTimer
+    if (prev) { clearTimeout(prev); set({ _retryTimer: null }) }
+
     set({ loading: true, error: null })
     try {
       const result = await (window as any).electronAPI.sales.actionGetToday()
@@ -70,20 +76,22 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
       })
       // 如果返回空且无错误，可能是启动时序问题，2秒后重试一次
       if ((!result.items || result.items.length === 0) && !result.error) {
-        setTimeout(async () => {
+        const timer = setTimeout(async () => {
           try {
             const retry = await (window as any).electronAPI.sales.actionGetToday()
             if (retry.items?.length > 0 || retry.archiveCandidates?.length > 0) {
-              set({ items: retry.items || [], archiveCandidates: retry.archiveCandidates || [], stats: retry.stats, generatedAt: retry.generatedAt })
+              set({ items: retry.items || [], archiveCandidates: retry.archiveCandidates || [], stats: retry.stats, generatedAt: retry.generatedAt, _retryTimer: null })
             }
           } catch { /* ignore retry errors */ }
         }, 2000)
+        set({ _retryTimer: timer })
       }
     } catch (e: any) {
       const msg = e?.message || '加载失败'
       if (msg.includes('未初始化')) {
         set({ loading: false })
-        setTimeout(() => get().fetchToday(), 3000)
+        const timer = setTimeout(() => get().fetchToday(), 3000)
+        set({ _retryTimer: timer })
       } else {
         set({ error: msg, loading: false })
       }
@@ -125,9 +133,13 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
         )
       }))
     } catch (e: any) {
+      const errMsg = e?.message || '请求失败'
       set(state => ({
         items: state.items.map(i =>
-          i.id === item.id ? { ...i, suggestionError: e?.message || '请求失败' } : i
+          i.id === item.id ? { ...i, suggestionError: errMsg } : i
+        ),
+        archiveCandidates: state.archiveCandidates.map(i =>
+          i.id === item.id ? { ...i, suggestionError: errMsg } : i
         )
       }))
     }

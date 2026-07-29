@@ -144,6 +144,7 @@ const RULES: Rule[] = [
       // 30 天内第 3 次触发 R4/R5 → 建议放弃
       if (!['contacted', 'dormant'].includes(p.stage ?? '')) return false
       const lastContact = p.last_contact_at ?? 0
+      if (lastContact === 0) return false  // 未记录互动时间，跳过
       const silentDays = (now - lastContact) / DAY_SEC
       if (silentDays < 30) return false
       // 检查历史任务次数
@@ -362,8 +363,8 @@ const LAZY_SCAN_RULE_IDS = ['rule_r1_quoted_followup', 'rule_r2_negotiating_stal
 async function lazyScan(): Promise<number> {
   const nowSec = Math.floor(Date.now() / 1000)
   const nowMs = Date.now()
-  const todayStartMs = new Date()
-  todayStartMs.setHours(0, 0, 0, 0)
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
 
   // 仅取 R1/R2/R4/R5 关心的阶段
   const targetStages = new Set(['quoted', 'negotiating', 'contacted', 'dormant'])
@@ -377,7 +378,7 @@ async function lazyScan(): Promise<number> {
   for (const customer of customers) {
     // 已有今日 pending 任务则跳过（不限规则类型，同客户同天有任一 pending 即跳过）
     const existingToday = salesDbService.todoList({ status: 'pending', session_id: customer.session_id, limit: 3 })
-    const hasTaskToday = existingToday.some(t => (t.created_at ?? 0) >= todayStartMs)
+    const hasTaskToday = existingToday.some(t => (t.created_at ?? 0) >= todayStart.getTime())
     if (hasTaskToday) continue
 
     const lastContact = customer.last_contact_at ?? 0

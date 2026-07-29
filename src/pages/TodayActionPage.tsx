@@ -180,7 +180,7 @@ export default function TodayActionPage() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
     await fetchToday()
-    setTimeout(() => setRefreshing(false), 800)
+    setRefreshing(false)
   }, [fetchToday])
 
   const r6Count = stats?.r6Count ?? archiveCandidates.length
