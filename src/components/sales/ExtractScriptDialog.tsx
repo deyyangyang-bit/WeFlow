@@ -139,7 +139,9 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       if (!api?.kbScanCandidates) { setScanError('API 未就绪 kbScanCandidates'); return }
       const result = await api.kbScanCandidates({
         minMessages: overrideMinMsgs ?? minMsgs,
-        maxDaysAgo: overrideMaxDays ?? maxDays
+        maxDaysAgo: overrideMaxDays ?? maxDays,
+        beginDate: beginDate || undefined,
+        endDate: endDate || undefined
       })
       try { (window as any).electronAPI?.log?.debug(`[ExtractDialog] scan done ok=${result?.success} n=${result?.candidates?.length || 0}`) } catch {}
       if (!result?.success) { setScanError(result?.error || '扫描失败'); return }

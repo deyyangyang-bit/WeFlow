@@ -4870,10 +4870,20 @@ function registerIpcHandlers() {
   })
 
   // ─── 扫描提炼候选 IPC（纯本地，不调 AI）──────────────────────────────────
-  ipcMain.handle('sales:kb:scanExtractCandidates', async (_, options?: { minMessages?: number; maxDaysAgo?: number }) => {
+  ipcMain.handle('sales:kb:scanExtractCandidates', async (_, options?: { minMessages?: number; maxDaysAgo?: number; beginDate?: string; endDate?: string }) => {
     const start = Date.now()
     const minMessages = options?.minMessages ?? 10
-    const maxDaysAgo = options?.maxDaysAgo ?? 365 // 叉车行业默认 12 个月
+    // 日期区间联动：如果选了区间，自动把月份放宽到覆盖该区间
+    let maxDaysAgo = options?.maxDaysAgo ?? 365
+    if (options?.beginDate || options?.endDate) {
+      // 算区间最早日期距今天数，至少保留该窗口内的联系人
+      const earliestDate = options?.beginDate || options?.endDate || ''
+      if (earliestDate) {
+        const earliestSec = Math.floor(new Date(earliestDate + 'T00:00:00+08:00').getTime() / 1000)
+        const daysFromEarliest = Math.ceil((Date.now() / 1000 - earliestSec) / 86400) + 30
+        if (maxDaysAgo < daysFromEarliest) maxDaysAgo = daysFromEarliest
+      }
+    }
 
     try {
       const sessionsResult = await chatService.getSessions()
