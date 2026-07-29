@@ -122,6 +122,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   // 批量模式：弹窗打开时自动开始扫描
   useEffect(() => {
     if (!open || !batch) return
+    try { (window as any).electronAPI?.log?.debug('[ExtractDialog] batch open, starting scan') } catch {}
     handleBatchScan()
   }, [open, batch])
 
@@ -129,6 +130,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const handleBatchScan = useCallback(async (overrideMinMsgs?: number, overrideMaxDays?: number) => {
     setStep('scanning')
     setScanError('')
+    try { (window as any).electronAPI?.log?.debug('[ExtractDialog] scan start') } catch {}
     try {
       const api = (window as any).electronAPI?.sales
       if (!api?.kbScanCandidates) { setScanError('API 未就绪 kbScanCandidates'); return }
@@ -136,6 +138,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
         minMessages: overrideMinMsgs ?? minMsgs,
         maxDaysAgo: overrideMaxDays ?? maxDays
       })
+      try { (window as any).electronAPI?.log?.debug(`[ExtractDialog] scan done ok=${result?.success} n=${result?.candidates?.length || 0}`) } catch {}
       if (!result?.success) { setScanError(result?.error || '扫描失败'); return }
       const candidates = Array.isArray(result.candidates) ? result.candidates.map((c: any) => ({ ...c, selected: true })) : []
       setScanResult({
@@ -145,7 +148,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       })
       setStep('confirm_candidates')
     } catch (e: any) {
-      console.error('[ExtractDialog] scan error', e)
+      try { (window as any).electronAPI?.log?.debug(`[ExtractDialog] scan ERROR: ${e?.message || e}`) } catch {}
       setScanError(e?.message || '扫描出错')
     }
   }, [minMsgs, maxDays])
