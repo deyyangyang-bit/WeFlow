@@ -248,11 +248,14 @@ class SalesKnowledgeService {
       }
 
       // 拼接对话文本（脱敏前保留原始内容给用户对照）
+      const myWxid = config.getMyWxidCleaned()
       const conversationLines = messages.map((m: any) => {
         const ts = m.createTime || m.create_time || m.msg_time || 0
         const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
         const content = (m.content || m.msg || '').slice(0, 300)
-        const isSelf = m.isSelf || m.is_sender || false
+        // 用 talker 字段比对当前用户 wxid 判断说话人（WCDB 原始消息无 isSelf 字段）
+        const talker = m.talker || m.senderUsername || ''
+        const isSelf = myWxid ? talker === myWxid : false
         const speaker = isSelf ? '我' : '客户'
         return `[${timeStr}] ${speaker}: ${content}`
       }).join('\n')
