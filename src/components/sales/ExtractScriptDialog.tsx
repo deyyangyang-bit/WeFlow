@@ -19,17 +19,18 @@ interface Candidate {
   index: number
   title: string
   content: string
+  original: string
+  analysis: string
   scene: string
   tags: string[]
+  versions: { normal: string; professional: string; closing: string }
   duplicateOf?: string
   selected: boolean
-  /** 批量模式的来源联系人 */
   sourceContact?: string
-  /** 用户编辑后的值（覆盖 AI 原始输出） */
   editedTitle?: string
   editedContent?: string
-  /** 原始对话片段（折叠对照） */
-  originalSnippet?: string
+  /** 当前展示的版本: optimized | normal | professional | closing */
+  activeVersion?: 'optimized' | 'normal' | 'professional' | 'closing'
 }
 
 type Step = 'select' | 'scanning' | 'confirm_candidates' | 'analyzing' | 'preview'
@@ -171,10 +172,12 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       if (!result?.success) { setError(result?.error || '批量提炼失败'); setStep('confirm_candidates'); return }
       const list: Candidate[] = (result.candidates || []).map((c: any, idx: number) => ({
         index: idx, title: c.title || '未命名话术', content: c.content || '',
+        original: c.original || '', analysis: c.analysis || '',
         scene: c.scene || '其他', tags: c.tags || [], duplicateOf: c.duplicateOf,
+        versions: c.versions || { normal: '', professional: '', closing: '' },
         sourceContact: c.sourceContact, selected: !c.duplicateOf,
         editedTitle: undefined, editedContent: undefined,
-        originalSnippet: c.content?.slice(0, 120) || ''
+        activeVersion: 'optimized'
       }))
       if (list.length === 0) { setError(`已处理 ${result.stats?.processed || 0} 个联系人，未发现可提炼的销售话术。`); setStep('confirm_candidates'); return }
       setCandidates(list); setStep('preview')
@@ -221,11 +224,13 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       }
 
       const list: Candidate[] = (result.candidates || []).map((c: any) => ({
-        ...c,
-        selected: !c.duplicateOf, // 疑似重复的默认不勾选
-        editedTitle: undefined,
-        editedContent: undefined,
-        originalSnippet: c.content?.slice(0, 120) || ''
+        index: 0, title: c.title || '未命名话术', content: c.content || '',
+        original: c.original || '', analysis: c.analysis || '',
+        scene: c.scene || '其他', tags: c.tags || [], duplicateOf: c.duplicateOf,
+        versions: c.versions || { normal: '', professional: '', closing: '' },
+        selected: !c.duplicateOf,
+        editedTitle: undefined, editedContent: undefined,
+        activeVersion: 'optimized'
       }))
 
       if (list.length === 0) {
@@ -541,19 +546,60 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
                         onChange={e => updateCandidate(c.index, 'editedTitle', e.target.value)}
                       />
                       {c.sourceContact && (
-                        <span className="extract-candidate__source" title={`来源：${c.sourceContact}`}>
-                          {c.sourceContact}
-                        </span>
+                        <span className="extract-candidate__source">{c.sourceContact}</span>
                       )}
                       <span className="extract-candidate__scene">{SCENE_LABELS[c.scene] || c.scene}</span>
                     </div>
 
+                    {/* 版本切换 tabs */}
+                    <div className="extract-version-tabs">
+                      {(['optimized', 'normal', 'professional', 'closing'] as const).map(v => {
+                        const label = { optimized: '优化版', normal: '普通版', professional: '专业版', closing: '逼单版' }[v]
+                        const text = v === 'optimized' ? (c.editedContent ?? c.content) : c.versions?.[v]
+                        if (!text) return null
+                        return (
+                          <button
+                            key={v}
+                            className={`extract-version-tab ${c.activeVersion === v ? 'active' : ''}`}
+                            onClick={() => setCandidates(prev => prev.map(x => x.index === c.index ? { ...x, activeVersion: v } : x))}
+                          >
+                            {label}
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {/* 当前版本内容 */}
                     <textarea
                       className="extract-candidate__content"
-                      value={c.editedContent ?? c.content}
-                      onChange={e => updateCandidate(c.index, 'editedContent', e.target.value)}
+                      value={
+                        c.activeVersion === 'optimized' ? (c.editedContent ?? c.content)
+                        : c.activeVersion === 'normal' ? c.versions.normal
+                        : c.activeVersion === 'professional' ? c.versions.professional
+                        : c.versions.closing
+                      }
+                      onChange={e => {
+                        if (c.activeVersion === 'optimized') updateCandidate(c.index, 'editedContent', e.target.value)
+                      }}
                       rows={3}
+                      readOnly={c.activeVersion !== 'optimized'}
                     />
+
+                    {/* 诊断分析 */}
+                    {c.analysis && (
+                      <div className="extract-analysis">
+                        <span className="extract-analysis-label">分析诊断：</span>
+                        {c.analysis}
+                      </div>
+                    )}
+
+                    {/* 销售原话对照 */}
+                    {c.original && (
+                      <div className="extract-original-ref">
+                        <span className="extract-original-label">原话：</span>
+                        「{c.original}」
+                      </div>
+                    )}
 
                     <div className="extract-candidate__meta">
                       {c.tags.length > 0 && (
@@ -562,23 +608,11 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
                         </span>
                       )}
                       {c.duplicateOf && (
-                        <span className="extract-candidate__dup" title="与已有条目相似度高">
+                        <span className="extract-candidate__dup">
                           <AlertTriangle size={11} /> 疑似重复：「{c.duplicateOf}」
                         </span>
                       )}
-                      <button
-                        className="extract-candidate__toggle-original"
-                        onClick={() => toggleOriginal(c.index)}
-                      >
-                        {showOriginal[c.index] ? '收起原文' : '查看原文对照'}
-                      </button>
                     </div>
-
-                    {showOriginal[c.index] && (
-                      <div className="extract-candidate__original">
-                        {c.originalSnippet || c.content.slice(0, 150)}
-                      </div>
-                    )}
                   </div>
                 </div>
               ))}

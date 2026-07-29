@@ -43,13 +43,24 @@ export interface KbSearchPayload {
   product_line?: string
 }
 
-/** 话术提炼候选条目 */
+/** 话术提炼候选条目（v2：分析+诊断+优化+多版本） */
 export interface ExtractedScriptCandidate {
   index: number
   title: string
+  /** 优化后的标准话术（主文本，导入知识库的 content） */
   content: string
+  /** 销售原话（脱敏后，供对照） */
+  original: string
+  /** AI 分析诊断 */
+  analysis: string
   scene: string
   tags: string[]
+  /** 多版本话术 */
+  versions: {
+    normal: string
+    professional: string
+    closing: string
+  }
   /** 与已有条目的重复标题（相似度 >60% 时填充） */
   duplicateOf?: string
 }
@@ -270,19 +281,39 @@ class SalesKnowledgeService {
       }).join('\n')
       salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}`)
 
-      // 2. AI 提炼
-      const systemPrompt = `你是销售话术提炼助手。从微信聊天记录中识别销售人员（标注为"我"）的有效话术，提取为可复用的知识库条目。
+      // 2. AI 分析+诊断+优化
+      const systemPrompt = `你是一名拥有10年以上工业品（叉车/仓储设备）销售经验的销售培训专家。你的任务不是简单复制销售人员的话，而是：
 
-规则：
-- 只提取销售人员（"我"）的发言，不提取客户的话
-- 只提取有复用价值的：产品介绍、报价话术、异议处理、逼单技巧、售后服务话术
+1. 找出销售人员（标注为"我"）在真实聊天中具有销售价值的表达
+2. 判断当前表达的问题（是否建立信任？突出价值？推动成交？）
+3. 保留真实销售意图和产品事实，优化成更专业、更容易成交的话术
+4. 生成 3 个版本：普通版（日常客户）、专业版（老板/采购）、逼单版（犹豫客户）
+5. 把优化后的话术整理为可复用的销售模板
+
+严格规则：
+- 不虚构产品参数（型号/吨位/电池/价格等必须来自原文，未提及的写"未提及"）
+- 不夸大承诺
+- 保留原始价格信息
 - 金额→{金额}，人名→{客户名}，公司名→{公司名}，日期→{日期}，手机号→{手机号}
-- 场景归类：初次接触 / 报价 / 异议处理 / 售后 / 其他
-- 如果对话中没有值得提炼的销售话术，返回空数组 []（这是合法输出，不要硬编）
+- 场景分类：初次接触/需求确认/产品介绍/报价/价格异议/竞品比较/成交推进/售后维护
+- 如果对话中没有值得优化的销售话术，返回空数组 []（合法输出，不要硬编）
 
-必须返回 JSON：{"scripts":[{"title":"简短标题(≤15字)","content":"脱敏后的话术内容","scene":"场景","tags":["标签1","标签2"]}]}`
+必须返回 JSON：
+{"scripts":[{
+  "title":"简短标题(≤15字)",
+  "scene":"销售场景",
+  "original":"销售原话（脱敏后）",
+  "analysis":"诊断：优点/缺点/缺失什么（2-3句）",
+  "optimized":"优化后标准话术",
+  "versions":{
+    "normal":"普通版",
+    "professional":"专业版",
+    "closing":"逼单版"
+  },
+  "tags":["标签1","标签2"]
+}]}`
 
-      const userPrompt = `从以下微信聊天记录中提炼可复用的销售话术：\n\n${conversationLines}\n\n请返回 JSON。如果确实没有值得提炼的话术，返回 {"scripts": []}。`
+      const userPrompt = `分析以下微信聊天记录，将销售人员的表达优化成标准话术：\n\n${conversationLines}\n\n请返回 JSON。如果确实没有值得优化的销售话术，返回 {"scripts": []}。`
 
       const aiText = await simpleCompletion(config, systemPrompt, userPrompt, {
         temperature: 0.3,
@@ -311,12 +342,12 @@ class SalesKnowledgeService {
       const existingAll = salesDbService.kbList()
       const candidates: ExtractedScriptCandidate[] = rawScripts.map((s: any, idx: number) => {
         const scene = s.scene || '其他'
+        const optimized = s.optimized || s.content || ''
         const sceneEntries = existingAll.filter(e => (e.scene || '其他') === scene)
 
-        // 简单 n-gram 相似度：2-gram 命中率
         let maxSim = 0
         let similarTitle = ''
-        const candGrams = buildGrams((s.content || '').slice(0, 100))
+        const candGrams = buildGrams(optimized.slice(0, 100))
         for (const existing of sceneEntries) {
           const existGrams = buildGrams((existing.content || '').slice(0, 100))
           if (candGrams.size === 0 || existGrams.size === 0) continue
@@ -329,9 +360,16 @@ class SalesKnowledgeService {
         return {
           index: idx,
           title: (s.title || '未命名话术').slice(0, 30),
-          content: s.content || '',
+          content: optimized,
+          original: s.original || '',
+          analysis: s.analysis || '',
           scene,
           tags: Array.isArray(s.tags) ? s.tags.slice(0, 5) : [],
+          versions: {
+            normal: s.versions?.normal || '',
+            professional: s.versions?.professional || '',
+            closing: s.versions?.closing || ''
+          },
           duplicateOf: maxSim > 0.6 ? similarTitle : undefined
         }
       })
