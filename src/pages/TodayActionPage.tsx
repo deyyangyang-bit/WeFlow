@@ -1,10 +1,13 @@
 /**
  * TodayActionPage.tsx
  * 今日行动清单 — 产品核心页面
- * 用户每天打开看到的第一个屏幕：谁该联系、为什么、说什么、打勾完成。
+ *
+ * v3 升级：
+ * - 结构化分析展示（whyNow / opportunity / riskSignal / script / nextMove）
+ * - R6 清理候选独立折叠区
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ChevronRight, Copy, RefreshCw, SkipForward, Sparkles } from 'lucide-react'
+import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, Lightbulb, RefreshCw, SkipForward, Sparkles, TrendingUp, Zap } from 'lucide-react'
 import { useTodayActionStore, type ActionItem } from '../stores/todayActionStore'
 import './TodayActionPage.scss'
 
@@ -27,22 +30,24 @@ const PRIORITY_LABELS: Record<string, { text: string; color: string }> = {
   info: { text: '参考', color: '#6b7280' }
 }
 
-function ActionCard({ item }: { item: ActionItem }) {
+function ActionCard({ item, isArchive = false }: { item: ActionItem; isArchive?: boolean }) {
   const { completeItem, fetchSuggestion } = useTodayActionStore()
   const [copied, setCopied] = useState(false)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
 
   const stage = STAGE_LABELS[item.stage] || STAGE_LABELS.unknown
   const priority = PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.info
+  const hasAnalysis = !!(item.whyNow || item.opportunity || item.riskSignal || item.suggestion)
 
   const handleCopy = useCallback(async () => {
-    if (!item.suggestion) return
+    const text = item.suggestion || item.nextMove || ''
+    if (!text) return
     try {
-      await navigator.clipboard.writeText(item.suggestion)
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch { /* ignore */ }
-  }, [item.suggestion])
+  }, [item.suggestion, item.nextMove])
 
   const handleSuggest = useCallback(async () => {
     setLoadingSuggestion(true)
@@ -51,7 +56,7 @@ function ActionCard({ item }: { item: ActionItem }) {
   }, [item, fetchSuggestion])
 
   return (
-    <div className={`action-card priority-${item.priority}`}>
+    <div className={`action-card priority-${item.priority}${isArchive ? ' action-card--archive' : ''}`}>
       <div className="action-card__header">
         <div className="action-card__avatar">
           {(item.displayName || '?')[0]}
@@ -61,6 +66,11 @@ function ActionCard({ item }: { item: ActionItem }) {
             <span className="action-card__name">{item.displayName}</span>
             <span className="action-card__stage" style={{ background: stage.color }}>{stage.text}</span>
             <span className="action-card__priority" style={{ color: priority.color }}>{priority.text}</span>
+            {isArchive && (
+              <span className="action-card__archive-tag">
+                <Archive size={11} /> 清理候选
+              </span>
+            )}
           </div>
           <div className="action-card__reason">{item.reason}</div>
         </div>
@@ -69,32 +79,74 @@ function ActionCard({ item }: { item: ActionItem }) {
 
       <div className="action-card__title">{item.title}</div>
 
-      {item.suggestion && (
-        <div className="action-card__suggestion">
-          <div className="action-card__suggestion-text">{item.suggestion}</div>
-          <button className="action-card__copy-btn" onClick={handleCopy} title="复制话术">
-            {copied ? <Check size={14} /> : <Copy size={14} />}
-            {copied ? '已复制' : '复制'}
-          </button>
+      {/* v3 结构化分析展示 */}
+      {hasAnalysis && (
+        <div className="action-card__analysis">
+          {item.whyNow && (
+            <div className="analysis-row analysis-row--why">
+              <Zap size={13} />
+              <span>{item.whyNow}</span>
+            </div>
+          )}
+          {item.opportunity && (
+            <div className="analysis-row analysis-row--opportunity">
+              <TrendingUp size={13} />
+              <span>{item.opportunity}</span>
+            </div>
+          )}
+          {item.riskSignal && (
+            <div className="analysis-row analysis-row--risk">
+              <AlertTriangle size={13} />
+              <span>{item.riskSignal}</span>
+            </div>
+          )}
+          {item.suggestion && (
+            <div className="analysis-row analysis-row--script">
+              <Sparkles size={13} />
+              <span className="analysis-script-text">{item.suggestion}</span>
+              <button className="action-card__copy-btn" onClick={handleCopy} title="复制话术">
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {copied ? '已复制' : '复制'}
+              </button>
+            </div>
+          )}
+          {item.nextMove && !item.suggestion && (
+            <div className="analysis-row analysis-row--next">
+              <ChevronRight size={13} />
+              <span>{item.nextMove}</span>
+            </div>
+          )}
+          {item.degradationNote && (
+            <div className="analysis-degradation">{item.degradationNote}</div>
+          )}
         </div>
       )}
 
       <div className="action-card__actions">
-        {!item.suggestion && (
+        {!hasAnalysis && !loadingSuggestion && (
           <button
             className="action-card__btn action-card__btn--suggest"
             onClick={handleSuggest}
             disabled={loadingSuggestion}
           >
             <Sparkles size={14} />
-            {loadingSuggestion ? '生成中...' : 'AI 话术'}
+            AI 深度分析
           </button>
+        )}
+        {loadingSuggestion && (
+          <span className="action-card__loading">
+            <RefreshCw size={14} className="spinning" />
+            AI 分析中（获取聊天记录+深度分析，最长约20秒）...
+          </span>
         )}
         {item.notConfigured && (
           <span className="action-card__suggest-error">请在 设置 → AI 设置 中配置模型</span>
         )}
         {!item.notConfigured && item.suggestionError && (
-          <span className="action-card__suggest-error">AI 调用失败：{item.suggestionError}</span>
+          <span className="action-card__suggest-error">
+            AI 分析失败：{item.suggestionError}
+            <button className="action-card__retry-link" onClick={handleSuggest}>重试</button>
+          </span>
         )}
         <div className="action-card__spacer" />
         <button
@@ -109,7 +161,7 @@ function ActionCard({ item }: { item: ActionItem }) {
           onClick={() => completeItem(item.id, 'done')}
         >
           <Check size={14} />
-          完成
+          {isArchive ? '已处理' : '完成'}
         </button>
       </div>
     </div>
@@ -117,8 +169,9 @@ function ActionCard({ item }: { item: ActionItem }) {
 }
 
 export default function TodayActionPage() {
-  const { items, stats, loading, error, fetchToday } = useTodayActionStore()
+  const { items, archiveCandidates, stats, loading, error, fetchToday } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
+  const [archiveExpanded, setArchiveExpanded] = useState(false)
 
   useEffect(() => {
     fetchToday()
@@ -127,9 +180,10 @@ export default function TodayActionPage() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
     await fetchToday()
-    // 保证旋转动画至少转 800ms，让用户看到反馈
     setTimeout(() => setRefreshing(false), 800)
   }, [fetchToday])
+
+  const r6Count = stats?.r6Count ?? archiveCandidates.length
 
   return (
     <div className="today-action-page">
@@ -158,6 +212,20 @@ export default function TodayActionPage() {
             <span className="stat-chip__value">{stats.pipelineTotal}</span>
             <span className="stat-chip__label">管道中</span>
           </div>
+          {/* R6 清理候选：仅 N>0 时渲染 */}
+          {r6Count > 0 && (
+            <div
+              className="stat-chip stat-chip--archive"
+              onClick={() => setArchiveExpanded(!archiveExpanded)}
+              title="点击展开清理候选"
+            >
+              <span className="stat-chip__value">
+                <Archive size={13} />
+                {r6Count}
+              </span>
+              <span className="stat-chip__label">待清理</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -180,6 +248,27 @@ export default function TodayActionPage() {
           <div className="today-action-page__empty-icon">🎉</div>
           <p>今天全部跟完了！</p>
           {stats && <p className="today-action-page__empty-sub">管道中还有 {stats.pipelineTotal} 个客户</p>}
+        </div>
+      )}
+
+      {/* R6 清理候选折叠区：仅 N>0 时渲染，默认收起 */}
+      {r6Count > 0 && (
+        <div className={`archive-section ${archiveExpanded ? 'archive-section--expanded' : ''}`}>
+          <button
+            className="archive-section__toggle"
+            onClick={() => setArchiveExpanded(!archiveExpanded)}
+          >
+            {archiveExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            <span>待清理 ({r6Count})</span>
+            <span className="archive-section__hint">多次跟进无响应的客户</span>
+          </button>
+          {archiveExpanded && (
+            <div className="archive-section__list">
+              {archiveCandidates.map(item => (
+                <ActionCard key={item.id} item={item} isArchive />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -15,6 +15,12 @@ export interface ActionItem {
   suggestion: string
   suggestionError?: string
   notConfigured?: boolean
+  /** v3 结构化分析字段 */
+  whyNow?: string
+  opportunity?: string
+  riskSignal?: string
+  nextMove?: string
+  degradationNote?: string
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'info'
   priorityScore: number
   silentDays: number
@@ -27,10 +33,12 @@ export interface ActionStats {
   overdue: number
   newThisWeek: number
   pipelineTotal: number
+  r6Count: number
 }
 
 interface TodayActionState {
   items: ActionItem[]
+  archiveCandidates: ActionItem[]
   stats: ActionStats | null
   loading: boolean
   error: string | null
@@ -43,6 +51,7 @@ interface TodayActionState {
 
 export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   items: [],
+  archiveCandidates: [],
   stats: null,
   loading: false,
   error: null,
@@ -54,6 +63,7 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
       const result = await (window as any).electronAPI.sales.actionGetToday()
       set({
         items: result.items || [],
+        archiveCandidates: result.archiveCandidates || [],
         stats: result.stats || null,
         generatedAt: result.generatedAt || Date.now(),
         loading: false
@@ -63,14 +73,13 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
         setTimeout(async () => {
           try {
             const retry = await (window as any).electronAPI.sales.actionGetToday()
-            if (retry.items?.length > 0) {
-              set({ items: retry.items, stats: retry.stats, generatedAt: retry.generatedAt })
+            if (retry.items?.length > 0 || retry.archiveCandidates?.length > 0) {
+              set({ items: retry.items || [], archiveCandidates: retry.archiveCandidates || [], stats: retry.stats, generatedAt: retry.generatedAt })
             }
           } catch { /* ignore retry errors */ }
         }, 2000)
       }
     } catch (e: any) {
-      // 启动时序竞争：SalesDbService 未初始化，3秒后重试
       const msg = e?.message || '加载失败'
       if (msg.includes('未初始化')) {
         set({ loading: false })
@@ -84,9 +93,10 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   completeItem: async (taskId: number, action: 'done' | 'skipped') => {
     try {
       await (window as any).electronAPI.sales.actionComplete(taskId, action)
-      // 从列表中移除
+      // 从主列表和清理候选列表中移除
       set(state => ({
-        items: state.items.filter(item => item.id !== taskId)
+        items: state.items.filter(item => item.id !== taskId),
+        archiveCandidates: state.archiveCandidates.filter(item => item.id !== taskId)
       }))
     } catch (e) {
       console.error('完成行动失败:', e)
@@ -96,11 +106,22 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   fetchSuggestion: async (item: ActionItem) => {
     try {
       const result = await (window as any).electronAPI.sales.actionSuggest(item)
+      const analysis = {
+        suggestion: result?.script || result?.suggestion || '',
+        whyNow: result?.whyNow || '',
+        opportunity: result?.opportunity || '',
+        riskSignal: result?.riskSignal || '',
+        nextMove: result?.nextMove || '',
+        suggestionError: result?.error,
+        notConfigured: result?.notConfigured,
+        degradationNote: result?.degradationNote
+      }
       set(state => ({
         items: state.items.map(i =>
-          i.id === item.id
-            ? { ...i, suggestion: result?.suggestion || '', suggestionError: result?.error, notConfigured: result?.notConfigured }
-            : i
+          i.id === item.id ? { ...i, ...analysis } : i
+        ),
+        archiveCandidates: state.archiveCandidates.map(i =>
+          i.id === item.id ? { ...i, ...analysis } : i
         )
       }))
     } catch (e: any) {

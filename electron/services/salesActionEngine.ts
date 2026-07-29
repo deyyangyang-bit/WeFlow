@@ -40,11 +40,13 @@ export interface ActionItem {
 
 export interface TodayActionResult {
   items: ActionItem[]
+  archiveCandidates: ActionItem[]
   stats: {
     todayPending: number
     overdue: number
     newThisWeek: number
     pipelineTotal: number
+    r6Count: number
   }
   generatedAt: number
 }
@@ -197,51 +199,104 @@ export function stopActionEngineScheduler(): void {
 /**
  * 全量扫描：遍历所有客户，应用规则生成今日任务。
  * 在 salesQueue 内执行（调用方负责 enqueue）。
+ *
+ * v3 优化：
+ * - 客户级去重：同客户命中多条规则时只保留优先级分数最高的一条
+ * - R6 独立：不占用主队列 15 条名额，单独落库
  */
-export async function runFullScan(): Promise<{ generated: number }> {
+export async function runFullScan(): Promise<{ generated: number; r6Generated: number }> {
   const nowSec = Math.floor(Date.now() / 1000)
   const nowMs = Date.now()
   const customers = salesDbService.customerAll()
-  let generated = 0
 
   salesLog('INFO', `[ActionEngine] 全量扫描开始，客户数: ${customers.length}`)
 
-  for (const customer of customers) {
-    if (generated >= DAILY_LIMIT) break
+  // Phase 1: 收集候选（内存去重：同客户只保留最高分）
+  interface Candidate {
+    sessionId: string
+    displayName: string
+    ruleId: string
+    title: string
+    score: number
+    priority: string
+  }
+  const customerBest = new Map<string, Candidate>()   // R1-R5 候选
+  const r6Candidates: Candidate[] = []                 // R6 独立候选
 
+  for (const customer of customers) {
     const lastContact = customer.last_contact_at ?? 0
     const silentDays = (nowSec - lastContact) / DAY_SEC
 
     for (const rule of RULES) {
-      if (generated >= DAILY_LIMIT) break
-
       try {
         if (!rule.match(customer, nowSec)) continue
-
-        // 去重：24h 内同客户同规则不重复
+        // 24h 内同客户同规则不重复
         if (salesDbService.hasRecentTask(customer.session_id, rule.id, nowMs - DEDUP_WINDOW_MS)) continue
 
-        // 生成任务
-        const title = rule.title(customer, silentDays)
-        salesDbService.todoCreate({
-          session_id: customer.session_id,
-          display_name: customer.display_name ?? null,
-          trigger_type: rule.id,
-          title,
-          status: 'pending',
-          priority_score: PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30),
-          created_by: 'action_engine'
-        })
-        generated++
+        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30)
+        const cand: Candidate = {
+          sessionId: customer.session_id,
+          displayName: customer.display_name ?? '未知',
+          ruleId: rule.id,
+          title: rule.title(customer, silentDays),
+          score,
+          priority: rule.priority
+        }
+
+        if (rule.id === 'rule_r6_consider_drop') {
+          // R6 独立收集，不参与主队列客户级去重
+          r6Candidates.push(cand)
+        } else {
+          // R1-R5：同客户只保留最高分
+          const existing = customerBest.get(customer.session_id)
+          if (!existing || score > existing.score) {
+            customerBest.set(customer.session_id, cand)
+          }
+        }
       } catch (e) {
         salesLog('WARN', `[ActionEngine] 规则 ${rule.id} 对客户 ${customer.session_id} 执行失败: ${e}`)
       }
     }
   }
 
+  // Phase 2: 排序 + 截断（≤DAILY_LIMIT，仅 R1-R5）
+  const sorted = [...customerBest.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, DAILY_LIMIT)
+
+  // Phase 3: 落库（R1-R5 主队列）
+  let generated = 0
+  for (const cand of sorted) {
+    salesDbService.todoCreate({
+      session_id: cand.sessionId,
+      display_name: cand.displayName || null,
+      trigger_type: cand.ruleId,
+      title: cand.title,
+      status: 'pending',
+      priority_score: cand.score,
+      created_by: 'action_engine'
+    })
+    generated++
+  }
+
+  // Phase 4: 落库（R6 独立，不限名额）
+  let r6Generated = 0
+  for (const cand of r6Candidates) {
+    salesDbService.todoCreate({
+      session_id: cand.sessionId,
+      display_name: cand.displayName || null,
+      trigger_type: cand.ruleId,
+      title: cand.title,
+      status: 'pending',
+      priority_score: cand.score,
+      created_by: 'action_engine'
+    })
+    r6Generated++
+  }
+
   lastFullScanAt = nowMs
-  salesLog('INFO', `[ActionEngine] 全量扫描完成，生成 ${generated} 条任务`)
-  return { generated }
+  salesLog('INFO', `[ActionEngine] 全量扫描完成，候选 ${customerBest.size} 客户，生成 ${generated} 条任务，R6 ${r6Generated} 条`)
+  return { generated, r6Generated }
 }
 
 /**
@@ -295,16 +350,78 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
   })
 }
 
+// ─── 懒扫描 ────────────────────────────────────────────────────────────────────
+
+/** 懒扫描目标规则：R1/R2/R4/R5 (R3 有新消息增量，R6 走独立清理) */
+const LAZY_SCAN_RULE_IDS = ['rule_r1_quoted_followup', 'rule_r2_negotiating_stall', 'rule_r4_contacted_silent', 'rule_r5_dormant_wake']
+
+/**
+ * 首页打开时轻量增量检查：弥补 08:00 全量扫描后到下次打开首页之间的发现延迟。
+ * 只检查 R1/R2/R4/R5 中"已越过阈值但今日尚未生成任务"的客户，不做 AI 阶段分类。
+ */
+async function lazyScan(): Promise<number> {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const nowMs = Date.now()
+  const todayStartMs = new Date()
+  todayStartMs.setHours(0, 0, 0, 0)
+
+  // 仅取 R1/R2/R4/R5 关心的阶段
+  const targetStages = new Set(['quoted', 'negotiating', 'contacted', 'dormant'])
+  const customers = salesDbService.customerAll().filter(c => targetStages.has(c.stage ?? ''))
+
+  if (customers.length === 0) return 0
+
+  const lazyRules = RULES.filter(r => LAZY_SCAN_RULE_IDS.includes(r.id))
+  let generated = 0
+
+  for (const customer of customers) {
+    // 已有今日 pending 任务则跳过（不限规则类型，同客户同天有任一 pending 即跳过）
+    const existingToday = salesDbService.todoList({ status: 'pending', session_id: customer.session_id, limit: 3 })
+    const hasTaskToday = existingToday.some(t => (t.created_at ?? 0) >= todayStartMs)
+    if (hasTaskToday) continue
+
+    const lastContact = customer.last_contact_at ?? 0
+    const silentDays = (nowSec - lastContact) / DAY_SEC
+
+    for (const rule of lazyRules) {
+      try {
+        if (!rule.match(customer, nowSec)) continue
+        if (salesDbService.hasRecentTask(customer.session_id, rule.id, nowMs - DEDUP_WINDOW_MS)) continue
+
+        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30)
+        salesDbService.todoCreate({
+          session_id: customer.session_id,
+          display_name: customer.display_name ?? null,
+          trigger_type: rule.id,
+          title: rule.title(customer, silentDays),
+          status: 'pending',
+          priority_score: score,
+          created_by: 'action_engine'
+        })
+        generated++
+        break // 一个客户在懒扫描中只生成一条任务
+      } catch (e) {
+        salesLog('WARN', `[ActionEngine] 懒扫描 ${rule.id} 对客户 ${customer.session_id} 失败: ${e}`)
+      }
+    }
+  }
+
+  if (generated > 0) {
+    salesLog('INFO', `[ActionEngine] 懒扫描完成，补充生成 ${generated} 条任务`)
+  }
+  return generated
+}
+
 // ─── 今日行动查询 ─────────────────────────────────────────────────────────────
 
 /**
  * 获取今日行动清单（供前端 IPC 调用）。
- * 如果今天还没生成过任务，先触发一次全量扫描。
+ * 如果今天还没生成过任务，先触发全量扫描 + 懒扫描补充。
  */
 export async function getTodayActions(): Promise<TodayActionResult> {
   // 容错：数据库尚未初始化时返回空结果（启动时序竞争）
   if (!salesDbService.isInitialized()) {
-    return { items: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0 }, generatedAt: Date.now() }
+    return { items: [], archiveCandidates: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0, r6Count: 0 }, generatedAt: Date.now() }
   }
 
   const nowMs = Date.now()
@@ -312,42 +429,30 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   todayStart.setHours(0, 0, 0, 0)
   const todayStartMs = todayStart.getTime()
 
-  // 如果今天还没扫描过，先跑一次
+  // 如果今天还没扫描过，先跑一次全量 + 懒扫描补充
   if (lastFullScanAt < todayStartMs) {
     await enqueueSalesTask(() => runFullScan())
   }
+  // 懒扫描：无论是否刚跑完全量，都补扫一次（填补 08:00 后的增量窗口）
+  await enqueueSalesTask(() => lazyScan())
 
-  // 查询所有 pending 任务（按 priority_score 降序）
-  const pendingTasks = salesDbService.todoList({ status: 'pending', limit: 50 })
+  // 查询所有 pending 任务
+  const pendingTasks = salesDbService.todoList({ status: 'pending', limit: 100 })
 
-  // 过滤出今天生成的 + 之前遗留的 pending
-  const actionItems: ActionItem[] = pendingTasks
+  // 分离 R6 与主队列（R6 不参与 DAILY_LIMIT 主队列竞争）
+  const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
+  const r6Pending = pendingTasks.filter(t => t.trigger_type === 'rule_r6_consider_drop')
+
+  // 主队列：排序 + 截断 + 映射
+  const actionItems: ActionItem[] = mainPending
     .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
     .slice(0, DAILY_LIMIT)
-    .map(task => {
-      const nowSec = Math.floor(nowMs / 1000)
-      const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
-      const lastContact = profile?.last_contact_at ?? 0
-      // 容错：last_contact_at 为 0 表示从未记录，用 created_at 代替；都没有则为 0 天
-      const effectiveContact = lastContact > 0 ? lastContact : (profile?.created_at ? Math.floor((profile.created_at) / 1000) : nowSec)
-      const silentDays = Math.max(0, Math.floor((nowSec - effectiveContact) / DAY_SEC))
+    .map(task => mapTaskToActionItem(task, nowMs))
 
-      return {
-        id: task.id ?? 0,
-        sessionId: task.session_id ?? '',
-        displayName: task.display_name ?? '未知客户',
-        stage: profile?.stage ?? 'unknown',
-        triggerType: task.trigger_type,
-        title: task.title,
-        reason: buildReason(task.trigger_type, silentDays),
-        suggestion: '',  // AI 建议后续异步填充
-        priority: scoreToPriority(task.priority_score ?? 0),
-        priorityScore: task.priority_score ?? 0,
-        silentDays,
-        createdAt: task.created_at ?? 0,
-        status: task.status ?? 'pending'
-      }
-    })
+  // R6 清理候选：独立列表，不限名额
+  const archiveCandidates: ActionItem[] = r6Pending
+    .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
+    .map(task => mapTaskToActionItem(task, nowMs))
 
   // 统计数字
   const allCustomers = salesDbService.customerAll()
@@ -356,48 +461,176 @@ export async function getTodayActions(): Promise<TodayActionResult> {
     todayPending: actionItems.length,
     overdue: pendingTasks.filter(t => t.due_at && t.due_at < nowMs).length,
     newThisWeek: allCustomers.filter(c => (c.created_at ?? 0) >= weekStartMs).length,
-    pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(c.stage ?? '')).length
+    pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(c.stage ?? '')).length,
+    r6Count: r6Pending.length
   }
 
-  return { items: actionItems, stats, generatedAt: nowMs }
+  return { items: actionItems, archiveCandidates, stats, generatedAt: nowMs }
 }
 
 /**
- * 为行动项生成 AI 建议话术（异步，可选）。
+ * 结构化深度分析结果（对齐 wechat-crm deep_analysis.py 框架）。
  */
-export interface SuggestionResult { suggestion: string; error?: string; notConfigured?: boolean }
+export interface ActionAnalysisResult {
+  whyNow: string
+  opportunity: string
+  riskSignal: string
+  script: string
+  nextMove: string
+  /** 非空时表示降级：聊天记录不足等 */
+  degradationNote?: string
+  error?: string
+  notConfigured?: boolean
+}
 
-export async function generateSuggestion(actionItem: ActionItem): Promise<SuggestionResult> {
-  if (!configRef || !isAiConfigured(configRef)) return { suggestion: '', notConfigured: true, error: 'AI 模型未配置' }
+/** WCDB 消息缓存：60 秒内同 session 复用 */
+const msgCache = new Map<string, { msgs: string; ts: number }>()
+const MSG_CACHE_TTL_MS = 60_000
+const MIN_MSGS_FOR_ANALYSIS = 5
+const MAX_MSGS_FOR_ANALYSIS = 50
+const MSG_WINDOW_DAYS = 30
+
+/**
+ * 获取客户近期聊天记录（带 60s 内存缓存）。
+ */
+async function fetchRecentMessages(sessionId: string): Promise<string> {
+  const cached = msgCache.get(sessionId)
+  if (cached && (Date.now() - cached.ts) < MSG_CACHE_TTL_MS) {
+    return cached.msgs
+  }
 
   try {
-    // 从知识库检索相关产品/话术上下文
-    const knowledgeContext = salesKnowledgeService.buildKnowledgeContext(
-      `${actionItem.title} ${actionItem.displayName} ${actionItem.stage}`,
-      1500,
-      2
-    )
+    const result = await wcdbService.getMessages(sessionId, MAX_MSGS_FOR_ANALYSIS, 0)
+    if (!result?.success || !result.messages?.length) {
+      const empty = ''
+      msgCache.set(sessionId, { msgs: empty, ts: Date.now() })
+      return empty
+    }
+
+    // 取最近 50 条，按时间升序拼接
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cutoffSec = nowSec - MSG_WINDOW_DAYS * DAY_SEC
+    const recent = result.messages
+      .filter((m: any) => {
+        const ts = m.createTime || m.create_time || m.msg_time || 0
+        return ts >= cutoffSec
+      })
+      .slice(-MAX_MSGS_FOR_ANALYSIS)
+      .map((m: any) => {
+        const ts = m.createTime || m.create_time || m.msg_time || 0
+        const timeStr = ts ? new Date(ts * 1000).toISOString().slice(0, 16) : '?'
+        const content = (m.content || m.msg || '').slice(0, 200)
+        return `[${timeStr}] ${content}`
+      })
+      .join('\n')
+
+    msgCache.set(sessionId, { msgs: recent, ts: Date.now() })
+    return recent
+  } catch (e) {
+    salesLog('WARN', `[ActionEngine] WCDB 消息获取失败 ${sessionId}: ${e}`)
+    return ''
+  }
+}
+
+/**
+ * 生成结构化深度分析（替代原 generateSuggestion）。
+ *
+ * 对齐 wechat-crm deep_analysis.py 框架，输出 5 字段：
+ * whyNow / opportunity / riskSignal / script / nextMove。
+ * 聊天记录不足（<5条）时诚实降级，不硬编。
+ */
+export async function generateActionAnalysis(actionItem: ActionItem): Promise<ActionAnalysisResult> {
+  if (!configRef || !isAiConfigured(configRef)) {
+    return { whyNow: '', opportunity: '', riskSignal: '', script: '', nextMove: '', notConfigured: true, error: 'AI 模型未配置' }
+  }
+
+  try {
+    // 并行获取：WCDB 聊天记录 + 知识库检索
+    const [chatHistory, knowledgeContext] = await Promise.all([
+      fetchRecentMessages(actionItem.sessionId),
+      Promise.resolve(salesKnowledgeService.buildKnowledgeContext(
+        `${actionItem.title} ${actionItem.displayName} ${actionItem.stage}`,
+        1500,
+        2
+      ))
+    ])
+
+    const msgCount = chatHistory ? chatHistory.split('\n').filter(l => l.trim()).length : 0
+    const isLowData = msgCount < MIN_MSGS_FOR_ANALYSIS
 
     const knowledgeSection = knowledgeContext
-      ? `\n\n相关产品信息（可引用）：\n${knowledgeContext}`
+      ? `\n\n【相关产品信息】\n${knowledgeContext}`
       : ''
 
-    const prompt = `你是叉车/仓储设备销售顾问。客户"${actionItem.displayName}"当前阶段：${actionItem.stage}，已沉默${actionItem.silentDays}天。
-任务：${actionItem.title}${knowledgeSection}
+    const chatSection = chatHistory
+      ? `\n\n【近期聊天记录（近${MSG_WINDOW_DAYS}天，${msgCount}条）】\n${chatHistory}`
+      : '\n\n【近期聊天记录】无（WCDB 未连接或无记录）'
 
-请用1-2句话给出一条跟进建议话术（直接可以发给客户的），口语化，不要太正式。如果有相关产品参数可以自然带入。`
+    const degradationNote = isLowData
+      ? '\n\n⚠️ 聊天记录较少（<5条），opportunity 和 riskSignal 字段如无法从对话中推断，请输出"聊天记录不足，暂无法判断"。script 和 nextMove 仍可基于客户阶段和知识库正常生成。'
+      : ''
 
-    const text = await simpleCompletion(configRef, '你是一个销售话术助手，输出简短实用的跟进话术。', prompt, {
-      temperature: 0.7,
-      maxTokens: 500,
+    const systemPrompt = `你是经验丰富的工业品 B2B 销售助理（叉车/仓储设备领域）。分析微信聊天记录，给出结构化销售建议。严格依据对话内容，不臆测。必须返回 JSON。`
+
+    const userPrompt = `客户：${actionItem.displayName}
+当前阶段：${actionItem.stage}
+已沉默：${actionItem.silentDays} 天
+触发任务：${actionItem.title}
+触发原因：${actionItem.reason}${knowledgeSection}${chatSection}${degradationNote}
+
+请返回 JSON（不要包含其他文字）：
+{
+  "whyNow": "为什么现在是行动窗口（1-2句，紧迫性）",
+  "opportunity": "这个机会有多大（1-2句，成交可能性与价值判断）",
+  "riskSignal": "风险信号（1-2句，最大的1-2个风险点；聊天不足则写'聊天记录不足，暂无法判断'）",
+  "script": "适合微信发送的跟进话术，口语化自然，不超过100字",
+  "nextMove": "下一步最优动作（一句话）"
+}`
+
+    const text = await simpleCompletion(configRef, systemPrompt, userPrompt, {
+      temperature: 0.3,
+      maxTokens: 800,
+      responseFormatJson: true,
       disableThinking: true,
-      timeoutMs: 15_000
+      timeoutMs: 20_000
     })
-    return { suggestion: text || '' }
+
+    // 解析 JSON 输出
+    let parsed: any
+    try {
+      parsed = JSON.parse(text || '{}')
+    } catch {
+      // 容错：尝试从文本中提取 JSON
+      const jsonMatch = (text || '').match(/\{[\s\S]*\}/)
+      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {}
+    }
+
+    return {
+      whyNow: parsed.whyNow || buildReason(actionItem.triggerType, actionItem.silentDays),
+      opportunity: parsed.opportunity || (isLowData ? '聊天记录不足，暂无法判断' : ''),
+      riskSignal: parsed.riskSignal || (isLowData ? '聊天记录不足，暂无法判断' : ''),
+      script: parsed.script || '',
+      nextMove: parsed.nextMove || '',
+      degradationNote: isLowData ? '聊天记录较少，分析可能不完整' : undefined
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    salesLog('ERROR', `[ActionEngine] generateSuggestion 失败: ${msg}`)
-    return { suggestion: '', error: msg.slice(0, 80) }
+    salesLog('ERROR', `[ActionEngine] generateActionAnalysis 失败: ${msg}`)
+    return {
+      whyNow: buildReason(actionItem.triggerType, actionItem.silentDays),
+      opportunity: '', riskSignal: '', script: '', nextMove: '',
+      error: msg.slice(0, 80)
+    }
+  }
+}
+
+/** @deprecated 保留旧函数作为兼容，内部转发到 generateActionAnalysis */
+export async function generateSuggestion(actionItem: ActionItem): Promise<{ suggestion: string; error?: string; notConfigured?: boolean }> {
+  const result = await generateActionAnalysis(actionItem)
+  return {
+    suggestion: result.script || result.nextMove || result.whyNow || '',
+    error: result.error,
+    notConfigured: result.notConfigured
   }
 }
 
@@ -414,6 +647,30 @@ export function completeAction(taskId: number, action: 'done' | 'skipped'): void
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+
+function mapTaskToActionItem(task: FollowUpTask, nowMs: number): ActionItem {
+  const nowSec = Math.floor(nowMs / 1000)
+  const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
+  const lastContact = profile?.last_contact_at ?? 0
+  const effectiveContact = lastContact > 0 ? lastContact : (profile?.created_at ? Math.floor((profile.created_at) / 1000) : nowSec)
+  const silentDays = Math.max(0, Math.floor((nowSec - effectiveContact) / DAY_SEC))
+
+  return {
+    id: task.id ?? 0,
+    sessionId: task.session_id ?? '',
+    displayName: task.display_name ?? '未知客户',
+    stage: profile?.stage ?? 'unknown',
+    triggerType: task.trigger_type,
+    title: task.title,
+    reason: buildReason(task.trigger_type, silentDays),
+    suggestion: '',
+    priority: scoreToPriority(task.priority_score ?? 0),
+    priorityScore: task.priority_score ?? 0,
+    silentDays,
+    createdAt: task.created_at ?? 0,
+    status: task.status ?? 'pending'
+  }
+}
 
 function buildReason(triggerType: string, silentDays: number): string {
   const reasons: Record<string, string> = {

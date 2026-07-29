@@ -108,6 +108,20 @@
     color: var(--text-secondary, #666);
   }
   &--warn .stat-chip__value { color: #dc2626; }
+  &--archive {
+    cursor: pointer;
+    border: 1px dashed #d1d5db;
+    background: #fafafa;
+    &:hover { background: #f3f4f6; }
+    .stat-chip__value {
+      font-size: 17px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: #6b7280;
+    }
+    .stat-chip__label { color: #9ca3af; }
+  }
 }
 
 .action-card {
@@ -284,4 +298,150 @@
   font-size: 11px;
   color: #dc2626;
   margin-left: 4px;
+}
+
+.action-card__retry-link {
+  background: none;
+  border: none;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 6px;
+  text-decoration: underline;
+  &:hover { color: #1d4ed8; }
+}
+
+.action-card__loading {
+  font-size: 12px;
+  color: #7c3aed;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+
+.action-card__archive-tag {
+  font-size: 10px;
+  color: #6b7280;
+  background: #f3f4f6;
+  padding: 1px 5px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+// ─── v3 结构化分析 ────────────────────────────────────────────────────────────
+
+.action-card__analysis {
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.analysis-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 4px 0;
+  color: var(--text-primary, #333);
+
+  & + & { border-top: 1px solid rgba(0, 0, 0, 0.04); }
+
+  svg { flex-shrink: 0; margin-top: 2px; }
+
+  &--why { color: #6366f1; svg { color: #6366f1; } }
+  &--opportunity { color: #059669; svg { color: #059669; } }
+  &--risk { color: #dc2626; svg { color: #dc2626; } }
+  &--script {
+    position: relative;
+    padding-right: 60px;
+    .analysis-script-text {
+      font-style: italic;
+      color: var(--text-primary, #333);
+    }
+    .action-card__copy-btn {
+      position: absolute;
+      top: 2px;
+      right: 0;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 11px;
+      color: var(--text-secondary, #666);
+      background: var(--bg-primary, #fff);
+      border: 1px solid var(--border-color, #e5e7eb);
+      border-radius: 4px;
+      padding: 2px 7px;
+      cursor: pointer;
+      &:hover { background: var(--bg-hover, #f0f0f0); }
+    }
+  }
+  &--next { color: #0891b2; svg { color: #0891b2; } }
+}
+
+.analysis-degradation {
+  font-size: 10px;
+  color: #9ca3af;
+  font-style: italic;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+// ─── R6 清理候选折叠区 ─────────────────────────────────────────────────────────
+
+.archive-section {
+  margin-bottom: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+
+  &__toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: #fafafa;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: #6b7280;
+    text-align: left;
+    transition: background 0.12s;
+    &:hover { background: #f3f4f6; }
+  }
+
+  &__hint {
+    font-size: 11px;
+    font-weight: 400;
+    color: #9ca3af;
+    margin-left: 8px;
+  }
+
+  &__list {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--bg-primary, #fff);
+  }
+
+  &--expanded {
+    border-color: #d1d5db;
+    .archive-section__toggle {
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+  }
+}
+
+.action-card--archive {
+  background: #fafafa;
+  border-left-color: #9ca3af !important;
 }

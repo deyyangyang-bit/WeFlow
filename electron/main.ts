@@ -34,7 +34,7 @@ import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, onNewMessage as actionOnNewMessage } from './services/salesActionEngine'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage } from './services/salesActionEngine'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -4844,8 +4844,8 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('sales:action:suggest', async (_, item: any) => {
-    const r = await generateSuggestion(item)
-    return { success: true, suggestion: r.suggestion, error: r.error, notConfigured: r.notConfigured }
+    const r = await generateActionAnalysis(item)
+    return { success: true, ...r }
   })
 
   // ─── 周复盘 IPC ─────────────────────────────────────────────────────────────
