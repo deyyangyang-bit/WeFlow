@@ -137,7 +137,6 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       if (!api?.kbScanCandidates) { setScanError('API 未就绪 kbScanCandidates'); return }
       const result = await api.kbScanCandidates({
         minMessages: overrideMinMsgs ?? minMsgs,
-        maxDaysAgo: (beginDate || endDate) ? 0 : undefined,  // 有日期区间时不限制月份
         beginDate: beginDate || undefined,
         endDate: endDate || undefined
       })

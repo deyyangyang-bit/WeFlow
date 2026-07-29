@@ -4874,6 +4874,13 @@ function registerIpcHandlers() {
     const start = Date.now()
     const minMessages = options?.minMessages ?? 10
     const maxDaysAgo = options?.maxDaysAgo ?? 365
+    const beginDate = options?.beginDate
+    const endDate = options?.endDate
+
+    // 日期区间 → 绝对秒级时间戳；无日期区间 → 用 maxDaysAgo 算相对下限
+    const beginSec = beginDate ? Math.floor(new Date(beginDate + 'T00:00:00+08:00').getTime() / 1000) : 0
+    const endSec = endDate ? Math.floor(new Date(endDate + 'T23:59:59+08:00').getTime() / 1000) : 0
+    const hasDateRange = !!(beginDate || endDate)
 
     try {
       const sessionsResult = await chatService.getSessions()
@@ -4883,7 +4890,7 @@ function registerIpcHandlers() {
       const sessions = sessionsResult.sessions
 
       const nowSec = Math.floor(Date.now() / 1000)
-      const cutoffSec = maxDaysAgo > 0 ? nowSec - maxDaysAgo * 86400 : 0
+      const cutoffSec = (!hasDateRange && maxDaysAgo > 0) ? nowSec - maxDaysAgo * 86400 : 0
 
       // Phase 1: 硬性排除
       const rawCandidates: Array<{
@@ -4901,7 +4908,13 @@ function registerIpcHandlers() {
         if (msgCount < minMessages) continue
 
         const lastTs = s.lastTimestamp || s.sortTimestamp || 0
-        if (lastTs > 0 && lastTs < cutoffSec) continue
+        // 日期区间：过滤 lastTs 不在区间内的联系人
+        if (hasDateRange) {
+          if (beginSec > 0 && lastTs < beginSec) continue
+          if (endSec > 0 && lastTs > endSec) continue
+        } else if (lastTs > 0 && lastTs < cutoffSec) {
+          continue
+        }
 
         rawCandidates.push({
           sessionId: s.username,
