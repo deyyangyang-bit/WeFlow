@@ -252,25 +252,17 @@ class SalesKnowledgeService {
       const myWxid = config.getMyWxidCleaned()
       let selfCount = 0
 
-      // 诊断：打印前 3 条消息关键字段
-      for (let di = 0; di < Math.min(3, messages.length); di++) {
-        const m = messages[di] as any
-        salesLog('DEBUG', `[ExtractScripts] msg[${di}]: isSend=${m.isSend} senderUsername=${m.senderUsername} talker=${m.talker} sender=${m.sender} fromUser=${m.fromUser} sender_id=${m.sender_id} content=${(m.content || m.msg || '').slice(0, 40)}`)
-      }
-
       const conversationLines = messages.map((m: any) => {
-        const ts = m.createTime || m.create_time || m.msg_time || 0
+        // WCDB 原生字段: snake_case — is_send, create_time, message_content, sender_username, real_sender_id
+        const ts = m.create_time || m.createTime || 0
         const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
-        const content = (m.content || m.msg || m.StrContent || m.strContent || '').slice(0, 300)
-        // 判断是否自己发送：优先 isSend 字段，其次多字段 wxid 比对
+        const content = (m.message_content || m.content || m.msg || '').slice(0, 300)
+        // is_send 是 WCDB 原生字段: "0"=收到, "1"=发送
         const isSelf =
-          m.isSend === 1 || m.isSend === true ||
+          m.is_send === '1' || m.is_send === 1 || m.computed_is_send === '1' ||
           (myWxid && (
-            m.senderUsername === myWxid ||
-            m.talker === myWxid ||
-            m.fromUser === myWxid ||
-            m.sender === myWxid ||
-            m.sender_id === myWxid
+            m.sender_username === myWxid ||
+            m.real_sender_id === myWxid
           ))
         if (isSelf) selfCount++
         const speaker = isSelf ? '我' : '客户'
