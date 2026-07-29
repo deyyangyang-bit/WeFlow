@@ -69,6 +69,7 @@ export interface InsightRecord {
   read: boolean
   messageInsight?: MessageInsightTarget
   log: InsightRecordLog
+  salesStage?: string
 }
 
 export interface InsightRecordSummary {

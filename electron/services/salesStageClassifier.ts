@@ -9,7 +9,7 @@
  * - 通过 salesQueue 串行执行，不并发调 WCDB/AI
  */
 
-import { ConfigService } from '../config'
+import { ConfigService } from './config'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
 import { salesLog } from './salesLogger'

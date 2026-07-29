@@ -29,13 +29,13 @@ export interface ReportStats {
 export interface GenerateReportResult {
   success: boolean
   report?: {
-    id: number
+    id?: number
     period_type: string
     period_start: number
     period_end: number
     stats: string
     ai_summary?: string | null
-    created_at: number
+    created_at?: number
   }
   error?: string
 }
@@ -281,7 +281,7 @@ class SalesReportService {
 
         // 本周阶段变化（通过 intent_tag_log 判断）
         const latestIntent = salesDbService.intentGetLatest(c.session_id)
-        if (latestIntent && latestIntent.created_at >= range.start) {
+        if (latestIntent && (latestIntent.created_at ?? 0) >= range.start) {
           if (['quoted', 'negotiating', 'won'].includes(latestIntent.stage)) {
             hotCustomers.push(`${c.display_name || c.session_id}→${latestIntent.stage}`)
           }

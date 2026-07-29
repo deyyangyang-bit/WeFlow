@@ -11,13 +11,14 @@
  * - 所有 WCDB/AI 重操作走 salesQueue 串行
  */
 
-import { ConfigService } from '../config'
+import { ConfigService } from './config'
 import { salesDbService, type CustomerProfile, type FollowUpTask } from './salesDbService'
 import { salesLog } from './salesLogger'
 import { wcdbService } from './wcdbService'
 import { enqueueSalesTask } from './salesQueue'
 import { classifyStage, toMessageSnippets, persistClassification, type CustomerStage } from './salesStageClassifier'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
+import { salesKnowledgeService } from './salesKnowledgeService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -147,7 +148,7 @@ const RULES: Rule[] = [
       const recentTasks = salesDbService.todoList({ session_id: p.session_id, limit: 10 })
       const r4r5Count = recentTasks.filter(t =>
         (t.trigger_type === 'rule_r4_contacted_silent' || t.trigger_type === 'rule_r5_dormant_wake') &&
-        t.created_at >= Date.now() - 30 * 24 * 60 * 60 * 1000
+        (t.created_at ?? 0) >= Date.now() - 30 * 24 * 60 * 60 * 1000
       ).length
       return r4r5Count >= 2
     },
@@ -332,7 +333,7 @@ export async function getTodayActions(): Promise<TodayActionResult> {
       const silentDays = Math.max(0, Math.floor((nowSec - effectiveContact) / DAY_SEC))
 
       return {
-        id: task.id,
+        id: task.id ?? 0,
         sessionId: task.session_id ?? '',
         displayName: task.display_name ?? '未知客户',
         stage: profile?.stage ?? 'unknown',
@@ -343,8 +344,8 @@ export async function getTodayActions(): Promise<TodayActionResult> {
         priority: scoreToPriority(task.priority_score ?? 0),
         priorityScore: task.priority_score ?? 0,
         silentDays,
-        createdAt: task.created_at,
-        status: task.status
+        createdAt: task.created_at ?? 0,
+        status: task.status ?? 'pending'
       }
     })
 
@@ -354,7 +355,7 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   const stats = {
     todayPending: actionItems.length,
     overdue: pendingTasks.filter(t => t.due_at && t.due_at < nowMs).length,
-    newThisWeek: allCustomers.filter(c => c.created_at >= weekStartMs).length,
+    newThisWeek: allCustomers.filter(c => (c.created_at ?? 0) >= weekStartMs).length,
     pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(c.stage ?? '')).length
   }
 
