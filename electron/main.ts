@@ -4865,8 +4865,8 @@ function registerIpcHandlers() {
   })
 
   // ─── 话术提炼 IPC ──────────────────────────────────────────────────────────
-  ipcMain.handle('sales:kb:extractScripts', async (_, sessionId: string) => {
-    return salesKnowledgeService.extractScriptsFromChat(sessionId, configService)
+  ipcMain.handle('sales:kb:extractScripts', async (_, sessionId: string, opts?: { beginDate?: string; endDate?: string }) => {
+    return salesKnowledgeService.extractScriptsFromChat(sessionId, configService, opts?.beginDate || opts?.endDate ? 300 : 100, opts?.beginDate, opts?.endDate)
   })
 
   // ─── 扫描提炼候选 IPC（纯本地，不调 AI）──────────────────────────────────
@@ -4949,8 +4949,8 @@ function registerIpcHandlers() {
     }
   })
 
-  // ─── 一键提炼全部私聊 IPC（接收扫描后的 {sessionId,nickname}[]）─────────
-  ipcMain.handle('sales:kb:extractScriptsAll', async (_, contacts?: Array<{ sessionId: string; nickname: string }>) => {
+  // ─── 一键提炼全部私聊 IPC（接收扫描后的 {sessionId,nickname}[] + 可选日期）─
+  ipcMain.handle('sales:kb:extractScriptsAll', async (_, contacts?: Array<{ sessionId: string; nickname: string }>, opts?: { beginDate?: string; endDate?: string }) => {
     try {
       let targets: Array<{ username: string; displayName: string }> = []
 
@@ -4999,7 +4999,9 @@ function registerIpcHandlers() {
           const result = await salesKnowledgeService.extractScriptsFromChat(
             t.username,
             configService,
-            80
+            (opts?.beginDate || opts?.endDate) ? 300 : 80,
+            opts?.beginDate,
+            opts?.endDate
           )
           processed++
 

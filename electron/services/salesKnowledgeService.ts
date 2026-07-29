@@ -241,20 +241,42 @@ class SalesKnowledgeService {
   async extractScriptsFromChat(
     sessionId: string,
     config: ConfigService,
-    maxMessages: number = 100
+    maxMessages: number = 100,
+    beginDate?: string,  // ISO date "2025-01-01"
+    endDate?: string     // ISO date "2025-09-30"
   ): Promise<{ success: boolean; candidates?: ExtractedScriptCandidate[]; error?: string }> {
     try {
       if (!isAiConfigured(config)) {
         return { success: false, error: 'AI 模型未配置' }
       }
 
+      // 计算日期区间秒级时间戳
+      const beginSec = beginDate ? Math.floor(new Date(beginDate + 'T00:00:00+08:00').getTime() / 1000) : 0
+      const endSec = endDate ? Math.floor(new Date(endDate + 'T23:59:59+08:00').getTime() / 1000) : 0
+
+      // 有日期区间时取更多消息（最多 300 条），再按时间过滤
+      const fetchLimit = (beginDate || endDate) ? 300 : maxMessages
+
       // 1. 读取聊天记录
-      const msgResult = await wcdbService.getMessages(sessionId, maxMessages, 0)
+      const msgResult = await wcdbService.getMessages(sessionId, fetchLimit, 0)
       if (!msgResult?.success || !msgResult.messages?.length) {
         return { success: false, error: '无法读取该联系人的聊天记录' }
       }
 
-      const messages = msgResult.messages
+      let messages = msgResult.messages
+
+      // 日期区间过滤
+      if (beginSec > 0 || endSec > 0) {
+        messages = messages.filter((m: any) => {
+          const ts = m.create_time || m.createTime || 0
+          if (!ts) return false
+          if (beginSec > 0 && ts < beginSec) return false
+          if (endSec > 0 && ts > endSec) return false
+          return true
+        })
+        salesLog('INFO', `[ExtractScripts] ${sessionId}: date filter ${beginDate || '*'}-${endDate || '*'}: ${msgResult.messages.length}→${messages.length}`)
+      }
+
       if (messages.length < 10) {
         return { success: false, error: '聊天记录不足 10 条，无法提炼话术' }
       }

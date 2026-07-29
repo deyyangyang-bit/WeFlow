@@ -79,6 +79,8 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const [scanError, setScanError] = useState('')
   const [minMsgs, setMinMsgs] = useState(10)
   const [maxDays, setMaxDays] = useState(365)
+  const [beginDate, setBeginDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
 
   // 过滤非群聊会话
@@ -167,7 +169,8 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       (data: { current: number; total: number; contactName: string; foundSoFar: number }) => setBatchProgress(data)
     )
     try {
-      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll(contacts)
+      const dateOpts = beginDate || endDate ? { beginDate: beginDate || undefined, endDate: endDate || undefined } : undefined
+      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll(contacts, dateOpts)
       unsub()
       if (!result?.success) { setError(result?.error || '批量提炼失败'); setStep('confirm_candidates'); return }
       const list: Candidate[] = (result.candidates || []).map((c: any, idx: number) => ({
@@ -213,7 +216,8 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       // 模拟两段式 loading 感知（实际 WCDB 查询嵌入在后端 extractScriptsFromChat 内）
       const timer = setTimeout(() => setLoadingStage('ai'), 1500)
 
-      const result = await (window as any).electronAPI.sales.kbExtractScripts(selectedSessionId)
+      const dateOpts = beginDate || endDate ? { beginDate: beginDate || undefined, endDate: endDate || undefined } : undefined
+      const result = await (window as any).electronAPI.sales.kbExtractScripts(selectedSessionId, dateOpts)
 
       clearTimeout(timer)
 
@@ -330,6 +334,14 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
               选择一个微信联系人，AI 将分析你们的聊天记录，自动提炼可复用的销售话术。
             </p>
 
+            <div className="extract-date-row">
+              <label>日期区间（可选）：</label>
+              <input type="date" value={beginDate} onChange={e => setBeginDate(e.target.value)} />
+              <span>至</span>
+              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate('') }}>清除</button>}
+            </div>
+
             <div className="extract-search">
               <Search size={16} />
               <input
@@ -404,6 +416,15 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
               共扫描 <strong>{scanResult.totalScanned}</strong> 个会话，筛选出 <strong>{scanResult.candidates.length}</strong> 个候选
               （耗时 {scanResult.scanDurationMs}ms）
             </p>
+
+            {/* 日期区间 */}
+            <div className="extract-date-row">
+              <label>日期区间（可选）：</label>
+              <input type="date" value={beginDate} onChange={e => setBeginDate(e.target.value)} />
+              <span>至</span>
+              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate('') }}>清除</button>}
+            </div>
 
             {/* 阈值调整 */}
             <div className="extract-filter-row">
