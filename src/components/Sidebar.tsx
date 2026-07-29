@@ -345,15 +345,15 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">朋友圈</span>
           </NavLink>}
 
-          {/* 灵感信箱 - PRD v2 隐藏（合并入首页通知） */}
-          {false && <NavLink
+          {/* 灵感信箱（AI 见解收件箱：含高意向/沉默预警） */}
+          <NavLink
             to="/insight-inbox"
             className={`nav-item ${isActive('/insight-inbox') ? 'active' : ''}`}
             title={collapsed ? '灵感信箱' : undefined}
           >
             <span className="nav-icon"><Sparkles size={20} /></span>
             <span className="nav-label">灵感信箱</span>
-          </NavLink>}
+          </NavLink>
 
           {/* 知识库 */}
           <NavLink
