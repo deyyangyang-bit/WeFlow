@@ -257,6 +257,7 @@ export default function KnowledgeBasePage() {
 
   const [searchInput, setSearchInput] = useState('')
   const [extractOpen, setExtractOpen] = useState(false)
+  const [batchExtractOpen, setBatchExtractOpen] = useState(false)
 
   // 初始加载
   useEffect(() => {
@@ -326,8 +327,11 @@ export default function KnowledgeBasePage() {
 
   return (
     <div className="kb-page">
-      {/* 话术提炼弹窗 */}
+      {/* 话术提炼弹窗（单选） */}
       <ExtractScriptDialog open={extractOpen} onClose={() => setExtractOpen(false)} />
+
+      {/* 话术提炼弹窗（批量） */}
+      <ExtractScriptDialog open={batchExtractOpen} onClose={() => setBatchExtractOpen(false)} batch />
 
       <div className="kb-page-header">
         <div className="kb-page-title">
@@ -374,6 +378,11 @@ export default function KnowledgeBasePage() {
           <button className="kb-btn kb-btn-accent" onClick={() => setExtractOpen(true)}>
             <Sparkles size={16} />
             提炼话术
+          </button>
+
+          <button className="kb-btn kb-btn-accent" onClick={() => setBatchExtractOpen(true)}>
+            <Sparkles size={16} />
+            一键提炼
           </button>
 
           <button className="kb-btn kb-btn-primary" onClick={() => openForm()}>

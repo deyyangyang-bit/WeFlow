@@ -4862,6 +4862,111 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:kb:extractScripts', async (_, sessionId: string) => {
     return salesKnowledgeService.extractScriptsFromChat(sessionId, configService)
   })
+
+  // ─── 一键提炼全部私聊 IPC ──────────────────────────────────────────────────
+  ipcMain.handle('sales:kb:extractScriptsAll', async () => {
+    try {
+      const sessionsResult = await wcdbService.getSessions()
+      if (!sessionsResult?.success || !sessionsResult.sessions?.length) {
+        return { success: false, error: '无法获取会话列表' }
+      }
+
+      // 过滤非群聊、有消息的会话，按消息数降序排列
+      const personalChats = sessionsResult.sessions
+        .filter((s: any) => {
+          const isGroup = s.type !== 0 || s.isGroup === true
+          return !isGroup && s.displayName
+        })
+        .sort((a: any, b: any) => (b.messageCountHint || 0) - (a.messageCountHint || 0))
+
+      if (personalChats.length === 0) {
+        return { success: true, candidates: [], stats: { total: 0, processed: 0, skipped: 0 } }
+      }
+
+      // 取前 50 个联系人（避免处理时间过长）
+      const MAX_CONTACTS = 50
+      const targets = personalChats.slice(0, MAX_CONTACTS)
+      const allCandidates: any[] = []
+      let processed = 0
+      let skipped = 0
+
+      for (let i = 0; i < targets.length; i++) {
+        const s = targets[i]
+
+        // 发送进度到渲染进程
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('sales:kb:extractProgress', {
+            current: i + 1,
+            total: targets.length,
+            contactName: s.displayName || s.username,
+            foundSoFar: allCandidates.length
+          })
+        }
+
+        try {
+          const result = await salesKnowledgeService.extractScriptsFromChat(
+            s.username,
+            configService,
+            80  // 批量模式取 80 条消息（比单次 100 少，加快速度）
+          )
+          processed++
+
+          if (result.success && result.candidates?.length) {
+            for (const c of result.candidates) {
+              allCandidates.push({
+                ...c,
+                sourceContact: s.displayName || s.username
+              })
+            }
+          } else if (!result.success) {
+            skipped++
+          }
+        } catch {
+          skipped++
+        }
+      }
+
+      // 去重：跨联系人合并，标题+内容相似度 >60% 的只保留一条
+      const deduped = dedupeAcrossContacts(allCandidates)
+
+      return {
+        success: true,
+        candidates: deduped,
+        stats: { total: targets.length, processed, skipped }
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+}
+
+// ─── 跨联系人去重 ─────────────────────────────────────────────────────────────
+
+function dedupeAcrossContacts(candidates: any[]): any[] {
+  if (candidates.length <= 1) return candidates
+
+  const result: any[] = []
+  for (const c of candidates) {
+    const content = (c.content || '').slice(0, 80)
+    const isDup = result.some(r => {
+      const rContent = (r.content || '').slice(0, 80)
+      return similarity(content, rContent) > 0.65
+    })
+    if (!isDup) result.push(c)
+  }
+  return result
+}
+
+function similarity(a: string, b: string): number {
+  if (!a || !b) return 0
+  const aGrams = new Set<string>()
+  const bGrams = new Set<string>()
+  for (let i = 0; i < a.length - 1; i++) aGrams.add(a.slice(i, i + 2))
+  for (let i = 0; i < b.length - 1; i++) bGrams.add(b.slice(i, i + 2))
+  if (aGrams.size === 0 || bGrams.size === 0) return 0
+  let hits = 0
+  for (const g of aGrams) { if (bGrams.has(g)) hits++ }
+  return hits / Math.max(aGrams.size, bGrams.size)
 }
 
 // 主窗口引用

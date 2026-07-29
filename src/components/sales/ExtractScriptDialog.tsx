@@ -23,6 +23,8 @@ interface Candidate {
   tags: string[]
   duplicateOf?: string
   selected: boolean
+  /** 批量模式的来源联系人 */
+  sourceContact?: string
   /** 用户编辑后的值（覆盖 AI 原始输出） */
   editedTitle?: string
   editedContent?: string
@@ -45,9 +47,11 @@ const SCENE_LABELS: Record<string, string> = {
 interface Props {
   open: boolean
   onClose: () => void
+  /** 批量模式：一键提炼全部私聊，跳过选人步骤 */
+  batch?: boolean
 }
 
-export default function ExtractScriptDialog({ open, onClose }: Props) {
+export default function ExtractScriptDialog({ open, onClose, batch = false }: Props) {
   const sessions = useChatStore(s => s.sessions)
   const { fetchList } = useKnowledgeStore()
 
@@ -60,6 +64,8 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [showOriginal, setShowOriginal] = useState<Record<number, boolean>>({})
+  // 批量模式进度
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
 
   // 过滤非群聊会话
   const contacts = useMemo(() =>
@@ -80,7 +86,7 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
 
   // 重置状态
   const reset = useCallback(() => {
-    setStep('select')
+    setStep(batch ? 'analyzing' : 'select')
     setSearchQuery('')
     setSelectedSessionId('')
     setSelectedName('')
@@ -89,6 +95,65 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
     setError('')
     setImporting(false)
     setShowOriginal({})
+    setBatchProgress({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
+  }, [batch])
+
+  // 批量模式：弹窗打开时自动开始提炼
+  useEffect(() => {
+    if (!open || !batch) return
+    handleBatchExtract()
+  }, [open, batch])
+
+  // ─── 批量提炼 ──────────────────────────────────────────────────────────────
+  const handleBatchExtract = useCallback(async () => {
+    setStep('analyzing')
+    setError('')
+    setBatchProgress({ current: 0, total: 0, contactName: '准备中...', foundSoFar: 0 })
+
+    // 监听进度
+    const unsub = (window as any).electronAPI.sales.onExtractProgress(
+      (data: { current: number; total: number; contactName: string; foundSoFar: number }) => {
+        setBatchProgress(data)
+      }
+    )
+
+    try {
+      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll()
+      unsub()
+
+      if (!result?.success) {
+        setError(result?.error || '批量提炼失败')
+        setStep(batch ? 'select' : 'select')
+        return
+      }
+
+      const list: Candidate[] = (result.candidates || []).map((c: any, idx: number) => ({
+        index: idx,
+        title: c.title || '未命名话术',
+        content: c.content || '',
+        scene: c.scene || '其他',
+        tags: c.tags || [],
+        duplicateOf: c.duplicateOf,
+        sourceContact: c.sourceContact,
+        selected: !c.duplicateOf,
+        editedTitle: undefined,
+        editedContent: undefined,
+        originalSnippet: c.content?.slice(0, 120) || ''
+      }))
+
+      if (list.length === 0) {
+        setError(`已处理 ${result.stats?.processed || 0} 个联系人，未发现可提炼的销售话术。`)
+        setStep('select')
+        return
+      }
+
+      setCandidates(list)
+      setStep('preview')
+    } catch (e: any) {
+      unsub()
+      setError(e?.message || '批量提炼出错')
+      setStep('select')
+    }
   }, [])
 
   // 关闭弹窗
@@ -278,22 +343,47 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
 
             {!error ? (
               <>
-                <p className="extract-analyzing-title">正在提炼话术...</p>
-                <div className="extract-progress">
-                  <div className={`extract-progress-step ${loadingStage === 'messages' ? 'active' : loadingStage === 'ai' ? 'done' : ''}`}>
-                    <span className="extract-progress-dot">
-                      {loadingStage === 'ai' ? <Check size={12} /> : loadingStage === 'messages' ? <RefreshCw size={12} className="spinning" /> : <span />}
-                    </span>
-                    <span>正在读取聊天记录</span>
+                <p className="extract-analyzing-title">
+                  {batch ? '正在批量提炼话术...' : '正在提炼话术...'}
+                </p>
+
+                {batch && batchProgress.total > 0 ? (
+                  <div className="extract-batch-progress">
+                    <div className="extract-batch-bar">
+                      <div
+                        className="extract-batch-bar__fill"
+                        style={{ width: `${Math.round((batchProgress.current / batchProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                    <p className="extract-batch-status">
+                      {batchProgress.current} / {batchProgress.total} 个联系人
+                    </p>
+                    <p className="extract-batch-contact">
+                      当前：{batchProgress.contactName}
+                    </p>
+                    <p className="extract-batch-found">
+                      已找到 {batchProgress.foundSoFar} 条话术
+                    </p>
                   </div>
-                  <div className={`extract-progress-step ${loadingStage === 'ai' ? 'active' : ''}`}>
-                    <span className="extract-progress-dot">
-                      {loadingStage === 'ai' ? <RefreshCw size={12} className="spinning" /> : <span />}
-                    </span>
-                    <span>AI 分析中（识别有效话术、脱敏、分类...）</span>
-                  </div>
-                </div>
-                <p className="extract-analyzing-hint">最长约 30 秒，取决于聊天量</p>
+                ) : (
+                  <>
+                    <div className="extract-progress">
+                      <div className={`extract-progress-step ${loadingStage === 'messages' ? 'active' : loadingStage === 'ai' ? 'done' : ''}`}>
+                        <span className="extract-progress-dot">
+                          {loadingStage === 'ai' ? <Check size={12} /> : loadingStage === 'messages' ? <RefreshCw size={12} className="spinning" /> : <span />}
+                        </span>
+                        <span>正在读取聊天记录</span>
+                      </div>
+                      <div className={`extract-progress-step ${loadingStage === 'ai' ? 'active' : ''}`}>
+                        <span className="extract-progress-dot">
+                          {loadingStage === 'ai' ? <RefreshCw size={12} className="spinning" /> : <span />}
+                        </span>
+                        <span>AI 分析中（识别有效话术、脱敏、分类...）</span>
+                      </div>
+                    </div>
+                    <p className="extract-analyzing-hint">最长约 30 秒，取决于聊天量</p>
+                  </>
+                )}
               </>
             ) : (
               <>
@@ -313,10 +403,10 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
             <div className="extract-preview-header">
               <span className="extract-preview-contact">
                 <MessageSquareText size={14} />
-                {selectedName}
+                {batch ? `全部私聊（${candidates.length} 条）` : selectedName}
               </span>
               <span className="extract-preview-count">
-                共 {candidates.length} 条话术，已选 {selectedCount} 条
+                已选 {selectedCount} 条
               </span>
               <button className="extract-select-all" onClick={toggleAll}>
                 {allSelected ? '取消全选' : '全选'}
@@ -341,6 +431,11 @@ export default function ExtractScriptDialog({ open, onClose }: Props) {
                         value={c.editedTitle ?? c.title}
                         onChange={e => updateCandidate(c.index, 'editedTitle', e.target.value)}
                       />
+                      {c.sourceContact && (
+                        <span className="extract-candidate__source" title={`来源：${c.sourceContact}`}>
+                          {c.sourceContact}
+                        </span>
+                      )}
                       <span className="extract-candidate__scene">{SCENE_LABELS[c.scene] || c.scene}</span>
                     </div>
 

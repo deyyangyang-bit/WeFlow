@@ -739,7 +739,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 知识库批量导入
     kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent),
     // 话术提炼
-    kbExtractScripts: (sessionId: string) => ipcRenderer.invoke('sales:kb:extractScripts', sessionId)
+    kbExtractScripts: (sessionId: string) => ipcRenderer.invoke('sales:kb:extractScripts', sessionId),
+    kbExtractScriptsAll: () => ipcRenderer.invoke('sales:kb:extractScriptsAll'),
+    // 批量提炼进度监听
+    onExtractProgress: (cb: (data: { current: number; total: number; contactName: string; foundSoFar: number }) => void) => {
+      const handler = (_: any, data: any) => cb(data)
+      ipcRenderer.on('sales:kb:extractProgress', handler)
+      return () => ipcRenderer.removeListener('sales:kb:extractProgress', handler)
+    }
   },
 
   social: {

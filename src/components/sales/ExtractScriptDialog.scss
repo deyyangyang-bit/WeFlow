@@ -439,6 +439,63 @@
   margin-top: 12px;
 }
 
+// ─── 批量提炼进度 ──────────────────────────────────────────────────────────────
+
+.extract-batch-progress {
+  width: 100%;
+  max-width: 400px;
+}
+
+.extract-batch-bar {
+  width: 100%;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 12px;
+
+  &__fill {
+    height: 100%;
+    background: linear-gradient(90deg, #7c3aed, #a78bfa);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+}
+
+.extract-batch-status {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #1a1a1a);
+  margin: 0 0 4px;
+}
+
+.extract-batch-contact {
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  margin: 0 0 4px;
+}
+
+.extract-batch-found {
+  font-size: 12px;
+  color: #059669;
+  margin: 0;
+}
+
+// ─── 来源联系人标签 ─────────────────────────────────────────────────────────────
+
+.extract-candidate__source {
+  font-size: 10px;
+  background: #f0fdf4;
+  color: #059669;
+  padding: 1px 6px;
+  border-radius: 4px;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .spinning {
   animation: spin 1s linear infinite;
 }
