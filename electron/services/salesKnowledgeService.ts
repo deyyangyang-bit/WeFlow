@@ -251,22 +251,32 @@ class SalesKnowledgeService {
       // 拼接对话文本（脱敏前保留原始内容给用户对照）
       const myWxid = config.getMyWxidCleaned()
       let selfCount = 0
+
+      // 诊断：打印前 3 条消息关键字段
+      for (let di = 0; di < Math.min(3, messages.length); di++) {
+        const m = messages[di] as any
+        salesLog('DEBUG', `[ExtractScripts] msg[${di}]: isSend=${m.isSend} senderUsername=${m.senderUsername} talker=${m.talker} sender=${m.sender} fromUser=${m.fromUser} sender_id=${m.sender_id} content=${(m.content || m.msg || '').slice(0, 40)}`)
+      }
+
       const conversationLines = messages.map((m: any) => {
         const ts = m.createTime || m.create_time || m.msg_time || 0
         const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
-        const content = (m.content || m.msg || '').slice(0, 300)
-        // 用 talker 字段比对当前用户 wxid 判断说话人（WCDB 原始消息无 isSelf 字段）
-        const talker = m.senderUsername || m.talker || ''
-        const isSelf = myWxid ? talker === myWxid : false
+        const content = (m.content || m.msg || m.StrContent || m.strContent || '').slice(0, 300)
+        // 判断是否自己发送：优先 isSend 字段，其次多字段 wxid 比对
+        const isSelf =
+          m.isSend === 1 || m.isSend === true ||
+          (myWxid && (
+            m.senderUsername === myWxid ||
+            m.talker === myWxid ||
+            m.fromUser === myWxid ||
+            m.sender === myWxid ||
+            m.sender_id === myWxid
+          ))
         if (isSelf) selfCount++
         const speaker = isSelf ? '我' : '客户'
         return `[${timeStr}] ${speaker}: ${content}`
       }).join('\n')
-      const sampleMsg = messages[0] || {}
-      const sampleKeys = Object.keys(sampleMsg).join(',')
-      const sampleTalker = (sampleMsg as any).talker
-      const sampleSender = (sampleMsg as any).senderUsername
-      salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}, sampleKeys=[${sampleKeys}], talker=${sampleTalker}, sender=${sampleSender}`)
+      salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}`)
 
       // 2. AI 提炼
       const systemPrompt = `你是销售话术提炼助手。从微信聊天记录中识别销售人员（标注为"我"）的有效话术，提取为可复用的知识库条目。
