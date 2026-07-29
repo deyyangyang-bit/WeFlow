@@ -78,7 +78,6 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const [scanResult, setScanResult] = useState<{ totalScanned: number; candidates: ScanCandidate[]; scanDurationMs: number } | null>(null)
   const [scanError, setScanError] = useState('')
   const [minMsgs, setMinMsgs] = useState(10)
-  const [maxDays, setMaxDays] = useState(365)
   const [beginDate, setBeginDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
@@ -130,16 +129,15 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   }, [open, batch])
 
   // ─── 批量 Step 1: 扫描候选 ────────────────────────────────────────────────
-  const handleBatchScan = useCallback(async (overrideMinMsgs?: number, overrideMaxDays?: number) => {
+  const handleBatchScan = useCallback(async (overrideMinMsgs?: number) => {
     setStep('scanning')
     setScanError('')
-    try { (window as any).electronAPI?.log?.debug('[ExtractDialog] scan start') } catch {}
     try {
       const api = (window as any).electronAPI?.sales
       if (!api?.kbScanCandidates) { setScanError('API 未就绪 kbScanCandidates'); return }
       const result = await api.kbScanCandidates({
         minMessages: overrideMinMsgs ?? minMsgs,
-        maxDaysAgo: overrideMaxDays ?? maxDays,
+        maxDaysAgo: (beginDate || endDate) ? 0 : undefined,  // 有日期区间时不限制月份
         beginDate: beginDate || undefined,
         endDate: endDate || undefined
       })
@@ -156,7 +154,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
       try { (window as any).electronAPI?.log?.debug(`[ExtractDialog] scan ERROR: ${e?.message || e}`) } catch {}
       setScanError(e?.message || '扫描出错')
     }
-  }, [minMsgs, maxDays])
+  }, [minMsgs, beginDate, endDate])
 
   // ─── 批量 Step 2→3: 确认后提炼 ────────────────────────────────────────────
   const handleBatchExtract = useCallback(async () => {
@@ -430,8 +428,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
 
             {/* 阈值调整 */}
             <div className="extract-filter-row">
-              <label>消息数 ≥ <input type="number" min={1} value={minMsgs} onChange={e => { setMinMsgs(Number(e.target.value)); handleBatchScan(Number(e.target.value), undefined) }} style={{ width: 50 }} /></label>
-              <label>最近 <input type="number" min={1} value={Math.round(maxDays / 30)} onChange={e => { const m = Number(e.target.value); setMaxDays(m * 30); handleBatchScan(undefined, m * 30) }} style={{ width: 50 }} /> 个月内</label>
+              <label>消息数 ≥ <input type="number" min={1} value={minMsgs} onChange={e => { setMinMsgs(Number(e.target.value)); handleBatchScan(Number(e.target.value)) }} style={{ width: 50 }} /></label>
             </div>
 
             {scanResult.candidates.length > 200 && (
