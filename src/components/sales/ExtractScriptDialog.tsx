@@ -130,18 +130,22 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
     setStep('scanning')
     setScanError('')
     try {
-      const result = await (window as any).electronAPI.sales.kbScanCandidates({
+      const api = (window as any).electronAPI?.sales
+      if (!api?.kbScanCandidates) { setScanError('API 未就绪 kbScanCandidates'); return }
+      const result = await api.kbScanCandidates({
         minMessages: overrideMinMsgs ?? minMsgs,
         maxDaysAgo: overrideMaxDays ?? maxDays
       })
       if (!result?.success) { setScanError(result?.error || '扫描失败'); return }
+      const candidates = Array.isArray(result.candidates) ? result.candidates.map((c: any) => ({ ...c, selected: true })) : []
       setScanResult({
-        totalScanned: result.totalScanned,
-        candidates: (result.candidates || []).map((c: any) => ({ ...c, selected: true })),
-        scanDurationMs: result.scanDurationMs
+        totalScanned: result.totalScanned ?? 0,
+        candidates,
+        scanDurationMs: result.scanDurationMs ?? 0
       })
       setStep('confirm_candidates')
     } catch (e: any) {
+      console.error('[ExtractDialog] scan error', e)
       setScanError(e?.message || '扫描出错')
     }
   }, [minMsgs, maxDays])
