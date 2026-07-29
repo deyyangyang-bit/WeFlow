@@ -65,7 +65,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const sessions = useChatStore(s => s.sessions)
   const { fetchList } = useKnowledgeStore()
 
-  const [step, setStep] = useState<Step>('select')
+  const [step, setStep] = useState<Step>(batch ? 'scanning' : 'select')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [selectedName, setSelectedName] = useState('')
@@ -74,13 +74,10 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [showOriginal, setShowOriginal] = useState<Record<number, boolean>>({})
-  // 批量模式扫描结果
   const [scanResult, setScanResult] = useState<{ totalScanned: number; candidates: ScanCandidate[]; scanDurationMs: number } | null>(null)
   const [scanError, setScanError] = useState('')
-  // 过滤阈值（可调整）
   const [minMsgs, setMinMsgs] = useState(10)
   const [maxDays, setMaxDays] = useState(365)
-  // 批量模式进度
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
 
   // 过滤非群聊会话
