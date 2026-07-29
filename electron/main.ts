@@ -4866,17 +4866,14 @@ function registerIpcHandlers() {
   // ─── 一键提炼全部私聊 IPC ──────────────────────────────────────────────────
   ipcMain.handle('sales:kb:extractScriptsAll', async () => {
     try {
-      const sessionsResult = await wcdbService.getSessions()
-      if (!sessionsResult?.success || !sessionsResult.sessions?.length) {
+      const sessions = await chatService.getSessions()
+      if (!Array.isArray(sessions) || sessions.length === 0) {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 过滤非群聊、有消息的会话，按消息数降序排列
-      const personalChats = sessionsResult.sessions
-        .filter((s: any) => {
-          const isGroup = s.type !== 0 || s.isGroup === true
-          return !isGroup && s.displayName
-        })
+      // 过滤非群聊（type===0 为个人）、有显示名的会话，按消息数降序
+      const personalChats = sessions
+        .filter((s: any) => s.type === 0 && s.displayName)
         .sort((a: any, b: any) => (b.messageCountHint || 0) - (a.messageCountHint || 0))
 
       if (personalChats.length === 0) {
