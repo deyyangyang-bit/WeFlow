@@ -335,10 +335,10 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
 
             <div className="extract-date-row">
               <label>日期区间（可选）：</label>
-              <input type="date" value={beginDate} onChange={e => setBeginDate(e.target.value)} />
+              <input type="date" value={beginDate} onChange={e => { setBeginDate(e.target.value); batch && handleBatchScan() }} />
               <span>至</span>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
-              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate('') }}>清除</button>}
+              <input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); batch && handleBatchScan() }} />
+              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate(''); batch && handleBatchScan() }}>清除</button>}
             </div>
 
             <div className="extract-search">
@@ -419,10 +419,10 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
             {/* 日期区间 */}
             <div className="extract-date-row">
               <label>日期区间（可选）：</label>
-              <input type="date" value={beginDate} onChange={e => setBeginDate(e.target.value)} />
+              <input type="date" value={beginDate} onChange={e => { setBeginDate(e.target.value); batch && handleBatchScan() }} />
               <span>至</span>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
-              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate('') }}>清除</button>}
+              <input type="date" value={endDate} onChange={e => { setEndDate(e.target.value); batch && handleBatchScan() }} />
+              {(beginDate || endDate) && <button className="extract-date-clear" onClick={() => { setBeginDate(''); setEndDate(''); batch && handleBatchScan() }}>清除</button>}
             </div>
 
             {/* 阈值调整 */}
