@@ -1,8 +1,9 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 截至 **2026-07-29**，本地与 GitHub 私人备份同步于 commit `f60b5bd`。
-> 自上游基线 `e5b7067` 起共 **39 个二创提交**，`npx tsc --noEmit` 零错误。
+> 截至 **2026-07-29**，本地与 GitHub 私人备份同步于 commit `d40cd4d`。
+> 自上游基线 `e5b7067` 起共 **47 个二创提交**，`npx tsc --noEmit` 零错误。
+> Mac + Windows 双平台打包验证通过。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -34,10 +35,11 @@
 ## 2. 当前状态快照（2026-07-29）
 
 - **代码健康**：`tsc --noEmit` 零错误，`vite build` 成功
-- **v3 第一期**：今日行动引擎四项核心优化已完成并提交（`f60b5bd`）
+- **v3 第一期**：今日行动引擎四项核心优化已完成（客户去重、R6独立清理、懒扫描、AI深度分析）
+- **话术提炼 v2**：AI销售教练模式（分析+诊断+优化+多版本）已完成；扫描→确认→提炼→导入全链路打通；日期区间筛选；单选+一键批量双模式
+- **知识库**：已导入 353 条产品参数（3个Excel→CSV转标准格式）
 - **PRD v2 三周计划**：P0/P1/P2 全部代码完成
-- **打包**：electron-builder 在当前 Mac 环境有 packaging 阶段死锁问题（MAINTENANCE §4），需手动打包
-- **知识库**：框架完成，**内容为空**——需要用户提供叉车产品资料填充
+- **打包**：Mac DMG+ZIP + Windows EXE 均已产出，沙箱环境打包输出到 `/tmp/weflow-release`
 - **Windows 适配**：koffi 打包问题已修复（`@koromix/koffi-win32-x64@3.1.0` + asarUnpack）
 
 ---
@@ -64,6 +66,11 @@
 | 16 | **v3 R6 独立清理** | 首页折叠区 | R6 不入主队列 15 条，独立"待清理"视图 | ✅ |
 | 17 | **v3 懒扫描** | `lazyScan()` 首页打开触发 | R1/R2/R4/R5 补扫，缩短最坏发现延迟 | ✅ |
 | 18 | **v3 AI 深度分析** | `generateActionAnalysis()` | WCDB 上下文 + 结构化 5 字段 + 降级 + 缓存 | ✅ |
+| 19 | **话术提炼（单选）** | 知识库页「提炼话术」按钮 | 选联系人→AI提取→预览编辑→导入 | ✅ |
+| 20 | **一键提炼（批量）** | 知识库页「一键提炼」按钮 | 扫描候选→确认→排队提炼→统一预览导入 | ✅ |
+| 21 | **话术提炼 v2 — AI销售教练** | 同上 | 分析诊断+原话保留+优化版+普通/专业/逼单三版本 | ✅ |
+| 22 | **提炼日期区间筛选** | 提炼弹窗日期输入 | 按时间段筛选历史聊天记录提炼话术 | ✅ |
+| 23 | **知识库产品数据导入** | CSV批量导入 | 353条叉车产品参数（淘宝竞品/外调车型/整车价格） | ✅ |
 
 ---
 
@@ -181,7 +188,7 @@
 | `salesActionEngine.ts` | **核心**：触发规则引擎 + 今日行动生成 + 增量检查 |
 | `salesStageClassifier.ts` | **核心**：轻量AI阶段分类（7阶段，≤500token/次） |
 | `salesDbService.ts` | 销售库5表CRUD + migration |
-| `salesKnowledgeService.ts` | 知识库CRUD + n-gram检索 + CSV批量导入 |
+| `salesKnowledgeService.ts` | 知识库CRUD + n-gram检索 + CSV导入 + **话术提炼引擎**（extractScriptsFromChat/generateActionAnalysis） |
 | `salesReportService.ts` | 周报/月报 + **周复盘**（weekly_review） |
 | `salesIntentService.ts` | AI意向分析 |
 | `salesReplyService.ts` | 回复建议（引用知识库） |
@@ -205,6 +212,7 @@
 | `pages/KnowledgeBasePage.tsx` | 知识库管理 |
 | `pages/SalesReportPage.tsx` | 复盘/报表 |
 | `pages/SalesDashboardPage.tsx` | 仪表盘（移至/dashboard） |
+| `components/sales/ExtractScriptDialog.tsx` | **话术提炼弹窗**（单选/批量双模式，三步流程） |
 | `stores/todayActionStore.ts` | 行动清单store |
 | `stores/` (其他5个) | dashboard/customerList/customerProfile/followUp/knowledge/salesReport |
 
@@ -225,6 +233,8 @@
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
 8. **打包前必杀残留进程**（否则 packaging 阶段死锁）
 9. **ffmpeg 缺失会崩**：用户需自备 `~/bin/ffmpeg`
+10. **WCDB 消息字段是 snake_case**：`is_send`/`create_time`/`message_content`/`sender_username`（不是 camelCase），用错字段名全部读到 undefined
+11. **`chatService.getSessions()` 返回 `{success, sessions[]}`** 而非裸数组，`Array.isArray()` 永远 false，需解包 `.sessions`
 
 ---
 
@@ -265,11 +275,11 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
-| **P0** | 知识库填充 | 框架完成但内容为空，需用户提供叉车产品资料 |
-| P1 | 话术自动提炼 | 从真实聊天总结话术入库 |
+| P1 | 话术提炼优化 | v2已完成基础版，待优化：提炼结果反馈闭环、提炼历史去重 |
 | P1 | 触发规则配置UI | v1硬编码，验证有效后开放 |
-| P1 | 灵感信箱合并 | 等 insightService 与规则引擎产生实际冲突后再评估 |
+| P1 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
 | P2 | 优先级公式重设计 | 等 customer_value_score 有真实数据源后 |
+| P2 | 知识库增量补充 | 已有353条产品参数，需持续补充叉车行业话术/FAQ |
 | 大后期 | CRM双向同步 | 仅预留字段 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -277,11 +287,12 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 ## 11. 给接手者的下一步
 
-1. **读本文档** → 读 `PRD-v2-销售行动驱动器.md` → 读 `MAINTENANCE.md`
+1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
 2. **跑起来**：`npm install && npm run dev`（开发模式）
-3. **填充知识库**：准备叉车产品 CSV → 知识库页面导入
-4. **打包测试**：按 §8 流程打包，在真实 Windows 机器上验证
-5. **继续开发**：按 §10 待办优先级推进
+3. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
+4. **补充知识库**：已有353条产品参数，继续补充FAQ/话术类条目
+5. **打包测试**：按 §8 流程打包，Mac + Windows 均已验证
+6. **继续开发**：按 §10 待办优先级推进
 
 ---
 
@@ -301,12 +312,33 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 ---
 
-## 13. 提交历史（39条，分组）
+## 13. 提交历史（47条，分组）
 
-### v3 第一期（2026-07-29）
+### 话术提炼 v2 + 批量 + 日期筛选（2026-07-29）
+- `d40cd4d` fix: 日期区间变化时触发重新扫描
+- `e8ae71d` fix: scanExtractCandidates 真正使用 beginDate/endDate
+- `b14479b` refactor: 删除「最近N个月」筛选，统一用日期区间
+- `4fb4b91` fix: 月份筛选0=不限制（cutoffSec=0跳过时间过滤）
+- `63c9b8f` feat: 话术提炼加日期区间筛选
+- `d719e4a` feat: 话术提炼升级为「AI销售教练」— 分析+诊断+优化+多版本
+- `a6287db` fix: WCDB消息字段改为snake_case（is_send/create_time/message_content）
+- `32aacdf` fix: salesKnowledgeService.ts 补 salesLog import
+- `c2c4429` fix: main.ts 补 salesLog import
+- `e335ffc` fix: 加 log:debug IPC handler
+- `d71255c` fix: ExtractScriptDialog 加防御性检查
+- `7b54454` debug: ExtractScriptDialog 加前端诊断日志
+- `13e35e0` debug: 话术提炼加完整消息字段诊断
+- `d9a191c` fix: senderUsername 优先于 talker
+- `f461532` feat: 一键提炼全部私聊话术（批量模式）
+- `1cd37df` feat: 一键提炼增加「扫描候选」步骤
+- `aacc36f` fix: 一键提炼改用 username 特征过滤
+- `b7def7d` fix: 一键提炼改用 chatService.getSessions()
+
+### v3 第一期 — 今日行动引擎（2026-07-29）
+- `39bd7a2` fix: 代码审查修复 — 5个bug（R6守卫/retry竞态/错误处理/timer/命名）
 - `f60b5bd` feat: 今日行动v3第一期 — 客户去重+R6独立+懒扫描+AI深度分析升级
-- `8ad9e29` fix: 恢复灵感信箱独立入口（Sidebar 入口 + RouteGuard 白名单）
-- `b1f4295` fix: AI话术崩溃根因(缺import+config路径笔误) + 本会话代码类型清理
+- `8ad9e29` fix: 恢复灵感信箱独立入口（Sidebar + RouteGuard）
+- `b1f4295` fix: AI话术崩溃根因 + 代码类型清理
 
 ### PRD v2 核心（2026-07-28~29）
 - `145395d` fix: salesLogger 导入修复 + salesReportService 语法
