@@ -4871,9 +4871,20 @@ function registerIpcHandlers() {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 过滤非群聊（type===0 为个人）、有显示名的会话，按消息数降序
+      // 过滤纯私聊：排除群聊(@chatroom)、公众号(gh_)、系统号
       const personalChats = sessions
-        .filter((s: any) => s.type === 0 && s.displayName)
+        .filter((s: any) => {
+          if (!s.displayName) return false
+          const u = (s.username || '').toLowerCase()
+          if (!u) return false
+          // 排除群聊
+          if (u.includes('@chatroom')) return false
+          // 排除公众号/服务号
+          if (u.startsWith('gh_')) return false
+          // 排除系统通知号
+          if (u === 'weixin' || u === 'newsapp' || u.startsWith('qmessage')) return false
+          return true
+        })
         .sort((a: any, b: any) => (b.messageCountHint || 0) - (a.messageCountHint || 0))
 
       if (personalChats.length === 0) {

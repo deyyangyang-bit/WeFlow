@@ -70,7 +70,13 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   // 过滤非群聊会话
   const contacts = useMemo(() =>
     sessions
-      .filter(s => s.type === 0 && s.displayName)
+      .filter(s => {
+        if (!s.displayName) return false
+        const u = (s.username || '').toLowerCase()
+        if (!u || u.includes('@chatroom') || u.startsWith('gh_')) return false
+        if (u === 'weixin' || u === 'newsapp' || u.startsWith('qmessage')) return false
+        return true
+      })
       .sort((a, b) => (b.sortTimestamp || 0) - (a.sortTimestamp || 0)),
     [sessions]
   )
