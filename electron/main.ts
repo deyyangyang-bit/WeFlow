@@ -2274,6 +2274,11 @@ function registerIpcHandlers() {
     }
   })
 
+  // 前端诊断日志 → weflow-sales.log（chrome console 替代）
+  ipcMain.on('log:debug', (_, msg: string) => {
+    salesLog('DEBUG', `[Renderer] ${msg}`)
+  })
+
   ipcMain.handle('diagnostics:getExportCardLogs', async (_, options?: { limit?: number }) => {
     return exportCardDiagnosticsService.snapshot(options?.limit)
   })
