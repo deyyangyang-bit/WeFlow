@@ -152,16 +152,17 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   // ─── 批量 Step 2→3: 确认后提炼 ────────────────────────────────────────────
   const handleBatchExtract = useCallback(async () => {
     if (!scanResult) return
-    const ids = scanResult.candidates.filter(c => c.selected).map(c => c.sessionId)
-    if (ids.length === 0) return
+    const selected = scanResult.candidates.filter(c => c.selected)
+    if (selected.length === 0) return
+    const contacts = selected.map(c => ({ sessionId: c.sessionId, nickname: c.nickname }))
     setStep('analyzing')
     setError('')
-    setBatchProgress({ current: 0, total: ids.length, contactName: '准备中...', foundSoFar: 0 })
+    setBatchProgress({ current: 0, total: contacts.length, contactName: '准备中...', foundSoFar: 0 })
     const unsub = (window as any).electronAPI.sales.onExtractProgress(
       (data: { current: number; total: number; contactName: string; foundSoFar: number }) => setBatchProgress(data)
     )
     try {
-      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll(ids)
+      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll(contacts)
       unsub()
       if (!result?.success) { setError(result?.error || '批量提炼失败'); setStep('confirm_candidates'); return }
       const list: Candidate[] = (result.candidates || []).map((c: any, idx: number) => ({

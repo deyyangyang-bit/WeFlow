@@ -4942,22 +4942,14 @@ function registerIpcHandlers() {
     }
   })
 
-  // ─── 一键提炼全部私聊 IPC（接收扫描后的 sessionIds）───────────────────────
-  ipcMain.handle('sales:kb:extractScriptsAll', async (_, sessionIds?: string[]) => {
+  // ─── 一键提炼全部私聊 IPC（接收扫描后的 {sessionId,nickname}[]）─────────
+  ipcMain.handle('sales:kb:extractScriptsAll', async (_, contacts?: Array<{ sessionId: string; nickname: string }>) => {
     try {
-      // 若未传 sessionIds，回退到扫描逻辑（兼容旧调用）
       let targets: Array<{ username: string; displayName: string }> = []
 
-      if (sessionIds && sessionIds.length > 0) {
-        // 直接使用传入的 sessionIds
-        const sessions = await chatService.getSessions()
-        const sessionMap = new Map(sessions.map((s: any) => [s.username, s]))
-        targets = sessionIds
-          .map(id => {
-            const s = sessionMap.get(id)
-            return s ? { username: s.username, displayName: s.displayName || s.username } : null
-          })
-          .filter(Boolean) as Array<{ username: string; displayName: string }>
+      if (contacts && contacts.length > 0) {
+        // 直接使用前端传入的 sessionId+nickname，不再重查全部会话
+        targets = contacts.map(c => ({ username: c.sessionId, displayName: c.nickname }))
       } else {
         // 回退：自己扫描（兼容直接调用 extractScriptsAll 的旧代码路径）
         const sessions = await chatService.getSessions()
