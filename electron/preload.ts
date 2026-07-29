@@ -740,7 +740,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent),
     // 话术提炼
     kbExtractScripts: (sessionId: string) => ipcRenderer.invoke('sales:kb:extractScripts', sessionId),
-    kbExtractScriptsAll: () => ipcRenderer.invoke('sales:kb:extractScriptsAll'),
+    kbScanCandidates: (options?: { minMessages?: number; maxDaysAgo?: number }) =>
+      ipcRenderer.invoke('sales:kb:scanExtractCandidates', options),
+    kbExtractScriptsAll: (sessionIds?: string[]) => ipcRenderer.invoke('sales:kb:extractScriptsAll', sessionIds),
     // 批量提炼进度监听
     onExtractProgress: (cb: (data: { current: number; total: number; contactName: string; foundSoFar: number }) => void) => {
       const handler = (_: any, data: any) => cb(data)

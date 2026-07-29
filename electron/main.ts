@@ -4863,59 +4863,144 @@ function registerIpcHandlers() {
     return salesKnowledgeService.extractScriptsFromChat(sessionId, configService)
   })
 
-  // ─── 一键提炼全部私聊 IPC ──────────────────────────────────────────────────
-  ipcMain.handle('sales:kb:extractScriptsAll', async () => {
+  // ─── 扫描提炼候选 IPC（纯本地，不调 AI）──────────────────────────────────
+  ipcMain.handle('sales:kb:scanExtractCandidates', async (_, options?: { minMessages?: number; maxDaysAgo?: number }) => {
+    const start = Date.now()
+    const minMessages = options?.minMessages ?? 10
+    const maxDaysAgo = options?.maxDaysAgo ?? 365 // 叉车行业默认 12 个月
+
     try {
       const sessions = await chatService.getSessions()
       if (!Array.isArray(sessions) || sessions.length === 0) {
         return { success: false, error: '无法获取会话列表' }
       }
 
-      // 过滤纯私聊：排除群聊(@chatroom)、公众号(gh_)、系统号
-      const personalChats = sessions
-        .filter((s: any) => {
-          if (!s.displayName) return false
-          const u = (s.username || '').toLowerCase()
-          if (!u) return false
-          // 排除群聊
-          if (u.includes('@chatroom')) return false
-          // 排除公众号/服务号
-          if (u.startsWith('gh_')) return false
-          // 排除系统通知号
-          if (u === 'weixin' || u === 'newsapp' || u.startsWith('qmessage')) return false
-          return true
-        })
-        .sort((a: any, b: any) => (b.messageCountHint || 0) - (a.messageCountHint || 0))
+      const nowSec = Math.floor(Date.now() / 1000)
+      const cutoffSec = nowSec - maxDaysAgo * 86400
 
-      if (personalChats.length === 0) {
-        return { success: true, candidates: [], stats: { total: 0, processed: 0, skipped: 0 } }
+      // Phase 1: 硬性排除
+      const rawCandidates: Array<{
+        sessionId: string; nickname: string; messageCount: number;
+        lastContactAt: number; isKnownCustomer: boolean; score: number
+      }> = []
+
+      for (const s of sessions) {
+        if (!s.displayName) continue
+        const u = (s.username || '').toLowerCase()
+        if (!u || u.includes('@chatroom') || u.startsWith('gh_')) continue
+        if (u === 'weixin' || u === 'newsapp' || u.startsWith('qmessage')) continue
+
+        const msgCount = s.messageCountHint || 0
+        if (msgCount < minMessages) continue
+
+        const lastTs = s.lastTimestamp || s.sortTimestamp || 0
+        if (lastTs > 0 && lastTs < cutoffSec) continue
+
+        rawCandidates.push({
+          sessionId: s.username,
+          nickname: s.displayName || s.username,
+          messageCount: msgCount,
+          lastContactAt: lastTs,
+          isKnownCustomer: false,
+          score: 0
+        })
       }
 
-      // 取前 50 个联系人（避免处理时间过长）
-      const MAX_CONTACTS = 50
-      const targets = personalChats.slice(0, MAX_CONTACTS)
+      if (rawCandidates.length === 0) {
+        return { success: true, totalScanned: sessions.length, candidates: [], scanDurationMs: Date.now() - start }
+      }
+
+      // Phase 2: 批量查 customer_profile（标记已知客户）
+      const allProfiles = salesDbService.customerAll()
+      const knownSessionIds = new Set(allProfiles.map(p => p.session_id))
+      for (const c of rawCandidates) {
+        c.isKnownCustomer = knownSessionIds.has(c.sessionId)
+      }
+
+      // Phase 3: 加权排序
+      const maxMsgs = Math.max(1, ...rawCandidates.map(c => c.messageCount))
+      const nowForDays = nowSec
+
+      for (const c of rawCandidates) {
+        const daysAgo = Math.max(1, (nowForDays - c.lastContactAt) / 86400)
+        const normMsgs = c.messageCount / maxMsgs
+        const normRecency = Math.min(1, 30 / daysAgo) // 30天以内权重高
+        const normCustomer = c.isKnownCustomer ? 1 : 0
+        c.score = 0.3 * normMsgs + 0.3 * normRecency + 0.4 * normCustomer
+      }
+
+      rawCandidates.sort((a, b) => b.score - a.score)
+
+      return {
+        success: true,
+        totalScanned: sessions.length,
+        candidates: rawCandidates.slice(0, 200), // 上限 200，超出提示用户缩小范围
+        scanDurationMs: Date.now() - start
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // ─── 一键提炼全部私聊 IPC（接收扫描后的 sessionIds）───────────────────────
+  ipcMain.handle('sales:kb:extractScriptsAll', async (_, sessionIds?: string[]) => {
+    try {
+      // 若未传 sessionIds，回退到扫描逻辑（兼容旧调用）
+      let targets: Array<{ username: string; displayName: string }> = []
+
+      if (sessionIds && sessionIds.length > 0) {
+        // 直接使用传入的 sessionIds
+        const sessions = await chatService.getSessions()
+        const sessionMap = new Map(sessions.map((s: any) => [s.username, s]))
+        targets = sessionIds
+          .map(id => {
+            const s = sessionMap.get(id)
+            return s ? { username: s.username, displayName: s.displayName || s.username } : null
+          })
+          .filter(Boolean) as Array<{ username: string; displayName: string }>
+      } else {
+        // 回退：自己扫描（兼容直接调用 extractScriptsAll 的旧代码路径）
+        const sessions = await chatService.getSessions()
+        if (!Array.isArray(sessions) || sessions.length === 0) {
+          return { success: false, error: '无法获取会话列表' }
+        }
+        targets = sessions
+          .filter((s: any) => {
+            if (!s.displayName) return false
+            const u = (s.username || '').toLowerCase()
+            if (!u || u.includes('@chatroom') || u.startsWith('gh_')) return false
+            return true
+          })
+          .sort((a: any, b: any) => (b.messageCountHint || 0) - (a.messageCountHint || 0))
+          .slice(0, 50)
+          .map((s: any) => ({ username: s.username, displayName: s.displayName || s.username }))
+      }
+
+      if (targets.length === 0) {
+        return { success: true, candidates: [], stats: { total: 0, processed: 0, skipped: 0 } }
+      }
       const allCandidates: any[] = []
       let processed = 0
       let skipped = 0
 
       for (let i = 0; i < targets.length; i++) {
-        const s = targets[i]
+        const t = targets[i]
 
         // 发送进度到渲染进程
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('sales:kb:extractProgress', {
             current: i + 1,
             total: targets.length,
-            contactName: s.displayName || s.username,
+            contactName: t.displayName,
             foundSoFar: allCandidates.length
           })
         }
 
         try {
           const result = await salesKnowledgeService.extractScriptsFromChat(
-            s.username,
+            t.username,
             configService,
-            80  // 批量模式取 80 条消息（比单次 100 少，加快速度）
+            80
           )
           processed++
 
@@ -4923,7 +5008,7 @@ function registerIpcHandlers() {
             for (const c of result.candidates) {
               allCandidates.push({
                 ...c,
-                sourceContact: s.displayName || s.username
+                sourceContact: t.displayName
               })
             }
           } else if (!result.success) {

@@ -32,7 +32,17 @@ interface Candidate {
   originalSnippet?: string
 }
 
-type Step = 'select' | 'analyzing' | 'preview'
+type Step = 'select' | 'scanning' | 'confirm_candidates' | 'analyzing' | 'preview'
+
+interface ScanCandidate {
+  sessionId: string
+  nickname: string
+  messageCount: number
+  lastContactAt: number
+  isKnownCustomer: boolean
+  score: number
+  selected: boolean
+}
 
 const SCENE_LABELS: Record<string, string> = {
   '初次接触': '初次接触',
@@ -64,6 +74,12 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [showOriginal, setShowOriginal] = useState<Record<number, boolean>>({})
+  // 批量模式扫描结果
+  const [scanResult, setScanResult] = useState<{ totalScanned: number; candidates: ScanCandidate[]; scanDurationMs: number } | null>(null)
+  const [scanError, setScanError] = useState('')
+  // 过滤阈值（可调整）
+  const [minMsgs, setMinMsgs] = useState(10)
+  const [maxDays, setMaxDays] = useState(365)
   // 批量模式进度
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
 
@@ -92,7 +108,7 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
 
   // 重置状态
   const reset = useCallback(() => {
-    setStep(batch ? 'analyzing' : 'select')
+    setStep(batch ? 'scanning' : 'select')
     setSearchQuery('')
     setSelectedSessionId('')
     setSelectedName('')
@@ -101,66 +117,76 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
     setError('')
     setImporting(false)
     setShowOriginal({})
+    setScanResult(null)
+    setScanError('')
     setBatchProgress({ current: 0, total: 0, contactName: '', foundSoFar: 0 })
   }, [batch])
 
-  // 批量模式：弹窗打开时自动开始提炼
+  // 批量模式：弹窗打开时自动开始扫描
   useEffect(() => {
     if (!open || !batch) return
-    handleBatchExtract()
+    handleBatchScan()
   }, [open, batch])
 
-  // ─── 批量提炼 ──────────────────────────────────────────────────────────────
+  // ─── 批量 Step 1: 扫描候选 ────────────────────────────────────────────────
+  const handleBatchScan = useCallback(async (overrideMinMsgs?: number, overrideMaxDays?: number) => {
+    setStep('scanning')
+    setScanError('')
+    try {
+      const result = await (window as any).electronAPI.sales.kbScanCandidates({
+        minMessages: overrideMinMsgs ?? minMsgs,
+        maxDaysAgo: overrideMaxDays ?? maxDays
+      })
+      if (!result?.success) { setScanError(result?.error || '扫描失败'); return }
+      setScanResult({
+        totalScanned: result.totalScanned,
+        candidates: (result.candidates || []).map((c: any) => ({ ...c, selected: true })),
+        scanDurationMs: result.scanDurationMs
+      })
+      setStep('confirm_candidates')
+    } catch (e: any) {
+      setScanError(e?.message || '扫描出错')
+    }
+  }, [minMsgs, maxDays])
+
+  // ─── 批量 Step 2→3: 确认后提炼 ────────────────────────────────────────────
   const handleBatchExtract = useCallback(async () => {
+    if (!scanResult) return
+    const ids = scanResult.candidates.filter(c => c.selected).map(c => c.sessionId)
+    if (ids.length === 0) return
     setStep('analyzing')
     setError('')
-    setBatchProgress({ current: 0, total: 0, contactName: '准备中...', foundSoFar: 0 })
-
-    // 监听进度
+    setBatchProgress({ current: 0, total: ids.length, contactName: '准备中...', foundSoFar: 0 })
     const unsub = (window as any).electronAPI.sales.onExtractProgress(
-      (data: { current: number; total: number; contactName: string; foundSoFar: number }) => {
-        setBatchProgress(data)
-      }
+      (data: { current: number; total: number; contactName: string; foundSoFar: number }) => setBatchProgress(data)
     )
-
     try {
-      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll()
+      const result = await (window as any).electronAPI.sales.kbExtractScriptsAll(ids)
       unsub()
-
-      if (!result?.success) {
-        setError(result?.error || '批量提炼失败')
-        setStep(batch ? 'select' : 'select')
-        return
-      }
-
+      if (!result?.success) { setError(result?.error || '批量提炼失败'); setStep('confirm_candidates'); return }
       const list: Candidate[] = (result.candidates || []).map((c: any, idx: number) => ({
-        index: idx,
-        title: c.title || '未命名话术',
-        content: c.content || '',
-        scene: c.scene || '其他',
-        tags: c.tags || [],
-        duplicateOf: c.duplicateOf,
-        sourceContact: c.sourceContact,
-        selected: !c.duplicateOf,
-        editedTitle: undefined,
-        editedContent: undefined,
+        index: idx, title: c.title || '未命名话术', content: c.content || '',
+        scene: c.scene || '其他', tags: c.tags || [], duplicateOf: c.duplicateOf,
+        sourceContact: c.sourceContact, selected: !c.duplicateOf,
+        editedTitle: undefined, editedContent: undefined,
         originalSnippet: c.content?.slice(0, 120) || ''
       }))
+      if (list.length === 0) { setError(`已处理 ${result.stats?.processed || 0} 个联系人，未发现可提炼的销售话术。`); setStep('confirm_candidates'); return }
+      setCandidates(list); setStep('preview')
+    } catch (e: any) { unsub(); setError(e?.message || '批量提炼出错'); setStep('confirm_candidates') }
+  }, [scanResult])
 
-      if (list.length === 0) {
-        setError(`已处理 ${result.stats?.processed || 0} 个联系人，未发现可提炼的销售话术。`)
-        setStep('select')
-        return
-      }
-
-      setCandidates(list)
-      setStep('preview')
-    } catch (e: any) {
-      unsub()
-      setError(e?.message || '批量提炼出错')
-      setStep('select')
-    }
-  }, [])
+  // ─── 候选勾选 ──────────────────────────────────────────────────────────────
+  const toggleCandidate = (sessionId: string) => {
+    if (!scanResult) return
+    setScanResult({ ...scanResult, candidates: scanResult.candidates.map(c => c.sessionId === sessionId ? { ...c, selected: !c.selected } : c) })
+  }
+  const toggleAllCandidates = () => {
+    if (!scanResult) return
+    const all = scanResult.candidates.every(c => c.selected)
+    setScanResult({ ...scanResult, candidates: scanResult.candidates.map(c => ({ ...c, selected: !all })) })
+  }
+  const selectedCandidateCount = scanResult?.candidates.filter(c => c.selected).length || 0
 
   // 关闭弹窗
   const handleClose = useCallback(() => {
@@ -340,7 +366,79 @@ export default function ExtractScriptDialog({ open, onClose, batch = false }: Pr
           </div>
         )}
 
-        {/* ── Step 2: AI 分析中 ────────────────────────────────────────────── */}
+        {/* ── Batch Step 1: 扫描中 ─────────────────────────────────────────── */}
+        {step === 'scanning' && (
+          <div className="extract-step extract-step--analyzing">
+            <div className="extract-analyzing-icon">
+              {scanError ? <AlertTriangle size={36} /> : <LoaderCircle size={36} className="spinning" />}
+            </div>
+            {!scanError ? (
+              <>
+                <p className="extract-analyzing-title">正在扫描私聊会话...</p>
+                <p className="extract-analyzing-hint">纯本地查询，预计 3 秒内完成</p>
+              </>
+            ) : (
+              <>
+                <p className="extract-error-title">扫描失败</p>
+                <p className="extract-error-msg">{scanError}</p>
+                <button className="extract-btn extract-btn--primary" onClick={() => handleBatchScan()}>重试</button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Batch Step 2: 确认候选 ────────────────────────────────────────── */}
+        {step === 'confirm_candidates' && scanResult && (
+          <div className="extract-step extract-step--candidates">
+            <p className="extract-step__desc">
+              共扫描 <strong>{scanResult.totalScanned}</strong> 个会话，筛选出 <strong>{scanResult.candidates.length}</strong> 个候选
+              （耗时 {scanResult.scanDurationMs}ms）
+            </p>
+
+            {/* 阈值调整 */}
+            <div className="extract-filter-row">
+              <label>消息数 ≥ <input type="number" min={1} value={minMsgs} onChange={e => { setMinMsgs(Number(e.target.value)); handleBatchScan(Number(e.target.value), undefined) }} style={{ width: 50 }} /></label>
+              <label>最近 <input type="number" min={1} value={Math.round(maxDays / 30)} onChange={e => { const m = Number(e.target.value); setMaxDays(m * 30); handleBatchScan(undefined, m * 30) }} style={{ width: 50 }} /> 个月内</label>
+            </div>
+
+            {scanResult.candidates.length > 200 && (
+              <p className="extract-candidate-warn">候选数量较多（{scanResult.candidates.length}），提炼将耗时较长，建议提高筛选门槛</p>
+            )}
+
+            {/* 候选列表 */}
+            <div className="extract-candidate-list">
+              <div className="extract-candidate-header">
+                <label><input type="checkbox" checked={scanResult.candidates.every(c => c.selected)} onChange={toggleAllCandidates} /> 全选</label>
+                <span className="extract-candidate-col">联系人</span>
+                <span className="extract-candidate-col">消息数</span>
+                <span className="extract-candidate-col">最近联系</span>
+                <span className="extract-candidate-col">客户</span>
+              </div>
+              {scanResult.candidates.map(c => (
+                <label key={c.sessionId} className="extract-candidate-row">
+                  <input type="checkbox" checked={c.selected} onChange={() => toggleCandidate(c.sessionId)} />
+                  <span className="extract-candidate-col extract-candidate-name">{c.nickname}</span>
+                  <span className="extract-candidate-col">{c.messageCount}</span>
+                  <span className="extract-candidate-col">{c.lastContactAt ? new Date(c.lastContactAt * 1000).toLocaleDateString('zh-CN') : '-'}</span>
+                  <span className="extract-candidate-col">{c.isKnownCustomer ? '✅' : '-'}</span>
+                </label>
+              ))}
+            </div>
+
+            {scanResult.candidates.length === 0 && (
+              <p className="extract-contact-empty">未找到符合条件的联系人，请放宽消息数或时间范围</p>
+            )}
+
+            <div className="extract-step__actions">
+              <button className="extract-btn extract-btn--secondary" onClick={handleClose}>取消</button>
+              <button className="extract-btn extract-btn--primary" disabled={selectedCandidateCount === 0} onClick={handleBatchExtract}>
+                <Sparkles size={14} /> 开始批量提炼 ({selectedCandidateCount})
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Step 2/3: AI 分析中 ──────────────────────────────────────────── */}
         {step === 'analyzing' && (
           <div className="extract-step extract-step--analyzing">
             <div className="extract-analyzing-icon">
