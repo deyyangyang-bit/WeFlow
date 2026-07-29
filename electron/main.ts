@@ -4870,10 +4870,11 @@ function registerIpcHandlers() {
     const maxDaysAgo = options?.maxDaysAgo ?? 365 // 叉车行业默认 12 个月
 
     try {
-      const sessions = await chatService.getSessions()
-      if (!Array.isArray(sessions) || sessions.length === 0) {
+      const sessionsResult = await chatService.getSessions()
+      if (!sessionsResult?.success || !sessionsResult.sessions?.length) {
         return { success: false, error: '无法获取会话列表' }
       }
+      const sessions = sessionsResult.sessions
 
       const nowSec = Math.floor(Date.now() / 1000)
       const cutoffSec = nowSec - maxDaysAgo * 86400
@@ -4952,11 +4953,11 @@ function registerIpcHandlers() {
         targets = contacts.map(c => ({ username: c.sessionId, displayName: c.nickname }))
       } else {
         // 回退：自己扫描（兼容直接调用 extractScriptsAll 的旧代码路径）
-        const sessions = await chatService.getSessions()
-        if (!Array.isArray(sessions) || sessions.length === 0) {
+        const sessionsResult = await chatService.getSessions()
+        if (!sessionsResult?.success || !sessionsResult.sessions?.length) {
           return { success: false, error: '无法获取会话列表' }
         }
-        targets = sessions
+        targets = sessionsResult.sessions
           .filter((s: any) => {
             if (!s.displayName) return false
             const u = (s.username || '').toLowerCase()
