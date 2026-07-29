@@ -4,8 +4,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload } from 'lucide-react'
+import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
+import ExtractScriptDialog from '../components/sales/ExtractScriptDialog'
 import './KnowledgeBasePage.scss'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
@@ -255,6 +256,7 @@ export default function KnowledgeBasePage() {
   } = useKnowledgeStore()
 
   const [searchInput, setSearchInput] = useState('')
+  const [extractOpen, setExtractOpen] = useState(false)
 
   // 初始加载
   useEffect(() => {
@@ -324,6 +326,9 @@ export default function KnowledgeBasePage() {
 
   return (
     <div className="kb-page">
+      {/* 话术提炼弹窗 */}
+      <ExtractScriptDialog open={extractOpen} onClose={() => setExtractOpen(false)} />
+
       <div className="kb-page-header">
         <div className="kb-page-title">
           <BookOpen size={22} />
@@ -364,6 +369,11 @@ export default function KnowledgeBasePage() {
           <button className="kb-btn kb-btn-secondary" onClick={handleImportClick} disabled={importing}>
             <Upload size={16} />
             {importing ? '导入中...' : '批量导入'}
+          </button>
+
+          <button className="kb-btn kb-btn-accent" onClick={() => setExtractOpen(true)}>
+            <Sparkles size={16} />
+            提炼话术
           </button>
 
           <button className="kb-btn kb-btn-primary" onClick={() => openForm()}>

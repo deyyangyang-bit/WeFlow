@@ -737,7 +737,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reviewGenerate: () => ipcRenderer.invoke('sales:review:generate'),
 
     // 知识库批量导入
-    kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent)
+    kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent),
+    // 话术提炼
+    kbExtractScripts: (sessionId: string) => ipcRenderer.invoke('sales:kb:extractScripts', sessionId)
   },
 
   social: {

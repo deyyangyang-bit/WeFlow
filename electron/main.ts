@@ -4857,6 +4857,11 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:kb:importCsv', async (_, csvContent: string) => {
     return salesKnowledgeService.importFromCsv(csvContent)
   })
+
+  // ─── 话术提炼 IPC ──────────────────────────────────────────────────────────
+  ipcMain.handle('sales:kb:extractScripts', async (_, sessionId: string) => {
+    return salesKnowledgeService.extractScriptsFromChat(sessionId, configService)
+  })
 }
 
 // 主窗口引用

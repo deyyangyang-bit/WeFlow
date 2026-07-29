@@ -6,6 +6,9 @@
  */
 
 import { salesDbService, type KnowledgeEntry } from './salesDbService'
+import { wcdbService } from './wcdbService'
+import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
+import type { ConfigService } from './config'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,17 @@ export interface KbSearchPayload {
   keyword: string
   category?: string
   product_line?: string
+}
+
+/** 话术提炼候选条目 */
+export interface ExtractedScriptCandidate {
+  index: number
+  title: string
+  content: string
+  scene: string
+  tags: string[]
+  /** 与已有条目的重复标题（相似度 >60% 时填充） */
+  duplicateOf?: string
 }
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -206,6 +220,115 @@ class SalesKnowledgeService {
   }
 
   /**
+   * 从真实聊天记录提炼销售话术，返回候选条目供用户审核后入库。
+   *
+   * @param sessionId 微信会话 ID
+   * @param config AI 配置（由 IPC handler 注入）
+   * @param maxMessages 最多取最近 N 条消息，默认 100
+   */
+  async extractScriptsFromChat(
+    sessionId: string,
+    config: ConfigService,
+    maxMessages: number = 100
+  ): Promise<{ success: boolean; candidates?: ExtractedScriptCandidate[]; error?: string }> {
+    try {
+      if (!isAiConfigured(config)) {
+        return { success: false, error: 'AI 模型未配置' }
+      }
+
+      // 1. 读取聊天记录
+      const msgResult = await wcdbService.getMessages(sessionId, maxMessages, 0)
+      if (!msgResult?.success || !msgResult.messages?.length) {
+        return { success: false, error: '无法读取该联系人的聊天记录' }
+      }
+
+      const messages = msgResult.messages
+      if (messages.length < 10) {
+        return { success: false, error: '聊天记录不足 10 条，无法提炼话术' }
+      }
+
+      // 拼接对话文本（脱敏前保留原始内容给用户对照）
+      const conversationLines = messages.map((m: any) => {
+        const ts = m.createTime || m.create_time || m.msg_time || 0
+        const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
+        const content = (m.content || m.msg || '').slice(0, 300)
+        const isSelf = m.isSelf || m.is_sender || false
+        const speaker = isSelf ? '我' : '客户'
+        return `[${timeStr}] ${speaker}: ${content}`
+      }).join('\n')
+
+      // 2. AI 提炼
+      const systemPrompt = `你是销售话术提炼助手。从微信聊天记录中识别销售人员（标注为"我"）的有效话术，提取为可复用的知识库条目。
+
+规则：
+- 只提取销售人员（"我"）的发言，不提取客户的话
+- 只提取有复用价值的：产品介绍、报价话术、异议处理、逼单技巧、售后服务话术
+- 金额→{金额}，人名→{客户名}，公司名→{公司名}，日期→{日期}，手机号→{手机号}
+- 场景归类：初次接触 / 报价 / 异议处理 / 售后 / 其他
+- 如果对话中没有值得提炼的销售话术，返回空数组 []（这是合法输出，不要硬编）
+
+必须返回 JSON：{"scripts":[{"title":"简短标题(≤15字)","content":"脱敏后的话术内容","scene":"场景","tags":["标签1","标签2"]}]}`
+
+      const userPrompt = `从以下微信聊天记录中提炼可复用的销售话术：\n\n${conversationLines}\n\n请返回 JSON。如果确实没有值得提炼的话术，返回 {"scripts": []}。`
+
+      const aiText = await simpleCompletion(config, systemPrompt, userPrompt, {
+        temperature: 0.3,
+        maxTokens: 2000,
+        responseFormatJson: true,
+        disableThinking: true,
+        timeoutMs: 30_000
+      })
+
+      // 3. 解析 AI 输出
+      let parsed: any
+      try {
+        parsed = JSON.parse(aiText || '{}')
+      } catch {
+        const jsonMatch = (aiText || '').match(/\{[\s\S]*\}/)
+        parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {}
+      }
+
+      const rawScripts: any[] = parsed?.scripts || []
+      if (!Array.isArray(rawScripts) || rawScripts.length === 0) {
+        return { success: true, candidates: [] }
+      }
+
+      // 4. n-gram 去重检测（仅比对同 scene 分类下的已有条目）
+      const existingAll = salesDbService.kbList()
+      const candidates: ExtractedScriptCandidate[] = rawScripts.map((s: any, idx: number) => {
+        const scene = s.scene || '其他'
+        const sceneEntries = existingAll.filter(e => (e.scene || '其他') === scene)
+
+        // 简单 n-gram 相似度：2-gram 命中率
+        let maxSim = 0
+        let similarTitle = ''
+        const candGrams = buildGrams((s.content || '').slice(0, 100))
+        for (const existing of sceneEntries) {
+          const existGrams = buildGrams((existing.content || '').slice(0, 100))
+          if (candGrams.size === 0 || existGrams.size === 0) continue
+          let hits = 0
+          for (const g of candGrams) { if (existGrams.has(g)) hits++ }
+          const sim = hits / candGrams.size
+          if (sim > maxSim) { maxSim = sim; similarTitle = existing.title }
+        }
+
+        return {
+          index: idx,
+          title: (s.title || '未命名话术').slice(0, 30),
+          content: s.content || '',
+          scene,
+          tags: Array.isArray(s.tags) ? s.tags.slice(0, 5) : [],
+          duplicateOf: maxSim > 0.6 ? similarTitle : undefined
+        }
+      })
+
+      return { success: true, candidates }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
    * 从 CSV 内容批量导入知识库条目（PRD v2 P1）。
    * CSV 格式：category,product_line,title,content,tags,scene
    * 第一行为表头，自动跳过。支持带 BOM 的 UTF-8。
@@ -295,6 +418,18 @@ class SalesKnowledgeService {
     result.push(current)
     return result
   }
+}
+
+// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+
+/** 构建 2/3-gram 集合，用于去重相似度比对 */
+function buildGrams(text: string): Set<string> {
+  const grams = new Set<string>()
+  for (let i = 0; i < text.length - 1; i++) {
+    grams.add(text.slice(i, i + 2))
+    if (i < text.length - 2) grams.add(text.slice(i, i + 3))
+  }
+  return grams
 }
 
 export const salesKnowledgeService = new SalesKnowledgeService()
