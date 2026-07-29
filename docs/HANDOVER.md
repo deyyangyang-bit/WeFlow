@@ -1,13 +1,14 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 截至 **2026-07-29**，本地与 GitHub 私人备份同步于 commit `145395d`。
-> 自上游基线 `e5b7067` 起共 **36 个二创提交**，`npx tsc --noEmit` 零错误。
+> 截至 **2026-07-29**，本地与 GitHub 私人备份同步于 commit `f60b5bd`。
+> 自上游基线 `e5b7067` 起共 **39 个二创提交**，`npx tsc --noEmit` 零错误。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
 > - **`MAINTENANCE.md`** = 怎么打包 / 怎么避坑 / 安全红线 / 版本规则（操作手册）
-> - **`PRD-v2-销售行动驱动器.md`** = 当前产品规划（唯一权威需求来源）
+> - **`PRD-v2-销售行动驱动器.md`** = v2 原始需求（已被 v3 第一期取代）
+> - **微信文件** = `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md`（最新需求来源）
 > - **`PRD-v0.2-AI销售助手.md`** = 历史需求（已被 v2 取代，仅供参考）
 
 ---
@@ -33,7 +34,8 @@
 ## 2. 当前状态快照（2026-07-29）
 
 - **代码健康**：`tsc --noEmit` 零错误，`vite build` 成功
-- **PRD v2 三周计划**：P0/P1/P2 全部代码完成并提交
+- **v3 第一期**：今日行动引擎四项核心优化已完成并提交（`f60b5bd`）
+- **PRD v2 三周计划**：P0/P1/P2 全部代码完成
 - **打包**：electron-builder 在当前 Mac 环境有 packaging 阶段死锁问题（MAINTENANCE §4），需手动打包
 - **知识库**：框架完成，**内容为空**——需要用户提供叉车产品资料填充
 - **Windows 适配**：koffi 打包问题已修复（`@koromix/koffi-win32-x64@3.1.0` + asarUnpack）
@@ -58,6 +60,10 @@
 | 12 | **销售仪表盘** | `/dashboard`（原首页） | `SalesDashboardPage.tsx` | ✅ |
 | 13 | **周报/月报** | 侧边栏「复盘」 | `SalesReportPage.tsx` | ✅ |
 | 14 | **Windows 适配** | 打包配置 | koffi asarUnpack + dbPathService 多路径检测 | ✅ |
+| 15 | **v3 客户级去重** | 全量扫描 `runFullScan()` | 同客户多规则命中仅保留最高分一条 | ✅ |
+| 16 | **v3 R6 独立清理** | 首页折叠区 | R6 不入主队列 15 条，独立"待清理"视图 | ✅ |
+| 17 | **v3 懒扫描** | `lazyScan()` 首页打开触发 | R1/R2/R4/R5 补扫，缩短最坏发现延迟 | ✅ |
+| 18 | **v3 AI 深度分析** | `generateActionAnalysis()` | WCDB 上下文 + 结构化 5 字段 + 降级 + 缓存 | ✅ |
 
 ---
 
@@ -260,13 +266,12 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
 | **P0** | 知识库填充 | 框架完成但内容为空，需用户提供叉车产品资料 |
-| P1 | 话术自动提炼 | 从真实聊天总结话术入库（PRD v0.2 设想，未做） |
+| P1 | 话术自动提炼 | 从真实聊天总结话术入库 |
 | P1 | 触发规则配置UI | v1硬编码，验证有效后开放 |
-| P2 | 产品库导入按钮 | 前端UI（后端CSV解析已完成） |
-| P2 | OCR接入 | tesseract 未装 |
+| P1 | 灵感信箱合并 | 等 insightService 与规则引擎产生实际冲突后再评估 |
+| P2 | 优先级公式重设计 | 等 customer_value_score 有真实数据源后 |
 | 大后期 | CRM双向同步 | 仅预留字段 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
-| 大后期 | 自动发消息 | WeFlow只读，无发送能力 |
 
 ---
 
@@ -286,16 +291,22 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 |------|------|
 | `docs/HANDOVER.md` | 本文件（全局交接） |
 | `docs/MAINTENANCE.md` | 操作手册（打包/坑/安全） |
-| `docs/PRD-v2-销售行动驱动器.md` | 当前产品规划 |
+| `docs/PRD-v2-销售行动驱动器.md` | v2 产品规划（已被 v3 取代） |
 | `docs/PRD-v0.2-AI销售助手.md` | 历史需求（已取代） |
 | `docs/HTTP-API.md` | HTTP API 文档 |
 | `docs/MAC-KEY-FAQ.md` | Mac 密钥 FAQ |
 | `docs/产品库导入模板.csv` | 知识库导入模板 |
 | `AGENTS.md` | Agent 启动指南（本地，gitignore） |
+| 微信文件 | `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md` |
 
 ---
 
-## 13. 提交历史（36条，分组）
+## 13. 提交历史（39条，分组）
+
+### v3 第一期（2026-07-29）
+- `f60b5bd` feat: 今日行动v3第一期 — 客户去重+R6独立+懒扫描+AI深度分析升级
+- `8ad9e29` fix: 恢复灵感信箱独立入口（Sidebar 入口 + RouteGuard 白名单）
+- `b1f4295` fix: AI话术崩溃根因(缺import+config路径笔误) + 本会话代码类型清理
 
 ### PRD v2 核心（2026-07-28~29）
 - `145395d` fix: salesLogger 导入修复 + salesReportService 语法
