@@ -256,13 +256,17 @@ class SalesKnowledgeService {
         const timeStr = ts ? new Date(ts * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
         const content = (m.content || m.msg || '').slice(0, 300)
         // 用 talker 字段比对当前用户 wxid 判断说话人（WCDB 原始消息无 isSelf 字段）
-        const talker = m.talker || m.senderUsername || ''
+        const talker = m.senderUsername || m.talker || ''
         const isSelf = myWxid ? talker === myWxid : false
         if (isSelf) selfCount++
         const speaker = isSelf ? '我' : '客户'
         return `[${timeStr}] ${speaker}: ${content}`
       }).join('\n')
-      salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}`)
+      const sampleMsg = messages[0] || {}
+      const sampleKeys = Object.keys(sampleMsg).join(',')
+      const sampleTalker = (sampleMsg as any).talker
+      const sampleSender = (sampleMsg as any).senderUsername
+      salesLog('INFO', `[ExtractScripts] ${sessionId}: ${messages.length} msgs, myWxid=${myWxid || '(empty)'}, selfCount=${selfCount}, sampleKeys=[${sampleKeys}], talker=${sampleTalker}, sender=${sampleSender}`)
 
       // 2. AI 提炼
       const systemPrompt = `你是销售话术提炼助手。从微信聊天记录中识别销售人员（标注为"我"）的有效话术，提取为可复用的知识库条目。
