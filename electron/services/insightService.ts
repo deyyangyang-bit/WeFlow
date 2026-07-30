@@ -433,6 +433,15 @@ class InsightService {
   private lastActivityAnalysis: Map<string, number> = new Map()
 
   /**
+   * 沉默扫描冷却记录：sessionId -> 上次沉默扫描时间戳（毫秒）
+   * 24h 滚动窗口内同一 session 不重复生成沉默洞察。
+   */
+  private lastSilenceScan: Map<string, number> = new Map()
+
+  /** 沉默扫描独立锁，与活跃分析共享的 this.processing 分离 */
+  private silenceScanning = false
+
+  /**
    * 跟踪每个会话上次见到的最新消息时间戳，用于判断是否有真正的新消息。
    * sessionId -> lastMessageTimestamp（秒，与微信 DB 保持一致）
    */
@@ -504,7 +513,7 @@ class InsightService {
     this.processing = false
   }
 
-  private async refreshConfiguration(_reason: string): Promise<void> {
+  private async refreshConfiguration(reason: string): Promise<void> {
     if (!this.started) return
     if (!this.isEnabled()) {
       this.clearTimers()
@@ -512,14 +521,27 @@ class InsightService {
       this.processing = false
       return
     }
-    this.scheduleSilenceScan()
+    // 仅初次启动、间隔值变化、或 enable 状态切换时才重调度
+    // 避免 prompt/notification 等无关配置变更重置扫描计时器
+    const prevInterval = this._lastScanIntervalHours
+    const newInterval = (this.config.get('aiInsightScanIntervalHours') as number) || 4
+    if (reason === 'startup' || newInterval !== prevInterval) {
+      this._lastScanIntervalHours = newInterval
+      if (this.silenceScanning) {
+        insightLog('INFO', '[Insight] 跳过重调度：扫描进行中，新间隔将在下次扫描结束后生效')
+        return
+      }
+      this.scheduleSilenceScan()
+    }
   }
+  private _lastScanIntervalHours: number | undefined
 
   private clearRuntimeCache(): void {
     this.dbConnected = false
     this.sessionCache = null
     this.sessionCacheAt = 0
     this.lastActivityAnalysis.clear()
+    this.lastSilenceScan.clear()
     this.lastSeenTimestamp.clear()
     this.todayTriggers.clear()
     this.todayDate = getStartOfDay()
@@ -1364,17 +1386,19 @@ ${afterText}
     if (!this.isEnabled()) {
       return
     }
-    if (this.processing) {
+    if (this.processing || this.silenceScanning) {
       insightLog('INFO', '沉默扫描：正在处理中，跳过本次')
       return
     }
 
     this.processing = true
+    this.silenceScanning = true
     insightLog('INFO', '开始沉默联系人扫描...')
     try {
       const silenceDays = (this.config.get('aiInsightSilenceDays') as number) || DEFAULT_SILENCE_DAYS
       const silenceMaxDays = (this.config.get('aiInsightSilenceMaxDays') as number) || 30
       const scanLimit = (this.config.get('aiInsightScanLimit') as number) || 50
+      const cooldownMinutes = (this.config.get('aiInsightCooldownMinutes') as number) ?? 120
       const thresholdMs = silenceDays * 24 * 60 * 60 * 1000
       const maxThresholdMs = silenceMaxDays * 24 * 60 * 60 * 1000
       const now = Date.now()
@@ -1450,20 +1474,40 @@ ${afterText}
       insightLog('INFO', `符合条件 ${candidates.length} 个，取前 ${scanLimit} 个生成见解`)
 
       // 第三阶段：按上限生成见解
+      const activityCooldownMs = (cooldownMinutes ?? 120) * 60 * 1000
+      const SILENCE_COOLDOWN_MS = 24 * 3600 * 1000
       let generatedCount = 0
       for (const candidate of candidates.slice(0, scanLimit)) {
         if (!this.isEnabled()) return
+        const sid = candidate.sessionId
+
+        // Fix 1a: 活跃分析冷却检查 — 冷却期内有活跃分析则跳过
+        const lastActivity = this.lastActivityAnalysis.get(sid)
+        if (lastActivity && (now - lastActivity) < activityCooldownMs) continue
+
+        // Fix 1b: 沉默扫描自身冷却 — 24h 内已扫过则跳过
+        const lastSilence = this.lastSilenceScan.get(sid)
+        if (lastSilence && (now - lastSilence) < SILENCE_COOLDOWN_MS) continue
+
         const stageLabel = candidate.salesStage ? `（${candidate.salesStage}阶段）` : ''
         insightLog('INFO', `生成沉默见解：${candidate.displayName}${stageLabel}，已沉默 ${candidate.silentDays} 天`)
 
-        await this.generateInsightForSession({
-          sessionId: candidate.sessionId,
-          displayName: candidate.displayName,
-          triggerReason: 'silence',
-          silentDays: candidate.silentDays,
-          salesStage: candidate.salesStage
-        })
-        generatedCount++
+        // 先标记，防止生成耗时期间被重复选中
+        this.lastSilenceScan.set(sid, now)
+        try {
+          await this.generateInsightForSession({
+            sessionId: sid,
+            displayName: candidate.displayName,
+            triggerReason: 'silence',
+            silentDays: candidate.silentDays,
+            salesStage: candidate.salesStage
+          })
+          generatedCount++
+        } catch (err) {
+          // 生成失败，撤销标记，允许下一轮重试
+          this.lastSilenceScan.delete(sid)
+          insightLog('WARN', `沉默洞察生成失败，已回滚冷却标记: ${candidate.displayName} — ${(err as Error)?.message || err}`)
+        }
         // 高意向沉默预警：比价/决策阶段客户沉默时弹窗（受冷却控制）
         if (candidate.salesStage === '比价' || candidate.salesStage === '决策') {
           if (this.shouldAlert(candidate.sessionId, candidate.salesStage)) {
@@ -1499,6 +1543,16 @@ ${afterText}
       insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
     } finally {
       this.processing = false
+      this.silenceScanning = false
+      // Fix 3: 清理超过 7 天未更新的冷却 key
+      const MAX_AGE_MS = 7 * 24 * 3600 * 1000
+      const cleanNow = Date.now()
+      for (const [k, v] of this.lastSilenceScan) {
+        if (cleanNow - v > MAX_AGE_MS) this.lastSilenceScan.delete(k)
+      }
+      for (const [k, v] of this.lastActivityAnalysis) {
+        if (cleanNow - v > MAX_AGE_MS) this.lastActivityAnalysis.delete(k)
+      }
     }
   }
 
