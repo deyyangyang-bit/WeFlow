@@ -9,7 +9,7 @@ import { crmDbService } from './crmDbService'
 import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
 import { generateDoc, ensureTemplates } from './crmDocGenService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import type { ConfigService } from './config'
 
 export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService): void {

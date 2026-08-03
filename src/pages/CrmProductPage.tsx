@@ -93,15 +93,23 @@ export default function CrmProductPage() {
 
   const aiExtract = async (dataUrl: string) => {
     const tpl = SPEC_TEMPLATES[form.category] ?? []
-    const out = await window.electronAPI.crm.aiExtract(tpl, dataUrl)
-    setForm((f) => ({ ...f, specs: { ...f.specs, ...out } }))
-    setNotice('AI 已按模版提取参数，请确认后保存')
+    try {
+      const out = await window.electronAPI.crm.aiExtract(tpl, dataUrl)
+      setForm((f) => ({ ...f, specs: { ...f.specs, ...out } }))
+      setNotice('AI 已按模版提取参数，请确认后保存')
+    } catch {
+      setNotice('当前 AI 模型不支持视觉提取，请手动填写模版')
+    }
   }
 
   const aiDescRow = async (p: ProductRow) => {
-    const text = await window.electronAPI.crm.aiDesc({ name: p.name, model: p.model, material: p.material, specs: p.specs })
-    await window.electronAPI.crm.update('product', p.id, { description: text })
-    await fetchProducts()
+    try {
+      const text = await window.electronAPI.crm.aiDesc({ name: p.name, model: p.model, material: p.material, specs: p.specs })
+      await window.electronAPI.crm.update('product', p.id, { description: text })
+      await fetchProducts()
+    } catch {
+      setNotice('AI 描述生成失败（未配置或不支持），请手动填写')
+    }
   }
   const aiDescBatch = async () => {
     for (const id of selected) {
