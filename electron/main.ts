@@ -35,7 +35,8 @@ import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'\nimport { registerCrmIpcHandlers } from './services/crmIpcHandlers'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'
+import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -5313,7 +5314,8 @@ app.whenReady().then(async () => {
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
     // 启动今日行动引擎
-    setActionEngineConfig(configService)\n    registerCrmIpcHandlers(ipcMain, configService)
+    setActionEngineConfig(configService)
+    registerCrmIpcHandlers(ipcMain, configService)
     startActionEngineScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)

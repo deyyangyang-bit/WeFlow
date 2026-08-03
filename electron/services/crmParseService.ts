@@ -3,7 +3,9 @@
  * 群消息解析管道：定时增量扫描配置群 → 规则先行（crmParseRules）→ AI 兜底 → 落库。
  * 铁律：扫描走 salesQueue 串行（最外层 enqueue）；WCDB 秒级时间戳→毫秒；不猜测落库。
  */
-import { app } from 'electron'\nimport { readFileSync } from 'fs'\nimport { chatService } from './chatService'
+import { app } from 'electron'
+import { readFileSync } from 'fs'
+import { chatService } from './chatService'
 import { wcdbService } from './wcdbService'
 import { crmDbService, type CrmRow } from './crmDbService'
 import { crmFileService } from './crmFileService'
@@ -168,7 +170,7 @@ function userDataPath(): string {
 }
 
 function isVisionEnabled(): boolean {
-  return configRef ? Boolean(configRef.get('crmVisionEnabled')) : false
+  return configRef ? Boolean((configRef as any).get('crmVisionEnabled')) : false
 }
 
 function findPaymentByRaw(quotedContent: string): CrmRow | null {

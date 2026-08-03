@@ -1,7 +1,7 @@
 /**
  * crmFileService.ts
  * 微信文件缓存定位与归档（Mac 优先；Windows 二期）。
- * 路径模式来自真实样本：~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/*/temp/RWTemp/**
+ * 路径模式来自真实样本：xwechat_files 下 wxid 目录的 temp/RWTemp 与 msg/file。
  */
 import { existsSync, mkdirSync, copyFileSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
