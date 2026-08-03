@@ -602,7 +602,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
 
     const source: SignalSource = {
       type: 'task',
-      ruleCode: rule ? (() => { const m = rule.id.match(/r(\d+)/); return m ? 'R' + m[1] : '??' })() : '??',
+      ruleCode: rule ? (() => { const m = rule.id.match(/r(\d+)/); return m ? 'R' + m[1] : 'R0' })() : 'R0',
       label: (() => {
         const labels: Record<string, string> = {
           'rule_r0_unknown_followup': '待确认',
@@ -613,7 +613,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
           'rule_r5_dormant_wake': '沉默唤醒',
           'rule_r6_consider_drop': '考虑放弃',
         }
-        return labels[task.trigger_type || ''] || '跟进'
+        return labels[task.trigger_type || ''] || '待确认'
       })(),
       reason: buildReason(task.trigger_type || '', silentDays),
       rawTaskId: task.id ?? 0
