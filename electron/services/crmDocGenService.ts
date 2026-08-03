@@ -29,7 +29,7 @@ function buildPlaceholderTemplate(type: DocType): Buffer {
   let body = ''
   if (type === 'quotation') {
     body = para('报价单 NO.{no}') + para('客户：{customer}') + para('日期：{date}') +
-      '{#items}' + para('{model} {name} 数量{qty} 单价{unit_price} 小计{subtotal}') + '{/items}' +
+      para('{#items}') + para('{model} {name} {spec_summary} 数量{qty} 单价{unit_price} 小计{subtotal}') + para('{/items}') +
       para('合计：{total}')
   } else if (type === 'contract') {
     body = para('购销合同 NO.{no}') + para('甲方客户：{customer}') + para('金额：{amount}') + para('签订日期：{sign_date}') + para('型号明细：{items_text}')

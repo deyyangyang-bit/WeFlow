@@ -298,7 +298,9 @@ class CrmDbService {
       const unit = it.unit_price ?? Number(p.unit_price ?? 0)
       const subtotal = Math.round(unit * it.qty * 100) / 100
       total = Math.round((total + subtotal) * 100) / 100
-      items.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', qty: it.qty, unit_price: unit, subtotal })
+      const specsObj = JSON.parse(String(p.specs || '{}')) as Record<string, string>
+      const specSummary = [p.material, ...Object.entries(specsObj).map(([k, v]) => `${k}:${v}`)].filter(Boolean).join('；')
+      items.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', spec_summary: specSummary, qty: it.qty, unit_price: unit, subtotal })
     }
     const id = this.create('quotation', { contract_id: data.contract_id, items: JSON.stringify(items), total, valid_until: data.valid_until ?? null, created_at: Date.now() })
     return { ok: true, id }
