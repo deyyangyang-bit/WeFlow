@@ -1,0 +1,7 @@
+
+.crm-product-page { padding: 24px; color: var(--text-primary, #1e293b); }
+.crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
+.crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } }
+.crm-new-form { display: flex; gap: 8px; margin-bottom: 12px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; } }
+.crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; } }

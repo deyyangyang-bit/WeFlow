@@ -1704,6 +1704,29 @@ export interface ElectronAPI {
   }
 
   // ─── 销售助手 ─────────────────────────────────────────────────────────────
+  crm: {
+    list: (entity: string, opts?: unknown) => Promise<any[]>
+    get: (entity: string, id: number) => Promise<any>
+    create: (entity: string, payload: unknown) => Promise<number>
+    update: (entity: string, id: number, patch: unknown) => Promise<void>
+    formGet: (entity: string) => Promise<any[]>
+    fieldMetaSave: (meta: unknown) => Promise<number>
+    reviewQueues: () => Promise<any>
+    workbench: () => Promise<any[]>
+    allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string }>
+    allocationReject: (id: number) => Promise<void>
+    contractShip: (id: number) => Promise<{ ok: boolean; gap?: number; reason?: string }>
+    logisticsLink: (id: number, contractId: number) => Promise<{ ok: boolean; warning?: string }>
+    logisticsCandidates: (receiver: string, city: string) => Promise<any[]>
+    productImport: (rows: unknown[]) => Promise<{ imported: number }>
+    quotationCreate: (data: unknown) => Promise<{ ok: boolean; id?: number; reason?: string }>
+    groupsList: () => Promise<any[]>
+    groupsSave: (g: unknown) => Promise<number>
+    groupsUpdate: (id: number, patch: unknown) => Promise<void>
+    parseScanNow: () => Promise<{ scanned: number }>
+    docGenerate: (type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>
+    aliasLearn: (alias: string, accountId: number) => Promise<void>
+  }
   sales: {
     // 知识库
     kbList: (filters?: { category?: string; product_line?: string; scene?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>

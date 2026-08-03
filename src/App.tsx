@@ -45,6 +45,9 @@ const FollowUpPage = lazy(() => import('./pages/FollowUpPage'))
 const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
 const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
 const CustomerListPage = lazy(() => import('./pages/CustomerListPage'))
+const CrmWorkbenchPage = lazy(() => import('./pages/CrmWorkbenchPage'))
+const CrmReviewPage = lazy(() => import('./pages/CrmReviewPage'))
+const CrmProductPage = lazy(() => import('./pages/CrmProductPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
 const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
@@ -724,6 +727,9 @@ function App() {
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/follow-up" element={<FollowUpPage />} />
                 <Route path="/customers" element={<CustomerListPage />} />
+                <Route path="/crm" element={<CrmWorkbenchPage />} />
+                <Route path="/crm-review" element={<CrmReviewPage />} />
+                <Route path="/crm-product" element={<CrmProductPage />} />
                 <Route path="/biz" element={<BizPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />
