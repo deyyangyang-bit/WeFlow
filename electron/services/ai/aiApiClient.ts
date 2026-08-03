@@ -47,6 +47,8 @@ export interface CallOptions {
   useMaxCompletionTokens?: boolean
   /** 要求返回 JSON 格式 */
   responseFormatJson?: boolean
+  /** vision：附带 base64 图片（OpenAI 兼容 image_url parts） */
+  imagesBase64?: Array<{ data: string; mime: string }>
   /** 中止信号 */
   signal?: AbortSignal
 }
@@ -123,6 +125,21 @@ export function callChatCompletion(
 
     if (options.responseFormatJson) {
       payload.response_format = { type: 'json_object' }
+    }
+
+    if (options.imagesBase64?.length) {
+      const msgs = (payload.messages as ChatMessage[]).map((m) => ({ ...m }))
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'user' && typeof msgs[i].content === 'string') {
+          const text = msgs[i].content as string
+          ;(msgs[i] as unknown as Record<string, unknown>).content = [
+            { type: 'text', text },
+            ...options.imagesBase64.map((img) => ({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } }))
+          ]
+          break
+        }
+      }
+      payload.messages = msgs
     }
 
     const body = JSON.stringify(payload)

@@ -675,6 +675,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ─── 销售助手 ───────────────────────────────────────────────────────────────
 
+  crm: {
+    list: (entity: string, opts?: unknown) => ipcRenderer.invoke('crm:entity:list', entity, opts),
+    get: (entity: string, id: number) => ipcRenderer.invoke('crm:entity:get', entity, id),
+    create: (entity: string, payload: unknown) => ipcRenderer.invoke('crm:entity:create', entity, payload),
+    update: (entity: string, id: number, patch: unknown) => ipcRenderer.invoke('crm:entity:update', entity, id, patch),
+    formGet: (entity: string) => ipcRenderer.invoke('crm:form:get', entity),
+    fieldMetaSave: (meta: unknown) => ipcRenderer.invoke('crm:fieldmeta:save', meta),
+    reviewQueues: () => ipcRenderer.invoke('crm:review:queues'),
+    workbench: () => ipcRenderer.invoke('crm:workbench'),
+    allocationConfirm: (id: number, patch?: unknown) => ipcRenderer.invoke('crm:allocation:confirm', id, patch),
+    allocationReject: (id: number) => ipcRenderer.invoke('crm:allocation:reject', id),
+    contractShip: (id: number) => ipcRenderer.invoke('crm:contract:ship', id),
+    logisticsLink: (id: number, contractId: number) => ipcRenderer.invoke('crm:logistics:link', id, contractId),
+    logisticsCandidates: (receiver: string, city: string) => ipcRenderer.invoke('crm:logistics:candidates', receiver, city),
+    productImport: (rows: unknown[]) => ipcRenderer.invoke('crm:product:import', rows),
+    quotationCreate: (data: unknown) => ipcRenderer.invoke('crm:quotation:create', data),
+    groupsList: () => ipcRenderer.invoke('crm:groups:list'),
+    groupsSave: (g: unknown) => ipcRenderer.invoke('crm:groups:save'),
+    groupsUpdate: (id: number, patch: unknown) => ipcRenderer.invoke('crm:groups:update'),
+    parseScanNow: () => ipcRenderer.invoke('crm:parse:scanNow'),
+    docGenerate: (type: string, recordId: number) => ipcRenderer.invoke('crm:doc:generate', type, recordId),
+    aliasLearn: (alias: string, accountId: number) => ipcRenderer.invoke('crm:alias:learn', alias, accountId)
+  },
   sales: {
     // 知识库
     kbList: (filters?: { category?: string; product_line?: string; scene?: string }) =>
