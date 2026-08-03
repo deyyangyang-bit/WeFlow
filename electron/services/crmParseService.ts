@@ -14,7 +14,7 @@ import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
-  isCompanyHint, splitAliasHints, type AllocationRow
+  isCompanyHint, splitAliasHints, parseShippingInfo, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
@@ -75,6 +75,70 @@ async function scanAll(): Promise<number> {
         if (ms > maxMs) maxMs = ms
       }
       if (maxMs > lastScan) crmDbService.updateGroup(Number(group.id), { last_scan: maxMs })
+    }
+    // ── 私聊收货地址扫描：客户付款后发地址/联系人 → 落 shipping_info 并回填未链接物流 ──
+    const nowMs = Date.now()
+    let privBudget = 150
+    for (const sess of sessions) {
+      if (privBudget <= 0) break
+      const uid = String(sess.username || '')
+      if (!uid || uid.includes('@chatroom') || uid.startsWith('gh_') || uid === 'filehelper') continue
+      const lastAct = Number(sess.sortTimestamp || sess.lastTimestamp || 0)
+      if (lastAct && lastAct < nowMs - 7 * 86400_000) continue
+      const name = String(sess.displayName || '')
+      let accountId = 0
+      const acc = crmDbService.matchAccountByName(name)
+      if (acc) accountId = Number(acc.id)
+      if (!accountId) {
+        const al = crmDbService.aliasLookup(name)
+        if (al) accountId = Number(al.account_id)
+      }
+      if (!accountId) {
+        const ct = crmDbService.all('SELECT account_id FROM contact WHERE name = ? LIMIT 1', [name])
+        if (ct.length) accountId = Number(ct[0].account_id)
+      }
+      const lastScan = crmDbService.getScanState('priv:' + uid)
+      if (lastScan && lastAct && lastScan >= lastAct) continue // 无新消息，跳过拉取
+      privBudget--
+      const mr = await chatService.getMessages(uid, 0, 50)
+      if (!mr?.success || !mr.messages?.length) continue
+      let maxMs = lastScan
+      for (const msg of mr.messages) {
+        const ms = Number(msg.createTime ?? 0) * 1000
+        if (ms <= lastScan) continue
+        const key = String(msg.messageKey || `${uid}:${String(msg.createTime)}`)
+        if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
+        try {
+          const content = String(msg.content ?? msg.parsedContent ?? '')
+          let info: ShippingInfo | null = parseShippingInfo(content)
+          if (!info && /1[3-9]\d{9}/.test(content) && /(地址|收货|收件)/.test(content) && configRef && isAiConfigured(configRef)) {
+            info = await aiParseShipping(content)
+          }
+          if (info && info.address) {
+            let accId = accountId
+            // 主数据无此客户：私聊发完整收货地址即视为客户本人 → 建账户+别名学习（跳过自家同事/文件传输助手）
+            if (!accId && info.receiver && info.phone && name && !/库叉|文件传输助手/.test(name)) {
+              accId = crmDbService.ensureAccount(name)
+              crmDbService.aliasLearn(name, accId)
+              salesLog('INFO', `[CrmParse] 新建客户账户（私聊地址）: ${name} -> ${accId}`)
+            }
+            if (!accId) { crmDbService.markMsgProcessed(key); if (ms > maxMs) maxMs = ms; continue }
+            crmDbService.saveShippingInfo({
+              account_id: accId, receiver: info.receiver, phone: info.phone,
+              address: info.address, city: info.city, source_msg_id: key, created_at: Date.now()
+            })
+            if (info.receiver) {
+              const unlinked = crmDbService.all("SELECT * FROM logistics WHERE link_status = 'unlinked' AND receiver = ?", [info.receiver])
+              for (const l of unlinked) crmDbService.autoLinkLogisticsByReceiver(Number(l.id), info.receiver)
+            }
+          }
+        } catch (e) {
+          salesLog('WARN', `[CrmParse] priv handle error ${key}: ${e}`)
+        }
+        crmDbService.markMsgProcessed(key)
+        if (ms > maxMs) maxMs = ms
+      }
+      if (maxMs > lastScan) crmDbService.setScanState('priv:' + uid, maxMs)
     }
   } catch (e) {
     salesLog('WARN', `[CrmParse] scanAll error: ${e}`)
@@ -151,12 +215,16 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
     const logiRows = parseLogisticsBatch(content)
     if (logiRows) {
       for (const r of logiRows) {
-        crmDbService.create('logistics', {
+        const lid = crmDbService.create('logistics', {
           tracking_no: r.trackingNo, brand: r.brand, receiver: r.receiver, city: r.city,
           courier: String(group.default_courier || '安能物流'), status: 'shipped',
           latest_update_at: Number(msg.createTime || 0) * 1000,
           source_msg_id: String(msg.messageKey || ''), created_at: Date.now()
         })
+        // 收货人命中私聊地址 → 自动链接客户合同
+        if (lid && !crmDbService.autoLinkLogisticsByReceiver(Number(lid), r.receiver)) {
+          // 未命中则保持 unlinked，待确认中心手动/自动匹配
+        }
       }
       return
     }
@@ -200,7 +268,14 @@ function applyClaim(payment: CrmRow, senderName: string): void {
       account_id: account ? account.id : null, sales_name: senderName,
       status: 'confirmed', created_at: Date.now(), confirmed_at: Date.now()
     })
+    return
   }
+  // 企业微信扫码（财付通）：认领记销售，客户待地址/手动确认
+  crmDbService.create('allocation', {
+    payment_record_id: payment.id, customer_hint: '企业微信扫码', sales_hint: senderName,
+    amount_hint: payment.amount_net, credited_amount: payment.amount_net,
+    account_id: null, sales_name: senderName, status: 'pending', created_at: Date.now()
+  })
 }
 
 function resolveAccountForAllocation(a: CrmRow, patch: CrmRow): void {
@@ -212,6 +287,8 @@ function resolveAccountForAllocation(a: CrmRow, patch: CrmRow): void {
     } else {
       const alias = crmDbService.aliasLookup(h)
       if (alias) { patch.account_id = alias.account_id; return }
+      const acc = crmDbService.accountByReceiver(h)
+      if (acc) { patch.account_id = Number(acc.id); return }
     }
   }
 }
@@ -252,6 +329,22 @@ async function aiParseShorthand(content: string, quotedContent: string): Promise
       .filter((x) => x && x.customer && x.amount != null)
       .map((x) => ({ customerHint: String(x.customer), salesHint: String(x.sales || ''), amountHint: parseFloat(String(x.amount)) }))
     return rows.length ? rows : null
+  } catch {
+    return null
+  }
+}
+
+async function aiParseShipping(content: string): Promise<ShippingInfo | null> {
+  if (!configRef) return null
+  try {
+    const out = await simpleCompletion(configRef,
+      '你是地址解析器。从聊天文本提取收货信息，输出JSON {receiver,phone,address,city}，缺失字段用空字符串。只输出JSON。',
+      content, { responseFormatJson: true, maxTokens: 300 })
+    const m = out.match(/\{[\s\S]*\}/)
+    if (!m) return null
+    const o = JSON.parse(m[0]) as Record<string, unknown>
+    if (!o.address) return null
+    return { receiver: String(o.receiver || ''), phone: String(o.phone || ''), address: String(o.address || ''), city: String(o.city || '') }
   } catch {
     return null
   }

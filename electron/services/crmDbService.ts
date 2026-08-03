@@ -89,13 +89,20 @@ CREATE INDEX IF NOT EXISTS idx_crm_alloc_contract ON allocation(contract_id, sta
 CREATE INDEX IF NOT EXISTS idx_crm_logi_link ON logistics(link_status);
 CREATE INDEX IF NOT EXISTS idx_crm_pay_channel ON payment_record(pay_channel, needs_review);
 CREATE INDEX IF NOT EXISTS idx_crm_account_name ON account(name);
+CREATE TABLE IF NOT EXISTS shipping_info (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, receiver TEXT, phone TEXT,
+  address TEXT, city TEXT, source_msg_id TEXT, created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS scan_state (
+  key TEXT PRIMARY KEY, last_scan INTEGER DEFAULT 0
+);
 `
 
 export interface CrmRow { [key: string]: any }
 
 const ENTITIES = [
   'lead', 'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
-  'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config'
+  'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -278,6 +285,37 @@ class CrmDbService {
     const warning = c && this.creditedTotal(contractId) + 0.005 < Number(c.amount ?? 0) ? '未全款已发货' : undefined
     return { ok: true, warning }
   }
+  saveShippingInfo(row: CrmRow): number {
+    if (row.source_msg_id && this.all('SELECT 1 AS x FROM shipping_info WHERE source_msg_id = ?', [row.source_msg_id]).length) return 0
+    return this.create('shipping_info', row)
+  }
+  findShippingByReceiver(receiver: string): CrmRow | null {
+    if (!receiver) return null
+    const exact = this.all('SELECT * FROM shipping_info WHERE receiver = ? ORDER BY id DESC LIMIT 1', [receiver])
+    if (exact.length) return exact[0]
+    const fuzzy = this.all("SELECT * FROM shipping_info WHERE receiver <> '' AND (receiver LIKE ? OR ? LIKE '%' || receiver || '%') ORDER BY id DESC LIMIT 1", [receiver + '%', receiver])
+    return fuzzy.length ? fuzzy[0] : null
+  }
+  accountByReceiver(receiver: string): CrmRow | null {
+    const sh = this.findShippingByReceiver(receiver)
+    if (!sh || !sh.account_id) return null
+    return this.getById('account', Number(sh.account_id))
+  }
+  getScanState(key: string): number {
+    const r = this.all('SELECT last_scan FROM scan_state WHERE key = ?', [key])
+    return r.length ? Number(r[0].last_scan || 0) : 0
+  }
+  setScanState(key: string, ms: number): void {
+    this.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [key, ms])
+  }
+  autoLinkLogisticsByReceiver(logiId: number, receiver: string): boolean {
+    const acc = this.accountByReceiver(receiver)
+    if (!acc) return false
+    const c = this.all("SELECT * FROM contract WHERE account_id = ? AND status IN ('signed','shipped') ORDER BY id DESC LIMIT 1", [Number(acc.id)])
+    if (!c.length) return false
+    this.update('logistics', logiId, { contract_id: Number(c[0].id), link_status: 'linked' })
+    return true
+  }
   logisticsCandidates(receiver: string, city: string): CrmRow[] {
     // 收件人+城市 → 候选合同（经 account 名称/城市模糊匹配），兜底近期已签约合同
     const byAccount = this.all(
@@ -285,6 +323,12 @@ class CrmDbService {
       ['%' + (receiver || '') + '%', city || '', city || '']
     )
     if (byAccount.length) return byAccount
+    // 私聊收货地址 → 客户 → 合同
+    const acc = this.accountByReceiver(receiver || '')
+    if (acc) {
+      const viaShip = this.all('SELECT * FROM contract WHERE account_id = ? ORDER BY id DESC LIMIT 5', [Number(acc.id)])
+      if (viaShip.length) return viaShip
+    }
     return this.all("SELECT * FROM contract WHERE status IN ('signed','shipped') ORDER BY id DESC LIMIT 5")
   }
 

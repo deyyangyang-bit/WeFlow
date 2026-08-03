@@ -63,6 +63,65 @@ export function isClaimKeyword(content: string): boolean {
   return CLAIM_WORDS.includes(t)
 }
 
+
+// ─── 私聊收货地址（收货人/电话/地址/城市，启发式+AI兜底在外层）──────────────
+export interface ShippingInfo { receiver: string; phone: string; address: string; city: string }
+
+const SHIP_PHONE_RE = /1[3-9]\d{9}/
+const SHIP_ADDR_KW_RE = /(省|自治区|市|区|县|开发区|街道|镇|路|号|弄|栋|园区|产业园|大厦|工业园)/
+const SHIP_NAME_LABEL_RE = /(?:收货人|收件人|联系人)[\s:：]*([\u4e00-\u9fa5A-Za-z]{1,4})/
+
+export function parseShippingInfo(content: string): ShippingInfo | null {
+  if (!content) return null
+  const text = String(content).replace(/\[[^\]]{1,8}\]/g, ' ')
+  const phoneM = text.match(SHIP_PHONE_RE)
+  if (!phoneM || !SHIP_ADDR_KW_RE.test(text)) return null
+  const phone = phoneM[0]
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+
+  let receiver = ''
+  const labelM = text.match(SHIP_NAME_LABEL_RE)
+  if (labelM) receiver = labelM[1]
+  if (!receiver) {
+    const near = [
+      new RegExp(`([\u4e00-\u9fa5]{1,4})(?:（[^）)]*[)）])?[,，、\\s]*(?:收[,，、\\s]*)?${phone}`),
+      new RegExp(`${phone}[-)）\\s]*([\u4e00-\u9fa5]{1,4})`)
+    ]
+    for (const line of lines) {
+      for (const re of near) {
+        const m = line.match(re)
+        if (m?.[1] && !/^(收|是|这|打|拨|请|谢谢|麻烦)/.test(m[1])) { receiver = m[1].replace(/收$/, ''); break }
+      }
+      if (receiver) break
+    }
+  }
+  if (!receiver) {
+    for (const line of lines) {
+      const bare = line.replace(SHIP_PHONE_RE, '').replace(/[,，、\s()（）-]/g, '')
+      if (/^[\u4e00-\u9fa5]{2,4}$/.test(bare)) { receiver = bare; break }
+    }
+  }
+
+  let address = ''
+  for (const line of [...lines].sort((a, b) => b.length - a.length)) {
+    const hits = (line.match(/(省|自治区|市|区|县|街道|镇|路|号|弄|栋|园区|产业园|大厦|工业园|开发区)/g) || []).length
+    if (hits >= 2) {
+      address = line
+        .replace(/(收货地址|仓库地址|收货信息|公司地址|地址|收货人|收件人|联系人|联系电话|电话)[\s:：]*/g, ' ')
+        .replace(SHIP_PHONE_RE, ' ')
+        .replace(new RegExp(receiver ? receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : 'xxxxxx', 'g'), ' ')
+        .replace(/[,，、;；\s]+/g, ' ')
+        .replace(/(是这个|谢谢|麻烦|收到|拨打请输入分机号\S*)$/g, '').replace(/\\s*收$/, '')
+        .trim()
+      break
+    }
+  }
+  if (!address) return null
+  const noProv = address.replace(/^[^市]*?(省|自治区)/, '')
+  const cityM = noProv.match(/([\u4e00-\u9fa5]{2,8}?市)/)
+  return { receiver, phone, address, city: cityM ? cityM[1] : '' }
+}
+
 // ─── 物流批量（一行：单号 品牌 收件人 城市）─────────────────────────────────
 const LOGI_LINE_RE = /^(?<no>\d{10,15})\s+(?<brand>\S+)\s+(?<name>\S+)\s+(?<city>\S+)$/
 
