@@ -5,3 +5,10 @@
 .crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &:disabled { opacity: 0.5; } }
 .crm-review-page section { margin-bottom: 18px; h3 { font-size: 13px; color: #64748b; margin-bottom: 8px; } }
 .crm-card { display: flex; gap: 8px; align-items: center; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; span { margin-right: auto; } select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 6px; font-size: 12px; } }
+
+.crm-review-page .gtype { font-style: normal; background: #eff6ff; color: #2563eb; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+.crm-review-page .gswitch { font-size: 12px; display: flex; gap: 4px; align-items: center; }
+.crm-review-page .crm-search { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; font-size: 13px; width: 100%; margin-bottom: 10px; }
+.crm-review-page .pick-list { max-height: 50vh; overflow: auto; }
+.crm-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.crm-modal-body { background: #fff; border-radius: 12px; padding: 20px; width: 640px; max-height: 80vh; overflow: auto; color: #1e293b; h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }

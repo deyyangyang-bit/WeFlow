@@ -46,15 +46,17 @@ async function scanAll(): Promise<number> {
   try {
     const groups = crmDbService.groups().filter((g) => Number(g.enabled) === 1)
     if (!groups.length) return 0
+    salesLog('INFO', `[CrmParse] scan start groups=${groups.length}`)
     const sessResult = await chatService.getSessions()
     const sessions: CrmRow[] = sessResult?.sessions ?? []
     const byId = new Map<string, CrmRow>()
     for (const s of sessions) byId.set(String(s.username || s.id || ''), s)
     for (const group of groups) {
       const gid = String(group.group_id)
-      if (!byId.has(gid)) continue
+      if (!byId.has(gid)) { salesLog('INFO', `[CrmParse] skip ${gid} not-in-sessions`); continue }
       const lastScan = Number(group.last_scan || 0)
-      const msgResult = await wcdbService.getMessages(gid, 100, 0)
+      const msgResult = await chatService.getMessages(gid, 0, 100)
+      salesLog('INFO', `[CrmParse] group=${String(group.group_name)} success=${String(msgResult?.success)} msgs=${String(msgResult?.messages?.length ?? 0)}`)
       if (!msgResult?.success || !msgResult.messages?.length) continue
       const messages: CrmRow[] = msgResult.messages
       let maxMs = lastScan
@@ -79,6 +81,7 @@ async function scanAll(): Promise<number> {
   } finally {
     scanning = false
   }
+  salesLog('INFO', `[CrmParse] scan done scanned=${scanned}`)
   return scanned
 }
 
