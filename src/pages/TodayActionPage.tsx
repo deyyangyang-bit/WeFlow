@@ -1,181 +1,56 @@
 /**
- * TodayActionPage.tsx
- * 今日行动清单 — 产品核心页面
+ * TodayActionPage.tsx — 统一信号流首页(v4 布局)
  *
- * v3 升级：
- * - 结构化分析展示（whyNow / opportunity / riskSignal / script / nextMove）
- * - R6 清理候选独立折叠区
+ * 结构：header(标题+销售复盘+刷新) → KPI 单行条 → 高意向提示条
+ *       → 主两栏(左:筛选chips+信号卡流 | 右:待办侧栏)
+ *       → 可折叠「数据概览」(来源/紧急度/阶段)
  */
-import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, Copy, Lightbulb, RefreshCw, SkipForward, Sparkles, TrendingUp, Zap } from 'lucide-react'
-import { useTodayActionStore, type ActionItem } from '../stores/todayActionStore'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  Activity, BarChart3, Bell, ChevronDown, ChevronUp,
+  Clock, Flame, RefreshCw, TrendingUp, Users,
+} from 'lucide-react'
+import AIActionCard from '../components/sales/AIActionCard'
+import TodoSidebar from '../components/sales/TodoSidebar'
+import { useTodayActionStore, type SignalFilter } from '../stores/todayActionStore'
 import './TodayActionPage.scss'
 
-const STAGE_LABELS: Record<string, { text: string; color: string }> = {
-  new: { text: '新客', color: '#3b82f6' },
-  contacted: { text: '已沟通', color: '#8b5cf6' },
-  quoted: { text: '已报价', color: '#f59e0b' },
-  negotiating: { text: '谈判中', color: '#ef4444' },
-  won: { text: '成交', color: '#10b981' },
-  lost: { text: '流失', color: '#6b7280' },
-  dormant: { text: '沉默', color: '#9ca3af' },
-  unknown: { text: '未知', color: '#6b7280' }
+const CHIPS: { key: SignalFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'task', label: '该联系' },
+  { key: 'insight', label: '有动向' },
+  { key: 'urgent', label: '紧急' },
+]
+
+const STAGE_LABELS: Record<string, string> = {
+  contacted: '沟通', quoted: '报价', negotiating: '谈判',
+  unknown: '未知', new: '新客', dormant: '沉默',
+}
+const STAGE_COLORS: Record<string, string> = {
+  contacted: '#8b5cf6', quoted: '#f59e0b', negotiating: '#ef4444',
+  unknown: '#9ca3af', new: '#3b82f6', dormant: '#6b7280',
 }
 
-const PRIORITY_LABELS: Record<string, { text: string; color: string }> = {
-  urgent: { text: '紧急', color: '#dc2626' },
-  high: { text: '高', color: '#ea580c' },
-  medium: { text: '中', color: '#ca8a04' },
-  low: { text: '低', color: '#2563eb' },
-  info: { text: '参考', color: '#6b7280' }
-}
-
-function ActionCard({ item, isArchive = false }: { item: ActionItem; isArchive?: boolean }) {
-  const { completeItem, fetchSuggestion } = useTodayActionStore()
-  const [copied, setCopied] = useState(false)
-  const [loadingSuggestion, setLoadingSuggestion] = useState(false)
-
-  const stage = STAGE_LABELS[item.stage] || STAGE_LABELS.unknown
-  const priority = PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.info
-  const hasAnalysis = !!(item.whyNow || item.opportunity || item.riskSignal || item.suggestion)
-
-  const handleCopy = useCallback(async () => {
-    const text = item.suggestion || item.nextMove || ''
-    if (!text) return
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* ignore */ }
-  }, [item.suggestion, item.nextMove])
-
-  const handleSuggest = useCallback(async () => {
-    setLoadingSuggestion(true)
-    await fetchSuggestion(item)
-    setLoadingSuggestion(false)
-  }, [item, fetchSuggestion])
-
+function KpiStat({ icon, value, label }: { icon: React.ReactNode; value: number; label: string }) {
   return (
-    <div className={`action-card priority-${item.priority}${isArchive ? ' action-card--archive' : ''}`}>
-      <div className="action-card__header">
-        <div className="action-card__avatar">
-          {(item.displayName || '?')[0]}
-        </div>
-        <div className="action-card__meta">
-          <div className="action-card__name-row">
-            <span className="action-card__name">{item.displayName}</span>
-            <span className="action-card__stage" style={{ background: stage.color }}>{stage.text}</span>
-            <span className="action-card__priority" style={{ color: priority.color }}>{priority.text}</span>
-            {isArchive && (
-              <span className="action-card__archive-tag">
-                <Archive size={11} /> 清理候选
-              </span>
-            )}
-          </div>
-          <div className="action-card__reason">{item.reason}</div>
-        </div>
-        <div className="action-card__silent">{item.silentDays}天</div>
-      </div>
-
-      <div className="action-card__title">{item.title}</div>
-
-      {/* v3 结构化分析展示 */}
-      {hasAnalysis && (
-        <div className="action-card__analysis">
-          {item.whyNow && (
-            <div className="analysis-row analysis-row--why">
-              <Zap size={13} />
-              <span>{item.whyNow}</span>
-            </div>
-          )}
-          {item.opportunity && (
-            <div className="analysis-row analysis-row--opportunity">
-              <TrendingUp size={13} />
-              <span>{item.opportunity}</span>
-            </div>
-          )}
-          {item.riskSignal && (
-            <div className="analysis-row analysis-row--risk">
-              <AlertTriangle size={13} />
-              <span>{item.riskSignal}</span>
-            </div>
-          )}
-          {item.suggestion && (
-            <div className="analysis-row analysis-row--script">
-              <Sparkles size={13} />
-              <span className="analysis-script-text">{item.suggestion}</span>
-              <button className="action-card__copy-btn" onClick={handleCopy} title="复制话术">
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-                {copied ? '已复制' : '复制'}
-              </button>
-            </div>
-          )}
-          {item.nextMove && !item.suggestion && (
-            <div className="analysis-row analysis-row--next">
-              <ChevronRight size={13} />
-              <span>{item.nextMove}</span>
-            </div>
-          )}
-          {item.degradationNote && (
-            <div className="analysis-degradation">{item.degradationNote}</div>
-          )}
-        </div>
-      )}
-
-      <div className="action-card__actions">
-        {!hasAnalysis && !loadingSuggestion && (
-          <button
-            className="action-card__btn action-card__btn--suggest"
-            onClick={handleSuggest}
-            disabled={loadingSuggestion}
-          >
-            <Sparkles size={14} />
-            AI 深度分析
-          </button>
-        )}
-        {loadingSuggestion && (
-          <span className="action-card__loading">
-            <RefreshCw size={14} className="spinning" />
-            AI 分析中（获取聊天记录+深度分析，最长约20秒）...
-          </span>
-        )}
-        {item.notConfigured && (
-          <span className="action-card__suggest-error">请在 设置 → AI 设置 中配置模型</span>
-        )}
-        {!item.notConfigured && item.suggestionError && (
-          <span className="action-card__suggest-error">
-            AI 分析失败：{item.suggestionError}
-            <button className="action-card__retry-link" onClick={handleSuggest}>重试</button>
-          </span>
-        )}
-        <div className="action-card__spacer" />
-        <button
-          className="action-card__btn action-card__btn--skip"
-          onClick={() => completeItem(item.id, 'skipped')}
-        >
-          <SkipForward size={14} />
-          跳过
-        </button>
-        <button
-          className="action-card__btn action-card__btn--done"
-          onClick={() => completeItem(item.id, 'done')}
-        >
-          <Check size={14} />
-          {isArchive ? '已处理' : '完成'}
-        </button>
+    <div className="kpi-strip__stat">
+      {icon}
+      <div>
+        <div className="kpi-strip__value">{value}</div>
+        <div className="kpi-strip__label">{label}</div>
       </div>
     </div>
-  )
+  );
 }
 
 export default function TodayActionPage() {
-  const { items, archiveCandidates, stats, loading, error, fetchToday } = useTodayActionStore()
+  const { items, stats, loading, error, filter, noticeDismissed, fetchToday, setFilter, dismissNotice } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
-  const [archiveExpanded, setArchiveExpanded] = useState(false)
+  const [overviewOpen, setOverviewOpen] = useState(false)
+  const navigate = useNavigate()
 
-  useEffect(() => {
-    fetchToday()
-  }, [fetchToday])
+  useEffect(() => { fetchToday() }, [fetchToday])
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -183,99 +58,201 @@ export default function TodayActionPage() {
     setRefreshing(false)
   }, [fetchToday])
 
-  const r6Count = stats?.r6Count ?? archiveCandidates.length
+  // 筛选
+  const filtered = useMemo(() => {
+    if (filter === 'all') return items
+    if (filter === 'task') return items.filter(i => i.sources.every(s => s.type === 'task'))
+    if (filter === 'insight') return items.filter(i => i.sources.some(s => s.type === 'insight'))
+    if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
+    return items
+  }, [items, filter])
+
+  // chips 计数
+  const chipCounts = useMemo(() => ({
+    all: items.length,
+    task: items.filter(i => i.sources.every(s => s.type === 'task')).length,
+    insight: items.filter(i => i.sources.some(s => s.type === 'insight')).length,
+    urgent: items.filter(i => i.urgencyTier === 'urgent').length,
+  }), [items])
+
+  // 高意向提示条
+  const highIntentWithInsight = items.filter(i =>
+    i.urgencyTier === 'urgent' && i.sources.some(s => s.type === 'insight')
+  ).length
+
+  // 概览:阶段分布
+  const stageCounts = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const item of items) {
+      const s = item.stage || 'unknown'
+      m[s] = (m[s] || 0) + 1
+    }
+    return Object.entries(m).sort((a, b) => b[1] - a[1])
+  }, [items])
+  const maxStageCount = Math.max(1, ...stageCounts.map(([, c]) => c))
 
   return (
     <div className="today-action-page">
+      {/* header */}
       <div className="today-action-page__header">
-        <h1 className="today-action-page__title">今日行动</h1>
-        <button className="today-action-page__refresh" onClick={handleRefresh} disabled={refreshing}>
-          <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
-        </button>
+        <div>
+          <h1 className="today-action-page__title">今日行动</h1>
+          <p className="today-action-page__subtitle">任务与动态已合并 · 共 {filtered.length} 条信号</p>
+        </div>
+        <div className="today-action-page__header-actions">
+          <button className="ta-btn ta-btn--teal" onClick={() => navigate('/sales-report')}>
+            <BarChart3 size={14} /> 销售复盘
+          </button>
+          <button className="today-action-page__refresh" onClick={handleRefresh} disabled={refreshing}>
+            <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
+          </button>
+        </div>
       </div>
 
+      {/* KPI 单行条 */}
       {stats && (
-        <div className="today-action-page__stats">
-          <div className="stat-chip">
-            <span className="stat-chip__value">{stats.todayPending}</span>
-            <span className="stat-chip__label">待跟进</span>
+        <div className="kpi-strip">
+          <KpiStat icon={<Flame size={15} />} value={stats.highPriorityCount} label="高优行动" />
+          <span className="kpi-strip__divider" />
+          <KpiStat icon={<Clock size={15} />} value={stats.riskCustomerCount} label="沉默风险" />
+          <span className="kpi-strip__divider" />
+          <KpiStat icon={<TrendingUp size={15} />} value={stats.activeDeals} label="活跃商机" />
+          <span className="kpi-strip__divider" />
+          <KpiStat icon={<Users size={15} />} value={stats.totalSignals} label="待处理" />
+        </div>
+      )}
+
+      {/* 高意向提示条 */}
+      {!noticeDismissed && highIntentWithInsight > 0 && (
+        <div className="signal-notice" onClick={dismissNotice}>
+          <Bell size={14} />
+          {highIntentWithInsight} 位客户有高意向动向，已置顶排序
+          <span className="signal-notice__dismiss">点击收起</span>
+        </div>
+      )}
+
+      {/* 主两栏 */}
+      <div className="today-action-page__main">
+        <div className="today-action-page__left">
+          {/* 筛选 chips */}
+          <div className="signal-chips">
+            {CHIPS.map(c => (
+              <button
+                key={c.key}
+                className={`signal-chip ${filter === c.key ? 'signal-chip--active' : ''}`}
+                onClick={() => setFilter(c.key)}
+              >
+                {c.label}
+                <span className="signal-chip__count">{chipCounts[c.key]}</span>
+              </button>
+            ))}
           </div>
-          <div className="stat-chip stat-chip--warn">
-            <span className="stat-chip__value">{stats.overdue}</span>
-            <span className="stat-chip__label">逾期</span>
-          </div>
-          <div className="stat-chip">
-            <span className="stat-chip__value">{stats.newThisWeek}</span>
-            <span className="stat-chip__label">本周新增</span>
-          </div>
-          <div className="stat-chip">
-            <span className="stat-chip__value">{stats.pipelineTotal}</span>
-            <span className="stat-chip__label">管道中</span>
-          </div>
-          {/* R6 清理候选：仅 N>0 时渲染 */}
-          {r6Count > 0 && (
-            <div
-              className="stat-chip stat-chip--archive"
-              onClick={() => setArchiveExpanded(!archiveExpanded)}
-              title="点击展开清理候选"
-            >
-              <span className="stat-chip__value">
-                <Archive size={13} />
-                {r6Count}
-              </span>
-              <span className="stat-chip__label">待清理</span>
+
+          {/* 错误 */}
+          {error && (
+            <div className="today-action-page__error">
+              {error}
+              <button onClick={fetchToday}>重试</button>
             </div>
           )}
-        </div>
-      )}
 
-      {error && (
-        <div className="today-action-page__error">
-          {error}
-          <button onClick={fetchToday}>重试</button>
-        </div>
-      )}
-
-      {loading && items.length === 0 && (
-        <div className="today-action-page__loading">
-          <RefreshCw size={24} className="spinning" />
-          <p>正在分析客户数据...</p>
-        </div>
-      )}
-
-      {!loading && items.length === 0 && !error && (
-        <div className="today-action-page__empty">
-          <div className="today-action-page__empty-icon">🎉</div>
-          <p>今天全部跟完了！</p>
-          {stats && <p className="today-action-page__empty-sub">管道中还有 {stats.pipelineTotal} 个客户</p>}
-        </div>
-      )}
-
-      {/* R6 清理候选折叠区：仅 N>0 时渲染，默认收起 */}
-      {r6Count > 0 && (
-        <div className={`archive-section ${archiveExpanded ? 'archive-section--expanded' : ''}`}>
-          <button
-            className="archive-section__toggle"
-            onClick={() => setArchiveExpanded(!archiveExpanded)}
-          >
-            {archiveExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-            <span>待清理 ({r6Count})</span>
-            <span className="archive-section__hint">多次跟进无响应的客户</span>
-          </button>
-          {archiveExpanded && (
-            <div className="archive-section__list">
-              {archiveCandidates.map(item => (
-                <ActionCard key={item.id} item={item} isArchive />
-              ))}
+          {/* 加载 */}
+          {loading && items.length === 0 && (
+            <div className="today-action-page__loading">
+              <RefreshCw size={24} className="spinning" />
+              <p>正在分析客户数据...</p>
             </div>
           )}
-        </div>
-      )}
 
-      <div className="today-action-page__list">
-        {items.map(item => (
-          <ActionCard key={item.id} item={item} />
-        ))}
+          {/* 空状态 */}
+          {!loading && filtered.length === 0 && !error && (
+            <div className="signal-empty">
+              {items.length === 0
+                ? '🎉 今天全部跟完了！'
+                : '这个筛选下暂无信号，你已经跟上了所有客户'}
+            </div>
+          )}
+
+          {/* 信号卡片流 */}
+          <div className="signal-list">
+            {filtered.map(item => (
+              <AIActionCard key={item.sessionId} item={item} />
+            ))}
+          </div>
+        </div>
+
+        {/* 右栏:待办侧栏 */}
+        <div className="today-action-page__right">
+          <TodoSidebar />
+        </div>
+      </div>
+
+      {/* 可折叠数据概览 */}
+      <div className="overview-card">
+        <button className="overview-card__toggle" onClick={() => setOverviewOpen(!overviewOpen)}>
+          <span className="overview-card__title">
+            <Activity size={14} /> 数据概览 · 来源 / 紧急度 / 阶段
+          </span>
+          {overviewOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+
+        {overviewOpen && stats && stats.totalSignals > 0 && (
+          <div className="overview-grid">
+            {/* 来源分布 */}
+            <div className="overview-section">
+              <span className="overview-section__title">信号来源</span>
+              <div className="overview-section__bar">
+                {stats.taskOnly > 0 && (
+                  <div className="overview-section__seg overview-section__seg--task" style={{ flex: stats.taskOnly }} title={`该联系 ${stats.taskOnly}`} />
+                )}
+                {stats.merged > 0 && (
+                  <div className="overview-section__seg overview-section__seg--merged" style={{ flex: stats.merged }} title={`双重信号 ${stats.merged}`} />
+                )}
+                {stats.insightOnly > 0 && (
+                  <div className="overview-section__seg overview-section__seg--insight" style={{ flex: stats.insightOnly }} title={`有动向 ${stats.insightOnly}`} />
+                )}
+              </div>
+              <div className="overview-section__legend">
+                {stats.taskOnly > 0 && <><span className="overview-section__dot overview-section__dot--task" /> 该联系 {stats.taskOnly}</>}
+                {stats.merged > 0 && <><span className="overview-section__dot overview-section__dot--merged" /> 双重 {stats.merged}</>}
+                {stats.insightOnly > 0 && <><span className="overview-section__dot overview-section__dot--insight" /> 有动向 {stats.insightOnly}</>}
+              </div>
+            </div>
+
+            {/* 紧急度分布 */}
+            <div className="overview-section">
+              <span className="overview-section__title">紧急度</span>
+              <div className="overview-section__urgency">
+                {(['urgent', 'high', 'normal'] as const).map(tier => (
+                  <div key={tier} className="overview-section__urgency-item">
+                    <span className={`overview-section__urgency-dot overview-section__urgency-dot--${tier}`} />
+                    <span className="overview-section__urgency-num">{items.filter(i => i.urgencyTier === tier).length}</span>
+                    <span className="overview-section__urgency-label">{tier === 'urgent' ? '紧急' : tier === 'high' ? '高' : '常规'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 阶段分布 */}
+            <div className="overview-section overview-section--wide">
+              <span className="overview-section__title">客户阶段</span>
+              <div className="overview-section__stages">
+                {stageCounts.map(([stage, count]) => (
+                  <div key={stage} className="overview-section__stage-bar">
+                    <span className="overview-section__stage-label">{STAGE_LABELS[stage] || stage}</span>
+                    <div className="overview-section__stage-track">
+                      <div
+                        className="overview-section__stage-fill"
+                        style={{ width: `${(count / maxStageCount) * 100}%`, background: STAGE_COLORS[stage] || '#9ca3af' }}
+                      />
+                    </div>
+                    <span className="overview-section__stage-count">{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

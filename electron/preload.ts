@@ -732,6 +732,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     actionComplete: (taskId: number, action: 'done' | 'skipped') =>
       ipcRenderer.invoke('sales:action:complete', taskId, action),
     actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item),
+    actionGetUnified: () => ipcRenderer.invoke('sales:action:getUnified'),
+    actionCompleteUnified: (sessionId: string, action: 'done' | 'skipped') => ipcRenderer.invoke('sales:action:completeUnified', sessionId, action),
 
     // 周复盘
     reviewGenerate: () => ipcRenderer.invoke('sales:review:generate'),

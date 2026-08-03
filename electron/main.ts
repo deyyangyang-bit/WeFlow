@@ -35,7 +35,7 @@ import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage } from './services/salesActionEngine'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -4847,6 +4847,15 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:action:complete', async (_, taskId: number, action: 'done' | 'skipped') => {
     completeAction(taskId, action)
     return { success: true }
+  })
+
+  ipcMain.handle('sales:action:getUnified', async () => {
+    return getUnifiedSignals()
+  })
+
+  ipcMain.handle('sales:action:completeUnified', async (_, sessionId: string, action: 'done' | 'skipped') => {
+    completeUnifiedSignal(sessionId, action)
+    return { ok: true }
   })
 
   ipcMain.handle('sales:action:suggest', async (_, item: any) => {

@@ -613,7 +613,7 @@ class SalesDbService {
    */
   hasRecentTask(sessionId: string, triggerType: string, sinceMs: number): boolean {
     const row = this.get<{ c: number }>(
-      'SELECT COUNT(*) as c FROM follow_up_task WHERE session_id = ? AND trigger_type = ? AND created_at >= ?',
+      'SELECT COUNT(*) as c FROM follow_up_task WHERE session_id = ? AND trigger_type = ? AND created_at >= ? AND status = \'pending\'',
       [sessionId, triggerType, sinceMs]
     )
     return (row?.c ?? 0) > 0

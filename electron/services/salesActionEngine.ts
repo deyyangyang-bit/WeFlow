@@ -19,6 +19,7 @@ import { enqueueSalesTask } from './salesQueue'
 import { classifyStage, toMessageSnippets, persistClassification, type CustomerStage } from './salesStageClassifier'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
+import { insightRecordService } from './insightRecordService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -47,9 +48,56 @@ export interface TodayActionResult {
     newThisWeek: number
     pipelineTotal: number
     r6Count: number
+    highPriorityCount: number
+    riskCustomerCount: number
+    activeDeals: number
   }
   generatedAt: number
 }
+
+// ─── 统一信号流类型 ────────────────────────────────────────────────────────────
+
+export type SignalSource =
+  | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
+  | { type: 'insight'; label: string; reason: string; rawInsightId: string; insightText?: string }
+
+export interface UnifiedSignal {
+  sessionId: string
+  displayName: string
+  stage: string
+  silentDays: number
+  sources: SignalSource[]
+  priorityScore: number
+  urgencyTier: 'urgent' | 'high' | 'normal'
+  status: string
+}
+
+export interface UnifiedStats {
+  totalSignals: number
+  taskOnly: number
+  insightOnly: number
+  merged: number
+  urgentCount: number
+  highPriorityCount: number
+  riskCustomerCount: number
+  activeDeals: number
+  todayPending: number
+}
+
+export interface UnifiedResult {
+  signals: UnifiedSignal[]
+  stats: UnifiedStats
+  generatedAt: number
+}
+
+const INSIGHT_BOOST: Record<string, number> = {
+  activity: 40,
+  silence: 10,
+  message_analysis: 25,
+  manual: 25,
+  test: 0,
+}
+
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +113,28 @@ const PRIORITY_WEIGHT: Record<string, number> = {
   info: 20
 }
 
+
+/** 中文阶段 → 英文阶段映射（InsightService 写中文，规则用英文） */
+const STAGE_CN_TO_EN: Record<string, string> = {
+  '了解': 'contacted',
+  '比价': 'quoted',
+  '决策': 'negotiating',
+  '成交': 'won',
+  '流失': 'lost',
+  '未知': 'unknown',
+  '新客': 'new',
+  '沉默': 'dormant',
+  '谈判中': 'negotiating',
+  '已报价': 'quoted',
+  '已沟通': 'contacted',
+}
+
+function normalizeStage(raw: string | null | undefined): string {
+  const s = (raw || '').trim()
+  if (!s) return 'unknown'
+  return STAGE_CN_TO_EN[s] || s  // 已经是英文则原样返回
+}
+
 // ─── 规则定义 ─────────────────────────────────────────────────────────────────
 
 interface Rule {
@@ -78,12 +148,26 @@ interface Rule {
 
 const RULES: Rule[] = [
   {
+    id: 'rule_r0_unknown_followup',
+    priority: 'medium',
+    match: (p, now) => {
+      // 兜底：标准化后仍为 unknown/new 的客户沉默 ≥ 2 天即触发
+      const stage = p.stage ?? 'unknown'
+      if (!['unknown', 'new'].includes(stage)) return false
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      if (lastContact === 0) return false
+      const silentDays = (now - lastContact) / DAY_SEC
+      return silentDays >= 2
+    },
+    title: (p, days) => `待确认意向：${p.display_name || '未知'}，${Math.floor(days)}天未互动`
+  },
+  {
     id: 'rule_r3_new_no_reply',
     priority: 'urgent',
     match: (p, now) => {
       if (p.stage !== 'new') return false
-      const lastContact = p.last_contact_at ?? 0
-      if (lastContact === 0) return false  // 未记录互动时间，跳过
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 1
     },
@@ -94,7 +178,7 @@ const RULES: Rule[] = [
     priority: 'high',
     match: (p, now) => {
       if (p.stage !== 'quoted') return false
-      const lastContact = p.last_contact_at ?? 0
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 3
@@ -106,7 +190,7 @@ const RULES: Rule[] = [
     priority: 'high',
     match: (p, now) => {
       if (p.stage !== 'negotiating') return false
-      const lastContact = p.last_contact_at ?? 0
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 2
@@ -118,10 +202,10 @@ const RULES: Rule[] = [
     priority: 'medium',
     match: (p, now) => {
       if (p.stage !== 'contacted') return false
-      const lastContact = p.last_contact_at ?? 0
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
-      return silentDays >= 7
+      return silentDays >= 5
     },
     title: (p, days) => `激活沉默：${p.display_name || '未知'}，聊过产品但${Math.floor(days)}天没联系了`
   },
@@ -130,7 +214,7 @@ const RULES: Rule[] = [
     priority: 'low',
     match: (p, now) => {
       if (p.stage !== 'dormant') return false
-      const lastContact = p.last_contact_at ?? 0
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 30 && silentDays <= 90
@@ -143,8 +227,8 @@ const RULES: Rule[] = [
     match: (p, now) => {
       // 30 天内第 3 次触发 R4/R5 → 建议放弃
       if (!['contacted', 'dormant'].includes(p.stage ?? '')) return false
-      const lastContact = p.last_contact_at ?? 0
-      if (lastContact === 0) return false  // 未记录互动时间，跳过
+      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       if (silentDays < 30) return false
       // 检查历史任务次数
@@ -210,7 +294,47 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   const nowMs = Date.now()
   const customers = salesDbService.customerAll()
 
+  // 清理所有 action_engine 生成的 pending 任务（幂等重扫，含历史遗留）
+  const staleTasks = salesDbService.todoList({ status: 'pending', limit: 500 })
+    .filter(t => t.created_by === 'action_engine')
+  for (const t of staleTasks) {
+    if (t.id) salesDbService.todoUpdate(t.id, { status: 'superseded' })
+  }
+  if (staleTasks.length > 0) {
+    salesLog('INFO', `[ActionEngine] 清理 ${staleTasks.length} 条旧 pending 任务（幂等重扫）`)
+  }
+
+  // 一次性修复：清理被 InsightService 错误设置的 last_contact_at
+  // 如果 last_contact_at 在最近4小时内，但 created_at 是1天前的 → 被错误设置，重置为 null
+  const fourHoursAgoSec = nowSec - 14400
+  let fixedCount = 0
+  for (const c of customers) {
+    if (c.last_contact_at && c.last_contact_at > fourHoursAgoSec) {
+      const createdSec = c.created_at ? Math.floor(c.created_at / 1000) : 0
+      if (createdSec > 0 && (nowSec - createdSec) > 86400) {
+        c.last_contact_at = null
+        salesDbService.customerUpsert({ session_id: c.session_id, last_contact_at: null as any })
+        fixedCount++
+      }
+    }
+  }
+  if (fixedCount > 0) {
+    salesLog('INFO', `[ActionEngine] 修复 ${fixedCount} 个被错误设置的 last_contact_at`)
+  }
+
   salesLog('INFO', `[ActionEngine] 全量扫描开始，客户数: ${customers.length}`)
+  // 调试：stage 分布（标准化后）
+  const stageDist: Record<string, number> = {}
+  for (const c of customers) { const s = normalizeStage(c.stage); stageDist[s] = (stageDist[s] || 0) + 1 }
+  salesLog('INFO', `[ActionEngine] stage分布(标准化): ${JSON.stringify(stageDist)}`)
+  // 调试：前3个客户的 last_contact_at
+  for (const c of customers.slice(0, 3)) {
+    const lc = c.last_contact_at || 0
+    const ca = c.created_at ? Math.floor(c.created_at / 1000) : 0
+    const eff = lc || ca
+    const sd = eff > 0 ? Math.floor((nowSec - eff) / DAY_SEC) : -1
+    salesLog('INFO', `[ActionEngine] debug ${c.display_name}: stage=${c.stage} lc=${lc} ca=${ca} silent=${sd}d`)
+  }
 
   // Phase 1: 收集候选（内存去重：同客户只保留最高分）
   interface Candidate {
@@ -225,8 +349,14 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   const r6Candidates: Candidate[] = []                 // R6 独立候选
 
   for (const customer of customers) {
-    const lastContact = customer.last_contact_at ?? 0
-    const silentDays = (nowSec - lastContact) / DAY_SEC
+    // 标准化阶段名（中文→英文），让规则能匹配
+    customer.stage = normalizeStage(customer.stage)
+    // 成交/流失客户直接跳过
+    if (['won', 'lost'].includes(customer.stage)) continue
+    const lastContact = customer.last_contact_at || (customer.created_at ? Math.floor(customer.created_at / 1000) : 0)
+    const silentDays = lastContact > 0 ? (nowSec - lastContact) / DAY_SEC : 0
+    // 沉默不足1天的跳过
+    if (silentDays < 1) continue
 
     for (const rule of RULES) {
       try {
@@ -419,10 +549,204 @@ async function lazyScan(): Promise<number> {
  * 获取今日行动清单（供前端 IPC 调用）。
  * 如果今天还没生成过任务，先触发全量扫描 + 懒扫描补充。
  */
+/**
+ * 统一信号流：合并 follow_up_task + insight records 为 UnifiedSignal[]
+ */
+export async function getUnifiedSignals(): Promise<UnifiedResult> {
+  if (!salesDbService.isInitialized()) {
+    return { signals: [], stats: { totalSignals: 0, taskOnly: 0, insightOnly: 0, merged: 0, urgentCount: 0, highPriorityCount: 0, riskCustomerCount: 0, activeDeals: 0, todayPending: 0 }, generatedAt: Date.now() }
+  }
+
+  const nowMs = Date.now()
+  const nowSec = Math.floor(nowMs / 1000)
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0)
+  const todayStartMs = todayStart.getTime()
+
+  // 1. 沿用现有扫描逻辑
+  if (lastFullScanAt < todayStartMs) {
+    await enqueueSalesTask(() => runFullScan())
+  }
+  await enqueueSalesTask(() => lazyScan())
+
+  // 2. 查 pending tasks
+  const pendingTasks = salesDbService.todoList({ status: 'pending' })
+  const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
+
+  // 3. 查最近 24h 未读 insight records
+  const insightWindow = nowMs - 24 * 60 * 60 * 1000
+  let insightRecords: any[] = []
+  try {
+    const result = insightRecordService.listRecords({ startTime: insightWindow })
+    insightRecords = (result.records || []).filter((r: any) => !r.read)
+  } catch (e) {
+    salesLog('WARN', `[UnifiedSignals] insight query failed: ${e}`)
+  }
+
+  // 4. 按 sessionId 分组合并
+  const signalMap = new Map<string, UnifiedSignal>()
+
+  // 4a. 从 tasks 构建
+  for (const task of mainPending) {
+    const sid = task.session_id || ''
+    if (!sid) continue
+    const profile = salesDbService.customerGetBySession(sid)
+    const stage = normalizeStage(profile?.stage)
+    if (['won', 'lost'].includes(stage)) continue
+    const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor(profile.created_at / 1000) : 0)
+    const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
+    if (silentDays <= 0) continue
+
+    const rule = RULES.find(r => r.id === task.trigger_type)
+    const rulePriority = rule ? rule.priority : 'info'
+    const baseScore = PRIORITY_WEIGHT[rulePriority] ?? 20
+
+    const source: SignalSource = {
+      type: 'task',
+      ruleCode: rule ? (() => { const m = rule.id.match(/r(\d+)/); return m ? 'R' + m[1] : '??' })() : '??',
+      label: (() => {
+        const labels: Record<string, string> = {
+          'rule_r0_unknown_followup': '待确认',
+          'rule_r1_quoted_followup': '报价跟进',
+          'rule_r2_negotiating_stall': '谈判跟进',
+          'rule_r3_new_no_reply': '新客响应',
+          'rule_r4_contacted_silent': '激活沉默',
+          'rule_r5_dormant_wake': '沉默唤醒',
+          'rule_r6_consider_drop': '考虑放弃',
+        }
+        return labels[task.trigger_type || ''] || '跟进'
+      })(),
+      reason: buildReason(task.trigger_type || '', silentDays),
+      rawTaskId: task.id ?? 0
+    }
+
+    const existing = signalMap.get(sid)
+    if (existing) {
+      existing.sources.push(source)
+      existing.priorityScore = Math.min(140, Math.max(existing.priorityScore, baseScore))
+    } else {
+      signalMap.set(sid, {
+        sessionId: sid,
+        displayName: task.display_name || profile?.display_name || '未知',
+        stage,
+        silentDays,
+        sources: [source],
+        priorityScore: baseScore,
+        urgencyTier: 'normal',
+        status: 'pending'
+      })
+    }
+  }
+
+  // 4b. 从 insights 合并（每客户只取最新1条，按 createdAt 降序已排好）
+  const insightBySession = new Map<string, any>()
+  for (const rec of insightRecords) {
+    const sid = rec.sessionId || ''
+    if (!sid) continue
+    // 只保留最新一条
+    if (!insightBySession.has(sid)) {
+      insightBySession.set(sid, rec)
+    }
+  }
+
+  for (const [sid, rec] of insightBySession) {
+    const profile = salesDbService.customerGetBySession(sid)
+    const stage = normalizeStage(profile?.stage)
+    if (['won', 'lost'].includes(stage)) continue
+    const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor((profile.created_at || rec.createdAt || 0) / 1000) : 0)
+    const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
+
+    const boost = INSIGHT_BOOST[rec.triggerReason] ?? 25
+    const ageHours = Math.max(0, (nowMs - (rec.createdAt || 0)) / 3600000)
+    const recencyBonus = Math.max(0, Math.round(20 * (1 - ageHours / 24)))
+    const insightScore = boost + recencyBonus
+
+    const source: SignalSource = {
+      type: 'insight',
+      label: rec.triggerReason === 'activity' ? '活跃信号' : rec.triggerReason === 'silence' ? '沉默预警' : 'AI 洞察',
+      reason: (rec.insight || '').slice(0, 80),
+      rawInsightId: rec.id || '',
+      insightText: rec.insight || ''
+    }
+
+    const existing = signalMap.get(sid)
+    if (existing) {
+      existing.sources.push(source)
+      existing.priorityScore = Math.min(140, existing.priorityScore + insightScore)  // 合并加分，cap 140
+    } else {
+      signalMap.set(sid, {
+        sessionId: sid,
+        displayName: rec.displayName || profile?.display_name || '未知',
+        stage,
+        silentDays,
+        sources: [source],
+        priorityScore: Math.min(140, insightScore),
+        urgencyTier: 'normal',
+        status: 'pending'
+      })
+    }
+  }
+
+  // 5. 计算 urgencyTier
+  for (const sig of signalMap.values()) {
+    if (sig.priorityScore >= 100) sig.urgencyTier = 'urgent'
+    else if (sig.priorityScore >= 60) sig.urgencyTier = 'high'
+    else sig.urgencyTier = 'normal'
+  }
+
+  // 6. 排序 + 截断
+  const signals = [...signalMap.values()]
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+
+  // 7. Stats
+  const allCustomers = salesDbService.customerAll()
+  const weekStartMs = getWeekStartMs()
+  const activeStageCustomers = allCustomers.filter(c => ['quoted', 'negotiating', 'contacted'].includes(normalizeStage(c.stage)))
+
+  const stats: UnifiedStats = {
+    totalSignals: signals.length,
+    taskOnly: signals.filter(s => s.sources.every(src => src.type === 'task')).length,
+    insightOnly: signals.filter(s => s.sources.some(src => src.type === 'insight') && !s.sources.some(src => src.type === 'task')).length,
+    merged: signals.filter(s => s.sources.some(src => src.type === 'task') && s.sources.some(src => src.type === 'insight')).length,
+    urgentCount: signals.filter(s => s.urgencyTier === 'urgent').length,
+    highPriorityCount: signals.filter(s => s.urgencyTier === 'urgent' || s.urgencyTier === 'high').length,
+    riskCustomerCount: activeStageCustomers.filter(c => {
+      const lc = c.last_contact_at || 0
+      return lc > 0 && (nowSec - lc) / DAY_SEC >= 5
+    }).length,
+    activeDeals: allCustomers.filter(c => ['quoted', 'negotiating'].includes(normalizeStage(c.stage))).length,
+    todayPending: signals.length
+  }
+
+  salesLog('INFO', `[UnifiedSignals] ${signals.length} signals (${stats.taskOnly} task-only, ${stats.insightOnly} insight-only, ${stats.urgentCount} urgent)`)
+  return { signals, stats, generatedAt: nowMs }
+}
+
+/**
+ * 完成/跳过统一信号：标记 task done/skipped + 标记 insight read
+ */
+export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped'): void {
+  // 标记该 sessionId 的所有 pending tasks
+  const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
+  for (const t of tasks) {
+    if (t.id) completeAction(t.id, action)
+  }
+  // 标记该 sessionId 的未读 insights 为已读
+  try {
+    const result = insightRecordService.listRecords({ sessionId, limit: 50 })
+    for (const rec of result.records || []) {
+      if (!rec.read && rec.id) {
+        insightRecordService.markRecordRead(rec.id)
+      }
+    }
+  } catch (e) {
+    salesLog('WARN', `[UnifiedSignals] markRead failed for ${sessionId}: ${e}`)
+  }
+}
+
 export async function getTodayActions(): Promise<TodayActionResult> {
   // 容错：数据库尚未初始化时返回空结果（启动时序竞争）
   if (!salesDbService.isInitialized()) {
-    return { items: [], archiveCandidates: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0, r6Count: 0 }, generatedAt: Date.now() }
+    return { items: [], archiveCandidates: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0, r6Count: 0, highPriorityCount: 0, riskCustomerCount: 0, activeDeals: 0 }, generatedAt: Date.now() }
   }
 
   const nowMs = Date.now()
@@ -444,11 +768,18 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
   const r6Pending = pendingTasks.filter(t => t.trigger_type === 'rule_r6_consider_drop')
 
-  // 主队列：排序 + 截断 + 映射
+  // 主队列：排序 + 截断 + 映射 + 过滤无效项
   const actionItems: ActionItem[] = mainPending
     .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
     .slice(0, DAILY_LIMIT)
     .map(task => mapTaskToActionItem(task, nowMs))
+    .filter(item => {
+      // 成交/流失客户不需要跟进
+      if (['won', 'lost'].includes(item.stage)) return false
+      // 0天沉默的不需要行动
+      if (item.silentDays <= 0) return false
+      return true
+    })
 
   // R6 清理候选：独立列表，不限名额
   const archiveCandidates: ActionItem[] = r6Pending
@@ -458,12 +789,20 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   // 统计数字
   const allCustomers = salesDbService.customerAll()
   const weekStartMs = getWeekStartMs()
+  const nowSec = Math.floor(nowMs / 1000)
+  const activeStageCustomers = allCustomers.filter(c => ['quoted', 'negotiating', 'contacted'].includes(normalizeStage(c.stage)))
   const stats = {
     todayPending: actionItems.length,
     overdue: pendingTasks.filter(t => t.due_at && t.due_at < nowMs).length,
     newThisWeek: allCustomers.filter(c => (c.created_at ?? 0) >= weekStartMs).length,
-    pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(c.stage ?? '')).length,
-    r6Count: r6Pending.length
+    pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(normalizeStage(c.stage))).length,
+    r6Count: r6Pending.length,
+    highPriorityCount: actionItems.filter(i => i.priority === 'urgent' || i.priority === 'high').length,
+    riskCustomerCount: activeStageCustomers.filter(c => {
+      const lc = c.last_contact_at ?? 0
+      return lc > 0 && (nowSec - lc) / DAY_SEC >= 5
+    }).length,
+    activeDeals: allCustomers.filter(c => ['quoted', 'negotiating'].includes(normalizeStage(c.stage))).length
   }
 
   return { items: actionItems, archiveCandidates, stats, generatedAt: nowMs }
@@ -652,20 +991,22 @@ export function completeAction(taskId: number, action: 'done' | 'skipped'): void
 function mapTaskToActionItem(task: FollowUpTask, nowMs: number): ActionItem {
   const nowSec = Math.floor(nowMs / 1000)
   const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
-  const lastContact = profile?.last_contact_at ?? 0
-  const effectiveContact = lastContact > 0 ? lastContact : (profile?.created_at ? Math.floor((profile.created_at) / 1000) : nowSec)
-  const silentDays = Math.max(0, Math.floor((nowSec - effectiveContact) / DAY_SEC))
+  const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor((profile.created_at) / 1000) : 0)
+  const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
 
   return {
     id: task.id ?? 0,
     sessionId: task.session_id ?? '',
     displayName: task.display_name ?? '未知客户',
-    stage: profile?.stage ?? 'unknown',
+    stage: normalizeStage(profile?.stage),
     triggerType: task.trigger_type,
     title: task.title,
     reason: buildReason(task.trigger_type, silentDays),
     suggestion: '',
-    priority: scoreToPriority(task.priority_score ?? 0),
+    priority: (() => {
+      const rule = RULES.find(r => r.id === task.trigger_type)
+      return rule ? rule.priority : scoreToPriority(task.priority_score ?? 0)
+    })(),
     priorityScore: task.priority_score ?? 0,
     silentDays,
     createdAt: task.created_at ?? 0,
@@ -680,6 +1021,7 @@ function buildReason(triggerType: string, silentDays: number): string {
     'rule_r2_negotiating_stall': `谈判中${silentDays}天无进展`,
     'rule_r4_contacted_silent': `沟通后${silentDays}天未联系`,
     'rule_r5_dormant_wake': `沉默${silentDays}天，曾有沟通`,
+    'rule_r0_unknown_followup': `未分类客户${silentDays}天未互动，需确认意向`,
     'rule_r6_consider_drop': `多次跟进无响应（${silentDays}天）`
   }
   return reasons[triggerType] || `${silentDays}天未互动`
