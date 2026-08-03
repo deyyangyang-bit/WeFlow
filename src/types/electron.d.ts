@@ -1726,6 +1726,10 @@ export interface ElectronAPI {
     parseScanNow: () => Promise<{ scanned: number }>
     docGenerate: (type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>
     aliasLearn: (alias: string, accountId: number) => Promise<void>
+    aiDesc: (payload: unknown) => Promise<string>
+    aiExtract: (template: string[], dataUrl: string) => Promise<Record<string, string>>
+    saveImage: (dataUrl: string, fileName: string) => Promise<string>
+    readImage: (filePath: string) => Promise<string>
   }
   sales: {
     // 知识库

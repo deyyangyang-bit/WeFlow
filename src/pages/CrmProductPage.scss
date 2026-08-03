@@ -1,7 +1,20 @@
 
 .crm-product-page { padding: 24px; color: var(--text-primary, #1e293b); }
-.crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
+.crm-header { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; .count { font-size: 12px; color: #64748b; font-weight: 400; } } }
 .crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
-.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } }
-.crm-new-form { display: flex; gap: 8px; margin-bottom: 12px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; } }
-.crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; } }
+.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &.active { background: #f59e0b; color: #fff; border-color: #f59e0b; } &:disabled { opacity: 0.5; } }
+.crm-filterbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.crm-search { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; font-size: 13px; width: 280px; }
+.crm-chips { display: flex; gap: 6px; flex-wrap: wrap; .chip { border: 1px solid #e2e8f0; background: #fff; border-radius: 16px; padding: 4px 12px; font-size: 12px; cursor: pointer; &.active { background: #2563eb; color: #fff; border-color: #2563eb; } } }
+.crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; } input { border: 1px solid #e2e8f0; border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 90px; } }
+.thumb { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; &.empty { background: #f1f5f9; display: flex; align-items: center; justify-content: center; color: #94a3b8; } }
+.pname { font-weight: 600; }
+.psub { font-size: 11px; color: #94a3b8; }
+.p1 { font-weight: 600; }
+.price-col .psub { margin-top: 2px; }
+.desc { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ops { display: flex; gap: 4px; }
+.crm-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.crm-modal-body { background: #fff; border-radius: 12px; padding: 20px; width: 640px; max-height: 80vh; overflow: auto; h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } h4 { font-size: 13px; color: #64748b; margin: 12px 0 6px; } }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; label { font-size: 12px; color: #64748b; display: flex; flex-direction: column; gap: 3px; input, select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; font-size: 13px; } } }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }

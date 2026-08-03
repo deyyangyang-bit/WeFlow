@@ -696,7 +696,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     groupsUpdate: (id: number, patch: unknown) => ipcRenderer.invoke('crm:groups:update'),
     parseScanNow: () => ipcRenderer.invoke('crm:parse:scanNow'),
     docGenerate: (type: string, recordId: number) => ipcRenderer.invoke('crm:doc:generate', type, recordId),
-    aliasLearn: (alias: string, accountId: number) => ipcRenderer.invoke('crm:alias:learn', alias, accountId)
+    aliasLearn: (alias: string, accountId: number) => ipcRenderer.invoke('crm:alias:learn', alias, accountId),
+    aiDesc: (payload: unknown) => ipcRenderer.invoke('crm:product:aiDesc', payload),
+    aiExtract: (template: string[], dataUrl: string) => ipcRenderer.invoke('crm:product:aiExtract', template, dataUrl),
+    saveImage: (dataUrl: string, fileName: string) => ipcRenderer.invoke('crm:file:saveImage', dataUrl, fileName),
+    readImage: (filePath: string) => ipcRenderer.invoke('crm:file:readImage', filePath)
   },
   sales: {
     // 知识库

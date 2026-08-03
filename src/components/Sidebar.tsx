@@ -374,7 +374,7 @@ function Sidebar({ collapsed }: SidebarProps) {
             </NavLink>
             <NavLink to="/crm-product" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '型号库' : undefined}>
               <span className="nav-icon"><Package size={20} /></span>
-              {!collapsed && <span className="nav-label">型号库</span>}
+              {!collapsed && <span className="nav-label">产品库</span>}
             </NavLink>
 
           {/* 销售报表 */}

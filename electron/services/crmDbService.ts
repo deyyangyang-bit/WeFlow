@@ -112,6 +112,17 @@ class CrmDbService {
     const SQL = await initSqlJs({ locateFile: () => wasmPath })
     this.db = existsSync(this.dbPath) ? new SQL.Database(readFileSync(this.dbPath)) : new SQL.Database()
     this.db.run(SCHEMA_SQL)
+    // Migration: product 升级产品库字段（v8.1）
+    const productCols: Array<[string, string]> = [
+      ['sku', 'TEXT'], ['category', 'TEXT'], ['subcategory', 'TEXT'], ['image_path', 'TEXT'],
+      ['cost_price', 'REAL'], ['reference_price', 'REAL'], ['moq', 'INTEGER DEFAULT 1'],
+      ['material', 'TEXT'], ['description', 'TEXT'],
+      ['specs', "TEXT DEFAULT '{}'"], ['variants', "TEXT DEFAULT '[]'"]
+    ]
+    for (const [col, type] of productCols) {
+      try { this.db.run(`ALTER TABLE product ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    try { this.db.run("UPDATE product SET category = product_line WHERE (category IS NULL OR category = '') AND product_line IS NOT NULL") } catch { /* ignore */ }
     this.persist()
   }
 
@@ -287,7 +298,7 @@ class CrmDbService {
       const unit = it.unit_price ?? Number(p.unit_price ?? 0)
       const subtotal = Math.round(unit * it.qty * 100) / 100
       total = Math.round((total + subtotal) * 100) / 100
-      items.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, qty: it.qty, unit_price: unit, subtotal })
+      items.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', qty: it.qty, unit_price: unit, subtotal })
     }
     const id = this.create('quotation', { contract_id: data.contract_id, items: JSON.stringify(items), total, valid_until: data.valid_until ?? null, created_at: Date.now() })
     return { ok: true, id }
