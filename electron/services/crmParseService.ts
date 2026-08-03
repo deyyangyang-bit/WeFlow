@@ -45,7 +45,6 @@ async function scanAll(): Promise<number> {
   let scanned = 0
   try {
     const groups = crmDbService.groups().filter((g) => Number(g.enabled) === 1)
-    if (!groups.length) return 0
     salesLog('INFO', `[CrmParse] scan start groups=${groups.length}`)
     const sessResult = await chatService.getSessions()
     const sessions: CrmRow[] = sessResult?.sessions ?? []
@@ -83,7 +82,8 @@ async function scanAll(): Promise<number> {
       if (privBudget <= 0) break
       const uid = String(sess.username || '')
       if (!uid || uid.includes('@chatroom') || uid.startsWith('gh_') || uid === 'filehelper') continue
-      const lastAct = Number(sess.sortTimestamp || sess.lastTimestamp || 0)
+      const lastActRaw = Number(sess.sortTimestamp || sess.lastTimestamp || 0)
+      const lastAct = lastActRaw > 1e12 ? lastActRaw : lastActRaw * 1000 // WCDB 秒级兼容
       if (lastAct && lastAct < nowMs - 7 * 86400_000) continue
       const name = String(sess.displayName || '')
       let accountId = 0
