@@ -97,6 +97,7 @@
   &__actions {
     display: flex;
     gap: 8px;
+    flex-wrap: wrap;
   }
 
   &__side {
@@ -218,6 +219,30 @@
     &:hover:not(:disabled) { background: var(--wf-teal-soft, #ECFAF7); }
     &:active:not(:disabled) { background: #d7f2ec; }
   }
+
+  &--chat {
+    background: #fff;
+    color: #2563eb;
+    border-color: #2563eb;
+
+    &:hover:not(:disabled) { background: #eff6ff; }
+    &:active:not(:disabled) { background: #dbeafe; }
+  }
+
+  &--copy {
+    background: var(--wf-teal, #0F766E);
+    color: #fff;
+
+    &:hover:not(:disabled) { background: #0d695e; }
+    &:active:not(:disabled) { background: #0b534b; }
+  }
+
+  &--sm {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
 }
 
 .ai-row {
@@ -240,6 +265,17 @@
   }
 
   &--risk span:last-child { color: var(--wf-urgent, #DC2626); }
+}
+
+.ai-row--script {
+  align-items: flex-start;
+
+  .ai-row__script {
+    flex: 1;
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 }
 
 .ai-degradation {

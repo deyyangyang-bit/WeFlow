@@ -20,7 +20,8 @@
     "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",
-    "electron:build": "npm run build"
+    "electron:build": "npm run build",
+    "test:autoconfirm": "npx tsx scripts/crm-autoconfirm-test.ts"
   },
   "dependencies": {
     "@hicccc77/electron-liquid-glass": "^0.3.0",

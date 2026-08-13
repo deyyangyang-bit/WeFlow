@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
 import { resolve } from 'path'
 
+// ⛔ 环境变量坑：ELECTRON_RUN_AS_NODE=1 会让 Electron 以 Node 模式启动（GUI 不出现，
+//   --version 输出内嵌 Node 版本 v24.17.0 而非 Electron 43.0.0）。
+//   某些 shell/工具会话会注入该变量。vite 是 spawn Electron 的父进程，必须在 spawn 前清除。
+//   （Linux 侧同款处理见 electron/services/keyServiceLinux.ts）
+delete process.env.ELECTRON_RUN_AS_NODE
+
 const handleElectronOnStart = (options: { reload: () => void }) => {
   options.reload()
 }

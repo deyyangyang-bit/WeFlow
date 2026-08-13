@@ -9,7 +9,8 @@
  * - 底部：完成 / 跳过 / AI分析（行为不变）+ AI 五字段折叠面板
  */
 import { useCallback, useState } from 'react'
-import { Check, ChevronDown, ChevronUp, Clock, RotateCw, Sparkles, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Clock, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useTodayActionStore, type ActionItem, type SignalSource } from '../../stores/todayActionStore'
 import './AIActionCard.scss'
 
@@ -63,8 +64,12 @@ function SourceTag({ source }: { source: SignalSource }) {
 
 export default function AIActionCard({ item }: { item: ActionItem }) {
   const { completeItem, fetchSuggestion } = useTodayActionStore()
+  const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
+  const [copied, setCopied] = useState(false)
+  // 话术 = AI 分析生成的可粘贴话术（无 insightText 时也常显示 suggestion）
+  const script = item.suggestion || ''
 
   const stage = STAGE_LABELS[item.stage] || STAGE_LABELS.unknown
   const hasInsight = item.sources.some(s => s.type === 'insight' && (s as any).insightText)
@@ -81,6 +86,37 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
     setLoadingSuggestion(false)
     setExpanded(true)
   }, [item, fetchSuggestion])
+
+  // 打开聊天：直达该客户的微信聊天页（一键执行第一步）
+  const handleOpenChat = useCallback(() => {
+    navigate(`/chat?sessionId=${encodeURIComponent(item.sessionId)}`)
+  }, [navigate, item.sessionId])
+
+  // 复制话术：无话术先生成再复制，做到"一点即得可粘贴话术"
+  const handleCopyScript = useCallback(async () => {
+    let text = script
+    if (!text) {
+      setLoadingSuggestion(true)
+      await fetchSuggestion(item)
+      setLoadingSuggestion(false)
+      const fresh = useTodayActionStore.getState().items.find((i) => i.sessionId === item.sessionId)
+      text = fresh?.suggestion || ''
+    }
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // fallback：部分受限环境 navigator.clipboard 不可用
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }, [script, item, fetchSuggestion])
 
   const tierClass = item.urgencyTier === 'urgent'
     ? 'signal-card--urgent'
@@ -116,6 +152,12 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
 
           {/* 底部操作 */}
           <div className="signal-card__actions">
+            <button className="signal-btn signal-btn--chat" onClick={handleOpenChat}>
+              <MessageCircle size={14} /> 打开聊天
+            </button>
+            <button className="signal-btn signal-btn--copy" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+              {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? '已复制' : '复制话术'}
+            </button>
             <button className="signal-btn signal-btn--done" onClick={handleComplete}>
               <Check size={14} /> 完成
             </button>
@@ -147,7 +189,16 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
           {item.whyNow && <div className="ai-row"><span className="ai-row__label">为什么现在</span><span>{item.whyNow}</span></div>}
           {item.opportunity && <div className="ai-row"><span className="ai-row__label">机会</span><span>{item.opportunity}</span></div>}
           {item.riskSignal && <div className="ai-row ai-row--risk"><span className="ai-row__label">风险</span><span>{item.riskSignal}</span></div>}
-          {insightContent && !item.whyNow && <div className="ai-row"><span className="ai-row__label">AI 洞察</span><span>{insightContent}</span></div>}
+          {(insightText as any)?.insightText && !item.whyNow && <div className="ai-row"><span className="ai-row__label">AI 洞察</span><span>{(insightText as any)?.insightText}</span></div>}
+          {script && (
+            <div className="ai-row ai-row--script">
+              <span className="ai-row__label">话术</span>
+              <span className="ai-row__script">{script}</span>
+              <button className="signal-btn signal-btn--copy signal-btn--sm" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? '已复制' : '复制'}
+              </button>
+            </div>
+          )}
           {item.nextMove && <div className="ai-row"><span className="ai-row__label">下一步</span><span>{item.nextMove}</span></div>}
           {item.degradationNote && <div className="ai-degradation">{item.degradationNote}</div>}
         </div>

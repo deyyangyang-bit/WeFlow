@@ -23,8 +23,13 @@ import type { ConfigService } from './config'
 let configRef: ConfigService | null = null
 let timer: NodeJS.Timeout | null = null
 let scanning = false
+// 扫描完成钩子（fire-and-forget）：crmIpcHandlers 注入 → 立刻触发确认中心自动确认
+let postScanHook: (() => void) | null = null
 
 export function setCrmParseConfig(config: ConfigService): void { configRef = config }
+
+/** 注册扫描完成钩子（调用方负责内部 enqueueSalesTask，避免阻塞扫描） */
+export function setPostScanHook(hook: (() => void) | null): void { postScanHook = hook }
 
 export function startCrmParseScheduler(): void {
   if (timer) return
@@ -186,6 +191,8 @@ async function scanAll(): Promise<number> {
     salesLog('WARN', `[CrmParse] scanAll error: ${e}`)
   } finally {
     scanning = false
+    // 扫完立刻触发确认中心自动确认（fire-and-forget；调用方负责 enqueueSalesTask）
+    try { postScanHook?.() } catch (e) { salesLog('WARN', `[CrmParse] postScanHook error: ${e}`) }
   }
   salesLog('INFO', `[CrmParse] scan done scanned=${scanned}`)
   return scanned
@@ -229,7 +236,10 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
       bank: bank.bank, account_tail: bank.accountTail, payer: bank.payer,
       amount_net: bank.amount, pay_time: wechatTimeToMs(bank.timeText), memo: bank.memo,
       pay_channel: channel, source: 'bank_text', group_id: String(group.group_id),
-      msg_id: String(msg.messageKey || ''), raw_content: content
+      msg_id: String(msg.messageKey || ''), raw_content: content,
+      // 前置小修：银行直连到款但客户未命中 → 进到款待审队列（needs_review=1），
+      // 避免"客户没登记 → 无归属可建 → 钱静默消失"。财付通走认领，保持原状。
+      needs_review: channel === 'bank_direct' && !account ? 1 : 0
     })
     if (account) {
       crmDbService.addAllocations(payId, [{ customerHint: bank.payer, salesHint: '', amountHint: bank.amount }])

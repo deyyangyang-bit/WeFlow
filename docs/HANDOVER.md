@@ -1,10 +1,10 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `66c54b5`。
-> ⚠️ **当前工作树有 30 个文件未提交**（§2.4 / §2.5 本次增量 + 本交接文档，待 `git add` + 提交到 `backup`）。
-> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**。
+> 基线 commit `d40cd4d`；最近提交 `7e56755`。
+> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**。
 > Mac + Windows 双平台打包验证通过。
+> **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -100,6 +100,24 @@
 - **级联删除**（原设计"不暴露删除端点"已解除，用户定级联策略）：`deleteContract`/`deleteAccount`（子资源 quotation/invoice/logistics/allocation/contract_status_history + alias_map/activity_log 级联）；**删除前自动备份** `userData/crm-backups/weflow-crm-before-delete-*.db`；IPC `crm:contract:delete`/`crm:customer:delete`；工作台两 tab 每行「删除」按钮 + confirm
 - **客户 tab 增强**：阶段筛选下拉（选项由数据动态生成，空值显示"未分类"）；深度分析按钮直显列表行（原藏档案展开区）；深度分析报告独立渲染
 - **销售漏斗修复**：趋势图柱高 `count*12px` 无上限（单日 170 条 → 2040px 撑爆页面）→ 相对缩放封顶 120px；流失/未分类客户进统计卡+脚注（原完全不可见）；转化率脚注解释逆漏斗（成交>决策 = 直接标记成交跳级）；近 7 天日期补 0
+
+## 2.6 确认中心零操作化 + 行动卡一键闭环 + Electron 闪退真因修正（2026-08-13）
+
+> 主线：把确认中心从"逐条人工确认"升级为"高置信自动处理 + 低置信留人工"（**钱不消失**设计），行动卡从"只能看"升级为"打开聊天 + 复制话术"一键闭环。新增测试 `scripts/crm-autoconfirm-test.ts` **56/56**。
+
+- **自动确认引擎 `electron/services/crmAutoConfirmService.ts`**（新增，纯判定 + 独立执行）：
+  - 纯判定函数 `evaluateAllocation/evaluatePayment/evaluateLogistics/evaluateInvoice/evaluateQueues`，无 Electron 依赖，可 tsx 单测
+  - **硬前提 = 挂上合同**：客户已定但无 active contract → 留人工（不挂合同 = 钱在报表消失，见 A6 守卫）；引擎**从不创建实体**，只把 customer_hint 解析到已存在 account，回滚只改状态
+  - 判定矩阵：归属（精确 0.95 / 模糊唯一 0.85，多候选/无合同/超付/父到款待审→review）、到款（bank_text 精确 0.95 / 近似唯一 0.85，**财付通永不自动**、screenshot 仅精确 0.85）、物流（唯一 0.95 → city 消歧 0.88 → receiver 词元消歧 0.82，消歧后仍多/仅兜底→review）、发票（buyer 精确 0.95 / 近似唯一 0.85 + amount>0，金额缺失用 `extractInvoiceAmountFromName` 保守提取）
+  - 执行：`applyDecision` 复用 crmDbService 现有确认函数（opts.autoBy 标记）；每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）；每个自动动作写三处——salesLog / activity_log(operator='auto') / `auto_confirm_log` 新表
+  - `undoAutoConfirm` 增量撤销（creditedTotal 自动重算）；`autoConfirmHistory` 最近 50 条
+- **三触发点**：① `crmParseService.setPostScanHook`（扫描完成立即跑，fire-and-forget）② 独立 60s 调度器（30s 冷却防重）③ 确认中心「运行自动确认」按钮
+- **前置小修（堵"钱消失"暗口）**：`crmParseService.createPaymentRecord` bank_direct 直连到款但客户未命中 → 补 `needs_review:1` 进到款待审队列（原逻辑客户没登记→无归属可建→钱静默消失）
+- **前端**：CrmReviewPage 扫描区后加**自动确认摘要块**（上次处理 N 自动/M 待审 + byEntity 拆分 + 可展开历史带撤销按钮）；SettingsPage「确认中心自动确认」小节（总开关/置信阈值 0.5-1.0/发票自动开单）
+- **行动卡一键闭环**：AIActionCard 新增「打开聊天」(`navigate('/chat?sessionId=…')`) + 「复制话术」（无话术先生成再复制，clipboard + fallback），AI 面板加话术行内复制；CrmWorkbenchPage 客户列表/档案加「打开聊天」
+- **Electron 闪退真因修正**：旧判断"dist 是 Node wrapper 混入的坏 Electron v24"是**误判**；真因是 `ELECTRON_RUN_AS_NODE=1` 环境变量让 Electron 以 Node 模式启动（`--version` 输出 v24.17.0）。防御已落地 `vite.config.ts`（spawn 前 `delete`），详见 `docs/HANDOVER-20260731…md` §四 修正版
+- **配置项**：`crmAutoConfirmEnabled`(默认 true) · `crmAutoConfirmThreshold`(默认 0.8) · `crmAutoConfirmInvoiceDocgen`(默认 false)
+- 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
 - **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动 pkill；`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需按 PID `kill -9`（Electron 偶发卡 UE 不可中断睡眠，不影响新实例）
 
 ## 3. 已交付功能清单
@@ -248,7 +266,7 @@
 
 ## 5.1 CRM 独立库 weflow-crm.db（sql.js/WASM，2026-08 增量）
 
-> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / lead / opportunity / contact / scan_state / processed_msg / crm_field_meta。
+> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / lead / opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。确认中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
 
 ### account（客户，核心）
 | 列 | 说明 |
@@ -289,6 +307,7 @@
 | `crmDeepAnalysisService.ts` | 资深销售助理七板块深度分析（用户自研 prompt 固化） |
 | `crmQuoteService.ts` | AI 报价：私聊需求→产品库选型→报价单草稿 |
 | `crmDocGenService.ts` | docx 生成（docxtemplater，报价单/合同/开票信息单） |
+| `crmAutoConfirmService.ts` | **自动确认引擎**（§2.6）：纯判定 evaluate×4 + applyDecision/runAutoConfirm/undo + 60s 调度器 |
 
 ### 前端 `src/`
 | 文件 | 说明 |
@@ -303,10 +322,12 @@
 | `pages/SalesReportPage.tsx` | 复盘/报表 |
 | `pages/SalesDashboardPage.tsx` | 仪表盘（移至/dashboard） |
 | `components/sales/ExtractScriptDialog.tsx` | **话术提炼弹窗**（单选/批量双模式，三步流程） |
-| `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选 |
-| `pages/CrmReviewPage.tsx` | **确认中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入） |
+| `components/sales/AIActionCard.tsx`（改） | 行动卡：**打开聊天**（跳转微信会话）+ **复制话术**（无话术先生成再复制）+ AI 面板话术行内复制 |
+| `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选、**打开聊天** |
+| `pages/CrmReviewPage.tsx` | **确认中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
 | `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
+| `stores/crmStore.ts`（改） | **autoSummary** state + runAutoConfirm/fetchAutoSummary/undoAutoConfirm |
 | `stores/` (其他5个) | dashboard/customerList/customerProfile/followUp/knowledge/salesReport |
 
 ### 测试脚本 `scripts/`
@@ -315,6 +336,7 @@
 | `crm-workbench-test.ts` | CRM 业务闭环单测（**48 项**：归属/签约/导入/聚合/成交/删除/到款审核/去重） |
 | `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |
 | `crm-claim-test.ts` | 货款认领测试（17 项） |
+| `crm-autoconfirm-test.ts` | **自动确认引擎单测**（**56 项**：归属 A1-A10 / 到款 P1-P8 / 物流 L1-L6 / 发票 I1-I5 / 金额 F1-F4 / docgen 注入 / 引擎 E1-E5 / 撤销 U1-U6） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 
 ### 已删除
@@ -329,6 +351,7 @@
 2. **不加 `app.disableHardwareAcceleration()`**（会导致闪退）
 3. **WCDB 时间戳是秒**，JS Date 是毫秒
 4. **`enqueueSalesTask` 只加最外层**，内部绝不再 enqueue（死锁）
+5. **`ELECTRON_RUN_AS_NODE=1` 让 Electron 当 Node 跑**（GUI 消失、--version 报 Node 版本）；vite 已自动清除，勿再删 dist 重建
 5. **单一固定 system prompt**，差异放 user prompt（API缓存）
 6. **win 只打 x64**，交叉编译前必须 `npm install @koromix/koffi-win32-x64@3.1.0 --force`
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
@@ -369,6 +392,9 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | aiInsightSilenceMaxDays | 30 | 上限 |
 | aiInsightScanLimit | 50 | 每次扫描上限 |
 | aiInsightCooldownMinutes | 10080 | 冷却（建议7天） |
+| crmAutoConfirmEnabled | true | 确认中心自动确认总开关 |
+| crmAutoConfirmThreshold | 0.8 | 自动确认置信阈值 0.5-1.0（低于留人工） |
+| crmAutoConfirmInvoiceDocgen | false | 发票自动关联后自动生成开票信息单（需合同含 tax_no） |
 
 ---
 
@@ -376,9 +402,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
-| **P0** | **提交未提交改动** | 工作树 28 个文件（§2.4/§2.5）→ `git add` + 提交到 `backup`（⛔ 永不 push origin） |
-| **P1** | **确认中心 P2 增强** | 用户审出的剩余项：已处理历史列表、到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
-| **P1** | **验证确认中心修复** | 用户用几天实测 approvePayment/自动挂合同/来源显示是否顺畅，有反馈再迭代 |
+| **P1** | **实测零操作闭环** | 用户用几天实测：自动确认判定是否符合预期（阈值可调）、行动卡打开聊天/复制话术是否顺滑、撤销是否好用，有反馈再迭代 |
+| **P1** | **确认中心 P2 增强** | 到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
 | P1 | 深度分析结果缓存 | 同客户 N 小时内不重复调 AI（避免反复点重复花费），可加缓存列 |
 | P1 | CRM 客户黑名单 | 删除后的客户若会话还在、AI 见解再标有意向会被重新导入——需黑名单机制 |
 | P1 | 今日行动卡深链客户档案 | 行动卡客户名点击 → 跳 CRM 客户档案一屏 |
@@ -395,12 +420,11 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 ## 11. 给接手者的下一步
 
 1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
-2. **跑起来**：`npm install && npm run dev`（开发模式）
-3. **先提交**：工作树 28 个未提交文件（§2.4/§2.5 增量）→ 提交到 `backup`
-4. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）
-5. **测试今天的新功能**：CRM 工作台（深度分析/阶段筛选/删除）、确认中心（确认到款→自动归属、卡片来源、发票金额）、销售漏斗页
-6. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
-7. **继续开发**：按 §10 待办优先级推进
+2. **跑起来**：`npm install && npm run dev`（开发模式）。⚠️ 若 `--version` 报 v24.17.0 且无 GUI，先 `unset ELECTRON_RUN_AS_NODE`（见 MAINTENANCE §4.8，vite 已自动防御）
+3. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）、`npx tsx scripts/crm-autoconfirm-test.ts`（56/56）
+4. **测试零操作闭环**：确认中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
+5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
+6. **继续开发**：按 §10 待办优先级推进
 
 ---
 

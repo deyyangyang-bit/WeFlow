@@ -230,6 +230,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
   const [wordCloudExcludeWords, setWordCloudExcludeWords] = useState<string[]>([])
   const [excludeWordsInput, setExcludeWordsInput] = useState('')
+  // CRM 自动确认
+  const [crmAutoConfirmEnabled, setCrmAutoConfirmEnabled] = useState(true)
+  const [crmAutoConfirmThreshold, setCrmAutoConfirmThreshold] = useState(0.8)
+  const [crmAutoConfirmInvoiceDocgen, setCrmAutoConfirmInvoiceDocgen] = useState(false)
 
 
 
@@ -566,6 +570,14 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedExcludeWords = await configService.getWordCloudExcludeWords()
       setWordCloudExcludeWords(savedExcludeWords)
       setExcludeWordsInput(savedExcludeWords.join('\n'))
+
+      // CRM 自动确认
+      const savedCrmAutoConfirmEnabled = await configService.getCrmAutoConfirmEnabled()
+      const savedCrmAutoConfirmThreshold = await configService.getCrmAutoConfirmThreshold()
+      const savedCrmAutoConfirmInvoiceDocgen = await configService.getCrmAutoConfirmInvoiceDocgen()
+      setCrmAutoConfirmEnabled(savedCrmAutoConfirmEnabled)
+      setCrmAutoConfirmThreshold(savedCrmAutoConfirmThreshold)
+      setCrmAutoConfirmInvoiceDocgen(savedCrmAutoConfirmInvoiceDocgen)
 
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
@@ -5056,6 +5068,79 @@ JSON 输出格式：
                 重置
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>确认中心自动确认</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>自动确认总开关</span>
+            <span className="setting-desc">开启后，扫描完成或每 60 秒自动处理高置信条目（归属/到款/物流/发票），低于阈值的留人工确认</span>
+          </div>
+          <div className="setting-control">
+            <label className="switch" htmlFor="crm-auto-confirm-enabled-toggle">
+              <input
+                id="crm-auto-confirm-enabled-toggle"
+                className="switch-input"
+                type="checkbox"
+                checked={crmAutoConfirmEnabled}
+                onChange={async (e) => {
+                  const val = e.target.checked
+                  setCrmAutoConfirmEnabled(val)
+                  await configService.setCrmAutoConfirmEnabled(val)
+                  showMessage(val ? '已开启自动确认' : '已关闭自动确认', true)
+                }}
+              />
+              <span className="switch-slider" />
+            </label>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>置信阈值</span>
+            <span className="setting-desc">置信度 ≥ 阈值的条目才会自动处理，越低自动越多但误判风险越高（建议 0.8）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="range"
+              min="0.5"
+              max="1"
+              step="0.05"
+              value={crmAutoConfirmThreshold}
+              onChange={async (e) => {
+                const val = parseFloat(e.target.value)
+                setCrmAutoConfirmThreshold(val)
+                await configService.setCrmAutoConfirmThreshold(val)
+                showMessage(`置信阈值已设为 ${val.toFixed(2)}`, true)
+              }}
+              style={{ width: '160px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmAutoConfirmThreshold.toFixed(2)}</span>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>发票自动开单</span>
+            <span className="setting-desc">发票自动关联合同后，若合同含税号（tax_no）则自动生成开票信息单</span>
+          </div>
+          <div className="setting-control">
+            <label className="switch" htmlFor="crm-auto-confirm-invoice-docgen-toggle">
+              <input
+                id="crm-auto-confirm-invoice-docgen-toggle"
+                className="switch-input"
+                type="checkbox"
+                checked={crmAutoConfirmInvoiceDocgen}
+                onChange={async (e) => {
+                  const val = e.target.checked
+                  setCrmAutoConfirmInvoiceDocgen(val)
+                  await configService.setCrmAutoConfirmInvoiceDocgen(val)
+                  showMessage(val ? '已开启发票自动开单' : '已关闭发票自动开单', true)
+                }}
+              />
+              <span className="switch-slider" />
+            </label>
           </div>
         </div>
       </div>

@@ -76,9 +76,15 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
 5. **origin 是上游 fork，禁止 push**；备份用独立 remote（见 §8）。
 6. **队列死锁**：`enqueueSalesTask` 只加在最外层入口；被排队函数内部**绝不能再 enqueue**。故 `batchProfile` 拆成 enqueue 外壳 + `batchProfileCore` 内核，`runSilenceScan` 内部回填调内核。
 7. **诊断代码勿留**：`process.on('uncaughtException')` 会让进程该死不死、掩盖真崩溃。维护时若见 main.ts 含 `[CRASH]`/`[PROCESS EXIT]` 或 salesIntentService 含 `console.log('[SalesIntent]'`，请删除（这些是历史排查残留）。
+8. **⛔ `ELECTRON_RUN_AS_NODE=1` 铁律**（曾误判为"dist 损坏"的元凶）：该环境变量让 Electron 以 Node 模式启动——GUI 不出现、`--version` 输出内嵌 Node 版本（v24.17.0）而非 Electron 版本。某些 CLI/工具会话会注入它（`echo $ELECTRON_RUN_AS_NODE` 可查）。**防御已落地**：`vite.config.ts` 在 spawn Electron 前 `delete process.env.ELECTRON_RUN_AS_NODE`（Linux 侧同款见 `keyServiceLinux.ts`）。**不要再删除 `node_modules/electron/dist` 重建**——dist 从未损坏，那只是误判（详见 HANDOVER-20260731 §四 修正版）。
 
-## 5. 配置项（设置 → AI 见解）
+## 5. 配置项（设置 → AI 见解 / 确认中心自动确认）
 `aiInsightSilenceDays`(沉默下限,默认3) · `aiInsightSilenceMaxDays`(上限,默认30) · `aiInsightScanLimit`(每次扫描上限,默认50) · `aiInsightCooldownMinutes`(冷却,**建议 10080=7天**) · `aiInsightScanIntervalHours`(扫描间隔,默认4)。高意向动态阈值硬编码：决策 1 天 / 比价 2 天。
+
+**确认中心自动确认（2026-08 新增，设置页「确认中心自动确认」小节）**：
+- `crmAutoConfirmEnabled`(总开关,默认 **true**) —— 开 = 扫描完成/每 60s 自动处理高置信条目
+- `crmAutoConfirmThreshold`(置信阈值,默认 **0.8**,范围 0.5-1.0 step 0.05) —— 置信度 ≥ 阈值才自动，低于留人工
+- `crmAutoConfirmInvoiceDocgen`(发票自动开单,默认 **false**) —— 自动关联后合同含 `tax_no` 才自动生成开票信息单
 
 ## 6. 降级与未做项
 - **P2「回复建议填入输入框」**：WeFlow 是只读工具，**无发送输入框**，不做；一键复制剪贴板即只读场景最佳体验。
@@ -100,7 +106,7 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
   - 或修复 gh 登录（`gh auth login`）后一条：`gh repo create <用户名>/<仓库名> --private --source=. --remote=backup --push`
 
 ## 9. 后续路线图
-P1 话术自动提炼 · 客户列表「打开聊天」跳转 · P2 知识库向量化（仅当知识量超过全量塞上下文时）· 回复建议增强（若未来 WeFlow 增加发送能力）。
+P1 话术自动提炼 · P2 知识库向量化（仅当知识量超过全量塞上下文时）· 回复建议增强（若未来 WeFlow 增加发送能力）。（「客户列表打开聊天」已做：2026-08 工作台客户行/档案 + 行动卡均有一键跳转。）
 
 ## 10. 安全与发布红线（上传/分发前必读）
 - **无硬编码密钥**：代码里没有数据库密码、API key、解密 hex key 的字面量。`config.ts` 里的 `decryptKey`/`aiModelApiKey` 等只是**配置键名**；真实密钥值在用户本机 `userData/WeFlow-config.json`（`safe:` 加密存储，**不在 git 仓库**）。

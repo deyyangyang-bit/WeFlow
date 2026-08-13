@@ -6,8 +6,10 @@ import type { IpcMain } from 'electron'
 import { app } from 'electron'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
-import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
+import { setCrmParseConfig, setPostScanHook, startCrmParseScheduler, scanNow } from './crmParseService'
 import { generateDoc, ensureTemplates } from './crmDocGenService'
+import { enqueueSalesTask } from './salesQueue'
+import { setAutoConfirmConfig, setDocgenRunner, runAutoConfirmNow, startAutoConfirmScheduler, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
 import { insightProfileService } from './insightProfileService'
@@ -23,6 +25,19 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ensureTemplates(app.getPath('userData'))
   setCrmParseConfig(config)
   startCrmParseScheduler()
+  // ── 确认中心自动确认装配：config 三键 / docgen 回调 / 扫后钩子 / 60s 兜底调度 ──
+  setAutoConfirmConfig({
+    get: (k) => {
+      if (k === 'crmAutoConfirmEnabled') return config.get('crmAutoConfirmEnabled')
+      if (k === 'crmAutoConfirmThreshold') return config.get('crmAutoConfirmThreshold')
+      if (k === 'crmAutoConfirmInvoiceDocgen') return config.get('crmAutoConfirmInvoiceDocgen')
+      return undefined
+    }
+  })
+  setDocgenRunner((type, recordId) => generateDoc(type, recordId))
+  // 扫完立刻触发（fire-and-forget；enqueue 串行 + runAutoConfirmNow 内置批前快照）
+  setPostScanHook(() => { void enqueueSalesTask(() => runAutoConfirmNow()) })
+  startAutoConfirmScheduler()
 
   ipcMain.handle('crm:entity:list', async (_, entity: string, opts?) => crmDbService.list(entity, opts || {}))
   ipcMain.handle('crm:entity:get', async (_, entity: string, id: number) => crmDbService.getById(entity, id))
@@ -110,6 +125,12 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:groups:save', async (_, g) => crmDbService.saveGroup(g))
   ipcMain.handle('crm:groups:update', async (_, id: number, patch) => crmDbService.updateGroup(id, patch || {}))
   ipcMain.handle('crm:parse:scanNow', async () => scanNow())
+  // 确认中心自动确认：手动一键运行（enqueue 串行，runAutoConfirmNow 内置批前快照+总开关）
+  ipcMain.handle('crm:autoConfirm:run', async () => enqueueSalesTask(async () => runAutoConfirmNow()))
+  // 自动确认历史（含置信/原因/动作，供前端展示 + 撤销）
+  ipcMain.handle('crm:autoConfirm:history', async (_, limit?: number) => crmDbService.autoConfirmHistory(limit ?? 50))
+  // 撤销单条自动确认（仅自动处理的条目可撤，非自动返回 reason 说明）
+  ipcMain.handle('crm:autoConfirm:undo', async (_, entity: string, id: number) => undoAutoConfirm(entity as AutoEntity, Number(id)))
   ipcMain.handle('crm:doc:generate', async (_, type: string, recordId: number) => generateDoc(type, recordId))
   ipcMain.handle('crm:alias:learn', async (_, alias: string, accountId: number) => crmDbService.aliasLearn(alias, accountId))
   ipcMain.handle('crm:product:aiDesc', async (_, payload) => {

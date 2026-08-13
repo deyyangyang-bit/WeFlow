@@ -2,7 +2,8 @@
  * CrmWorkbenchPage.tsx —— CRM 工作台：合同列表+全款进度+四子资源+发货卡点+文档生成
  */
 import { useEffect, useState } from 'react'
-import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Sparkles, Trash2 } from 'lucide-react'
+import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Sparkles, Trash2, MessageCircle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmWorkbenchPage.scss'
 
@@ -14,6 +15,12 @@ const STAGE_LABELS: Record<string, string> = {
 
 export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
+  const navigate = useNavigate()
+  // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
+  const openChat = (c: any) => {
+    if (!c.session_id) { setNotice('该客户未关联微信会话，无法打开聊天'); return }
+    navigate(`/chat?sessionId=${encodeURIComponent(c.session_id)}`)
+  }
   const [tab, setTab] = useState<'contracts' | 'customers'>('contracts')
   const [selected, setSelected] = useState<any>(null)
   const [quotations, setQuotations] = useState<any[]>([])
@@ -231,6 +238,7 @@ export default function CrmWorkbenchPage() {
                   <td>{Number(c.credited_total ?? 0).toLocaleString()}</td>
                   <td>{c.imported_at ? new Date(Number(c.imported_at)).toLocaleDateString('zh-CN') : '-'}</td>
                   <td onClick={(e) => e.stopPropagation()}>
+                    <button className="crm-btn" onClick={() => void openChat(c)} disabled={!c.session_id}><MessageCircle size={13} /> 打开聊天</button>
                     <button className="crm-btn" onClick={() => void genDeepAnalysisFromList(c)}><Sparkles size={13} /> 深度分析</button>
                     <button className="crm-btn" onClick={() => void createContractForCustomer(c)}><Plus size={13} /> 建合同</button>
                     <button className="crm-btn danger" onClick={() => void deleteCustomer(c)}><Trash2 size={13} /> 删除</button>
@@ -250,6 +258,7 @@ export default function CrmWorkbenchPage() {
               <div className="crm-detail-head">
                 <h3>{selectedCustomer.name} · 客户档案</h3>
                 <div className="crm-detail-actions">
+                  <button className="crm-btn" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
                   <button className="crm-btn" onClick={() => void genDeepAnalysis(selectedCustomer)}><Sparkles size={13} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                   <button className="crm-btn" onClick={() => void genAiQuotation(selectedCustomer)}><Sparkles size={13} /> AI 报价</button>
                   <button className="crm-btn primary" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>

@@ -126,6 +126,12 @@ interface ConfigSchema {
   crmInternalList: string[]
   /** 内部群名（群成员视为同事，启动时自动读成员加入排除名单） */
   crmInternalGroups: string[]
+  /** 确认中心自动确认总开关（默认开，高置信条目自动处理） */
+  crmAutoConfirmEnabled: boolean
+  /** 自动确认置信阈值 0.5-1.0（默认 0.8，低于阈值留人工） */
+  crmAutoConfirmThreshold: number
+  /** 发票自动关联后是否自动生成开票信息单（默认关，需合同含 tax_no） */
+  crmAutoConfirmInvoiceDocgen: boolean
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */

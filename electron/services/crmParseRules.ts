@@ -148,6 +148,18 @@ export function parseInvoicePdfName(fileName: string): InvoicePdfInfo | null {
   return { invoiceNo: m.groups.no, buyerPrefix: m.groups.buyer, tail: m.groups.tail }
 }
 
+// ─── 发票文件名金额提取（保守）：仅识别带金额标记（金额/¥/￥/价款/价税合计）的数值，
+//     数字后不得再接数字（避免 1234.56 只截到 1234）。无标记（如 dzfp_…2959.pdf 的尾号 2959）不识别。
+const INVOICE_AMOUNT_RE = /(?:金额|¥|￥|价款|含税|价税合计)[:：]?\s*([\d,]+(?:\.\d{1,2})?)(?![\d])/
+/** 从发票文件名提取金额；无法保守确认返回 null（留人工填金额） */
+export function extractInvoiceAmountFromName(fileName: string): number | null {
+  if (!fileName) return null
+  const m = fileName.match(INVOICE_AMOUNT_RE)
+  if (!m) return null
+  const v = Number(String(m[1]).replace(/,/g, ''))
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
 // ─── 财付通费率校验：毛额×(1-feeRate) ≈ 净到账 ───────────────────────────────
 export function feeCheck(sumGross: number, net: number, feeRate = 0.002, tol = 0.01): boolean {
   return Math.abs(sumGross * (1 - feeRate) - net) <= tol

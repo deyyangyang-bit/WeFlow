@@ -2,12 +2,12 @@
  * CrmReviewPage.tsx —— 确认中心：归属待确认/物流待链接/到款待审核/发票待开
  */
 import { useEffect, useState } from 'react'
-import { ClipboardCheck, RefreshCw, Radio, Users, X } from 'lucide-react'
+import { ClipboardCheck, RefreshCw, Radio, Sparkles, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmReviewPage.scss'
 
 export default function CrmReviewPage() {
-  const { queues, fetchQueues, fetchWorkbench, scanNow, loading, notice, setNotice } = useCrmStore()
+  const { queues, fetchQueues, fetchWorkbench, scanNow, loading, notice, setNotice, autoSummary, fetchAutoSummary, runAutoConfirm, undoAutoConfirm } = useCrmStore()
   const [contracts, setContracts] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
   const [showPick, setShowPick] = useState(false)
@@ -17,6 +17,8 @@ export default function CrmReviewPage() {
   const [allocContract, setAllocContract] = useState<Record<number, string>>({}) // allocationId → 合同 id（下拉选中）
   const [invoiceContract, setInvoiceContract] = useState<Record<number, string>>({})
   const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
+  const [running, setRunning] = useState(false) // 运行自动确认中
+  const [showHistory, setShowHistory] = useState(false) // 自动确认历史展开
 
   const TYPE_LABELS: Record<string, string> = { logistics: '物流发货', payment: '货款认领', order: '订单截图' }
 
@@ -42,8 +44,9 @@ export default function CrmReviewPage() {
   useEffect(() => {
     void fetchQueues()
     void fetchGroups()
+    void fetchAutoSummary()
     void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => setContracts(rows || []))
-  }, [fetchQueues])
+  }, [fetchQueues, fetchAutoSummary])
 
   const confirmAlloc = async (a: any, contractId?: number) => {
     const cid = contractId ? Number(contractId) : undefined
@@ -84,6 +87,18 @@ export default function CrmReviewPage() {
     await fetchQueues(); await fetchWorkbench()
   }
 
+  // ── 自动确认：手动一键运行 / 历史撤销 ──────────────────────────────────────
+  const ENTITY_LABELS: Record<string, string> = { allocation: '归属', payment: '到款', logistics: '物流', invoice: '发票' }
+  const doRunAuto = async () => {
+    setRunning(true)
+    try { await runAutoConfirm() } catch { setNotice('自动确认运行失败') } finally { setRunning(false) }
+  }
+  const doUndoAuto = async (h: any) => {
+    if (!window.confirm(`撤销这条自动${ENTITY_LABELS[String(h.entity)] || h.entity}处理？`)) return
+    const r = await undoAutoConfirm(h.entity, h.entity_id)
+    setNotice(r.ok ? '已撤销，条目恢复待处理' : `撤销失败：${r.reason}`)
+  }
+
   return (
     <div className="crm-review-page">
       <div className="crm-header">
@@ -107,6 +122,41 @@ export default function CrmReviewPage() {
           </div>
         ))}
         <button className="crm-btn" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
+      </section>
+
+      <section className="crm-auto">
+        <h3>
+          <Sparkles size={14} /> 自动确认
+          {autoSummary.lastRun && (
+            <em className="crm-auto__sum">上次自动处理 {autoSummary.lastRun.auto} 条，仍待人工 {autoSummary.lastRun.reviewed} 条</em>
+          )}
+          <button className="crm-btn primary" onClick={() => void doRunAuto()} disabled={running}>{running ? '运行中…' : '运行自动确认'}</button>
+          <button className="crm-btn" onClick={() => setShowHistory(!showHistory)}>历史 {showHistory ? '收起' : `（${autoSummary.history.length}）`}</button>
+        </h3>
+        {autoSummary.lastRun && (
+          <div className="crm-auto__byentity">
+            {(['allocation', 'payment', 'logistics', 'invoice'] as const).map((k) => {
+              const e = autoSummary.lastRun?.byEntity?.[k]
+              if (!e || (e.auto === 0 && e.reviewed === 0)) return null
+              return <span key={k}>{ENTITY_LABELS[k]}：自动 {e.auto} / 待审 {e.reviewed}</span>
+            })}
+          </div>
+        )}
+        {showHistory && (
+          <div className="crm-auto__history">
+            {autoSummary.history.length === 0 && <em className="crm-card__src">暂无自动确认记录（扫描新消息或点「运行自动确认」触发）</em>}
+            {autoSummary.history.map((h) => (
+              <div key={h.id} className="crm-card">
+                <span>{ENTITY_LABELS[String(h.entity)] || h.entity} #{h.entity_id} · {h.decision === 'auto_confirm' ? '自动' : h.decision} · 置信 {Math.round(Number(h.confidence ?? 0) * 100)}% · {h.action || '-'}
+                  <em className="crm-card__src">{h.reason}{h.created_at ? ` · ${fmtTime(h.created_at)}` : ''}</em>
+                </span>
+                {h.decision === 'auto_confirm' && (
+                  <button className="crm-btn" onClick={() => void doUndoAuto(h)}>撤销</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {showPick && (

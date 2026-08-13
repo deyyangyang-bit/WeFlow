@@ -85,6 +85,11 @@ export const CONFIG_KEYS = {
   // 词云
   WORD_CLOUD_EXCLUDE_WORDS: 'wordCloudExcludeWords',
 
+  // CRM 自动确认
+  CRM_AUTO_CONFIRM_ENABLED: 'crmAutoConfirmEnabled',
+  CRM_AUTO_CONFIRM_THRESHOLD: 'crmAutoConfirmThreshold',
+  CRM_AUTO_CONFIRM_INVOICE_DOCGEN: 'crmAutoConfirmInvoiceDocgen',
+
   // 数据收集
 
   // AI 见解
@@ -1873,6 +1878,40 @@ export async function getWordCloudExcludeWords(): Promise<string[]> {
 // 设置词云排除词列表
 export async function setWordCloudExcludeWords(words: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.WORD_CLOUD_EXCLUDE_WORDS, words)
+}
+
+// 获取确认中心自动确认总开关（默认开）
+export async function getCrmAutoConfirmEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.CRM_AUTO_CONFIRM_ENABLED)
+  return value === undefined ? true : value === true
+}
+
+// 设置确认中心自动确认总开关
+export async function setCrmAutoConfirmEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_AUTO_CONFIRM_ENABLED, enabled)
+}
+
+// 获取自动确认置信阈值（默认 0.8）
+export async function getCrmAutoConfirmThreshold(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.CRM_AUTO_CONFIRM_THRESHOLD)
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.8
+}
+
+// 设置自动确认置信阈值
+export async function setCrmAutoConfirmThreshold(threshold: number): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_AUTO_CONFIRM_THRESHOLD, threshold)
+}
+
+// 获取发票自动开单开关（默认关）
+export async function getCrmAutoConfirmInvoiceDocgen(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.CRM_AUTO_CONFIRM_INVOICE_DOCGEN)
+  return value === true
+}
+
+// 设置发票自动开单开关
+export async function setCrmAutoConfirmInvoiceDocgen(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_AUTO_CONFIRM_INVOICE_DOCGEN, enabled)
 }
 
 // 获取 HTTP API 自动启动状态

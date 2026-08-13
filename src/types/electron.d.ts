@@ -1733,6 +1733,9 @@ export interface ElectronAPI {
     groupsSave: (g: unknown) => Promise<number>
     groupsUpdate: (id: number, patch: unknown) => Promise<void>
     parseScanNow: () => Promise<{ scanned: number }>
+    autoConfirmRun: () => Promise<{ auto: number; reviewed: number; byEntity: Record<string, { auto: number; reviewed: number }> }>
+    autoConfirmHistory: (limit?: number) => Promise<Array<{ id: number; entity: string; entity_id: number; decision: string; confidence: number; reason: string; action: string; created_at: number }>>
+    autoConfirmUndo: (entity: string, id: number) => Promise<{ ok: boolean; reason?: string }>
     docGenerate: (type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>
     aliasLearn: (alias: string, accountId: number) => Promise<void>
     aiDesc: (payload: unknown) => Promise<string>

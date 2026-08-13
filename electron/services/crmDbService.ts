@@ -4,7 +4,8 @@
  * 蓝本：Cordys(领域骨架/表单形态) 悟空-11(财务字段) MoChat(归属状态机) Twenty(增量元数据)。
  * 合规：数据本地；删除为级联且删除前自动备份（crm-backups/）；时间戳统一毫秒。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { readdirSync } from 'fs'
 import { dirname, join } from 'path'
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { salesLog } from './salesLogger'
@@ -41,28 +42,30 @@ CREATE TABLE IF NOT EXISTS quotation (
   attachment_path TEXT, custom_fields TEXT DEFAULT '{}', created_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS invoice (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, invoice_no TEXT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, account_id INTEGER, invoice_no TEXT,
   buyer TEXT, invoice_type TEXT, amount REAL DEFAULT 0, tax_rate REAL,
   invoice_date INTEGER, status TEXT DEFAULT 'pre_issue', attachment_path TEXT,
-  custom_fields TEXT DEFAULT '{}', created_at INTEGER
+  custom_fields TEXT DEFAULT '{}', created_at INTEGER, auto_updated_by TEXT
 );
 CREATE TABLE IF NOT EXISTS payment_record (
   id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT, group_id TEXT, bank TEXT,
   account_tail TEXT, payer TEXT, amount_net REAL DEFAULT 0, pay_time INTEGER,
   memo TEXT, source TEXT DEFAULT 'bank_text', pay_channel TEXT DEFAULT 'bank_direct',
-  needs_review INTEGER DEFAULT 0, attachment_path TEXT, raw_content TEXT, created_at INTEGER
+  needs_review INTEGER DEFAULT 0, attachment_path TEXT, raw_content TEXT, created_at INTEGER,
+  auto_approved_by TEXT
 );
 CREATE TABLE IF NOT EXISTS allocation (
   id INTEGER PRIMARY KEY AUTOINCREMENT, payment_record_id INTEGER,
   customer_hint TEXT, sales_hint TEXT, amount_hint REAL DEFAULT 0,
   credited_amount REAL DEFAULT 0, account_id INTEGER, contract_id INTEGER,
-  sales_name TEXT, status TEXT DEFAULT 'pending', created_at INTEGER, confirmed_at INTEGER
+  sales_name TEXT, status TEXT DEFAULT 'pending', created_at INTEGER, confirmed_at INTEGER,
+  auto_confirmed_by TEXT, auto_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS logistics (
   id INTEGER PRIMARY KEY AUTOINCREMENT, tracking_no TEXT, brand TEXT,
   receiver TEXT, city TEXT, courier TEXT, status TEXT DEFAULT 'shipped',
   latest_update_at INTEGER, source_msg_id TEXT, link_status TEXT DEFAULT 'unlinked',
-  contract_id INTEGER, created_at INTEGER
+  contract_id INTEGER, created_at INTEGER, auto_linked_by TEXT
 );
 CREATE TABLE IF NOT EXISTS product (
   id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, name TEXT, spec TEXT,
@@ -108,6 +111,12 @@ CREATE TABLE IF NOT EXISTS activity_log (
 CREATE INDEX IF NOT EXISTS idx_crm_status_hist_contract ON contract_status_history(contract_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_crm_activity_entity ON activity_log(entity, entity_id);
 CREATE INDEX IF NOT EXISTS idx_crm_activity_action ON activity_log(action, created_at);
+CREATE TABLE IF NOT EXISTS auto_confirm_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT, entity_id INTEGER,
+  decision TEXT, confidence REAL DEFAULT 0, reason TEXT DEFAULT '', action TEXT DEFAULT '',
+  created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_crm_auto_confirm_created ON auto_confirm_log(created_at);
 `
 
 export interface CrmRow { [key: string]: any }
@@ -155,6 +164,16 @@ class CrmDbService {
     ]
     for (const [col, type] of accountCols) {
       try { this.db.run(`ALTER TABLE account ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    // Migration: 确认中心自动确认审计列（auto_confirm_log 表由 SCHEMA_SQL 保证）
+    const autoConfirmCols: Array<[string, string, string]> = [
+      ['allocation', 'auto_confirmed_by', 'TEXT'], ['allocation', 'auto_reason', 'TEXT'],
+      ['payment_record', 'auto_approved_by', 'TEXT'],
+      ['logistics', 'auto_linked_by', 'TEXT'],
+      ['invoice', 'account_id', 'INTEGER'], ['invoice', 'auto_updated_by', 'TEXT']
+    ]
+    for (const [table, col, type] of autoConfirmCols) {
+      try { this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
     this.persist()
   }
@@ -244,6 +263,29 @@ class CrmDbService {
     if (prefixed.length) return prefixed[0]
     return null
   }
+  /**
+   * 客户候选集（供自动确认引擎判断"唯一 vs 多候选"）。
+   * 命中强度降序：精确 name= → 前缀 name% → 别名 alias_map → 收货人 shipping_info.receiver → 双向包含 %name%。
+   * 精确命中时只返回精确候选（模糊命中不叠加）；其余按序去重收集。
+   * 每行附 match_tier / match_strength 供引擎计算置信度。
+   */
+  matchAccountCandidates(name: string): CrmRow[] {
+    if (!name) return []
+    const exact = this.all('SELECT * FROM account WHERE name = ?', [name])
+    if (exact.length) return [{ ...exact[0], match_tier: 'exact', match_strength: 0.95 }]
+    const out: CrmRow[] = []
+    const seen = new Set<number>()
+    const push = (row: CrmRow, tier: string, strength: number): void => {
+      if (!row || seen.has(Number(row.id))) return
+      seen.add(Number(row.id))
+      out.push({ ...row, match_tier: tier, match_strength: strength })
+    }
+    for (const r of this.all('SELECT * FROM account WHERE name LIKE ?', [name + '%'])) push(r, 'prefix', 0.9)
+    for (const r of this.all('SELECT a.* FROM alias_map m JOIN account a ON a.id = m.account_id WHERE m.alias = ?', [name])) push(r, 'alias', 0.88)
+    for (const r of this.all('SELECT a.* FROM shipping_info s JOIN account a ON a.id = s.account_id WHERE s.receiver = ?', [name])) push(r, 'receiver', 0.85)
+    for (const r of this.all('SELECT * FROM account WHERE name LIKE ?', ['%' + name + '%'])) push(r, 'contains', 0.8)
+    return out
+  }
   findAccountByPrefix(prefix: string): CrmRow | null {
     if (!prefix) return null
     const r = this.all('SELECT * FROM account WHERE name LIKE ?', [prefix + '%'])
@@ -325,7 +367,7 @@ class CrmDbService {
     }))
   }
   pendingAllocations(): CrmRow[] { return this.all("SELECT * FROM allocation WHERE status = 'pending' ORDER BY id") }
-  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string }): { ok: boolean; reason?: string } {
+  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string }, opts: { autoBy?: string; reason?: string } = {}): { ok: boolean; reason?: string } {
     const a = this.getById('allocation', id)
     if (!a) return { ok: false, reason: '归属项不存在' }
     if (a.status !== 'pending') return { ok: false, reason: '已被处理（先到先得）' }
@@ -338,10 +380,15 @@ class CrmDbService {
     }
     const final: CrmRow = { ...patch, status: 'confirmed', confirmed_at: Date.now() }
     if (contractId) final.contract_id = contractId
+    if (opts.autoBy) {
+      final.auto_confirmed_by = opts.autoBy
+      if (opts.reason) final.auto_reason = opts.reason
+    }
     this.update('allocation', id, final)
+    const operator = opts.autoBy ?? patch.sales_name ?? String(a.sales_name ?? '')
     this.logActivity('allocation', id, 'confirmed',
-      `归属 ${a.customer_hint || ''} ${Number(a.amount_hint ?? 0)} → 合同 ${contractId ?? '未关联'}${accountId ? ` 客户${accountId}` : ''}`,
-      patch.sales_name ?? String(a.sales_name ?? ''))
+      `归属 ${a.customer_hint || ''} ${Number(a.amount_hint ?? 0)} → 合同 ${contractId ?? '未关联'}${accountId ? ` 客户${accountId}` : ''}${opts.reason ? `（${opts.reason}）` : ''}`,
+      operator)
     return { ok: true, linked: Boolean(contractId) }
   }
 
@@ -349,7 +396,7 @@ class CrmDbService {
    * 到款审核通过：若该笔到款尚无任何归属，则自动建一条 pending 归属（挂到归属待确认）。
    * 保证审核通过后钱不"消失"——最终通过归属确认计入合同回款。
    */
-  approvePayment(id: number): { ok: boolean; reason?: string; allocationCreated?: boolean } {
+  approvePayment(id: number, opts: { autoBy?: string } = {}): { ok: boolean; reason?: string; allocationCreated?: boolean } {
     const p = this.getById('payment_record', id)
     if (!p) return { ok: false, reason: '到款不存在' }
     let created = false
@@ -364,8 +411,10 @@ class CrmDbService {
       })
       created = true
     }
-    this.update('payment_record', id, { needs_review: 0 })
-    this.logActivity('payment_record', id, 'approved', `确认到款 ${String(p.payer || '')} ¥${Number(p.amount_net ?? 0)}，${created ? '已转入归属待确认' : '已有归属记录'}`)
+    const patch: CrmRow = { needs_review: 0 }
+    if (opts.autoBy) patch.auto_approved_by = opts.autoBy
+    this.update('payment_record', id, patch)
+    this.logActivity('payment_record', id, 'approved', `确认到款 ${String(p.payer || '')} ¥${Number(p.amount_net ?? 0)}，${created ? '已转入归属待确认' : '已有归属记录'}`, opts.autoBy ?? '')
     return { ok: true, allocationCreated: created }
   }
   rejectAllocation(id: number): void {
@@ -446,15 +495,33 @@ class CrmDbService {
   }
 
   // ─── 删除（级联，删除前自动备份）──────────────────────────────────────────
-  /** 删除前把当前数据库快照备份到 userData/crm-backups/ 下（带时间戳） */
-  private backupDb(): void {
-    if (!this.db || !this.dbPath) return
+  /**
+   * 公开快照备份：把当前数据库完整快照写入 userData/crm-backups/weflow-crm-before-<tag>-<stamp>.db。
+   * 滚动保留最近 20 份（旧的删除）。供删除前自动备份与自动确认批前快照共用。返回快照路径，失败返回 ''。
+   */
+  exportSnapshot(tag: string): string {
+    if (!this.db || !this.dbPath) return ''
     try {
       const dir = join(dirname(this.dbPath), 'crm-backups')
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-      writeFileSync(join(dir, `weflow-crm-before-delete-${stamp}.db`), Buffer.from(this.db.export()))
+      const file = join(dir, `weflow-crm-before-${tag}-${stamp}.db`)
+      writeFileSync(file, Buffer.from(this.db.export()))
+      this.pruneSnapshots(dir)
+      return file
     } catch (e) { console.error('[CrmDb] backup error:', e) }
+    return ''
+  }
+  /** 滚动清理：crm-backups/ 下只保留最近 20 份快照 */
+  private pruneSnapshots(dir: string): void {
+    try {
+      const files = readdirSync(dir).filter((f) => f.endsWith('.db')).sort().reverse()
+      for (const f of files.slice(20)) rmSync(join(dir, f), { force: true })
+    } catch { /* ignore */ }
+  }
+  /** 删除前自动备份（deleteContract/deleteAccount 调用） */
+  private backupDb(): void {
+    this.exportSnapshot('delete')
   }
 
   /** 级联删除单个合同的全部子资源（不含 activity_log，调用方处理） */
@@ -504,13 +571,15 @@ class CrmDbService {
 
   // ─── 物流 ─────────────────────────────────────────────────────────────────
   unlinkedLogistics(): CrmRow[] { return this.all("SELECT * FROM logistics WHERE link_status = 'unlinked' ORDER BY id") }
-  linkLogistics(id: number, contractId: number): { ok: boolean; warning?: string } {
+  linkLogistics(id: number, contractId: number, opts: { autoBy?: string } = {}): { ok: boolean; warning?: string } {
     const l = this.getById('logistics', id)
     if (!l) return { ok: false }
-    this.update('logistics', id, { contract_id: contractId, link_status: 'linked' })
+    const patch: CrmRow = { contract_id: contractId, link_status: 'linked' }
+    if (opts.autoBy) patch.auto_linked_by = opts.autoBy
+    this.update('logistics', id, patch)
     const c = this.getById('contract', contractId)
     const warning = c && this.creditedTotal(contractId) + 0.005 < Number(c.amount ?? 0) ? '未全款已发货' : undefined
-    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 合同 ${contractId}`)
+    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 合同 ${contractId}`, opts.autoBy ?? '')
     return { ok: true, warning }
   }
   saveShippingInfo(row: CrmRow): number {
@@ -544,20 +613,24 @@ class CrmDbService {
     this.update('logistics', logiId, { contract_id: Number(c[0].id), link_status: 'linked' })
     return true
   }
+  /**
+   * 物流候选合同：收件人+城市 → 候选合同（经 account 名称/城市模糊匹配），私聊地址兜底，近期已签约兜底。
+   * 每行附带 account_city / account_name / cand_tier（byAccount|viaShip|fallback），供自动确认引擎消歧与识别兜底。
+   */
   logisticsCandidates(receiver: string, city: string): CrmRow[] {
-    // 收件人+城市 → 候选合同（经 account 名称/城市模糊匹配），兜底近期已签约合同
     const byAccount = this.all(
-      "SELECT c.* FROM contract c JOIN account a ON a.id = c.account_id WHERE a.name LIKE ? OR (a.city = ? AND ? <> '') ORDER BY c.id DESC LIMIT 5",
+      "SELECT c.*, a.city AS account_city, a.name AS account_name FROM contract c JOIN account a ON a.id = c.account_id WHERE a.name LIKE ? OR (a.city = ? AND ? <> '') ORDER BY c.id DESC LIMIT 5",
       ['%' + (receiver || '') + '%', city || '', city || '']
     )
-    if (byAccount.length) return byAccount
+    if (byAccount.length) return byAccount.map((r) => ({ ...r, cand_tier: 'byAccount' }))
     // 私聊收货地址 → 客户 → 合同
     const acc = this.accountByReceiver(receiver || '')
     if (acc) {
       const viaShip = this.all('SELECT * FROM contract WHERE account_id = ? ORDER BY id DESC LIMIT 5', [Number(acc.id)])
-      if (viaShip.length) return viaShip
+      if (viaShip.length) return viaShip.map((r) => ({ ...r, cand_tier: 'viaShip' }))
     }
     return this.all("SELECT * FROM contract WHERE status IN ('signed','shipped') ORDER BY id DESC LIMIT 5")
+      .map((r) => ({ ...r, cand_tier: 'fallback' }))
   }
 
   // ─── 报价单（行项型号必须来自 product）─────────────────────────────────────
@@ -596,6 +669,61 @@ class CrmDbService {
       payments: this.all('SELECT * FROM payment_record WHERE needs_review = 1 ORDER BY id'),
       invoices: this.all("SELECT * FROM invoice WHERE status = 'pre_issue' ORDER BY id")
     }
+  }
+
+  // ─── 自动确认：审计日志 / 历史 / 撤销 ──────────────────────────────────────
+  /** 写一条结构化自动确认日志（auto_confirm_log，供前端回看/撤销） */
+  logAutoConfirm(entity: string, entityId: number, decision: string, confidence: number, reason: string, action: string): void {
+    if (!this.db) return
+    this.db.run(
+      'INSERT INTO auto_confirm_log (entity, entity_id, decision, confidence, reason, action, created_at) VALUES (?,?,?,?,?,?,?)',
+      [entity, entityId, decision, confidence, reason, action, Date.now()]
+    )
+    this.persist()
+  }
+  /** 自动确认历史（倒序） */
+  autoConfirmHistory(limit = 50): CrmRow[] {
+    return this.all('SELECT * FROM auto_confirm_log ORDER BY id DESC LIMIT ?', [limit])
+  }
+  /** 撤销自动确认归属：恢复 pending 并清空 account/contract/审计字段（仅限自动确认的条目） */
+  undoAllocation(id: number): { ok: boolean; reason?: string } {
+    const a = this.getById('allocation', id)
+    if (!a) return { ok: false, reason: '归属项不存在' }
+    if (String(a.auto_confirmed_by || '') !== 'auto') return { ok: false, reason: '非自动确认，无需撤销' }
+    this.update('allocation', id, { status: 'pending', account_id: null, contract_id: null, auto_confirmed_by: null, auto_reason: null, confirmed_at: null })
+    this.logActivity('allocation', id, 'unconfirmed', `撤销自动确认 ${String(a.customer_hint || '')}`, 'auto')
+    this.logAutoConfirm('allocation', id, 'undo', 0, '人工撤销自动确认', 'undoAllocation')
+    return { ok: true }
+  }
+  /** 撤销自动通过到款：needs_review=1 恢复待审（仅限自动通过的条目） */
+  undoPayment(id: number): { ok: boolean; reason?: string } {
+    const p = this.getById('payment_record', id)
+    if (!p) return { ok: false, reason: '到款不存在' }
+    if (String(p.auto_approved_by || '') !== 'auto') return { ok: false, reason: '非自动通过，无需撤销' }
+    this.update('payment_record', id, { needs_review: 1, auto_approved_by: null })
+    this.logActivity('payment_record', id, 'unapproved', `撤销自动通过 ${String(p.payer || '')}`, 'auto')
+    this.logAutoConfirm('payment_record', id, 'undo', 0, '人工撤销自动通过', 'undoPayment')
+    return { ok: true }
+  }
+  /** 撤销自动链接物流：unlinked 恢复（仅限自动链接的条目） */
+  undoLogistics(id: number): { ok: boolean; reason?: string } {
+    const l = this.getById('logistics', id)
+    if (!l) return { ok: false, reason: '物流不存在' }
+    if (String(l.auto_linked_by || '') !== 'auto') return { ok: false, reason: '非自动链接，无需撤销' }
+    this.update('logistics', id, { contract_id: null, link_status: 'unlinked', auto_linked_by: null })
+    this.logActivity('logistics', id, 'unlinked', `撤销自动链接 ${String(l.tracking_no || '')}`, 'auto')
+    this.logAutoConfirm('logistics', id, 'undo', 0, '人工撤销自动链接', 'undoLogistics')
+    return { ok: true }
+  }
+  /** 撤销自动关联发票：清 account/contract/amount（仅限自动关联的条目） */
+  undoInvoice(id: number): { ok: boolean; reason?: string } {
+    const inv = this.getById('invoice', id)
+    if (!inv) return { ok: false, reason: '发票不存在' }
+    if (String(inv.auto_updated_by || '') !== 'auto') return { ok: false, reason: '非自动关联，无需撤销' }
+    this.update('invoice', id, { account_id: null, contract_id: null, amount: 0, auto_updated_by: null })
+    this.logActivity('invoice', id, 'unlinked', `撤销自动关联发票 ${String(inv.invoice_no || '')}`, 'auto')
+    this.logAutoConfirm('invoice', id, 'undo', 0, '人工撤销自动关联', 'undoInvoice')
+    return { ok: true }
   }
 
   // ─── 群配置 ───────────────────────────────────────────────────────────────
