@@ -256,6 +256,7 @@ export default function CrmReviewPage() {
               {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-info', i.id).then((r) => setNotice(r.ok ? `开票信息单：${r.path}` : '生成失败')) }}>开票信息单</button>
+            <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-app', i.id).then((r) => setNotice(r.ok ? `开票申请单：${r.path}` : '生成失败')) }}>开票申请</button>
           </div>
         ))}
       </section>

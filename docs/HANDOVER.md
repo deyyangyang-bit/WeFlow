@@ -120,6 +120,20 @@
 - 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
 - **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动 pkill；`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需按 PID `kill -9`（Electron 偶发卡 UE 不可中断睡眠，不影响新实例）
 
+## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
+
+> 主线：让 app 生成的单据与用户**真实销售模版** 1:1 复刻——报价单/销售合同直接拿真实 docx 注入 docxtemplater 标签（样式原样保留），开票申请单按 Excel 原样用 exceljs 重建（合并单元格 + 公式 + 合计大写/小写），甲方(客户)开票信息改为系统录入。新增测试 `scripts/crm-docgen-test.ts` **65/65**。
+
+- **真实模版**：`scripts/build-crm-templates.py`（python-docx，一次性）读用户真实样板副本（`/tmp/crm-tpl-inspect/`）→ 打标签 → `resources/crm-templates/{quotation,contract}.docx`（**提交进仓库**，随 `extraResources` 打包）。quotation：7列表格（序号/备注）+ `{customer}` 客户行 + 合计/含运费行 + 付款条款/footer 公司信息保留原样；contract：COOFORK-编号 + 行项目循环 + `合计人民币金额（大写）：{amount_cn}` + table1 甲方块 `{buyer_name/addr/bank/account/tax/phone}`（乙方固定）+ 售后保修附表保留
+- **新增 `invoice-app` doc 类型** → `buildInvoiceAppWorkbook`（exceljs）复刻「开票申请」样板 sheet（B:I 列）：标题 B3:I3/日期 B4:I4 合并居中；表头 r8；明细 r9+（商品名称 C:D 合并，总额 `=H{r}*G{r}` 公式，商品编码取 product.sku）；合计 r14（B14 大写 + C14:E14 合并=**中文大写文本**，G14 小写 + H14:I14 合并=`=SUM(I9:I末)` 公式）；r15/16 货款情况静态（款项来源默认 对公转账）；r17 汇款单位名称合并=buyer；r19 复核/填表人：杨青。列宽/宋体/边框按样板复刻
+- **金额大写** `electron/services/moneyCn.ts`（新，纯函数，零 electron）：`amountToChinese(n)` 按四位分组 + 组间补零规则，支持 角/分/整/负（`100005→壹拾万零伍元整`、`100050000→壹亿零伍万元整`）
+- **架构拆分**：`electron/services/crmDocGenCore.ts`（新，零 electron 纯核心）承接 `renderDocx` + `buildInvoiceAppWorkbook` + 数据装配 + `generateDocBuffer(type, recordId)`（`DOC_TYPES = quotation/contract/invoice-info/invoice-app`，invoice-app 出 `.xlsx`）；`crmDocGenService.ts` 降为 **electron 薄壳**（模板路径三候选解析 → 调 Core → 落盘 `userData/crm-docs/{type}-{id}-{ts}.{ext}` → 写回 `attachment_path`）。`generateDoc` 改 **async**，`crmAutoConfirmService` 的 docgenRunner 类型同步为 `Promise<{ok;path?;reason?}>`
+- **甲方(客户)开票信息 = 系统录入**（已确认决策）：`CrmWorkbenchPage` 新建合同表单加 5 输入（单位地址/开户银行/银行账号/税号/电话）→ `createContract` 写 `contract.custom_fields`（`buyer_addr/buyer_bank/buyer_account/tax_no/buyer_phone`，与自动确认引擎的 `tax_no` 同 key）；合同详情「子资源」面板加「甲方开票信息」编辑块（5 输入 + 保存 → `crm.update('contract', id, {custom_fields})`，IPC 已存在）
+- **前端**：CrmReviewPage 发票待开行加「开票申请」按钮（在「开票信息单」旁）→ `docGenerate('invoice-app', i.id)`
+- **数据装配**：合同 `no = COOFORK-{yyyymmdd}{id 补2位}`（date 取 sign_date||created_at）；报价单 `no = Q-{id}`；行项 单位默认 台、备注默认 空；invoice-app 经 inv→contract→quotations→items 取明细（商品编码=product.sku），buyer=inv.buyer，tax_no=cf.tax_no
+- 新 npm script：`test:docgen`；`docs/HANDOVER.md` 本次同步
+- **坑**：exceljs 4.4 的 `ws.model.merges` 是**范围字符串数组**（`["B3:I3","C9:D9"]`），单测需按字符串解析，不是 `{top,left,bottom,right}` 对象；真实 docx 模版含图片（quotation 516KB），`python-docx` 只动段落/单元格文本，图片与样式原样保留
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -306,7 +320,9 @@
 | `crmImportService.ts` | AI 意向判断→CRM 自动导入 + 历史回填 + 内部群成员收集 |
 | `crmDeepAnalysisService.ts` | 资深销售助理七板块深度分析（用户自研 prompt 固化） |
 | `crmQuoteService.ts` | AI 报价：私聊需求→产品库选型→报价单草稿 |
-| `crmDocGenService.ts` | docx 生成（docxtemplater，报价单/合同/开票信息单） |
+| `crmDocGenCore.ts` | **文档生成纯核心**（§2.7，零 electron，可单测）：renderDocx + buildInvoiceAppWorkbook + 数据装配 + generateDocBuffer（quotation/contract/invoice-info/**invoice-app**→.xlsx） |
+| `moneyCn.ts` | **金额大写纯函数**：`amountToChinese`（零壹贰…元角分整，四位分组 + 组间补零） |
+| `crmDocGenService.ts`（改） | **electron 薄壳**：模板路径三候选 + 落盘 `userData/crm-docs` + 写回 attachment_path；generateDoc 为 async |
 | `crmAutoConfirmService.ts` | **自动确认引擎**（§2.6）：纯判定 evaluate×4 + applyDecision/runAutoConfirm/undo + 60s 调度器 |
 
 ### 前端 `src/`
@@ -337,7 +353,12 @@
 | `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |
 | `crm-claim-test.ts` | 货款认领测试（17 项） |
 | `crm-autoconfirm-test.ts` | **自动确认引擎单测**（**56 项**：归属 A1-A10 / 到款 P1-P8 / 物流 L1-L6 / 发票 I1-I5 / 金额 F1-F4 / docgen 注入 / 引擎 E1-E5 / 撤销 U1-U6） |
+| `crm-docgen-test.ts` | **文档生成单测**（**65 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
+
+### 资源/脚本（§2.7 新增）
+- `resources/crm-templates/{quotation,contract}.docx` —— 真实模版（docxtemplater 标签已注入，**提交进仓库**，随 extraResources 打包）；改模版用 `python3 scripts/build-crm-templates.py [源目录]`（默认读 `/tmp/crm-tpl-inspect/`）
+- `scripts/build-crm-templates.py` —— python-docx 一次性注入脚本（真实样板 → 仓库模版）
 
 ### 已删除
 - `cloudControlService.ts`（向上游上报使用统计，隐私风险）

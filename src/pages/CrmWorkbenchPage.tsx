@@ -30,6 +30,19 @@ export default function CrmWorkbenchPage() {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [newAmount, setNewAmount] = useState('')
+  // 甲方开票信息（新建合同：随合同创建写入 custom_fields）
+  const [newBuyerAddr, setNewBuyerAddr] = useState('')
+  const [newBuyerBank, setNewBuyerBank] = useState('')
+  const [newBuyerAccount, setNewBuyerAccount] = useState('')
+  const [newBuyerTax, setNewBuyerTax] = useState('')
+  const [newBuyerPhone, setNewBuyerPhone] = useState('')
+  // 甲方开票信息（已建合同：详情编辑）
+  const [showEditInvoice, setShowEditInvoice] = useState(false)
+  const [editAddr, setEditAddr] = useState('')
+  const [editBank, setEditBank] = useState('')
+  const [editAccount, setEditAccount] = useState('')
+  const [editTax, setEditTax] = useState('')
+  const [editPhone, setEditPhone] = useState('')
   const [showQuo, setShowQuo] = useState(false)
   const [quoRows, setQuoRows] = useState<QuoRow[]>([])
   const [quoSearch, setQuoSearch] = useState('')
@@ -125,6 +138,13 @@ export default function CrmWorkbenchPage() {
     setLogistics(await window.electronAPI.crm.list('logistics', { contract_id: c.id }))
     const allocs = await window.electronAPI.crm.list('allocation', { contract_id: c.id })
     setAllocations(allocs)
+    // 甲方开票信息回填到编辑表单
+    const cf = (() => { try { return JSON.parse(c.custom_fields || '{}') } catch { return {} } })()
+    setEditAddr(cf.buyer_addr ?? '')
+    setEditBank(cf.buyer_bank ?? '')
+    setEditAccount(cf.buyer_account ?? '')
+    setEditTax(cf.tax_no ?? '')
+    setEditPhone(cf.buyer_phone ?? '')
   }
 
   const ship = async (c: any) => {
@@ -171,9 +191,29 @@ export default function CrmWorkbenchPage() {
 
   const createContract = async () => {
     const amount = parseFloat(newAmount || '0')
-    const accountId = await window.electronAPI.crm.create('account', { name: newName, created_at: Date.now(), updated_at: Date.now() })
-    await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName}-合同`, amount, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now() })
+    if (!newName.trim()) { setNotice('请填写客户名称'); return }
+    // 甲方开票信息只写入非空字段（自动确认引擎也会写 tax_no，键一致）
+    const custom_fields: Record<string, string> = {}
+    if (newBuyerAddr.trim()) custom_fields.buyer_addr = newBuyerAddr.trim()
+    if (newBuyerBank.trim()) custom_fields.buyer_bank = newBuyerBank.trim()
+    if (newBuyerAccount.trim()) custom_fields.buyer_account = newBuyerAccount.trim()
+    if (newBuyerTax.trim()) custom_fields.tax_no = newBuyerTax.trim()
+    if (newBuyerPhone.trim()) custom_fields.buyer_phone = newBuyerPhone.trim()
+    const accountId = await window.electronAPI.crm.create('account', { name: newName.trim(), created_at: Date.now(), updated_at: Date.now() })
+    await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName.trim()}-合同`, amount, status: 'pending_sign', custom_fields: JSON.stringify(custom_fields), created_at: Date.now(), updated_at: Date.now() })
     setShowNew(false); setNewName(''); setNewAmount('')
+    setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
+    await fetchWorkbench()
+  }
+
+  // 已建合同：保存/更新甲方开票信息（覆盖式写入 custom_fields）
+  const saveInvoiceInfo = async () => {
+    if (!selected) return
+    const old = (() => { try { return JSON.parse(selected.custom_fields || '{}') } catch { return {} } })()
+    const cf = { ...old, buyer_addr: editAddr.trim(), buyer_bank: editBank.trim(), buyer_account: editAccount.trim(), tax_no: editTax.trim(), buyer_phone: editPhone.trim() }
+    await window.electronAPI.crm.update('contract', selected.id, { custom_fields: JSON.stringify(cf) })
+    setNotice('甲方开票信息已保存，生成合同/开票申请单将使用新信息')
+    setShowEditInvoice(false)
     await fetchWorkbench()
   }
 
@@ -193,6 +233,12 @@ export default function CrmWorkbenchPage() {
         <div className="crm-new-form">
           <input placeholder="客户名称" value={newName} onChange={(e) => setNewName(e.target.value)} />
           <input placeholder="合同金额" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
+          <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
+          <input placeholder="单位地址" value={newBuyerAddr} onChange={(e) => setNewBuyerAddr(e.target.value)} />
+          <input placeholder="开户银行" value={newBuyerBank} onChange={(e) => setNewBuyerBank(e.target.value)} />
+          <input placeholder="银行账号" value={newBuyerAccount} onChange={(e) => setNewBuyerAccount(e.target.value)} />
+          <input placeholder="税号" value={newBuyerTax} onChange={(e) => setNewBuyerTax(e.target.value)} />
+          <input placeholder="电话" value={newBuyerPhone} onChange={(e) => setNewBuyerPhone(e.target.value)} />
           <button className="crm-btn primary" onClick={() => void createContract()}>创建</button>
         </div>
       )}
@@ -337,6 +383,22 @@ export default function CrmWorkbenchPage() {
             <div><h4>物流</h4>{logistics.map((l) => (
               <div key={l.id} className="crm-row">{l.tracking_no} {l.receiver} {l.city} [{l.link_status}]</div>
             ))}</div>
+          </div>
+
+          <div className="crm-invoice-edit">
+            <button className="crm-btn" onClick={() => setShowEditInvoice((v) => !v)}>
+              <FileText size={13} /> {showEditInvoice ? '收起开票信息' : '甲方开票信息'}
+            </button>
+            {showEditInvoice && (
+              <div className="crm-invoice-edit__grid">
+                <input placeholder="单位地址" value={editAddr} onChange={(e) => setEditAddr(e.target.value)} />
+                <input placeholder="开户银行" value={editBank} onChange={(e) => setEditBank(e.target.value)} />
+                <input placeholder="银行账号" value={editAccount} onChange={(e) => setEditAccount(e.target.value)} />
+                <input placeholder="税号" value={editTax} onChange={(e) => setEditTax(e.target.value)} />
+                <input placeholder="电话" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
+                <button className="crm-btn primary" onClick={() => void saveInvoiceInfo()}>保存开票信息</button>
+              </div>
+            )}
           </div>
         </div>
       )}

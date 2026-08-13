@@ -3,7 +3,10 @@
 .crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
 .crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
 .crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &:active { transform: scale(0.97); } &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &.danger { color: #dc2626; border-color: #fecaca; &:hover { background: #fef2f2; } } }
-.crm-new-form { display: flex; gap: 8px; margin-bottom: 12px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; } }
+.crm-new-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; } }
+.crm-new-form__divider { width: 100%; font-size: 12px; color: #64748b; border-top: 1px dashed #e2e8f0; padding-top: 6px; }
+.crm-invoice-edit { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e8f0; }
+.crm-invoice-edit__grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; min-width: 180px; flex: 1; } }
 .crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; } tr.active { background: #f1f5f9; } td.warn { color: #dc2626; font-weight: 600; } }
 .crm-progress { width: 90px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; div { height: 100%; background: #16a34a; } }
 .crm-detail { margin-top: 20px; h3 { font-size: 14px; margin-bottom: 8px; } }

@@ -37,14 +37,14 @@ export interface AutoRunResult {
 
 // ─── 可注入依赖（保持引擎无 electron import）────────────────────────────────
 let configRef: { get: (k: string) => unknown } | null = null
-let docgenRunner: ((type: string, recordId: number) => { ok: boolean; path?: string; reason?: string }) | null = null
+let docgenRunner: ((type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>) | null = null
 
 /** 注入 ConfigService（同 crmParseService.setCrmParseConfig 模式） */
 export function setAutoConfirmConfig(cfg: { get: (k: string) => unknown } | null): void {
   configRef = cfg
 }
 /** 注入发票开单回调（generateDoc），引擎不直接 import electron 依赖的 docgen */
-export function setDocgenRunner(fn: ((type: string, recordId: number) => { ok: boolean; path?: string; reason?: string }) | null): void {
+export function setDocgenRunner(fn: ((type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>) | null): void {
   docgenRunner = fn
 }
 
@@ -224,8 +224,9 @@ export function applyDecision(d: AutoDecision, opts?: AutoRunOptions): { ok: boo
           const c = crmDbService.getById('contract', Number(p.contract_id))
           const cf = (() => { try { return JSON.parse(String(c?.custom_fields || '{}')) } catch { return {} } })() as Record<string, unknown>
           if (cf.tax_no) {
-            const r = docgenRunner('invoice-info', d.id)
-            if (r?.ok) salesLog('INFO', `[AutoConfirm] 发票#${d.id} 自动生成开票信息单：${r.path || ''}`)
+            void docgenRunner('invoice-info', d.id)?.then((r) => {
+              if (r?.ok) salesLog('INFO', `[AutoConfirm] 发票#${d.id} 自动生成开票信息单：${r.path || ''}`)
+            })
           }
         }
         return { ok: true }
