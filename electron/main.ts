@@ -44,6 +44,8 @@ import { messagePushService } from './services/messagePushService'
 import { insightService } from './services/insightService'
 import { insightRecordService } from './services/insightRecordService'
 import { insightProfileService } from './services/insightProfileService'
+import { judgeAndImportCrmCustomer, backfillImportFromInsightRecords, collectInternalGroupMembers } from './services/crmImportService'
+import { crmDbService } from './services/crmDbService'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
@@ -2090,7 +2092,20 @@ function registerIpcHandlers() {
     displayName?: string
     avatarUrl?: string
   }) => {
-    return insightProfileService.generateProfile(payload)
+    const result = await insightProfileService.generateProfile(payload)
+    // AI 画像完成后：判定销售意向，有意向则自动导入 CRM
+    if (result.success && payload.sessionId) {
+      try {
+        const record = insightProfileService.getProfileRecord(payload.sessionId)
+        if (record) {
+          const judge = await judgeAndImportCrmCustomer(record, configService)
+          if (judge.imported) result.message = `${result.message || 'AI 画像已生成'}。已自动导入 CRM 客户（${judge.stage ? judge.stage + '，' : ''}${judge.reason || '有意向'}）`
+        }
+      } catch (e) {
+        salesLog('WARN', `[CrmImport] 画像后导入失败 ${payload.sessionId}: ${e}`)
+      }
+    }
+    return result
   })
 
   ipcMain.handle('insight:cancelProfile', async (_, sessionId?: string) => {
@@ -4606,6 +4621,15 @@ function registerIpcHandlers() {
     }
   })
 
+  // 销售漏斗（阶段分布 + 意向标记时间线）
+  ipcMain.handle('sales:funnel:stats', async () => {
+    try {
+      return { success: true, data: salesDbService.funnelStats() }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 客户数据导出 Excel（exceljs 运行时加载，弹保存对话框）
   ipcMain.handle('sales:customer:export', async () => {
     try {
@@ -5316,6 +5340,31 @@ app.whenReady().then(async () => {
     // 启动今日行动引擎
     setActionEngineConfig(configService)
     registerCrmIpcHandlers(ipcMain, configService)
+    // 内部人员名单（同事）：手动名单 + 内部群成员，CRM 导入自动跳过
+    await crmDbService.initialize(app.getPath('userData'))
+    try {
+      const manualList = Array.from(configService.get('crmInternalList') || [])
+      const groupMembers = await collectInternalGroupMembers(configService.get('crmInternalGroups'))
+      const internalList = Array.from(new Set([...manualList, ...groupMembers]))
+      crmDbService.setInternalList(internalList)
+      console.log(`[Sales] 内部名单共 ${internalList.length} 条：${internalList.slice(0, 25).map((n) => String(n).slice(0, 20)).join(' | ')}`)
+      const removed = crmDbService.removeInternalAccounts()
+      if (removed > 0) console.log(`[Sales] 已清理内部人员（同事）${removed} 个 CRM 客户`)
+      if (groupMembers.length > 0) console.log(`[Sales] 内部群成员 ${groupMembers.length} 个已加入排除名单`)
+    } catch (e) {
+      console.warn('[Sales] 内部人员名单初始化失败:', e)
+    }
+    // 回填导入：把往期灵感信箱里判定出销售意向的记录补导入 CRM（幂等）
+    // 必须先 await crmDbService.initialize（registerCrmIpcHandlers 内是异步不等待的），否则 db 未就绪全部静默失败
+    try {
+      await crmDbService.initialize(app.getPath('userData'))
+      const backfill = backfillImportFromInsightRecords(insightRecordService.getAllRecordsForBackfill())
+      if (backfill.imported > 0 || backfill.existing > 0) {
+        console.log(`[Sales] 灵感信箱回填导入 CRM：新建 ${backfill.imported}，已存在 ${backfill.existing}`)
+      }
+    } catch (e) {
+      console.warn('[Sales] 灵感信箱回填导入失败:', e)
+    }
     startActionEngineScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)

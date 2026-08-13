@@ -153,6 +153,25 @@ export function feeCheck(sumGross: number, net: number, feeRate = 0.002, tol = 0
   return Math.abs(sumGross * (1 - feeRate) - net) <= tol
 }
 
+// ─── 私聊成交信号（私域成交检测，保守词表宁缺勿滥）───────────────────────────
+// 明确成交词（客户确认下单/付款）
+const DEAL_WORDS = [
+  '下单', '拍下', '订了', '定了', '就这么定', '成交', '来一台', '来两台', '来三台',
+  '打款给你', '转给你', '给你打款', '付款了', '转账了', '款已付', '已付款', '就这台', '就要这台'
+]
+// 意向词（≠成交，命中则排除）
+const DEAL_EXCLUDE = ['想要', '要不要', '想买', '考虑', '了解一下', '打算', '再看看', '考虑下', '不要', '不用', '先不', '别急']
+/**
+ * 识别客户私聊中的成交信号。只看客户消息（isSend=0），命中明确成交词且无意向词时返回 true。
+ * 保守设计：只认最明确的"定了/下单/付款"表达，避免把"考虑买"误判为成交。
+ */
+export function isDealSignal(content: string, isSend: number): boolean {
+  if (isSend !== 0) return false
+  const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ')
+  if (DEAL_EXCLUDE.some((w) => text.includes(w))) return false
+  return DEAL_WORDS.some((w) => text.includes(w))
+}
+
 // ─── 公司名 vs 个人别名判别 ──────────────────────────────────────────────────
 const COMPANY_HINT_RE = /(公司|有限|厂|集团|合作社|经营部|商贸行)/
 export function isCompanyHint(hint: string): boolean {

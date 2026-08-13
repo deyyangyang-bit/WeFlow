@@ -1713,13 +1713,22 @@ export interface ElectronAPI {
     fieldMetaSave: (meta: unknown) => Promise<number>
     reviewQueues: () => Promise<any>
     workbench: () => Promise<any[]>
-    allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string }>
+    customers: () => Promise<any[]>
+    customerProfile: (sessionId: string) => Promise<any>
+    customerDeepAnalysis: (sessionId: string, displayName: string) => Promise<{ ok: boolean; report?: string; reason?: string }>
+    allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
     allocationReject: (id: number) => Promise<void>
+    paymentApprove: (id: number) => Promise<{ ok: boolean; reason?: string; allocationCreated?: boolean }>
+    accountEnsure: (name: string) => Promise<number>
     contractShip: (id: number) => Promise<{ ok: boolean; gap?: number; reason?: string }>
+    contractSign: (id: number) => Promise<{ ok: boolean; reason?: string }>
+    contractDelete: (id: number) => Promise<{ ok: boolean; reason?: string; removed?: number }>
+    customerDelete: (id: number) => Promise<{ ok: boolean; reason?: string; removed?: number }>
     logisticsLink: (id: number, contractId: number) => Promise<{ ok: boolean; warning?: string }>
     logisticsCandidates: (receiver: string, city: string) => Promise<any[]>
     productImport: (rows: unknown[]) => Promise<{ imported: number }>
     quotationCreate: (data: unknown) => Promise<{ ok: boolean; id?: number; reason?: string }>
+    quotationAi: (sessionId: string, displayName: string) => Promise<{ ok: boolean; quotationId?: number; contractId?: number; reason?: string; matched?: Array<{ keyword: string; productName: string }> }>
     groupsList: () => Promise<any[]>
     groupsSave: (g: unknown) => Promise<number>
     groupsUpdate: (id: number, patch: unknown) => Promise<void>
@@ -1751,6 +1760,7 @@ export interface ElectronAPI {
     customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
     dashboardStats: () => Promise<{ success: boolean; stats?: DashboardStats; error?: string }>
+    funnelStats: () => Promise<{ success: boolean; data?: { stageDistribution: Array<{ stage: string; count: number }>; intentTimeline: Array<{ date: string; stage: string; count: number }>; totalCustomers: number }; error?: string }>
     customerExport: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
     customerDetail: (sessionId: string) => Promise<{
       success: boolean;

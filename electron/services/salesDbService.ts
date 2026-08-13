@@ -202,6 +202,7 @@ class SalesDbService {
       ['created_by', "TEXT DEFAULT 'ai'"],
       ['confidence', 'REAL'],
       ['feedback_log', "TEXT DEFAULT '[]'"],
+      ['analysis', 'TEXT'],
     ]
     for (const [col, type] of migrationCols) {
       try { this.db.run(`ALTER TABLE follow_up_task ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
@@ -565,7 +566,7 @@ class SalesDbService {
     return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])!
   }
 
-  todoUpdate(id: number, updates: { status?: string; title?: string; due_at?: number; priority_score?: number; feedback_log?: string; completed_at?: number }): FollowUpTask | undefined {
+  todoUpdate(id: number, updates: { status?: string; title?: string; due_at?: number; priority_score?: number; feedback_log?: string; completed_at?: number; analysis?: string }): FollowUpTask | undefined {
     const fields: string[] = []
     const params: unknown[] = []
 
@@ -604,6 +605,23 @@ class SalesDbService {
   /**
    * 获取所有客户（供 actionEngine 全量扫描）
    */
+  /** 销售漏斗：阶段分布 + 意向标记时间线（近 30 天），前端做归一化与转化计算 */
+  funnelStats(): {
+    stageDistribution: Array<{ stage: string; count: number }>
+    intentTimeline: Array<{ date: string; stage: string; count: number }>
+    totalCustomers: number
+  } {
+    const stageDistribution = this.all<{ stage: string; cnt: number }>(
+      'SELECT stage, COUNT(*) AS cnt FROM customer_profile GROUP BY stage', []
+    ).map((r) => ({ stage: String(r.stage || 'unknown'), count: Number(r.cnt) || 0 }))
+    const intentTimeline = this.all<{ date: string; stage: string; cnt: number }>(
+      "SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS date, stage, COUNT(*) AS cnt FROM intent_tag_log WHERE created_at >= ? GROUP BY date, stage ORDER BY date",
+      [Date.now() - 30 * 86400_000]
+    ).map((r) => ({ date: String(r.date || ''), stage: String(r.stage || 'unknown'), count: Number(r.cnt) || 0 }))
+    const totalCustomers = Number(this.get<{ c: number }>('SELECT COUNT(*) AS c FROM customer_profile', [])?.c || 0)
+    return { stageDistribution, intentTimeline, totalCustomers }
+  }
+
   customerAll(): CustomerProfile[] {
     return this.all<CustomerProfile>('SELECT * FROM customer_profile', [])
   }

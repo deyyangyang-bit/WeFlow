@@ -37,6 +37,8 @@ export interface ActionItem {
   silentDays: number
   createdAt: number
   status: string
+  /** 预热生成的五字段分析（JSON 字符串，AIActionCard 直接渲染） */
+  analysis?: string
 }
 
 export interface TodayActionResult {
@@ -70,6 +72,8 @@ export interface UnifiedSignal {
   priorityScore: number
   urgencyTier: 'urgent' | 'high' | 'normal'
   status: string
+  /** 预热生成的五字段分析（JSON 字符串） */
+  analysis?: string
 }
 
 export interface UnifiedStats {
@@ -111,6 +115,17 @@ const PRIORITY_WEIGHT: Record<string, number> = {
   medium: 60,
   low: 40,
   info: 20
+}
+
+// 阶段加分：高意向推进中 > 已沟通 > 新客 > 沉默。
+// 范围 0-12：可压过沉默天数(0-30)的一半，但不推翻规则优先级(级差20)。
+const STAGE_BONUS: Record<string, number> = {
+  negotiating: 12,
+  quoted: 8,
+  contacted: 5,
+  new: 2,
+  unknown: 2,
+  dormant: 0
 }
 
 
@@ -231,10 +246,13 @@ const RULES: Rule[] = [
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       if (silentDays < 30) return false
-      // 检查历史任务次数
+      // 检查历史任务次数：只看「未完成的」R4/R5 任务
+      // （done/skipped/followed_ai = 跟了没效果的不该算；superseded = 被重扫顶掉，非用户行为）
       const recentTasks = salesDbService.todoList({ session_id: p.session_id, limit: 10 })
+      const DONE_STATUS = new Set(['done', 'skipped', 'followed_ai', 'superseded'])
       const r4r5Count = recentTasks.filter(t =>
         (t.trigger_type === 'rule_r4_contacted_silent' || t.trigger_type === 'rule_r5_dormant_wake') &&
+        !DONE_STATUS.has(t.status ?? '') &&
         (t.created_at ?? 0) >= Date.now() - 30 * 24 * 60 * 60 * 1000
       ).length
       return r4r5Count >= 2
@@ -295,13 +313,23 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   const customers = salesDbService.customerAll()
 
   // 清理所有 action_engine 生成的 pending 任务（幂等重扫，含历史遗留）
+  // 已到期的 → overdue 保留（跨天积累：欠着的跟进不能每天消失）
+  // 未到期/无 due 的 → superseded（今天重新计算）
   const staleTasks = salesDbService.todoList({ status: 'pending', limit: 500 })
     .filter(t => t.created_by === 'action_engine')
+  let overdueCount = 0
   for (const t of staleTasks) {
-    if (t.id) salesDbService.todoUpdate(t.id, { status: 'superseded' })
+    if (!t.id) continue
+    const due = Number(t.due_at || 0)
+    if (due > 0 && due <= nowMs) {
+      salesDbService.todoUpdate(t.id, { status: 'overdue' })
+      overdueCount++
+    } else {
+      salesDbService.todoUpdate(t.id, { status: 'superseded' })
+    }
   }
   if (staleTasks.length > 0) {
-    salesLog('INFO', `[ActionEngine] 清理 ${staleTasks.length} 条旧 pending 任务（幂等重扫）`)
+    salesLog('INFO', `[ActionEngine] 清理 ${staleTasks.length} 条旧 pending 任务（overdue ${overdueCount}，superseded ${staleTasks.length - overdueCount}）`)
   }
 
   // 一次性修复：清理被 InsightService 错误设置的 last_contact_at
@@ -364,7 +392,7 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
         // 24h 内同客户同规则不重复
         if (salesDbService.hasRecentTask(customer.session_id, rule.id, nowMs - DEDUP_WINDOW_MS)) continue
 
-        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30)
+        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30) + (STAGE_BONUS[customer.stage] ?? 0)
         const cand: Candidate = {
           sessionId: customer.session_id,
           displayName: customer.display_name ?? '未知',
@@ -397,8 +425,9 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
 
   // Phase 3: 落库（R1-R5 主队列）
   let generated = 0
+  const preheat: Array<{ id: number; cand: Candidate }> = []
   for (const cand of sorted) {
-    salesDbService.todoCreate({
+    const task = salesDbService.todoCreate({
       session_id: cand.sessionId,
       display_name: cand.displayName || null,
       trigger_type: cand.ruleId,
@@ -407,7 +436,39 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
       priority_score: cand.score,
       created_by: 'action_engine'
     })
+    // 收集 high/urgent 任务用于预热 AI 分析（前 8 条，避免批量扫描过慢）
+    if ((cand.priority === 'high' || cand.priority === 'urgent') && preheat.length < 8 && task.id) {
+      preheat.push({ id: task.id, cand })
+    }
     generated++
+  }
+  // 异步预热深度分析（走串行队列，不阻塞扫描返回）
+  if (preheat.length > 0 && configRef && isAiConfigured(configRef)) {
+    void enqueueSalesTask(async () => {
+      for (const { id, cand } of preheat) {
+        try {
+          const item: ActionItem = {
+            id,
+            sessionId: cand.sessionId,
+            displayName: cand.displayName ?? '未知',
+            stage: 'unknown',
+            triggerType: cand.ruleId,
+            title: cand.title,
+            reason: cand.title,
+            suggestion: '',
+            priority: cand.priority,
+            priorityScore: cand.score,
+            silentDays: 0,
+            createdAt: Date.now(),
+            status: 'pending'
+          }
+          const analysis = await generateActionAnalysis(item)
+          if (analysis && !analysis.notConfigured && !analysis.error) {
+            salesDbService.todoUpdate(id, { analysis: JSON.stringify(analysis) })
+          }
+        } catch { /* 预热失败不影响扫描 */ }
+      }
+    })
   }
 
   // Phase 4: 落库（R6 独立，不限名额）
@@ -519,7 +580,7 @@ async function lazyScan(): Promise<number> {
         if (!rule.match(customer, nowSec)) continue
         if (salesDbService.hasRecentTask(customer.session_id, rule.id, nowMs - DEDUP_WINDOW_MS)) continue
 
-        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30)
+        const score = PRIORITY_WEIGHT[rule.priority] + Math.min(silentDays, 30) + (STAGE_BONUS[customer.stage] ?? 0)
         salesDbService.todoCreate({
           session_id: customer.session_id,
           display_name: customer.display_name ?? null,
@@ -632,7 +693,8 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         sources: [source],
         priorityScore: baseScore,
         urgencyTier: 'normal',
-        status: 'pending'
+        status: 'pending',
+        analysis: task.analysis ?? ''
       })
     }
   }
@@ -1010,7 +1072,8 @@ function mapTaskToActionItem(task: FollowUpTask, nowMs: number): ActionItem {
     priorityScore: task.priority_score ?? 0,
     silentDays,
     createdAt: task.created_at ?? 0,
-    status: task.status ?? 'pending'
+    status: task.status ?? 'pending',
+    analysis: task.analysis ?? ''
   }
 }
 

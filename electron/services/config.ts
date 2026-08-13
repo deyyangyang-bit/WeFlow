@@ -122,6 +122,10 @@ interface ConfigSchema {
   aiInsightContextCount: number
   /** 自定义 system prompt，空字符串表示使用内置默认值 */
   aiInsightSystemPrompt: string
+  /** 内部人员名单（同事等，CRM 导入时自动跳过） */
+  crmInternalList: string[]
+  /** 内部群名（群成员视为同事，启动时自动读成员加入排除名单） */
+  crmInternalGroups: string[]
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */
@@ -266,6 +270,8 @@ export class ConfigService {
       aiInsightScanIntervalHours: 4,
       aiInsightContextCount: 40,
       aiInsightSocialContextCount: 3,
+      crmInternalList: ['库叉', '文件传输助手'],
+      crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,
       aiInsightTelegramToken: '',

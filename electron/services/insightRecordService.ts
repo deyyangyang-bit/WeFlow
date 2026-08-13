@@ -194,6 +194,22 @@ class InsightRecordService {
     return this.records.filter((record) => record.accountScope === scope)
   }
 
+  /** 该会话在 windowMs 内是否已有见解记录（用于防重复分析，时间窗通常 12h） */
+  hasRecentRecord(sessionId: string, windowMs: number): boolean {
+    if (!sessionId) return false
+    const cutoff = Date.now() - windowMs
+    return this.getScopedRecords().some((r) => r.sessionId === sessionId && r.createdAt >= cutoff)
+  }
+
+  /** 返回所有记录（含 salesStage），供 CRM 回填导入使用 */
+  getAllRecordsForBackfill(): Array<{ sessionId: string; displayName: string; salesStage?: string; createdAt: number }> {
+    this.ensureLoaded()
+    const scope = this.getCurrentAccountScope()
+    return this.records
+      .filter((r) => r.accountScope === scope)
+      .map((r) => ({ sessionId: r.sessionId, displayName: r.displayName, salesStage: r.salesStage, createdAt: r.createdAt }))
+  }
+
   addRecord(input: {
     sessionId: string
     displayName: string

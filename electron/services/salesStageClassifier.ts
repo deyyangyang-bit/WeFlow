@@ -133,7 +133,6 @@ export function persistClassification(
   result: StageClassification
 ): boolean {
   const nowMs = Date.now()
-  const nowSec = Math.floor(nowMs / 1000)
 
   // 查询当前阶段
   const existing = salesDbService.customerGetBySession(sessionId)
@@ -144,11 +143,12 @@ export function persistClassification(
   if (result.stage === 'dormant') return false
 
   // 使用 customerUpsert 更新/创建
+  // 注意：不写 last_contact_at —— 分类动作≠联系动作，
+  // 分类时刷时间戳会把沉默天数归零、让跟进规则永不触发（曾引发 hack 修补）
   salesDbService.customerUpsert({
     session_id: sessionId,
     display_name: displayName || undefined,
-    stage: result.stage,
-    last_contact_at: nowSec
+    stage: result.stage
   })
 
   // 更新 last_stage_change_at（migration 列，通过 updateStageChangeTime）

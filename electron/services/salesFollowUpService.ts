@@ -42,7 +42,7 @@ export interface ScanResult {
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
-const SCAN_SESSION_LIMIT = 15
+const SCAN_SESSION_LIMIT = 50
 const SCAN_MESSAGE_LIMIT = 30
 const MAX_CONTEXT_CHARS = 1500
 const CONFIDENCE_THRESHOLD = 0.6   // 低于此值进入"待确认"

@@ -2,10 +2,30 @@
 .crm-workbench-page { padding: 24px; color: var(--text-primary, #1e293b); }
 .crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
 .crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
-.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &:active { transform: scale(0.97); } &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } }
+.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &:active { transform: scale(0.97); } &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &.danger { color: #dc2626; border-color: #fecaca; &:hover { background: #fef2f2; } } }
 .crm-new-form { display: flex; gap: 8px; margin-bottom: 12px; input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; } }
 .crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; } tr.active { background: #f1f5f9; } td.warn { color: #dc2626; font-weight: 600; } }
 .crm-progress { width: 90px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; div { height: 100%; background: #16a34a; } }
 .crm-detail { margin-top: 20px; h3 { font-size: 14px; margin-bottom: 8px; } }
 .crm-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; h4 { font-size: 12px; color: #64748b; margin-bottom: 6px; } }
 .crm-row { font-size: 12px; padding: 6px 8px; border: 1px solid #f1f5f9; border-radius: 6px; margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+.crm-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.crm-modal-body { background: #fff; border-radius: 12px; padding: 20px; width: 640px; max-height: 80vh; overflow: auto; color: #1e293b; h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }
+.crm-modal-body .crm-search { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; margin-bottom: 8px; }
+.quo-list { max-height: 180px; overflow: auto; border: 1px solid #f1f5f9; border-radius: 6px; margin-bottom: 8px; }
+.quo-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #f8fafc; font-size: 12px; input[type=number] { width: 64px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 6px; } }
+.quo-total { font-weight: 600; font-size: 13px; }
+.crm-tabs { display: flex; gap: 4px; }
+.crm-tab { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; &.active { background: #2563eb; color: #fff; border-color: #2563eb; } }
+.crm-badge { margin-left: 6px; background: #dbeafe; color: #2563eb; border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+.crm-empty { text-align: center; color: #94a3b8; padding: 24px; font-size: 13px; }
+.crm-insight { font-size: 13px; line-height: 1.7; color: #334155; background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 8px; padding: 12px; margin-bottom: 12px; white-space: pre-wrap; }
+.crm-profile__section { margin-bottom: 14px; h4 { font-size: 13px; color: #475569; margin-bottom: 6px; } }
+.crm-detail-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.crm-detail-actions { display: flex; gap: 8px; }
+.ai-row { display: flex; gap: 8px; margin-bottom: 6px; }
+.ai-row__label { flex-shrink: 0; color: #2563eb; font-weight: 500; min-width: 56px; }
+
+.crm-filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.crm-filter-select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; background: #fff; cursor: pointer; }
+.crm-filter-count { font-size: 12px; color: #64748b; }

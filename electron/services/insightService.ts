@@ -24,7 +24,9 @@ import { showNotification } from '../windows/notificationWindow'
 import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
+import { crmDbService } from './crmDbService'
 import { enqueueSalesTask } from './salesQueue'
+import { onNewMessage as actionStageClassifier } from './salesActionEngine'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -42,6 +44,8 @@ const DB_CHANGE_DEBOUNCE_MS = 2000
 
 /** 首次沉默扫描延迟（毫秒），避免启动期间抢占资源 */
 const SILENCE_SCAN_INITIAL_DELAY_MS = 3 * 60 * 1000
+// 自动触发见解的重复分析去重窗口（内存冷却重启即丢，故用记录级去重兜底）
+const INSIGHT_RECORD_DEDUP_MS = 12 * 3600 * 1000
 
 /** 单次 API 请求超时（毫秒） */
 const API_TIMEOUT_MS = 45_000
@@ -1662,6 +1666,9 @@ ${afterText}
         insightLog('INFO', `${displayName} 有新消息，准备生成见解...`)
         this.lastActivityAnalysis.set(sessionId, now)
 
+        // 接线 AI 阶段分类器（新消息到达 → 分类 → 更新 customer_profile.stage）
+        void actionStageClassifier(sessionId, displayName)
+
         await this.generateInsightForSession({
           sessionId,
           displayName,
@@ -1678,6 +1685,29 @@ ${afterText}
 
   // ── 核心见解生成 ────────────────────────────────────────────────────────────
 
+  /** AI 见解判定出意向阶段 → 自动导入 CRM（幂等）。了解/比价/决策/成交=有意向，流失/未知不导入。返回是否导入 */
+  private importIntentCustomerToCrm(sessionId: string, displayName: string, salesStage: string): boolean {
+    if (!sessionId || sessionId.endsWith('@chatroom')) return false
+    const STAGE_TO_CRM: Record<string, string> = {
+      了解: 'contacted', 比价: 'negotiating', 决策: 'negotiating', 成交: 'won'
+    }
+    const crmStage = STAGE_TO_CRM[salesStage]
+    if (!crmStage) return false
+    try {
+      const res = crmDbService.importCustomerFromProfile({
+        name: displayName,
+        sessionId,
+        stage: crmStage,
+        reason: `AI 见解阶段：${salesStage}`
+      })
+      salesLog('INFO', `[CrmImport] AI 见解判定「${displayName}」有意向（${salesStage}）→ CRM ${crmStage}（${res.created ? '新建' : '已存在'}）`)
+      return true
+    } catch (e) {
+      salesLog('WARN', `[CrmImport] 见解导入失败 ${displayName}: ${e}`)
+      return false
+    }
+  }
+
   private async generateInsightForSession(params: {
     sessionId: string
     displayName: string
@@ -1688,6 +1718,14 @@ ${afterText}
     const { sessionId, displayName, triggerReason, silentDays, salesStage } = params
     if (!sessionId) return { success: false, message: '会话无效，无法生成见解' }
     if (!this.isEnabled()) return { success: false, message: '请先在设置中开启「AI 见解」' }
+    let crmImported = false // 本次是否自动导入 CRM（用于提示）
+    // 防重复分析：自动触发（活跃/沉默/批量）12h 内已有该客户见解记录则跳过。
+    // 根因：冷却标记在内存、应用重启即清零，导致同一客户被反复分析几十次。
+    // 手动触发保留覆盖权利（用户主动点，允许重析）。
+    if (triggerReason !== 'manual' && insightRecordService.hasRecentRecord(sessionId, INSIGHT_RECORD_DEDUP_MS)) {
+      insightLog('INFO', `跳过 ${displayName}：12h 内已生成过见解（触发 ${triggerReason}）`)
+      return { success: true, message: '最近已生成过见解，跳过', skipped: true }
+    }
 
     const { apiBaseUrl, apiKey, model, maxTokens } = this.getSharedAiModelConfig()
     const allowContext = this.config.get('aiInsightAllowContext') as boolean
@@ -1867,6 +1905,9 @@ ${afterText}
         salesStage: finalSalesStage
       })
 
+      // AI 见解判定出意向阶段 → 自动导入 CRM（幂等；了解/比价/决策/成交=有意向）
+      if (finalSalesStage) crmImported = this.importIntentCustomerToCrm(sessionId, resolvedDisplayName, finalSalesStage)
+
       const insightNotificationEnabled = this.config.get('aiInsightNotificationEnabled') !== false
       if (insightNotificationEnabled) {
         insightLog('INFO', `推送通知 → ${resolvedDisplayName}: ${insight}`)
@@ -1904,11 +1945,12 @@ ${afterText}
 
       insightLog('INFO', `已完成 ${resolvedDisplayName} 的见解处理`)
       this.recordTrigger(sessionId)
+      const crmNote = crmImported ? '，已自动导入 CRM 客户' : ''
       return {
         success: true,
-        message: insightNotificationEnabled
+        message: (insightNotificationEnabled
           ? `已生成「${resolvedDisplayName}」的 AI 见解，请查看通知弹窗`
-          : `已生成「${resolvedDisplayName}」的 AI 见解，AI 见解消息通知当前已关闭`,
+          : `已生成「${resolvedDisplayName}」的 AI 见解，AI 见解消息通知当前已关闭`) + crmNote,
         recordId: record.id,
         insight,
         notificationEnabled: insightNotificationEnabled

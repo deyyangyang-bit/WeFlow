@@ -14,8 +14,9 @@ import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
-  isCompanyHint, splitAliasHints, parseShippingInfo, type AllocationRow, type ShippingInfo
+  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
+import { salesDbService } from './salesDbService'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 
@@ -54,24 +55,38 @@ async function scanAll(): Promise<number> {
       const gid = String(group.group_id)
       if (!byId.has(gid)) { salesLog('INFO', `[CrmParse] skip ${gid} not-in-sessions`); continue }
       const lastScan = Number(group.last_scan || 0)
-      const msgResult = await chatService.getMessages(gid, 0, 100)
-      salesLog('INFO', `[CrmParse] group=${String(group.group_name)} success=${String(msgResult?.success)} msgs=${String(msgResult?.messages?.length ?? 0)}`)
-      if (!msgResult?.success || !msgResult.messages?.length) continue
-      const messages: CrmRow[] = msgResult.messages
+      // 按 lastScan 翻页扫增量：getMessages 倒序返回，遇 ms<=lastScan 即增量已扫完，
+      // 避免两次扫描间隔内消息超过单批上限(100)时中间增量被跳过（曾静默丢失到款/发票/物流）
+      const BATCH = 100
+      const MAX_PAGES = 20
+      let offset = 0
       let maxMs = lastScan
-      for (const msg of messages) {
-        const ms = Number(msg.createTime ?? 0) * 1000 // WCDB 秒 → 毫秒
-        if (ms <= lastScan) continue
-        const key = String(msg.messageKey || `${gid}:${msg.createTime}:${msg.localId}`)
-        if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
-        try {
-          await handle(group, msg)
-          scanned++
-        } catch (e) {
-          salesLog('WARN', `[CrmParse] handle error ${key}: ${e}`)
+      let reachedEnd = false
+      let batchMsgs = 0
+      for (let page = 0; page < MAX_PAGES && !reachedEnd; page++) {
+        const msgResult = await chatService.getMessages(gid, offset, BATCH)
+        salesLog('INFO', `[CrmParse] group=${String(group.group_name)} page=${page + 1} msgs=${String(msgResult?.messages?.length ?? 0)} hasMore=${String(msgResult?.hasMore)}`)
+        if (!msgResult?.success || !msgResult.messages?.length) break
+        for (const msg of msgResult.messages) {
+          const ms = Number(msg.createTime ?? 0) * 1000 // WCDB 秒 → 毫秒
+          if (ms <= lastScan) { reachedEnd = true; break } // 倒序：后续只会更旧
+          const key = String(msg.messageKey || `${gid}:${msg.createTime}:${msg.localId}`)
+          if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
+          try {
+            await handle(group, msg)
+            scanned++
+          } catch (e) {
+            salesLog('WARN', `[CrmParse] handle error ${key}: ${e}`)
+          }
+          crmDbService.markMsgProcessed(key)
+          if (ms > maxMs) maxMs = ms
         }
-        crmDbService.markMsgProcessed(key)
-        if (ms > maxMs) maxMs = ms
+        batchMsgs += msgResult.messages.length
+        if (reachedEnd || !msgResult.hasMore) break
+        offset = Number(msgResult.nextOffset ?? offset + msgResult.messages.length)
+      }
+      if (batchMsgs >= BATCH * MAX_PAGES && !reachedEnd) {
+        salesLog('WARN', `[CrmParse] group=${String(group.group_name)} 翻页达到上限 ${MAX_PAGES} 页，仍有未扫增量`)
       }
       if (maxMs > lastScan) crmDbService.updateGroup(Number(group.id), { last_scan: maxMs })
     }
@@ -100,43 +115,70 @@ async function scanAll(): Promise<number> {
       const lastScan = crmDbService.getScanState('priv:' + uid)
       if (lastScan && lastAct && lastScan >= lastAct) continue // 无新消息，跳过拉取
       privBudget--
-      const mr = await chatService.getMessages(uid, 0, 50)
-      if (!mr?.success || !mr.messages?.length) continue
+      // 同样翻页扫增量（倒序，遇 ms<=lastScan 即止）
+      const BATCH = 50
+      const MAX_PAGES = 10
+      let offset = 0
       let maxMs = lastScan
-      for (const msg of mr.messages) {
-        const ms = Number(msg.createTime ?? 0) * 1000
-        if (ms <= lastScan) continue
-        const key = String(msg.messageKey || `${uid}:${String(msg.createTime)}`)
-        if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
-        try {
+      let reachedEnd = false
+      for (let page = 0; page < MAX_PAGES && !reachedEnd; page++) {
+        const mr = await chatService.getMessages(uid, offset, BATCH)
+        if (!mr?.success || !mr.messages?.length) break
+        for (const msg of mr.messages) {
+          const ms = Number(msg.createTime ?? 0) * 1000
+          if (ms <= lastScan) { reachedEnd = true; break }
+          const key = String(msg.messageKey || `${uid}:${String(msg.createTime)}`)
+          if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
           const content = String(msg.content ?? msg.parsedContent ?? '')
-          let info: ShippingInfo | null = parseShippingInfo(content)
-          if (!info && /1[3-9]\d{9}/.test(content) && /(地址|收货|收件)/.test(content) && configRef && isAiConfigured(configRef)) {
-            info = await aiParseShipping(content)
-          }
-          if (info && info.address) {
-            let accId = accountId
-            // 主数据无此客户：私聊发完整收货地址即视为客户本人 → 建账户+别名学习（跳过自家同事/文件传输助手）
-            if (!accId && info.receiver && info.phone && name && !/库叉|文件传输助手/.test(name)) {
-              accId = crmDbService.ensureAccount(name)
-              crmDbService.aliasLearn(name, accId)
-              salesLog('INFO', `[CrmParse] 新建客户账户（私聊地址）: ${name} -> ${accId}`)
-            }
-            if (!accId) { crmDbService.markMsgProcessed(key); if (ms > maxMs) maxMs = ms; continue }
-            crmDbService.saveShippingInfo({
-              account_id: accId, receiver: info.receiver, phone: info.phone,
-              address: info.address, city: info.city, source_msg_id: key, created_at: Date.now()
-            })
-            if (info.receiver) {
-              const unlinked = crmDbService.all("SELECT * FROM logistics WHERE link_status = 'unlinked' AND receiver = ?", [info.receiver])
-              for (const l of unlinked) crmDbService.autoLinkLogisticsByReceiver(Number(l.id), info.receiver)
+          const isSend = Number(msg.isSend ?? msg.computed_is_send ?? msg.is_send ?? 0)
+          // 私域成交检测：客户消息含明确成交信号 → 阶段=won + 自动建 CRM 合同
+          if (isDealSignal(content, isSend)) {
+            try {
+              let dealAccountId = accountId
+              if (!dealAccountId) {
+                const imp = crmDbService.importCustomerFromProfile({ name, sessionId: uid, stage: 'won', reason: '私聊成交信号' })
+                if (imp.id) dealAccountId = imp.id
+              }
+              if (dealAccountId) {
+                try { salesDbService.customerUpsert({ session_id: uid, display_name: name, stage: 'won' }) } catch { /* salesDb 未初始化忽略 */ }
+                const dr = crmDbService.createDealContract(dealAccountId, content.slice(0, 60))
+                salesLog('INFO', `[CrmParse] 私聊成交信号「${name}」→ ${dr.created ? '新建合同' : '已有合同'}`)
+              }
+            } catch (e) {
+              salesLog('WARN', `[CrmParse] 成交检测处理失败 ${name}: ${e}`)
             }
           }
-        } catch (e) {
-          salesLog('WARN', `[CrmParse] priv handle error ${key}: ${e}`)
+          try {
+            let info: ShippingInfo | null = parseShippingInfo(content)
+            if (!info && /1[3-9]\d{9}/.test(content) && /(地址|收货|收件)/.test(content) && configRef && isAiConfigured(configRef)) {
+              info = await aiParseShipping(content)
+            }
+            if (info && info.address) {
+              let accId = accountId
+              // 主数据无此客户：私聊发完整收货地址即视为客户本人 → 建账户+别名学习（跳过自家同事/文件传输助手）
+              if (!accId && info.receiver && info.phone && name && !/库叉|文件传输助手/.test(name)) {
+                accId = crmDbService.ensureAccount(name)
+                crmDbService.aliasLearn(name, accId)
+                salesLog('INFO', `[CrmParse] 新建客户账户（私聊地址）: ${name} -> ${accId}`)
+              }
+              if (!accId) { crmDbService.markMsgProcessed(key); if (ms > maxMs) maxMs = ms; continue }
+              crmDbService.saveShippingInfo({
+                account_id: accId, receiver: info.receiver, phone: info.phone,
+                address: info.address, city: info.city, source_msg_id: key, created_at: Date.now()
+              })
+              if (info.receiver) {
+                const unlinked = crmDbService.all("SELECT * FROM logistics WHERE link_status = 'unlinked' AND receiver = ?", [info.receiver])
+                for (const l of unlinked) crmDbService.autoLinkLogisticsByReceiver(Number(l.id), info.receiver)
+              }
+            }
+          } catch (e) {
+            salesLog('WARN', `[CrmParse] priv handle error ${key}: ${e}`)
+          }
+          crmDbService.markMsgProcessed(key)
+          if (ms > maxMs) maxMs = ms
         }
-        crmDbService.markMsgProcessed(key)
-        if (ms > maxMs) maxMs = ms
+        if (reachedEnd || !mr.hasMore) break
+        offset = Number(mr.nextOffset ?? offset + mr.messages.length)
       }
       if (maxMs > lastScan) crmDbService.setScanState('priv:' + uid, maxMs)
     }
@@ -164,11 +206,16 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
     if (info) {
       const account = crmDbService.findAccountByPrefix(info.buyerPrefix)
       const archived = crmFileService.archive(fileName, userDataPath(), String(msg.fileMd5 || ''))
-      crmDbService.create('invoice', {
+      // 发票挂到该客户最近一条可挂款合同，未命中留空待确认中心人工关联
+      const contract = account ? crmDbService.activeContractForAccount(Number(account.id)) : null
+      const invId = crmDbService.create('invoice', {
         invoice_no: info.invoiceNo, buyer: account ? account.name : info.buyerPrefix,
-        account_id: account ? account.id : null, amount: 0,
+        account_id: account ? account.id : null, contract_id: contract ? Number(contract.id) : null,
+        amount: 0,
         status: archived ? 'issued' : 'pre_issue', attachment_path: archived, created_at: Date.now()
       })
+      if (invId) crmDbService.logActivity('invoice', invId, 'archived',
+        `群归档发票 ${info.invoiceNo}${account ? `，客户 ${account.name}` : ''}${archived ? '' : '（文件未定位，待归档）'}`)
       return
     }
   }
@@ -307,6 +354,11 @@ function applyAllocations(payment: CrmRow, rows: AllocationRow[], aiParsed: bool
       } else {
         const alias = crmDbService.aliasLookup(hint)
         if (alias) patch.account_id = alias.account_id
+      }
+      // 归属挂到该客户最近一条可挂款合同（pending_sign/signed），无则留空待人工
+      if (patch.account_id) {
+        const contract = crmDbService.activeContractForAccount(Number(patch.account_id))
+        if (contract) patch.contract_id = Number(contract.id)
       }
       crmDbService.update('allocation', id, patch)
     })

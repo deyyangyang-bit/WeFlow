@@ -78,7 +78,7 @@ function tierToPriority(tier: string): ActionItem['priority'] {
 
 function mapSignal(sig: any): ActionItem {
   const taskSource = sig.sources?.find((s: any) => s.type === 'task')
-  return {
+  const base: ActionItem = {
     sessionId: sig.sessionId,
     displayName: sig.displayName || '未知',
     stage: sig.stage || 'unknown',
@@ -96,6 +96,14 @@ function mapSignal(sig: any): ActionItem {
     priority: tierToPriority(sig.urgencyTier),
     createdAt: Date.now()
   }
+  // 预热 analysis（后端已生成五字段）→ 合并展开字段，卡片打开即带原因+建议
+  if (sig.analysis) {
+    try {
+      const parsed = JSON.parse(sig.analysis) as Partial<ActionItem>
+      Object.assign(base, parsed)
+    } catch { /* 预热分析解析失败忽略 */ }
+  }
+  return base
 }
 
 export const useTodayActionStore = create<TodayActionState>((set, get) => ({

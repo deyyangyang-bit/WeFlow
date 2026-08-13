@@ -5,7 +5,7 @@
 import {
   parseBankText, detectPayChannel, parseAllocationShorthand, isClaimKeyword,
   parseLogisticsBatch, parseInvoicePdfName, feeCheck, wechatTimeToMs,
-  isCompanyHint, splitAliasHints
+  isCompanyHint, splitAliasHints, isDealSignal
 } from '../electron/services/crmParseRules'
 
 let pass = 0, fail = 0
@@ -60,6 +60,14 @@ ok('time.year', new Date(ms).getFullYear() === 2026 && new Date(ms).getMonth() =
 ok('alias.company', isCompanyHint('无锡中和德机械有限公司'))
 ok('alias.person', !isCompanyHint('亮哥'))
 ok('alias.split', splitAliasHints('吴忠伟/亮哥').length === 2)
+
+// 9 私聊成交信号
+ok('deal.定了', isDealSignal('那就定了，我转给你', 0))
+ok('deal.下单', isDealSignal('好的，下单了', 0))
+ok('deal.款已付', isDealSignal('款已付，查收', 0))
+ok('deal.意向不误判', !isDealSignal('我想了解一下这个型号', 0))
+ok('deal.考虑不误判', !isDealSignal('我考虑考虑，下周再说', 0))
+ok('deal.销售消息不算', !isDealSignal('那就定了，转给你', 1))
 
 console.log(`\nGOLDEN RESULT: pass=${pass} fail=${fail}`)
 if (fail > 0) process.exit(1)

@@ -9,6 +9,12 @@ import { crmDbService } from './crmDbService'
 import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
 import { generateDoc, ensureTemplates } from './crmDocGenService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
+import { salesDbService } from './salesDbService'
+import { insightProfileService } from './insightProfileService'
+import { insightRecordService } from './insightRecordService'
+import { generateActionAnalysis } from './salesActionEngine'
+import { aiGenerateQuotation } from './crmQuoteService'
+import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import type { ConfigService } from './config'
 
@@ -26,9 +32,68 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:fieldmeta:save', async (_, meta) => crmDbService.saveFieldMeta(meta))
   ipcMain.handle('crm:review:queues', async () => crmDbService.reviewQueues())
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
+  ipcMain.handle('crm:customers', async () => crmDbService.customers())
+  // 客户档案一屏：销售画像 + 阶段 + 见解 + 待办 + 合同/回款 + AI 下一步建议
+  ipcMain.handle('crm:customer:profile', async (_, sessionId: string) => {
+    if (!sessionId) return { success: false, error: 'sessionId 不能为空' }
+    try {
+      let profile: any = null
+      let aiProfile = ''
+      let todos: any[] = []
+      let intentHistory: any[] = []
+      try { profile = salesDbService.customerGetBySession(sessionId) } catch { /* ignore */ }
+      try {
+        const rec = insightProfileService.getProfileRecord(sessionId)
+        if (rec?.finalProfile) aiProfile = rec.finalProfile
+      } catch { /* ignore */ }
+      try { todos = salesDbService.todoList({ session_id: sessionId }) } catch { /* ignore */ }
+      try { intentHistory = salesDbService.intentHistory(sessionId, 10) } catch { /* ignore */ }
+
+      let insights: any[] = []
+      try {
+        const r = insightRecordService.listRecords({ sessionId, limit: 5 })
+        insights = r.records || []
+      } catch { /* ignore */ }
+
+      const accRows = sessionId ? crmDbService.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [sessionId]) : []
+      const account = accRows.length ? accRows[0] : null
+      let contracts: any[] = []
+      let credited = 0
+      if (account) {
+        contracts = crmDbService.list('contract', { account_id: Number(account.id) })
+        credited = crmDbService.creditedTotal(Number(account.id))
+      }
+
+      // AI 下一步建议（轻量，复用五字段分析）
+      let advice: any = null
+      const displayName = profile?.display_name || account?.name || sessionId
+      try {
+        advice = await generateActionAnalysis({
+          id: 0, sessionId,
+          displayName,
+          stage: profile?.stage || account?.sales_stage || 'unknown',
+          triggerType: 'customer_profile',
+          title: `客户「${displayName}」`,
+          reason: '客户档案 AI 建议',
+          suggestion: '',
+          priority: 'high', priorityScore: 60, silentDays: 0,
+          createdAt: Date.now(), status: 'pending'
+        } as any)
+      } catch { /* ignore */ }
+
+      return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, advice } }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
   ipcMain.handle('crm:allocation:confirm', async (_, id: number, patch) => crmDbService.confirmAllocation(id, patch || {}))
+  ipcMain.handle('crm:payment:approve', async (_, id: number) => crmDbService.approvePayment(id))
+  ipcMain.handle('crm:account:ensure', async (_, name: string) => crmDbService.ensureAccount(String(name || '')))
   ipcMain.handle('crm:allocation:reject', async (_, id: number) => crmDbService.rejectAllocation(id))
   ipcMain.handle('crm:contract:ship', async (_, id: number) => crmDbService.shipContract(id))
+  ipcMain.handle('crm:contract:sign', async (_, id: number) => crmDbService.signContract(id))
+  ipcMain.handle('crm:contract:delete', async (_, id: number) => crmDbService.deleteContract(id))
+  ipcMain.handle('crm:customer:delete', async (_, id: number) => crmDbService.deleteAccount(id))
   ipcMain.handle('crm:logistics:link', async (_, id: number, contractId: number) => crmDbService.linkLogistics(id, contractId))
   ipcMain.handle('crm:logistics:candidates', async (_, receiver: string, city: string) => crmDbService.logisticsCandidates(receiver, city))
   ipcMain.handle('crm:product:import', async (_, rows: Array<Record<string, unknown>>) => {
@@ -37,6 +102,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     return { imported: n }
   })
   ipcMain.handle('crm:quotation:create', async (_, data) => crmDbService.createQuotation(data))
+  // AI 报价辅助：私聊需求 → 产品库选型 → 生成报价单草稿
+  ipcMain.handle('crm:quotation:ai', async (_, sessionId: string, displayName: string) => aiGenerateQuotation(sessionId, displayName, config))
+  // 资深销售助理深度分析：七板块销售分析报告
+  ipcMain.handle('crm:customer:deepAnalysis', async (_, sessionId: string, displayName: string) => deepAnalyzeSession(sessionId, displayName, config))
   ipcMain.handle('crm:groups:list', async () => crmDbService.groups())
   ipcMain.handle('crm:groups:save', async (_, g) => crmDbService.saveGroup(g))
   ipcMain.handle('crm:groups:update', async (_, id: number, patch) => crmDbService.updateGroup(id, patch || {}))

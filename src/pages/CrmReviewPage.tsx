@@ -14,10 +14,16 @@ export default function CrmReviewPage() {
   const [pickSearch, setPickSearch] = useState('')
   const [groupSessions, setGroupSessions] = useState<any[]>([])
   const [pickType, setPickType] = useState<Record<string, string>>({})
+  const [allocContract, setAllocContract] = useState<Record<number, string>>({}) // allocationId → 合同 id（下拉选中）
+  const [invoiceContract, setInvoiceContract] = useState<Record<number, string>>({})
+  const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
 
   const TYPE_LABELS: Record<string, string> = { logistics: '物流发货', payment: '货款认领', order: '订单截图' }
 
   const fetchGroups = async () => setGroups((await window.electronAPI.crm.groupsList()) || [])
+  // 来源展示辅助：群名映射 + 时间格式化（供确认卡片核对"这笔数据哪来的"）
+  const groupName = (gid?: string) => groups.find((g) => String(g.group_id) === String(gid || ''))?.group_name || gid || ''
+  const fmtTime = (ms?: number) => (ms ? new Date(Number(ms)).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '')
   const openPick = async () => {
     setShowPick(true)
     const r = await window.electronAPI.chat.getSessions()
@@ -39,27 +45,42 @@ export default function CrmReviewPage() {
     void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => setContracts(rows || []))
   }, [fetchQueues])
 
-  const confirmAlloc = async (a: any) => {
-    const r = await window.electronAPI.crm.allocationConfirm(a.id, { sales_name: a.sales_hint || a.sales_name })
-    setNotice(r.ok ? '归属已确认' : `失败：${r.reason}`)
+  const confirmAlloc = async (a: any, contractId?: number) => {
+    const cid = contractId ? Number(contractId) : undefined
+    // 未选合同且客户未确定 → 确认后钱不会计入任何合同，二次确认
+    if (!cid && !a.account_id) {
+      if (!window.confirm('未选择合同且客户未确定，确认后这笔归属不会计入任何合同回款。仍要确认吗？')) return
+    }
+    const r = await window.electronAPI.crm.allocationConfirm(a.id, {
+      sales_name: a.sales_hint || a.sales_name,
+      ...(cid ? { contract_id: cid } : {})
+    })
+    setNotice(r.ok ? (r.linked ? '归属已确认，已计入合同回款' : '归属已确认（未关联合同，回款未计入）') : `失败：${r.reason}`)
     await fetchQueues(); await fetchWorkbench()
   }
-  const bindAccount = async (a: any) => {
-    const accountId = await window.electronAPI.crm.create('account', { name: a.customer_hint, created_at: Date.now(), updated_at: Date.now() })
-    await window.electronAPI.crm.aliasLearn(a.customer_hint, accountId)
-    await window.electronAPI.crm.allocationConfirm(a.id, { account_id: accountId, sales_name: a.sales_hint || a.sales_name })
+  const bindAccount = async (a: any, contractId?: number) => {
+    const hint = String(a.customer_hint || '').trim()
+    if (!hint) { setNotice('客户名为空，无法建客户'); return }
+    const accountId = await window.electronAPI.crm.accountEnsure(hint) // 去重：同名客户不重复建
+    await window.electronAPI.crm.aliasLearn(hint, accountId)
+    const r = await window.electronAPI.crm.allocationConfirm(a.id, {
+      account_id: accountId, sales_name: a.sales_hint || a.sales_name,
+      ...(contractId ? { contract_id: contractId } : {})
+    })
+    setNotice(r.ok ? (r.linked ? '客户已建立并计入合同回款' : '客户已建立（暂无待签约合同，回款待关联）') : `失败：${r.reason}`)
     await fetchQueues(); await fetchWorkbench()
   }
   const linkLogi = async (l: any) => {
     const cands = await window.electronAPI.crm.logisticsCandidates(l.receiver, l.city)
-    const pick = cands[0]
-    if (!pick) { setNotice('无候选合同，请先在工作台建合同'); return }
-    const r = await window.electronAPI.crm.logisticsLink(l.id, pick.id)
+    if (!cands.length) { setNotice('无候选合同，请先在工作台建合同'); return }
+    if (cands.length > 1) { setNotice(`命中 ${cands.length} 个候选合同（${cands.map((c: any) => c.name).join('、')}），请用下拉选择`); return }
+    const r = await window.electronAPI.crm.logisticsLink(l.id, cands[0].id)
     setNotice(r.warning ? `已链接，但${r.warning}` : '物流已链接')
     await fetchQueues()
   }
-  const clearReview = async (p: any) => {
-    await window.electronAPI.crm.update('payment_record', p.id, { needs_review: 0 })
+  const approvePayment = async (p: any) => {
+    const r = await window.electronAPI.crm.paymentApprove(p.id)
+    setNotice(r.ok ? (r.allocationCreated ? '已确认到款，已转入「归属待确认」' : '已确认到款（该笔已有归属记录）') : `失败：${r.reason}`)
     await fetchQueues(); await fetchWorkbench()
   }
 
@@ -122,9 +143,15 @@ export default function CrmReviewPage() {
         <h3>归属待确认（{queues.allocations.length}）</h3>
         {queues.allocations.map((a) => (
           <div key={a.id} className="crm-card">
-            <span>{a.customer_hint} · {Number(a.amount_hint).toLocaleString()} · 销售 {a.sales_hint || a.sales_name || '?'}</span>
-            <button className="crm-btn primary" onClick={() => void confirmAlloc(a)}>确认</button>
-            <button className="crm-btn" onClick={() => void bindAccount(a)}>建新客户并确认</button>
+            <span>{a.customer_hint} · {Number(a.amount_hint).toLocaleString()} · 销售 {a.sales_hint || a.sales_name || '?'}
+              {(a.src_group_id || a.src_time) && <em className="crm-card__src">{groupName(a.src_group_id)}{a.src_time ? ` · ${fmtTime(a.src_time)}` : ''}{a.src_raw ? ` · 「${String(a.src_raw).slice(0, 40)}」` : ''}</em>}
+            </span>
+            <select value={allocContract[a.id] ?? ''} onChange={(e) => setAllocContract((m) => ({ ...m, [a.id]: e.target.value }))}>
+              <option value="">关联合同…</option>
+              {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button className="crm-btn primary" onClick={() => void confirmAlloc(a, allocContract[a.id] ? Number(allocContract[a.id]) : undefined)}>确认</button>
+            <button className="crm-btn" onClick={() => void bindAccount(a, allocContract[a.id] ? Number(allocContract[a.id]) : undefined)}>建新客户并确认</button>
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.allocationReject(a.id).then(fetchQueues) }}>驳回</button>
           </div>
         ))}
@@ -148,8 +175,10 @@ export default function CrmReviewPage() {
         <h3>到款待审核（{queues.payments.length}）</h3>
         {queues.payments.map((p) => (
           <div key={p.id} className="crm-card">
-            <span>{p.payer || '(截图/未知)'} · {Number(p.amount_net).toLocaleString()} · {p.source}</span>
-            <button className="crm-btn primary" onClick={() => void clearReview(p)}>审核通过</button>
+            <span>{p.payer || '(截图/未知)'} · {Number(p.amount_net).toLocaleString()} · {p.source}
+              {(p.group_id || p.pay_time) && <em className="crm-card__src">{groupName(p.group_id)}{p.pay_time ? ` · ${fmtTime(p.pay_time)}` : ''}{p.raw_content ? ` · 「${String(p.raw_content).slice(0, 40)}」` : ''}</em>}
+            </span>
+            <button className="crm-btn primary" onClick={() => void approvePayment(p)}>确认到款</button>
           </div>
         ))}
       </section>
@@ -158,7 +187,24 @@ export default function CrmReviewPage() {
         <h3>发票待开（{queues.invoices.length}）</h3>
         {queues.invoices.map((i) => (
           <div key={i.id} className="crm-card">
-            <span>{i.buyer} · {Number(i.amount).toLocaleString()}</span>
+            <span>{i.buyer} · 发票号 {i.invoice_no || '-'} · 金额 ¥{Number(i.amount ?? 0).toLocaleString()}
+              <em className="crm-card__src">{i.contract_id ? '已关联合同' : '未关联合同'}</em>
+            </span>
+            <input className="crm-card__amt" type="number" min="0" placeholder="填写金额" value={invoiceAmount[i.id] ?? ''}
+              onChange={(e) => setInvoiceAmount((m) => ({ ...m, [i.id]: e.target.value }))} />
+            <button className="crm-btn" onClick={() => {
+              const amt = parseFloat(invoiceAmount[i.id] ?? '')
+              if (!amt || amt <= 0) { setNotice('请先填写发票金额'); return }
+              void window.electronAPI.crm.update('invoice', i.id, { amount: amt }).then(() => { setNotice(`发票金额已保存 ¥${amt.toLocaleString()}`); void fetchQueues() })
+            }}>保存金额</button>
+            <select value={invoiceContract[i.id] ?? ''} onChange={(e) => {
+              const v = e.target.value
+              setInvoiceContract((m) => ({ ...m, [i.id]: v }))
+              if (v) { void window.electronAPI.crm.update('invoice', i.id, { contract_id: Number(v) }).then(fetchQueues) }
+            }}>
+              <option value="">关联合同…</option>
+              {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-info', i.id).then((r) => setNotice(r.ok ? `开票信息单：${r.path}` : '生成失败')) }}>开票信息单</button>
           </div>
         ))}

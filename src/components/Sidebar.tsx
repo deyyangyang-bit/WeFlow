@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -385,6 +385,16 @@ function Sidebar({ collapsed }: SidebarProps) {
           >
             <span className="nav-icon"><BarChart3 size={20} /></span>
             <span className="nav-label">复盘</span>
+          </NavLink>
+
+          {/* 销售漏斗 */}
+          <NavLink
+            to="/sales-funnel"
+            className={`nav-item ${isActive('/sales-funnel') ? 'active' : ''}`}
+            title={collapsed ? '销售漏斗' : undefined}
+          >
+            <span className="nav-icon"><TrendingDown size={20} /></span>
+            <span className="nav-label">漏斗</span>
           </NavLink>
 
           {/* 跟进待办 - PRD v2 隐藏（合并入今日行动） */}

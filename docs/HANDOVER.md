@@ -1,8 +1,9 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 截至 **2026-07-29**，本地与 GitHub 私人备份同步于 commit `d40cd4d`。
-> 自上游基线 `e5b7067` 起共 **47 个二创提交**，`npx tsc --noEmit` 零错误。
+> 基线 commit `d40cd4d`；最近提交 `66c54b5`。
+> ⚠️ **当前工作树有 30 个文件未提交**（§2.4 / §2.5 本次增量 + 本交接文档，待 `git add` + 提交到 `backup`）。
+> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**。
 > Mac + Windows 双平台打包验证通过。
 >
 > **文档分工**：
@@ -74,6 +75,33 @@
 - 货款认领修复：企微扫码（财付通）到款被销售引用认领时原先静默丢弃 → 现生成 pending 归属（带销售名）进确认中心；归属解析增加收货地址兜底
 - 性能：私聊扫描 7 天活跃窗 + 无新消息跳过 + 每周期 150 上限；稳态整轮 <1s（[CrmParse] 日志可见）
 
+## 2.4 AI 销售助手三阶段 + CRM 联动（2026-08-04~05，⚠️未提交）
+
+> 本会话主线：把"AI 见解散点"升级为"AI 销售助手"。**阶段标签 = AI 见解 【阶段】标签**（了解/比价/决策/成交/流失/未知），与分类器英文阶段归一化共存（见 §4 STAGE_NORM 说明）。
+
+- **A1 行动卡自带分析**：`follow_up_task` 新增 `analysis TEXT` 列（ALTER 迁移）；`runFullScan` 落库后对 high/urgent 任务**异步**调 `generateActionAnalysis`（whyNow/opportunity/riskSignal/script/nextMove），`todoUpdate` 写回 analysis；AIActionCard 有 analysis 直接渲染，无需点按钮
+- **A2 分类器接线**：`main.ts` DB monitor 回调同时调 `actionOnNewMessage`（走 salesQueue 串行）→ 新消息到达自动 AI 分类 → `customer_profile.stage` 实时更新（含 won）
+- **B 客户档案一屏**：IPC `crm:customer:profile(sessionId)` 聚合 销售画像 + AI 画像 + 阶段 + 最近见解 + 待办 + 合同/回款 + 轻量 AI 下一步建议（`generateActionAnalysis` 复用）；CrmWorkbenchPage 客户 tab 展开渲染
+- **C1 AI 报价**：`crmQuoteService.aiGenerateQuotation`（拉私聊 50 条 → AI 提取 `{models:[{keyword,qty}],budget,deliveryNote}` → 产品库 name/model 模糊匹配 → `createQuotation` 报价单草稿），客户档案「AI 报价」按钮
+- **C2 销售漏斗**：`SalesFunnelPage` + `salesDbService.funnelStats()`（customer_profile 阶段分布 + intent_tag_log 近 30 天时间线）
+- **AI 见解 → CRM 自动导入**：`crmImportService.judgeAndImportCrmCustomer`（AI 判断意向→导入）+ `backfillImportFromInsightRecords`（按中文阶段标签批量回填）+ `insightService.importIntentCustomerToCrm`（STAGE_TO_CRM：了解→contacted，比价/决策→negotiating，成交→won），记录后自动触发，`crmImported` 反馈进 AI 见解消息
+- **内部名单排除**：`crmInternalGroups`（总部运营中心/库叉线上销售订单对接群/新媒体业务奋斗群/新媒体运营-厂商开发，74 人）启动时收集进 internal list，AI 导入跳过同事
+- **私域成交检测**：`crmParseRules.isDealSignal`（保守词表，只认客户消息的明确成交表达）+ `createDealContract`（幂等，金额留 0 待回款确认补）
+- **资深销售助理深度分析**：`crmDeepAnalysisService` 固化用户自研七板块 prompt（客户情况/成交概率/顾虑/危险信号/下一步/话术/老板点评），CRM 客户档案「深度分析」按钮独立触发；**AI 见解恢复内置短格式**（清空 aiInsightSystemPrompt，保住【阶段】解析 + CRM 导入闭环）
+
+## 2.5 确认中心修复 + 级联删除 + 漏斗/客户增强（2026-08-05~06，⚠️未提交）
+
+- **确认中心 P0+P1 修复**（用户审出 6 个问题，修到 P1）：
+  - `approvePayment`：到款审核通过若无归属 → **自动建 pending 归属转入「归属待确认」**（原逻辑只清 needs_review，截图到款审核通过后钱直接"消失"）
+  - `confirmAllocation` 自动挂合同：客户已确定但未选合同 → 自动挂 `activeContractForAccount`；前端未选合同且客户未定时 confirm 二次拦截
+  - `bindAccount` 改用 `ensureAccount` **去重**（原 `create('account')` 同名反复建）
+  - `reviewQueues` JOIN payment_record 带 `src_group_id/src_time/src_raw`，确认卡片显示**来源群+时间+原始消息**
+  - 物流自动匹配多候选 → 提示用下拉选；发票卡片加**金额输入**（原恒 ¥0，文件名不含金额）
+- **级联删除**（原设计"不暴露删除端点"已解除，用户定级联策略）：`deleteContract`/`deleteAccount`（子资源 quotation/invoice/logistics/allocation/contract_status_history + alias_map/activity_log 级联）；**删除前自动备份** `userData/crm-backups/weflow-crm-before-delete-*.db`；IPC `crm:contract:delete`/`crm:customer:delete`；工作台两 tab 每行「删除」按钮 + confirm
+- **客户 tab 增强**：阶段筛选下拉（选项由数据动态生成，空值显示"未分类"）；深度分析按钮直显列表行（原藏档案展开区）；深度分析报告独立渲染
+- **销售漏斗修复**：趋势图柱高 `count*12px` 无上限（单日 170 条 → 2040px 撑爆页面）→ 相对缩放封顶 120px；流失/未分类客户进统计卡+脚注（原完全不可见）；转化率脚注解释逆漏斗（成交>决策 = 直接标记成交跳级）；近 7 天日期补 0
+- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动 pkill；`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需按 PID `kill -9`（Electron 偶发卡 UE 不可中断睡眠，不影响新实例）
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -101,6 +129,13 @@
 | 21 | **话术提炼 v2 — AI销售教练** | 同上 | 分析诊断+原话保留+优化版+普通/专业/逼单三版本 | ✅ |
 | 22 | **提炼日期区间筛选** | 提炼弹窗日期输入 | 按时间段筛选历史聊天记录提炼话术 | ✅ |
 | 23 | **知识库产品数据导入** | CSV批量导入 | 353条叉车产品参数（淘宝竞品/外调车型/整车价格） | ✅ |
+| 24 | **AI 见解→CRM 自动导入** | AI 见解生成后自动 | `insightService` + `crmImportService`（中文阶段标签→CRM 阶段） | ✅ |
+| 25 | **私域成交检测** | 私聊扫描自动 | `crmParseRules.isDealSignal` + `createDealContract` | ✅ |
+| 26 | **客户档案一屏 + 深度分析** | CRM 客户 tab | `crm:customer:profile` + `crmDeepAnalysisService` 七板块报告 | ✅ |
+| 27 | **AI 报价辅助** | CRM 客户档案「AI 报价」 | `crmQuoteService.aiGenerateQuotation`（需求→选型→报价草稿） | ✅ |
+| 28 | **销售漏斗** | 侧边栏「漏斗」 | `SalesFunnelPage` + `salesDbService.funnelStats` | ✅ |
+| 29 | **CRM 级联删除（自动备份）** | 工作台/确认中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
+| 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
 
 ---
 
@@ -198,6 +233,7 @@
 | created_by | TEXT | action_engine / ai / user |
 | due_at | INTEGER | |
 | created_at / completed_at | INTEGER | |
+| analysis | TEXT | （migration列）A1 预热 AI 分析 JSON（whyNow/opportunity/riskSignal/script/nextMove） |
 
 ### report_snapshot（报表/复盘）
 | 列 | 类型 | 说明 |
@@ -207,6 +243,23 @@
 | stats | TEXT | JSON统计 |
 | ai_summary | TEXT | AI生成的摘要/建议 |
 | created_at | INTEGER | |
+
+---
+
+## 5.1 CRM 独立库 weflow-crm.db（sql.js/WASM，2026-08 增量）
+
+> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / lead / opportunity / contact / scan_state / processed_msg / crm_field_meta。
+
+### account（客户，核心）
+| 列 | 说明 |
+|----|------|
+| id / name | 自增 / 客户名 |
+| session_id | AI 导入联动（私聊会话） |
+| sales_stage | contacted/quoted/negotiating/won/new/unknown（AI 见解中文标签映射） |
+| last_contact_at / imported_at | 毫秒时间戳 |
+| industry/province/city/phone/owner_sales | 基础字段 |
+
+> 关联：contract.account_id；allocation.payment_record_id+contract_id+account_id；activity_log(entity,entity_id)。删除为级联（§2.5），删前自动备份 `userData/crm-backups/`。
 
 ---
 
@@ -229,6 +282,13 @@
 | `insightService.ts`（改） | 销售prompt + 沉默扫描 + 高意向预警 |
 | `dbPathService.ts`（改） | Windows多路径检测 + 注册表查询 |
 | `wcdbCore.ts`（改） | -2302错误信息改善 |
+| `crmDbService.ts` | **CRM 数据层**（weflow-crm.db）：客户/合同/回款/物流/发票 CRUD + 级联删除 + 自动备份 |
+| `crmParseService.ts` | CRM 群扫描：银行到款/认领归属/物流批量/发票归档/截图OCR |
+| `crmParseRules.ts` | 纯规则库：银行文本/物流批量/发票名/归属简语/私聊成交词表 |
+| `crmImportService.ts` | AI 意向判断→CRM 自动导入 + 历史回填 + 内部群成员收集 |
+| `crmDeepAnalysisService.ts` | 资深销售助理七板块深度分析（用户自研 prompt 固化） |
+| `crmQuoteService.ts` | AI 报价：私聊需求→产品库选型→报价单草稿 |
+| `crmDocGenService.ts` | docx 生成（docxtemplater，报价单/合同/开票信息单） |
 
 ### 前端 `src/`
 | 文件 | 说明 |
@@ -243,8 +303,19 @@
 | `pages/SalesReportPage.tsx` | 复盘/报表 |
 | `pages/SalesDashboardPage.tsx` | 仪表盘（移至/dashboard） |
 | `components/sales/ExtractScriptDialog.tsx` | **话术提炼弹窗**（单选/批量双模式，三步流程） |
-| `stores/todayActionStore.ts` | 行动清单store |
+| `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选 |
+| `pages/CrmReviewPage.tsx` | **确认中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入） |
+| `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
+| `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
 | `stores/` (其他5个) | dashboard/customerList/customerProfile/followUp/knowledge/salesReport |
+
+### 测试脚本 `scripts/`
+| 文件 | 说明 |
+|------|------|
+| `crm-workbench-test.ts` | CRM 业务闭环单测（**48 项**：归属/签约/导入/聚合/成交/删除/到款审核/去重） |
+| `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |
+| `crm-claim-test.ts` | 货款认领测试（17 项） |
+| `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 
 ### 已删除
 - `cloudControlService.ts`（向上游上报使用统计，隐私风险）
@@ -305,6 +376,12 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
+| **P0** | **提交未提交改动** | 工作树 28 个文件（§2.4/§2.5）→ `git add` + 提交到 `backup`（⛔ 永不 push origin） |
+| **P1** | **确认中心 P2 增强** | 用户审出的剩余项：已处理历史列表、到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
+| **P1** | **验证确认中心修复** | 用户用几天实测 approvePayment/自动挂合同/来源显示是否顺畅，有反馈再迭代 |
+| P1 | 深度分析结果缓存 | 同客户 N 小时内不重复调 AI（避免反复点重复花费），可加缓存列 |
+| P1 | CRM 客户黑名单 | 删除后的客户若会话还在、AI 见解再标有意向会被重新导入——需黑名单机制 |
+| P1 | 今日行动卡深链客户档案 | 行动卡客户名点击 → 跳 CRM 客户档案一屏 |
 | P1 | 话术提炼优化 | v2已完成基础版，待优化：提炼结果反馈闭环、提炼历史去重 |
 | P1 | 触发规则配置UI | v1硬编码，验证有效后开放 |
 | P1 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
@@ -319,10 +396,11 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
 2. **跑起来**：`npm install && npm run dev`（开发模式）
-3. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
-4. **补充知识库**：已有353条产品参数，继续补充FAQ/话术类条目
-5. **打包测试**：按 §8 流程打包，Mac + Windows 均已验证
-6. **继续开发**：按 §10 待办优先级推进
+3. **先提交**：工作树 28 个未提交文件（§2.4/§2.5 增量）→ 提交到 `backup`
+4. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）
+5. **测试今天的新功能**：CRM 工作台（深度分析/阶段筛选/删除）、确认中心（确认到款→自动归属、卡片来源、发票金额）、销售漏斗页
+6. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
+7. **继续开发**：按 §10 待办优先级推进
 
 ---
 
