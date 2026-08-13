@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `7e56755`。
+> 基线 commit `d40cd4d`；最近提交 `3ef6925`。
 > `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
