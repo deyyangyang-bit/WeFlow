@@ -12,7 +12,7 @@ import PizZip from 'pizzip'
 import ExcelJS from 'exceljs'
 import { crmDbService } from '../electron/services/crmDbService'
 import { amountToChinese } from '../electron/services/moneyCn'
-import { renderDocx, generateDocBuffer } from '../electron/services/crmDocGenCore'
+import { renderDocx, generateDocBuffer, buildPlaceholderTemplate } from '../electron/services/crmDocGenCore'
 
 let pass = 0, fail = 0
 const ok = (name: string, cond: boolean): void => { if (cond) pass++; else { fail++; console.error('FAIL:', name) } }
@@ -132,6 +132,7 @@ async function main(): Promise<void> {
       const text = docxText(qRes.buffer)
       ok('quo 客户名', text.includes('常州世界伟业链轮有限公司'))
       ok('quo 规格拼装', text.includes('颜色:黑黄'))
+      ok('quo 型号', text.includes('X1c-Li'))
       ok('quo 无标签', !text.includes('{'))
     }
 
@@ -144,7 +145,14 @@ async function main(): Promise<void> {
       ok('contract 大写', text.includes('叁仟伍佰元整'))
       ok('contract 甲方税号', text.includes('91320411251074637P'))
       ok('contract 甲方电话', text.includes('051985862772'))
+      ok('contract 型号', text.includes('X1c-Li'))
       ok('contract 无标签', !text.includes('{'))
+    }
+
+    // invoice-info：attachment_path 应落 invoice 行（entity=invoice），不是 contract
+    {
+      const r = await generateDocBuffer('invoice-info', iid, buildPlaceholderTemplate('invoice-info'))
+      ok('generate invoice-info ok/entity=invoice', r.ok && r.entity === 'invoice' && r.ext === 'docx')
     }
 
     // invoice-app（Excel）

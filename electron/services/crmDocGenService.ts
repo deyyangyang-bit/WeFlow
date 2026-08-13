@@ -51,7 +51,7 @@ export async function generateDoc(type: string, recordId: number): Promise<{ ok:
     if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
     const outPath = join(outDir, `${t}-${recordId}-${Date.now()}.${r.ext}`)
     writeFileSync(outPath, r.buffer)
-    crmDbService.update(r.entity, r.entityId, { attachment_path: outPath })
+    try { crmDbService.update(r.entity, r.entityId, { attachment_path: outPath }) } catch { /* 元数据写回失败不影响生成 */ }
     salesLog('INFO', `[CrmDocGen] generated ${outPath}`)
     return { ok: true, path: outPath }
   } catch (e) {

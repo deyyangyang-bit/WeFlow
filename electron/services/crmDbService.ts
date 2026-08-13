@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS opportunity (
 CREATE TABLE IF NOT EXISTS contract (
   id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT,
   amount REAL DEFAULT 0, status TEXT DEFAULT 'pending_sign', sign_date INTEGER,
-  custom_fields TEXT DEFAULT '{}', created_at INTEGER, updated_at INTEGER
+  custom_fields TEXT DEFAULT '{}', attachment_path TEXT, created_at INTEGER, updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS quotation (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, total REAL DEFAULT 0,
@@ -175,6 +175,8 @@ class CrmDbService {
     for (const [table, col, type] of autoConfirmCols) {
       try { this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: contract 补 attachment_path（docgen 生成的合同 docx 路径写回用）
+    try { this.db.run('ALTER TABLE contract ADD COLUMN attachment_path TEXT') } catch { /* 列已存在 */ }
     this.persist()
   }
 

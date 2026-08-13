@@ -46,9 +46,11 @@ function yyyymmdd(ts: number | string | null | undefined): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
 }
 
-/** 行项展示规格：spec_summary 优先，其次 spec，最后 model */
+/** 行项展示规格：型号前置 + 参数（复刻真实模版「X1D-LI\n48v10ah」），无型号时只回参数 */
 function itemSpec(it: CrmRow): string {
-  return String(it.spec_summary || it.spec || it.model || '')
+  const spec = String(it.spec_summary || it.spec || '')
+  const model = String(it.model || '')
+  return model ? [model, spec].filter(Boolean).join('\n') : spec
 }
 
 // ── 数据装配（纯 crmDbService，无 electron）──────────────────────────────
@@ -365,7 +367,8 @@ export async function generateDocBuffer(
     if (t === 'quotation') data = buildQuotationData(recordId)
     else if (t === 'contract') data = buildContractData(recordId)
     else data = buildInvoiceInfoData(recordId)
-    const entity = t === 'quotation' ? 'quotation' : 'contract'
+    // attachment_path 写回目标：invoice-info 落 invoice 行（contract 行无该列）
+    const entity = t === 'quotation' ? 'quotation' : t === 'invoice-info' ? 'invoice' : 'contract'
     return { ok: true, buffer: renderDocx(templateBuf, data), ext: 'docx', entity, entityId: recordId }
   } catch (e) {
     return { ok: false, reason: String(e) }
