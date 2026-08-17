@@ -20,6 +20,7 @@ import { classifyStage, toMessageSnippets, persistClassification, type CustomerS
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
+import { crmDbService } from './crmDbService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -196,7 +197,7 @@ const RULES: Rule[] = [
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
-      return silentDays >= 3
+      return silentDays >= 2
     },
     title: (p, days) => `报价跟进：${p.display_name || '未知'}，已报价${Math.floor(days)}天没回复`
   },
@@ -416,6 +417,31 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
         salesLog('WARN', `[ActionEngine] 规则 ${rule.id} 对客户 ${customer.session_id} 执行失败: ${e}`)
       }
     }
+  }
+
+  // R7 报价跟进（事实驱动）：quote_signal 在 [24h, 7d] 窗口且客户未回复。
+  // 不依赖 AI 阶段猜测——"我方发出过带金额的报价 + 客户没回"两个事实直接生成高优先级行动
+  try {
+    const quoteSignals = crmDbService.pendingQuoteFollowups(24, 7)
+    for (const s of quoteSignals) {
+      const ruleId = 'rule_r7_quote_followup'
+      if (salesDbService.hasRecentTask(String(s.session_id), ruleId, nowMs - DEDUP_WINDOW_MS)) continue
+      const hours = Math.max(1, Math.floor((nowMs - Number(s.quoted_at)) / 3600000))
+      const ageLabel = hours >= 48 ? `${Math.floor(hours / 24)}天` : `${hours}小时`
+      const cand: Candidate = {
+        sessionId: String(s.session_id),
+        displayName: String(s.display_name || '未知'),
+        ruleId,
+        title: `报价跟进：${s.display_name || '未知'}，${ageLabel}前报出 ¥${Number(s.amount || 0).toLocaleString()}${s.model ? `（${s.model}）` : ''}，客户还没回复`,
+        score: PRIORITY_WEIGHT.high + 20 + Math.min(Math.floor(hours / 24), 7),
+        priority: 'high'
+      }
+      const existing = customerBest.get(cand.sessionId)
+      if (!existing || cand.score > existing.score) customerBest.set(cand.sessionId, cand)
+    }
+    if (quoteSignals.length) salesLog('INFO', `[ActionEngine] R7 报价跟进候选 ${quoteSignals.length} 条`)
+  } catch (e) {
+    salesLog('WARN', `[ActionEngine] R7 报价跟进收集失败: ${e}`)
   }
 
   // Phase 2: 排序 + 截断（≤DAILY_LIMIT，仅 R1-R5）
@@ -668,6 +694,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         const labels: Record<string, string> = {
           'rule_r0_unknown_followup': '待确认',
           'rule_r1_quoted_followup': '报价跟进',
+          'rule_r7_quote_followup': '报价跟进',
           'rule_r2_negotiating_stall': '谈判跟进',
           'rule_r3_new_no_reply': '新客响应',
           'rule_r4_contacted_silent': '激活沉默',

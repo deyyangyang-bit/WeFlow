@@ -26,6 +26,46 @@ export function parseBankText(content: string): BankPayment | null {
   }
 }
 
+// ─── 报价信号（销售侧消息：意向词/设备词 + 金额；客户询价不算）─────────────
+const QUOTE_INTENT_RE = /(报价|报个价|价格如下|给你算|优惠价|含运费|含税|不含税|首付|定金|全款|落地价|出厂价|包送)/
+const ASK_QUOTE_RE = /(你报个价|给我报个价|能报价吗|报个价看看|发个报价|想要报价|求报价|多少钱)/
+const EQUIP_HINT_RE = /(吨|叉车|搬运|堆高|托盘|电动|内燃|CPD|CPC|台|辆)/
+const QUOTE_AMOUNT_RE = /(¥|￥|人民币)?\s*(\d[\d,]*(?:\.\d+)?)\s*(万\s*元|万元|万|元|块钱|块)?/g
+
+export interface QuoteSignalInfo { amount: number; model: string | null }
+
+/**
+ * 报价信号检测（纯函数）。仅认销售侧消息（isSend=1）；必须有金额；
+ * 还需 报价意向词 或 设备词 之一（避免"转你200元"类误报）；客户询价话术排除。
+ * 语音消息调用方先换转写文本再传入。
+ */
+export function parseQuoteSignal(content: string, isSend: number): QuoteSignalInfo | null {
+  if (isSend !== 1) return null
+  const text = String(content || '').trim()
+  if (!text || text.length < 4) return null
+  if (ASK_QUOTE_RE.test(text) && !QUOTE_INTENT_RE.test(text)) return null
+  // 遍历所有数字候选：跳过型号里的数字（如 CPD20 的 20），取第一个带单位/货币符号/≥1000 的
+  let amount = 0
+  let matched = false
+  for (const m of text.matchAll(QUOTE_AMOUNT_RE)) {
+    const hasCurrency = Boolean(m[1])
+    const unit = m[3] || ''
+    let v = parseFloat(m[2].replace(/,/g, ''))
+    if (!Number.isFinite(v) || v <= 0) continue
+    if (unit.includes('万')) v *= 10000
+    if (!unit && !hasCurrency && v < 1000) continue // 数量/天数类小额数字不认
+    amount = v
+    matched = true
+    break
+  }
+  if (!matched) return null
+  const hasIntent = QUOTE_INTENT_RE.test(text)
+  const hasEquip = EQUIP_HINT_RE.test(text)
+  if (!hasIntent && !hasEquip) return null
+  const modelM = text.match(/(\d+(?:\.\d+)?\s*吨|CPD\d{1,4}|CPC\d{1,4}|电动叉车|内燃叉车)/)
+  return { amount, model: modelM ? modelM[1].replace(/\s+/g, '') : null }
+}
+
 export function detectPayChannel(payer: string): 'wecom_tenpay' | 'bank_direct' {
   return payer && payer.includes('财付通') ? 'wecom_tenpay' : 'bank_direct'
 }

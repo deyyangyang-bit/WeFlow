@@ -5,7 +5,7 @@
 import {
   parseBankText, detectPayChannel, parseAllocationShorthand, isClaimKeyword,
   parseLogisticsBatch, parseInvoicePdfName, feeCheck, wechatTimeToMs,
-  isCompanyHint, splitAliasHints, isDealSignal
+  isCompanyHint, splitAliasHints, isDealSignal, parseQuoteSignal
 } from '../electron/services/crmParseRules'
 
 let pass = 0, fail = 0
@@ -68,6 +68,23 @@ ok('deal.款已付', isDealSignal('款已付，查收', 0))
 ok('deal.意向不误判', !isDealSignal('我想了解一下这个型号', 0))
 ok('deal.考虑不误判', !isDealSignal('我考虑考虑，下周再说', 0))
 ok('deal.销售消息不算', !isDealSignal('那就定了，转给你', 1))
+
+// 10 报价信号（打字 + 语音转写文本）
+const q1 = parseQuoteSignal('这台CPD20电动叉车给你报价38,500元，含税含运费', 1)
+ok('quote.打字报价', q1?.amount === 38500 && q1?.model === 'CPD20')
+const q2 = parseQuoteSignal('3吨内燃的报价5.8万，包送', 1)
+ok('quote.万元单位', q2?.amount === 58000 && q2?.model === '3吨')
+const q3 = parseQuoteSignal('那个2.5吨电动的给你报价45000元，价格还能谈', 1)
+ok('quote.转写文本', q3?.amount === 45000 && q3?.model === '2.5吨')
+const q4 = parseQuoteSignal('明天给你报价', 1)
+ok('quote.无金额不算', q4 === null)
+const q5 = parseQuoteSignal('你报个价我看看', 1)
+ok('quote.询价不算', q5 === null)
+const q6 = parseQuoteSignal('这台报45000', 1)
+ok('quote.无单位大额+设备词', q6?.amount === 45000)
+const q7 = parseQuoteSignal('回头转你200元', 1)
+ok('quote.闲聊小额不算', q7 === null)
+ok('quote.客户消息不算', parseQuoteSignal('这台CPD20报价38500元', 0) === null)
 
 console.log(`\nGOLDEN RESULT: pass=${pass} fail=${fail}`)
 if (fail > 0) process.exit(1)

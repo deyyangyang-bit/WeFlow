@@ -117,6 +117,12 @@ CREATE TABLE IF NOT EXISTS auto_confirm_log (
   created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_crm_auto_confirm_created ON auto_confirm_log(created_at);
+CREATE TABLE IF NOT EXISTS quote_signal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, msg_key TEXT UNIQUE, session_id TEXT, account_id INTEGER,
+  display_name TEXT, amount REAL, model TEXT, quoted_at INTEGER,
+  customer_replied_at INTEGER DEFAULT 0, created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_crm_quote_session ON quote_signal(session_id, quoted_at);
 `
 
 export interface CrmRow { [key: string]: any }
@@ -124,7 +130,7 @@ export interface CrmRow { [key: string]: any }
 const ENTITIES = [
   'lead', 'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
-  'contract_status_history', 'activity_log'
+  'contract_status_history', 'activity_log', 'quote_signal'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -551,6 +557,33 @@ class CrmDbService {
     this.update('account', accountId, patchRow)
     this.logActivity('account', accountId, 'field_edited', `手动编辑「${field}」${v ? `= ${v.slice(0, 60)}` : '（清空）'}`)
     return { ok: true }
+  }
+
+  // ─── 报价信号（R7 报价跟进的事实来源）─────────────────────────────────────
+  /** 记录报价信号（msg_key 幂等）。返回是否新记录 */
+  recordQuoteSignal(p: { msgKey: string; sessionId: string; accountId: number; displayName: string; amount: number | null; model: string | null; quotedAt: number }): boolean {
+    if (!p.msgKey || !p.sessionId) return false
+    if (this.all('SELECT 1 AS x FROM quote_signal WHERE msg_key = ?', [p.msgKey]).length) return false
+    this.run(
+      'INSERT INTO quote_signal (msg_key, session_id, account_id, display_name, amount, model, quoted_at, customer_replied_at, created_at) VALUES (?,?,?,?,?,?,?,0,?)',
+      [p.msgKey, p.sessionId, p.accountId || null, p.displayName || '', p.amount ?? null, p.model ?? null, p.quotedAt, Date.now()]
+    )
+    return true
+  }
+  /** 客户回复 → 关闭该会话所有更早的未回复报价信号。返回关闭条数 */
+  markQuoteReplied(sessionId: string, replyMs: number): number {
+    if (!sessionId) return 0
+    const rows = this.all('SELECT id FROM quote_signal WHERE session_id = ? AND customer_replied_at = 0 AND quoted_at <= ?', [sessionId, replyMs])
+    for (const r of rows) this.update('quote_signal', Number(r.id), { customer_replied_at: replyMs })
+    return rows.length
+  }
+  /** 待跟进报价信号：发出在 [maxDays 前, minHours 前] 区间且客户至今未回复 */
+  pendingQuoteFollowups(minHours: number, maxDays: number): CrmRow[] {
+    const now = Date.now()
+    return this.all(
+      'SELECT * FROM quote_signal WHERE customer_replied_at = 0 AND quoted_at <= ? AND quoted_at >= ? ORDER BY quoted_at',
+      [now - minHours * 3600000, now - maxDays * 86400000]
+    )
   }
 
   /** 批量按微信会话查 account（灵感信箱徽章用，避免 N+1） */

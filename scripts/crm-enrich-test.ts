@@ -144,6 +144,15 @@ async function main(): Promise<void> {
   ok('14a 正式列属于 ENRICH_FIELDS', [...ENRICH_FORMAL_COLUMNS].every((f) => (ENRICH_FIELDS as readonly string[]).includes(f)))
   ok('14b 字段数 12', ENRICH_FIELDS.length === 12)
 
+  // ── 15 quote_signal（R7 报价跟进事实表）────────────────────────────────────
+  const qAt = Date.now() - 30 * 3600000 // 30 小时前
+  ok('15a 记录报价信号', crmDbService.recordQuoteSignal({ msgKey: 'qk1', sessionId: 'wxid_quote_test', accountId: 0, displayName: '报价测试客户', amount: 38500, model: 'CPD20', quotedAt: qAt }))
+  ok('15b msg_key 幂等', !crmDbService.recordQuoteSignal({ msgKey: 'qk1', sessionId: 'wxid_quote_test', accountId: 0, displayName: '报价测试客户', amount: 38500, model: 'CPD20', quotedAt: qAt }))
+  ok('15c 24h-7d 窗口命中', crmDbService.pendingQuoteFollowups(24, 7).some((s) => s.msg_key === 'qk1'))
+  ok('15d 48h 下限排除', !crmDbService.pendingQuoteFollowups(48, 7).some((s) => s.msg_key === 'qk1'))
+  crmDbService.markQuoteReplied('wxid_quote_test', Date.now())
+  ok('15e 客户回复后不再待跟进', !crmDbService.pendingQuoteFollowups(24, 7).some((s) => s.msg_key === 'qk1'))
+
   console.log(`\nENRICH RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
 }

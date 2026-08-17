@@ -14,7 +14,7 @@ import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
-  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, type AllocationRow, type ShippingInfo
+  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { salesDbService } from './salesDbService'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
@@ -153,6 +153,23 @@ async function scanAll(): Promise<number> {
               salesLog('WARN', `[CrmParse] 成交检测处理失败 ${name}: ${e}`)
             }
           }
+          // 报价信号：我方消息含金额+报价意向/设备词 → quote_signal（供 R7 报价跟进）；语音用转写文本
+          let textForSignal = content
+          if (/^<msg>\s*<voicemsg/i.test(content)) {
+            try {
+              const t = chatService.getCachedVoiceTranscript(uid, String((msg as any).localId ?? ''), Number(msg.createTime ?? 0))
+              if (t) textForSignal = t
+            } catch { /* 转写不可用则跳过 */ }
+          }
+          const quoteSig = parseQuoteSignal(textForSignal, isSend)
+          if (quoteSig) {
+            if (crmDbService.recordQuoteSignal({ msgKey: key, sessionId: uid, accountId, displayName: name, amount: quoteSig.amount, model: quoteSig.model, quotedAt: ms })) {
+              salesLog('INFO', `[CrmParse] 报价信号「${name}」¥${quoteSig.amount}${quoteSig.model ? `（${quoteSig.model}）` : ''}`)
+            }
+          } else if (isSend === 0) {
+            crmDbService.markQuoteReplied(uid, ms)
+          }
+
           try {
             let info: ShippingInfo | null = parseShippingInfo(content)
             if (!info && /1[3-9]\d{9}/.test(content) && /(地址|收货|收件)/.test(content) && configRef && isAiConfigured(configRef)) {

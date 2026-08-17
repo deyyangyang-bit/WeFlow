@@ -9876,6 +9876,14 @@ class ChatService {
    * 批量统计转写缓存命中数（按会话维度）。
    * 仅基于本地 transcripts cache key 统计，用于导出前快速预估。
    */
+  /** 查询已缓存的语音转写文本（CRM 报价信号检测用；未转写返回 ''） */
+  getCachedVoiceTranscript(sessionId: string, msgId: string, msgCreateTime?: number): string {
+    try {
+      const cacheKey = this.getVoiceCacheKey(sessionId, msgId, msgCreateTime)
+      return this.voiceTranscriptCache.get(cacheKey) || ''
+    } catch { return '' }
+  }
+
   getCachedVoiceTranscriptCountMap(sessionIds: string[]): Record<string, number> {
     this.loadTranscriptCacheIfNeeded()
     const normalizedIds = Array.from(
