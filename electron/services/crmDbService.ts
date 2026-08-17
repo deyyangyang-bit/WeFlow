@@ -530,6 +530,29 @@ class CrmDbService {
     return { ok: true }
   }
 
+  /** 手动编辑 enrich 字段：写值并标 source=manual + locked（AI 永不再覆盖），同时清该字段 pending */
+  setAccountFieldManual(accountId: number, field: string, value: string): { ok: boolean; reason?: string } {
+    const acc = this.getById('account', accountId)
+    if (!acc) return { ok: false, reason: '客户不存在' }
+    if (!(ENRICH_FIELDS as readonly string[]).includes(field)) return { ok: false, reason: '未知字段' }
+    const patchRow: CrmRow = { updated_at: Date.now() }
+    let customFields: Record<string, unknown> = {}
+    try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+    const v = String(value ?? '').trim()
+    if (ENRICH_FORMAL_COLUMNS.has(field)) patchRow[field] = v || null
+    else { if (v) customFields[field] = v; else delete customFields[field] }
+    patchRow.custom_fields = JSON.stringify(customFields)
+    const meta = parseEnrichMeta(String(acc.enrich_meta || ''))
+    const fields = { ...(meta.fields || {}) }
+    fields[field] = { source: 'manual', confidence: 1, at: Date.now(), locked: true }
+    const pending = { ...(meta.pending || {}) }
+    delete pending[field]
+    patchRow.enrich_meta = JSON.stringify({ fields, pending })
+    this.update('account', accountId, patchRow)
+    this.logActivity('account', accountId, 'field_edited', `手动编辑「${field}」${v ? `= ${v.slice(0, 60)}` : '（清空）'}`)
+    return { ok: true }
+  }
+
   /** 批量按微信会话查 account（灵感信箱徽章用，避免 N+1） */
   accountsBySessions(sessionIds: string[]): Record<string, { id: number; name: string }> {
     const ids = Array.from(new Set((sessionIds || []).filter(Boolean)))

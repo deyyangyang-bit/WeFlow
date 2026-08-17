@@ -60,6 +60,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
   ipcMain.handle('crm:customers', async () => crmDbService.customers())
   // 客户信息自动填充：单客手动补全 / 存量回填（enqueue 串行；引擎内部不 enqueue）
+  // 手动编辑客户字段（写入并锁定，AI 不再覆盖）
+  ipcMain.handle('crm:enrich:manualSet', async (_, accountId: number, field: string, value: string) =>
+    crmDbService.setAccountFieldManual(Number(accountId), String(field || ''), String(value ?? '')))
   ipcMain.handle('crm:enrich:run', async (_, sessionId: string, displayName?: string) =>
     enqueueSalesTask(() => enrichCustomer(String(sessionId || ''), String(displayName || ''), { config })))
   ipcMain.handle('crm:enrich:backfill', async () => enqueueSalesTask(() => backfillEnrich()))
@@ -117,7 +120,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
         } as any)
       } catch { /* ignore */ }
 
-      return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, advice } }
+      // CRM 操作时间线（导入/AI 填充/人工采纳/合同动作，倒序 30 条）
+      let activities: any[] = []
+      try { if (account) activities = crmDbService.activityBy('account', Number(account.id)).slice(-30).reverse() } catch { /* ignore */ }
+
+      return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, advice, activities } }
     } catch (e) {
       return { success: false, error: String(e) }
     }

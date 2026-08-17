@@ -3,7 +3,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Sparkles, Trash2, MessageCircle } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmWorkbenchPage.scss'
 
@@ -28,6 +28,7 @@ export default function CrmWorkbenchPage() {
   const [allocations, setAllocations] = useState<any[]>([])
   const [logistics, setLogistics] = useState<any[]>([])
   const [showNew, setShowNew] = useState(false)
+  const [newAccountId, setNewAccountId] = useState(0) // 选中的已有客户（零操作建合同：不再重复建 account）
   const [newName, setNewName] = useState('')
   const [newAmount, setNewAmount] = useState('')
   // 甲方开票信息（新建合同：随合同创建写入 custom_fields）
@@ -58,8 +59,25 @@ export default function CrmWorkbenchPage() {
   useEffect(() => { void fetchCustomers() }, [])
 
   const fetchCustomers = async () => {
-    setCustomers((await window.electronAPI.crm.customers()) || [])
+    const rows = (await window.electronAPI.crm.customers()) || []
+    setCustomers(rows)
+    return rows
   }
+
+  // 深链协议：/crm?tab=customer&id=<accountId>（灵感信箱/确认中心/行动卡跳入）
+  const [searchParams] = useSearchParams()
+  useEffect(() => {
+    const t = searchParams.get('tab')
+    const id = Number(searchParams.get('id') || 0)
+    if (t === 'customer' && id > 0) {
+      setTab('customers')
+      void fetchCustomers().then((rows) => {
+        const hit = rows.find((x: any) => Number(x.id) === id)
+        if (hit) void openCustomer(hit)
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   // 阶段归一化为中文标签（与表格展示一致，未知阶段保留原始值）
   const stageLabel = (c: any) => STAGE_LABELS[String(c.sales_stage ?? '')] || String(c.sales_stage ?? '') || '未分类'
@@ -79,11 +97,77 @@ export default function CrmWorkbenchPage() {
     setProfileLoading(false)
   }
 
+
+  // ─── 客户 360：AI 填充字段视图 + 手动编辑 + 时间线 ─────────────────────────
+  const FIELD_LABELS_WB: Record<string, string> = {
+    company: '公司', position: '职位', phone: '电话', industry: '行业', province: '省份', city: '城市',
+    needs: '需求', budget: '预算', intent_model: '意向型号', purchase_timeframe: '采购时间',
+    competitor: '竞品', price_sensitive: '价格敏感度'
+  }
+  const ENRICH_FIELD_ORDER = ['company', 'position', 'phone', 'industry', 'province', 'city', 'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive']
+  const FORMAL_SET = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
+
+  const accountFieldView = (acc: any) => {
+    let cf: Record<string, any> = {}
+    try { cf = JSON.parse(acc?.custom_fields || '{}') } catch { /* ignore */ }
+    let meta: any = {}
+    try { meta = JSON.parse(acc?.enrich_meta || '{}') } catch { /* ignore */ }
+    return ENRICH_FIELD_ORDER.map((f) => {
+      const raw = FORMAL_SET.has(f) ? acc?.[f] : cf[f]
+      return {
+        field: f, label: FIELD_LABELS_WB[f],
+        value: raw == null ? '' : String(raw),
+        source: meta.fields?.[f]?.source as string | undefined,
+        confidence: meta.fields?.[f]?.confidence as number | undefined,
+        evidence: meta.fields?.[f]?.evidence as string | undefined,
+        locked: Boolean(meta.fields?.[f]?.locked)
+      }
+    })
+  }
+  const [editingField, setEditingField] = useState('')
+  const [editingValue, setEditingValue] = useState('')
+  const saveFieldManual = async (field: string) => {
+    const accId = Number(customerProfile?.account?.id || 0)
+    if (!accId) return
+    const r = await window.electronAPI.crm.manualSet(accId, field, editingValue)
+    setNotice(r.ok ? '已保存（该字段已锁定，AI 不再覆盖）' : `保存失败：${r.reason}`)
+    setEditingField('')
+    if (selectedCustomer) await openCustomer(selectedCustomer)
+  }
+  const runEnrichOne = async (c: any) => {
+    if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 补全'); return }
+    setNotice(`AI 正在补全 ${c.name}…`)
+    const r = await window.electronAPI.crm.enrichRun(String(c.session_id), c.name)
+    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待确认中心裁决` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
+    await fetchCustomers()
+    if (selectedCustomer?.id === c.id) await openCustomer(c)
+  }
+  const [backfilling, setBackfilling] = useState(false)
+  const runBackfill = async () => {
+    setBackfilling(true)
+    setNotice('批量 AI 补全进行中（串行执行，可能需要一两分钟）…')
+    try {
+      const r = await window.electronAPI.crm.enrichBackfill()
+      setNotice(`批量 AI 补全完成：处理 ${r.processed} 个客户，有更新 ${r.updated}，失败 ${r.failed}`)
+    } catch (e) { setNotice(`批量补全失败：${e}`) }
+    setBackfilling(false)
+    await fetchCustomers()
+  }
+
   const createContractForCustomer = (c: any) => {
     setSelected(null)
     setTab('contracts')
+    setNewAccountId(Number(c.id))
     setNewName(c.name)
     setNewAmount('')
+    // 甲方开票信息自动带出（account.custom_fields 已有则回填）
+    let cf: Record<string, any> = {}
+    try { cf = JSON.parse(c.custom_fields || '{}') } catch { /* ignore */ }
+    setNewBuyerAddr(String(cf.buyer_addr || ''))
+    setNewBuyerBank(String(cf.buyer_bank || ''))
+    setNewBuyerAccount(String(cf.buyer_account || ''))
+    setNewBuyerTax(String(cf.tax_no || ''))
+    setNewBuyerPhone(String(cf.buyer_phone || c.phone || ''))
     setShowNew(true)
   }
 
@@ -199,9 +283,13 @@ export default function CrmWorkbenchPage() {
     if (newBuyerAccount.trim()) custom_fields.buyer_account = newBuyerAccount.trim()
     if (newBuyerTax.trim()) custom_fields.tax_no = newBuyerTax.trim()
     if (newBuyerPhone.trim()) custom_fields.buyer_phone = newBuyerPhone.trim()
-    const accountId = await window.electronAPI.crm.create('account', { name: newName.trim(), created_at: Date.now(), updated_at: Date.now() })
+    // 已选客户 → 直接挂到该客户（不重复建 account）；未选 → 新建
+    let accountId = newAccountId
+    if (!accountId) {
+      accountId = await window.electronAPI.crm.create('account', { name: newName.trim(), created_at: Date.now(), updated_at: Date.now() })
+    }
     await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName.trim()}-合同`, amount, status: 'pending_sign', custom_fields: JSON.stringify(custom_fields), created_at: Date.now(), updated_at: Date.now() })
-    setShowNew(false); setNewName(''); setNewAmount('')
+    setShowNew(false); setNewName(''); setNewAmount(''); setNewAccountId(0)
     setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
     await fetchWorkbench()
   }
@@ -231,6 +319,24 @@ export default function CrmWorkbenchPage() {
       {notice && <div className="crm-notice">{notice}</div>}
       {showNew && (
         <div className="crm-new-form">
+          <select value={newAccountId} onChange={(e) => {
+            const id = Number(e.target.value)
+            setNewAccountId(id)
+            const c = customers.find((x) => Number(x.id) === id)
+            if (c) {
+              setNewName(c.name)
+              let cf: Record<string, any> = {}
+              try { cf = JSON.parse(c.custom_fields || '{}') } catch { /* ignore */ }
+              setNewBuyerAddr(String(cf.buyer_addr || ''))
+              setNewBuyerBank(String(cf.buyer_bank || ''))
+              setNewBuyerAccount(String(cf.buyer_account || ''))
+              setNewBuyerTax(String(cf.tax_no || ''))
+              setNewBuyerPhone(String(cf.buyer_phone || c.phone || ''))
+            }
+          }}>
+            <option value={0}>选择已有客户（自动带出名称与开票信息）…</option>
+            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` · ${c.company}` : ''}</option>)}
+          </select>
           <input placeholder="客户名称" value={newName} onChange={(e) => setNewName(e.target.value)} />
           <input placeholder="合同金额" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
           <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
@@ -272,19 +378,25 @@ export default function CrmWorkbenchPage() {
               {stageOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <span className="crm-filter-count">共 {filteredCustomers.length} / {customers.length} 个客户</span>
+            <button className="crm-btn crm-filter-backfill" onClick={() => void runBackfill()} disabled={backfilling}>
+              <Sparkles size={13} /> {backfilling ? 'AI 补全中…' : '批量 AI 补全'}
+            </button>
           </div>
           <table className="crm-table">
-            <thead><tr><th>客户</th><th>AI 阶段</th><th>合同</th><th>累计回款</th><th>导入时间</th><th>操作</th></tr></thead>
+            <thead><tr><th>客户</th><th>公司</th><th>AI 阶段</th><th>AI 填充度</th><th>合同</th><th>累计回款</th><th>导入时间</th><th>操作</th></tr></thead>
             <tbody>
               {filteredCustomers.map((c) => (
                 <tr key={c.id} className={selectedCustomer?.id === c.id ? 'active' : ''} onClick={() => void openCustomer(c)}>
                   <td>{c.name}{c.session_id ? <span className="crm-badge">AI</span> : ''}</td>
+                  <td>{c.company || <span className="crm-muted">-</span>}</td>
                   <td>{stageLabel(c)}</td>
+                  <td><span className={`crm-fill ${(c.enrich_filled ?? 0) >= 6 ? 'crm-fill--hi' : (c.enrich_filled ?? 0) >= 3 ? 'crm-fill--mid' : 'crm-fill--lo'}`}>{c.enrich_filled ?? 0}/{c.enrich_total ?? 12}</span></td>
                   <td>{c.contract_count}</td>
                   <td>{Number(c.credited_total ?? 0).toLocaleString()}</td>
                   <td>{c.imported_at ? new Date(Number(c.imported_at)).toLocaleDateString('zh-CN') : '-'}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <button className="crm-btn" onClick={() => void openChat(c)} disabled={!c.session_id}><MessageCircle size={13} /> 打开聊天</button>
+                    <button className="crm-btn" onClick={() => void runEnrichOne(c)} disabled={!c.session_id}><Sparkles size={13} /> AI 补全</button>
                     <button className="crm-btn" onClick={() => void genDeepAnalysisFromList(c)}><Sparkles size={13} /> 深度分析</button>
                     <button className="crm-btn" onClick={() => void createContractForCustomer(c)}><Plus size={13} /> 建合同</button>
                     <button className="crm-btn danger" onClick={() => void deleteCustomer(c)}><Trash2 size={13} /> 删除</button>
@@ -292,7 +404,7 @@ export default function CrmWorkbenchPage() {
                 </tr>
               ))}
               {filteredCustomers.length === 0 && (
-                <tr><td colSpan={6} className="crm-empty">
+                <tr><td colSpan={8} className="crm-empty">
                   {customers.length === 0 ? '暂无客户 —— 在「设置 → AI 画像」生成客户画像后，有意向的客户会自动导入这里' : '该阶段暂无客户'}
                 </td></tr>
               )}
@@ -305,6 +417,7 @@ export default function CrmWorkbenchPage() {
                 <h3>{selectedCustomer.name} · 客户档案</h3>
                 <div className="crm-detail-actions">
                   <button className="crm-btn" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
+                  <button className="crm-btn" onClick={() => void runEnrichOne(selectedCustomer)} disabled={!selectedCustomer.session_id}><Sparkles size={13} /> AI 补全</button>
                   <button className="crm-btn" onClick={() => void genDeepAnalysis(selectedCustomer)}><Sparkles size={13} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                   <button className="crm-btn" onClick={() => void genAiQuotation(selectedCustomer)}><Sparkles size={13} /> AI 报价</button>
                   <button className="crm-btn primary" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
@@ -314,6 +427,54 @@ export default function CrmWorkbenchPage() {
               {!selectedCustomer.session_id && <div className="crm-insight">（未关联微信会话，无 AI 档案）</div>}
               {!profileLoading && selectedCustomer.session_id && customerProfile && (
                 <div className="crm-profile">
+                  <div className="crm-profile__section">
+                    <h4>客户信息 <span className="crm-profile__hint">点击字段可编辑，手改后 AI 不再覆盖</span></h4>
+                    <div className="crm-field-grid">
+                      {accountFieldView(customerProfile.account).map((f) => (
+                        <div key={f.field} className={`crm-field ${f.value ? '' : 'crm-field--empty'}`}>
+                          <div className="crm-field__head">
+                            <span className="crm-field__label">{f.label}</span>
+                            {f.value && f.source === 'ai' && (
+                              <span className="crm-field__badge crm-field__badge--ai" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
+                                🤖 {Math.round((f.confidence ?? 0) * 100)}%
+                              </span>
+                            )}
+                            {f.value && f.source === 'manual' && <span className="crm-field__badge crm-field__badge--manual">✍️ 手动</span>}
+                          </div>
+                          {editingField === f.field ? (
+                            <div className="crm-field__edit">
+                              <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
+                              <button className="crm-btn primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
+                              <button className="crm-btn" onClick={() => setEditingField('')}>取消</button>
+                            </div>
+                          ) : (
+                            <div className="crm-field__value" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
+                              title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
+                              {f.value || '未提取'}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {(customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
+                    <div className="crm-profile__section">
+                      <h4>动态时间线</h4>
+                      <div className="crm-timeline">
+                        {[
+                          ...(customerProfile.activities || []).map((a: any) => ({ at: Number(a.created_at || 0), kind: 'crm', text: `${a.detail || a.action}` })),
+                          ...(customerProfile.insights || []).map((i: any) => ({ at: Number(i.createdAt || 0), kind: 'insight', text: String(i.insight || '') }))
+                        ].sort((x: any, y: any) => y.at - x.at).slice(0, 30).map((e: any, idx: number) => (
+                          <div key={idx} className="crm-timeline__item">
+                            <span className="crm-timeline__time">{new Date(e.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                            <span className={`crm-timeline__tag ${e.kind}`}>{e.kind === 'insight' ? 'AI 见解' : 'CRM'}</span>
+                            <span className="crm-timeline__text">{e.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {customerProfile.aiProfile && (
                     <div className="crm-profile__section">
                       <h4>AI 画像</h4>

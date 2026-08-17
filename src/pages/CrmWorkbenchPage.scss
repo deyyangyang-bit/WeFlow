@@ -32,3 +32,41 @@
 .crm-filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .crm-filter-select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; font-size: 13px; background: #fff; cursor: pointer; }
 .crm-filter-count { font-size: 12px; color: #64748b; }
+
+// ─── 客户 360：字段卡 / 时间线 / 填充度（P2）────────────────────────────────
+.crm-profile__hint { font-size: 11px; color: #94a3b8; font-weight: 400; margin-left: 6px; }
+.crm-muted { color: #cbd5e1; }
+.crm-fill { font-variant-numeric: tabular-nums; font-size: 12px; padding: 1px 8px; border-radius: 10px; }
+.crm-fill--hi { background: rgba(5, 150, 105, 0.1); color: #059669; }
+.crm-fill--mid { background: rgba(217, 119, 6, 0.1); color: #b45309; }
+.crm-fill--lo { background: rgba(225, 29, 72, 0.08); color: #be123c; }
+.crm-filter-backfill { margin-left: auto; }
+
+.crm-field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 8px; }
+.crm-field {
+  border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  &:hover { border-color: #94a3b8; }
+}
+.crm-field--empty { background: #f8fafc; border-style: dashed; .crm-field__value { color: #cbd5e1; } }
+.crm-field__head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.crm-field__label { font-size: 11px; color: #64748b; }
+.crm-field__badge {
+  margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 8px; white-space: nowrap;
+  &--ai { background: rgba(59, 130, 246, 0.1); color: #2563eb; }
+  &--manual { background: rgba(100, 116, 139, 0.12); color: #475569; }
+}
+.crm-field__value { font-size: 13px; color: #1e293b; cursor: text; min-height: 18px; word-break: break-all; }
+.crm-field__edit { display: flex; gap: 6px; align-items: center;
+  input { flex: 1; border: 1px solid #94a3b8; border-radius: 6px; padding: 3px 8px; font-size: 13px; outline: none; }
+}
+
+.crm-timeline { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
+.crm-timeline__item { display: flex; gap: 8px; align-items: baseline; font-size: 12px; border-bottom: 1px dashed #f1f5f9; padding-bottom: 5px; }
+.crm-timeline__time { color: #94a3b8; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.crm-timeline__tag {
+  white-space: nowrap; font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  &.insight { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
+  &.crm { background: rgba(5, 150, 105, 0.1); color: #059669; }
+}
+.crm-timeline__text { color: #334155; word-break: break-all; }

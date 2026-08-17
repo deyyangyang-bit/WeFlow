@@ -1715,6 +1715,7 @@ export interface ElectronAPI {
     workbench: () => Promise<any[]>
     customers: () => Promise<any[]>
     enrichRun: (sessionId: string, displayName?: string) => Promise<any>
+    manualSet: (accountId: number, field: string, value: string) => Promise<{ ok: boolean; reason?: string }>
     enrichBackfill: () => Promise<{ processed: number; updated: number; failed: number }>
     infoQueueApply: (accountId: number, field: string, action: 'accept' | 'reject') => Promise<{ ok: boolean; reason?: string }>
     accountsBySessions: (sessionIds: string[]) => Promise<Record<string, { id: number; name: string }>>

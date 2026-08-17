@@ -686,6 +686,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     workbench: () => ipcRenderer.invoke('crm:workbench'),
     customers: () => ipcRenderer.invoke('crm:customers'),
     enrichRun: (sessionId: string, displayName?: string) => ipcRenderer.invoke('crm:enrich:run', sessionId, displayName),
+    manualSet: (accountId: number, field: string, value: string) => ipcRenderer.invoke('crm:enrich:manualSet', accountId, field, value),
     enrichBackfill: () => ipcRenderer.invoke('crm:enrich:backfill'),
     infoQueueApply: (accountId: number, field: string, action: 'accept' | 'reject') => ipcRenderer.invoke('crm:infoQueue:apply', accountId, field, action),
     accountsBySessions: (sessionIds: string[]) => ipcRenderer.invoke('crm:accounts:bySessions', sessionIds),
