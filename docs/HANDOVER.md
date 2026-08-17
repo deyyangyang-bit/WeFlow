@@ -1,8 +1,8 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `5568b47`。
-> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**。
+> 基线 commit `d40cd4d`；最近提交 `141736d`。
+> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **48/48**。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
 >
@@ -145,6 +145,20 @@
 
 ---
 
+## 2.9 CRM 零操作改造：AI 自动填充 + 见解联动 + 客户 360 + 可视化（2026-08-17）
+
+> 主线：按 PRD-v2「用户不录入、不标记、不操作」原则重塑 CRM 模块——AI 扫描自动填充客户信息并与灵感信箱联动；客户档案升级为 360 单屏视图；工作台增加可视化面板；漏斗换真漏斗图并可下钻。新增测试 `scripts/crm-enrich-test.ts` **48/48**。
+
+- **信息自动填充引擎**（`crmEnrichService.ts` 装配层 + `crmEnrichCore.ts` 纯核心）：AI 从聊天上下文 + 见解记录 + 关系画像结构化提取 12 字段（公司/职位/电话/行业/省市/需求/预算/意向型号/采购时间/竞品/价格敏感度）。置信分级：≥0.85 自动写入 account（正式列 company/position + custom_fields），0.7~0.85 进确认中心「信息待确认」队列人工裁决，<0.7 丢弃。每字段带 来源/置信度/聊天原话证据（`account.enrich_meta`）。手动编辑过的字段 source=manual + locked，AI 永不覆盖（`setAccountFieldManual`）。引擎绝不创建客户（只充实已导入 account）。触发点：见解导入后（insightService）/ 画像导入后（main.ts）/ 档案「AI 补全」按钮 / 「批量 AI 补全」存量回填（限额，enqueue 串行）
+- **确认中心第 5 队列「信息待确认」**：从 account.enrich_meta.pending 派生（不建表），每行 = 客户+字段+AI 值+置信度+证据，操作 采纳/放弃/查看档案
+- **客户 360 单屏视图**：客户 tab 档案 = 12 字段卡（🤖AI/✍️手动 角标 + 置信度 + 证据悬浮，点击编辑→保存即锁定）+ 动态时间线（CRM 操作 + AI 见解混排倒序 30 条，`crm:customer:profile` 返回 activities + insights 20 条）+ 深度分析/AI 报价入口；客户列表加 公司/AI 填充度 列 + 单客 AI 补全。新建合同零操作化：选客户自动带出名称 + 甲方开票信息，复用已有 account 不重复建客户
+- **深链协议**：`/crm?tab=customer&id=<accountId>`（直达档案）与 `/crm?tab=customer&stage=<阶段标签>`（漏斗下钻筛选）；灵感信箱卡片显示「已入 CRM」徽章 + 查看档案按钮（`crm:accounts:bySessions` 批量映射）
+- **可视化**：`crmDbService.statsOverview()`（总量 + 近 8 周到款趋势 + 阶段分布 + 合同管道）；工作台顶部 4 统计卡（客户总数/在途合同额/本月到款/待确认事项）+ ECharts 三图（echarts-for-react，与仪表盘同款）；漏斗页换 ECharts 真漏斗，点击阶段深链下钻 CRM 客户列表
+- **配置项**：`crmEnrichEnabled`(true) · `crmEnrichThreshold`(0.7) · `crmEnrichAutoApply`(0.85) · `crmEnrichBackfillLimit`(20)，设置页可调
+- **空壳表处置（不建）**：lead（线索=已自动导入的 account）、contact（个体销售单联系人场景）、opportunity（报价单已承担商机角色）——列入方案「非目标」，避免后续误读为漏做
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -180,6 +194,10 @@
 | 29 | **CRM 级联删除（自动备份）** | 工作台/确认中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
 | 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
 | 31 | **今日行动分页** | 今日行动信号卡片流底部 | `TodayActionPage.tsx`（`.signal-pagination`，10 条/页） | ✅ |
+| 32 | **客户信息 AI 自动填充** | 导入后自动 / 档案「AI 补全」/ 批量回填 | `crmEnrichService.ts` + `crmEnrichCore.ts` | ✅ |
+| 33 | **信息待确认队列** | 确认中心第 5 队列 | `crmDbService.infoPendingQueue` + CrmReviewPage | ✅ |
+| 34 | **客户 360 单屏视图** | CRM 客户 tab | `CrmWorkbenchPage.tsx`（字段卡+时间线+手改锁定+深链） | ✅ |
+| 35 | **CRM 可视化** | 工作台顶部 + 漏斗页 | `statsOverview` + ECharts 三图 + 真漏斗下钻 | ✅ |
 
 ---
 
@@ -302,6 +320,8 @@
 | sales_stage | contacted/quoted/negotiating/won/new/unknown（AI 见解中文标签映射） |
 | last_contact_at / imported_at | 毫秒时间戳 |
 | industry/province/city/phone/owner_sales | 基础字段 |
+| company/position | AI 自动填充正式列（公司/职位） |
+| enrich_meta | 字段级填充元数据 JSON：fields{source/confidence/evidence/locked} + pending（待确认值） |
 
 > 关联：contract.account_id；allocation.payment_record_id+contract_id+account_id；activity_log(entity,entity_id)。删除为级联（§2.5），删前自动备份 `userData/crm-backups/`。
 
@@ -328,6 +348,8 @@
 | `wcdbCore.ts`（改） | -2302错误信息改善 |
 | `crmDbService.ts` | **CRM 数据层**（weflow-crm.db）：客户/合同/回款/物流/发票 CRUD + 级联删除 + 自动备份 |
 | `crmParseService.ts` | CRM 群扫描：银行到款/认领归属/物流批量/发票归档/截图OCR |
+| `crmEnrichService.ts` | **客户信息自动填充引擎**（置信分级写入/pending/存量回填；绝不创建客户） |
+| `crmEnrichCore.ts` | 填充纯核心：提取 prompt + AI 输出解析 + 本地校验（零 electron，可单测） |
 | `crmParseRules.ts` | 纯规则库：银行文本/物流批量/发票名/归属简语/私聊成交词表 |
 | `crmImportService.ts` | AI 意向判断→CRM 自动导入 + 历史回填 + 内部群成员收集 |
 | `crmDeepAnalysisService.ts` | 资深销售助理七板块深度分析（用户自研 prompt 固化） |
@@ -365,6 +387,7 @@
 | `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |
 | `crm-claim-test.ts` | 货款认领测试（17 项） |
 | `crm-autoconfirm-test.ts` | **自动确认引擎单测**（**56 项**：归属 A1-A10 / 到款 P1-P8 / 物流 L1-L6 / 发票 I1-I5 / 金额 F1-F4 / docgen 注入 / 引擎 E1-E5 / 撤销 U1-U6） |
+| `crm-enrich-test.ts` | **自动填充引擎单测**（**48 项**：合并规则 / 核心解析校验 / 落库链路 / pending 裁决 / 填充度 / statsOverview） |
 | `crm-docgen-test.ts` | **文档生成单测**（**68 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写 / 型号输出 / invoice-info 落点） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 
@@ -428,6 +451,10 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | crmAutoConfirmEnabled | true | 确认中心自动确认总开关 |
 | crmAutoConfirmThreshold | 0.8 | 自动确认置信阈值 0.5-1.0（低于留人工） |
 | crmAutoConfirmInvoiceDocgen | false | 发票自动关联后自动生成开票信息单（需合同含 tax_no） |
+| crmEnrichEnabled | true | CRM 客户信息 AI 自动填充总开关 |
+| crmEnrichThreshold | 0.7 | 自动填充：进 pending 队列的置信下限（低于丢弃） |
+| crmEnrichAutoApply | 0.85 | 自动填充：直接写入档案的置信阈值 |
+| crmEnrichBackfillLimit | 20 | 自动填充：单次存量回填客户数上限 |
 
 ---
 
@@ -473,6 +500,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/MAC-KEY-FAQ.md` | Mac 密钥 FAQ |
 | `docs/产品库导入模板.csv` | 知识库导入模板 |
 | `AGENTS.md` | Agent 启动指南（本地，gitignore） |
+| `docs/PLAN-CRM零操作改造.md` | CRM 零操作改造方案（已实施，含提交映射） |
 | `DEVELOPMENT.md` | AI Agent 软件工程开发规范（项目级开发规则） |
 | 微信文件 | `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md` |
 

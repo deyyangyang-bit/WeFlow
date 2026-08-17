@@ -1,6 +1,6 @@
 # CRM 零操作改造方案（AI 自动填充 + 见解联动 + 客户 360）
 
-> 状态：**待评审**（2026-08-17）。评审通过后按 §9 提交计划实施。
+> 状态：**已实施**（2026-08-17）。提交映射：P0 `d8bb5d0` · P1 `cfe66a7` · P2 `a104dbf` · P3 `141736d`（P3 为评审中补充的可视化增量，见下）。
 > 对齐：PRD-v2 核心原则「用户不录入、不标记、不操作——所有数据从微信聊天自动提取，用户只做看清单和打勾」。
 > 调研依据：客户 360 单屏（Twenty / CordysCRM issue#84 / 纷享销客同构）；AI 对话提取字段→预览→写入+来源标注（Relaticle / Comp AI CRM / WorkBuddy-Cordys 同款）。只借设计不借代码（GPL 红线 + 单机 Electron 场景，与 v6 方案结论一致）。
 
@@ -136,11 +136,12 @@
 - 手动 golden：挑 3 个真实客户（1 大单在谈 / 1 已成交 / 1 纯熟人），验证提取准确性与熟人不过度填充。
 - 回归：`tsc --noEmit` + 现有 5 个测试套件全过（enrich 改动不得破坏 autoconfirm/workbench 基线）。
 
-## 9. 提交计划（3 个增量）
+## 9. 提交计划（4 个增量）
 
 1. `feat: CRM 信息自动填充引擎（crmEnrichService + field_meta + 双触发点 + 回填 + 单测）`
 2. `feat: 确认中心「信息待确认」队列 + 灵感信箱 CRM 联动（徽章/深链/见解时间线）`
 3. `feat: 客户 360 单屏视图 + 新建合同零操作化 + 客户列表填充度`
+4. `feat: CRM 可视化（工作台统计卡 + ECharts 三图 + 真漏斗下钻）`（P3：statsOverview + echarts-for-react，漏斗点击阶段深链 `/crm?tab=customer&stage=`）
 
 每个提交前：tsc 零错误 + 相关测试过 + HANDOVER/AGENTS 同步（规范第四节）。
 
