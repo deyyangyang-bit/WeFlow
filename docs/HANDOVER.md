@@ -1,8 +1,8 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `141736d`。
-> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **48/48**。
+> 基线 commit `d40cd4d`；最近提交 `1fd12d7`。
+> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **53/53**（含 quote_signal）、`crm-golden-test.ts` **39/39**（含报价信号）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
 >
@@ -159,6 +159,19 @@
 
 ---
 
+## 2.10 报价跟进事实驱动（R7）+ 批量补全修复（2026-08-17）
+
+> 主线：解决"客户上来问价、报完价就消失"——不靠 AI 猜阶段，用"我方发出过带金额的报价 + 客户没回"两个事实直接生成高优先级行动。同时修复批量 AI 补全全部失败的装配 bug。
+
+- **报价信号检测** `crmParseRules.parseQuoteSignal`：仅销售侧消息；金额 + (报价意向词 或 设备词) 双条件；排除客户询价（多少钱/你报个价）、闲聊小额（无单位且 <1000）、型号内数字（CPD20 的 20）；支持万元单位与千分位；语音消息走转写缓存（`chatService.getCachedVoiceTranscript`，未转写的语音不识别）
+- **quote_signal 事实表**（crmDb）：msg_key 幂等；私聊扫描挂钩记录；客户任意回复即自动关闭（markQuoteReplied）
+- **R7 规则**（salesActionEngine）：报价发出 24h~7d 内客户未回复 → 高优先级行动卡「报价跟进：X，N小时/天前报出 ¥金额（型号），客户还没回复」，评分高于普通 high；与 R1-R5 同客户取最高分；每日全量扫描时评估
+- **R1 阈值 3 天 → 2 天**（AI 阶段兜底的报价跟进提前一天）
+- **修复**：批量 AI 补全失败根因 = setEnrichConfig shim 只代理 4 个 enrich 键，回填路径 isAiConfigured 读不到 apiBaseUrl/apiKey；新增 setEnrichAiConfig 注入完整 config + 回填失败逐客户记 WARN
+- 测试：golden 39/39（含 8 项报价信号正反例）、enrich 53/53（含 quote_signal 落库往返）
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -198,6 +211,7 @@
 | 33 | **信息待确认队列** | 确认中心第 5 队列 | `crmDbService.infoPendingQueue` + CrmReviewPage | ✅ |
 | 34 | **客户 360 单屏视图** | CRM 客户 tab | `CrmWorkbenchPage.tsx`（字段卡+时间线+手改锁定+深链） | ✅ |
 | 35 | **CRM 可视化** | 工作台顶部 + 漏斗页 | `statsOverview` + ECharts 三图 + 真漏斗下钻 | ✅ |
+| 36 | **报价跟进 R7（事实驱动）** | 今日行动（私聊扫描自动） | `parseQuoteSignal` + `quote_signal` 表 + R7 规则 | ✅ |
 
 ---
 
@@ -323,6 +337,14 @@
 | company/position | AI 自动填充正式列（公司/职位） |
 | enrich_meta | 字段级填充元数据 JSON：fields{source/confidence/evidence/locked} + pending（待确认值） |
 
+### quote_signal（报价信号，R7 事实表）
+| 列 | 说明 |
+|----|------|
+| msg_key | 消息唯一键（幂等） |
+| session_id / account_id / display_name | 客户定位 |
+| amount / model | 报价金额 / 型号（可空） |
+| quoted_at / customer_replied_at | 报价时间 / 客户回复时间（0=未回复） |
+
 > 关联：contract.account_id；allocation.payment_record_id+contract_id+account_id；activity_log(entity,entity_id)。删除为级联（§2.5），删前自动备份 `userData/crm-backups/`。
 
 ---
@@ -347,7 +369,7 @@
 | `dbPathService.ts`（改） | Windows多路径检测 + 注册表查询 |
 | `wcdbCore.ts`（改） | -2302错误信息改善 |
 | `crmDbService.ts` | **CRM 数据层**（weflow-crm.db）：客户/合同/回款/物流/发票 CRUD + 级联删除 + 自动备份 |
-| `crmParseService.ts` | CRM 群扫描：银行到款/认领归属/物流批量/发票归档/截图OCR |
+| `crmParseService.ts` | CRM 群扫描：银行到款/认领归属/物流批量/发票归档/截图OCR/私聊报价信号 |
 | `crmEnrichService.ts` | **客户信息自动填充引擎**（置信分级写入/pending/存量回填；绝不创建客户） |
 | `crmEnrichCore.ts` | 填充纯核心：提取 prompt + AI 输出解析 + 本地校验（零 electron，可单测） |
 | `crmParseRules.ts` | 纯规则库：银行文本/物流批量/发票名/归属简语/私聊成交词表 |
