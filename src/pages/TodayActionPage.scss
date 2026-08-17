@@ -282,6 +282,40 @@
   color: var(--wf-muted);
 }
 
+// 分页
+.signal-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 14px 0 4px;
+
+  &__btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--wf-card, #fff);
+    color: var(--wf-body, #475569);
+    border: 1px solid var(--wf-border, #E7E9EE);
+    transition: background 0.15s, border-color 0.15s;
+
+    &:hover:not(:disabled) { background: var(--wf-canvas, #F5F6F8); border-color: var(--wf-muted, #94A3B8); }
+    &:disabled { opacity: 0.4; cursor: default; }
+  }
+
+  &__info {
+    font-size: 12px;
+    color: var(--wf-muted, #94A3B8);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
 // 可折叠数据概览
 .overview-card {
   background: var(--wf-card);

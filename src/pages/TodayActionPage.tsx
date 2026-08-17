@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Activity, BarChart3, Bell, ChevronDown, ChevronUp,
+  Activity, BarChart3, Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
   Clock, Flame, RefreshCw, TrendingUp, Users,
 } from 'lucide-react'
 import AIActionCard from '../components/sales/AIActionCard'
@@ -48,7 +48,11 @@ export default function TodayActionPage() {
   const { items, stats, loading, error, filter, noticeDismissed, fetchToday, setFilter, dismissNotice } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
   const [overviewOpen, setOverviewOpen] = useState(false)
+  const [page, setPage] = useState(1)
   const navigate = useNavigate()
+
+  // 卡片流分页：每页条数（信号卡较高，10 条一页避免页面过长）
+  const PAGE_SIZE = 10
 
   useEffect(() => { fetchToday() }, [fetchToday])
 
@@ -66,6 +70,17 @@ export default function TodayActionPage() {
     if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
     return items
   }, [items, filter])
+
+  // 切筛选时回到第一页
+  useEffect(() => { setPage(1) }, [filter])
+
+  // 分页切片（page 超出范围时钳制到最后一页，避免刷新后空页）
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const curPage = Math.min(Math.max(1, page), pageCount)
+  const pageItems = useMemo(
+    () => filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE),
+    [filtered, curPage],
+  )
 
   // chips 计数
   const chipCounts = useMemo(() => ({
@@ -174,11 +189,38 @@ export default function TodayActionPage() {
           )}
 
           {/* 信号卡片流 */}
-          <div className="signal-list">
-            {filtered.map(item => (
-              <AIActionCard key={item.sessionId} item={item} />
-            ))}
-          </div>
+          {filtered.length > 0 && (
+            <>
+              <div className="signal-list">
+                {pageItems.map(item => (
+                  <AIActionCard key={item.sessionId} item={item} />
+                ))}
+              </div>
+
+              {/* 分页 */}
+              {pageCount > 1 && (
+                <div className="signal-pagination">
+                  <button
+                    className="signal-pagination__btn"
+                    disabled={curPage === 1}
+                    onClick={() => setPage(curPage - 1)}
+                  >
+                    <ChevronLeft size={14} /> 上一页
+                  </button>
+                  <span className="signal-pagination__info">
+                    {curPage} / {pageCount} 页 · 共 {filtered.length} 条
+                  </span>
+                  <button
+                    className="signal-pagination__btn"
+                    disabled={curPage === pageCount}
+                    onClick={() => setPage(curPage + 1)}
+                  >
+                    下一页 <ChevronRight size={14} />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* 右栏:待办侧栏 */}
