@@ -46,11 +46,14 @@ function yyyymmdd(ts: number | string | null | undefined): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
 }
 
-/** 行项展示规格：型号前置 + 参数（复刻真实模版「X1D-LI\n48v10ah」），无型号时只回参数 */
+/** 行项展示规格：显式 spec 文案优先（样板「2吨\n550 黑黄 X1c-Li 48V15AH」原样，型号已在文案内）；
+ *  无 spec 时 型号前置 + 参数摘要（spec_summary） */
 function itemSpec(it: CrmRow): string {
-  const spec = String(it.spec_summary || it.spec || '')
-  const model = String(it.model || '')
-  return model ? [model, spec].filter(Boolean).join('\n') : spec
+  const spec = String(it.spec || '').trim()
+  if (spec) return spec
+  const summary = String(it.spec_summary || '').trim()
+  const model = String(it.model || '').trim()
+  return model ? [model, summary].filter(Boolean).join('\n') : summary
 }
 
 // ── 数据装配（纯 crmDbService，无 electron）──────────────────────────────

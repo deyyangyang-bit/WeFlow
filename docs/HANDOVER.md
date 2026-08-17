@@ -130,7 +130,7 @@
 - **架构拆分**：`electron/services/crmDocGenCore.ts`（新，零 electron 纯核心）承接 `renderDocx` + `buildInvoiceAppWorkbook` + 数据装配 + `generateDocBuffer(type, recordId)`（`DOC_TYPES = quotation/contract/invoice-info/invoice-app`，invoice-app 出 `.xlsx`）；`crmDocGenService.ts` 降为 **electron 薄壳**（模板路径三候选解析 → 调 Core → 落盘 `userData/crm-docs/{type}-{id}-{ts}.{ext}` → 写回 `attachment_path`，写回失败不影响生成）。`generateDoc` 改 **async**，`crmAutoConfirmService` 的 docgenRunner 类型同步为 `Promise<{ok;path?;reason?}>`。attachment_path 写回目标：quotation→quotation、invoice-info→**invoice**（invoice-app 同）、contract→contract；`contract` 表已补 `attachment_path` 列（ALTER 迁移，旧库自动加）
 - **甲方(客户)开票信息 = 系统录入**（已确认决策）：`CrmWorkbenchPage` 新建合同表单加 5 输入（单位地址/开户银行/银行账号/税号/电话）→ `createContract` 写 `contract.custom_fields`（`buyer_addr/buyer_bank/buyer_account/tax_no/buyer_phone`，与自动确认引擎的 `tax_no` 同 key）；合同详情「子资源」面板加「甲方开票信息」编辑块（5 输入 + 保存 → `crm.update('contract', id, {custom_fields})`，IPC 已存在）
 - **前端**：CrmReviewPage 发票待开行加「开票申请」按钮（在「开票信息单」旁）→ `docGenerate('invoice-app', i.id)`
-- **数据装配**：合同 `no = COOFORK-{yyyymmdd}{id 补2位}`（date 取 sign_date||created_at）；报价单 `no = Q-{id}`；行项 单位默认 台、备注默认 空；**规格 = 型号前置 + 参数**（复刻样板「X1D-LI\n48v10ah」格式，行项 `model` 放首行）；invoice-app 经 inv→contract→quotations→items 取明细（商品编码=product.sku），buyer=inv.buyer，tax_no=cf.tax_no
+- **数据装配**：合同 `no = COOFORK-{yyyymmdd}{id 补2位}`（date 取 sign_date||created_at）；报价单 `no = Q-{id}`；行项 单位默认 台、备注默认 空；**规格 = 显式 spec 文案优先**（样板「2吨\n550 黑黄 X1c-Li 48V15AH」原样，型号已含在文案内），无 spec 时 型号前置 + spec_summary 参数摘要；invoice-app 经 inv→contract→quotations→items 取明细（商品编码=product.sku），buyer=inv.buyer，tax_no=cf.tax_no
 - 新 npm script：`test:docgen`；`docs/HANDOVER.md` 本次同步
 - **坑**：exceljs 4.4 的 `ws.model.merges` 是**范围字符串数组**（`["B3:I3","C9:D9"]`），单测需按字符串解析，不是 `{top,left,bottom,right}` 对象；真实 docx 模版含图片（quotation 516KB），`python-docx` 只动段落/单元格文本，图片与样式原样保留
 
@@ -353,7 +353,7 @@
 | `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |
 | `crm-claim-test.ts` | 货款认领测试（17 项） |
 | `crm-autoconfirm-test.ts` | **自动确认引擎单测**（**56 项**：归属 A1-A10 / 到款 P1-P8 / 物流 L1-L6 / 发票 I1-I5 / 金额 F1-F4 / docgen 注入 / 引擎 E1-E5 / 撤销 U1-U6） |
-| `crm-docgen-test.ts` | **文档生成单测**（**68 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写 / 型号前置 / invoice-info 落点） |
+| `crm-docgen-test.ts` | **文档生成单测**（**68 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写 / 型号输出 / invoice-info 落点） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 
 ### 资源/脚本（§2.7 新增）
