@@ -153,6 +153,11 @@ async function main(): Promise<void> {
   crmDbService.markQuoteReplied('wxid_quote_test', Date.now())
   ok('15e 客户回复后不再待跟进', !crmDbService.pendingQuoteFollowups(24, 7).some((s) => s.msg_key === 'qk1'))
 
+  // ── 16 aiAccuracyStats（AI 准确率统计）─────────────────────────────────────
+  const accStats = crmDbService.aiAccuracyStats(7)
+  ok('16a 结构完整', typeof accStats.enrichAuto === 'number' && typeof accStats.correctionRate === 'number' && accStats.quoteTotal >= 1)
+  ok('16b 报价信号统计含测试数据', accStats.quoteReplied >= 1)
+
   console.log(`\nENRICH RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
 }

@@ -231,6 +231,9 @@ class SalesDbService {
   /**
    * 立即持久化（用于关键操作后）
    */
+  /** 公开落盘入口（备份前强制刷盘用） */
+  flushNow(): void { this.persistNow() }
+
   private persistNow(): void {
     if (!this.db || !this.dbPath) return
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }

@@ -39,7 +39,8 @@ function BackupPage() {
   const [resourceOptions, setResourceOptions] = useState({
     includeImages: false,
     includeVideos: false,
-    includeFiles: false
+    includeFiles: false,
+    includeSalesData: true
   })
 
   useEffect(() => {
@@ -58,7 +59,7 @@ function BackupPage() {
     setMessage('')
     setRestoreSummary(null)
     try {
-      const hasResources = resourceOptions.includeImages || resourceOptions.includeVideos || resourceOptions.includeFiles
+      const hasResources = resourceOptions.includeImages || resourceOptions.includeVideos || resourceOptions.includeFiles || resourceOptions.includeSalesData
       const extension = hasResources ? 'tar' : 'tar.gz'
       const defaultPath = `weflow-db-backup-${new Date().toISOString().slice(0, 10)}.${extension}`
       const result = await window.electronAPI.dialog.saveFile({
@@ -207,6 +208,16 @@ function BackupPage() {
           />
           <File size={16} />
           <span>文件</span>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={resourceOptions.includeSalesData}
+            disabled={busy}
+            onChange={(event) => setResourceOptions(prev => ({ ...prev, includeSalesData: event.target.checked }))}
+          />
+          <Database size={16} />
+          <span>销售数据（客户档案/CRM/配置/见解）</span>
         </label>
       </section>
 

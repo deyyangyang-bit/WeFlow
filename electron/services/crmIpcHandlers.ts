@@ -60,6 +60,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:review:queues', async () => crmDbService.reviewQueues())
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
   ipcMain.handle('crm:stats:overview', async () => crmDbService.statsOverview())
+  ipcMain.handle('crm:stats:aiAccuracy', async (_, days?: number) => crmDbService.aiAccuracyStats(Number(days) || 7))
   ipcMain.handle('crm:customers', async () => crmDbService.customers())
   // 客户信息自动填充：单客手动补全 / 存量回填（enqueue 串行；引擎内部不 enqueue）
   // 手动编辑客户字段（写入并锁定，AI 不再覆盖）

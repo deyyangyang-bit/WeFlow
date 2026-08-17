@@ -6,6 +6,8 @@ import { tmpdir } from 'os'
 import * as tar from 'tar'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
+import { crmDbService } from './crmDbService'
+import { salesDbService } from './salesDbService'
 import { expandHomePath } from '../utils/pathUtils'
 
 type BackupDbKind = 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns' | 'hardlink'
@@ -18,6 +20,7 @@ export interface BackupOptions {
   includeImages?: boolean
   includeVideos?: boolean
   includeFiles?: boolean
+  includeSalesData?: boolean
 }
 
 interface BackupDbEntry {
@@ -50,6 +53,7 @@ interface BackupResourceEntry {
 }
 
 interface BackupManifest {
+  salesDataFiles?: string[]
   version: 1
   type: 'weflow-db-snapshots'
   createdAt: string
@@ -701,6 +705,36 @@ export class BackupService {
     }
   }
 
+  /**
+   * 销售数据备份：销售库/CRM 库/配置/见解数据 → 归档内 sales-data/。
+   * 恢复方式：退出 app 后将 sales-data/ 内文件覆盖回用户数据目录（帮助菜单可查看路径）。
+   */
+  private async collectSalesData(stagingDir: string, manifest: BackupManifest): Promise<void> {
+    try {
+      const userData = app.getPath('userData')
+      // 先强制落盘，避免 debounce 窗口内的最新数据丢失
+      try { crmDbService.persistNow() } catch { /* ignore */ }
+      try { salesDbService.flushNow() } catch { /* ignore */ }
+      const names = [
+        'weflow-sales.db', 'weflow-crm.db', 'WeFlow-config.json',
+        'weflow-insight-profiles.json', 'weflow-insight-records.json', 'weflow-group-summary-records.json'
+      ]
+      const dir = join(stagingDir, 'sales-data')
+      mkdirSync(dir, { recursive: true })
+      const copied: string[] = []
+      for (const name of names) {
+        const src = join(userData, name)
+        if (!existsSync(src)) continue
+        await copyFile(src, join(dir, name))
+        copied.push(`sales-data/${name}`)
+      }
+      manifest.salesDataFiles = copied
+      emitBackupProgress({ phase: 'scanning', message: `销售数据已纳入备份（${copied.length} 个文件）` })
+    } catch (e) {
+      emitBackupProgress({ phase: 'scanning', message: `销售数据备份失败：${e instanceof Error ? e.message : String(e)}` })
+    }
+  }
+
   async createBackup(outputPath: string, options: BackupOptions = {}): Promise<{ success: boolean; filePath?: string; manifest?: BackupManifest; error?: string }> {
     let stagingDir = ''
     try {
@@ -728,7 +762,8 @@ export class BackupService {
         options: {
           includeImages: options.includeImages === true,
           includeVideos: options.includeVideos === true,
-          includeFiles: options.includeFiles === true
+          includeFiles: options.includeFiles === true,
+          includeSalesData: options.includeSalesData === true
         }
       }
 
@@ -798,6 +833,9 @@ export class BackupService {
       }
       if (options.includeFiles === true) {
         await this.collectPlainResources({ dbStorage: connected.dbStorage }, stagingDir, manifest, 'file')
+      }
+      if (options.includeSalesData === true) {
+        await this.collectSalesData(stagingDir, manifest)
       }
 
       await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')

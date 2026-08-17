@@ -282,6 +282,13 @@
   color: var(--wf-muted);
 }
 
+// 客户名可点击（深链到客户 360 档案）
+.signal-card__name--link {
+  cursor: pointer;
+  transition: color 0.15s;
+  &:hover { color: var(--wf-accent, #2563eb); text-decoration: underline; }
+}
+
 // 分页
 .signal-pagination {
   display: flex;

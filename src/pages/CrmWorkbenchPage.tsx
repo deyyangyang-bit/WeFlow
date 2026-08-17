@@ -65,6 +65,13 @@ export default function CrmWorkbenchPage() {
     try { setStats(await window.electronAPI.crm.statsOverview()) } catch { /* ignore */ }
   }
   useEffect(() => { void fetchStats() }, [])
+  // AI 准确率（近 7 天）：填充/采纳/修正/报价信号转化
+  const [accuracy, setAccuracy] = useState<any>(null)
+  const [accuracyOpen, setAccuracyOpen] = useState(false)
+  const fetchAccuracy = async () => {
+    try { setAccuracy(await window.electronAPI.crm.statsAiAccuracy(7)) } catch { /* ignore */ }
+  }
+  useEffect(() => { void fetchAccuracy() }, [])
   const STAGE_LABEL_MAP: Record<string, string> = {
     contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
   }
@@ -109,6 +116,16 @@ export default function CrmWorkbenchPage() {
       void fetchCustomers().then((rows) => {
         const hit = rows.find((x: any) => Number(x.id) === id)
         if (hit) void openCustomer(hit)
+      })
+    }
+    // 行动卡深链：/crm?tab=customer&sid=<sessionId>（按微信会话定位客户）
+    const sid = searchParams.get('sid')
+    if (t === 'customer' && !(id > 0) && sid) {
+      setTab('customers')
+      void fetchCustomers().then((rows) => {
+        const hit = rows.find((x: any) => String(x.session_id || '') === sid)
+        if (hit) void openCustomer(hit)
+        else setNotice('该客户尚未导入 CRM（AI 判定有意向后会自动导入）')
       })
     }
     // 漏斗下钻深链：/crm?tab=customer&stage=已沟通
@@ -354,7 +371,7 @@ export default function CrmWorkbenchPage() {
           <button className={`crm-tab ${tab === 'contracts' ? 'active' : ''}`} onClick={() => setTab('contracts')}>合同 ({workbench.length})</button>
           <button className={`crm-tab ${tab === 'customers' ? 'active' : ''}`} onClick={() => void fetchCustomers().then(() => setTab('customers'))}>客户 ({customers.length})</button>
         </div>
-        <button className="crm-btn" onClick={() => { void fetchStats(); if (tab === 'contracts') void fetchWorkbench(); else void fetchCustomers() }}><RefreshCw size={14} /> 刷新</button>
+        <button className="crm-btn" onClick={() => { void fetchStats(); void fetchAccuracy(); if (tab === 'contracts') void fetchWorkbench(); else void fetchCustomers() }}><RefreshCw size={14} /> 刷新</button>
         <button className="crm-btn" onClick={() => setShowNew((v) => !v)}><Plus size={14} /> 新建合同</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -370,6 +387,25 @@ export default function CrmWorkbenchPage() {
             <div className="crm-chart-box"><h4>近 8 周到款趋势</h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
             <div className="crm-chart-box"><h4>客户阶段分布</h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
             <div className="crm-chart-box"><h4>合同管道（金额）</h4>{pipelineOption && <ReactECharts option={pipelineOption} style={{ height: 190 }} notMerge />}</div>
+          </div>
+          <div className="crm-accuracy">
+            <button className="crm-accuracy__head" onClick={() => setAccuracyOpen((v) => !v)}>
+              <span>📊 AI 准确率（近 7 天）</span>
+              <span className="crm-accuracy__toggle">{accuracyOpen ? '收起 ▲' : '展开 ▼'}</span>
+            </button>
+            {accuracyOpen && accuracy && (
+              <div className="crm-accuracy__grid">
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.enrichAuto}</span><span className="crm-accuracy__label">AI 自动写入字段</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoAccept}</span><span className="crm-accuracy__label">待确认采纳</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoReject}</span><span className="crm-accuracy__label">待确认放弃</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.acceptRate == null ? '-' : `${accuracy.acceptRate}%`}</span><span className="crm-accuracy__label">采纳率</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.manualEdit}</span><span className="crm-accuracy__label">手动修正字段</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.writtenTotal > 0 ? `${accuracy.correctionRate}%` : '-'}</span><span className="crm-accuracy__label">修正率（越低越准）</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteTotal}</span><span className="crm-accuracy__label">报价信号</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteReplied24}/{accuracy.quoteReplied}</span><span className="crm-accuracy__label">24h 内回复/总回复</span></div>
+                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quotePending}</span><span className="crm-accuracy__label">报价待跟进</span></div>
+              </div>
+            )}
           </div>
         </>
       )}

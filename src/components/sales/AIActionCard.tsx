@@ -130,7 +130,9 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
         <div className="signal-card__main">
           {/* 头部 */}
           <div className="signal-card__header">
-            <span className="signal-card__name">{item.displayName}</span>
+            <span className="signal-card__name signal-card__name--link" title="查看客户 360 档案"
+              onClick={(e) => { e.stopPropagation(); navigate(`/crm?tab=customer&sid=${encodeURIComponent(item.sessionId)}`) }}
+            >{item.displayName}</span>
             <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
               {stage.text}
             </span>

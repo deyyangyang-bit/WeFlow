@@ -685,6 +685,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reviewQueues: () => ipcRenderer.invoke('crm:review:queues'),
     workbench: () => ipcRenderer.invoke('crm:workbench'),
     statsOverview: () => ipcRenderer.invoke('crm:stats:overview'),
+    statsAiAccuracy: (days?: number) => ipcRenderer.invoke('crm:stats:aiAccuracy', days),
     customers: () => ipcRenderer.invoke('crm:customers'),
     enrichRun: (sessionId: string, displayName?: string) => ipcRenderer.invoke('crm:enrich:run', sessionId, displayName),
     manualSet: (accountId: number, field: string, value: string) => ipcRenderer.invoke('crm:enrich:manualSet', accountId, field, value),

@@ -239,6 +239,7 @@ export interface BackupOptions {
   includeImages?: boolean
   includeVideos?: boolean
   includeFiles?: boolean
+  includeSalesData?: boolean
 }
 
 export interface BackupImageDatMeta {
@@ -1714,6 +1715,7 @@ export interface ElectronAPI {
     reviewQueues: () => Promise<any>
     workbench: () => Promise<any[]>
     statsOverview: () => Promise<any>
+    statsAiAccuracy: (days?: number) => Promise<any>
     customers: () => Promise<any[]>
     enrichRun: (sessionId: string, displayName?: string) => Promise<any>
     manualSet: (accountId: number, field: string, value: string) => Promise<{ ok: boolean; reason?: string }>

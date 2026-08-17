@@ -1086,6 +1086,27 @@ class CrmDbService {
     }
   }
 
+  /** AI 准确率统计（近 N 天）：自动填充/人工采纳修正/报价信号转化 */
+  aiAccuracyStats(days = 7): CrmRow {
+    const since = Date.now() - days * 86400000
+    const cnt = (sql: string, params: unknown[] = []) => Number(this.all(sql, params)[0]?.n ?? 0)
+    const enrichAuto = cnt("SELECT COUNT(*) AS n FROM auto_confirm_log WHERE entity = 'account' AND decision = 'enrich_auto' AND created_at >= ?", [since])
+    const infoAccept = cnt("SELECT COUNT(*) AS n FROM auto_confirm_log WHERE entity = 'account' AND decision = 'info_accept' AND created_at >= ?", [since])
+    const infoReject = cnt("SELECT COUNT(*) AS n FROM auto_confirm_log WHERE entity = 'account' AND decision = 'info_reject' AND created_at >= ?", [since])
+    const manualEdit = cnt("SELECT COUNT(*) AS n FROM activity_log WHERE entity = 'account' AND action = 'field_edited' AND created_at >= ?", [since])
+    const writtenTotal = enrichAuto + infoAccept
+    const quoteTotal = cnt('SELECT COUNT(*) AS n FROM quote_signal WHERE quoted_at >= ?', [since])
+    const quoteReplied = cnt('SELECT COUNT(*) AS n FROM quote_signal WHERE quoted_at >= ? AND customer_replied_at > 0', [since])
+    const quoteReplied24 = cnt('SELECT COUNT(*) AS n FROM quote_signal WHERE quoted_at >= ? AND customer_replied_at > 0 AND customer_replied_at - quoted_at <= 86400000', [since])
+    const quotePending = cnt('SELECT COUNT(*) AS n FROM quote_signal WHERE quoted_at >= ? AND customer_replied_at = 0', [since])
+    return {
+      days, enrichAuto, infoAccept, infoReject, manualEdit, writtenTotal,
+      correctionRate: writtenTotal > 0 ? Math.round((manualEdit / writtenTotal) * 100) : 0,
+      acceptRate: infoAccept + infoReject > 0 ? Math.round((infoAccept / (infoAccept + infoReject)) * 100) : null,
+      quoteTotal, quoteReplied, quoteReplied24, quotePending
+    }
+  }
+
   // ─── 工作台 ───────────────────────────────────────────────────────────────
   workbench(): CrmRow[] {
     const contracts = this.all('SELECT * FROM contract ORDER BY id DESC LIMIT 200')

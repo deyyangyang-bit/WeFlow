@@ -93,3 +93,17 @@
 // 漏斗下钻提示
 .funnel-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; }
 .funnel-drill-hint { text-align: center; font-size: 12px; color: #94a3b8; padding-bottom: 6px; }
+
+// ─── AI 准确率面板（近 7 天）────────────────────────────────────────────────
+.crm-accuracy { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
+.crm-accuracy__head {
+  display: flex; justify-content: space-between; align-items: center; width: 100%;
+  padding: 10px 14px; background: none; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #334155;
+  &:hover { background: #f8fafc; }
+}
+.crm-accuracy__toggle { font-size: 11px; color: #94a3b8; font-weight: 400; }
+.crm-accuracy__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; padding: 4px 14px 12px; }
+.crm-accuracy__item { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; background: #f8fafc; border-radius: 8px; }
+.crm-accuracy__value { font-size: 16px; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
+.crm-accuracy__label { font-size: 11px; color: #64748b; }
