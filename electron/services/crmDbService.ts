@@ -128,6 +128,96 @@ const ENTITIES = [
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
+// ─── 客户信息自动填充（enrich）：字段定义 + 纯合并规则（可单测）───────────────
+/** AI 可自动填充的客户字段：前 6 个为 account 正式列，其余存 custom_fields */
+export const ENRICH_FIELDS = [
+  'company', 'position', 'phone', 'industry', 'province', 'city',
+  'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive'
+] as const
+export type EnrichField = (typeof ENRICH_FIELDS)[number]
+export const ENRICH_FORMAL_COLUMNS: ReadonlySet<string> = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
+
+export type EnrichFieldSource = 'ai' | 'manual'
+export interface EnrichFieldMetaEntry { source: EnrichFieldSource; confidence: number; at: number; evidence?: string; locked?: boolean }
+export interface PendingFieldEntry { value: string; confidence: number; evidence?: string; at: number }
+export interface EnrichMeta { fields?: Record<string, EnrichFieldMetaEntry>; pending?: Record<string, PendingFieldEntry> }
+export interface EnrichIncomingField { value: string; confidence: number; evidence?: string }
+
+export function parseEnrichMeta(raw: string | null | undefined): EnrichMeta {
+  if (!raw) return {}
+  try {
+    const o = JSON.parse(String(raw))
+    return o && typeof o === 'object' ? (o as EnrichMeta) : {}
+  } catch { return {} }
+}
+
+export interface MergeEnrichResult {
+  /** 直接写入的字段（含新 meta） */
+  updates: Record<string, { value: string; meta: EnrichFieldMetaEntry }>
+  /** 与既有高值冲突、需人工裁决的字段 */
+  pending: Record<string, PendingFieldEntry>
+  /** 手动/锁定字段，AI 不覆盖 */
+  skipped: string[]
+  /** 新证据弱于既有 AI 证据，丢弃 */
+  discarded: string[]
+  /** 值相同，仅刷新 meta */
+  refreshed: string[]
+}
+
+/**
+ * 字段合并规则（纯函数）：
+ * 1 手动/锁定字段永不覆盖（skipped）
+ * 2 目标为空 → 写入
+ * 3 值相同 → 仅刷新 meta（置信度取高）
+ * 4 既有 ai 值：新置信 ≥ 旧置信 → 覆盖；否则丢弃
+ * 5 既有值无 meta（历史/手动数据）且新值置信 ≥ threshold → 进 pending 人工裁决；否则丢弃
+ */
+export function mergeEnrichFields(
+  current: Record<string, string | null | undefined>,
+  meta: EnrichMeta,
+  incoming: Record<string, EnrichIncomingField>,
+  opts: { threshold?: number; now?: number } = {}
+): MergeEnrichResult {
+  const threshold = opts.threshold ?? 0.7
+  const now = opts.now ?? Date.now()
+  const result: MergeEnrichResult = { updates: {}, pending: {}, skipped: [], discarded: [], refreshed: [] }
+  const fields = meta.fields || {}
+  for (const [field, item] of Object.entries(incoming)) {
+    const value = String(item?.value || '').trim()
+    if (!value) continue
+    const m = fields[field]
+    if (m?.locked || m?.source === 'manual') { result.skipped.push(field); continue }
+    const cur = String(current[field] ?? '').trim()
+    if (!cur) {
+      result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence } }
+      continue
+    }
+    if (cur === value) {
+      result.refreshed.push(field)
+      result.updates[field] = {
+        value,
+        meta: { source: 'ai', confidence: Math.max(item.confidence, m?.confidence ?? 0), at: now, evidence: item.evidence || m?.evidence }
+      }
+      continue
+    }
+    if (m?.source === 'ai') {
+      if (item.confidence >= (m.confidence ?? 0)) {
+        result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence } }
+      } else {
+        result.discarded.push(field)
+      }
+      continue
+    }
+    // 既有值无 AI meta（历史/手动数据）：够置信则进 pending 人工裁决
+    if (item.confidence >= threshold) {
+      result.pending[field] = { value, confidence: item.confidence, evidence: item.evidence, at: now }
+    } else {
+      result.discarded.push(field)
+    }
+  }
+  return result
+}
+
 class CrmDbService {
   private db: SqlJsDatabase | null = null
   private dbPath: string | null = null
@@ -160,7 +250,8 @@ class CrmDbService {
     // Migration: account 增加 AI 导入联动列（意向客户自动导入）
     const accountCols: Array<[string, string]> = [
       ['session_id', 'TEXT'], ['sales_stage', 'TEXT'],
-      ['last_contact_at', 'INTEGER'], ['imported_at', 'INTEGER']
+      ['last_contact_at', 'INTEGER'], ['imported_at', 'INTEGER'],
+      ['company', 'TEXT'], ['position', 'TEXT'], ['enrich_meta', "TEXT DEFAULT '{}'"]
     ]
     for (const [col, type] of accountCols) {
       try { this.db.run(`ALTER TABLE account ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
@@ -348,6 +439,123 @@ class CrmDbService {
     this.logActivity('account', id, 'imported', `AI 意向客户导入（${p.stage || 'unknown'}）${p.reason ? `：${p.reason}` : ''}`)
     return { id, created: true }
   }
+  // ─── 客户信息自动填充（enrich）────────────────────────────────────────────
+  /** 读取并解析 account.enrich_meta */
+  accountEnrichMeta(accountId: number): EnrichMeta {
+    const acc = this.getById('account', accountId)
+    return parseEnrichMeta(acc ? String(acc.enrich_meta || '') : '')
+  }
+
+  /**
+   * 写入 AI 填充结果：updates → 正式列/custom_fields + meta；pending 整体替换为新合并结果。
+   * 写 activity_log（客户可见时间线）+ auto_confirm_log（enrich_auto 审计，供历史/回溯）。
+   */
+  applyEnrichment(
+    accountId: number,
+    updates: Record<string, { value: string; meta: EnrichFieldMetaEntry }>,
+    pending: Record<string, PendingFieldEntry>,
+    opts: { discarded?: string[] } = {}
+  ): { ok: boolean; reason?: string } {
+    const acc = this.getById('account', accountId)
+    if (!acc) return { ok: false, reason: '客户不存在' }
+    const patch: CrmRow = { updated_at: Date.now() }
+    let customFields: Record<string, unknown> = {}
+    try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+    const meta = parseEnrichMeta(String(acc.enrich_meta || ''))
+    const fields = { ...(meta.fields || {}) }
+    const labels: string[] = []
+    for (const [field, u] of Object.entries(updates)) {
+      if (ENRICH_FORMAL_COLUMNS.has(field)) patch[field] = u.value
+      else customFields[field] = u.value
+      fields[field] = u.meta
+      labels.push(field)
+    }
+    patch.custom_fields = JSON.stringify(customFields)
+    patch.enrich_meta = JSON.stringify({ fields, pending })
+    this.update('account', accountId, patch)
+    if (labels.length) {
+      this.logActivity('account', accountId, 'enriched', `AI 自动填充 ${labels.length} 项：${labels.join('、')}`)
+      const avgConf = labels.reduce((s, f) => s + (updates[f]?.meta?.confidence ?? 0), 0) / labels.length
+      this.logAutoConfirm('account', accountId, 'enrich_auto', Math.round(avgConf * 100) / 100, `AI 填充 ${labels.join('、')}${opts.discarded?.length ? `（丢弃 ${opts.discarded.length} 项低置信）` : ''}`, 'enrichCustomer')
+    } else if (Object.keys(pending).length) {
+      this.update('account', accountId, { enrich_meta: JSON.stringify({ fields, pending }) })
+    }
+    return { ok: true }
+  }
+
+  /** 确认中心「信息待确认」队列：从 account.enrich_meta.pending 派生（不建表） */
+  infoPendingQueue(): CrmRow[] {
+    const rows = this.all("SELECT id, name, session_id, enrich_meta FROM account WHERE enrich_meta LIKE '%\"pending\"%'")
+    const out: CrmRow[] = []
+    for (const r of rows) {
+      const meta = parseEnrichMeta(String(r.enrich_meta || ''))
+      const pending = meta.pending || {}
+      for (const [field, p] of Object.entries(pending)) {
+        out.push({
+          account_id: Number(r.id), account_name: String(r.name || ''), session_id: String(r.session_id || ''),
+          field, value: p.value, confidence: p.confidence, evidence: p.evidence || '', at: p.at ?? 0
+        })
+      }
+    }
+    return out.sort((a, b) => Number(a.at) - Number(b.at))
+  }
+
+  /** 人工裁决待确认字段：accept 写入（source=ai，可被后续 AI 更新）；reject 仅清除 pending */
+  applyInfoField(accountId: number, field: string, action: 'accept' | 'reject'): { ok: boolean; reason?: string } {
+    const acc = this.getById('account', accountId)
+    if (!acc) return { ok: false, reason: '客户不存在' }
+    const meta = parseEnrichMeta(String(acc.enrich_meta || ''))
+    const pending = { ...(meta.pending || {}) }
+    const p = pending[field]
+    if (!p) return { ok: false, reason: '该条目已处理' }
+    delete pending[field]
+    if (action === 'accept') {
+      const patch: CrmRow = { updated_at: Date.now() }
+      let customFields: Record<string, unknown> = {}
+      try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+      if (ENRICH_FORMAL_COLUMNS.has(field)) patch[field] = p.value
+      else customFields[field] = p.value
+      patch.custom_fields = JSON.stringify(customFields)
+      const fields = { ...(meta.fields || {}) }
+      fields[field] = { source: 'ai', confidence: p.confidence, at: Date.now(), evidence: p.evidence }
+      patch.enrich_meta = JSON.stringify({ fields, pending })
+      this.update('account', accountId, patch)
+      this.logActivity('account', accountId, 'info_accepted', `人工采纳 AI 填充「${field}」= ${p.value}`)
+      this.logAutoConfirm('account', accountId, 'info_accept', p.confidence, `采纳 ${field}=${p.value}`, 'applyInfoField')
+      return { ok: true }
+    }
+    this.update('account', accountId, { enrich_meta: JSON.stringify({ fields: meta.fields || {}, pending }), updated_at: Date.now() })
+    this.logActivity('account', accountId, 'info_rejected', `人工放弃 AI 填充「${field}」`)
+    this.logAutoConfirm('account', accountId, 'info_reject', p.confidence, `放弃 ${field}=${p.value}`, 'applyInfoField')
+    return { ok: true }
+  }
+
+  /** 批量按微信会话查 account（灵感信箱徽章用，避免 N+1） */
+  accountsBySessions(sessionIds: string[]): Record<string, { id: number; name: string }> {
+    const ids = Array.from(new Set((sessionIds || []).filter(Boolean)))
+    if (!ids.length) return {}
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.all(`SELECT id, name, session_id FROM account WHERE session_id IN (${placeholders})`, ids)
+    const out: Record<string, { id: number; name: string }> = {}
+    for (const r of rows) out[String(r.session_id)] = { id: Number(r.id), name: String(r.name || '') }
+    return out
+  }
+
+  /** 存量回填候选：已导入但核心字段缺失多的客户（按导入时间倒序） */
+  enrichCandidates(limit: number): CrmRow[] {
+    const rows = this.all('SELECT * FROM account WHERE session_id IS NOT NULL AND session_id <> \'\' ORDER BY imported_at DESC, id DESC LIMIT 200')
+    const coreFields = ['company', 'phone', 'needs', 'budget', 'intent_model']
+    return rows.filter((r) => {
+      let customFields: Record<string, unknown> = {}
+      try { customFields = JSON.parse(String(r.custom_fields || '{}')) } catch { customFields = {} }
+      const missing = coreFields.filter((f) => {
+        const v = ENRICH_FORMAL_COLUMNS.has(f) ? r[f] : customFields[f]
+        return v == null || String(v).trim() === ''
+      })
+      return missing.length >= 3
+    }).slice(0, Math.max(1, limit))
+  }
+
   aliasLookup(alias: string): CrmRow | null {
     const r = this.all('SELECT * FROM alias_map WHERE alias = ?', [alias])
     return r.length ? r[0] : null
@@ -661,7 +869,7 @@ class CrmDbService {
   saveFieldMeta(meta: CrmRow): number { return this.create('crm_field_meta', meta) }
 
   // ─── 确认中心队列 ─────────────────────────────────────────────────────────
-  reviewQueues(): { allocations: CrmRow[]; logistics: CrmRow[]; payments: CrmRow[]; invoices: CrmRow[] } {
+  reviewQueues(): { allocations: CrmRow[]; logistics: CrmRow[]; payments: CrmRow[]; invoices: CrmRow[]; infoPending: CrmRow[] } {
     return {
       // JOIN 支付记录带来源（群/时间/原始内容），供确认卡片核对"这笔钱哪来的"
       allocations: this.all(`SELECT al.*, pr.group_id AS src_group_id, pr.pay_time AS src_time, pr.raw_content AS src_raw
@@ -669,7 +877,9 @@ class CrmDbService {
         WHERE al.status = 'pending' ORDER BY al.id`),
       logistics: this.unlinkedLogistics(),
       payments: this.all('SELECT * FROM payment_record WHERE needs_review = 1 ORDER BY id'),
-      invoices: this.all("SELECT * FROM invoice WHERE status = 'pre_issue' ORDER BY id")
+      invoices: this.all("SELECT * FROM invoice WHERE status = 'pre_issue' ORDER BY id"),
+      // 信息待确认：account.enrich_meta.pending 派生（AI 填充低置信字段人工裁决）
+      infoPending: this.infoPendingQueue()
     }
   }
 
@@ -776,7 +986,16 @@ class CrmDbService {
            WHERE c2.account_id = a.id AND al.status = 'confirmed') AS credited_total
       FROM account a ORDER BY a.imported_at DESC, a.id DESC
     `)
-    return rows.map((r) => ({ ...r, credited_total: Number(r.credited_total || 0), contract_count: Number(r.contract_count || 0) }))
+    return rows.map((r) => {
+      let customFields: Record<string, unknown> = {}
+      try { customFields = JSON.parse(String(r.custom_fields || '{}')) } catch { customFields = {} }
+      let filled = 0
+      for (const f of ENRICH_FIELDS) {
+        const v = ENRICH_FORMAL_COLUMNS.has(f) ? r[f] : customFields[f]
+        if (v != null && String(v).trim() !== '') filled++
+      }
+      return { ...r, credited_total: Number(r.credited_total || 0), contract_count: Number(r.contract_count || 0), enrich_filled: filled, enrich_total: ENRICH_FIELDS.length }
+    })
   }
 
   // ─── 工作台 ───────────────────────────────────────────────────────────────

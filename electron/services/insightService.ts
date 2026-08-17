@@ -25,6 +25,7 @@ import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
 import { crmDbService } from './crmDbService'
+import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
 import { onNewMessage as actionStageClassifier } from './salesActionEngine'
 import {
@@ -1907,6 +1908,8 @@ ${afterText}
 
       // AI 见解判定出意向阶段 → 自动导入 CRM（幂等；了解/比价/决策/成交=有意向）
       if (finalSalesStage) crmImported = this.importIntentCustomerToCrm(sessionId, resolvedDisplayName, finalSalesStage)
+      // 导入成功 → AI 自动填充客户信息（enqueue 串行；enrichCustomer 内部不 enqueue）
+      if (crmImported) void enqueueSalesTask(() => enrichCustomer(sessionId, resolvedDisplayName).then(() => undefined))
 
       const insightNotificationEnabled = this.config.get('aiInsightNotificationEnabled') !== false
       if (insightNotificationEnabled) {

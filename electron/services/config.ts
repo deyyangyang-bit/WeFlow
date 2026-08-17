@@ -132,6 +132,14 @@ interface ConfigSchema {
   crmAutoConfirmThreshold: number
   /** 发票自动关联后是否自动生成开票信息单（默认关，需合同含 tax_no） */
   crmAutoConfirmInvoiceDocgen: boolean
+  /** CRM 客户信息 AI 自动填充总开关（默认开） */
+  crmEnrichEnabled: boolean
+  /** 自动填充：进 pending 人工队列的置信下限 0-1（默认 0.7，低于直接丢弃） */
+  crmEnrichThreshold: number
+  /** 自动填充：直接写入的置信阈值 0-1（默认 0.85，[threshold, autoApply) 进 pending） */
+  crmEnrichAutoApply: number
+  /** 自动填充：单次存量回填客户数上限（默认 20，控 token 成本） */
+  crmEnrichBackfillLimit: number
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */
@@ -277,6 +285,10 @@ export class ConfigService {
       aiInsightContextCount: 40,
       aiInsightSocialContextCount: 3,
       crmInternalList: ['库叉', '文件传输助手'],
+      crmEnrichEnabled: true,
+      crmEnrichThreshold: 0.7,
+      crmEnrichAutoApply: 0.85,
+      crmEnrichBackfillLimit: 20,
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,

@@ -10,6 +10,7 @@ import { setCrmParseConfig, setPostScanHook, startCrmParseScheduler, scanNow } f
 import { generateDoc, ensureTemplates } from './crmDocGenService'
 import { enqueueSalesTask } from './salesQueue'
 import { setAutoConfirmConfig, setDocgenRunner, runAutoConfirmNow, startAutoConfirmScheduler, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
+import { setEnrichConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
 import { insightProfileService } from './insightProfileService'
@@ -35,6 +36,16 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     }
   })
   setDocgenRunner((type, recordId) => generateDoc(type, recordId))
+  // 客户信息自动填充装配：config 注入（阈值/开关在 enrichCustomer 内读取）
+  setEnrichConfig({
+    get: (k) => {
+      if (k === 'crmEnrichEnabled') return config.get('crmEnrichEnabled')
+      if (k === 'crmEnrichThreshold') return config.get('crmEnrichThreshold')
+      if (k === 'crmEnrichAutoApply') return config.get('crmEnrichAutoApply')
+      if (k === 'crmEnrichBackfillLimit') return config.get('crmEnrichBackfillLimit')
+      return undefined
+    }
+  })
   // 扫完立刻触发（fire-and-forget；enqueue 串行 + runAutoConfirmNow 内置批前快照）
   setPostScanHook(() => { void enqueueSalesTask(() => runAutoConfirmNow()) })
   startAutoConfirmScheduler()
@@ -48,6 +59,16 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:review:queues', async () => crmDbService.reviewQueues())
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
   ipcMain.handle('crm:customers', async () => crmDbService.customers())
+  // 客户信息自动填充：单客手动补全 / 存量回填（enqueue 串行；引擎内部不 enqueue）
+  ipcMain.handle('crm:enrich:run', async (_, sessionId: string, displayName?: string) =>
+    enqueueSalesTask(() => enrichCustomer(String(sessionId || ''), String(displayName || ''), { config })))
+  ipcMain.handle('crm:enrich:backfill', async () => enqueueSalesTask(() => backfillEnrich()))
+  // 信息待确认队列人工裁决（accept 写入 / reject 清除）
+  ipcMain.handle('crm:infoQueue:apply', async (_, accountId: number, field: string, action: 'accept' | 'reject') =>
+    crmDbService.applyInfoField(Number(accountId), String(field || ''), action))
+  // 批量会话→客户映射（灵感信箱 CRM 状态徽章）
+  ipcMain.handle('crm:accounts:bySessions', async (_, sessionIds: string[]) =>
+    crmDbService.accountsBySessions(Array.isArray(sessionIds) ? sessionIds : []))
   // 客户档案一屏：销售画像 + 阶段 + 见解 + 待办 + 合同/回款 + AI 下一步建议
   ipcMain.handle('crm:customer:profile', async (_, sessionId: string) => {
     if (!sessionId) return { success: false, error: 'sessionId 不能为空' }

@@ -45,6 +45,8 @@ import { insightService } from './services/insightService'
 import { insightRecordService } from './services/insightRecordService'
 import { insightProfileService } from './services/insightProfileService'
 import { judgeAndImportCrmCustomer, backfillImportFromInsightRecords, collectInternalGroupMembers } from './services/crmImportService'
+import { enrichCustomer } from './services/crmEnrichService'
+import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
@@ -2099,7 +2101,11 @@ function registerIpcHandlers() {
         const record = insightProfileService.getProfileRecord(payload.sessionId)
         if (record) {
           const judge = await judgeAndImportCrmCustomer(record, configService)
-          if (judge.imported) result.message = `${result.message || 'AI 画像已生成'}。已自动导入 CRM 客户（${judge.stage ? judge.stage + '，' : ''}${judge.reason || '有意向'}）`
+          if (judge.imported) {
+            result.message = `${result.message || 'AI 画像已生成'}。已自动导入 CRM 客户（${judge.stage ? judge.stage + '，' : ''}${judge.reason || '有意向'}）`
+            // 导入成功 → AI 自动填充客户信息（enqueue 串行）
+            void enqueueSalesTask(() => enrichCustomer(payload.sessionId, record.displayName).then(() => undefined))
+          }
         }
       } catch (e) {
         salesLog('WARN', `[CrmImport] 画像后导入失败 ${payload.sessionId}: ${e}`)
