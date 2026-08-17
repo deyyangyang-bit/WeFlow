@@ -1021,6 +1021,38 @@ class CrmDbService {
     })
   }
 
+  // ─── 统计概览（工作台可视化面板）──────────────────────────────────────────
+  /** 工作台概览：总量 + 近 8 周到款趋势 + 客户阶段分布 + 合同管道（前端 ECharts 渲染） */
+  statsOverview(): CrmRow {
+    const customers = Number(this.all('SELECT COUNT(*) AS n FROM account')[0]?.n ?? 0)
+    const active = this.all("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS n FROM contract WHERE status IN ('pending_sign','signed')")[0]
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const monthPaid = Number(this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE status = 'confirmed' AND confirmed_at >= ?", [monthStart])[0]?.s ?? 0)
+    const q = this.reviewQueues()
+    const pendingReview = q.allocations.length + q.logistics.length + q.payments.length + q.invoices.length + q.infoPending.length
+    // 近 8 周到款趋势（周一为一周起点）
+    const weekMs = 7 * 24 * 3600 * 1000
+    const thisMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7)).getTime()
+    const paidWeekly: Array<{ week: string; amount: number }> = []
+    for (let i = 7; i >= 0; i--) {
+      const start = thisMonday - i * weekMs
+      const r = this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE status = 'confirmed' AND confirmed_at >= ? AND confirmed_at < ?", [start, start + weekMs])
+      const d = new Date(start)
+      paidWeekly.push({ week: `${d.getMonth() + 1}/${d.getDate()}`, amount: Number(r[0]?.s ?? 0) })
+    }
+    const stageDist = this.all("SELECT COALESCE(sales_stage,'') AS stage, COUNT(*) AS count FROM account GROUP BY sales_stage ORDER BY count DESC")
+      .map((r) => ({ stage: String(r.stage || 'unknown'), count: Number(r.count) }))
+    const pipeline = this.all('SELECT status, COUNT(*) AS count, COALESCE(SUM(amount),0) AS amount FROM contract GROUP BY status')
+      .map((r) => ({ status: String(r.status), count: Number(r.count), amount: Number(r.amount) }))
+    return {
+      customers,
+      activeContractCount: Number(active?.n ?? 0),
+      activeContractAmount: Number(active?.s ?? 0),
+      monthPaid, pendingReview, paidWeekly, stageDist, pipeline
+    }
+  }
+
   // ─── 工作台 ───────────────────────────────────────────────────────────────
   workbench(): CrmRow[] {
     const contracts = this.all('SELECT * FROM contract ORDER BY id DESC LIMIT 200')

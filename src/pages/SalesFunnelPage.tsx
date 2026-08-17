@@ -2,8 +2,15 @@
  * SalesFunnelPage.tsx —— 销售漏斗：阶段分布 + 转化率 + 近 30 天意向标记趋势
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
+import ReactECharts from 'echarts-for-react'
 import './SalesFunnelPage.scss'
+
+// 漏斗阶段 → CRM 客户列表阶段筛选（下钻深链）
+const FUNNEL_TO_CRM_LABEL: Record<string, string> = {
+  了解: '已沟通', 比价: '已报价', 决策: '谈判中', 成交: '已成交'
+}
 
 interface FunnelData {
   stageDistribution: Array<{ stage: string; count: number }>
@@ -26,6 +33,7 @@ const STAGE_COLORS: Record<string, string> = {
 }
 
 export default function SalesFunnelPage() {
+  const navigate = useNavigate()
   const [data, setData] = useState<FunnelData | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -61,6 +69,32 @@ export default function SalesFunnelPage() {
       return { ...n, rate }
     })
   }, [normalized])
+
+  // ECharts 真漏斗（点击阶段 → 下钻 CRM 客户列表按该阶段筛选）
+  const funnelOption = useMemo(() => {
+    if (!conversion.length) return null
+    return {
+      tooltip: { trigger: 'item' as const, formatter: '{b}: {c} 人' },
+      series: [{
+        type: 'funnel', left: '12%', right: '12%', top: 12, bottom: 12,
+        minSize: '14%', maxSize: '100%', sort: 'none' as const, gap: 4,
+        label: { show: true, position: 'inside' as const, fontSize: 12, color: '#fff' },
+        itemStyle: { borderWidth: 0 },
+        emphasis: { label: { fontSize: 14 } },
+        data: conversion.map((n, i) => ({
+          name: n.stage, value: n.count,
+          itemStyle: { color: STAGE_COLORS[n.stage] },
+          label: { formatter: `${n.stage}  ${n.count} 人 · 转化 ${conversion[i]?.rate ?? 0}%` }
+        }))
+      }]
+    }
+  }, [conversion])
+  const funnelEvents = useMemo(() => ({
+    click: (p: any) => {
+      const label = FUNNEL_TO_CRM_LABEL[String(p?.name || '')]
+      if (label) navigate(`/crm?tab=customer&stage=${encodeURIComponent(label)}`)
+    }
+  }), [navigate])
 
   // 流失/未分类客户数（不参与漏斗形状，单独展示）
   const lostCount = useMemo(() => {
@@ -110,23 +144,14 @@ export default function SalesFunnelPage() {
             <div className="funnel-stat"><span className="funnel-stat__value">{lostCount}</span><span className="funnel-stat__label">流失</span></div>
           </div>
 
-          <div className="funnel-bars">
-            {conversion.map((n) => (
-              <div key={n.stage} className="funnel-bar">
-                <div className="funnel-bar__label">
-                  <span className="funnel-bar__name">{n.stage}</span>
-                  <span className="funnel-bar__count">{n.count}</span>
-                </div>
-                <div className="funnel-bar__track">
-                  <div
-                    className="funnel-bar__fill"
-                    style={{ width: `${n.count > 0 ? Math.max(4, (n.count / (normalized[0]?.count || 1)) * 100) : 0}%`, background: STAGE_COLORS[n.stage] }}
-                  />
-                </div>
-                <div className="funnel-bar__rate">转化率 {n.rate}%</div>
-              </div>
-            ))}
-          </div>
+          {funnelOption ? (
+            <div className="funnel-chart">
+              <ReactECharts option={funnelOption} style={{ height: 300 }} notMerge onEvents={funnelEvents} />
+              <div className="funnel-drill-hint">点击漏斗任一阶段 → 下钻 CRM 客户列表</div>
+            </div>
+          ) : (
+            <div className="funnel-empty">暂无阶段数据</div>
+          )}
           <div className="funnel-footnote">
             转化率为相对上一阶段的比例 · 成交 &gt; 决策说明部分客户直接标记成交（跳级）· 流失 {lostCount} 人 / 未分类 {unknownCount} 人未计入漏斗
           </div>

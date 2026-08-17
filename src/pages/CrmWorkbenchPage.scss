@@ -70,3 +70,26 @@
   &.crm { background: rgba(5, 150, 105, 0.1); color: #059669; }
 }
 .crm-timeline__text { color: #334155; word-break: break-all; }
+
+// ─── P3 可视化：统计卡 + 图表区 ─────────────────────────────────────────────
+.crm-stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0; }
+.crm-stat-card {
+  display: flex; flex-direction: column; gap: 2px; padding: 12px 14px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  &__value { font-size: 20px; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
+  &__label { font-size: 12px; color: #64748b; }
+  &--alert .crm-stat-card__value { color: #b45309; }
+}
+.crm-overview-charts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.crm-chart-box {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px;
+  h4 { font-size: 13px; color: #334155; margin: 0 0 4px; }
+}
+@media (max-width: 1100px) {
+  .crm-stats-row { grid-template-columns: repeat(2, 1fr); }
+  .crm-overview-charts { grid-template-columns: 1fr; }
+}
+
+// 漏斗下钻提示
+.funnel-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; }
+.funnel-drill-hint { text-align: center; font-size: 12px; color: #94a3b8; padding-bottom: 6px; }

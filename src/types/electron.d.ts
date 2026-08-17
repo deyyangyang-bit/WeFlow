@@ -1713,6 +1713,7 @@ export interface ElectronAPI {
     fieldMetaSave: (meta: unknown) => Promise<number>
     reviewQueues: () => Promise<any>
     workbench: () => Promise<any[]>
+    statsOverview: () => Promise<any>
     customers: () => Promise<any[]>
     enrichRun: (sessionId: string, displayName?: string) => Promise<any>
     manualSet: (accountId: number, field: string, value: string) => Promise<{ ok: boolean; reason?: string }>

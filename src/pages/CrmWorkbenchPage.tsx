@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Sparkles, Trash2, MessageCircle } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmWorkbenchPage.scss'
 
@@ -58,6 +59,40 @@ export default function CrmWorkbenchPage() {
   useEffect(() => { void fetchWorkbench() }, [fetchWorkbench])
   useEffect(() => { void fetchCustomers() }, [])
 
+  // ─── P3 可视化：统计概览 + 三图 ────────────────────────────────────────────
+  const [stats, setStats] = useState<any>(null)
+  const fetchStats = async () => {
+    try { setStats(await window.electronAPI.crm.statsOverview()) } catch { /* ignore */ }
+  }
+  useEffect(() => { void fetchStats() }, [])
+  const STAGE_LABEL_MAP: Record<string, string> = {
+    contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
+  }
+  const CONTRACT_STATUS_MAP: Record<string, string> = { pending_sign: '待签约', signed: '已签约', shipped: '已发货' }
+  const paidTrendOption = stats ? {
+    tooltip: { trigger: 'axis' as const },
+    grid: { left: 48, right: 16, top: 24, bottom: 24 },
+    xAxis: { type: 'category' as const, data: stats.paidWeekly.map((w: any) => w.week), axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value' as const, axisLabel: { fontSize: 11 } },
+    series: [{ type: 'bar', data: stats.paidWeekly.map((w: any) => w.amount), itemStyle: { color: '#16a34a', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 22 }]
+  } : null
+  const stageDistOption = stats ? {
+    tooltip: { trigger: 'item' as const },
+    series: [{
+      type: 'pie', radius: ['38%', '68%'], center: ['50%', '52%'],
+      label: { fontSize: 11 },
+      data: stats.stageDist.map((s: any) => ({ name: STAGE_LABEL_MAP[s.stage] || s.stage, value: s.count }))
+    }]
+  } : null
+  const pipelineOption = stats ? {
+    tooltip: { trigger: 'axis' as const, formatter: (ps: any) => { const p = ps[0]; const row = stats.pipeline[p.dataIndex]; return `${p.name}<br/>金额 ¥${Number(p.value).toLocaleString()}<br/>合同 ${row?.count ?? 0} 份` } },
+    grid: { left: 56, right: 16, top: 24, bottom: 24 },
+    xAxis: { type: 'category' as const, data: stats.pipeline.map((p: any) => CONTRACT_STATUS_MAP[p.status] || p.status), axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value' as const, axisLabel: { fontSize: 11 } },
+    series: [{ type: 'bar', data: stats.pipeline.map((p: any) => p.amount), itemStyle: { color: '#2563eb', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 34 }]
+  } : null
+
+
   const fetchCustomers = async () => {
     const rows = (await window.electronAPI.crm.customers()) || []
     setCustomers(rows)
@@ -75,6 +110,12 @@ export default function CrmWorkbenchPage() {
         const hit = rows.find((x: any) => Number(x.id) === id)
         if (hit) void openCustomer(hit)
       })
+    }
+    // 漏斗下钻深链：/crm?tab=customer&stage=已沟通
+    const stage = searchParams.get('stage')
+    if (t === 'customer' && stage) {
+      setTab('customers')
+      setStageFilter(stage)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
@@ -192,7 +233,7 @@ export default function CrmWorkbenchPage() {
     if (!ok) return
     const r = await window.electronAPI.crm.contractDelete(c.id)
     setNotice(r.ok ? `已删除合同「${c.name}」（含 ${r.removed ?? 0} 条子资源）` : `删除失败：${r.reason}`)
-    if (r.ok) { await fetchWorkbench(); if (selected?.id === c.id) setSelected(null) }
+    if (r.ok) { await fetchWorkbench(); void fetchStats(); if (selected?.id === c.id) setSelected(null) }
   }
 
   const deleteCustomer = async (c: any) => {
@@ -234,13 +275,13 @@ export default function CrmWorkbenchPage() {
   const ship = async (c: any) => {
     const r = await window.electronAPI.crm.contractShip(c.id)
     setNotice(r.ok ? '已发货' : `拒绝发货：${r.reason}${r.gap != null ? `，缺口 ${r.gap}` : ''}`)
-    await fetchWorkbench()
+    await fetchWorkbench(); void fetchStats()
   }
 
   const sign = async (c: any) => {
     const r = await window.electronAPI.crm.contractSign(c.id)
     setNotice(r.ok ? '已签约' : `签约失败：${r.reason}`)
-    if (r.ok) { await fetchWorkbench(); if (selected?.id === c.id) setSelected(null) }
+    if (r.ok) { await fetchWorkbench(); void fetchStats(); if (selected?.id === c.id) setSelected(null) }
   }
 
   const openQuotation = () => {
@@ -313,10 +354,25 @@ export default function CrmWorkbenchPage() {
           <button className={`crm-tab ${tab === 'contracts' ? 'active' : ''}`} onClick={() => setTab('contracts')}>合同 ({workbench.length})</button>
           <button className={`crm-tab ${tab === 'customers' ? 'active' : ''}`} onClick={() => void fetchCustomers().then(() => setTab('customers'))}>客户 ({customers.length})</button>
         </div>
-        <button className="crm-btn" onClick={() => (tab === 'contracts' ? void fetchWorkbench() : void fetchCustomers())}><RefreshCw size={14} /> 刷新</button>
+        <button className="crm-btn" onClick={() => { void fetchStats(); if (tab === 'contracts') void fetchWorkbench(); else void fetchCustomers() }}><RefreshCw size={14} /> 刷新</button>
         <button className="crm-btn" onClick={() => setShowNew((v) => !v)}><Plus size={14} /> 新建合同</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
+      {stats && (
+        <>
+          <div className="crm-stats-row">
+            <div className="crm-stat-card"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月已确认到款</span></div>
+            <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div>
+          </div>
+          <div className="crm-overview-charts">
+            <div className="crm-chart-box"><h4>近 8 周到款趋势</h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
+            <div className="crm-chart-box"><h4>客户阶段分布</h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
+            <div className="crm-chart-box"><h4>合同管道（金额）</h4>{pipelineOption && <ReactECharts option={pipelineOption} style={{ height: 190 }} notMerge />}</div>
+          </div>
+        </>
+      )}
       {showNew && (
         <div className="crm-new-form">
           <select value={newAccountId} onChange={(e) => {

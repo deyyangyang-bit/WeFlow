@@ -133,9 +133,16 @@ async function main(): Promise<void> {
   const candidates = crmDbService.enrichCandidates(10)
   ok('12c 回填候选只含缺失多的客户', candidates.some((c) => Number(c.id) === accId2) && !candidates.some((c) => Number(c.id) === accId))
 
-  // ── 13 字段定义一致性 ─────────────────────────────────────────────────────
-  ok('13a 正式列属于 ENRICH_FIELDS', [...ENRICH_FORMAL_COLUMNS].every((f) => (ENRICH_FIELDS as readonly string[]).includes(f)))
-  ok('13b 字段数 12', ENRICH_FIELDS.length === 12)
+  // ── 13 statsOverview（P3 可视化数据源）─────────────────────────────────────
+  const stats = crmDbService.statsOverview()
+  ok('13a 结构完整', typeof stats.customers === 'number' && Array.isArray(stats.paidWeekly) && Array.isArray(stats.stageDist) && Array.isArray(stats.pipeline))
+  ok('13b 近 8 周趋势', stats.paidWeekly.length === 8)
+  ok('13c 客户数含测试客户', stats.customers >= 2)
+  ok('13d pendingReview 非负', Number(stats.pendingReview) >= 0)
+
+  // ── 14 字段定义一致性 ─────────────────────────────────────────────────────
+  ok('14a 正式列属于 ENRICH_FIELDS', [...ENRICH_FORMAL_COLUMNS].every((f) => (ENRICH_FIELDS as readonly string[]).includes(f)))
+  ok('14b 字段数 12', ENRICH_FIELDS.length === 12)
 
   console.log(`\nENRICH RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
