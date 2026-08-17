@@ -20,7 +20,7 @@ interface AutoSummary {
 
 interface CrmState {
   workbench: any[]
-  queues: { allocations: any[]; logistics: any[]; payments: any[]; invoices: any[] }
+  queues: { allocations: any[]; logistics: any[]; payments: any[]; invoices: any[]; infoPending: any[] }
   products: any[]
   groups: any[]
   loading: boolean
@@ -40,7 +40,7 @@ interface CrmState {
 
 export const useCrmStore = create<CrmState>((set, get) => ({
   workbench: [],
-  queues: { allocations: [], logistics: [], payments: [], invoices: [] },
+  queues: { allocations: [], logistics: [], payments: [], invoices: [], infoPending: [] },
   products: [],
   groups: [],
   loading: false,

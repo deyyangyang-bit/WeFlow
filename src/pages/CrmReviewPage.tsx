@@ -2,6 +2,7 @@
  * CrmReviewPage.tsx —— 确认中心：归属待确认/物流待链接/到款待审核/发票待开
  */
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ClipboardCheck, RefreshCw, Radio, Sparkles, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmReviewPage.scss'
@@ -19,6 +20,19 @@ export default function CrmReviewPage() {
   const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
   const [running, setRunning] = useState(false) // 运行自动确认中
   const [showHistory, setShowHistory] = useState(false) // 自动确认历史展开
+
+  const navigate = useNavigate()
+  // AI 填充字段中文标签（与 ENRICH_FIELDS 对应）
+  const FIELD_LABELS: Record<string, string> = {
+    company: '公司', position: '职位', phone: '电话', industry: '行业', province: '省份', city: '城市',
+    needs: '需求', budget: '预算', intent_model: '意向型号', purchase_timeframe: '采购时间',
+    competitor: '竞品', price_sensitive: '价格敏感度'
+  }
+  const applyInfo = async (it: any, action: 'accept' | 'reject') => {
+    const r = await window.electronAPI.crm.infoQueueApply(Number(it.account_id), String(it.field), action)
+    setNotice(r.ok ? (action === 'accept' ? `已采纳「${FIELD_LABELS[it.field] || it.field}」` : '已放弃该条 AI 填充') : `失败：${r.reason}`)
+    await fetchQueues()
+  }
 
   const TYPE_LABELS: Record<string, string> = { logistics: '物流发货', payment: '货款认领', order: '订单截图' }
 
@@ -257,6 +271,21 @@ export default function CrmReviewPage() {
             </select>
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-info', i.id).then((r) => setNotice(r.ok ? `开票信息单：${r.path}` : '生成失败')) }}>开票信息单</button>
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-app', i.id).then((r) => setNotice(r.ok ? `开票申请单：${r.path}` : '生成失败')) }}>开票申请</button>
+          </div>
+        ))}
+      </section>
+
+      <section>
+        <h3>信息待确认（{queues.infoPending.length}）</h3>
+        {queues.infoPending.length === 0 && <div className="crm-card crm-card--empty">暂无 AI 填充的待确认信息（高置信字段已自动写入客户档案）</div>}
+        {queues.infoPending.map((it: any) => (
+          <div key={`${it.account_id}-${it.field}`} className="crm-card">
+            <span><strong>{it.account_name}</strong> · {FIELD_LABELS[it.field] || it.field} → {it.value}
+              <em className="crm-card__src">置信 {Math.round((it.confidence || 0) * 100)}%{it.evidence ? ` · 证据「${String(it.evidence).slice(0, 40)}」` : ''}</em>
+            </span>
+            <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
+            <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
+            <button className="crm-btn" onClick={() => navigate(`/crm?tab=customer&id=${it.account_id}`)}>查看档案</button>
           </div>
         ))}
       </section>

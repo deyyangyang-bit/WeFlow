@@ -89,6 +89,10 @@ export const CONFIG_KEYS = {
   CRM_AUTO_CONFIRM_ENABLED: 'crmAutoConfirmEnabled',
   CRM_AUTO_CONFIRM_THRESHOLD: 'crmAutoConfirmThreshold',
   CRM_AUTO_CONFIRM_INVOICE_DOCGEN: 'crmAutoConfirmInvoiceDocgen',
+  CRM_ENRICH_ENABLED: 'crmEnrichEnabled',
+  CRM_ENRICH_THRESHOLD: 'crmEnrichThreshold',
+  CRM_ENRICH_AUTO_APPLY: 'crmEnrichAutoApply',
+  CRM_ENRICH_BACKFILL_LIMIT: 'crmEnrichBackfillLimit',
 
   // 数据收集
 
@@ -1912,6 +1916,43 @@ export async function getCrmAutoConfirmInvoiceDocgen(): Promise<boolean> {
 // 设置发票自动开单开关
 export async function setCrmAutoConfirmInvoiceDocgen(enabled: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.CRM_AUTO_CONFIRM_INVOICE_DOCGEN, enabled)
+}
+
+// ─── CRM 客户信息自动填充（enrich）──────────────────────────────────────────
+// 获取自动填充总开关（默认开）
+export async function getCrmEnrichEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.CRM_ENRICH_ENABLED)
+  return value === undefined ? true : value === true
+}
+export async function setCrmEnrichEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_ENRICH_ENABLED, enabled)
+}
+// 获取进 pending 队列的置信下限（默认 0.7）
+export async function getCrmEnrichThreshold(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.CRM_ENRICH_THRESHOLD)
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.7
+}
+export async function setCrmEnrichThreshold(threshold: number): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_ENRICH_THRESHOLD, threshold)
+}
+// 获取直接写入的置信阈值（默认 0.85）
+export async function getCrmEnrichAutoApply(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.CRM_ENRICH_AUTO_APPLY)
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.85
+}
+export async function setCrmEnrichAutoApply(threshold: number): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_ENRICH_AUTO_APPLY, threshold)
+}
+// 获取单次存量回填客户数上限（默认 20）
+export async function getCrmEnrichBackfillLimit(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.CRM_ENRICH_BACKFILL_LIMIT)
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.floor(n)) : 20
+}
+export async function setCrmEnrichBackfillLimit(limit: number): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_ENRICH_BACKFILL_LIMIT, limit)
 }
 
 // 获取 HTTP API 自动启动状态

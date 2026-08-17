@@ -87,7 +87,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
 
       let insights: any[] = []
       try {
-        const r = insightRecordService.listRecords({ sessionId, limit: 5 })
+        const r = insightRecordService.listRecords({ sessionId, limit: 20 })
         insights = r.records || []
       } catch { /* ignore */ }
 

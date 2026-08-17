@@ -234,6 +234,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [crmAutoConfirmEnabled, setCrmAutoConfirmEnabled] = useState(true)
   const [crmAutoConfirmThreshold, setCrmAutoConfirmThreshold] = useState(0.8)
   const [crmAutoConfirmInvoiceDocgen, setCrmAutoConfirmInvoiceDocgen] = useState(false)
+  const [crmEnrichEnabled, setCrmEnrichEnabled] = useState(true)
+  const [crmEnrichThreshold, setCrmEnrichThreshold] = useState(0.7)
+  const [crmEnrichAutoApply, setCrmEnrichAutoApply] = useState(0.85)
+  const [crmEnrichBackfillLimit, setCrmEnrichBackfillLimit] = useState(20)
 
 
 
@@ -578,6 +582,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setCrmAutoConfirmEnabled(savedCrmAutoConfirmEnabled)
       setCrmAutoConfirmThreshold(savedCrmAutoConfirmThreshold)
       setCrmAutoConfirmInvoiceDocgen(savedCrmAutoConfirmInvoiceDocgen)
+
+      // CRM 客户信息自动填充
+      setCrmEnrichEnabled(await configService.getCrmEnrichEnabled())
+      setCrmEnrichThreshold(await configService.getCrmEnrichThreshold())
+      setCrmEnrichAutoApply(await configService.getCrmEnrichAutoApply())
+      setCrmEnrichBackfillLimit(await configService.getCrmEnrichBackfillLimit())
 
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
@@ -5068,6 +5078,92 @@ JSON 输出格式：
                 重置
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h2>CRM 客户信息自动填充</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>自动填充总开关</span>
+            <span className="setting-desc">客户导入 CRM 后，AI 自动从聊天/见解/画像提取公司、电话、需求、预算等 12 项信息填入档案（高置信直接写入，中置信进确认中心待你打勾）</span>
+          </div>
+          <div className="setting-control">
+            <label className="switch" htmlFor="crm-enrich-enabled-toggle">
+              <input
+                id="crm-enrich-enabled-toggle"
+                className="switch-input"
+                type="checkbox"
+                checked={crmEnrichEnabled}
+                onChange={async (e) => {
+                  const val = e.target.checked
+                  setCrmEnrichEnabled(val)
+                  await configService.setCrmEnrichEnabled(val)
+                  showMessage(val ? '已开启客户信息自动填充' : '已关闭客户信息自动填充', true)
+                }}
+              />
+              <span className="switch-slider" />
+            </label>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>直接写入阈值</span>
+            <span className="setting-desc">置信度 ≥ 该值的字段自动写入档案，越高越保守（建议 0.85）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="range" min="0.5" max="1" step="0.05"
+              value={crmEnrichAutoApply}
+              onChange={async (e) => {
+                const val = parseFloat(e.target.value)
+                setCrmEnrichAutoApply(val)
+                await configService.setCrmEnrichAutoApply(val)
+                showMessage(`直接写入阈值已设为 ${val.toFixed(2)}`, true)
+              }}
+              style={{ width: '160px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichAutoApply.toFixed(2)}</span>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>待确认下限</span>
+            <span className="setting-desc">介于「待确认下限」与「直接写入阈值」之间的字段进确认中心由你裁决，低于下限直接丢弃（建议 0.7）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="range" min="0.5" max="1" step="0.05"
+              value={crmEnrichThreshold}
+              onChange={async (e) => {
+                const val = parseFloat(e.target.value)
+                setCrmEnrichThreshold(val)
+                await configService.setCrmEnrichThreshold(val)
+                showMessage(`待确认下限已设为 ${val.toFixed(2)}`, true)
+              }}
+              style={{ width: '160px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichThreshold.toFixed(2)}</span>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>存量回填上限</span>
+            <span className="setting-desc">点「批量 AI 补全」时单次最多处理多少个老客户（控 AI 成本，建议 20）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="number" min="1" max="100" step="1"
+              value={crmEnrichBackfillLimit}
+              onChange={async (e) => {
+                const val = Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 20)))
+                setCrmEnrichBackfillLimit(val)
+                await configService.setCrmEnrichBackfillLimit(val)
+              }}
+              style={{ width: '80px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px' }}>个/次</span>
           </div>
         </div>
       </div>

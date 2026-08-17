@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, X } from 'lucide-react'
+import { CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, UserCheck, X } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import type {
   InsightRecord,
@@ -122,6 +122,8 @@ export default function InsightInboxPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [records, setRecords] = useState<InsightRecordSummary[]>([])
+  // 会话 → CRM 客户映射（已入 CRM 徽章 + 查看档案深链）
+  const [crmMap, setCrmMap] = useState<Record<string, { id: number; name: string }>>({})
   const [contacts, setContacts] = useState<InsightRecordContactFacet[]>([])
   const [keyword, setKeyword] = useState('')
   const [contactSearch, setContactSearch] = useState('')
@@ -177,6 +179,11 @@ export default function InsightInboxPage() {
       }
       setRecords(result.records)
       setContacts(result.contacts)
+      // 批量查 CRM 映射（失败不阻断列表渲染）
+      try {
+        const sids = Array.from(new Set((result.records || []).map((r) => r.sessionId).filter(Boolean)))
+        if (sids.length) setCrmMap((await window.electronAPI.crm.accountsBySessions(sids)) || {})
+      } catch { /* ignore */ }
       setStats({
         total: result.total,
         todayCount: result.todayCount,
@@ -348,6 +355,15 @@ export default function InsightInboxPage() {
                           <span className={`insight-stage-pill stage-${record.salesStage}`}>{record.salesStage}</span>
                         )}
                         <span className="insight-time">{formatRecordTime(record.createdAt)}</span>
+                        {crmMap[record.sessionId] && (
+                          <button
+                            className="insight-action-btn crm"
+                            onClick={() => navigate(`/crm?tab=customer&id=${crmMap[record.sessionId].id}`)}
+                            title={`已在 CRM：${crmMap[record.sessionId].name} · 查看档案`}
+                          >
+                            <UserCheck size={14} />
+                          </button>
+                        )}
                         <button className="insight-action-btn" onClick={() => openChat(record)} title="打开聊天">
                           <MessageSquare size={14} />
                         </button>
