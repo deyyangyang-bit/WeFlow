@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `1fd12d7`。
+> 基线 commit `d40cd4d`；最近提交 `abca441`。
 > `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **53/53**（含 quote_signal）、`crm-golden-test.ts` **39/39**（含报价信号）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
@@ -172,6 +172,15 @@
 
 ---
 
+## 2.11 三项体验优化（2026-08-17）
+
+- **行动卡深链**：今日行动卡客户名可点击 → `/crm?tab=customer&sid=<sessionId>` 直达客户 360 档案（深链协议新增 sid 参数，按微信会话定位；未导入客户给提示）
+- **销售数据备份**：备份页新增「销售数据」勾选项（默认开），`backupService.collectSalesData` 将 weflow-sales.db / weflow-crm.db / WeFlow-config.json / 见解 profiles+records / 群摘要记录打包进归档 sales-data/；备份前强制落盘（crmDbService.persistNow + salesDbService.flushNow）；恢复 = 退出 app 后覆盖回数据目录
+- **AI 准确率面板**：`crmDbService.aiAccuracyStats(days)` 聚合 auto_confirm_log + activity_log + quote_signal（AI 自动写入数/待确认采纳放弃/采纳率/手动修正与修正率/报价信号数/24h 回复率/待跟进数），工作台「📊 AI 准确率（近 7 天）」可折叠面板
+- 测试：crm-enrich-test 55/55
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -212,6 +221,8 @@
 | 34 | **客户 360 单屏视图** | CRM 客户 tab | `CrmWorkbenchPage.tsx`（字段卡+时间线+手改锁定+深链） | ✅ |
 | 35 | **CRM 可视化** | 工作台顶部 + 漏斗页 | `statsOverview` + ECharts 三图 + 真漏斗下钻 | ✅ |
 | 36 | **报价跟进 R7（事实驱动）** | 今日行动（私聊扫描自动） | `parseQuoteSignal` + `quote_signal` 表 + R7 规则 | ✅ |
+| 37 | **销售数据备份** | 备份页勾选项 | `backupService.collectSalesData` | ✅ |
+| 38 | **AI 准确率面板** | CRM 工作台 | `aiAccuracyStats` + 折叠面板 | ✅ |
 
 ---
 
