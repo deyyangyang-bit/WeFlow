@@ -27,6 +27,11 @@ let configRef: { get: (k: string) => unknown } | null = null
 export function setEnrichConfig(cfg: { get: (k: string) => unknown } | null): void {
   configRef = cfg
 }
+// 完整 ConfigService 注入（AI 调用需要 apiBaseUrl/apiKey 等全量键；configRef shim 只含 enrich 键）
+let aiConfigRef: ConfigService | null = null
+export function setEnrichAiConfig(cfg: ConfigService | null): void {
+  aiConfigRef = cfg
+}
 
 function isEnabled(): boolean { return Boolean(configRef?.get('crmEnrichEnabled') ?? true) }
 function thresholdOf(): number {
@@ -95,7 +100,7 @@ export interface EnrichResult {
 export async function enrichCustomer(sessionId: string, displayName: string, opts?: { config?: ConfigService }): Promise<EnrichResult> {
   if (!sessionId || sessionId.endsWith('@chatroom')) return { ok: false, reason: '非私聊会话' }
   if (!isEnabled()) return { ok: false, reason: '自动填充已关闭' }
-  const cfg = opts?.config ?? (configRef as ConfigService | null)
+  const cfg = opts?.config ?? aiConfigRef
   if (!cfg) return { ok: false, reason: '配置未装配' }
   if (!isAiConfigured(cfg)) return { ok: false, reason: 'AI 未配置' }
 
@@ -188,7 +193,10 @@ export async function backfillEnrich(limit?: number): Promise<{ processed: numbe
       const r = await enrichCustomer(sessionId, String(acc.name || ''))
       processed++
       if (r.ok && (r.updated?.length || 0) > 0) updated++
-      if (!r.ok) failed++
+      if (!r.ok) {
+        failed++
+        salesLog('WARN', `[CrmEnrich] 回填未更新 ${acc.name}: ${r.reason || '未知原因'}`)
+      }
     } catch (e) {
       failed++
       salesLog('WARN', `[CrmEnrich] 回填失败 ${acc.name}: ${e instanceof Error ? e.message : String(e)}`)

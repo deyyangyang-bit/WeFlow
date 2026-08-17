@@ -10,7 +10,7 @@ import { setCrmParseConfig, setPostScanHook, startCrmParseScheduler, scanNow } f
 import { generateDoc, ensureTemplates } from './crmDocGenService'
 import { enqueueSalesTask } from './salesQueue'
 import { setAutoConfirmConfig, setDocgenRunner, runAutoConfirmNow, startAutoConfirmScheduler, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
-import { setEnrichConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
+import { setEnrichConfig, setEnrichAiConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
 import { insightProfileService } from './insightProfileService'
@@ -36,7 +36,8 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     }
   })
   setDocgenRunner((type, recordId) => generateDoc(type, recordId))
-  // 客户信息自动填充装配：config 注入（阈值/开关在 enrichCustomer 内读取）
+  // 客户信息自动填充装配：enrich 配置 shim + 完整 config（AI 调用需要 apiBaseUrl/apiKey）
+  setEnrichAiConfig(config)
   setEnrichConfig({
     get: (k) => {
       if (k === 'crmEnrichEnabled') return config.get('crmEnrichEnabled')
