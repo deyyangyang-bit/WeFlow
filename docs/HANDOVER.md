@@ -1,8 +1,8 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `3ef6925`。
-> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**。
+> 基线 commit `d40cd4d`；最近提交 `5568b47`。
+> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
 >
@@ -122,7 +122,7 @@
 
 ## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
 
-> 主线：让 app 生成的单据与用户**真实销售模版** 1:1 复刻——报价单/销售合同直接拿真实 docx 注入 docxtemplater 标签（样式原样保留），开票申请单按 Excel 原样用 exceljs 重建（合并单元格 + 公式 + 合计大写/小写），甲方(客户)开票信息改为系统录入。新增测试 `scripts/crm-docgen-test.ts` **65/65**。
+> 主线：让 app 生成的单据与用户**真实销售模版** 1:1 复刻——报价单/销售合同直接拿真实 docx 注入 docxtemplater 标签（样式原样保留），开票申请单按 Excel 原样用 exceljs 重建（合并单元格 + 公式 + 合计大写/小写），甲方(客户)开票信息改为系统录入。新增测试 `scripts/crm-docgen-test.ts` **68/68**。
 
 - **真实模版**：`scripts/build-crm-templates.py`（python-docx，一次性）读用户真实样板副本（`/tmp/crm-tpl-inspect/`）→ 打标签 → `resources/crm-templates/{quotation,contract}.docx`（**提交进仓库**，随 `extraResources` 打包）。quotation：7列表格（序号/备注）+ `{customer}` 客户行 + 合计/含运费行 + 付款条款/footer 公司信息保留原样；contract：COOFORK-编号 + 行项目循环 + `合计人民币金额（大写）：{amount_cn}` + table1 甲方块 `{buyer_name/addr/bank/account/tax/phone}`（乙方固定）+ 售后保修附表保留
 - **新增 `invoice-app` doc 类型** → `buildInvoiceAppWorkbook`（exceljs）复刻「开票申请」样板 sheet（B:I 列）：标题 B3:I3/日期 B4:I4 合并居中；表头 r8；明细 r9+（商品名称 C:D 合并，总额 `=H{r}*G{r}` 公式，商品编码取 product.sku）；合计 r14（B14 大写 + C14:E14 合并=**中文大写文本**，G14 小写 + H14:I14 合并=`=SUM(I9:I末)` 公式）；r15/16 货款情况静态（款项来源默认 对公转账）；r17 汇款单位名称合并=buyer；r19 复核/填表人：杨青。列宽/宋体/边框按样板复刻
@@ -133,6 +133,17 @@
 - **数据装配**：合同 `no = COOFORK-{yyyymmdd}{id 补2位}`（date 取 sign_date||created_at）；报价单 `no = Q-{id}`；行项 单位默认 台、备注默认 空；**规格 = 显式 spec 文案优先**（样板「2吨\n550 黑黄 X1c-Li 48V15AH」原样，型号已含在文案内），无 spec 时 型号前置 + spec_summary 参数摘要；invoice-app 经 inv→contract→quotations→items 取明细（商品编码=product.sku），buyer=inv.buyer，tax_no=cf.tax_no
 - 新 npm script：`test:docgen`；`docs/HANDOVER.md` 本次同步
 - **坑**：exceljs 4.4 的 `ws.model.merges` 是**范围字符串数组**（`["B3:I3","C9:D9"]`），单测需按字符串解析，不是 `{top,left,bottom,right}` 对象；真实 docx 模版含图片（quotation 516KB），`python-docx` 只动段落/单元格文本，图片与样式原样保留
+
+## 2.8 今日行动分页 + 工程基线同步（2026-08-17）
+
+> 主线：今日行动信号卡片流分页（信号卡较高，10 条/页避免页面过长）；`tsx` 纳入 devDependencies（干净 clone 直接跑测试脚本）；`DEVELOPMENT.md` 入库（AI Agent 项目级开发规范）。
+
+- **今日行动分页**：`TodayActionPage.tsx` 信号卡片流 `PAGE_SIZE = 10`，底部上一页/下一页按钮 + 「n / m 页 · 共 N 条」信息栏（`.signal-pagination`）；切换筛选回到第 1 页；数据变化后 page 超范围自动钳制到最后一页，避免空页
+- **tsx 进 devDependencies**：交接文档承诺的 `npx tsx scripts/*.ts` 与 `npm run test:autoconfirm` / `npm run test:docgen` 在干净 clone 上可直接运行，无需临时联网拉包
+- **`DEVELOPMENT.md`（根目录）**：AI Agent 软件工程开发规范——先调研再编码、先复用再自研、代码/测试/文档同步完成、当前文档只描述当前真实状态、历史信息单独归档；`AGENTS.md` 必读清单引用本文件，`CLAUDE.md`（本地，gitignore）指向本文件
+- 文档同步：HANDOVER 头部最近提交引用、docgen 测试数（68 项）、功能清单第 31 行、AGENTS.md 对应 commit 与测试数
+
+---
 
 ## 3. 已交付功能清单
 
@@ -168,6 +179,7 @@
 | 28 | **销售漏斗** | 侧边栏「漏斗」 | `SalesFunnelPage` + `salesDbService.funnelStats` | ✅ |
 | 29 | **CRM 级联删除（自动备份）** | 工作台/确认中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
 | 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
+| 31 | **今日行动分页** | 今日行动信号卡片流底部 | `TodayActionPage.tsx`（`.signal-pagination`，10 条/页） | ✅ |
 
 ---
 
@@ -461,6 +473,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/MAC-KEY-FAQ.md` | Mac 密钥 FAQ |
 | `docs/产品库导入模板.csv` | 知识库导入模板 |
 | `AGENTS.md` | Agent 启动指南（本地，gitignore） |
+| `DEVELOPMENT.md` | AI Agent 软件工程开发规范（项目级开发规则） |
 | 微信文件 | `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md` |
 
 ---
