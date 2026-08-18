@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `abca441`。
+> 基线 commit `d40cd4d`；最近提交 `8107625`（2026-08-18 阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **53/53**（含 quote_signal）、`crm-golden-test.ts` **39/39**（含报价信号）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
@@ -534,6 +534,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/产品库导入模板.csv` | 知识库导入模板 |
 | `AGENTS.md` | Agent 启动指南（本地，gitignore） |
 | `docs/PLAN-CRM零操作改造.md` | CRM 零操作改造方案（已实施，含提交映射） |
+| `docs/HANDOVER-20260818-CRM零操作改造与产品库.md` | 2026-08-18 阶段交接（零操作改造/R7/三优化/产品库导入指引） |
 | `DEVELOPMENT.md` | AI Agent 软件工程开发规范（项目级开发规则） |
 | 微信文件 | `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md` |
 
