@@ -223,6 +223,7 @@
 | 36 | **报价跟进 R7（事实驱动）** | 今日行动（私聊扫描自动） | `parseQuoteSignal` + `quote_signal` 表 + R7 规则 | ✅ |
 | 37 | **销售数据备份** | 备份页勾选项 | `backupService.collectSalesData` | ✅ |
 | 38 | **AI 准确率面板** | CRM 工作台 | `aiAccuracyStats` + 折叠面板 | ✅ |
+| 39 | **产品库图片编辑** | CRM 产品库操作列 | 换图/删图（saveImage+image_path）+ 复制摘要嵌套展开 | ✅ |
 
 ---
 

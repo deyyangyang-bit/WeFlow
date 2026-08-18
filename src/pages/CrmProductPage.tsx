@@ -2,7 +2,7 @@
  * CrmProductPage.tsx —— 产品库（v8.1）：分类规格模版 + 三档价 + 变体 + AI 提取/描述
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Package, Upload, Plus, RefreshCw, Copy, Sparkles, Pencil, X, Tags } from 'lucide-react'
+import { Package, Upload, Plus, RefreshCw, Copy, Sparkles, Pencil, X, Tags, ImagePlus, Trash2 } from 'lucide-react'
 import * as XLSX from 'exceljs'
 import { useCrmStore } from '../stores/crmStore'
 import { mapProductMatrix } from '../utils/productImportMapper'
@@ -34,6 +34,7 @@ export default function CrmProductPage() {
   const [aiImg, setAiImg] = useState<string>('') // dataUrl for AI extract
   const aiFileRef = useRef<HTMLInputElement>(null)
   const imgFileRef = useRef<HTMLInputElement>(null)
+  const imgTargetRef = useRef(0) // 当前要换图的产品 id
 
   useEffect(() => { void fetchProducts() }, [fetchProducts])
 
@@ -120,8 +121,18 @@ export default function CrmProductPage() {
   }
 
   const copyRow = (p: ProductRow) => {
-    const specs = JSON.parse(String(p.specs || '{}')) as Record<string, string>
-    const text = [p.name, p.model && `型号:${p.model}`, `单价:¥${p.unit_price}`, p.material && `材质:${p.material}`, ...Object.entries(specs).map(([k, v]) => `${k}:${v}`)].filter(Boolean).join(' ')
+    const specs = JSON.parse(String(p.specs || '{}')) as Record<string, unknown>
+    // 嵌套对象展开为紧凑文本（避免 [object Object]），超长字段截断
+    const fmt = (v: unknown, limit = 8): string => {
+      if (v && typeof v === 'object') {
+        const entries = Object.entries(v as Record<string, unknown>)
+        const parts = entries.slice(0, limit).map(([k, x]) => `${k}:${fmt(x, limit)}`)
+        if (entries.length > limit) parts.push(`等${entries.length}项`)
+        return parts.join(' ')
+      }
+      return String(v ?? '')
+    }
+    const text = [p.name, p.model && `型号:${p.model}`, `单价:¥${p.unit_price}`, p.material && `材质:${p.material}`, ...Object.entries(specs).map(([k, v]) => `${k}:${fmt(v)}`)].filter(Boolean).join(' ')
     void navigator.clipboard.writeText(text)
     setNotice('已复制产品摘要')
   }
@@ -131,6 +142,34 @@ export default function CrmProductPage() {
     if (key === 'unit_price' || key === 'reference_price' || key === 'cost_price') patch[key] = parseFloat(value || '0') || 0
     else patch[key] = value
     void window.electronAPI.crm.update('product', p.id, patch).then(fetchProducts)
+  }
+
+  const changeImage = async (id: number, file: File) => {
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const dataUrl = String(reader.result || '')
+        const path = await window.electronAPI.crm.saveImage(dataUrl, 'product.jpg')
+        await window.electronAPI.crm.update('product', id, { image_path: path })
+        setImgCache((c) => ({ ...c, [id]: dataUrl }))
+        setNotice('图片已更新')
+        await fetchProducts()
+      } catch {
+        setNotice('图片保存失败，请重试')
+      }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const removeImage = async (id: number) => {
+    try {
+      await window.electronAPI.crm.update('product', id, { image_path: '' })
+      await fetchProducts() // 先刷新 products（image_path 已空）再清缓存，避免 useEffect 用旧 image_path 重载图片
+      setImgCache((c) => { const n = { ...c }; delete n[id]; return n })
+      setNotice('已删除图片')
+    } catch {
+      setNotice('删图失败，请重试')
+    }
   }
 
   const openSpecs = (p: ProductRow) => {
@@ -198,11 +237,19 @@ export default function CrmProductPage() {
                 <button className="crm-btn" title="复制" onClick={() => copyRow(p)}><Copy size={13} /></button>
                 <button className="crm-btn" title="AI描述" onClick={() => void aiDescRow(p)}><Sparkles size={13} /></button>
                 <button className="crm-btn" title="规格" onClick={() => openSpecs(p)}><Tags size={13} /></button>
+                <button className="crm-btn" title="换图" onClick={() => { imgTargetRef.current = p.id; imgFileRef.current?.click() }}><ImagePlus size={13} /></button>
+                {p.image_path && <button className="crm-btn" title="删图" onClick={() => void removeImage(p.id)}><Trash2 size={13} /></button>}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+
+      <input ref={imgFileRef} type="file" accept="image/*" hidden onChange={(e) => {
+        const f = e.target.files?.[0]
+        if (f) void changeImage(imgTargetRef.current, f)
+        e.target.value = ''
+      }} />
 
       {showNew && (
         <div className="crm-modal">

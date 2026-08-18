@@ -53,15 +53,22 @@
 - 备份页「销售数据」勾选（默认开）→ `backupService.collectSalesData` 打包 6 个文件进归档 `sales-data/`（备份前 crmDb.persistNow + salesDb.flushNow 强制落盘）
 - 恢复：退出 app 后覆盖回 userData
 
-## 3. 产品库导入（已备好，待执行）
+## 3. 产品库导入（2026-08-18 已执行）
 
-**用户 2026-08-18 整理了完整产品表，导入脚本与源文件已入库，等待执行：**
+**脚本与源表已入库，导入已执行完成：**
 - 脚本：`scripts/import-product-summary.py`（可重跑，整表替换）
 - 源文件：`resources/product-data/产品汇总表_库叉自产+外调车型.xlsx`（4 sheet：汇总对比 21 车型 / 自产详细参数 52 项 / 性能特点 / 外调明细）
-- **执行步骤**：① 停应用（数据库是 sql.js 内存模式，运行中写文件会被覆盖）② `python3 scripts/import-product-summary.py "resources/product-data/产品汇总表_库叉自产+外调车型.xlsx"` ③ 重启 `npm run dev`
+- **执行结果**：4 → 21 个产品（自产 6 / 外调 15），旧 4 条测试数据全部覆盖（T02C/X1c-Li/CBD 重复，X1-Li 并入 X1C-Li）；执行前 db 已备份至 `crm-backups/weflow-crm-before-product-import-*.db`
+- ⚠️ **脚本默认 db 路径是大写 `Application Support/WeFlow/weflow-crm.db`，实际是小写 `weflow`**，重跑必须显式传 `--db "/Users/yang/Library/Application Support/weflow/weflow-crm.db"`
+- **执行步骤**：① 停应用（数据库是 sql.js 内存模式，运行中写文件会被覆盖）② `python3 scripts/import-product-summary.py <xlsx> --db <db路径>` ③ 重启 `npm run dev`
 - **用户确认的口径**：X1-Li = X1C-Li 同一产品；**库叉自产价格=含税运，外调车型=裸车价不含税运**（已写入每产品 specs.价格口径 + description）；定制款价格 5500-6000（源表 5500-600 是笔误，脚本内已修正）
 - 映射：多规格价格（2T:620/3T:726…）→ `variants` JSON；「按车型报价(详询)」→ 价格留空；自产 6 车型的 52 项详细参数 → `specs` JSON（AI 报价选型直接引用）
-- 旧 4 条测试数据全部被覆盖（T02C/X1c-Li/CBD 重复，X1-Li 并入 X1C-Li）
+
+### 3.1 产品库图片编辑 + 复制摘要（2026-08-18，CrmProductPage.tsx）
+
+- **换图/删图**：操作列「换图」（ImagePlus）→ 选图 → `crm:file:saveImage` 存 `userData/crm-images/` → `crm:entity:update` 写 `image_path`；「删图」（Trash2，仅当有图时显示）→ `image_path` 置空。图片用 `Date.now()` 前缀命名不互覆；删图不删磁盘文件（无害残留）
+- ⚠️ 踩坑：删图后**先 `fetchProducts` 再清 `imgCache`**，否则 useEffect 拿旧 `image_path` 重载，图片「删不掉」（UI 假象，数据库已删成功）
+- **复制摘要**：specs 是嵌套 JSON（`参数`/`详细技术参数` 是对象），旧代码 `${v}` 输出 `[object Object]`；现递归展开 `k:v`，每对象最多 8 项 + `等N项` 收尾
 
 ## 4. 配置项（设置页可调）
 
@@ -78,7 +85,7 @@
 
 ## 6. 下一步待办（按优先级）
 
-1. **执行产品库导入**（§3 三步，10 分钟）→ 然后实测 AI 报价选型是否命中新产品
+1. **实测 AI 报价选型**：产品库已导入 21 个产品（§3），验证报价选型是否命中新产品
 2. **实测一周后看 AI 准确率面板**：修正率高 → 调高 crmEnrichAutoApply；采纳率低 → 调低
 3. 图片/文件报价识别（vision 通道 → quote_signal，补 R7 盲区）
 4. 发票金额自动解析 + 到款/归属队列合并（确认中心 P2）
