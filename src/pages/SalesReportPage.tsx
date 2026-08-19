@@ -3,12 +3,22 @@
  * 销售复盘页面：周报 / 月报（消息量统计）+ 周复盘（经营分析：谁热了/谁冷了/谁该放弃/下周重点）
  */
 
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { BarChart3, Calendar, RefreshCw, Trash2, Sparkles, Users, MessageSquare, TrendingUp, AlertCircle, Flame, Snowflake, Layers, UserX } from 'lucide-react'
+import { BarChart3, Calendar, RefreshCw, Trash2, Sparkles, Users, MessageSquare, TrendingUp, AlertCircle, Flame, Snowflake, Layers, UserX, EyeOff, SlidersHorizontal, X } from 'lucide-react'
 import { useSalesReportStore, type ReportStats, type WeeklyReviewStats } from '../stores/salesReportStore'
 import { Avatar } from '../components/Avatar'
 import './SalesReportPage.scss'
+
+interface ExcludeSession {
+  username: string
+  displayName: string
+  avatarUrl?: string
+}
+
+function sessionDisplayName(s: { username: string; displayName?: string }): string {
+  return s.displayName || s.username
+}
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
@@ -156,11 +166,22 @@ function ReviewSections({ stats }: { stats: WeeklyReviewStats }) {
 export default function SalesReportPage() {
   const {
     reports, currentReport, currentStats, currentReviewStats,
-    generating, error, periodType,
-    setPeriodType, generateReport, generateReview, fetchReports, viewReport, deleteReport
+    generating, error, periodType, excludedSessions,
+    setPeriodType, generateReport, generateReview, fetchReports, viewReport, deleteReport,
+    loadExcludedSessions, excludeContact, setExcludedSessions
   } = useSalesReportStore()
 
-  useEffect(() => { fetchReports() }, [fetchReports])
+  // ── 排除联系人弹窗 ──────────────────────────────────────────────────────────
+  const [showExcludeDialog, setShowExcludeDialog] = useState(false)
+  const [allSessions, setAllSessions] = useState<ExcludeSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [excludeSearch, setExcludeSearch] = useState('')
+  const [draftExcluded, setDraftExcluded] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    fetchReports()
+    loadExcludedSessions()
+  }, [fetchReports, loadExcludedSessions])
 
   const handleGenerate = useCallback(() => {
     generateReport()
@@ -169,6 +190,36 @@ export default function SalesReportPage() {
   const handleReview = useCallback(() => {
     generateReview()
   }, [generateReview])
+
+  const openExcludeDialog = useCallback(async () => {
+    setShowExcludeDialog(true)
+    setDraftExcluded(new Set(excludedSessions))
+    setExcludeSearch('')
+    if (allSessions.length > 0) return
+    setSessionsLoading(true)
+    try {
+      const result = await window.electronAPI.chat.getSessions()
+      if (result.success && result.sessions) {
+        const filtered = result.sessions
+          .filter((s) => {
+            const u = String(s.username || '')
+            if (!u || u.toLowerCase().includes('placeholder_foldgroup')) return false
+            if (u.endsWith('@chatroom') || u.startsWith('gh_')) return false
+            return true
+          })
+          .map((s) => ({ username: String(s.username), displayName: sessionDisplayName(s), avatarUrl: s.avatarUrl }))
+          .sort((a, b) => a.displayName.localeCompare(b.displayName, 'zh'))
+        setAllSessions(filtered)
+      }
+    } finally {
+      setSessionsLoading(false)
+    }
+  }, [allSessions.length, excludedSessions])
+
+  const saveExcluded = useCallback(async () => {
+    await setExcludedSessions([...draftExcluded])
+    setShowExcludeDialog(false)
+  }, [draftExcluded, setExcludedSessions])
 
   const isWeeklyReview = currentReport?.period_type === 'weekly_review'
 
@@ -212,6 +263,15 @@ export default function SalesReportPage() {
           >
             <Sparkles size={16} className={generating ? 'spinning' : ''} />
             {generating ? '生成中...' : '生成周复盘'}
+          </button>
+
+          <button
+            className="sr-btn sr-btn-exclude"
+            onClick={openExcludeDialog}
+          >
+            <SlidersHorizontal size={16} />
+            排除联系人
+            {excludedSessions.length > 0 && <span className="sr-btn-badge">{excludedSessions.length}</span>}
           </button>
         </div>
       </div>
@@ -304,6 +364,13 @@ export default function SalesReportPage() {
                             <Avatar src={c.avatarUrl} name={c.displayName} size={32} />
                             <span className="sr-top-name">{c.displayName}</span>
                             <span className="sr-top-count">{c.messageCount} 条</span>
+                            <button
+                              className="sr-top-exclude"
+                              title="从复盘中排除该联系人（同事/朋友）"
+                              onClick={() => excludeContact(c.sessionId)}
+                            >
+                              <EyeOff size={14} />
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -367,6 +434,75 @@ export default function SalesReportPage() {
           )}
         </div>
       </div>
+
+      {/* 排除联系人弹窗 */}
+      {showExcludeDialog && (
+        <div className="sr-exclude-mask" onClick={() => setShowExcludeDialog(false)}>
+          <div className="sr-exclude-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="sr-exclude-header">
+              <div>
+                <h3>排除联系人</h3>
+                <span className="sr-exclude-hint">同事/朋友等非销售关系会从周报/月报/周复盘的统计中剔除</span>
+              </div>
+              <button className="sr-exclude-close" onClick={() => setShowExcludeDialog(false)} title="关闭">
+                <X size={18} />
+              </button>
+            </div>
+
+            <input
+              className="sr-exclude-search"
+              placeholder="搜索联系人..."
+              value={excludeSearch}
+              onChange={(e) => setExcludeSearch(e.target.value)}
+            />
+
+            <div className="sr-exclude-list">
+              {sessionsLoading ? (
+                <div className="sr-empty-mini sr-exclude-tip">加载联系人...</div>
+              ) : (
+                (() => {
+                  const kw = excludeSearch.trim().toLowerCase()
+                  const shown = allSessions.filter(
+                    (s) => !kw || s.displayName.toLowerCase().includes(kw) || s.username.toLowerCase().includes(kw)
+                  )
+                  const sorted = [...shown].sort((a, b) => {
+                    const ae = draftExcluded.has(a.username) ? 1 : 0
+                    const be = draftExcluded.has(b.username) ? 1 : 0
+                    return be - ae // 已排除置顶
+                  })
+                  if (sorted.length === 0) {
+                    return <div className="sr-empty-mini sr-exclude-tip">没有匹配的联系人</div>
+                  }
+                  return sorted.map((s) => (
+                    <label key={s.username} className={`sr-exclude-item ${draftExcluded.has(s.username) ? 'excluded' : ''}`}>
+                      <Avatar src={s.avatarUrl} name={s.displayName} size={28} />
+                      <span className="sr-exclude-name">{s.displayName}</span>
+                      <input
+                        type="checkbox"
+                        checked={draftExcluded.has(s.username)}
+                        onChange={() => {
+                          setDraftExcluded((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(s.username)) next.delete(s.username)
+                            else next.add(s.username)
+                            return next
+                          })
+                        }}
+                      />
+                    </label>
+                  ))
+                })()
+              )}
+            </div>
+
+            <div className="sr-exclude-footer">
+              <span className="sr-exclude-count">已排除 {draftExcluded.size} 个联系人</span>
+              <button className="sr-btn" onClick={() => setShowExcludeDialog(false)}>取消</button>
+              <button className="sr-btn sr-btn-primary" onClick={saveExcluded} disabled={sessionsLoading}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

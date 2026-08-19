@@ -114,6 +114,8 @@ interface ConfigSchema {
   aiInsightFilterList: string[]
   /** AI 判定非客户（阶段=未知）后自动加入的黑名单，命中一律不触发 AI 见解 */
   aiInsightNonCustomerBlacklist: string[]
+  /** 销售复盘手动排除的联系人（同事/朋友等非销售关系），统计与经营分析一律剔除 */
+  reportExcludedSessions: string[]
   aiInsightWhitelistEnabled: boolean
   aiInsightWhitelist: string[]
   /** 活跃分析冷却时间（分钟），0 表示无冷却 */
@@ -287,6 +289,7 @@ export class ConfigService {
       aiInsightFilterMode: 'whitelist',
       aiInsightFilterList: [],
       aiInsightNonCustomerBlacklist: [],
+      reportExcludedSessions: [],
       aiInsightWhitelistEnabled: false,
       aiInsightWhitelist: [],
       aiInsightCooldownMinutes: 120,

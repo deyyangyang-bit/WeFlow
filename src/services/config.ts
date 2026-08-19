@@ -119,6 +119,7 @@ export const CONFIG_KEYS = {
   AI_INSIGHT_FILTER_MODE: 'aiInsightFilterMode',
   AI_INSIGHT_FILTER_LIST: 'aiInsightFilterList',
   AI_INSIGHT_NON_CUSTOMER_BLACKLIST: 'aiInsightNonCustomerBlacklist',
+  REPORT_EXCLUDED_SESSIONS: 'reportExcludedSessions',
   AI_INSIGHT_WHITELIST_ENABLED: 'aiInsightWhitelistEnabled',
   AI_INSIGHT_WHITELIST: 'aiInsightWhitelist',
   AI_INSIGHT_COOLDOWN_MINUTES: 'aiInsightCooldownMinutes',
@@ -2195,6 +2196,16 @@ export async function getAiInsightNonCustomerBlacklist(): Promise<string[]> {
 
 export async function setAiInsightNonCustomerBlacklist(list: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST, normalizeAiInsightFilterList(list))
+}
+
+// 销售复盘手动排除的联系人（同事/朋友等非销售关系），周报/月报/周复盘统计一律剔除
+export async function getReportExcludedSessions(): Promise<string[]> {
+  const value = await config.get(CONFIG_KEYS.REPORT_EXCLUDED_SESSIONS)
+  return normalizeAiInsightFilterList(value)
+}
+
+export async function setReportExcludedSessions(list: string[]): Promise<void> {
+  await config.set(CONFIG_KEYS.REPORT_EXCLUDED_SESSIONS, normalizeAiInsightFilterList(list))
 }
 
 // 兼容旧字段命名：内部已映射到新的黑白名单模式

@@ -106,6 +106,19 @@ function main(): void {
   ok('A4d 管道数排除 won/lost', distStats.pipelineTotal === 3)
   ok('A4e 活跃客户明细（本周有互动，10 天前不算本周）', distStats.activeCount === 3 && distStats.activeCustomers.length === 3)
 
+  // ── A5 排除名单：用户手动排除的联系人（同事/朋友）不进任何统计 ────────────
+  const exclCust = [
+    customer('wx_f1', 'quoted', 2),
+    customer('wx_f2', 'quoted', 35) // 本应触发冷
+  ]
+  const exclStats = computeWeeklyReviewStats(exclCust, {
+    ...intentOpts({ wx_f1: { now: 'quoted' } }),
+    excludedSessions: ['wx_f2']
+  })
+  ok('A5a 排除名单中的客户不进阶段分布', exclStats.stageCounts.quoted === 1)
+  ok('A5b 排除名单中的客户不算冷', exclStats.coldCount === 0)
+  ok('A5c 排除名单中的客户不计入管道数', exclStats.pipelineTotal === 1)
+
   // ── B 非客户过滤 ────────────────────────────────────────────────────────────
   const contactMessages = new Map<string, number>([
     ['wx_a', 100],  // 非客户，最高消息量 → 应被剔除
@@ -124,6 +137,12 @@ function main(): void {
   const sortMsgs = new Map<string, number>([['wx_x', 5], ['wx_y', 9], ['wx_z', 3]])
   const sortFiltered = filterCustomerSessions(sortMsgs, { wx_x: { id: 2, name: 'X' }, wx_y: { id: 3, name: 'Y' }, wx_z: { id: 4, name: 'Z' } }, new Map())
   ok('B5 topSessions 按消息量倒序', JSON.stringify(sortFiltered.topSessions) === JSON.stringify(['wx_y', 'wx_x', 'wx_z']))
+
+  // 排除名单：即使 account 命中也被剔除
+  const exclMsgs = new Map<string, number>([['wx_b', 50], ['wx_c', 10]])
+  const exclFiltered = filterCustomerSessions(exclMsgs, accountMap, profileMap, ['wx_b'])
+  ok('B6 排除名单中的会话即使 account 命中也被剔除', !exclFiltered.topSessions.includes('wx_b'))
+  ok('B7 排除后活跃客户数递减', exclFiltered.activeContacts === 1)
 
   // ── C intentBefore/intentHistory 集成冒烟（created_at 由 db 自动取 Date.now）────
   void (async () => {

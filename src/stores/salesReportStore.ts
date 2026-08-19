@@ -5,6 +5,20 @@
  */
 
 import { create } from 'zustand'
+import { getReportExcludedSessions, setReportExcludedSessions } from '../services/config'
+
+/** 排除名单本地过滤：Top 列表剔除被排除会话，活跃客户数同步递减（精确值下次生成时后端重算） */
+function filterStatsByExcluded(stats: ReportStats | null, excluded: string[]): ReportStats | null {
+  if (!stats) return null
+  const set = new Set(excluded)
+  const removed = stats.topContacts.filter((c) => set.has(c.sessionId)).length
+  if (removed === 0) return stats
+  return {
+    ...stats,
+    activeContacts: Math.max(0, stats.activeContacts - removed),
+    topContacts: stats.topContacts.filter((c) => !set.has(c.sessionId))
+  }
+}
 
 export interface ReportRecord {
   id: number
@@ -52,6 +66,8 @@ interface SalesReportState {
   generating: boolean
   error: string | null
   periodType: 'week' | 'month'
+  /** 手动排除的会话名单（同事/朋友等），复盘统计剔除 */
+  excludedSessions: string[]
 
   setPeriodType: (type: 'week' | 'month') => void
   generateReport: () => Promise<void>
@@ -59,6 +75,9 @@ interface SalesReportState {
   fetchReports: () => Promise<void>
   viewReport: (id: number) => void
   deleteReport: (id: number) => Promise<void>
+  loadExcludedSessions: () => Promise<void>
+  excludeContact: (sessionId: string) => Promise<void>
+  setExcludedSessions: (list: string[]) => Promise<void>
 }
 
 export const useSalesReportStore = create<SalesReportState>((set, get) => ({
@@ -69,6 +88,7 @@ export const useSalesReportStore = create<SalesReportState>((set, get) => ({
   generating: false,
   error: null,
   periodType: 'week',
+  excludedSessions: [],
 
   setPeriodType: (type) => set({ periodType: type }),
 
@@ -159,5 +179,42 @@ export const useSalesReportStore = create<SalesReportState>((set, get) => ({
     } catch (e) {
       console.error('[SalesReportStore] deleteReport error:', e)
     }
+  },
+
+  loadExcludedSessions: async () => {
+    try {
+      const list = await getReportExcludedSessions()
+      set({ excludedSessions: list })
+    } catch (e) {
+      console.error('[SalesReportStore] loadExcludedSessions error:', e)
+    }
+  },
+
+  excludeContact: async (sessionId) => {
+    const current = get().excludedSessions
+    if (current.includes(sessionId)) return
+    const next = Array.from(new Set([...current, sessionId]))
+    try {
+      await setReportExcludedSessions(next)
+    } catch (e) {
+      console.error('[SalesReportStore] excludeContact save error:', e)
+    }
+    set({
+      excludedSessions: next,
+      currentStats: filterStatsByExcluded(get().currentStats, next)
+    })
+  },
+
+  setExcludedSessions: async (list) => {
+    const next = Array.from(new Set(list.filter(Boolean)))
+    try {
+      await setReportExcludedSessions(next)
+    } catch (e) {
+      console.error('[SalesReportStore] setExcludedSessions save error:', e)
+    }
+    set({
+      excludedSessions: next,
+      currentStats: filterStatsByExcluded(get().currentStats, next)
+    })
   }
 }))

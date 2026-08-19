@@ -75,16 +75,28 @@ function stageToCn(en: string): string {
   return STAGE_EN_TO_CN[en] || en
 }
 
+/** 读取用户手动排除的会话名单（同事/朋友等非销售关系），去空格规范化 */
+function getExcludedSessions(config: ConfigService | null): string[] {
+  if (!config) return []
+  const raw = config.get('reportExcludedSessions')
+  return Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : []
+}
+
 /**
  * 纯函数：从「周期内消息会话」中筛出客户会话（命中 CRM account 或 AI 画像 customer_profile）。
  * 过滤掉家人/同事/快递员等非客户的高消息量会话，避免 Top 互动排行失真。
+ * excludedSessions：用户手动排除名单（同事/朋友），命中一律剔除。
  */
 export function filterCustomerSessions(
   contactMessages: Map<string, number>,
   accountMap: Record<string, { id: number; name: string }>,
-  profileMap: Map<string, CustomerProfile>
+  profileMap: Map<string, CustomerProfile>,
+  excludedSessions: string[] = []
 ): { activeContacts: number; topSessions: string[] } {
-  const customerSessions = [...contactMessages.entries()].filter(([sid]) => accountMap[sid] || profileMap.has(sid))
+  const excluded = new Set(excludedSessions.map((s) => String(s).trim()).filter(Boolean))
+  const customerSessions = [...contactMessages.entries()].filter(
+    ([sid]) => !excluded.has(sid) && (accountMap[sid] || profileMap.has(sid))
+  )
   return {
     activeContacts: customerSessions.length,
     topSessions: customerSessions
@@ -105,9 +117,11 @@ export function computeWeeklyReviewStats(
     weekStartSec: number
     getIntentLatest: (sessionId: string) => { stage?: string } | undefined
     getIntentBefore: (sessionId: string, ts: number) => { stage?: string } | undefined
+    excludedSessions?: string[]
   }
 ): WeeklyReviewStats {
   const { nowSec, weekStartSec, getIntentLatest, getIntentBefore } = opts
+  const excluded = new Set((opts.excludedSessions || []).map((s) => String(s).trim()).filter(Boolean))
   const stageCounts: Record<string, number> = {}
   const activeCustomers: string[] = []
   const hotCustomers: string[] = []
@@ -115,6 +129,8 @@ export function computeWeeklyReviewStats(
   const dropCandidates: string[] = []
 
   for (const c of customers) {
+    // 用户手动排除的联系人（同事/朋友）：不进任何统计
+    if (c.session_id && excluded.has(c.session_id)) continue
     const enStage = normalizeStage(c.stage)
     stageCounts[enStage] = (stageCounts[enStage] || 0) + 1
 
@@ -148,7 +164,9 @@ export function computeWeeklyReviewStats(
     }
   }
 
-  const pipelineTotal = customers.filter((c) => !['won', 'lost'].includes(normalizeStage(c.stage))).length
+  const pipelineTotal = customers.filter(
+    (c) => !excluded.has(c.session_id || '') && !['won', 'lost'].includes(normalizeStage(c.stage))
+  ).length
 
   return {
     pipelineTotal,
@@ -289,13 +307,13 @@ class SalesReportService {
         }
       }
 
-      // 4. 过滤非客户会话（命中 CRM account 或 AI 画像 customer_profile），再取 Top 10
+      // 4. 过滤非客户会话（命中 CRM account 或 AI 画像 customer_profile）+ 用户手动排除名单，再取 Top 10
       const accountMap = crmDbService.accountsBySessions([...contactMessages.keys()])
       const profileMap = new Map<string, CustomerProfile>()
       for (const p of salesDbService.customerAll()) {
         if (p.session_id) profileMap.set(p.session_id, p)
       }
-      const { activeContacts, topSessions } = filterCustomerSessions(contactMessages, accountMap, profileMap)
+      const { activeContacts, topSessions } = filterCustomerSessions(contactMessages, accountMap, profileMap, getExcludedSessions(this.config))
 
       // 5. 获取 Top N 联系人的显示名和头像（无客户会话则跳过查询）
       const topSessionIds = topSessions
@@ -387,12 +405,13 @@ class SalesReportService {
         return { success: false, error: '暂无客户数据，请先连接微信数据库' }
       }
 
-      // 统计（纯函数，可单测）：热/冷/放弃/阶段分布 + 明细
+      // 统计（纯函数，可单测）：热/冷/放弃/阶段分布 + 明细（用户手动排除名单一并剔除）
       const stats = computeWeeklyReviewStats(customers, {
         nowSec,
         weekStartSec,
         getIntentLatest: (sid) => salesDbService.intentGetLatest(sid),
-        getIntentBefore: (sid, ts) => salesDbService.intentBefore(sid, ts)
+        getIntentBefore: (sid, ts) => salesDbService.intentBefore(sid, ts),
+        excludedSessions: getExcludedSessions(this.config)
       })
 
       // 构建 AI prompt
