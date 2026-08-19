@@ -5,10 +5,11 @@
  * 状态机：待跟进 → 已跟进(AI) / 疑似跟进(待确认) / 逾期 / 手动完成 / 已忽略
  */
 
-import React, { useEffect, useState, useCallback } from 'react'
-import { Clock, Plus, Check, X, Calendar, Sparkles, Loader2, AlertTriangle, CheckCircle2, HelpCircle, Users } from 'lucide-react'
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
+import { Clock, Plus, Check, X, Calendar, Sparkles, Loader2, AlertTriangle, CheckCircle2, HelpCircle, Users, ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ExpandIcon } from 'lucide-react'
 import { useFollowUpStore } from '../stores/followUpStore'
 import type { FollowUpTask } from '../stores/followUpStore'
+import { groupFollowUpTasks } from '../utils/followUpGroup'
 import './FollowUpPage.scss'
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -55,6 +56,10 @@ export default function FollowUpPage() {
   const [scanResult, setScanResult] = useState<string | null>(null)
   const [batchRunning, setBatchRunning] = useState(false)
   const [batchResult, setBatchResult] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const PAGE_SIZE = 10
 
   useEffect(() => {
     if (filter === 'active') {
@@ -79,6 +84,23 @@ export default function FollowUpPage() {
       if (sa !== sb) return sa - sb
       return (b.priority_score || 0) - (a.priority_score || 0)
     })
+
+  // 同客户去重分组：同一 session 的多条待办合并为一组（主卡=最高优，其余折叠可展开）
+  const groups = useMemo(() => groupFollowUpTasks(displayTasks), [displayTasks])
+  // 分页：按去重后的组数切片，每页 10 组；数据变化后自动钳制回合法页
+  const pageCount = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
+  const curPage = Math.min(Math.max(1, page), pageCount)
+  const pageGroups = groups.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
+  useEffect(() => { if (page > pageCount) setPage(pageCount) }, [pageCount, page])
+
+  const toggleExpand = useCallback((key: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
 
   const handleScan = useCallback(async () => {
     setScanning(true)
@@ -137,6 +159,54 @@ export default function FollowUpPage() {
 
   const activeCount = tasks.filter(t => ['pending', 'suspected', 'overdue'].includes(t.status || '')).length
 
+  // 渲染单条任务行（主卡与折叠展开的 rest 共用）
+  const renderTaskRow = (task: FollowUpTask) => {
+    const statusCfg = STATUS_CONFIG[task.status || 'pending'] || STATUS_CONFIG.pending
+    return (
+      <div key={task.id} className={`fu-item status-${task.status || 'pending'}`}>
+        <div className="fu-item-main">
+          <div className="fu-item-top">
+            <span className="fu-status-badge" style={{ background: statusCfg.color }}>
+              {statusCfg.icon} {statusCfg.label}
+            </span>
+            <span className="fu-action-type">{ACTION_LABELS[task.action_type || task.trigger_type] || task.trigger_type}</span>
+            {task.confidence != null && task.confidence > 0 && (
+              <span className="fu-confidence">{Math.round(task.confidence * 100)}%</span>
+            )}
+          </div>
+          <div className="fu-item-title">{task.promise_summary || task.title}</div>
+          <div className="fu-item-meta">
+            {task.display_name && <span className="fu-customer">{task.display_name}</span>}
+            {task.due_at && (
+              <span className={`fu-due ${task.due_at < Date.now() && task.status === 'pending' ? 'overdue' : ''}`}>
+                <Calendar size={10} /> {formatDate(task.due_at)}
+              </span>
+            )}
+            <span className="fu-time">{formatTime(task.created_at)}</span>
+            {task.created_by === 'ai' && <span className="fu-ai-tag">AI</span>}
+          </div>
+        </div>
+        <div className="fu-item-actions">
+          {['pending', 'suspected', 'overdue'].includes(task.status || '') && (
+            <>
+              <button className="fu-action-btn confirm" onClick={() => handleConfirm(task.id!)} title="确认完成">
+                <Check size={14} />
+              </button>
+              <button className="fu-action-btn reject" onClick={() => handleReject(task.id!)} title="忽略">
+                <X size={14} />
+              </button>
+            </>
+          )}
+          {task.status === 'followed_ai' && (
+            <button className="fu-action-btn reject" onClick={() => handleReject(task.id!)} title="撤销AI判断">
+              <X size={14} /> 撤销
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="follow-up-page">
       <div className="fu-header">
@@ -185,57 +255,45 @@ export default function FollowUpPage() {
 
       <div className="fu-list">
         {loading && <div className="fu-loading">加载中...</div>}
-        {!loading && displayTasks.length === 0 && (
+        {!loading && groups.length === 0 && (
           <div className="fu-empty"><Clock size={32} /><p>暂无待办</p></div>
         )}
-        {!loading && displayTasks.map((task) => {
-          const statusCfg = STATUS_CONFIG[task.status || 'pending'] || STATUS_CONFIG.pending
+        {!loading && pageGroups.map((group) => {
+          const isExpanded = expanded.has(group.key)
+          const hasMore = group.rest.length > 0
           return (
-            <div key={task.id} className={`fu-item status-${task.status || 'pending'}`}>
-              <div className="fu-item-main">
-                <div className="fu-item-top">
-                  <span className="fu-status-badge" style={{ background: statusCfg.color }}>
-                    {statusCfg.icon} {statusCfg.label}
-                  </span>
-                  <span className="fu-action-type">{ACTION_LABELS[task.action_type || task.trigger_type] || task.trigger_type}</span>
-                  {task.confidence != null && task.confidence > 0 && (
-                    <span className="fu-confidence">{Math.round(task.confidence * 100)}%</span>
-                  )}
-                </div>
-                <div className="fu-item-title">{task.promise_summary || task.title}</div>
-                <div className="fu-item-meta">
-                  {task.display_name && <span className="fu-customer">{task.display_name}</span>}
-                  {task.due_at && (
-                    <span className={`fu-due ${task.due_at < Date.now() && task.status === 'pending' ? 'overdue' : ''}`}>
-                      <Calendar size={10} /> {formatDate(task.due_at)}
-                    </span>
-                  )}
-                  <span className="fu-time">{formatTime(task.created_at)}</span>
-                  {task.created_by === 'ai' && <span className="fu-ai-tag">AI</span>}
-                </div>
-              </div>
-              {/* 操作按钮 */}
-              <div className="fu-item-actions">
-                {['pending', 'suspected', 'overdue'].includes(task.status || '') && (
-                  <>
-                    <button className="fu-action-btn confirm" onClick={() => handleConfirm(task.id!)} title="确认完成">
-                      <Check size={14} />
-                    </button>
-                    <button className="fu-action-btn reject" onClick={() => handleReject(task.id!)} title="忽略">
-                      <X size={14} />
-                    </button>
-                  </>
-                )}
-                {task.status === 'followed_ai' && (
-                  <button className="fu-action-btn reject" onClick={() => handleReject(task.id!)} title="撤销AI判断">
-                    <X size={14} /> 撤销
+            <div key={group.key} className={`fu-group ${hasMore ? 'fu-group--multi' : ''}`}>
+              {renderTaskRow(group.main)}
+              {hasMore && (
+                <>
+                  <button className="fu-fold-toggle" onClick={() => toggleExpand(group.key)}>
+                    {isExpanded ? <ChevronDown size={12} /> : <ExpandIcon size={12} />}
+                    同客户还有 {group.rest.length} 条{isExpanded ? '，收起' : ''}
                   </button>
-                )}
-              </div>
+                  {isExpanded && (
+                    <div className="fu-group-rest">
+                      {group.rest.map(t => renderTaskRow(t))}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )
         })}
       </div>
+
+      {/* 分页：去重后每页 10 组 */}
+      {!loading && groups.length > PAGE_SIZE && (
+        <div className="fu-pagination">
+          <button className="fu-page-btn" disabled={curPage === 1} onClick={() => setPage(curPage - 1)} aria-label="上一页">
+            <ChevronLeft size={12} />
+          </button>
+          <span className="fu-page-info">{curPage} / {pageCount}</span>
+          <button className="fu-page-btn" disabled={curPage === pageCount} onClick={() => setPage(curPage + 1)} aria-label="下一页">
+            <ChevronRight size={12} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

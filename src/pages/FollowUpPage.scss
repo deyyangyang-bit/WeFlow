@@ -64,8 +64,45 @@
   .fu-error { padding: 8px 12px; background: rgba(231,76,60,0.06); color: #e74c3c; border-radius: 6px; font-size: 12px; margin-bottom: 12px; }
   .fu-scan-result { padding: 8px 12px; background: rgba(102,126,234,0.08); color: #667eea; border-radius: 6px; font-size: 12px; margin-bottom: 12px; }
 
+  .fu-pagination {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-top: 8px;
+    .fu-page-btn {
+      display: flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; padding: 0;
+      border: 1px solid var(--border-color, #e5e5e5); border-radius: 6px;
+      background: var(--card-bg, #fff); color: var(--text-secondary, #666); cursor: pointer;
+      &:hover:not(:disabled) { background: var(--stat-bg, #f0f0f0); }
+      &:disabled { opacity: 0.4; cursor: not-allowed; }
+    }
+    .fu-page-info {
+      font-size: 12px; font-weight: 600; color: var(--text-secondary, #888);
+      font-variant-numeric: tabular-nums; min-width: 42px; text-align: center;
+    }
+  }
+
   .fu-list {
     .fu-loading, .fu-empty { text-align: center; padding: 40px 0; color: var(--text-tertiary, #bbb); font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+    .fu-group {
+      &.fu-group--multi { margin-bottom: 8px; }
+
+      .fu-item { margin-bottom: 0; }
+
+      .fu-fold-toggle {
+        display: flex; align-items: center; gap: 4px;
+        margin: 6px 0 0 6px; padding: 2px 8px; border: none; background: none;
+        font-size: 11px; color: var(--primary-color, #4a9eff); cursor: pointer;
+        &:hover { text-decoration: underline; }
+      }
+
+      .fu-group-rest {
+        margin: 8px 0 0 12px; padding-left: 10px; border-left: 2px solid var(--border-color, #eee);
+        display: flex; flex-direction: column; gap: 8px;
+
+        .fu-item { background: var(--stat-bg, #f8f9fa); }
+      }
+    }
 
     .fu-item {
       display: flex; align-items: flex-start; justify-content: space-between;
