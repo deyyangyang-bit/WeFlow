@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `9a9fbaf`（2026-08-20 销售复盘改造：周复盘打通 + 非客户过滤 + 崩溃兜底，见 §2.14；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）。
+> 基线 commit `d40cd4d`；最近提交 `ed510df`（2026-08-20 复盘排除非销售联系人，见 §2.14；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -237,6 +237,7 @@
 - **2026-08-20 跟进待办页同客户去重 + 分页**（commit `95c9dd6`）：FollowUpPage（老页面）平铺同客户多条待办刷屏（真实库 6 客户各 2 条：urge_customer 催办 + rule_r1/r2 规则卡）。① 去重：同 `session_id` 合并为一组，主卡=最高优一条（全局已按 逾期>疑似>待跟进 + priority_score 排序，首见即最高），其余折叠「同客户还有 N 条」可展开逐条确认/忽略；无 session 手动待办独立成组不合并；② 分页：按去重后组数 **10 条/页**（prev/next + `N / M`），数据变化自动钳制回合法页；③ 纯函数 `src/utils/followUpGroup.ts`（`groupFollowUpTasks`）+ `scripts/followup-group-test.ts` **10/10**
 - **2026-08-20 AI 见解 24h 去重 + 非客户自动黑名单**（commit `f02b13c`）：① **数据源调查结论**——今日行动与灵感邮箱**同源**（都读 `insightRecordService`，JSON 落盘 `weflow-insight-records.json`），今日行动只取最近 24h 未读记录，与 `follow_up_task` 经 `getUnifiedSignals` 合并；② **24h 去重**：`INSIGHT_RECORD_DEDUP_MS` 12h→24h（同客户 24h 内不重复触发 AI 分析），`hasRecentRecord` 加 `sourceType==='insight'` 过滤——手动消息解析（`message_analysis`）不算「已分析过」，不阻塞后续自动 AI 见解；③ **非客户自动黑名单**：AI 输出【阶段=未知】→ `blacklistNonCustomer` 自动加入 `aiInsightNonCustomerBlacklist`（electron-store 持久化，与手动 whitelist/blacklist 名单完全独立）→ `isSessionAllowed` 先查黑名单硬屏蔽，不触发任何见解；④ **设置页可解除**：SettingsPage AI 见解 tab 底部展示黑名单（头像+名称+「解除」按钮），防 AI 误判永久沉默；前端 `src/services/config.ts` 加 `getAiInsightNonCustomerBlacklist`/`setAiInsightNonCustomerBlacklist`。新增 `scripts/insight-dedup-test.ts` **6/6**（a 24h 命中 / b message_analysis 不阻塞 / b2 混存命中 / c 黑名单读写 / d 与手动名单独立）
 - **2026-08-20 销售复盘改造**（commit `9a9fbaf`）：复盘页从「统计报表」升级为「经营分析 + 统计」双能力。**背景**：`generateWeeklyReview`（周复盘，PRD P1 重点）是后端孤岛——定时器每周日 20:00 自动落库，但前端 `sales.reviewGenerate` 已暴露从未调用；且 `weekly_review` 记录混入 reportList 被当「月报」展示、点开 `dailyMessageCounts.length` TypeError **整页白屏**。① **周复盘打通**：复盘页加「生成周复盘」按钮 + `weekly_review` 专属视图（管道/热/冷/放弃 4 统计卡 + 阶段分布条 + 热/冷/放弃明细列表 + AI 复盘正文），`electron.d.ts` 补 reviewGenerate 声明；② **热了改基线对比**：原「本周有新 intent 且阶段∈{quoted,negotiating,won}」无基线误报，现 `intentBefore`（salesDbService 新增，查上周最终阶段）对比——本周阶段前进才热（新进管道也算），后退/无变化/已成交/已流失不算；③ **修复中英混存漏判**：stage 中英混存（insightService 中文 / classifier 英文），原英文列表匹配中文 stage 永不命中，统一 `normalizeStage`（salesActionEngine 导出复用）；④ **非客户过滤**：`filterCustomerSessions` 纯函数，topContacts/活跃客户只留命中 CRM account 或 AI 画像的会话（剔除家人/同事），Top 客户名优先 CRM 客户名；⑤ **崩溃兜底**：`viewReport` 按 period_type 分派 + 结构校验，历史脏 `weekly_review` 仅保留报告头。统计纯函数化 `computeWeeklyReviewStats`/`filterCustomerSessions`。新增 `scripts/report-review-test.ts` **28/28**
+- **2026-08-20 复盘排除非销售联系人**（commit `ed510df`）：新增 `reportExcludedSessions` 配置（electron-store + 前端 config API `get/setReportExcludedSessions`），周报/月报/周复盘统计均剔除。背景：现有非客户过滤只剔「既非 CRM account 也无 AI 画像」的会话，同事/朋友被 AI 误打标建画像后仍混进复盘——排除名单是**人工兜底**，命中一律剔除。**两处生效**：`generate` 经 `filterCustomerSessions` 第四参剔除（activeContacts/Top 列表）；`computeWeeklyReviewStats` 循环顶部跳过（阶段分布/热/冷/放弃/管道数全部不含，pipelineTotal 曾漏已修）。**两个入口**：复盘页「排除联系人」弹窗（`chat.getSessions` 全量单聊过滤群聊/公众号，搜索 + 已排除置顶 + 保存）+ Top 互动客户每条「排除」快捷按钮（前端本地过滤 currentStats 不重复调 AI + 写配置）。`report-review-test.ts` 扩到 **33/33**（A5 排除不进任何统计 / B6 排除优先于 account 命中）
 
 ---
 
@@ -256,7 +257,7 @@
 | 10 | **AI 意向分析** | 画像卡片 + 自动扫描 | `salesIntentService.ts` | ✅ |
 | 11 | **跟进待办** | 侧边栏（已合并入今日行动） | `salesFollowUpService.ts` + `FollowUpPage.tsx` | ✅ |
 | 12 | **销售仪表盘** | `/dashboard`（原首页） | `SalesDashboardPage.tsx` | ✅ |
-| 13 | **销售复盘（周报/月报/周复盘）** | 侧边栏「复盘」 | `SalesReportPage.tsx` + `salesReportService.ts`（周复盘=热/冷/放弃经营分析，`9a9fbaf` 打通） | ✅ |
+| 13 | **销售复盘（周报/月报/周复盘）** | 侧边栏「复盘」 | `SalesReportPage.tsx` + `salesReportService.ts`（周复盘=热/冷/放弃经营分析，`9a9fbaf` 打通；排除同事/朋友等非销售联系人，`ed510df`） | ✅ |
 | 14 | **Windows 适配** | 打包配置 | koffi asarUnpack + dbPathService 多路径检测 | ✅ |
 | 15 | **v3 客户级去重** | 全量扫描 `runFullScan()` | 同客户多规则命中仅保留最高分一条 | ✅ |
 | 16 | **v3 R6 独立清理** | 首页折叠区 | R6 不入主队列 15 条，独立"待清理"视图 | ✅ |
