@@ -1,10 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `8107625`（2026-08-18 阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；`crm-workbench-test.ts` **48/48**、`crm-golden-test.ts` **31/31**、`crm-claim-test.ts` **17/17**、`crm-autoconfirm-test.ts` **56/56**、`crm-docgen-test.ts` **68/68**、`crm-enrich-test.ts` **53/53**（含 quote_signal）、`crm-golden-test.ts` **39/39**（含报价信号）。
+> 基线 commit `d40cd4d`；最近提交 `0eab71f`（2026-08-20 AI 销售助手 V1 P0：商机/意向评分/风险预警，见 §2.14；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**（商机/评分/风险）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -155,7 +156,7 @@
 - **深链协议**：`/crm?tab=customer&id=<accountId>`（直达档案）与 `/crm?tab=customer&stage=<阶段标签>`（漏斗下钻筛选）；灵感信箱卡片显示「已入 CRM」徽章 + 查看档案按钮（`crm:accounts:bySessions` 批量映射）
 - **可视化**：`crmDbService.statsOverview()`（总量 + 近 8 周到款趋势 + 阶段分布 + 合同管道）；工作台顶部 4 统计卡（客户总数/在途合同额/本月到款/待确认事项）+ ECharts 三图（echarts-for-react，与仪表盘同款）；漏斗页换 ECharts 真漏斗，点击阶段深链下钻 CRM 客户列表
 - **配置项**：`crmEnrichEnabled`(true) · `crmEnrichThreshold`(0.7) · `crmEnrichAutoApply`(0.85) · `crmEnrichBackfillLimit`(20)，设置页可调
-- **空壳表处置**：contact（个体销售单联系人场景）、opportunity（报价单已承担商机角色）——列入方案「非目标」，避免后续误读为漏做；lead 表已由 §2.12 线索流转模块落地（见 5.1）
+- **空壳表处置**：contact（个体销售单联系人场景）列入方案「非目标」；opportunity 已由 §2.14 商机模块落地（AI 采购信号识别 → 商机闭环，见 5.1）；lead 表已由 §2.12 线索流转模块落地（见 5.1）
 
 ---
 
@@ -213,6 +214,25 @@
 
 ---
 
+## 2.14 AI 销售助手 V1 P0：商机 + 意向评分 + 风险预警（2026-08-19~20，PRD `docs/PRD-V1-AI销售助手.md`）
+
+> 主线：按 V1 PRD 三大缺口落地——① **商机实体**（opportunity 从空壳表 → 完整闭环：AI 从微信聊天自动识别采购信号建商机、多商机并行、阶段联动、漏斗统计）；② **意向评分 0-100**（阶段 + 近期事件 + 商机加权，可展开评分依据）；③ **风险预警结构化**（竞品/价格/服务消息检测 → crm_risk 表 + 商机详情展示）。三者贯通：采购信号 → 商机 → 客户阶段联动 → 意向评分；风险信号附着商机。
+
+- **采购信号识别** `crmParseRules.parseBuySignal`（仅客户消息 isSend=0）：吨位（`BUY_TON_RE`）/ 设备（`BUY_DEVICE_RE` 长词优先，电动叉车等 14 类）/ 数量（`BUY_QUANTITY_RE`）/ 金额（`BUY_INTENT_RE` 想了解/询价/报个价/能便宜等）+ 噪声排除（发个图/哪个店/你在吗）→ 返回 `{ product（如「2吨电动叉车」）, quantity, amount, detail }`；门槛 = 设备|数量|金额 任一命中
+- **商机闭环**（crmDbService）：`opportunityUpsertBySignal` 同客户同产品 active 机会累积（数量/金额/详情），否则新建（name=`<产品>采购`，stage=「了解」，事件留痕）；`opportunityUpdateStage`/`opportunityClose`（won/lost 关单 + 事件）；`syncOpportunityStageByAccount` 客户阶段顺推（了解→比价→决策），成交→won、流失→lost 自动关单；`opportunityStats` 漏斗聚合（stageDist/total/totalAmount，仅 active）；`opportunityList` JOIN 客户名
+- **opportunity 表扩展**：product / quantity / amount / intent_score / status / last_signal_at / expected_close_at / main_resistance / competitor 列（Migration ALTER 8 列）；新增 **opportunity_event** 表（created/signal/stage_change/won/lost 事件时间线）+ idx
+- **意向评分 0-100** `electron/services/intentScore.ts`（纯核心 `computeIntentScore`）：STAGE_BASE（了解30/比价60/决策80/成交100/流失5/未知0）+ 近期事件加分 min(20, count×6) + 14 天衰减 min(30, (days-14)×2) + 商机加分 10+(details?5:0)，封顶 100；level 高≥70/中≥40/低≥15；`salesDbService.intentScore(sessionId, opp)` 跨库装配（account.session_id → salesDb profile + intent_tag_log 近 7 天事件 + active opps 的 count/quantity/amount）；前端分数条 + 详情「意向评分依据」factors 展开
+- **风险信号** `crmParseRules.parseRiskSignal`（仅客户消息）：竞品（别家/比你们便宜 → high）、价格（再便宜/太贵/底价 → medium）、服务（售后/保修 怎么处理 → low）；`crmDbService.upsertRisk` 同客户同类型 active 幂等累积（详情叠加 + severity 取高），`riskList`（JOIN 客户名，active 在前）、`resolveRisk`（人工确认处理）
+- **crm_risk 表**（crmDb）：account_id / opportunity_id / risk_type / detail / severity / source_msg / status(active/resolved) / created_at / resolved_at + idx_crm_risk_account；ENTITIES 注册补齐 `opportunity_event` + `crm_risk`（否则 create() 被 isEntity 拦截静默失败——本次修复）
+- **扫描挂钩**（crmParseService 私聊分支）：报价信号后接采购信号块（未建档客户自动 `importCustomerFromProfile` 建档再建商机）+ 风险块（取该客户第一个 active 商机挂 opportunity_id）；新建商机/风险均记 INFO 日志
+- **阶段联动**：`insightService.importIntentCustomerToCrm` 导入后调 `syncOpportunityStageByAccount`（AI 中文阶段 → 商机顺推/关单）
+- **前端** `src/pages/OpportunityPage.tsx`（新页面，路由 `/opportunities`，侧边栏「商机」）：ECharts 漏斗（点击下钻筛选）+ 统计卡（活跃商机/金额/待确认/决策中）+ 商机卡片（阶段徽章 + 意向评分条 tooltip=factors）+ 详情 modal（阶段推进按钮、成交/丢单、事件时间线、意向评分依据、**风险预警区**：类型标签 + 严重度 + 详情 + 确认处理按钮）
+- **IPC**：`crm:opportunity:list/get/events/stats/stage/close/intentScore` + `crm:risk:list/resolve`（crmIpcHandlers + preload + electron.d.ts 同步）
+- **验证**：`scripts/crm-opportunity-test.ts` **45/45**（评分 0a-0g / parseBuySignal 1a-1i / 商机累积 2a-2h / 阶段联动 3a-3e / 漏斗 4a-4e / 风险 5a-5k）；`tsc --noEmit` 零错误 + vite build 通过；crm 全系回归通过（lead 53 / workbench 48 / claim 17 / autoconfirm 56 / enrich 55 / docgen 68 / golden 45 / logistics 25 / opportunity 45）
+- **已知边界**：风险只附着已建档客户（account_id 非 0）；漏斗深链 bug（customer_profile 中文 stage vs account.sales_stage 英文双轨）已记录待处理（用户选择先做 PRD P0）
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -256,6 +276,9 @@
 | 37 | **销售数据备份** | 备份页勾选项 | `backupService.collectSalesData` | ✅ |
 | 38 | **AI 准确率面板** | CRM 工作台 | `aiAccuracyStats` + 折叠面板 | ✅ |
 | 39 | **产品库图片编辑** | CRM 产品库操作列 | 换图/删图（saveImage+image_path）+ 复制摘要嵌套展开 | ✅ |
+| 40 | **商机模块（AI 采购信号）** | `/opportunities` 侧边栏「商机」 | `parseBuySignal` + opportunity 闭环 + ECharts 漏斗 + 阶段联动 | ✅ |
+| 41 | **意向评分 0-100** | 商机列表/详情 | `intentScore.ts` 纯核心 + 跨库装配 + factors 评分依据展开 | ✅ |
+| 42 | **风险预警（竞品/价格/服务）** | 商机详情 | `parseRiskSignal` + crm_risk 表 + 确认处理 | ✅ |
 
 ---
 
@@ -368,7 +391,7 @@
 
 ## 5.1 CRM 独立库 weflow-crm.db（sql.js/WASM，2026-08 增量）
 
-> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / **lead**（2026-08 §2.12 新增）/ opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。跟单中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
+> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / **lead**（2026-08 §2.12 新增）/ **opportunity + opportunity_event + crm_risk**（2026-08 §2.14 商机/评分/风险新增，opportunity 由空壳表转商机实体）/ contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。跟单中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
 
 ### account（客户，核心）
 | 列 | 说明 |
@@ -438,6 +461,8 @@
 | `crmAutoConfirmService.ts` | **自动确认引擎**（§2.6）：纯判定 evaluate×4 + applyDecision/runAutoConfirm/undo + 60s 调度器 |
 | `crmLeadImportCore.ts` | **线索导入纯核心**（§2.12，零 electron 可单测）：行清洗/批量分类/同批跨批去重/来源预设 |
 | `crmLeadService.ts` | **线索流转装配层**（§2.12）：importLeads/listLeads/leadDetail/leadOverview/updateLeadStatus/toAccount/scanLeadSla/complete·skipLeadFirstContact + setLeadConfig shim |
+| `intentScore.ts` | **意向评分纯核心**（§2.14，零 electron 可单测）：`computeIntentScore`（阶段基数+近期事件+衰减+商机加权，0-100 封顶） |
+| `crmParseRules.ts`（改） | §2.14 新增 `parseBuySignal`（采购信号）+ `parseRiskSignal`（竞品/价格/服务风险） |
 
 ### 前端 `src/`
 | 文件 | 说明 |
@@ -458,6 +483,7 @@
 | `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
 | `pages/CrmLeadPage.tsx` + `.scss` | **线索池页**（§2.12，路由 /leads）：导入 modal（来源下拉/文件/文本粘贴）/ 统计卡 / 筛选 chips / 表格（脱敏+超时徽章+行内操作）/ 详情 + dead modal |
+| `pages/OpportunityPage.tsx` + `.scss` | **商机页**（§2.14，路由 /opportunities）：ECharts 漏斗下钻 + 统计卡 + 商机卡片（意向评分条）+ 详情 modal（阶段推进/成交丢单/事件时间线/评分依据/风险预警区） |
 | `stores/crmStore.ts`（改） | **autoSummary** state + runAutoConfirm/fetchAutoSummary/undoAutoConfirm |
 | `stores/` (其他5个) | dashboard/customerList/customerProfile/followUp/knowledge/salesReport |
 
@@ -472,6 +498,7 @@
 | `crm-docgen-test.ts` | **文档生成单测**（**68 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写 / 型号输出 / invoice-info 落点） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 | `crm-lead-test.ts` | **线索流转单测**（**53/53**：清洗/去重/SLA/闭环，2026-08 §2.12） |
+| `crm-opportunity-test.ts` | **商机/评分/风险单测**（**45/45**：意向评分 / parseBuySignal / 商机累积 / 阶段联动 / 漏斗 / 风险，2026-08 §2.14） |
 
 ### 资源/脚本（§2.7 新增）
 - `resources/crm-templates/{quotation,contract}.docx` —— 真实模版（docxtemplater 标签已注入，**提交进仓库**，随 extraResources 打包）；改模版用 `python3 scripts/build-crm-templates.py [源目录]`（默认读 `/tmp/crm-tpl-inspect/`）
