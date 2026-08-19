@@ -34,35 +34,28 @@
 
   &__progress {
     display: flex;
-    height: 26px;
-    border-radius: 8px;
+    height: 6px;
+    border-radius: 3px;
     overflow: hidden;
-    margin: 0 18px 12px;
+    margin: 0 18px 4px;
     background: var(--wf-border-soft, #F1F5F9);
   }
 
-  &__progress-pending {
+  &__progress-active {
     background: var(--wf-ink, #101728);
-    color: #fff;
-    font-size: 11px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     min-width: 0;
   }
 
   &__progress-done {
-    background: var(--wf-border-soft, #F1F5F9);
-    color: var(--wf-normal, #64748B);
+    background: var(--wf-teal, #0F8F7E);
+    min-width: 0;
+  }
+
+  &__stat {
     font-size: 11px;
-    font-weight: 600;
+    color: var(--wf-muted, #94A3B8);
+    margin: 0 18px 12px;
     font-variant-numeric: tabular-nums;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    white-space: nowrap;
   }
 
   &__list {
@@ -136,10 +129,39 @@
     margin-top: 2px;
   }
 
-  &__more {
+  &__pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px 18px 2px;
+  }
+
+  &__page-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid #E2E8F0;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--wf-normal, #64748B);
+    cursor: pointer;
+    transition: background 0.15s;
+
+    &:hover:not(:disabled) { background: var(--wf-border-soft, #F1F5F9); color: var(--wf-ink, #101728); }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+
+  &__page-info {
     font-size: 11px;
+    font-weight: 600;
     color: var(--wf-muted, #94A3B8);
-    padding: 8px 0 4px;
+    font-variant-numeric: tabular-nums;
+    min-width: 38px;
+    text-align: center;
   }
 
   &__footer {
