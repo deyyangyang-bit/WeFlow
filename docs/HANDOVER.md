@@ -155,7 +155,7 @@
 - **深链协议**：`/crm?tab=customer&id=<accountId>`（直达档案）与 `/crm?tab=customer&stage=<阶段标签>`（漏斗下钻筛选）；灵感信箱卡片显示「已入 CRM」徽章 + 查看档案按钮（`crm:accounts:bySessions` 批量映射）
 - **可视化**：`crmDbService.statsOverview()`（总量 + 近 8 周到款趋势 + 阶段分布 + 合同管道）；工作台顶部 4 统计卡（客户总数/在途合同额/本月到款/待确认事项）+ ECharts 三图（echarts-for-react，与仪表盘同款）；漏斗页换 ECharts 真漏斗，点击阶段深链下钻 CRM 客户列表
 - **配置项**：`crmEnrichEnabled`(true) · `crmEnrichThreshold`(0.7) · `crmEnrichAutoApply`(0.85) · `crmEnrichBackfillLimit`(20)，设置页可调
-- **空壳表处置（不建）**：lead（线索=已自动导入的 account）、contact（个体销售单联系人场景）、opportunity（报价单已承担商机角色）——列入方案「非目标」，避免后续误读为漏做
+- **空壳表处置**：contact（个体销售单联系人场景）、opportunity（报价单已承担商机角色）——列入方案「非目标」，避免后续误读为漏做；lead 表已由 §2.12 线索流转模块落地（见 5.1）
 
 ---
 
@@ -178,6 +178,21 @@
 - **销售数据备份**：备份页新增「销售数据」勾选项（默认开），`backupService.collectSalesData` 将 weflow-sales.db / weflow-crm.db / WeFlow-config.json / 见解 profiles+records / 群摘要记录打包进归档 sales-data/；备份前强制落盘（crmDbService.persistNow + salesDbService.flushNow）；恢复 = 退出 app 后覆盖回数据目录
 - **AI 准确率面板**：`crmDbService.aiAccuracyStats(days)` 聚合 auto_confirm_log + activity_log + quote_signal（AI 自动写入数/待确认采纳放弃/采纳率/手动修正与修正率/报价信号数/24h 回复率/待跟进数），工作台「📊 AI 准确率（近 7 天）」可折叠面板
 - 测试：crm-enrich-test 55/55
+
+---
+
+## 2.12 单机线索流转模块（2026-08-19，设计稿 `docs/设计-单机线索流转模块.md`）
+
+> 主线：线索池（lead pool）第一版——Excel/CSV 导入 + 文本粘贴 → 手机号/微信号清洗 → 同批/跨批去重 → 首触 SLA 24h 超时提醒（今日行动卡）→ 首触闭环 → 转客户。单机版明确不做分配/公海/回收/评分（团队版预留字段 `owner_id`/`pool_id`/`assigned_at`/`private_deadline` 恒 0/NULL，单机业务绝不依赖）。
+
+- **lead 表**（crmDb 新表）：联系方式双轨（`contact_phone` + `contact_wechat`，`both` 时手机号为主）、`source`（抖音/视频号/小红书/自定义）、`first_contact_deadline` 导入时锁定（改 SLA 配置不回溯）、状态机 NEW → CONTACTED → WX_ADDED → ACCOUNT + DEAD（REOPEN 是 action 回 NEW）、`activity_log` 全链路流水（entity='lead'）
+- **导入核心 `crmLeadImportCore.ts`**（纯函数，零 electron 可单测）：行清洗（手机号 11 位 / 微信号规则）、批量分类（phone/wechat/both/invalid）、同批 + 跨批去重（两类联系方式互不误伤）、来源预设（getCrmLeadSourcePreset）
+- **跨库铁律落点**：先写 crmDb（lead + 流水）→ 再写 salesDb（SLA 卡 follow_up_task trigger_type='sla_lead'）+ 启动兜底 `scanLeadSla()` 幂等自愈；两库无法单事务，靠 partial unique index（`idx_ft_sla_once` ON follow_up_task(trigger_type, source_id) WHERE status='pending'）双兜底
+- **统一信号流接入**：SLA 卡虚拟 sessionId `lead:<lead_id>` 进 getUnifiedSignals（stage='lead'），今日行动点完成/跳过 → `completeUnifiedSignal` 识别 `lead:` 前缀 → `completeLeadFirstContact`/`skipLeadFirstContact`（lead→CONTACTED + 卡 done + 流水三一致）
+- **死因必填**：DEAD 前置校验 `reason` 非空否则拒绝；`DEFAULT_DEAD_REASONS` 预设死因（无效/未接通/加微未回/竞品/价格）
+- **UI**：`/leads` 线索池页（导入 modal：预设来源下拉+自定义、文件上传或文本粘贴、无效行报错、批量结果反馈）、统计卡（超时/待处理/今日导入/今日首触）、来源+状态筛选、表格（脱敏 maskLead、超时红/剩余绿徽章、行内 phone/wx/toAccount/reopen/dead）、详情 modal + dead modal、列表导出
+- **配置项**：`crmLeadSlaHours`（24，1-72 设置页可调）· `crmLeadSourcePreset`（抖音,视频号,小红书 逗号分隔可配）
+- **验证**：`scripts/crm-lead-test.ts` **53/53**（清洗/去重/SLA/闭环四组）；`tsc --noEmit` 零错误；vite build 通过；mock-electron IPC smoke 14/14（含统一信号流 lead: 分支）
 
 ---
 
@@ -336,7 +351,7 @@
 
 ## 5.1 CRM 独立库 weflow-crm.db（sql.js/WASM，2026-08 增量）
 
-> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / lead / opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。确认中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
+> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / **lead**（2026-08 §2.12 新增）/ opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。确认中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
 
 ### account（客户，核心）
 | 列 | 说明 |
@@ -357,7 +372,19 @@
 | amount / model | 报价金额 / 型号（可空） |
 | quoted_at / customer_replied_at | 报价时间 / 客户回复时间（0=未回复） |
 
-> 关联：contract.account_id；allocation.payment_record_id+contract_id+account_id；activity_log(entity,entity_id)。删除为级联（§2.5），删前自动备份 `userData/crm-backups/`。
+### lead（线索池，§2.12 新增）
+| 列 | 说明 |
+|----|------|
+| name / contact_phone / contact_wechat | 姓名标签 / 手机号（both 时为主） / 微信号 |
+| contact_normalized | 归一化键（手机号 11 位，微信号小写），跨批去重索引 |
+| source | 来源（抖音/视频号/小红书/自定义） |
+| status | NEW / CONTACTED / WX_ADDED / ACCOUNT / DEAD（5 态，推进动作走 activity_log） |
+| first_contact_deadline | 首触 SLA 截止，导入时锁定（改配置不回溯） |
+| first_contacted_at / first_contact_channel | 首触时间 / 渠道（微信/电话） |
+| dead_reason / account_id | 死因 / 转客户后的 account 引用 |
+| owner_id / pool_id / assigned_at / private_deadline | 团队版预留，单机恒 0/NULL |
+
+> 关联：contract.account_id；allocation.payment_record_id+contract_id+account_id；activity_log(entity,entity_id)（lead 流水 entity='lead'）。删除为级联（§2.5），删前自动备份 `userData/crm-backups/`。SLA 卡跨库写 salesDb.follow_up_task（trigger_type='sla_lead'，source_id=lead.id，partial unique index 幂等）。
 
 ---
 
@@ -392,6 +419,8 @@
 | `moneyCn.ts` | **金额大写纯函数**：`amountToChinese`（零壹贰…元角分整，四位分组 + 组间补零） |
 | `crmDocGenService.ts`（改） | **electron 薄壳**：模板路径三候选 + 落盘 `userData/crm-docs` + 写回 attachment_path；generateDoc 为 async |
 | `crmAutoConfirmService.ts` | **自动确认引擎**（§2.6）：纯判定 evaluate×4 + applyDecision/runAutoConfirm/undo + 60s 调度器 |
+| `crmLeadImportCore.ts` | **线索导入纯核心**（§2.12，零 electron 可单测）：行清洗/批量分类/同批跨批去重/来源预设 |
+| `crmLeadService.ts` | **线索流转装配层**（§2.12）：importLeads/listLeads/leadDetail/leadOverview/updateLeadStatus/toAccount/scanLeadSla/complete·skipLeadFirstContact + setLeadConfig shim |
 
 ### 前端 `src/`
 | 文件 | 说明 |
@@ -411,6 +440,7 @@
 | `pages/CrmReviewPage.tsx` | **确认中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
 | `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
+| `pages/CrmLeadPage.tsx` + `.scss` | **线索池页**（§2.12，路由 /leads）：导入 modal（来源下拉/文件/文本粘贴）/ 统计卡 / 筛选 chips / 表格（脱敏+超时徽章+行内操作）/ 详情 + dead modal |
 | `stores/crmStore.ts`（改） | **autoSummary** state + runAutoConfirm/fetchAutoSummary/undoAutoConfirm |
 | `stores/` (其他5个) | dashboard/customerList/customerProfile/followUp/knowledge/salesReport |
 
@@ -424,6 +454,7 @@
 | `crm-enrich-test.ts` | **自动填充引擎单测**（**48 项**：合并规则 / 核心解析校验 / 落库链路 / pending 裁决 / 填充度 / statsOverview） |
 | `crm-docgen-test.ts` | **文档生成单测**（**68 项**：金额大写 18 / docx 渲染 / 端到端 quotation/contract/invoice-app 合并+公式+大写 / 型号输出 / invoice-info 落点） |
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
+| `crm-lead-test.ts` | **线索流转单测**（**53/53**：清洗/去重/SLA/闭环，2026-08 §2.12） |
 
 ### 资源/脚本（§2.7 新增）
 - `resources/crm-templates/{quotation,contract}.docx` —— 真实模版（docxtemplater 标签已注入，**提交进仓库**，随 extraResources 打包）；改模版用 `python3 scripts/build-crm-templates.py [源目录]`（默认读 `/tmp/crm-tpl-inspect/`）
@@ -489,6 +520,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | crmEnrichThreshold | 0.7 | 自动填充：进 pending 队列的置信下限（低于丢弃） |
 | crmEnrichAutoApply | 0.85 | 自动填充：直接写入档案的置信阈值 |
 | crmEnrichBackfillLimit | 20 | 自动填充：单次存量回填客户数上限 |
+| crmLeadSlaHours | 24 | 线索首触 SLA 小时数（1-72，导入时锁定不回溯） |
+| crmLeadSourcePreset | 抖音,视频号,小红书 | 线索来源预设（逗号分隔，导入/筛选下拉） |
 
 ---
 
@@ -506,6 +539,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | P1 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
 | P2 | 优先级公式重设计 | 等 customer_value_score 有真实数据源后 |
 | P2 | 知识库增量补充 | 已有353条产品参数，需持续补充叉车行业话术/FAQ |
+| P2 | 线索池实测迭代 | §2.12 首版已交付，实测后按需补：导入预览、导入批次统计、公海/回收（团队版演进见设计稿 §10） |
 | 大后期 | CRM双向同步 | 仅预留字段 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -515,10 +549,11 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
 2. **跑起来**：`npm install && npm run dev`（开发模式）。⚠️ 若 `--version` 报 v24.17.0 且无 GUI，先 `unset ELECTRON_RUN_AS_NODE`（见 MAINTENANCE §4.8，vite 已自动防御）
-3. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）、`npx tsx scripts/crm-autoconfirm-test.ts`（56/56）
+3. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）、`npx tsx scripts/crm-autoconfirm-test.ts`（56/56）、`npx tsx scripts/crm-lead-test.ts`（53/53）
 4. **测试零操作闭环**：确认中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
-6. **继续开发**：按 §10 待办优先级推进
+6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户
+7. **继续开发**：按 §10 待办优先级推进
 
 ---
 
@@ -536,6 +571,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `AGENTS.md` | Agent 启动指南（本地，gitignore） |
 | `docs/PLAN-CRM零操作改造.md` | CRM 零操作改造方案（已实施，含提交映射） |
 | `docs/HANDOVER-20260818-CRM零操作改造与产品库.md` | 2026-08-18 阶段交接（零操作改造/R7/三优化/产品库导入指引） |
+| `docs/设计-单机线索流转模块.md` | 线索流转 PRD+技术设计（**最终定稿，已实现**，2026-08 §2.12） |
+| `docs/PRD-团队版-WeFlow+Twenty底座.md` | 团队版演进预留（Twenty 底座，线索映射为自定义对象） |
 | `DEVELOPMENT.md` | AI Agent 软件工程开发规范（项目级开发规则） |
 | 微信文件 | `今日行动-优化PRD-v3.md` / `今日行动-第一期PRD.md` |
 

@@ -13,9 +13,49 @@ import { salesLog } from './salesLogger'
 // ─── 建表 SQL ────────────────────────────────────────────────────────────────
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS lead (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, company TEXT, phone TEXT,
-  source TEXT, owner_sales TEXT, stage TEXT DEFAULT 'new',
-  custom_fields TEXT DEFAULT '{}', created_at INTEGER, updated_at INTEGER
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contact_type TEXT NOT NULL DEFAULT 'phone',
+  contact_normalized TEXT NOT NULL,
+  contact_raw TEXT,
+  wechat TEXT DEFAULT '',
+  source TEXT DEFAULT '抖音',
+  name TEXT DEFAULT '',
+  tag TEXT DEFAULT '',
+  note TEXT DEFAULT '',
+  status TEXT DEFAULT 'NEW',
+  dead_reason TEXT DEFAULT '',
+  first_contact_channel TEXT DEFAULT '',
+  account_id INTEGER,
+  first_contacted_at INTEGER,
+  first_contact_deadline INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER,
+  owner_id INTEGER DEFAULT 0,
+  pool_id INTEGER DEFAULT 0,
+  assigned_at INTEGER,
+  private_deadline INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_contact ON lead(contact_type, contact_normalized);
+CREATE INDEX IF NOT EXISTS idx_lead_status ON lead(status);
+CREATE INDEX IF NOT EXISTS idx_lead_source ON lead(source);
+CREATE INDEX IF NOT EXISTS idx_lead_sla ON lead(status, first_contact_deadline);
+CREATE TABLE IF NOT EXISTS lead_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  note TEXT DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lead_activity_lead ON lead_activity(lead_id);
+CREATE TABLE IF NOT EXISTS import_batch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  file_name TEXT DEFAULT '',
+  total INTEGER DEFAULT 0,
+  valid INTEGER DEFAULT 0,
+  duplicate INTEGER DEFAULT 0,
+  invalid INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS account (
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, industry TEXT,
@@ -128,7 +168,8 @@ CREATE INDEX IF NOT EXISTS idx_crm_quote_session ON quote_signal(session_id, quo
 export interface CrmRow { [key: string]: any }
 
 const ENTITIES = [
-  'lead', 'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
+  'lead', 'lead_activity', 'import_batch',
+  'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
   'contract_status_history', 'activity_log', 'quote_signal'
 ] as const
@@ -274,7 +315,60 @@ class CrmDbService {
     }
     // Migration: contract 补 attachment_path（docgen 生成的合同 docx 路径写回用）
     try { this.db.run('ALTER TABLE contract ADD COLUMN attachment_path TEXT') } catch { /* 列已存在 */ }
+    // Migration: lead 旧空壳表（name/company/phone/stage...，无业务引用）→ 线索流转结构
+    // 旧表有旧结构列且无 contact_normalized → 迁移旧数据（如有）后重建为新 SCHEMA
+    try {
+      const leadCols = this.all('PRAGMA table_info(lead)').map((c) => String(c.name))
+      if (leadCols.length && !leadCols.includes('contact_normalized')) {
+        const oldRows = this.all('SELECT * FROM lead')
+        this.db.run('DROP TABLE lead')
+        this.db.run(SCHEMA_SQL)
+        const now = Date.now()
+        for (const r of oldRows) {
+          const ph = String(r.phone || '').trim()
+          if (!ph) continue
+          this.db.run(
+            'INSERT INTO lead (contact_type, contact_normalized, contact_raw, source, name, status, first_contact_deadline, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+            ['phone', ph, ph, String(r.source || '自定义').trim() || '自定义', String(r.name || '').trim(), 'NEW', now, now, now]
+          )
+        }
+      }
+    } catch { /* ignore */ }
     this.persist()
+  }
+
+  /** 事务执行一组写操作（sql.js 单库事务）：成功 COMMIT+persist，失败 ROLLBACK 后抛错。tx.run 返回 last_insert_rowid。 */
+  runTx<T>(fn: (tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] }) => T): T {
+    if (!this.db) throw new Error('CrmDb 未初始化')
+    this.db.run('BEGIN')
+    try {
+      const tx = {
+        run: (sql: string, params: unknown[] = []) => {
+          this.db!.run(sql, params as any[])
+          const stmt = this.db!.prepare('SELECT last_insert_rowid() AS id')
+          try {
+            stmt.step()
+            return Number(stmt.getAsObject().id || 0)
+          } finally { stmt.free() }
+        },
+        all: (sql: string, params: unknown[] = []) => {
+          const stmt = this.db!.prepare(sql)
+          try {
+            stmt.bind(params as any[])
+            const rows: CrmRow[] = []
+            while (stmt.step()) rows.push(stmt.getAsObject() as CrmRow)
+            return rows
+          } finally { stmt.free() }
+        }
+      }
+      const out = fn(tx)
+      this.db.run('COMMIT')
+      this.persist()
+      return out
+    } catch (e) {
+      try { this.db.run('ROLLBACK') } catch { /* ignore */ }
+      throw e
+    }
   }
 
   private persist(): void {

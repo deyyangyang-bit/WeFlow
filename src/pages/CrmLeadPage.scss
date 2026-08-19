@@ -1,0 +1,50 @@
+@use './CrmProductPage.scss' as *;
+
+.crm-lead-page { padding: 24px; color: var(--text-primary, #1e293b); }
+
+/* 顶部统计卡片 */
+.lead-cards { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.lead-card {
+  flex: 1; min-width: 140px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 2px;
+  .lc-num { font-size: 22px; font-weight: 700; color: #2563eb; }
+  .lc-label { font-size: 12px; color: #64748b; }
+  &.warn { background: #fef2f2; border-color: #fecaca; .lc-num { color: #dc2626; } }
+}
+
+/* 状态徽章 */
+.lead-st {
+  display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap;
+  &.st-new { background: #eff6ff; color: #2563eb; }
+  &.st-contacted { background: #ecfdf5; color: #059669; }
+  &.st-wx { background: #f5f3ff; color: #7c3aed; }
+  &.st-dead { background: #f1f5f9; color: #94a3b8; }
+  &.st-account { background: #fff7ed; color: #ea580c; }
+}
+
+/* 行内字段 */
+.lc-contact { font-weight: 600; }
+.lc-wechat { font-weight: 400; font-size: 12px; color: #7c3aed; }
+.lc-source { background: #f1f5f9; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+.lc-deadline { color: #64748b; font-size: 12px; }
+.lc-overdue { display: inline-flex; gap: 4px; align-items: center; color: #dc2626; font-size: 12px; font-weight: 600; }
+.lc-filename { font-size: 12px; color: #94a3b8; }
+.crm-btn.danger { color: #dc2626; border-color: #fecaca; }
+
+/* 导入 modal */
+.lead-import { width: 560px; }
+.lead-paste { width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; font-size: 13px; font-family: inherit; resize: vertical; }
+.lead-file { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.lead-preview { font-size: 12px; color: #64748b; margin-top: 8px; }
+
+/* 详情 modal */
+.lead-detail { width: 620px; }
+.lead-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; label { font-size: 11px; color: #94a3b8; } .ld-strong { font-weight: 700; font-size: 15px; } .ld-note { grid-column: span 2; } div { font-size: 13px; } }
+.lead-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; label { font-size: 12px; color: #64748b; display: flex; gap: 4px; align-items: center; select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 6px; font-size: 12px; } } }
+.lead-timeline { display: flex; flex-direction: column; gap: 4px; .lt-item { display: flex; gap: 10px; font-size: 12px; .lt-time { color: #94a3b8; width: 90px; flex-shrink: 0; } .lt-act { font-weight: 600; color: #2563eb; width: 90px; flex-shrink: 0; } .lt-note { color: #475569; } } }
+
+/* 失效确认 */
+.lead-dead { width: 420px; label { font-size: 12px; color: #64748b; display: flex; flex-direction: column; gap: 4px; select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; font-size: 13px; } } }
+.ld-tip { font-size: 13px; color: #475569; margin-bottom: 10px; }
+
+.empty { text-align: center; color: #94a3b8; padding: 24px 0; }

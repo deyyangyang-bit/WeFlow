@@ -16,6 +16,7 @@ import { salesDbService } from './salesDbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { generateActionAnalysis } from './salesActionEngine'
+import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -47,6 +48,8 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
       return undefined
     }
   })
+  // 线索流转装配：SLA 小时数从配置读取
+  setLeadConfig({ get: (k) => (k === 'crmLeadSlaHours' ? config.get('crmLeadSlaHours') : undefined) })
   // 扫完立刻触发（fire-and-forget；enqueue 串行 + runAutoConfirmNow 内置批前快照）
   setPostScanHook(() => { void enqueueSalesTask(() => runAutoConfirmNow()) })
   startAutoConfirmScheduler()
@@ -194,4 +197,19 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     writeFileSync(dest, Buffer.from(b64, 'base64'))
     return dest
   })
+
+  // ── 单机线索流转：导入 / 列表 / 详情 / 状态流转 / 转客户 / SLA ──────────────
+  ipcMain.handle('crm:lead:import', async (_, source: string, fileName: string, rows) => importLeads(String(source || ''), String(fileName || ''), Array.isArray(rows) ? rows : []))
+  ipcMain.handle('crm:lead:list', async (_, opts) => listLeads((opts || {}) as any))
+  ipcMain.handle('crm:lead:detail', async (_, id: number) => leadDetail(Number(id)))
+  ipcMain.handle('crm:lead:overview', async () => leadOverview())
+  ipcMain.handle('crm:lead:status', async (_, id: number, action: string, opts) => updateLeadStatus(Number(id), action as any, (opts || {}) as any))
+  ipcMain.handle('crm:lead:toAccount', async (_, id: number) => toAccount(Number(id)))
+  ipcMain.handle('crm:lead:scanSla', async () => scanLeadSla())
+  ipcMain.handle('crm:lead:slaComplete', async (_, taskId: number) => completeLeadFirstContact(Number(taskId)))
+  ipcMain.handle('crm:lead:slaSkip', async (_, taskId: number) => skipLeadFirstContact(Number(taskId)))
+  ipcMain.handle('crm:lead:deadReasons', async () => DEFAULT_DEAD_REASONS)
+
+  // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
+  enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })
 }

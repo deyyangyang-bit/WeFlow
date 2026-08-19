@@ -1750,6 +1750,18 @@ export interface ElectronAPI {
     aiExtract: (template: string[], dataUrl: string) => Promise<Record<string, string>>
     saveImage: (dataUrl: string, fileName: string) => Promise<string>
     readImage: (filePath: string) => Promise<string>
+
+    // 单机线索流转
+    leadImport: (source: string, fileName: string, rows: unknown[]) => Promise<{ batchId: number; total: number; valid: number; duplicate: number; invalid: number; invalidIndexes: number[] }>
+    leadList: (opts?: { status?: string; source?: string; overdueOnly?: boolean; q?: string; limit?: number; offset?: number }) => Promise<LeadRow[]>
+    leadDetail: (id: number) => Promise<{ lead: LeadRow | null; activities: Array<{ id: number; lead_id: number; action: string; note?: string; created_at: number }> }>
+    leadOverview: () => Promise<{ total: number; byStatus: Record<string, number>; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; sources: Array<{ source: string; count: number }> }>
+    leadStatus: (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string }) => Promise<{ ok: boolean; error?: string }>
+    leadToAccount: (id: number) => Promise<{ ok: boolean; error?: string; accountId?: number; existed?: boolean }>
+    leadScanSla: () => Promise<number>
+    leadSlaComplete: (taskId: number) => Promise<boolean>
+    leadSlaSkip: (taskId: number) => Promise<boolean>
+    leadDeadReasons: () => Promise<string[]>
   }
   sales: {
     // 知识库
@@ -1865,6 +1877,27 @@ export interface ExportProgress {
 export interface WxidInfo {
   wxid: string
   modifiedTime: number
+}
+
+/** 线索流转 lead 表行（contact_type=phone/wechat/both；status=NEW/CONTACTED/WX_ADDED/DEAD/ACCOUNT） */
+export interface LeadRow {
+  id: number
+  contact_type: 'phone' | 'wechat' | 'both'
+  contact_normalized: string
+  contact_raw: string
+  wechat?: string
+  source: string
+  name?: string
+  tag?: string
+  note?: string
+  status: string
+  dead_reason?: string
+  first_contact_channel?: string
+  account_id?: number
+  first_contacted_at?: number
+  first_contact_deadline?: number
+  created_at: number
+  updated_at: number
 }
 
 declare global {

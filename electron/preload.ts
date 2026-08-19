@@ -716,7 +716,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     aiDesc: (payload: unknown) => ipcRenderer.invoke('crm:product:aiDesc', payload),
     aiExtract: (template: string[], dataUrl: string) => ipcRenderer.invoke('crm:product:aiExtract', template, dataUrl),
     saveImage: (dataUrl: string, fileName: string) => ipcRenderer.invoke('crm:file:saveImage', dataUrl, fileName),
-    readImage: (filePath: string) => ipcRenderer.invoke('crm:file:readImage', filePath)
+    readImage: (filePath: string) => ipcRenderer.invoke('crm:file:readImage', filePath),
+
+    // 单机线索流转
+    leadImport: (source: string, fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:import', source, fileName, rows),
+    leadList: (opts?: unknown) => ipcRenderer.invoke('crm:lead:list', opts),
+    leadDetail: (id: number) => ipcRenderer.invoke('crm:lead:detail', id),
+    leadOverview: () => ipcRenderer.invoke('crm:lead:overview'),
+    leadStatus: (id: number, action: string, opts?: unknown) => ipcRenderer.invoke('crm:lead:status', id, action, opts),
+    leadToAccount: (id: number) => ipcRenderer.invoke('crm:lead:toAccount', id),
+    leadScanSla: () => ipcRenderer.invoke('crm:lead:scanSla'),
+    leadSlaComplete: (taskId: number) => ipcRenderer.invoke('crm:lead:slaComplete', taskId),
+    leadSlaSkip: (taskId: number) => ipcRenderer.invoke('crm:lead:slaSkip', taskId),
+    leadDeadReasons: () => ipcRenderer.invoke('crm:lead:deadReasons')
   },
   sales: {
     // 知识库

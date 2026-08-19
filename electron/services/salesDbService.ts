@@ -68,6 +68,8 @@ export interface FollowUpTask {
   action_type?: string
   trigger_type: string
   title: string
+  /** 业务源 id（SLA 卡=lead.id），配合 trigger_type 做幂等 */
+  source_id?: number | null
   due_at?: number | null
   status?: string
   priority_score?: number
@@ -203,10 +205,13 @@ class SalesDbService {
       ['confidence', 'REAL'],
       ['feedback_log', "TEXT DEFAULT '[]'"],
       ['analysis', 'TEXT'],
+      ['source_id', 'INTEGER'],
     ]
     for (const [col, type] of migrationCols) {
       try { this.db.run(`ALTER TABLE follow_up_task ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: 线索 SLA 卡幂等兜底（一个 lead 最多一张 pending 的 sla_lead 卡）
+    try { this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_sla_once ON follow_up_task(trigger_type, source_id) WHERE status = 'pending'") } catch { /* 已存在 */ }
     // Migration: customer_profile 增加 last_stage_change_at
     try { this.db.run('ALTER TABLE customer_profile ADD COLUMN last_stage_change_at INTEGER') } catch { /* 列已存在 */ }
     this.persist()
@@ -561,9 +566,9 @@ class SalesDbService {
   todoCreate(task: Omit<FollowUpTask, 'id' | 'created_at' | 'completed_at'>): FollowUpTask {
     const now = Date.now()
     this.run(
-      `INSERT INTO follow_up_task (session_id, customer_profile_id, display_name, source_message_id, promise_summary, action_type, trigger_type, title, due_at, status, priority_score, created_by, confidence, feedback_log, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', now]
+      `INSERT INTO follow_up_task (session_id, customer_profile_id, display_name, source_message_id, promise_summary, action_type, trigger_type, title, due_at, status, priority_score, created_by, confidence, feedback_log, source_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', task.source_id ?? null, now]
     )
     const id = this.lastInsertRowId()
     return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])!
@@ -627,6 +632,24 @@ class SalesDbService {
 
   customerAll(): CustomerProfile[] {
     return this.all<CustomerProfile>('SELECT * FROM customer_profile', [])
+  }
+
+  /** 按 id 查跟进任务（SLA 闭环需要读 task 的 source_id/trigger_type） */
+  getTask(id: number): FollowUpTask | undefined {
+    return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])
+  }
+
+  /** 线索 SLA 卡：按 source_id 查该 lead 当前 pending 的 sla_lead 卡 */
+  slaTaskByLead(leadId: number): FollowUpTask | undefined {
+    return this.get<FollowUpTask>(
+      "SELECT * FROM follow_up_task WHERE trigger_type = 'sla_lead' AND source_id = ? AND status = 'pending'",
+      [leadId]
+    )
+  }
+
+  /** 该 lead 是否已存在 pending 的 SLA 卡（scanLeadSla 幂等应用层判断） */
+  hasSlaPendingTask(leadId: number): boolean {
+    return this.slaTaskByLead(leadId) !== undefined
   }
 
   /**

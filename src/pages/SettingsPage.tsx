@@ -238,6 +238,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [crmEnrichThreshold, setCrmEnrichThreshold] = useState(0.7)
   const [crmEnrichAutoApply, setCrmEnrichAutoApply] = useState(0.85)
   const [crmEnrichBackfillLimit, setCrmEnrichBackfillLimit] = useState(20)
+  // 线索流转
+  const [crmLeadSlaHours, setCrmLeadSlaHours] = useState(24)
+  const [crmLeadSources, setCrmLeadSources] = useState<string[]>(['抖音', '视频号', '小红书'])
+  const [crmLeadSourcesInput, setCrmLeadSourcesInput] = useState('抖音,视频号,小红书')
 
 
 
@@ -588,6 +592,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setCrmEnrichThreshold(await configService.getCrmEnrichThreshold())
       setCrmEnrichAutoApply(await configService.getCrmEnrichAutoApply())
       setCrmEnrichBackfillLimit(await configService.getCrmEnrichBackfillLimit())
+
+      // 线索流转
+      const savedLeadSla = await configService.getCrmLeadSlaHours()
+      setCrmLeadSlaHours(savedLeadSla)
+      const savedLeadSources = await configService.getCrmLeadSourcePreset()
+      setCrmLeadSources(savedLeadSources)
+      setCrmLeadSourcesInput(savedLeadSources.join(','))
 
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
@@ -5298,6 +5309,54 @@ JSON 输出格式：
             >取消</button>
           </div>
         )}
+      </div>
+
+      <div className="settings-section">
+        <h2>线索流转</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>首触 SLA（小时）</span>
+            <span className="setting-desc">线索导入后超过该时长未首触，将生成今日行动提醒（仅盯「待首触」状态，默认 24 小时）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="range"
+              min="1"
+              max="72"
+              step="1"
+              value={crmLeadSlaHours}
+              onChange={async (e) => {
+                const val = Math.max(1, Math.min(72, parseInt(e.target.value, 10) || 24))
+                setCrmLeadSlaHours(val)
+                await configService.setCrmLeadSlaHours(val)
+                showMessage(`首触 SLA 已设为 ${val} 小时（新导入线索生效）`, true)
+              }}
+              style={{ width: '160px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmLeadSlaHours}h</span>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>线索来源预设</span>
+            <span className="setting-desc">导入线索时的来源选项，逗号分隔（如：抖音,视频号,小红书）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="text"
+              className="field-input"
+              style={{ width: '260px' }}
+              value={crmLeadSourcesInput}
+              onChange={(e) => setCrmLeadSourcesInput(e.target.value)}
+              onBlur={async (e) => {
+                const list = e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+                setCrmLeadSources(list)
+                await configService.setCrmLeadSourcePreset(list)
+                showMessage(`来源预设已更新：${list.join('、') || '（空）'}`, true)
+              }}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="divider" />

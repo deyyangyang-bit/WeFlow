@@ -140,6 +140,10 @@ interface ConfigSchema {
   crmEnrichAutoApply: number
   /** 自动填充：单次存量回填客户数上限（默认 20，控 token 成本） */
   crmEnrichBackfillLimit: number
+  /** 线索首触 SLA 小时数 1-72（默认 24，导入时锁定 first_contact_deadline） */
+  crmLeadSlaHours: number
+  /** 线索来源预设列表（逗号分隔，默认抖音/视频号/小红书，UI 下拉 + 自定义） */
+  crmLeadSourcePreset: string
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */
@@ -289,6 +293,8 @@ export class ConfigService {
       crmEnrichThreshold: 0.7,
       crmEnrichAutoApply: 0.85,
       crmEnrichBackfillLimit: 20,
+      crmLeadSlaHours: 24,
+      crmLeadSourcePreset: '抖音,视频号,小红书',
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,

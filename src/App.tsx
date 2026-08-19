@@ -49,6 +49,7 @@ const CustomerListPage = lazy(() => import('./pages/CustomerListPage'))
 const CrmWorkbenchPage = lazy(() => import('./pages/CrmWorkbenchPage'))
 const CrmReviewPage = lazy(() => import('./pages/CrmReviewPage'))
 const CrmProductPage = lazy(() => import('./pages/CrmProductPage'))
+const CrmLeadPage = lazy(() => import('./pages/CrmLeadPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
 const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
@@ -732,6 +733,7 @@ function App() {
                 <Route path="/crm" element={<CrmWorkbenchPage />} />
                 <Route path="/crm-review" element={<CrmReviewPage />} />
                 <Route path="/crm-product" element={<CrmProductPage />} />
+                <Route path="/leads" element={<CrmLeadPage />} />
                 <Route path="/biz" element={<BizPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />

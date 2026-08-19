@@ -93,6 +93,8 @@ export const CONFIG_KEYS = {
   CRM_ENRICH_THRESHOLD: 'crmEnrichThreshold',
   CRM_ENRICH_AUTO_APPLY: 'crmEnrichAutoApply',
   CRM_ENRICH_BACKFILL_LIMIT: 'crmEnrichBackfillLimit',
+  CRM_LEAD_SLA_HOURS: 'crmLeadSlaHours',
+  CRM_LEAD_SOURCE_PRESET: 'crmLeadSourcePreset',
 
   // 数据收集
 
@@ -1953,6 +1955,26 @@ export async function getCrmEnrichBackfillLimit(): Promise<number> {
 }
 export async function setCrmEnrichBackfillLimit(limit: number): Promise<void> {
   await config.set(CONFIG_KEYS.CRM_ENRICH_BACKFILL_LIMIT, limit)
+}
+
+// 获取线索首触 SLA 小时数（默认 24h，1~72）
+export async function getCrmLeadSlaHours(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.CRM_LEAD_SLA_HOURS)
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 1 && n <= 72 ? Math.floor(n) : 24
+}
+export async function setCrmLeadSlaHours(hours: number): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_LEAD_SLA_HOURS, hours)
+}
+
+// 获取线索来源预设（逗号分隔，如 抖音,视频号,小红书）
+export async function getCrmLeadSourcePreset(): Promise<string[]> {
+  const value = await config.get(CONFIG_KEYS.CRM_LEAD_SOURCE_PRESET)
+  if (typeof value === 'string' && value.trim()) return value.split(',').map((s) => s.trim()).filter(Boolean)
+  return ['抖音', '视频号', '小红书']
+}
+export async function setCrmLeadSourcePreset(sources: string[]): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_LEAD_SOURCE_PRESET, Array.isArray(sources) ? sources.join(',') : '')
 }
 
 // 获取 HTTP API 自动启动状态

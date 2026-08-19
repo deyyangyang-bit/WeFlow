@@ -21,6 +21,7 @@ import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
+import { completeLeadFirstContact, skipLeadFirstContact } from './crmLeadService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -674,6 +675,31 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
 
   // 4a. 从 tasks 构建
   for (const task of mainPending) {
+    // 线索首触 SLA 卡：无 session_id，用虚拟 sessionId lead:<id>（不参与沉默天数过滤）
+    if (task.trigger_type === 'sla_lead') {
+      const leadId = Number(task.source_id || 0)
+      if (!leadId) continue
+      const sid = `lead:${leadId}`
+      const source: SignalSource = {
+        type: 'task',
+        ruleCode: 'LEAD',
+        label: '线索首触',
+        reason: String(task.title || '线索超时未首触'),
+        rawTaskId: task.id ?? 0
+      }
+      signalMap.set(sid, {
+        sessionId: sid,
+        displayName: String(task.display_name || `线索 #${leadId}`),
+        stage: 'lead',
+        silentDays: 0,
+        sources: [source],
+        priorityScore: Math.min(140, Number(task.priority_score || 60)),
+        urgencyTier: 'normal',
+        status: 'pending',
+        analysis: task.analysis ?? ''
+      })
+      continue
+    }
     const sid = task.session_id || ''
     if (!sid) continue
     const profile = salesDbService.customerGetBySession(sid)
@@ -814,6 +840,16 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
  * 完成/跳过统一信号：标记 task done/skipped + 标记 insight read
  */
 export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped'): void {
+  // 线索首触 SLA 卡：虚拟 sessionId lead:<id>，走线索闭环（先 crmDb 后 salesDb）
+  if (String(sessionId || '').startsWith('lead:')) {
+    const leadId = Number(String(sessionId).slice(5))
+    const task = salesDbService.slaTaskByLead(leadId)
+    if (task?.id) {
+      if (action === 'done') completeLeadFirstContact(task.id)
+      else skipLeadFirstContact(task.id)
+    }
+    return
+  }
   // 标记该 sessionId 的所有 pending tasks
   const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
   for (const t of tasks) {

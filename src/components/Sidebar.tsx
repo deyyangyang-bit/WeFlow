@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -375,6 +375,10 @@ function Sidebar({ collapsed }: SidebarProps) {
             <NavLink to="/crm-product" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '型号库' : undefined}>
               <span className="nav-icon"><Package size={20} /></span>
               {!collapsed && <span className="nav-label">产品库</span>}
+            </NavLink>
+            <NavLink to="/leads" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '线索池' : undefined}>
+              <span className="nav-icon"><Inbox size={20} /></span>
+              {!collapsed && <span className="nav-label">线索池</span>}
             </NavLink>
 
           {/* 销售报表 */}
