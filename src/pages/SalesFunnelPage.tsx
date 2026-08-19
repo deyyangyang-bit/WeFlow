@@ -14,7 +14,7 @@ const FUNNEL_TO_CRM_LABEL: Record<string, string> = {
 
 interface FunnelData {
   stageDistribution: Array<{ stage: string; count: number }>
-  intentTimeline: Array<{ date: string; stage: string; count: number }>
+  intentTimeline: Array<{ date: string; count: number }>
   totalCustomers: number
 }
 
@@ -60,14 +60,14 @@ export default function SalesFunnelPage() {
     return STAGE_ORDER.map((s) => ({ stage: s, count: counts.get(s) || 0 }))
   }, [data])
 
+  // 转化率 = 相对漏斗顶部「了解」的比例（快照非队列，阶段间相除在成交>决策时会失真）
   const conversion = useMemo(() => {
     if (!normalized) return []
-    let prev = 0
-    return normalized.map((n, i) => {
-      const rate = i === 0 ? 100 : prev > 0 ? Math.round((n.count / prev) * 100) : 0
-      prev = n.count
-      return { ...n, rate }
-    })
+    const top = normalized[0]?.count || 0
+    return normalized.map((n, i) => ({
+      ...n,
+      rate: i === 0 ? 100 : top > 0 ? Math.round((n.count / top) * 100) : 0
+    }))
   }, [normalized])
 
   // ECharts 真漏斗（点击阶段 → 下钻 CRM 客户列表按该阶段筛选）
@@ -106,7 +106,7 @@ export default function SalesFunnelPage() {
     return data.stageDistribution.reduce((s, r) => s + ((STAGE_NORM[r.stage] || '未知') === '未知' ? r.count : 0), 0)
   }, [data])
 
-  // 近 7 天每天新增意向标记数（缺失日期补 0，避免柱子稀疏）
+  // 近 7 天每天新增进漏斗客户数（缺失日期补 0，避免柱子稀疏）
   const weekTrend = useMemo(() => {
     if (!data) return []
     const dayCounts = new Map<string, number>()
@@ -153,12 +153,12 @@ export default function SalesFunnelPage() {
             <div className="funnel-empty">暂无阶段数据</div>
           )}
           <div className="funnel-footnote">
-            转化率为相对上一阶段的比例 · 成交 &gt; 决策说明部分客户直接标记成交（跳级）· 流失 {lostCount} 人 / 未分类 {unknownCount} 人未计入漏斗
+            转化为相对漏斗顶部「了解」客户的比例 · 成交 ÷ 了解 = 赢单率 · 流失 {lostCount} 人 / 未分类 {unknownCount} 人未计入漏斗
           </div>
 
           {weekTrend.length > 0 && (
             <div className="funnel-trend">
-              <h3>近 7 天意向标记数</h3>
+              <h3>近 7 天新增进漏斗客户数</h3>
               <div className="funnel-trend__bars">
                 {weekTrend.map((d) => (
                   <div key={d.date} className="funnel-trend__col">

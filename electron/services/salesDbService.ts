@@ -179,9 +179,12 @@ class SalesDbService {
 
     this.dbPath = join(userDataPath, 'weflow-sales.db')
 
-    // sql.js 需要定位 WASM 二进制文件。打包后 __dirname 为 dist-electron/，
-    // 因此向上一级找到项目根目录下的 node_modules。
-    const wasmPath = join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
+    // sql.js 需要定位 WASM 二进制文件。打包态在 electron/node_modules；dev/测试态在项目根 node_modules
+    const wasmCandidates = [
+      join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
+    ]
+    const wasmPath = wasmCandidates.find((p) => existsSync(p)) ?? wasmCandidates[0]
     const SQL = await initSqlJs({
       locateFile: () => wasmPath
     })
@@ -617,16 +620,19 @@ class SalesDbService {
   /** 销售漏斗：阶段分布 + 意向标记时间线（近 30 天），前端做归一化与转化计算 */
   funnelStats(): {
     stageDistribution: Array<{ stage: string; count: number }>
-    intentTimeline: Array<{ date: string; stage: string; count: number }>
+    intentTimeline: Array<{ date: string; count: number }>
     totalCustomers: number
   } {
     const stageDistribution = this.all<{ stage: string; cnt: number }>(
       'SELECT stage, COUNT(*) AS cnt FROM customer_profile GROUP BY stage', []
     ).map((r) => ({ stage: String(r.stage || 'unknown'), count: Number(r.cnt) || 0 }))
-    const intentTimeline = this.all<{ date: string; stage: string; cnt: number }>(
-      "SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS date, stage, COUNT(*) AS cnt FROM intent_tag_log WHERE created_at >= ? GROUP BY date, stage ORDER BY date",
+    // 新增进漏斗客户数：按客户首次意向标签日期去重（同一客户重复扫描不重复计数），近 30 天
+    const intentTimeline = this.all<{ date: string; cnt: number }>(
+      `SELECT date(first_ts / 1000, 'unixepoch', 'localtime') AS date, COUNT(*) AS cnt
+       FROM (SELECT session_id, MIN(created_at) AS first_ts FROM intent_tag_log GROUP BY session_id)
+       WHERE first_ts >= ? GROUP BY date ORDER BY date`,
       [Date.now() - 30 * 86400_000]
-    ).map((r) => ({ date: String(r.date || ''), stage: String(r.stage || 'unknown'), count: Number(r.cnt) || 0 }))
+    ).map((r) => ({ date: String(r.date || ''), count: Number(r.cnt) || 0 }))
     const totalCustomers = Number(this.get<{ c: number }>('SELECT COUNT(*) AS c FROM customer_profile', [])?.c || 0)
     return { stageDistribution, intentTimeline, totalCustomers }
   }
