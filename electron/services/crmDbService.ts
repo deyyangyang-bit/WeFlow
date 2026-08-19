@@ -948,7 +948,8 @@ class CrmDbService {
   }
 
   // ─── 物流 ─────────────────────────────────────────────────────────────────
-  unlinkedLogistics(): CrmRow[] { return this.all("SELECT * FROM logistics WHERE link_status = 'unlinked' ORDER BY id") }
+  // 待认领队列：最新发货在前（配合跟单中心分页，今天的发货直接出现在第 1 页）
+  unlinkedLogistics(): CrmRow[] { return this.all("SELECT * FROM logistics WHERE link_status = 'unlinked' ORDER BY id DESC") }
   /** 单号查重：物流群每晚同批列表重扫/补扫时幂等判断 */
   logisticsByTrackingNo(trackingNo: string): CrmRow | null {
     if (!trackingNo) return null

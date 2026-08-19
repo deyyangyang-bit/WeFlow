@@ -46,6 +46,17 @@ ok('claim.not', !isClaimKeyword('吴忠伟总/王先生 2000 许丽娟'))
 const logi = parseLogisticsBatch('800211632728 艾驱电动 陈先生 嘉兴\n800211630064 艾驱电动 朱其峰 杭州')
 ok('logi.rows', logi?.length === 2)
 ok('logi.fields', logi?.[0].trackingNo === '800211632728' && logi?.[0].receiver === '陈先生' && logi?.[0].city === '嘉兴')
+// 尾部跟随闲聊/催单文本（如「@妙妙 查一下这个快递，客户在催」）仍识别为物流记录，只取前 4 段
+const logiTail = parseLogisticsBatch('800214278737 艾驱电动 谭华 东莞 @妙妙 查一下这个快递，客户在催')
+ok('logi.tail.rows', logiTail?.length === 1)
+ok('logi.tail.fields', logiTail?.[0].trackingNo === '800214278737' && logiTail?.[0].brand === '艾驱电动' && logiTail?.[0].receiver === '谭华' && logiTail?.[0].city === '东莞')
+// 多行混合：一行正常一行带尾随 → 整批仍识别
+const logiMix = parseLogisticsBatch('800211632728 艾驱电动 陈先生 嘉兴\n800214278737 艾驱电动 谭华 东莞 客户在催这个单')
+ok('logi.mix', logiMix?.length === 2)
+ok('logi.mix.fields', logiMix?.[1].city === '东莞')
+// 纯聊天行（无 4 段结构）整批仍拒绝，避免误抓
+ok('logi.not-chat', parseLogisticsBatch('@妙妙 查一下这个快递，客户在催') === null)
+ok('logi.not-onlyno', parseLogisticsBatch('800214278737 已安排发货') === null)
 
 // 7 发票 PDF 文件名
 const inv = parseInvoicePdfName('dzfp_263220000006267212401_深圳晶恒李…2959.pdf')

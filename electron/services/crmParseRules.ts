@@ -162,8 +162,10 @@ export function parseShippingInfo(content: string): ShippingInfo | null {
   return { receiver, phone, address, city: cityM ? cityM[1] : '' }
 }
 
-// ─── 物流批量（一行：单号 品牌 收件人 城市）─────────────────────────────────
-const LOGI_LINE_RE = /^(?<no>\d{10,15})\s+(?<brand>\S+)\s+(?<name>\S+)\s+(?<city>\S+)$/
+// ─── 物流批量（一行：单号 品牌 收件人 城市，尾部可跟催单/备注等闲聊文本）────────
+// 尾部容忍：物流群发货列表有时同条消息带跟进话（如「@妙妙 查一下这个快递，客户在催」），
+// 只取前 4 段（单号 品牌 收件人 城市），尾部文本不参与匹配也不影响整批识别。
+const LOGI_LINE_RE = /^(?<no>\d{10,15})\s+(?<brand>\S+)\s+(?<name>\S+)\s+(?<city>\S+)(?:\s+\S.*)?$/
 
 export function parseLogisticsBatch(content: string): LogisticsRow[] | null {
   if (!content) return null

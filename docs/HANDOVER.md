@@ -201,12 +201,15 @@
 - **改名**：侧边栏/跟单中心页/设置页/CrmWorkbench 通知文案「确认中心」→「跟单中心」；`/crm-review` 路由、`crmAutoConfirm*`/`crmEnrich*` 配置键名不变
 - **logistics 表**新增 `owner_sales`（认领销售，认领时手动填）+ `signed_at`（签收时间，0=未签收）；`status` 语义扩展：`shipped`（已发货）/`signed`（已确认签收）
 - **落库幂等**：物流批量解析 INSERT 前按 `tracking_no` 查重（`logisticsByTrackingNo`），已存在仅刷新 `latest_update_at`，每晚同批列表重扫/补扫不重复建单
+- **解析尾部容忍**：`LOGI_LINE_RE` 尾部可跟催单/备注等闲聊文本（如「`800214278737 艾驱电动 谭华 东莞 @妙妙 查一下这个快递，客户在催`」），只取「单号 品牌 收件人 城市」前 4 段，不影响整批识别；纯聊天行（无 4 段结构）仍拒绝，不误抓
 - **今日行动 R8 物流跟进**（照抄 R7 报价跟进事实驱动模式）：`pendingLogisticsOverdue(hours)` 取已认领 + 发货超阈值未签收 → 生成 `rule_r8_logistics_overdue` 卡，虚拟 sessionId `logi:<logistics_id>`（不参与沉默天数/阶段过滤）；`completeUnifiedSignal` 识别 `logi:` 前缀，点完成 = 确认签收（卡 done + logistics signed + activity 三一致）
 - **启动补扫**：app 启动时把物流群 `last_scan` 回退到昨天 00:00（`processed_msg` 幂等），应对物流更新不准时；调度器 60s 增量补扫
 - **跟单中心物流区**（CrmReviewPage）：待认领（单号/品牌/收件人/城市 + 认领销售输入 + 选合同/自动匹配）→ 已认领待签收（超期标红徽章「超期 N 小时」+ 确认签收按钮）→ 已签收（折叠）；顶部统计待认领/待签收/超期数
+- **三区分页**：待认领/待签收/已签收各每页 **10 条**（`LogiPager` 复用 `crm-pager` 样式，越界自动收敛）；待认领队列改最新发货在前（`unlinkedLogistics` ORDER BY id DESC），今天发货直接在第 1 页
+- **认领反馈可见化**：认领/自动匹配/签收结果就近行内提示（`logi-notice`，不再依赖页面顶部 notice 被滚动遮挡）；未选合同按钮禁用（置灰 + tooltip）；无合同库时待认领区显示引导横幅（先到客户工作台建合同）
 - **配置项**：`crmLogisticsOverdueHours`（24，1-168 设置页可调，超期阈值）
 - **二期预留**：`markLogisticsSigned` 独立成方法 + `crmLogisticsOverdueHours` 阈值就位 → 接快递 100 API（~0.03 元/次）命中签收自动调用，未签收才提醒销售
-- **验证**：`scripts/crm-logistics-test.ts` **25/25**（单号幂等/认领带销售/超期判定边界/签收闭环/logisticsList 分类）；`tsc --noEmit` 零错误；crm 全系单测回归通过（lead 53 / workbench 48 / autoconfirm 56 / enrich 55 / golden 39 / docgen 68）
+- **验证**：`scripts/crm-logistics-test.ts` **25/25**（单号幂等/认领带销售/超期判定边界/签收闭环/logisticsList 分类）；`scripts/crm-golden-test.ts` **45/45**（含解析尾部容忍用例）；`tsc --noEmit` 零错误 + vite build 通过；crm 全系单测回归通过（lead 53 / workbench 48 / claim 17 / autoconfirm 56 / enrich 55 / docgen 68）
 
 ---
 
