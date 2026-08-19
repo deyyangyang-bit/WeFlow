@@ -1,12 +1,12 @@
 /**
  * SalesReportPage.tsx
- * 销售周报/月报分析页面
+ * 销售复盘页面：周报 / 月报（消息量统计）+ 周复盘（经营分析：谁热了/谁冷了/谁该放弃/下周重点）
  */
 
 import { useCallback, useEffect, useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { BarChart3, Calendar, RefreshCw, Trash2, Sparkles, Users, MessageSquare, TrendingUp, AlertCircle } from 'lucide-react'
-import { useSalesReportStore, type ReportStats } from '../stores/salesReportStore'
+import { BarChart3, Calendar, RefreshCw, Trash2, Sparkles, Users, MessageSquare, TrendingUp, AlertCircle, Flame, Snowflake, Layers, UserX } from 'lucide-react'
+import { useSalesReportStore, type ReportStats, type WeeklyReviewStats } from '../stores/salesReportStore'
 import { Avatar } from '../components/Avatar'
 import './SalesReportPage.scss'
 
@@ -16,8 +16,13 @@ function formatPeriod(start: number, end: number, type: string): string {
   const s = new Date(start)
   const e = new Date(end)
   const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`
-  if (type === 'week') return `${fmt(s)} - ${fmt(e)}`
+  if (type === 'week' || type === 'weekly_review') return `${fmt(s)} - ${fmt(e)}`
   return `${s.getFullYear()}年${s.getMonth() + 1}月`
+}
+
+function periodTypeLabel(type: string): string {
+  if (type === 'weekly_review') return '周复盘'
+  return type === 'week' ? '周报' : '月报'
 }
 
 function formatTime(ts: number): string {
@@ -83,13 +88,76 @@ function TopContactsChart({ contacts }: { contacts: ReportStats['topContacts'] }
   return <ReactECharts option={option} style={{ height: Math.max(150, top5.length * 40) }} />
 }
 
+// ─── 周复盘子组件 ─────────────────────────────────────────────────────────────
+
+function ReviewList({ title, items, empty, tone }: { title: string; items: string[]; empty: string; tone: 'hot' | 'cold' | 'drop' }) {
+  return (
+    <div className={`sr-review-list ${tone}`}>
+      <h4>{title} {items.length > 0 && <span className="sr-review-count">{items.length}</span>}</h4>
+      {items.length === 0 ? (
+        <div className="sr-empty-mini">{empty}</div>
+      ) : (
+        <ul>
+          {items.map((it, i) => (
+            <li key={i}><span className="sr-review-item-dot" />{it}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ReviewSections({ stats }: { stats: WeeklyReviewStats }) {
+  const stageEntries = useMemo(() =>
+    Object.entries(stats.stageCounts || {})
+      .filter(([, v]) => Number(v) > 0)
+      .sort((a, b) => Number(b[1]) - Number(a[1])),
+    [stats.stageCounts])
+  const maxCount = stageEntries.length > 0 ? Number(stageEntries[0][1]) : 1
+  const labelOf = (en: string) => stats.stageLabel?.[en] || en
+
+  return (
+    <>
+      <div className="sr-review-metrics">
+        <StatCard icon={Layers} label="管道客户" value={stats.pipelineTotal} color="#007aff" />
+        <StatCard icon={Flame} label="本周热了" value={stats.hotCount} color="#ff3b30" />
+        <StatCard icon={Snowflake} label="变冷(>30天)" value={stats.coldCount} color="#34c759" />
+        <StatCard icon={UserX} label="建议放弃" value={stats.dropCount} color="#8e8e93" />
+      </div>
+
+      {stageEntries.length > 0 && (
+        <div className="sr-review-stage">
+          <h4>阶段分布</h4>
+          <div className="sr-stage-dist">
+            {stageEntries.map(([en, count]) => (
+              <div key={en} className="sr-stage-row">
+                <span className="sr-stage-label">{labelOf(en)}</span>
+                <div className="sr-stage-bar-track">
+                  <div className="sr-stage-bar" style={{ width: `${(Number(count) / maxCount) * 100}%` }} />
+                </div>
+                <span className="sr-stage-count">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="sr-review-sections">
+        <ReviewList title="🔥 谁热了" items={stats.hotCustomers || []} empty="本周没有阶段前进的客户" tone="hot" />
+        <ReviewList title="❄️ 谁冷了" items={stats.coldCustomers || []} empty="没有沉默超 30 天的客户" tone="cold" />
+        <ReviewList title="✂️ 建议放弃" items={stats.dropCandidates || []} empty="没有需要放弃的客户" tone="drop" />
+      </div>
+    </>
+  )
+}
+
 // ─── 主页面 ──────────────────────────────────────────────────────────────────
 
 export default function SalesReportPage() {
   const {
-    reports, currentReport, currentStats,
+    reports, currentReport, currentStats, currentReviewStats,
     generating, error, periodType,
-    setPeriodType, generateReport, fetchReports, viewReport, deleteReport
+    setPeriodType, generateReport, generateReview, fetchReports, viewReport, deleteReport
   } = useSalesReportStore()
 
   useEffect(() => { fetchReports() }, [fetchReports])
@@ -98,12 +166,18 @@ export default function SalesReportPage() {
     generateReport()
   }, [generateReport])
 
+  const handleReview = useCallback(() => {
+    generateReview()
+  }, [generateReview])
+
+  const isWeeklyReview = currentReport?.period_type === 'weekly_review'
+
   return (
     <div className="sr-page">
       <div className="sr-page-header">
         <div className="sr-page-title">
           <BarChart3 size={22} />
-          <h2>销售报表</h2>
+          <h2>销售复盘</h2>
         </div>
 
         <div className="sr-page-toolbar">
@@ -130,6 +204,15 @@ export default function SalesReportPage() {
             <RefreshCw size={16} className={generating ? 'spinning' : ''} />
             {generating ? '生成中...' : `生成${periodType === 'week' ? '周' : '月'}报`}
           </button>
+
+          <button
+            className="sr-btn sr-btn-review"
+            onClick={handleReview}
+            disabled={generating}
+          >
+            <Sparkles size={16} className={generating ? 'spinning' : ''} />
+            {generating ? '生成中...' : '生成周复盘'}
+          </button>
         </div>
       </div>
 
@@ -141,86 +224,115 @@ export default function SalesReportPage() {
       )}
 
       <div className="sr-page-body">
-        {/* 当前报表 */}
-        {currentReport && currentStats && (
+        {/* 当前报告 */}
+        {currentReport && (
           <div className="sr-current-report">
             <div className="sr-report-header">
               <Calendar size={16} />
               <span>{formatPeriod(currentReport.period_start, currentReport.period_end, currentReport.period_type)}</span>
+              <span className="sr-report-type">{periodTypeLabel(currentReport.period_type)}</span>
               <span className="sr-report-time">生成于 {formatTime(currentReport.created_at)}</span>
             </div>
 
-            {/* 统计卡片 */}
-            <div className="sr-stats-grid">
-              <StatCard icon={MessageSquare} label="消息总量" value={currentStats.totalMessages} color="#007aff" />
-              <StatCard icon={Users} label="活跃客户" value={currentStats.activeContacts} color="#34c759" />
-              <StatCard icon={TrendingUp} label="日均消息" value={
-                currentStats.dailyMessageCounts.length > 0
-                  ? Math.round(currentStats.totalMessages / currentStats.dailyMessageCounts.length)
-                  : 0
-              } color="#ff9500" />
-            </div>
-
-            {/* AI 摘要 */}
-            {currentReport.ai_summary && (
-              <div className="sr-ai-summary">
-                <div className="sr-ai-summary-header">
-                  <Sparkles size={16} />
-                  <span>AI 分析摘要</span>
-                </div>
-                <p>{currentReport.ai_summary}</p>
-              </div>
-            )}
-
-            {/* 图表 */}
-            <div className="sr-charts-grid">
-              {currentStats.dailyMessageCounts.length > 0 && (
-                <div className="sr-chart-card">
-                  <h4>每日消息量</h4>
-                  <DailyChart data={currentStats.dailyMessageCounts} />
-                </div>
-              )}
-
-              {currentStats.topContacts.length > 0 && (
-                <div className="sr-chart-card">
-                  <h4>Top 互动客户</h4>
-                  <TopContactsChart contacts={currentStats.topContacts} />
-                </div>
-              )}
-            </div>
-
-            {/* Top 客户列表 */}
-            {currentStats.topContacts.length > 0 && (
-              <div className="sr-top-list">
-                <h4>互动排行</h4>
-                <div className="sr-top-items">
-                  {currentStats.topContacts.map((c, i) => (
-                    <div key={c.sessionId} className="sr-top-item">
-                      <span className="sr-top-rank">{i + 1}</span>
-                      <Avatar src={c.avatarUrl} name={c.displayName} size={32} />
-                      <span className="sr-top-name">{c.displayName}</span>
-                      <span className="sr-top-count">{c.messageCount} 条</span>
+            {isWeeklyReview ? (
+              /* ── 周复盘视图 ── */
+              <>
+                {currentReport.ai_summary && (
+                  <div className="sr-ai-summary">
+                    <div className="sr-ai-summary-header">
+                      <Sparkles size={16} />
+                      <span>AI 复盘</span>
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <p>{currentReport.ai_summary}</p>
+                  </div>
+                )}
+                {currentReviewStats ? (
+                  <ReviewSections stats={currentReviewStats} />
+                ) : (
+                  <div className="sr-empty-mini" style={{ padding: '20px 4px' }}>
+                    该周复盘为旧格式，点击右上角「生成周复盘」重新生成以查看完整视图
+                  </div>
+                )}
+              </>
+            ) : (
+              /* ── 周报 / 月报视图 ── */
+              currentStats && (
+                <>
+                  <div className="sr-stats-grid">
+                    <StatCard icon={MessageSquare} label="消息总量" value={currentStats.totalMessages} color="#007aff" />
+                    <StatCard icon={Users} label="活跃客户" value={currentStats.activeContacts} color="#34c759" />
+                    <StatCard icon={TrendingUp} label="日均消息" value={
+                      currentStats.dailyMessageCounts.length > 0
+                        ? Math.round(currentStats.totalMessages / currentStats.dailyMessageCounts.length)
+                        : 0
+                    } color="#ff9500" />
+                  </div>
+
+                  {currentReport.ai_summary && (
+                    <div className="sr-ai-summary">
+                      <div className="sr-ai-summary-header">
+                        <Sparkles size={16} />
+                        <span>AI 分析摘要</span>
+                      </div>
+                      <p>{currentReport.ai_summary}</p>
+                    </div>
+                  )}
+
+                  <div className="sr-charts-grid">
+                    {currentStats.dailyMessageCounts.length > 0 && (
+                      <div className="sr-chart-card">
+                        <h4>每日消息量</h4>
+                        <DailyChart data={currentStats.dailyMessageCounts} />
+                      </div>
+                    )}
+
+                    {currentStats.topContacts.length > 0 && (
+                      <div className="sr-chart-card">
+                        <h4>Top 互动客户</h4>
+                        <TopContactsChart contacts={currentStats.topContacts} />
+                      </div>
+                    )}
+                  </div>
+
+                  {currentStats.topContacts.length > 0 && (
+                    <div className="sr-top-list">
+                      <h4>互动排行</h4>
+                      <div className="sr-top-items">
+                        {currentStats.topContacts.map((c, i) => (
+                          <div key={c.sessionId} className="sr-top-item">
+                            <span className="sr-top-rank">{i + 1}</span>
+                            <Avatar src={c.avatarUrl} name={c.displayName} size={32} />
+                            <span className="sr-top-name">{c.displayName}</span>
+                            <span className="sr-top-count">{c.messageCount} 条</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )
             )}
           </div>
         )}
 
-        {/* 历史报表 */}
+        {/* 历史报告 */}
         <div className="sr-history">
-          <h3>历史报表</h3>
+          <h3>历史报告</h3>
           {reports.length === 0 ? (
             <div className="sr-empty">
               <BarChart3 size={40} />
-              <p>暂无报表，点击上方按钮生成第一份{periodType === 'week' ? '周' : '月'}报</p>
+              <p>暂无报告，点击上方按钮生成第一份</p>
             </div>
           ) : (
             <div className="sr-history-list">
               {reports.map(r => {
                 let stats: ReportStats | null = null
-                try { stats = JSON.parse(r.stats) } catch {}
+                try {
+                  const parsed = JSON.parse(r.stats)
+                  if (r.period_type !== 'weekly_review' && parsed && Array.isArray(parsed.dailyMessageCounts)) {
+                    stats = parsed as ReportStats
+                  }
+                } catch { /* 脏 stats 忽略 */ }
                 return (
                   <div
                     key={r.id}
@@ -229,7 +341,10 @@ export default function SalesReportPage() {
                   >
                     <div className="sr-history-info">
                       <span className="sr-history-period">
-                        {r.period_type === 'week' ? '周报' : '月报'} · {formatPeriod(r.period_start, r.period_end, r.period_type)}
+                        <span className={`sr-history-badge ${r.period_type === 'weekly_review' ? 'review' : ''}`}>
+                          {periodTypeLabel(r.period_type)}
+                        </span>
+                        {formatPeriod(r.period_start, r.period_end, r.period_type)}
                       </span>
                       <span className="sr-history-meta">
                         {stats ? `${stats.totalMessages} 条消息 · ${stats.activeContacts} 位客户` : ''}

@@ -146,7 +146,7 @@ const STAGE_CN_TO_EN: Record<string, string> = {
   '已沟通': 'contacted',
 }
 
-function normalizeStage(raw: string | null | undefined): string {
+export function normalizeStage(raw: string | null | undefined): string {
   const s = (raw || '').trim()
   if (!s) return 'unknown'
   return STAGE_CN_TO_EN[s] || s  // 已经是英文则原样返回

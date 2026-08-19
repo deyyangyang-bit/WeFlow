@@ -351,3 +351,169 @@
   .sr-history-item:hover & { opacity: 1; }
   &:hover { background: #fee; color: #e53e3e; }
 }
+
+// ─── 周复盘 ──────────────────────────────────────────────────────────────────
+
+.sr-btn-review {
+  background: linear-gradient(135deg, #8e2de2, #4a00e0);
+  color: #fff;
+  &:hover:not(:disabled) { opacity: 0.9; }
+}
+
+.sr-report-type {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--accent-color, #007aff) 12%, transparent);
+  color: var(--accent-color, #007aff);
+}
+
+.sr-review-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+
+  .sr-stat-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}
+
+.sr-empty-mini {
+  font-size: 13px;
+  color: var(--text-tertiary, #999);
+}
+
+.sr-review-stage {
+  h4 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--text-primary, #333); }
+}
+
+.sr-stage-dist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sr-stage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  .sr-stage-label {
+    width: 52px;
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--text-secondary, #666);
+  }
+
+  .sr-stage-bar-track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--border-color, #e8e8e8) 70%, transparent);
+    overflow: hidden;
+  }
+
+  .sr-stage-bar {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #8e2de2, #4a00e0);
+  }
+
+  .sr-stage-count {
+    width: 28px;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary, #333);
+  }
+}
+
+.sr-review-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sr-review-list {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color, #e8e8e8);
+  background: var(--bg-primary, #fff);
+
+  h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary, #333);
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  li {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary, #666);
+    word-break: break-all;
+  }
+
+  &.hot .sr-review-item-dot { background: #ff3b30; }
+  &.cold .sr-review-item-dot { background: #34c759; }
+  &.drop .sr-review-item-dot { background: #8e8e93; }
+}
+
+.sr-review-count {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color, #007aff) 14%, transparent);
+  color: var(--accent-color, #007aff);
+}
+
+.sr-review-item-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+// ─── 历史报告类型徽章 ────────────────────────────────────────────────────────
+
+.sr-history-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--border-color, #e8e8e8) 60%, transparent);
+  color: var(--text-secondary, #666);
+
+  &.review {
+    background: color-mix(in srgb, #8e2de2 14%, transparent);
+    color: #8e2de2;
+  }
+}
+
+@media (max-width: 980px) {
+  .sr-review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sr-review-sections { grid-template-columns: 1fr; }
+}

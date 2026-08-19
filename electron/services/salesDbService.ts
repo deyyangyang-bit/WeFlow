@@ -547,6 +547,14 @@ class SalesDbService {
     )
   }
 
+  /** 某时间点之前的最新一条意向记录（周复盘基线对比用：上周最终阶段） */
+  intentBefore(sessionId: string, ts: number): IntentTagLog | undefined {
+    return this.get<IntentTagLog>(
+      'SELECT * FROM intent_tag_log WHERE session_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT 1',
+      [sessionId, ts]
+    )
+  }
+
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
 
   todoList(filters?: { status?: string; session_id?: string; limit?: number }): FollowUpTask[] {

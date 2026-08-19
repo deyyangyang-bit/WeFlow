@@ -6,7 +6,9 @@
  */
 
 import { wcdbService } from './wcdbService'
-import { salesDbService } from './salesDbService'
+import { salesDbService, type CustomerProfile } from './salesDbService'
+import { crmDbService } from './crmDbService'
+import { normalizeStage } from './salesActionEngine'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
 
@@ -38,6 +40,129 @@ export interface GenerateReportResult {
     created_at?: number
   }
   error?: string
+}
+
+/** 周复盘统计结构（computeWeeklyReviewStats 纯函数产物，随 stats 落库） */
+export interface WeeklyReviewStats {
+  pipelineTotal: number
+  stageCounts: Record<string, number>
+  activeCount: number
+  hotCount: number
+  coldCount: number
+  dropCount: number
+  /** 明细（各取前 5，活跃前 10），前端展示 + prompt 用 */
+  activeCustomers: string[]
+  hotCustomers: string[]
+  coldCustomers: string[]
+  dropCandidates: string[]
+  /** 阶段英文 key → 中文 label（前端渲染 + prompt 用） */
+  stageLabel: Record<string, string>
+}
+
+// ─── 阶段语义 ─────────────────────────────────────────────────────────────────
+
+/** 英文阶段 → 中文展示名（customer_profile/intent 存英文或中文混存，统一归一化后转回中文展示） */
+export const STAGE_EN_TO_CN: Record<string, string> = {
+  new: '新客', contacted: '了解', quoted: '比价', negotiating: '决策', won: '成交', lost: '流失', dormant: '沉默', unknown: '未知'
+}
+
+/** 阶段序：用于「热了」= 本周阶段相对上周前进 判定 */
+const STAGE_ORDER: Record<string, number> = {
+  unknown: 0, new: 0, dormant: 0, contacted: 1, quoted: 2, negotiating: 3, won: 4, lost: 5
+}
+
+function stageToCn(en: string): string {
+  return STAGE_EN_TO_CN[en] || en
+}
+
+/**
+ * 纯函数：从「周期内消息会话」中筛出客户会话（命中 CRM account 或 AI 画像 customer_profile）。
+ * 过滤掉家人/同事/快递员等非客户的高消息量会话，避免 Top 互动排行失真。
+ */
+export function filterCustomerSessions(
+  contactMessages: Map<string, number>,
+  accountMap: Record<string, { id: number; name: string }>,
+  profileMap: Map<string, CustomerProfile>
+): { activeContacts: number; topSessions: string[] } {
+  const customerSessions = [...contactMessages.entries()].filter(([sid]) => accountMap[sid] || profileMap.has(sid))
+  return {
+    activeContacts: customerSessions.length,
+    topSessions: customerSessions
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([sid]) => sid)
+  }
+}
+
+/**
+ * 纯函数：计算周复盘统计（热/冷/放弃/阶段分布），不触网、不落库。
+ * 「热了」= 本周最新意向阶段相对上周基线前进（上周无记录 → 新进入管道也算热）。
+ */
+export function computeWeeklyReviewStats(
+  customers: CustomerProfile[],
+  opts: {
+    nowSec: number
+    weekStartSec: number
+    getIntentLatest: (sessionId: string) => { stage?: string } | undefined
+    getIntentBefore: (sessionId: string, ts: number) => { stage?: string } | undefined
+  }
+): WeeklyReviewStats {
+  const { nowSec, weekStartSec, getIntentLatest, getIntentBefore } = opts
+  const stageCounts: Record<string, number> = {}
+  const activeCustomers: string[] = []
+  const hotCustomers: string[] = []
+  const coldCustomers: string[] = []
+  const dropCandidates: string[] = []
+
+  for (const c of customers) {
+    const enStage = normalizeStage(c.stage)
+    stageCounts[enStage] = (stageCounts[enStage] || 0) + 1
+
+    const lastContact = c.last_contact_at ?? 0
+    const silentDays = (nowSec - lastContact) / 86400
+    const label = c.display_name || c.session_id
+
+    // 本周有互动
+    if (lastContact >= weekStartSec) activeCustomers.push(label)
+
+    // 变冷：接触/比价/决策阶段，沉默超 30 天（修复原中英混存漏判）
+    if (['contacted', 'negotiating', 'quoted'].includes(enStage) && silentDays > 30) {
+      coldCustomers.push(`${label}(${stageToCn(enStage)},${Math.floor(silentDays)}天)`)
+    }
+
+    // 建议放弃：沉默超 60 天且未成交/未流失
+    if (silentDays > 60 && !['won', 'lost'].includes(enStage)) {
+      dropCandidates.push(label)
+    }
+
+    // 热了：本周最新阶段相对上周基线前进（已成交/已流失不算热点）
+    const cur = getIntentLatest(c.session_id)
+    const curStage = cur?.stage ? normalizeStage(cur.stage) : ''
+    if (curStage && !['lost', 'won'].includes(curStage)) {
+      const prev = getIntentBefore(c.session_id, weekStartSec)
+      const prevStage = prev?.stage ? normalizeStage(prev.stage) : ''
+      // 本周前进：无上周基线（新进入管道）或 本周序 > 上周序
+      if (!prevStage || (STAGE_ORDER[curStage] ?? 0) > (STAGE_ORDER[prevStage] ?? 0)) {
+        hotCustomers.push(`${label}→${stageToCn(curStage)}`)
+      }
+    }
+  }
+
+  const pipelineTotal = customers.filter((c) => !['won', 'lost'].includes(normalizeStage(c.stage))).length
+
+  return {
+    pipelineTotal,
+    stageCounts,
+    activeCount: activeCustomers.length,
+    hotCount: hotCustomers.length,
+    coldCount: coldCustomers.length,
+    dropCount: dropCandidates.length,
+    activeCustomers: activeCustomers.slice(0, 10),
+    hotCustomers: hotCustomers.slice(0, 5),
+    coldCustomers: coldCustomers.slice(0, 5),
+    dropCandidates: dropCandidates.slice(0, 5),
+    stageLabel: STAGE_EN_TO_CN
+  }
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
@@ -164,26 +289,37 @@ class SalesReportService {
         }
       }
 
-      // 4. 获取 Top N 联系人的显示名和头像
-      const topSessionIds = [...contactMessages.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([id]) => id)
+      // 4. 过滤非客户会话（命中 CRM account 或 AI 画像 customer_profile），再取 Top 10
+      const accountMap = crmDbService.accountsBySessions([...contactMessages.keys()])
+      const profileMap = new Map<string, CustomerProfile>()
+      for (const p of salesDbService.customerAll()) {
+        if (p.session_id) profileMap.set(p.session_id, p)
+      }
+      const { activeContacts, topSessions } = filterCustomerSessions(contactMessages, accountMap, profileMap)
 
-      const [namesResult, avatarsResult] = await Promise.all([
-        wcdbService.getDisplayNames(topSessionIds),
-        wcdbService.getAvatarUrls(topSessionIds)
-      ])
+      // 5. 获取 Top N 联系人的显示名和头像（无客户会话则跳过查询）
+      const topSessionIds = topSessions
+      let nameMap: Record<string, string> = {}
+      let avatarMap: Record<string, string> = {}
+      if (topSessionIds.length > 0) {
+        const [namesResult, avatarsResult] = await Promise.all([
+          wcdbService.getDisplayNames(topSessionIds),
+          wcdbService.getAvatarUrls(topSessionIds)
+        ])
+        nameMap = namesResult.success ? (namesResult.map ?? {}) : {}
+        avatarMap = avatarsResult.success ? (avatarsResult.map ?? {}) : {}
+      }
 
-      const nameMap = namesResult.success ? (namesResult.map ?? {}) : {}
-      const avatarMap = avatarsResult.success ? (avatarsResult.map ?? {}) : {}
-
-      const topContacts = topSessionIds.map(id => ({
-        sessionId: id,
-        displayName: nameMap[id] || id,
-        avatarUrl: avatarMap[id],
-        messageCount: contactMessages.get(id) ?? 0
-      }))
+      const topContacts = topSessionIds.map(id => {
+        const account = accountMap[id]
+        const profile = profileMap.get(id)
+        return {
+          sessionId: id,
+          displayName: account?.name || profile?.display_name || nameMap[id] || id,
+          avatarUrl: avatarMap[id],
+          messageCount: contactMessages.get(id) ?? 0
+        }
+      })
 
       // 5. 组装统计数据
       const dailyMessageCounts = [...dailyCounts.entries()]
@@ -192,7 +328,7 @@ class SalesReportService {
 
       const stats: ReportStats = {
         totalMessages,
-        activeContacts: contactMessages.size,
+        activeContacts,
         topContacts,
         dailyMessageCounts,
         myMessageCount: 0, // 简化版暂不区分收发
@@ -232,7 +368,9 @@ class SalesReportService {
   }
 
   /**
-   * 生成周复盘（PRD v2 P1）：不只是统计，重点是"谁热了/谁冷了/谁该放弃/下周重点"
+   * 生成周复盘（PRD v2 P1）：不只是统计，重点是"谁热了/谁冷了/谁该放弃/下周重点"。
+   * 统计由 computeWeeklyReviewStats 纯函数产出（热=本周 vs 上周基线对比，冷/放弃按沉默天数），
+   * AI 仅负责把统计转成经营建议文案。
    */
   async generateWeeklyReview(): Promise<GenerateReportResult> {
     try {
@@ -244,60 +382,28 @@ class SalesReportService {
       const nowSec = Math.floor(Date.now() / 1000)
       const weekStartSec = Math.floor(range.start / 1000)
 
-      // 获取所有客户及其阶段
       const customers = salesDbService.customerAll()
       if (customers.length === 0) {
         return { success: false, error: '暂无客户数据，请先连接微信数据库' }
       }
 
-      // 分类统计
-      const stageCounts: Record<string, number> = {}
-      const hotCustomers: string[] = []  // 阶段前进
-      const coldCustomers: string[] = [] // 阶段后退/进入 dormant
-      const dropCandidates: string[] = [] // 建议放弃
-      const activeThisWeek: string[] = []
-
-      for (const c of customers) {
-        const stage = c.stage || 'unknown'
-        stageCounts[stage] = (stageCounts[stage] || 0) + 1
-
-        const lastContact = c.last_contact_at ?? 0
-        const silentDays = (nowSec - lastContact) / 86400
-
-        // 本周有互动的
-        if (lastContact >= weekStartSec) {
-          activeThisWeek.push(c.display_name || c.session_id)
-        }
-
-        // 沉默超 30 天的 contacted/negotiating → 变冷了
-        if (['contacted', 'negotiating', 'quoted'].includes(stage) && silentDays > 30) {
-          coldCustomers.push(`${c.display_name || c.session_id}(${stage},${Math.floor(silentDays)}天)`)
-        }
-
-        // 沉默超 60 天 → 建议放弃
-        if (silentDays > 60 && !['won', 'lost'].includes(stage)) {
-          dropCandidates.push(c.display_name || c.session_id)
-        }
-
-        // 本周阶段变化（通过 intent_tag_log 判断）
-        const latestIntent = salesDbService.intentGetLatest(c.session_id)
-        if (latestIntent && (latestIntent.created_at ?? 0) >= range.start) {
-          if (['quoted', 'negotiating', 'won'].includes(latestIntent.stage)) {
-            hotCustomers.push(`${c.display_name || c.session_id}→${latestIntent.stage}`)
-          }
-        }
-      }
+      // 统计（纯函数，可单测）：热/冷/放弃/阶段分布 + 明细
+      const stats = computeWeeklyReviewStats(customers, {
+        nowSec,
+        weekStartSec,
+        getIntentLatest: (sid) => salesDbService.intentGetLatest(sid),
+        getIntentBefore: (sid, ts) => salesDbService.intentBefore(sid, ts)
+      })
 
       // 构建 AI prompt
-      const pipelineTotal = customers.filter(c => !['won', 'lost'].includes(c.stage || '')).length
       const prompt = `你是叉车/仓储设备销售顾问。以下是本周管道数据：
 
-管道中客户总数：${pipelineTotal}
-阶段分布：${JSON.stringify(stageCounts)}
-本周活跃客户(${activeThisWeek.length}人)：${activeThisWeek.slice(0, 10).join('、') || '无'}
-阶段前进(热了)：${hotCustomers.slice(0, 5).join('、') || '无'}
-变冷(>30天无互动)：${coldCustomers.slice(0, 5).join('、') || '无'}
-建议放弃(>60天)：${dropCandidates.slice(0, 5).join('、') || '无'}
+管道中客户总数：${stats.pipelineTotal}
+阶段分布：${JSON.stringify(stats.stageCounts)}
+本周活跃客户(${stats.activeCount}人)：${stats.activeCustomers.join('、') || '无'}
+阶段前进(热了)：${stats.hotCustomers.join('、') || '无'}
+变冷(>30天无互动)：${stats.coldCustomers.join('、') || '无'}
+建议放弃(>60天)：${stats.dropCandidates.join('、') || '无'}
 
 请生成本周复盘，格式：
 1. 一句话总结本周状态
@@ -316,15 +422,6 @@ class SalesReportService {
       )
 
       // 持久化为 report_snapshot（period_type = 'weekly_review'）
-      const stats = {
-        pipelineTotal,
-        stageCounts,
-        activeCount: activeThisWeek.length,
-        hotCount: hotCustomers.length,
-        coldCount: coldCustomers.length,
-        dropCount: dropCandidates.length
-      }
-
       const report = salesDbService.reportCreate({
         period_type: 'weekly_review',
         period_start: range.start,

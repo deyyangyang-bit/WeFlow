@@ -1788,6 +1788,7 @@ export interface ElectronAPI {
     reportList: (limit?: number) => Promise<{ success: boolean; reports: any[]; error?: string }>
     reportGet: (id: number) => Promise<{ success: boolean; report?: any; error?: string }>
     reportDelete: (id: number) => Promise<{ success: boolean; error?: string }>
+    reviewGenerate: () => Promise<{ success: boolean; report?: any; error?: string }>
 
     // 客户画像
     customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
