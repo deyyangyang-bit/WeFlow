@@ -1723,6 +1723,9 @@ export interface ElectronAPI {
     opportunityStats: () => Promise<{ stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number }>
     opportunityStage: (id: number, stage: string) => Promise<boolean>
     opportunityClose: (id: number, status: 'won' | 'lost', reason: string) => Promise<boolean>
+    opportunityIntentScore: (accountId: number) => Promise<{ score: number; level: string; factors: Array<{ label: string; delta: number; reason: string }> } | null>
+    riskList: (opts?: { accountId?: number; status?: string }) => Promise<any[]>
+    riskResolve: (id: number) => Promise<boolean>
     enrichRun: (sessionId: string, displayName?: string) => Promise<any>
     manualSet: (accountId: number, field: string, value: string) => Promise<{ ok: boolean; reason?: string }>
     enrichBackfill: () => Promise<{ processed: number; updated: number; failed: number }>

@@ -14,7 +14,7 @@ import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
-  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, type AllocationRow, type ShippingInfo
+  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, parseRiskSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { salesDbService } from './salesDbService'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
@@ -187,6 +187,21 @@ async function scanAll(): Promise<number> {
                 })
                 if (or.created) salesLog('INFO', `[CrmParse] 采购信号「${name}」→ 新商机 ${buySig.product}${buySig.quantity ? `×${buySig.quantity}` : ''}（${buySig.detail}）`)
               } catch (e) { salesLog('WARN', `[CrmParse] 商机识别失败 ${name}: ${e}`) }
+            }
+          }
+          // 风险信号（P0）：竞品/价格/服务 → crm_risk（同类型幂等累积）
+          const riskSig = parseRiskSignal(textForSignal, isSend)
+          if (riskSig) {
+            const riskAccountId = accountId
+            if (riskAccountId) {
+              try {
+                const activeOpp = crmDbService.activeOpportunitiesByAccount(riskAccountId)[0]
+                const rr = crmDbService.upsertRisk(riskAccountId, {
+                  riskType: riskSig.riskType, severity: riskSig.severity,
+                  detail: riskSig.detail, opportunityId: activeOpp ? Number(activeOpp.id) : undefined
+                })
+                if (rr.created) salesLog('INFO', `[CrmParse] 风险信号「${name}」(${riskSig.riskType})`)
+              } catch (e) { salesLog('WARN', `[CrmParse] 风险识别失败 ${name}: ${e}`) }
             }
           }
 

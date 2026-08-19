@@ -23,7 +23,21 @@
   .opp-card__qty { font-size: 12px; color: #64748b; }
   .opp-card__sub { display: flex; gap: 12px; align-items: center; }
   .opp-card__amt { font-size: 13px; font-weight: 600; color: #1e293b; }
-  .opp-card__time { font-size: 11px; color: #94a3b8; margin-left: auto; } }
+    .opp-card__time { font-size: 11px; color: #94a3b8; margin-left: auto; } }
+/* 意向评分条 */
+.opp-score { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  &.opp-score--高意向 .opp-score__fill { background: #16a34a; }
+  &.opp-score--中意向 .opp-score__fill { background: #f59e0b; }
+  &.opp-score--低意向 .opp-score__fill { background: #f97316; }
+  .opp-score__bar { width: 60px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; display: inline-block; }
+  .opp-score__fill { height: 100%; background: #94a3b8; border-radius: 3px; }
+  .opp-score__num { color: #475569; } }
+/* 详情页：意向评分依据 */
+.opp-factors { border-top: 1px solid #f1f5f9; padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
+.opp-factor { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0;
+  .opp-factor__label { color: #475569; width: 64px; flex-shrink: 0; }
+  .opp-factor__delta { font-weight: 600; width: 40px; flex-shrink: 0; text-align: right; &.pos { color: #16a34a; } &.neg { color: #dc2626; } }
+  .opp-factor__reason { color: #64748b; } }
 .opp-badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; color: #fff;
   &.opp-badge--了解 { background: #60a5fa; }
   &.opp-badge--比价 { background: #f59e0b; }
@@ -42,3 +56,17 @@
   .opp-event__stage { color: #475569; flex-shrink: 0; }
   .opp-event__detail { color: #334155; flex: 1; }
   .opp-event__time { color: #94a3b8; font-size: 11px; flex-shrink: 0; } }
+/* 风险预警（P0）：类型标签 + 严重度 + 确认处理 */
+.opp-risks { border-top: 1px solid #f1f5f9; padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
+.opp-risk { border: 1px solid #f1f5f9; border-left-width: 3px; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px;
+  &.opp-risk--high { border-left-color: #dc2626; }
+  &.opp-risk--medium { border-left-color: #f59e0b; }
+  &.opp-risk--low { border-left-color: #94a3b8; }
+  &.is-resolved { opacity: .55; }
+  .opp-risk__head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .opp-risk__type { background: #fef2f2; color: #dc2626; border-radius: 4px; padding: 1px 6px; font-weight: 600; }
+  .opp-risk__severity { color: #475569; }
+  .opp-risk__time { color: #94a3b8; font-size: 11px; }
+  .opp-risk__resolve { margin-left: auto; font-size: 11px; color: #2563eb; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+  .opp-risk__done { margin-left: auto; color: #16a34a; font-size: 11px; }
+  .opp-risk__detail { font-size: 12px; color: #475569; margin-top: 4px; white-space: pre-wrap; } }

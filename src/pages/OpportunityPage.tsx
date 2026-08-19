@@ -32,6 +32,26 @@ interface OppRow {
 }
 interface OppEvent { id: number; event_type: string; stage: string; detail: string; created_at: number }
 interface OppStats { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number }
+interface OppScore { score: number; level: string; factors: Array<{ label: string; delta: number; reason: string }> }
+interface RiskRow {
+  id: number
+  account_id: number
+  opportunity_id?: number
+  risk_type: string
+  severity: string
+  detail: string
+  status: string
+  created_at: number
+  resolved_at: number
+}
+
+// 风险类型文案（P0：竞品 / 价格 / 服务）
+const RISK_TYPE_LABEL: Record<string, string> = {
+  competitor: '竞品比较', price: '价格异议', service: '服务疑虑'
+}
+const RISK_SEVERITY_LABEL: Record<string, string> = {
+  high: '高风险', medium: '中风险', low: '低风险'
+}
 
 // 金额展示：0 = 待确认
 function fmtAmount(n: number): string {
@@ -58,6 +78,8 @@ export default function OpportunityPage() {
   const [stageFilter, setStageFilter] = useState('')
   const [selected, setSelected] = useState<OppRow | null>(null)
   const [events, setEvents] = useState<OppEvent[]>([])
+  const [risks, setRisks] = useState<RiskRow[]>([])
+  const [scores, setScores] = useState<Record<number, OppScore>>({})
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -70,6 +92,15 @@ export default function OpportunityPage() {
       ])
       setOpps(list || [])
       setStats(st || null)
+      // 逐个客户拉意向评分 0-100（跨库装配，失败忽略单个）
+      const scoreMap: Record<number, OppScore> = {}
+      await Promise.all((list || []).map(async (o: OppRow) => {
+        try {
+          const s = await window.electronAPI.crm.opportunityIntentScore(Number(o.account_id))
+          if (s) scoreMap[o.id] = s
+        } catch { /* 单个客户评分失败不影响列表 */ }
+      }))
+      setScores(scoreMap)
     } catch (e) { setNotice(String(e)) }
     setLoading(false)
   }
@@ -99,10 +130,18 @@ export default function OpportunityPage() {
   const filtered = stageFilter ? opps.filter((o) => o.stage === stageFilter) : opps
   const pendingAmount = opps.filter((o) => Number(o.amount) <= 0).length
 
-  // 详情：拉事件时间线
+  // 详情：拉事件时间线 + 客户风险（P0：竞品/价格/服务）
   const openDetail = async (o: OppRow) => {
     setSelected(o)
     try { setEvents((await window.electronAPI.crm.opportunityEvents(o.id)) || []) } catch { setEvents([]) }
+    try { setRisks((await window.electronAPI.crm.riskList({ accountId: Number(o.account_id) })) || []) } catch { setRisks([]) }
+  }
+  // 风险解决：人工确认已处理
+  const resolveRisk = async (id: number) => {
+    const ok = await window.electronAPI.crm.riskResolve(id)
+    if (!ok) return
+    setRisks((prev) => prev.map((r) => r.id === id ? { ...r, status: 'resolved', resolved_at: Date.now() } : r))
+    setNotice('已确认处理该风险')
   }
   // 阶段推进（人工，留痕）
   const advance = async () => {
@@ -171,6 +210,12 @@ export default function OpportunityPage() {
             </div>
             <div className="opp-card__sub">
               <span className="opp-card__amt">{fmtAmount(Number(o.amount))}</span>
+              {scores[o.id] && (
+                <span className={`opp-score opp-score--${scores[o.id].level}`} title={scores[o.id].factors.map((f) => `${f.label} ${f.delta >= 0 ? '+' : ''}${f.delta}：${f.reason}`).join('\n')}>
+                  <span className="opp-score__bar"><span className="opp-score__fill" style={{ width: `${scores[o.id].score}%` }} /></span>
+                  <span className="opp-score__num">{scores[o.id].score} {scores[o.id].level}</span>
+                </span>
+              )}
               <span className="opp-card__time">最近信号 {fmtTime(Number(o.last_signal_at))}</span>
             </div>
           </div>
@@ -192,6 +237,37 @@ export default function OpportunityPage() {
               <div className="opp-detail__row"><span>金额</span><b>{fmtAmount(Number(selected.amount))}</b></div>
               <div className="opp-detail__row"><span>阶段</span><b>{selected.stage}</b></div>
               <div className="opp-detail__row"><span>最近信号</span><b>{fmtTime(Number(selected.last_signal_at))}</b></div>
+              <div className="opp-detail__row"><span>意向评分</span><b>{scores[selected.id] ? `${scores[selected.id].score} / 100 · ${scores[selected.id].level}` : '—'}</b></div>
+            </div>
+            {scores[selected.id] && scores[selected.id].factors.length > 0 && (
+              <div className="opp-factors">
+                <h4>意向评分依据</h4>
+                {scores[selected.id].factors.map((f) => (
+                  <div key={f.label} className="opp-factor">
+                    <span className="opp-factor__label">{f.label}</span>
+                    <span className={`opp-factor__delta ${f.delta >= 0 ? 'pos' : 'neg'}`}>{f.delta >= 0 ? `+${f.delta}` : f.delta}</span>
+                    <span className="opp-factor__reason">{f.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="opp-risks">
+              <h4>风险预警</h4>
+              {risks.map((r) => (
+                <div key={r.id} className={`opp-risk opp-risk--${r.severity} ${r.status === 'resolved' ? 'is-resolved' : ''}`}>
+                  <div className="opp-risk__head">
+                    <span className="opp-risk__type">{RISK_TYPE_LABEL[r.risk_type] || r.risk_type}</span>
+                    <span className="opp-risk__severity">{RISK_SEVERITY_LABEL[r.severity] || r.severity}</span>
+                    <span className="opp-risk__time">{fmtTime(Number(r.created_at))}</span>
+                    {r.status === 'active' && (
+                      <button className="opp-risk__resolve" onClick={() => void resolveRisk(r.id)}>确认处理</button>
+                    )}
+                    {r.status === 'resolved' && <span className="opp-risk__done">已处理</span>}
+                  </div>
+                  <div className="opp-risk__detail">{r.detail}</div>
+                </div>
+              ))}
+              {!risks.length && <div className="opp-empty">暂无风险信号</div>}
             </div>
             <div className="opp-actions">
               {NEXT_STAGE[selected.stage] && (

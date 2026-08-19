@@ -227,6 +227,25 @@ const BUY_NOISE = ['你在吗', '发个图', '发图', '看看图', '店铺', '�
 
 export interface BuySignalInfo { product: string; quantity: number; amount: number; detail: string }
 
+// ─── 风险信号（P0）：客户消息里的竞品/价格/服务风险 → 结构化风险预警（PRD §18）──
+export interface RiskSignalInfo { riskType: 'competitor' | 'price' | 'service'; severity: 'high' | 'medium' | 'low'; detail: string }
+// 竞品：别家报价更低 / 比你们便宜
+const RISK_COMPETITOR_RE = /(另外|别的|其他|另一|还有)(?:一)?家?.{0,8}(?:便宜|低|报价|价格)|比(?:你|你们)?.{0,5}(?:便宜|低)/
+// 价格：压价 / 太贵 / 要底价
+const RISK_PRICE_RE = /(还能不能.{0,4}便宜|再便宜|优惠.{0,4}(?:定|买|就)|便宜.{0,3}(?:定|买|就)|太贵|价格(?:高|贵)|最低价|底价|给个实价)/
+// 服务：关注售后/保修
+const RISK_SERVICE_RE = /(售后|保修|质保|维修).{0,10}(怎么|在哪|多久|几年|怎么办|找谁)/
+
+export function parseRiskSignal(content: string, isSend: number): RiskSignalInfo | null {
+  if (isSend !== 0) return null // 只看客户消息
+  const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ').trim()
+  if (!text || text.length < 4) return null
+  if (RISK_COMPETITOR_RE.test(text)) return { riskType: 'competitor', severity: 'high', detail: text.slice(0, 100) }
+  if (RISK_PRICE_RE.test(text)) return { riskType: 'price', severity: 'medium', detail: text.slice(0, 100) }
+  if (RISK_SERVICE_RE.test(text)) return { riskType: 'service', severity: 'low', detail: text.slice(0, 100) }
+  return null
+}
+
 export function parseBuySignal(content: string, isSend: number): BuySignalInfo | null {
   if (isSend !== 0) return null // 只看客户消息
   const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ').trim()

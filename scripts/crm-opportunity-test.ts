@@ -10,7 +10,9 @@ import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
-import { parseBuySignal } from '../electron/services/crmParseRules'
+import { parseBuySignal, parseRiskSignal } from '../electron/services/crmParseRules'
+import { salesDbService } from '../electron/services/salesDbService'
+import { computeIntentScore } from '../electron/services/intentScore'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -20,6 +22,25 @@ function ok(name: string, cond: boolean): void {
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'crm-opportunity-'))
   await crmDbService.initialize(dir)
+  await salesDbService.initialize(dir)
+
+  // ── 0 意向评分 0-100（computeIntentScore 纯函数）──────────────────────────
+  const sc1 = computeIntentScore({ stage: '比价', lastContactAt: 0, recentEventCount: 3, lastEventAt: Date.now() - 2 * 86400_000, oppCount: 1, oppQuantity: 20, oppAmount: 70000 })
+  ok('0a 比价+近期活跃+商机 → 高分', sc1.score >= 80 && sc1.level === '高意向')
+  ok('0b 评分依据含阶段/活跃/商机', sc1.factors.some((f) => f.label === '当前阶段') && sc1.factors.some((f) => f.label === '商机进展'))
+  const sc2 = computeIntentScore({ stage: '了解', lastContactAt: Date.now() - 40 * 86400_000, recentEventCount: 0, lastEventAt: 0, oppCount: 0, oppQuantity: 0, oppAmount: 0 })
+  ok('0c 久未跟进低分', sc2.score < 30)
+  const sc3 = computeIntentScore({ stage: '流失', lastContactAt: 0, recentEventCount: 0, lastEventAt: 0, oppCount: 0, oppQuantity: 0, oppAmount: 0 })
+  ok('0d 流失极低分', sc3.score <= 5)
+  const sc4 = computeIntentScore({ stage: '决策', lastContactAt: 0, recentEventCount: 10, lastEventAt: Date.now() - 86400_000, oppCount: 2, oppQuantity: 30, oppAmount: 100000 })
+  ok('0e 分数封顶 100', sc4.score === 100)
+  // salesDbService.intentScore 集成：写入客户+意向标记后评分
+  salesDbService.customerUpsert({ session_id: 'wx_ck_score', display_name: '评分客户', stage: '比价' })
+  salesDbService.intentCreate({ session_id: 'wx_ck_score', stage: '比价', source: 'ai', confidence: 0.8, reason: '测试' })
+  salesDbService.intentCreate({ session_id: 'wx_ck_score', stage: '比价', source: 'ai', confidence: 0.8, reason: '测试' })
+  const sc5 = salesDbService.intentScore('wx_ck_score', { count: 1, quantity: 5, amount: 0 })
+  ok('0f intentScore 跨库装配可用', !!sc5 && sc5.score >= 60)
+  ok('0g 无客户返回 null', salesDbService.intentScore('wx_nonexist', undefined) === null)
 
   // ── 1 parseBuySignal：采购信号识别（客户消息 isSend=0）────────────────────
   const s1 = parseBuySignal('我们准备采购10台2吨的电动叉车，你们多少钱？', 0)
@@ -91,6 +112,26 @@ async function main(): Promise<void> {
     crmDbService.opportunityUpdateStage(Number(oid), '决策', 'manual')
     return crmDbService.opportunityEvents(Number(oid)).some((e) => e.event_type === 'stage_change' && String(e.detail).includes('manual'))
   })())
+
+  // ── 5 风险预警（P0）：parseRiskSignal 命中 + upsertRisk 幂等 + resolve ───────
+  const rk1 = parseRiskSignal('别家比你们便宜500，我看看', 0)
+  ok('5a 竞品风险命中（比你们便宜）', !!rk1 && rk1.riskType === 'competitor' && rk1.severity === 'high')
+  const rk2 = parseRiskSignal('6500太贵了，还能不能便宜点', 0)
+  ok('5b 价格风险命中（太贵/便宜）', !!rk2 && rk2.riskType === 'price' && rk2.severity === 'medium')
+  const rk3 = parseRiskSignal('你们售后怎么处理？', 0)
+  ok('5c 服务风险命中（售后+怎么）', !!rk3 && rk3.riskType === 'service' && rk3.severity === 'low')
+  ok('5d 我方消息不触发（isSend=1）', parseRiskSignal('别家比我们便宜', 1) === null)
+  ok('5e 无风险词不触发', parseRiskSignal('好的，那先这样', 0) === null)
+  const accR = crmDbService.ensureAccount('苏州某机械')
+  const rk5 = crmDbService.upsertRisk(accR, { riskType: 'price', severity: 'medium', detail: '6500太贵了' })
+  ok('5f 首次风险创建', rk5.created)
+  const rk6 = crmDbService.upsertRisk(accR, { riskType: 'price', severity: 'high', detail: '别家报6500' })
+  ok('5g 同类型幂等累积 + 严重度提升', rk6.id === rk5.id && rk6.created === false)
+  const riskRow = crmDbService.riskList({ accountId: accR })[0]
+  ok('5h 风险详情累积、severity 升为 high', !!riskRow && String(riskRow.severity) === 'high' && String(riskRow.detail).includes('6500太贵了'))
+  ok('5i riskList 支持 accountId 过滤', crmDbService.riskList({ accountId: accR }).length === 1 && crmDbService.riskList().length >= 1)
+  ok('5j resolveRisk 解决 active 风险', crmDbService.resolveRisk(Number(riskRow?.id)) === true && String(crmDbService.riskList({ accountId: accR })[0]?.status) === 'resolved')
+  ok('5k 重复解决返回 false', crmDbService.resolveRisk(Number(riskRow?.id)) === false)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS opportunity_event (
   stage TEXT DEFAULT '', detail TEXT DEFAULT '', created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opp_event_opp ON opportunity_event(opportunity_id);
+CREATE TABLE IF NOT EXISTS crm_risk (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER, opportunity_id INTEGER,
+  risk_type TEXT NOT NULL, detail TEXT DEFAULT '',
+  severity TEXT DEFAULT 'medium', source_msg TEXT DEFAULT '',
+  status TEXT DEFAULT 'active', created_at INTEGER NOT NULL, resolved_at INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_crm_risk_account ON crm_risk(account_id, status);
 CREATE TABLE IF NOT EXISTS contract (
   id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT,
   amount REAL DEFAULT 0, status TEXT DEFAULT 'pending_sign', sign_date INTEGER,
@@ -186,7 +194,7 @@ const ENTITIES = [
   'lead', 'lead_activity', 'import_batch',
   'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
-  'contract_status_history', 'activity_log', 'quote_signal'
+  'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -829,6 +837,48 @@ class CrmDbService {
       if (newIdx > curIdx && this.opportunityUpdateStage(Number(o.id), customerStage, 'customer_sync')) changed++
     }
     return changed
+  }
+
+  // ─── 风险预警（P0：竞品/价格/服务消息信号 → crm_risk，PRD §18）────────────
+  /** 客户风险列表（active 在前，含客户名） */
+  riskList(opts?: { accountId?: number; status?: string }): CrmRow[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (opts?.accountId) { where.push('r.account_id = ?'); params.push(opts.accountId) }
+    if (opts?.status) { where.push('r.status = ?'); params.push(opts.status) }
+    const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    return this.all(
+      `SELECT r.*, a.name AS account_name FROM crm_risk r LEFT JOIN account a ON a.id = r.account_id ${w}
+       ORDER BY (r.status = 'active') DESC, r.created_at DESC`, params
+    )
+  }
+  /** 幂等记录风险：同客户同类型 active → 追加详情 + 取更高严重度；否则新建 */
+  upsertRisk(accountId: number, risk: { riskType: 'competitor' | 'price' | 'service'; severity: 'high' | 'medium' | 'low'; detail: string; opportunityId?: number }): { id: number; created: boolean } {
+    const now = Date.now()
+    const existing = this.all("SELECT * FROM crm_risk WHERE account_id = ? AND risk_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1", [accountId, risk.riskType])[0]
+    if (existing) {
+      const severityRank = { high: 3, medium: 2, low: 1 } as const
+      const curRank = severityRank[String(existing.severity) as keyof typeof severityRank] ?? 1
+      const newRank = severityRank[risk.severity] ?? 1
+      const patch: CrmRow = { detail: `${String(existing.detail || '')}\n${risk.detail}`.slice(0, 300) }
+      if (newRank > curRank) patch.severity = risk.severity
+      if (!existing.opportunity_id && risk.opportunityId) patch.opportunity_id = risk.opportunityId
+      this.update('crm_risk', Number(existing.id), patch)
+      return { id: Number(existing.id), created: false }
+    }
+    const id = this.create('crm_risk', {
+      account_id: accountId, opportunity_id: risk.opportunityId || null,
+      risk_type: risk.riskType, severity: risk.severity,
+      detail: risk.detail, status: 'active', created_at: now, resolved_at: 0
+    })
+    return { id: Number(id), created: true }
+  }
+  /** 风险解决（人工确认已处理） */
+  resolveRisk(id: number): boolean {
+    const r = this.all("SELECT id FROM crm_risk WHERE id = ? AND status = 'active'", [id])[0]
+    if (!r) return false
+    this.update('crm_risk', Number(r.id), { status: 'resolved', resolved_at: Date.now() })
+    return true
   }
 
   /** 批量按微信会话查 account（灵感信箱徽章用，避免 N+1） */

@@ -9,6 +9,7 @@
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -632,6 +633,27 @@ class SalesDbService {
 
   customerAll(): CustomerProfile[] {
     return this.all<CustomerProfile>('SELECT * FROM customer_profile', [])
+  }
+
+  /**
+   * 客户意向评分 0-100（P0）：阶段 + 近 7 天意向活跃 + 久未跟进衰减 + 商机进展。
+   * opp 由调用方跨库装配（crmDbService.activeOpportunitiesByAccount）。
+   */
+  intentScore(sessionId: string, opp?: { count: number; quantity: number; amount: number }): IntentScore | null {
+    const p = this.customerGetBySession(sessionId)
+    if (!p) return null
+    const since = Date.now() - ACTIVE_WINDOW_MS
+    const recent = Number(this.all('SELECT COUNT(*) AS c FROM intent_tag_log WHERE session_id = ? AND created_at >= ?', [sessionId, since])[0]?.c ?? 0)
+    const last = this.all('SELECT created_at FROM intent_tag_log WHERE session_id = ? ORDER BY id DESC LIMIT 1', [sessionId])[0]
+    return computeIntentScore({
+      stage: String(p.stage || 'unknown'),
+      lastContactAt: Number(p.last_contact_at || 0),
+      recentEventCount: recent,
+      lastEventAt: last ? Number(last.created_at) : 0,
+      oppCount: opp?.count || 0,
+      oppQuantity: opp?.quantity || 0,
+      oppAmount: opp?.amount || 0
+    })
   }
 
   /** 按 id 查跟进任务（SLA 闭环需要读 task 的 source_id/trigger_type） */

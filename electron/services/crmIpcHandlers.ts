@@ -72,6 +72,23 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:opportunity:stats', async () => crmDbService.opportunityStats())
   ipcMain.handle('crm:opportunity:stage', async (_, id: number, stage: string) => crmDbService.opportunityUpdateStage(Number(id), String(stage || ''), 'manual'))
   ipcMain.handle('crm:opportunity:close', async (_, id: number, status: 'won' | 'lost', reason: string) => crmDbService.opportunityClose(Number(id), status, String(reason || '')))
+  // 客户意向评分 0-100（P0）：跨库装配（account → session → salesDb 意向事件 + crmDb 商机）
+  ipcMain.handle('crm:opportunity:intentScore', async (_, accountId: number) => {
+    const acc = crmDbService.getById('account', Number(accountId))
+    if (!acc?.session_id) return null
+    const opps = crmDbService.activeOpportunitiesByAccount(Number(accountId))
+    const opp = opps.reduce((o, x) => ({
+      count: o.count + 1,
+      quantity: o.quantity + (Number(x.quantity) || 0),
+      amount: o.amount + (Number(x.amount) || 0)
+    }), { count: 0, quantity: 0, amount: 0 })
+    try {
+      return salesDbService.intentScore(String(acc.session_id), opp)
+    } catch { return null }
+  })
+  // 风险预警（P0）：客户风险列表 / 解决
+  ipcMain.handle('crm:risk:list', async (_, opts?) => crmDbService.riskList(opts))
+  ipcMain.handle('crm:risk:resolve', async (_, id: number) => crmDbService.resolveRisk(Number(id)))
   // 客户信息自动填充：单客手动补全 / 存量回填（enqueue 串行；引擎内部不 enqueue）
   // 手动编辑客户字段（写入并锁定，AI 不再覆盖）
   ipcMain.handle('crm:enrich:manualSet', async (_, accountId: number, field: string, value: string) =>
