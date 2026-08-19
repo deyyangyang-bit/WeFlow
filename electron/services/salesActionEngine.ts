@@ -705,6 +705,30 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
 
   // 4a. 从 tasks 构建
   for (const task of mainPending) {
+    // 手动待办：独立分支（事实驱动，绕过沉默天数过滤；无客户用虚拟 sessionId todo:<id>）
+    if (task.trigger_type === 'manual') {
+      const sid = task.session_id ? String(task.session_id) : `todo:${task.id || 0}`
+      const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
+      const source: SignalSource = {
+        type: 'task',
+        ruleCode: 'MAN',
+        label: '手动待办',
+        reason: String(task.title || ''),
+        rawTaskId: task.id ?? 0
+      }
+      signalMap.set(sid, {
+        sessionId: sid,
+        displayName: task.display_name || profile?.display_name || task.title || '个人待办',
+        stage: profile ? normalizeStage(profile.stage) : 'manual',
+        silentDays: 0,
+        sources: [source],
+        priorityScore: Math.min(140, Number(task.priority_score || 40)),
+        urgencyTier: 'normal',
+        status: 'pending',
+        analysis: task.analysis ?? ''
+      })
+      continue
+    }
     // 线索首触 SLA 卡：无 session_id，用虚拟 sessionId lead:<id>（不参与沉默天数过滤）
     if (task.trigger_type === 'sla_lead') {
       const leadId = Number(task.source_id || 0)
@@ -895,6 +919,13 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
  * 完成/跳过统一信号：标记 task done/skipped + 标记 insight read
  */
 export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped'): void {
+  // 手动待办：虚拟 sessionId todo:<taskId>（无客户），完成/跳过即关闭该任务
+  if (String(sessionId || '').startsWith('todo:')) {
+    const taskId = Number(String(sessionId).slice(5))
+    const task = taskId > 0 ? salesDbService.getTask(taskId) : undefined
+    if (task?.id) completeAction(task.id, action)
+    return
+  }
   // 线索首触 SLA 卡：虚拟 sessionId lead:<id>，走线索闭环（先 crmDb 后 salesDb）
   if (String(sessionId || '').startsWith('lead:')) {
     const leadId = Number(String(sessionId).slice(5))

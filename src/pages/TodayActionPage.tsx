@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, BarChart3, Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
-  Clock, Flame, RefreshCw, TrendingUp, Users,
+  Clock, Flame, ListTodo, Plus, RefreshCw, TrendingUp, Users, X,
 } from 'lucide-react'
 import AIActionCard from '../components/sales/AIActionCard'
 import TodoSidebar from '../components/sales/TodoSidebar'
@@ -45,11 +45,59 @@ function KpiStat({ icon, value, label }: { icon: React.ReactNode; value: number;
 }
 
 export default function TodayActionPage() {
-  const { items, stats, loading, error, filter, noticeDismissed, fetchToday, setFilter, dismissNotice } = useTodayActionStore()
+  const { items, stats, loading, error, filter, noticeDismissed, fetchToday, setFilter, dismissNotice, createTodo } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [page, setPage] = useState(1)
   const navigate = useNavigate()
+
+  // 新建待办弹窗
+  const [showTodoModal, setShowTodoModal] = useState(false)
+  const [todoTitle, setTodoTitle] = useState('')
+  const [todoDue, setTodoDue] = useState('')
+  const [todoError, setTodoError] = useState<string | null>(null)
+  const [todoSubmitting, setTodoSubmitting] = useState(false)
+  const [customers, setCustomers] = useState<Array<{ session_id: string; name?: string }>>([])
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [customerOpen, setCustomerOpen] = useState(false)
+  const [selectedCustomer, setSelectedCustomer] = useState<{ session_id: string; name?: string } | null>(null)
+
+  // 打开弹窗时拉取客户列表（可选关联），重置表单
+  const openTodoModal = useCallback(async () => {
+    setShowTodoModal(true)
+    setTodoTitle('')
+    setTodoDue('')
+    setTodoError(null)
+    setCustomerSearch('')
+    setSelectedCustomer(null)
+    setCustomerOpen(false)
+    try {
+      const rows = await (window as any).electronAPI.crm.customers()
+      setCustomers(Array.isArray(rows) ? rows : [])
+    } catch { setCustomers([]) }
+  }, [])
+
+  const filteredCustomers = useMemo(() => {
+    const kw = customerSearch.trim().toLowerCase()
+    return kw
+      ? customers.filter(c => String(c.name || '').toLowerCase().includes(kw) || String(c.session_id || '').toLowerCase().includes(kw)).slice(0, 20)
+      : customers.slice(0, 20)
+  }, [customers, customerSearch])
+
+  const submitTodo = useCallback(async () => {
+    const title = todoTitle.trim()
+    if (!title || todoSubmitting) return
+    setTodoSubmitting(true)
+    setTodoError(null)
+    const res = await createTodo({
+      title,
+      session_id: selectedCustomer?.session_id || undefined,
+      due_at: todoDue ? new Date(todoDue).getTime() : undefined
+    })
+    setTodoSubmitting(false)
+    if (res.ok) setShowTodoModal(false)
+    else setTodoError(res.error || '创建失败')
+  }, [todoTitle, todoDue, selectedCustomer, todoSubmitting, createTodo])
 
   // 卡片流分页：每页条数（信号卡较高，10 条一页避免页面过长）
   const PAGE_SIZE = 10
@@ -115,6 +163,9 @@ export default function TodayActionPage() {
           <p className="today-action-page__subtitle">任务与动态已合并 · 共 {filtered.length} 条信号</p>
         </div>
         <div className="today-action-page__header-actions">
+          <button className="ta-btn ta-btn--todo" onClick={() => void openTodoModal()}>
+            <Plus size={14} /> 新建待办
+          </button>
           <button className="ta-btn ta-btn--teal" onClick={() => navigate('/sales-report')}>
             <BarChart3 size={14} /> 销售复盘
           </button>
@@ -296,6 +347,71 @@ export default function TodayActionPage() {
           </div>
         )}
       </div>
+
+      {/* 新建待办弹窗 */}
+      {showTodoModal && (
+        <div className="ta-modal-overlay" onClick={() => setShowTodoModal(false)}>
+          <div className="ta-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="ta-modal__header">
+              <h3 className="ta-modal__title"><ListTodo size={16} /> 新建待办</h3>
+              <button className="ta-modal__close" onClick={() => setShowTodoModal(false)} aria-label="关闭">
+                <X size={16} />
+              </button>
+            </div>
+
+            <input
+              className="ta-modal__input"
+              placeholder="待办内容（如：下午联系王总确认合同）"
+              value={todoTitle}
+              onChange={(e) => setTodoTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void submitTodo() }}
+              autoFocus
+            />
+
+            {/* 关联客户（可选，搜索下拉） */}
+            <div className="ta-customer-picker">
+              <input
+                className="ta-modal__input"
+                placeholder="关联客户（可选，输入搜索）"
+                value={selectedCustomer ? String(selectedCustomer.name || selectedCustomer.session_id) : customerSearch}
+                onChange={(e) => { setSelectedCustomer(null); setCustomerSearch(e.target.value) }}
+                onFocus={() => setCustomerOpen(true)}
+                onBlur={() => setTimeout(() => setCustomerOpen(false), 150)}
+              />
+              {customerOpen && filteredCustomers.length > 0 && (
+                <div className="ta-customer-list">
+                  {filteredCustomers.map((c) => (
+                    <button
+                      key={String(c.session_id)}
+                      className="ta-customer-item"
+                      onMouseDown={() => { setSelectedCustomer(c); setCustomerSearch(''); setCustomerOpen(false) }}
+                    >
+                      <span className="ta-customer-item__name">{c.name || '未命名客户'}</span>
+                      <span className="ta-customer-item__sid">{String(c.session_id).slice(0, 18)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <input
+              className="ta-modal__input"
+              type="datetime-local"
+              value={todoDue}
+              onChange={(e) => setTodoDue(e.target.value)}
+            />
+
+            {todoError && <div className="ta-modal__error">{todoError}</div>}
+
+            <div className="ta-modal__actions">
+              <button className="ta-modal__cancel" onClick={() => setShowTodoModal(false)}>取消</button>
+              <button className="ta-modal__submit" onClick={() => void submitTodo()} disabled={!todoTitle.trim() || todoSubmitting}>
+                {todoSubmitting ? '添加中...' : '添加待办'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

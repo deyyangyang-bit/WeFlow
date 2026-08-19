@@ -89,12 +89,29 @@
   }
 
   &__checkbox {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
     border: 1.5px solid var(--wf-muted, #94A3B8);
     border-radius: 4px;
     margin-top: 2px;
     flex-shrink: 0;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+
+    svg { opacity: 0; }
+
+    &:hover {
+      background: var(--wf-teal, #0F8F7E);
+      border-color: var(--wf-teal, #0F8F7E);
+
+      svg { opacity: 1; }
+    }
   }
 
   &__item-body {

@@ -53,9 +53,20 @@ export interface ActionStats {
 
 export type SignalFilter = 'all' | 'task' | 'insight' | 'urgent'
 
+/** 待办清单条目（TodoSidebar 数据源，与主卡流同 store 同步） */
+export interface TodoTask {
+  id?: number
+  title: string
+  display_name?: string | null
+  trigger_type?: string
+  status: string
+  due_at?: number | null
+}
+
 interface TodayActionState {
   items: ActionItem[]
   stats: ActionStats | null
+  todos: TodoTask[]
   loading: boolean
   error: string | null
   generatedAt: number | null
@@ -68,6 +79,9 @@ interface TodayActionState {
   fetchToday: () => Promise<void>
   completeItem: (sessionId: string, action: 'done' | 'skipped') => Promise<void>
   fetchSuggestion: (item: ActionItem) => Promise<void>
+  fetchTodos: () => Promise<void>
+  createTodo: (payload: { title: string; session_id?: string; due_at?: number }) => Promise<{ ok: boolean; error?: string }>
+  completeTodo: (id: number) => Promise<void>
 }
 
 function tierToPriority(tier: string): ActionItem['priority'] {
@@ -109,12 +123,47 @@ function mapSignal(sig: any): ActionItem {
 export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   items: [],
   stats: null,
+  todos: [],
   loading: false,
   error: null,
   generatedAt: null,
   filter: 'all',
   noticeDismissed: false,
   _retryTimer: null as ReturnType<typeof setTimeout> | null,
+
+  fetchTodos: async () => {
+    try {
+      const res = await (window as any).electronAPI.sales.todoList({})
+      set({ todos: Array.isArray(res?.tasks) ? res.tasks : [] })
+    } catch {
+      set({ todos: [] })
+    }
+  },
+
+  createTodo: async (payload) => {
+    try {
+      const res = await (window as any).electronAPI.sales.todoCreate({
+        trigger_type: 'manual',
+        title: payload.title,
+        session_id: payload.session_id ?? null,
+        due_at: payload.due_at
+      })
+      if (!res?.success) return { ok: false, error: res?.error || '创建失败' }
+      await get().fetchTodos()
+      await get().fetchToday()
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e?.message || '创建失败' }
+    }
+  },
+
+  completeTodo: async (id) => {
+    try {
+      await (window as any).electronAPI.sales.todoUpdate(id, { status: 'done' })
+    } catch { /* 失败不影响页面 */ }
+    await get().fetchTodos()
+    await get().fetchToday()
+  },
 
   setFilter: (f) => set({ filter: f }),
   dismissNotice: () => set({ noticeDismissed: true }),
@@ -133,6 +182,7 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
         generatedAt: result.generatedAt || Date.now(),
         loading: false
       })
+      void get().fetchTodos()
       if (items.length === 0 && !result.error) {
         const timer = setTimeout(async () => {
           try {
@@ -162,6 +212,7 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
       set(state => ({
         items: state.items.filter(item => item.sessionId !== sessionId)
       }))
+      void get().fetchTodos()
     } catch (e) {
       console.error('完成信号失败:', e)
     }

@@ -1,22 +1,13 @@
 /**
- * TodoSidebar.tsx — 待办清单侧栏(v4 视觉,展示_only_)
+ * TodoSidebar.tsx — 待办清单侧栏(v4 视觉)
  *
- * 数据源：electronAPI.sales.todoList()（{ success, tasks }）
- * 行为：仅展示 pending/overdue 列表 + 完成进度；「查看全部」跳转 /follow-up
+ * 数据源：todayActionStore.todos（与今日行动主卡流同源同步，fetchToday 顺带刷新）
+ * 行为：展示 pending/overdue 列表 + 完成进度；checkbox 点击即完成；「查看全部」跳 /follow-up
  */
-import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ListTodo } from 'lucide-react'
+import { Check, ListTodo } from 'lucide-react'
+import { useTodayActionStore, type TodoTask } from '../../stores/todayActionStore'
 import './TodoSidebar.scss'
-
-interface TodoTask {
-  id?: number
-  title: string
-  display_name?: string | null
-  trigger_type?: string
-  status: string
-  due_at?: number | null
-}
 
 const TRIGGER_LABELS: Record<string, string> = {
   rule_r0_unknown_followup: '待确认',
@@ -26,30 +17,19 @@ const TRIGGER_LABELS: Record<string, string> = {
   rule_r4_contacted_silent: '激活沉默',
   rule_r5_dormant_wake: '沉默唤醒',
   rule_r6_consider_drop: '考虑放弃',
-  ai_detected: 'AI 识别',
   manual: '手动',
+  ai_detected: 'AI 识别',
 }
 
 const MAX_VISIBLE = 8
 
 export default function TodoSidebar() {
-  const [tasks, setTasks] = useState<TodoTask[]>([])
+  const { todos, completeTodo } = useTodayActionStore()
   const navigate = useNavigate()
 
-  const load = useCallback(async () => {
-    try {
-      const res = await (window as any).electronAPI.sales.todoList({})
-      setTasks(Array.isArray(res?.tasks) ? res.tasks : [])
-    } catch {
-      setTasks([])
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  const pending = tasks.filter(t => t.status === 'pending' || t.status === 'overdue')
-  const doneCount = tasks.filter(t => t.status === 'done' || t.status === 'skipped').length
-  const total = Math.max(1, tasks.length)
+  const pending = todos.filter(t => t.status === 'pending' || t.status === 'overdue')
+  const doneCount = todos.filter(t => t.status === 'done' || t.status === 'skipped').length
+  const total = Math.max(1, todos.length)
 
   return (
     <div className="todo-sidebar">
@@ -75,9 +55,15 @@ export default function TodoSidebar() {
 
       <div className="todo-sidebar__list">
         {pending.length === 0 && <div className="todo-sidebar__empty">暂无未完成待办</div>}
-        {pending.slice(0, MAX_VISIBLE).map((t, i) => (
-          <div key={t.id ?? i} className="todo-sidebar__item">
-            <span className="todo-sidebar__checkbox" />
+        {pending.slice(0, MAX_VISIBLE).map((t) => (
+          <div key={t.id ?? t.title} className="todo-sidebar__item">
+            <button
+              className="todo-sidebar__checkbox"
+              title="标记完成"
+              onClick={() => { if (t.id) void completeTodo(t.id) }}
+            >
+              <Check size={11} />
+            </button>
             <div className="todo-sidebar__item-body">
               <div className="todo-sidebar__item-title">{t.title}</div>
               <div className="todo-sidebar__item-meta">

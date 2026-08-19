@@ -22,7 +22,8 @@ const STAGE_LABELS: Record<string, { text: string; color: string }> = {
   won: { text: '成交', color: '#10b981' },
   lost: { text: '流失', color: '#6b7280' },
   dormant: { text: '沉默', color: '#9ca3af' },
-  unknown: { text: '未知', color: '#6b7280' }
+  unknown: { text: '未知', color: '#6b7280' },
+  manual: { text: '手动', color: '#6b7280' }
 }
 
 /** 环形 gauge：score 原始分居中，环按 /140 归一化 */
@@ -124,6 +125,9 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
       ? 'signal-card--high'
       : 'signal-card--normal'
 
+  // 虚拟手动待办（无关联客户）：无聊天对象、无 AI 分析上下文，隐藏对应按钮
+  const isVirtualTodo = String(item.sessionId || '').startsWith('todo:')
+
   return (
     <div className={`signal-card ${tierClass}`}>
       <div className="signal-card__body">
@@ -154,9 +158,11 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
 
           {/* 底部操作 */}
           <div className="signal-card__actions">
-            <button className="signal-btn signal-btn--chat" onClick={handleOpenChat}>
-              <MessageCircle size={14} /> 打开聊天
-            </button>
+            {!isVirtualTodo && (
+              <button className="signal-btn signal-btn--chat" onClick={handleOpenChat}>
+                <MessageCircle size={14} /> 打开聊天
+              </button>
+            )}
             <button className="signal-btn signal-btn--copy" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
               {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? '已复制' : '复制话术'}
             </button>
@@ -166,15 +172,17 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
             <button className="signal-btn signal-btn--skip" onClick={handleSkip}>
               <X size={14} /> 跳过
             </button>
-            <button
-              className={`signal-btn signal-btn--ai ${hasInsight ? 'signal-btn--ai-ready' : ''}`}
-              onClick={hasAnalysis ? () => setExpanded(!expanded) : handleSuggest}
-              disabled={loadingSuggestion}
-            >
-              {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : hasInsight ? <RotateCw size={13} /> : <Sparkles size={13} />}
-              {loadingSuggestion ? '分析中...' : hasAnalysis ? (expanded ? '收起' : (hasInsight ? '查看AI分析' : 'AI深度分析')) : 'AI深度分析'}
-              {hasAnalysis && !loadingSuggestion && (expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
-            </button>
+            {!isVirtualTodo && (
+              <button
+                className={`signal-btn signal-btn--ai ${hasInsight ? 'signal-btn--ai-ready' : ''}`}
+                onClick={hasAnalysis ? () => setExpanded(!expanded) : handleSuggest}
+                disabled={loadingSuggestion}
+              >
+                {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : hasInsight ? <RotateCw size={13} /> : <Sparkles size={13} />}
+                {loadingSuggestion ? '分析中...' : hasAnalysis ? (expanded ? '收起' : (hasInsight ? '查看AI分析' : 'AI深度分析')) : 'AI深度分析'}
+                {hasAnalysis && !loadingSuggestion && (expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
+              </button>
+            )}
           </div>
         </div>
 
