@@ -1732,8 +1732,10 @@ export interface ElectronAPI {
     contractSign: (id: number) => Promise<{ ok: boolean; reason?: string }>
     contractDelete: (id: number) => Promise<{ ok: boolean; reason?: string; removed?: number }>
     customerDelete: (id: number) => Promise<{ ok: boolean; reason?: string; removed?: number }>
-    logisticsLink: (id: number, contractId: number) => Promise<{ ok: boolean; warning?: string }>
+    logisticsLink: (id: number, contractId: number, opts?: { ownerSales?: string }) => Promise<{ ok: boolean; warning?: string }>
     logisticsCandidates: (receiver: string, city: string) => Promise<any[]>
+    logisticsList: (opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => Promise<any[]>
+    logisticsSigned: (id: number) => Promise<{ ok: boolean; reason?: string }>
     productImport: (rows: unknown[]) => Promise<{ imported: number }>
     quotationCreate: (data: unknown) => Promise<{ ok: boolean; id?: number; reason?: string }>
     quotationAi: (sessionId: string, displayName: string) => Promise<{ ok: boolean; quotationId?: number; contractId?: number; reason?: string; matched?: Array<{ keyword: string; productName: string }> }>

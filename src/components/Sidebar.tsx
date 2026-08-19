@@ -368,9 +368,9 @@ function Sidebar({ collapsed }: SidebarProps) {
               <span className="nav-icon"><Briefcase size={20} /></span>
               {!collapsed && <span className="nav-label">CRM</span>}
             </NavLink>
-            <NavLink to="/crm-review" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '确认中心' : undefined}>
+            <NavLink to="/crm-review" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '跟单中心' : undefined}>
               <span className="nav-icon"><ClipboardCheck size={20} /></span>
-              {!collapsed && <span className="nav-label">确认中心</span>}
+              {!collapsed && <span className="nav-label">跟单中心</span>}
             </NavLink>
             <NavLink to="/crm-product" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '型号库' : undefined}>
               <span className="nav-icon"><Package size={20} /></span>

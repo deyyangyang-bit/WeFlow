@@ -289,10 +289,17 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
     const logiRows = parseLogisticsBatch(content)
     if (logiRows) {
       for (const r of logiRows) {
+        const ts = Number(msg.createTime || 0) * 1000
+        // 单号幂等：物流群每晚同批列表重扫/补扫时已存在只刷新更新时间，不重复建单
+        const existing = crmDbService.logisticsByTrackingNo(r.trackingNo)
+        if (existing) {
+          crmDbService.update('logistics', Number(existing.id), { latest_update_at: ts })
+          continue
+        }
         const lid = crmDbService.create('logistics', {
           tracking_no: r.trackingNo, brand: r.brand, receiver: r.receiver, city: r.city,
           courier: String(group.default_courier || '安能物流'), status: 'shipped',
-          latest_update_at: Number(msg.createTime || 0) * 1000,
+          latest_update_at: ts,
           source_msg_id: String(msg.messageKey || ''), created_at: Date.now()
         })
         // 收货人命中私聊地址 → 自动链接客户合同

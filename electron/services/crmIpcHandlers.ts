@@ -143,8 +143,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:contract:sign', async (_, id: number) => crmDbService.signContract(id))
   ipcMain.handle('crm:contract:delete', async (_, id: number) => crmDbService.deleteContract(id))
   ipcMain.handle('crm:customer:delete', async (_, id: number) => crmDbService.deleteAccount(id))
-  ipcMain.handle('crm:logistics:link', async (_, id: number, contractId: number) => crmDbService.linkLogistics(id, contractId))
+  ipcMain.handle('crm:logistics:link', async (_, id: number, contractId: number, opts?: { ownerSales?: string }) => crmDbService.linkLogistics(id, contractId, opts))
   ipcMain.handle('crm:logistics:candidates', async (_, receiver: string, city: string) => crmDbService.logisticsCandidates(receiver, city))
+  ipcMain.handle('crm:logistics:list', async (_, opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => crmDbService.logisticsList(opts))
+  ipcMain.handle('crm:logistics:signed', async (_, id: number) => crmDbService.markLogisticsSigned(id))
   ipcMain.handle('crm:product:import', async (_, rows: Array<Record<string, unknown>>) => {
     let n = 0
     for (const r of rows) { crmDbService.create('product', { created_at: Date.now(), ...r }); n++ }
@@ -212,4 +214,15 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })
+  // 物流跟单启动补扫：物流群每晚 6/7 点更新，可能当天更新不准时 → 启动时回退 last_scan 到昨天 00:00，
+  // 调度器（60s scanAll）随后补扫前一天发货；processed_msg 幂等保证已处理消息不重复落库
+  enqueueSalesTask(() => {
+    try {
+      const yest = new Date(); yest.setHours(0, 0, 0, 0)
+      const fallback = yest.getTime() - 86400000
+      for (const g of crmDbService.groups().filter((gr) => String(gr.group_type) === 'logistics' && Number(gr.enabled) === 1)) {
+        crmDbService.updateGroup(Number(g.id), { last_scan: Math.min(Number(g.last_scan || 0), fallback) })
+      }
+    } catch { /* 初始化时序竞争忽略 */ }
+  })
 }

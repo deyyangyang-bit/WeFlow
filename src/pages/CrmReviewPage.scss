@@ -26,3 +26,10 @@
   span { font-size: 11px; background: #ede9fe; color: #5b21b6; border-radius: 4px; padding: 2px 8px; } }
 .crm-auto__history { max-height: 40vh; overflow: auto; margin-top: 6px; }
 .crm-card--empty { justify-content: center; color: #94a3b8; background: #f8fafc; border-style: dashed; }
+
+/* ─── 物流跟单 ──────────────────────────────────────────────────────────── */
+.logi-stats { font-style: normal; font-size: 12px; color: #64748b; margin-left: 10px; font-weight: 400;
+  .logi-stats__overdue { color: #dc2626; font-weight: 600; }
+}
+.logi-overdue { font-style: normal; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca;
+  border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 8px; font-weight: 600; }

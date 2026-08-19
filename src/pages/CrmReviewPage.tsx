@@ -1,10 +1,11 @@
 /**
- * CrmReviewPage.tsx —— 确认中心：归属待确认/物流待链接/到款待审核/发票待开
+ * CrmReviewPage.tsx —— 跟单中心：归属待确认/物流待链接+待签收/到款待审核/发票待开
  */
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ClipboardCheck, RefreshCw, Radio, Sparkles, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
+import { getCrmLogisticsOverdueHours } from '../services/config'
 import './CrmReviewPage.scss'
 
 export default function CrmReviewPage() {
@@ -20,6 +21,14 @@ export default function CrmReviewPage() {
   const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
   const [running, setRunning] = useState(false) // 运行自动确认中
   const [showHistory, setShowHistory] = useState(false) // 自动确认历史展开
+  // ── 物流跟单 ─────────────────────────────────────────────────────────────
+  const [logiLinked, setLogiLinked] = useState<any[]>([]) // 已认领待签收
+  const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收（折叠）
+  const [showSignedLogi, setShowSignedLogi] = useState(false)
+  const [logiContract, setLogiContract] = useState<Record<number, string>>({}) // logisticsId → 合同 id（认领下拉）
+  const [logiSales, setLogiSales] = useState<Record<number, string>>({}) // logisticsId → 认领销售
+  const [logiOverdueHours, setLogiOverdueHours] = useState(24) // 超期阈值（设置页配置）
+  const [contractName, setContractName] = useState<Record<number, string>>({}) // contract_id → 名称（跟单视图展示）
 
   const navigate = useNavigate()
   // AI 填充字段中文标签（与 ENRICH_FIELDS 对应）
@@ -55,11 +64,35 @@ export default function CrmReviewPage() {
   const toggleGroup = async (g: any, on: boolean) => { await window.electronAPI.crm.groupsUpdate(Number(g.id), { enabled: on ? 1 : 0 }); await fetchGroups() }
   const retypeGroup = async (g: any, t: string) => { await window.electronAPI.crm.groupsUpdate(Number(g.id), { group_type: t }); await fetchGroups() }
 
+  // ── 物流跟单数据：已认领待签收 / 已签收 + 合同名映射 + 超期阈值 ─────────────
+  // 超期判定：已发货且超过阈值小时未签收 → 返回超期小时数，否则 0（阈值显式传参，避免闭包捕获旧值）
+  const overdueHoursOf = (l: any, hours: number) => {
+    const cutoff = Date.now() - hours * 3600 * 1000
+    return l.status === 'shipped' && l.latest_update_at > 0 && Number(l.latest_update_at) < cutoff
+      ? Math.max(1, Math.floor((Date.now() - Number(l.latest_update_at)) / 3600000))
+      : 0
+  }
+  const fetchLogi = async (hours: number) => {
+    const [pending, signed] = await Promise.all([
+      window.electronAPI.crm.logisticsList({ filter: 'pending' }),
+      window.electronAPI.crm.logisticsList({ filter: 'signed' }),
+    ])
+    setLogiLinked((pending || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
+    setLogiSigned((signed || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
+  }
+
   useEffect(() => {
     void fetchQueues()
     void fetchGroups()
     void fetchAutoSummary()
-    void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => setContracts(rows || []))
+    void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => {
+      setContracts(rows || [])
+      const map: Record<number, string> = {}
+      for (const c of rows || []) if (c.id) map[Number(c.id)] = String(c.name || '')
+      setContractName(map)
+    })
+    void fetchLogi(logiOverdueHours)
+    void getCrmLogisticsOverdueHours().then((h) => { setLogiOverdueHours(h); void fetchLogi(h) })
   }, [fetchQueues, fetchAutoSummary])
 
   const confirmAlloc = async (a: any, contractId?: number) => {
@@ -91,10 +124,27 @@ export default function CrmReviewPage() {
     const cands = await window.electronAPI.crm.logisticsCandidates(l.receiver, l.city)
     if (!cands.length) { setNotice('无候选合同，请先在工作台建合同'); return }
     if (cands.length > 1) { setNotice(`命中 ${cands.length} 个候选合同（${cands.map((c: any) => c.name).join('、')}），请用下拉选择`); return }
-    const r = await window.electronAPI.crm.logisticsLink(l.id, cands[0].id)
-    setNotice(r.warning ? `已链接，但${r.warning}` : '物流已链接')
-    await fetchQueues()
+    const r = await window.electronAPI.crm.logisticsLink(l.id, cands[0].id, { ownerSales: logiSales[l.id]?.trim() || undefined })
+    setNotice(r.warning ? `已链接，但${r.warning}` : '物流已认领')
+    await fetchQueues(); await fetchLogi(logiOverdueHours)
   }
+  // 手动认领：选合同 + 填销售 → 确认
+  const doClaimLogi = async (l: any) => {
+    const cid = logiContract[l.id]
+    if (!cid) { setNotice('请先选择要认领的合同'); return }
+    const r = await window.electronAPI.crm.logisticsLink(l.id, Number(cid), { ownerSales: logiSales[l.id]?.trim() || undefined })
+    setNotice(r.warning ? `已认领，但${r.warning}` : '物流已认领')
+    await fetchQueues(); await fetchLogi(logiOverdueHours)
+  }
+  // 确认签收：状态 → signed（销售联系客户/自查快递后标记）
+  const doSignedLogi = async (l: any) => {
+    if (!window.confirm(`确认「${l.tracking_no} · ${l.receiver}」已签收？`)) return
+    const r = await window.electronAPI.crm.logisticsSigned(Number(l.id))
+    setNotice(r.ok ? `已确认签收 ${l.receiver}` : `确认失败：${r.reason || ''}`)
+    await fetchQueues(); await fetchLogi(logiOverdueHours)
+  }
+  // 超期未签收统计（顶部徽章）
+  const logiOverdueCount = logiLinked.filter((l: any) => l._overdueHours > 0).length
   const approvePayment = async (p: any) => {
     const r = await window.electronAPI.crm.paymentApprove(p.id)
     setNotice(r.ok ? (r.allocationCreated ? '已确认到款，已转入「归属待确认」' : '已确认到款（该笔已有归属记录）') : `失败：${r.reason}`)
@@ -116,7 +166,7 @@ export default function CrmReviewPage() {
   return (
     <div className="crm-review-page">
       <div className="crm-header">
-        <h2><ClipboardCheck size={18} /> 确认中心</h2>
+        <h2><ClipboardCheck size={18} /> 跟单中心</h2>
         <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
         <button className="crm-btn" onClick={() => void fetchQueues()}><RefreshCw size={14} /> 刷新</button>
       </div>
@@ -222,17 +272,62 @@ export default function CrmReviewPage() {
       </section>
 
       <section>
-        <h3>物流待链接（{queues.logistics.length}）</h3>
-        {queues.logistics.map((l) => (
+        <h3>
+          物流跟单
+          <em className="logi-stats">
+            待认领 {queues.logistics.length} · 待签收 {logiLinked.length}
+            <span className={logiOverdueCount > 0 ? 'logi-stats__overdue' : ''}>{logiOverdueCount > 0 ? ` · 超期 ${logiOverdueCount}` : ''}</span>
+          </em>
+        </h3>
+        <div className="logi-queue">
+          <h4>待认领（{queues.logistics.length}）</h4>
+          {queues.logistics.length === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
+          {queues.logistics.map((l) => (
+            <div key={l.id} className="crm-card">
+              <span>{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
+              <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
+                onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
+              <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))}>
+                <option value="">选择合同…</option>
+                {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button className="crm-btn primary" onClick={() => void doClaimLogi(l)}>确认认领</button>
+              <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+            </div>
+          ))}
+        </div>
+        <h4 style={{ marginTop: '10px' }}>已认领待签收（{logiLinked.length}）</h4>
+        {logiLinked.length === 0 && <div className="crm-card crm-card--empty">暂无待签收物流（发货后 {logiOverdueHours}h 未签收会标红提醒）</div>}
+        {logiLinked.map((l) => (
           <div key={l.id} className="crm-card">
-            <span>{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
-            <select defaultValue="" onChange={(e) => { if (e.target.value) void window.electronAPI.crm.logisticsLink(l.id, Number(e.target.value)).then(fetchQueues) }}>
-              <option value="">选择合同…</option>
-              {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+            <span>
+              {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+              {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+              {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : ''}
+              {l._overdueHours > 0 && <em className="logi-overdue">超期 {l._overdueHours} 小时</em>}
+              <em className="crm-card__src">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
+            </span>
+            <button className="crm-btn primary" onClick={() => void doSignedLogi(l)}>确认签收</button>
           </div>
         ))}
+        <h4 style={{ marginTop: '10px' }}>
+          已签收（{logiSigned.length}）
+          <button className="crm-btn" style={{ marginLeft: '8px' }} onClick={() => setShowSignedLogi(!showSignedLogi)}>
+            {showSignedLogi ? '收起' : '展开'}
+          </button>
+        </h4>
+        {showSignedLogi && (
+          logiSigned.length === 0
+            ? <div className="crm-card crm-card--empty">暂无已签收物流</div>
+            : logiSigned.map((l) => (
+                <div key={l.id} className="crm-card">
+                  <span>{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+                    {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+                    <em className="crm-card__src">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
+                  </span>
+                </div>
+              ))
+        )}
       </section>
 
       <section>

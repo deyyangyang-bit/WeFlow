@@ -194,6 +194,20 @@
 - **配置项**：`crmLeadSlaHours`（24，1-72 设置页可调）· `crmLeadSourcePreset`（抖音,视频号,小红书 逗号分隔可配）
 - **验证**：`scripts/crm-lead-test.ts` **53/53**（清洗/去重/SLA/闭环四组）；`tsc --noEmit` 零错误；vite build 通过；mock-electron IPC smoke 14/14（含统一信号流 lead: 分支）
 
+## 2.13 跟单中心 + 物流跟单闭环（2026-08-19）
+
+> 主线：确认中心更名为**跟单中心**，物流从「认领即结束」升级为「发货 → 认领（选销售）→ 超期提醒 → 确认签收」的跟单闭环。物流群每晚 6/7 点更新发货列表（只发发货，签收状态不自动带），销售在跟单中心/今日行动人工确认签收（一期）；二期预留快递 100 API 自动查签收扩展点。
+
+- **改名**：侧边栏/跟单中心页/设置页/CrmWorkbench 通知文案「确认中心」→「跟单中心」；`/crm-review` 路由、`crmAutoConfirm*`/`crmEnrich*` 配置键名不变
+- **logistics 表**新增 `owner_sales`（认领销售，认领时手动填）+ `signed_at`（签收时间，0=未签收）；`status` 语义扩展：`shipped`（已发货）/`signed`（已确认签收）
+- **落库幂等**：物流批量解析 INSERT 前按 `tracking_no` 查重（`logisticsByTrackingNo`），已存在仅刷新 `latest_update_at`，每晚同批列表重扫/补扫不重复建单
+- **今日行动 R8 物流跟进**（照抄 R7 报价跟进事实驱动模式）：`pendingLogisticsOverdue(hours)` 取已认领 + 发货超阈值未签收 → 生成 `rule_r8_logistics_overdue` 卡，虚拟 sessionId `logi:<logistics_id>`（不参与沉默天数/阶段过滤）；`completeUnifiedSignal` 识别 `logi:` 前缀，点完成 = 确认签收（卡 done + logistics signed + activity 三一致）
+- **启动补扫**：app 启动时把物流群 `last_scan` 回退到昨天 00:00（`processed_msg` 幂等），应对物流更新不准时；调度器 60s 增量补扫
+- **跟单中心物流区**（CrmReviewPage）：待认领（单号/品牌/收件人/城市 + 认领销售输入 + 选合同/自动匹配）→ 已认领待签收（超期标红徽章「超期 N 小时」+ 确认签收按钮）→ 已签收（折叠）；顶部统计待认领/待签收/超期数
+- **配置项**：`crmLogisticsOverdueHours`（24，1-168 设置页可调，超期阈值）
+- **二期预留**：`markLogisticsSigned` 独立成方法 + `crmLogisticsOverdueHours` 阈值就位 → 接快递 100 API（~0.03 元/次）命中签收自动调用，未签收才提醒销售
+- **验证**：`scripts/crm-logistics-test.ts` **25/25**（单号幂等/认领带销售/超期判定边界/签收闭环/logisticsList 分类）；`tsc --noEmit` 零错误；crm 全系单测回归通过（lead 53 / workbench 48 / autoconfirm 56 / enrich 55 / golden 39 / docgen 68）
+
 ---
 
 ## 3. 已交付功能清单
@@ -228,11 +242,11 @@
 | 26 | **客户档案一屏 + 深度分析** | CRM 客户 tab | `crm:customer:profile` + `crmDeepAnalysisService` 七板块报告 | ✅ |
 | 27 | **AI 报价辅助** | CRM 客户档案「AI 报价」 | `crmQuoteService.aiGenerateQuotation`（需求→选型→报价草稿） | ✅ |
 | 28 | **销售漏斗** | 侧边栏「漏斗」 | `SalesFunnelPage` + `salesDbService.funnelStats` | ✅ |
-| 29 | **CRM 级联删除（自动备份）** | 工作台/确认中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
+| 29 | **CRM 级联删除（自动备份）** | 工作台/跟单中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
 | 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
 | 31 | **今日行动分页** | 今日行动信号卡片流底部 | `TodayActionPage.tsx`（`.signal-pagination`，10 条/页） | ✅ |
 | 32 | **客户信息 AI 自动填充** | 导入后自动 / 档案「AI 补全」/ 批量回填 | `crmEnrichService.ts` + `crmEnrichCore.ts` | ✅ |
-| 33 | **信息待确认队列** | 确认中心第 5 队列 | `crmDbService.infoPendingQueue` + CrmReviewPage | ✅ |
+| 33 | **信息待确认队列** | 跟单中心第 5 队列 | `crmDbService.infoPendingQueue` + CrmReviewPage | ✅ |
 | 34 | **客户 360 单屏视图** | CRM 客户 tab | `CrmWorkbenchPage.tsx`（字段卡+时间线+手改锁定+深链） | ✅ |
 | 35 | **CRM 可视化** | 工作台顶部 + 漏斗页 | `statsOverview` + ECharts 三图 + 真漏斗下钻 | ✅ |
 | 36 | **报价跟进 R7（事实驱动）** | 今日行动（私聊扫描自动） | `parseQuoteSignal` + `quote_signal` 表 + R7 规则 | ✅ |
@@ -351,7 +365,7 @@
 
 ## 5.1 CRM 独立库 weflow-crm.db（sql.js/WASM，2026-08 增量）
 
-> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / **lead**（2026-08 §2.12 新增）/ opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。确认中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
+> 销售数据主库 `weflow-sales.db` 之外的**第二库**，承接微信群自动解析 + 业务闭环（合同/回款/物流/发票）。路径 `userData/weflow-crm.db`。表：account / contract / quotation / invoice / logistics / allocation / payment_record / shipping_info / group_config / alias_map / activity_log / contract_status_history / product / **lead**（2026-08 §2.12 新增）/ opportunity / contact / scan_state / processed_msg / crm_field_meta / **auto_confirm_log**（2026-08 §2.6 新增）。跟单中心四队列各加 `auto_*` 标记列（allocation.auto_confirmed_by/auto_reason、payment.auto_approved_by、logistics.auto_linked_by、invoice.auto_updated_by），记录自动来源，前端可区分 人工 vs 自动。自动处理前每批一次快照 `crm-backups/weflow-crm-before-auto-*.db`（滚动留 20 份）。
 
 ### account（客户，核心）
 | 列 | 说明 |
@@ -437,7 +451,7 @@
 | `components/sales/ExtractScriptDialog.tsx` | **话术提炼弹窗**（单选/批量双模式，三步流程） |
 | `components/sales/AIActionCard.tsx`（改） | 行动卡：**打开聊天**（跳转微信会话）+ **复制话术**（无话术先生成再复制）+ AI 面板话术行内复制 |
 | `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选、**打开聊天** |
-| `pages/CrmReviewPage.tsx` | **确认中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
+| `pages/CrmReviewPage.tsx` | **跟单中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
 | `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
 | `pages/CrmLeadPage.tsx` + `.scss` | **线索池页**（§2.12，路由 /leads）：导入 modal（来源下拉/文件/文本粘贴）/ 统计卡 / 筛选 chips / 表格（脱敏+超时徽章+行内操作）/ 详情 + dead modal |
@@ -513,7 +527,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | aiInsightSilenceMaxDays | 30 | 上限 |
 | aiInsightScanLimit | 50 | 每次扫描上限 |
 | aiInsightCooldownMinutes | 10080 | 冷却（建议7天） |
-| crmAutoConfirmEnabled | true | 确认中心自动确认总开关 |
+| crmAutoConfirmEnabled | true | 跟单中心自动确认总开关 |
 | crmAutoConfirmThreshold | 0.8 | 自动确认置信阈值 0.5-1.0（低于留人工） |
 | crmAutoConfirmInvoiceDocgen | false | 发票自动关联后自动生成开票信息单（需合同含 tax_no） |
 | crmEnrichEnabled | true | CRM 客户信息 AI 自动填充总开关 |
@@ -530,7 +544,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
 | **P1** | **实测零操作闭环** | 用户用几天实测：自动确认判定是否符合预期（阈值可调）、行动卡打开聊天/复制话术是否顺滑、撤销是否好用，有反馈再迭代 |
-| **P1** | **确认中心 P2 增强** | 到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
+| **P1** | **跟单中心 P2 增强** | 到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
 | P1 | 深度分析结果缓存 | 同客户 N 小时内不重复调 AI（避免反复点重复花费），可加缓存列 |
 | P1 | CRM 客户黑名单 | 删除后的客户若会话还在、AI 见解再标有意向会被重新导入——需黑名单机制 |
 | P1 | 今日行动卡深链客户档案 | 行动卡客户名点击 → 跳 CRM 客户档案一屏 |
@@ -550,7 +564,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
 2. **跑起来**：`npm install && npm run dev`（开发模式）。⚠️ 若 `--version` 报 v24.17.0 且无 GUI，先 `unset ELECTRON_RUN_AS_NODE`（见 MAINTENANCE §4.8，vite 已自动防御）
 3. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）、`npx tsx scripts/crm-autoconfirm-test.ts`（56/56）、`npx tsx scripts/crm-lead-test.ts`（53/53）
-4. **测试零操作闭环**：确认中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
+4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
 6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户
 7. **继续开发**：按 §10 待办优先级推进

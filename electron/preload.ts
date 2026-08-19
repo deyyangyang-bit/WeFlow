@@ -702,8 +702,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     contractSign: (id: number) => ipcRenderer.invoke('crm:contract:sign', id),
     contractDelete: (id: number) => ipcRenderer.invoke('crm:contract:delete', id),
     customerDelete: (id: number) => ipcRenderer.invoke('crm:customer:delete', id),
-    logisticsLink: (id: number, contractId: number) => ipcRenderer.invoke('crm:logistics:link', id, contractId),
+    logisticsLink: (id: number, contractId: number, opts?: { ownerSales?: string }) => ipcRenderer.invoke('crm:logistics:link', id, contractId, opts),
     logisticsCandidates: (receiver: string, city: string) => ipcRenderer.invoke('crm:logistics:candidates', receiver, city),
+    logisticsList: (opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => ipcRenderer.invoke('crm:logistics:list', opts),
+    logisticsSigned: (id: number) => ipcRenderer.invoke('crm:logistics:signed', id),
     productImport: (rows: unknown[]) => ipcRenderer.invoke('crm:product:import', rows),
     quotationCreate: (data: unknown) => ipcRenderer.invoke('crm:quotation:create', data),
     quotationAi: (sessionId: string, displayName: string) => ipcRenderer.invoke('crm:quotation:ai', sessionId, displayName),
@@ -717,6 +719,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     aiExtract: (template: string[], dataUrl: string) => ipcRenderer.invoke('crm:product:aiExtract', template, dataUrl),
     saveImage: (dataUrl: string, fileName: string) => ipcRenderer.invoke('crm:file:saveImage', dataUrl, fileName),
     readImage: (filePath: string) => ipcRenderer.invoke('crm:file:readImage', filePath),
+    autoConfirmRun: () => ipcRenderer.invoke('crm:autoConfirm:run'),
+    autoConfirmHistory: (limit?: number) => ipcRenderer.invoke('crm:autoConfirm:history', limit),
+    autoConfirmUndo: (entity: string, id: number) => ipcRenderer.invoke('crm:autoConfirm:undo', entity, id),
 
     // 单机线索流转
     leadImport: (source: string, fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:import', source, fileName, rows),

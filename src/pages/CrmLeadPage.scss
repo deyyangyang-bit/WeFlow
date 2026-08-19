@@ -48,3 +48,7 @@
 .ld-tip { font-size: 13px; color: #475569; margin-bottom: 10px; }
 
 .empty { text-align: center; color: #94a3b8; padding: 24px 0; }
+
+/* 分页 */
+.crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0; }
+.crm-pager-info { font-size: 13px; color: #64748b; }

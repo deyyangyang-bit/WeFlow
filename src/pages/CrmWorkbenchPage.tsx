@@ -106,7 +106,7 @@ export default function CrmWorkbenchPage() {
     return rows
   }
 
-  // 深链协议：/crm?tab=customer&id=<accountId>（灵感信箱/确认中心/行动卡跳入）
+  // 深链协议：/crm?tab=customer&id=<accountId>（灵感信箱/跟单中心/行动卡跳入）
   const [searchParams] = useSearchParams()
   useEffect(() => {
     const t = searchParams.get('tab')
@@ -196,7 +196,7 @@ export default function CrmWorkbenchPage() {
     if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 补全'); return }
     setNotice(`AI 正在补全 ${c.name}…`)
     const r = await window.electronAPI.crm.enrichRun(String(c.session_id), c.name)
-    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待确认中心裁决` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
+    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待跟单中心裁决` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
     await fetchCustomers()
     if (selectedCustomer?.id === c.id) await openCustomer(c)
   }

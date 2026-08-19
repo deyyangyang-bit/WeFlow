@@ -35,10 +35,6 @@ CREATE TABLE IF NOT EXISTS lead (
   assigned_at INTEGER,
   private_deadline INTEGER
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_contact ON lead(contact_type, contact_normalized);
-CREATE INDEX IF NOT EXISTS idx_lead_status ON lead(status);
-CREATE INDEX IF NOT EXISTS idx_lead_source ON lead(source);
-CREATE INDEX IF NOT EXISTS idx_lead_sla ON lead(status, first_contact_deadline);
 CREATE TABLE IF NOT EXISTS lead_activity (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id INTEGER NOT NULL,
@@ -163,6 +159,15 @@ CREATE TABLE IF NOT EXISTS quote_signal (
   customer_replied_at INTEGER DEFAULT 0, created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_crm_quote_session ON quote_signal(session_id, quoted_at);
+`
+
+// lead 索引独立于 SCHEMA_SQL：旧空壳 lead 表无 contact_type 列，若在 SCHEMA_SQL 中建索引
+// 会在旧表上直接报 no such column 导致 initialize 在迁移逻辑前崩溃。故在迁移重建后执行（幂等）。
+const LEAD_INDEXES_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_contact ON lead(contact_type, contact_normalized);
+CREATE INDEX IF NOT EXISTS idx_lead_status ON lead(status);
+CREATE INDEX IF NOT EXISTS idx_lead_source ON lead(source);
+CREATE INDEX IF NOT EXISTS idx_lead_sla ON lead(status, first_contact_deadline);
 `
 
 export interface CrmRow { [key: string]: any }
@@ -313,27 +318,40 @@ class CrmDbService {
     for (const [table, col, type] of autoConfirmCols) {
       try { this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: logistics 跟单列（认领销售 + 签收时间；signed_at 0 = 未签收）
+    const logisticsTrackCols: Array<[string, string]> = [
+      ['owner_sales', "TEXT DEFAULT ''"], ['signed_at', 'INTEGER DEFAULT 0']
+    ]
+    for (const [col, type] of logisticsTrackCols) {
+      try { this.db.run(`ALTER TABLE logistics ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
     // Migration: contract 补 attachment_path（docgen 生成的合同 docx 路径写回用）
     try { this.db.run('ALTER TABLE contract ADD COLUMN attachment_path TEXT') } catch { /* 列已存在 */ }
-    // Migration: lead 旧空壳表（name/company/phone/stage...，无业务引用）→ 线索流转结构
-    // 旧表有旧结构列且无 contact_normalized → 迁移旧数据（如有）后重建为新 SCHEMA
+    // Migration: lead 旧结构表（空壳 name/company/phone 或中间态 contact_phone/contact_wechat）→ 线索流转结构
+    // 旧表缺 contact_type 或 contact_normalized 任一 → 迁移旧数据（如有）后重建为新 SCHEMA。
+    // 注意：lead 索引独立于 SCHEMA_SQL（LEAD_INDEXES_SQL），避免旧表上建索引先崩。
     try {
       const leadCols = this.all('PRAGMA table_info(lead)').map((c) => String(c.name))
-      if (leadCols.length && !leadCols.includes('contact_normalized')) {
+      const hasNewSchema = leadCols.includes('contact_normalized') && leadCols.includes('contact_type')
+      if (leadCols.length && !hasNewSchema) {
         const oldRows = this.all('SELECT * FROM lead')
         this.db.run('DROP TABLE lead')
         this.db.run(SCHEMA_SQL)
         const now = Date.now()
         for (const r of oldRows) {
-          const ph = String(r.phone || '').trim()
-          if (!ph) continue
+          const ph = String(r.contact_phone ?? r.phone ?? '').trim()
+          const wx = String(r.contact_wechat ?? r.wechat ?? '').trim()
+          if (!ph && !wx) continue
+          const contactType = ph ? (wx ? 'both' : 'phone') : 'wechat'
+          const normalized = ph || wx
           this.db.run(
-            'INSERT INTO lead (contact_type, contact_normalized, contact_raw, source, name, status, first_contact_deadline, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
-            ['phone', ph, ph, String(r.source || '自定义').trim() || '自定义', String(r.name || '').trim(), 'NEW', now, now, now]
+            'INSERT INTO lead (contact_type, contact_normalized, contact_raw, wechat, source, name, status, first_contact_deadline, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            [contactType, normalized, normalized, wx, String(r.source || '自定义').trim() || '自定义', String(r.name || '').trim(), 'NEW', now, now, now]
           )
         }
       }
-    } catch { /* ignore */ }
+    } catch (e) { console.error('[CrmDb] lead 迁移失败:', e) }
+    this.db.run(LEAD_INDEXES_SQL)
     this.persist()
   }
 
@@ -931,15 +949,58 @@ class CrmDbService {
 
   // ─── 物流 ─────────────────────────────────────────────────────────────────
   unlinkedLogistics(): CrmRow[] { return this.all("SELECT * FROM logistics WHERE link_status = 'unlinked' ORDER BY id") }
-  linkLogistics(id: number, contractId: number, opts: { autoBy?: string } = {}): { ok: boolean; warning?: string } {
+  /** 单号查重：物流群每晚同批列表重扫/补扫时幂等判断 */
+  logisticsByTrackingNo(trackingNo: string): CrmRow | null {
+    if (!trackingNo) return null
+    const rows = this.all('SELECT * FROM logistics WHERE tracking_no = ? LIMIT 1', [trackingNo])
+    return rows.length ? rows[0] : null
+  }
+  /**
+   * 跟单视图：全量物流，按入库时间倒序。
+   * opts.filter: 'unlinked'（待认领）| 'pending'（已认领待签收）| 'signed'（已签收）| 省略=全部
+   */
+  logisticsList(opts: { filter?: 'unlinked' | 'pending' | 'signed' } = {}): CrmRow[] {
+    let where = ''
+    if (opts.filter === 'unlinked') where = "WHERE link_status = 'unlinked'"
+    else if (opts.filter === 'pending') where = "WHERE link_status = 'linked' AND status = 'shipped'"
+    else if (opts.filter === 'signed') where = "WHERE status = 'signed'"
+    return this.all(`SELECT * FROM logistics ${where} ORDER BY created_at DESC, id DESC`)
+  }
+  /** 确认签收：status='signed' + signed_at=now（二期快递 API 命中签收也调此方法） */
+  markLogisticsSigned(id: number, opts: { actor?: string } = {}): { ok: boolean; reason?: string } {
+    const l = this.getById('logistics', id)
+    if (!l) return { ok: false, reason: '物流单不存在' }
+    if (String(l.status) === 'signed') return { ok: true }
+    this.update('logistics', id, { status: 'signed', signed_at: Date.now() })
+    this.logActivity('logistics', id, 'signed', `单号 ${String(l.tracking_no ?? '')} 确认签收`, opts.actor ?? '')
+    return { ok: true }
+  }
+  /**
+   * 跟单超期：已发货（status='shipped'）超过 hours 小时未确认签收。
+   * JOIN contract→account 带出客户名 / 归属销售 / session_id（卡片可跳客户档案）。
+   */
+  pendingLogisticsOverdue(hours: number): CrmRow[] {
+    const cutoff = Date.now() - hours * 3600 * 1000
+    return this.all(
+      `SELECT l.*, c.account_id, a.name AS customer_name, a.session_id, a.owner_sales AS account_owner_sales
+       FROM logistics l
+       LEFT JOIN contract c ON c.id = l.contract_id
+       LEFT JOIN account a ON a.id = c.account_id
+       WHERE l.link_status = 'linked' AND l.status = 'shipped' AND l.latest_update_at < ? AND l.latest_update_at > 0
+       ORDER BY l.latest_update_at ASC`,
+      [cutoff]
+    )
+  }
+  linkLogistics(id: number, contractId: number, opts: { autoBy?: string; ownerSales?: string } = {}): { ok: boolean; warning?: string } {
     const l = this.getById('logistics', id)
     if (!l) return { ok: false }
     const patch: CrmRow = { contract_id: contractId, link_status: 'linked' }
     if (opts.autoBy) patch.auto_linked_by = opts.autoBy
+    if (opts.ownerSales) patch.owner_sales = opts.ownerSales
     this.update('logistics', id, patch)
     const c = this.getById('contract', contractId)
     const warning = c && this.creditedTotal(contractId) + 0.005 < Number(c.amount ?? 0) ? '未全款已发货' : undefined
-    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 合同 ${contractId}`, opts.autoBy ?? '')
+    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 合同 ${contractId}${opts.ownerSales ? `（${opts.ownerSales}）` : ''}`, opts.autoBy ?? '')
     return { ok: true, warning }
   }
   saveShippingInfo(row: CrmRow): number {

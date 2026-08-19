@@ -18,6 +18,8 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   ACCOUNT: { label: '已转客户', cls: 'st-account' }
 }
 const CHANNELS = ['PHONE', 'WECHAT', 'SMS']
+const CHANNEL_META: Record<string, string> = { PHONE: '电话', WECHAT: '微信', SMS: '短信' }
+const PAGE_SIZE = 50
 
 interface RawRow { text?: string; phone?: string; wechat?: string; name?: string; tag?: string; note?: string }
 
@@ -94,10 +96,11 @@ export default function CrmLeadPage() {
   const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }> } | null>(null)
   const [deadLead, setDeadLead] = useState<LeadRow | null>(null)
   const [deadReason, setDeadReason] = useState('')
+  const [page, setPage] = useState(1)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const fetchAll = async () => {
-    const [ls, ov] = await Promise.all([window.electronAPI.crm.leadList({}), window.electronAPI.crm.leadOverview()])
+    const [ls, ov] = await Promise.all([window.electronAPI.crm.leadList({ limit: 10000 }), window.electronAPI.crm.leadOverview()])
     setLeads(ls || [])
     setOverview(ov || null)
   }
@@ -113,9 +116,12 @@ export default function CrmLeadPage() {
   const statusChips = useMemo(() => {
     const n = (s: string) => overview?.byStatus[s] ?? 0
     return [
-      { name: '全部', count: overview?.total ?? 0 },
-      { name: 'NEW', count: n('NEW') }, { name: 'CONTACTED', count: n('CONTACTED') },
-      { name: 'WX_ADDED', count: n('WX_ADDED') }, { name: 'DEAD', count: n('DEAD') }, { name: 'ACCOUNT', count: n('ACCOUNT') }
+      { value: '全部', label: '全部', count: overview?.total ?? 0 },
+      { value: 'NEW', label: STATUS_META.NEW.label, count: n('NEW') },
+      { value: 'CONTACTED', label: STATUS_META.CONTACTED.label, count: n('CONTACTED') },
+      { value: 'WX_ADDED', label: STATUS_META.WX_ADDED.label, count: n('WX_ADDED') },
+      { value: 'DEAD', label: STATUS_META.DEAD.label, count: n('DEAD') },
+      { value: 'ACCOUNT', label: STATUS_META.ACCOUNT.label, count: n('ACCOUNT') }
     ]
   }, [overview])
 
@@ -128,8 +134,12 @@ export default function CrmLeadPage() {
       return [l.name, l.contact_normalized, l.tag, l.source].some((v) => String(v || '').toLowerCase().includes(q))
     })
   }, [leads, search, statusChip, sourceChip])
+  // 前端分页：筛选后切片，page 越界自动收敛到最后一页
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const curPage = Math.min(page, totalPages)
+  const pageItems = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
 
-  const doRefresh = async () => { await window.electronAPI.crm.leadScanSla(); await fetchAll(); setNotice('已扫描 SLA，超时线索已加入今日行动') }
+  const doRefresh = async () => { await window.electronAPI.crm.leadScanSla(); await fetchAll(); setNotice('已检查，超时未首触的线索已加入今日行动提醒') }
 
   const pickFile = async (file: File) => {
     setFileName(file.name)
@@ -184,7 +194,7 @@ export default function CrmLeadPage() {
     <div className="crm-lead-page">
       <div className="crm-header">
         <h2><Inbox size={18} /> 线索池 <span className="count">共 {ov?.total ?? 0} 条</span></h2>
-        <button className="crm-btn" onClick={doRefresh}><RefreshCw size={14} /> 扫描SLA</button>
+        <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
         <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -199,17 +209,17 @@ export default function CrmLeadPage() {
       )}
 
       <div className="crm-filterbar">
-        <input className="crm-search" placeholder="搜索姓名 / 联系方式 / 标签 / 来源" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="crm-search" placeholder="搜索姓名 / 联系方式 / 标签 / 来源" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
         <div className="crm-chips">
           {statusChips.map((c) => (
-            <button key={c.name} className={`chip ${statusChip === c.name ? 'active' : ''}`} onClick={() => setStatusChip(c.name)}>{c.name} ({c.count})</button>
+            <button key={c.value} className={`chip ${statusChip === c.value ? 'active' : ''}`} onClick={() => { setStatusChip(c.value); setPage(1) }}>{c.label} ({c.count})</button>
           ))}
         </div>
         {ov && ov.sources.length > 0 && (
           <div className="crm-chips src">
-            <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => setSourceChip('全部')}>全部来源</button>
+            <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
             {ov.sources.map((s) => (
-              <button key={s.source} className={`chip ${sourceChip === s.source ? 'active' : ''}`} onClick={() => setSourceChip(s.source)}>{s.source} ({s.count})</button>
+              <button key={s.source} className={`chip ${sourceChip === s.source ? 'active' : ''}`} onClick={() => { setSourceChip(s.source); setPage(1) }}>{s.source} ({s.count})</button>
             ))}
           </div>
         )}
@@ -218,7 +228,7 @@ export default function CrmLeadPage() {
       <table className="crm-table">
         <thead><tr><th>状态</th><th>联系方式</th><th>姓名 / 标签</th><th>来源</th><th>首触期限</th><th>操作</th></tr></thead>
         <tbody>
-          {filtered.map((l) => {
+          {pageItems.map((l) => {
             const isOverdue = l.status === 'NEW' && Number(l.first_contact_deadline) > 0 && Number(l.first_contact_deadline) < Date.now()
             const meta = STATUS_META[l.status] || { label: l.status, cls: '' }
             return (
@@ -257,6 +267,14 @@ export default function CrmLeadPage() {
           {filtered.length === 0 && <tr><td colSpan={6} className="empty">暂无线索，点击右上角「导入线索」开始</td></tr>}
         </tbody>
       </table>
+
+      {filtered.length > PAGE_SIZE && (
+        <div className="crm-pager">
+          <button className="crm-btn" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>上一页</button>
+          <span className="crm-pager-info">第 {curPage} / {totalPages} 页 · 共 {filtered.length} 条</span>
+          <button className="crm-btn" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页</button>
+        </div>
+      )}
 
       {showImport && (
         <div className="crm-modal" onClick={() => setShowImport(false)}>
@@ -306,7 +324,7 @@ export default function CrmLeadPage() {
               <div><label>标签</label><div>{detail.lead.tag || '-'}</div></div>
               <div><label>状态</label><div>{(STATUS_META[detail.lead.status] || { label: detail.lead.status }).label}{detail.lead.status === 'DEAD' && detail.lead.dead_reason ? `（${detail.lead.dead_reason}）` : ''}</div></div>
               <div><label>导入时间</label><div>{fmtTime(detail.lead.created_at)}</div></div>
-              <div><label>首触期限</label><div>{fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${detail.lead.first_contact_channel || 'PHONE'}）` : ''}</div></div>
+              <div><label>首触期限</label><div>{fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${CHANNEL_META[detail.lead.first_contact_channel ?? ''] || detail.lead.first_contact_channel || '电话'}）` : ''}</div></div>
               <div className="ld-note"><label>备注</label><div>{detail.lead.note || '-'}</div></div>
             </div>
             {detail.lead.status === 'NEW' && (

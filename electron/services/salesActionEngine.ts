@@ -445,6 +445,36 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
     salesLog('WARN', `[ActionEngine] R7 报价跟进收集失败: ${e}`)
   }
 
+  // R8 物流跟进（事实驱动）：已发货超 crmLogisticsOverdueHours 小时未确认签收。
+  // 照抄 R7 模式：不依赖 AI 阶段猜测——"物流发出 + 超过阈值未确认签收"两个事实直接生成提醒。
+  // 统一用虚拟 sessionId logi:<logistics_id>（不区分是否已认领），保证不受沉默天数/阶段过滤。
+  try {
+    const overdueHours = Number(configRef?.get('crmLogisticsOverdueHours')) || 24
+    const logiSignals = crmDbService.pendingLogisticsOverdue(overdueHours)
+    for (const s of logiSignals) {
+      const ruleId = 'rule_r8_logistics_overdue'
+      const logiId = Number(s.id)
+      const sid = `logi:${logiId}`
+      if (salesDbService.hasRecentTask(sid, ruleId, nowMs - DEDUP_WINDOW_MS)) continue
+      const elapsedHours = Math.max(1, Math.floor((nowMs - Number(s.latest_update_at || nowMs)) / 3600000))
+      const name = String(s.customer_name || s.receiver || '未知')
+      const owner = String(s.owner_sales || s.account_owner_sales || '')
+      const cand: Candidate = {
+        sessionId: sid,
+        displayName: name,
+        ruleId,
+        title: `物流跟进：${String(s.brand || '')}（${name}），单号 ${String(s.tracking_no || '')}，发货超 ${elapsedHours} 小时未确认签收${owner ? `（负责：${owner}）` : ''}`,
+        score: PRIORITY_WEIGHT.high + Math.min(Math.floor(elapsedHours / 24), 7),
+        priority: 'high'
+      }
+      const existing = customerBest.get(cand.sessionId)
+      if (!existing || cand.score > existing.score) customerBest.set(cand.sessionId, cand)
+    }
+    if (logiSignals.length) salesLog('INFO', `[ActionEngine] R8 物流超期候选 ${logiSignals.length} 条`)
+  } catch (e) {
+    salesLog('WARN', `[ActionEngine] R8 物流跟进收集失败: ${e}`)
+  }
+
   // Phase 2: 排序 + 截断（≤DAILY_LIMIT，仅 R1-R5）
   const sorted = [...customerBest.values()]
     .sort((a, b) => b.score - a.score)
@@ -700,6 +730,30 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
       })
       continue
     }
+    // 物流超期卡：虚拟 sessionId logi:<logistics_id>（事实驱动，不参与沉默天数过滤）
+    if (task.trigger_type === 'rule_r8_logistics_overdue') {
+      const sid = String(task.session_id || '')
+      if (!sid.startsWith('logi:')) continue
+      const source: SignalSource = {
+        type: 'task',
+        ruleCode: 'R8',
+        label: '物流跟进',
+        reason: String(task.title || '发货超期未确认签收'),
+        rawTaskId: task.id ?? 0
+      }
+      signalMap.set(sid, {
+        sessionId: sid,
+        displayName: String(task.display_name || '未知客户'),
+        stage: 'followup',
+        silentDays: 0,
+        sources: [source],
+        priorityScore: Math.min(140, Number(task.priority_score || 80)),
+        urgencyTier: 'normal',
+        status: 'pending',
+        analysis: task.analysis ?? ''
+      })
+      continue
+    }
     const sid = task.session_id || ''
     if (!sid) continue
     const profile = salesDbService.customerGetBySession(sid)
@@ -726,6 +780,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
           'rule_r4_contacted_silent': '激活沉默',
           'rule_r5_dormant_wake': '沉默唤醒',
           'rule_r6_consider_drop': '考虑放弃',
+          'rule_r8_logistics_overdue': '物流跟进',
         }
         return labels[task.trigger_type || ''] || '待确认'
       })(),
@@ -850,6 +905,18 @@ export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipp
     }
     return
   }
+  // 物流超期卡：虚拟 sessionId logi:<logistics_id>，完成 = 确认签收（卡 done + logistics signed + activity 三一致）
+  if (String(sessionId || '').startsWith('logi:')) {
+    const logisticsId = Number(String(sessionId).slice(5))
+    const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
+    for (const t of tasks) if (t.id) completeAction(t.id, action)
+    if (action === 'done' && logisticsId > 0) {
+      try { crmDbService.markLogisticsSigned(logisticsId, { actor: '今日行动' }) } catch (e) {
+        salesLog('WARN', `[UnifiedSignals] markLogisticsSigned ${logisticsId} failed: ${e}`)
+      }
+    }
+    return
+  }
   // 标记该 sessionId 的所有 pending tasks
   const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
   for (const t of tasks) {
@@ -899,6 +966,8 @@ export async function getTodayActions(): Promise<TodayActionResult> {
     .slice(0, DAILY_LIMIT)
     .map(task => mapTaskToActionItem(task, nowMs))
     .filter(item => {
+      // 物流超期卡是事实驱动，不受阶段/沉默天数过滤（可能刚联系过客户但物流仍超期）
+      if (item.triggerType === 'rule_r8_logistics_overdue') return true
       // 成交/流失客户不需要跟进
       if (['won', 'lost'].includes(item.stage)) return false
       // 0天沉默的不需要行动
@@ -1148,7 +1217,8 @@ function buildReason(triggerType: string, silentDays: number): string {
     'rule_r4_contacted_silent': `沟通后${silentDays}天未联系`,
     'rule_r5_dormant_wake': `沉默${silentDays}天，曾有沟通`,
     'rule_r0_unknown_followup': `未分类客户${silentDays}天未互动，需确认意向`,
-    'rule_r6_consider_drop': `多次跟进无响应（${silentDays}天）`
+    'rule_r6_consider_drop': `多次跟进无响应（${silentDays}天）`,
+    'rule_r8_logistics_overdue': `发货超期未确认签收`
   }
   return reasons[triggerType] || `${silentDays}天未互动`
 }

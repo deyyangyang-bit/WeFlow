@@ -242,6 +242,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [crmLeadSlaHours, setCrmLeadSlaHours] = useState(24)
   const [crmLeadSources, setCrmLeadSources] = useState<string[]>(['抖音', '视频号', '小红书'])
   const [crmLeadSourcesInput, setCrmLeadSourcesInput] = useState('抖音,视频号,小红书')
+  // 物流跟单
+  const [crmLogisticsOverdueHours, setCrmLogisticsOverdueHours] = useState(24)
 
 
 
@@ -596,6 +598,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       // 线索流转
       const savedLeadSla = await configService.getCrmLeadSlaHours()
       setCrmLeadSlaHours(savedLeadSla)
+      const savedLogiOverdue = await configService.getCrmLogisticsOverdueHours()
+      setCrmLogisticsOverdueHours(savedLogiOverdue)
       const savedLeadSources = await configService.getCrmLeadSourcePreset()
       setCrmLeadSources(savedLeadSources)
       setCrmLeadSourcesInput(savedLeadSources.join(','))
@@ -5098,7 +5102,7 @@ JSON 输出格式：
         <div className="setting-item">
           <div className="setting-label">
             <span>自动填充总开关</span>
-            <span className="setting-desc">客户导入 CRM 后，AI 自动从聊天/见解/画像提取公司、电话、需求、预算等 12 项信息填入档案（高置信直接写入，中置信进确认中心待你打勾）</span>
+            <span className="setting-desc">客户导入 CRM 后，AI 自动从聊天/见解/画像提取公司、电话、需求、预算等 12 项信息填入档案（高置信直接写入，中置信进跟单中心待你打勾）</span>
           </div>
           <div className="setting-control">
             <label className="switch" htmlFor="crm-enrich-enabled-toggle">
@@ -5141,7 +5145,7 @@ JSON 输出格式：
         <div className="setting-item">
           <div className="setting-label">
             <span>待确认下限</span>
-            <span className="setting-desc">介于「待确认下限」与「直接写入阈值」之间的字段进确认中心由你裁决，低于下限直接丢弃（建议 0.7）</span>
+            <span className="setting-desc">介于「待确认下限」与「直接写入阈值」之间的字段进跟单中心由你裁决，低于下限直接丢弃（建议 0.7）</span>
           </div>
           <div className="setting-control">
             <input
@@ -5180,7 +5184,7 @@ JSON 输出格式：
       </div>
 
       <div className="settings-section">
-        <h2>确认中心自动确认</h2>
+        <h2>跟单中心自动确认</h2>
         <div className="setting-item">
           <div className="setting-label">
             <span>自动确认总开关</span>
@@ -5202,6 +5206,29 @@ JSON 输出格式：
               />
               <span className="switch-slider" />
             </label>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>物流超期（小时）</span>
+            <span className="setting-desc">发货后超过该时长未确认签收，今日行动将生成「物流跟进」提醒（默认 24 小时）</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="range"
+              min="1"
+              max="168"
+              step="1"
+              value={crmLogisticsOverdueHours}
+              onChange={async (e) => {
+                const val = Math.max(1, Math.min(168, parseInt(e.target.value, 10) || 24))
+                setCrmLogisticsOverdueHours(val)
+                await configService.setCrmLogisticsOverdueHours(val)
+                showMessage(`物流超期阈值已设为 ${val} 小时`, true)
+              }}
+              style={{ width: '160px' }}
+            />
+            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '48px' }}>{crmLogisticsOverdueHours}h</span>
           </div>
         </div>
         <div className="setting-item">
