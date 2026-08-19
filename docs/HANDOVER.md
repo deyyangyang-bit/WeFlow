@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `0eab71f`（2026-08-20 AI 销售助手 V1 P0：商机/意向评分/风险预警，见 §2.14；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**（商机/评分/风险）。
+> 基线 commit `d40cd4d`；最近提交 `c719678`（2026-08-20 漏斗数据修复：转化率口径 + 近7天去重，见 §2.14；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -230,6 +230,7 @@
 - **IPC**：`crm:opportunity:list/get/events/stats/stage/close/intentScore` + `crm:risk:list/resolve`（crmIpcHandlers + preload + electron.d.ts 同步）
 - **验证**：`scripts/crm-opportunity-test.ts` **45/45**（评分 0a-0g / parseBuySignal 1a-1i / 商机累积 2a-2h / 阶段联动 3a-3e / 漏斗 4a-4e / 风险 5a-5k）；`tsc --noEmit` 零错误 + vite build 通过；crm 全系回归通过（lead 53 / workbench 48 / claim 17 / autoconfirm 56 / enrich 55 / docgen 68 / golden 45 / logistics 25 / opportunity 45）
 - **已知边界**：风险只附着已建档客户（account_id 非 0）；漏斗深链 bug（customer_profile 中文 stage vs account.sales_stage 英文双轨）已记录待处理（用户选择先做 PRD P0）
+- **2026-08-20 漏斗数据修复**（commit `c719678`）：① 转化率口径由「阶段间相除」改为「相对漏斗顶部『了解』的比例」（成交 24/了解 71 = 34% 赢单率；原算法在 成交>决策 时算出 300% 失真）；② 近 7 天由「AI 扫描标签条数」改为「新增进漏斗客户数」（`intentTimeline` 按 `MIN(created_at)` 首次打标日期去重，同客户重复扫描只计 1 次）；③ `salesDbService.initialize` wasm 路径加根 `node_modules` 兜底（同 crmDbService 模式）。新增 `scripts/funnel-test.ts` **5/5**
 
 ---
 
