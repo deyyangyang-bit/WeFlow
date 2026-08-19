@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `11359fe`（2026-08-20 漏斗深链修复：阶段统一 customer_profile.stage，见 §2.14；漏斗数据修复 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）。
+> 基线 commit `d40cd4d`；最近提交 `8085dc2`（2026-08-20 今日行动新建待办：手动待办进信号流 + 侧栏可勾选，见 §2.14；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -232,6 +232,7 @@
 - **已知边界**：风险只附着已建档客户（account_id 非 0）。漏斗深链 bug（customer_profile 中文 stage vs account.sales_stage 英文双轨）已于 `11359fe` 修复：**customer_profile.stage 为唯一阶段真源**（见本段「漏斗深链修复」）
 - **2026-08-20 漏斗数据修复**（commit `c719678`）：① 转化率口径由「阶段间相除」改为「相对漏斗顶部『了解』的比例」（成交 24/了解 71 = 34% 赢单率；原算法在 成交>决策 时算出 300% 失真）；② 近 7 天由「AI 扫描标签条数」改为「新增进漏斗客户数」（`intentTimeline` 按 `MIN(created_at)` 首次打标日期去重，同客户重复扫描只计 1 次）；③ `salesDbService.initialize` wasm 路径加根 `node_modules` 兜底（同 crmDbService 模式）。新增 `scripts/funnel-test.ts` **5/5**
 - **2026-08-20 漏斗深链修复**（commit `11359fe`）：漏斗点阶段 → CRM 客户列表筛空。根因双轨：漏斗用 `customer_profile.stage`（中文 了解/比价/决策/成交），CRM 用 `account.sales_stage`（英文 contacted/quoted/negotiating/won，导入时 比价+决策 都映射成 negotiating），sales_stage **无 quoted**，漏斗「比价」深链「已报价」必空。修复统一 `customer_profile.stage` 为唯一阶段真源：`crm:customers` IPC 附带 `profile_stage`（session_id 关联）；CrmWorkbenchPage `stageLabel` 优先 `profile_stage`、无画像才回退 sales_stage 标签；SalesFunnelPage 下钻直接传原始中文阶段名（删 FUNNEL_TO_CRM_LABEL 映射）。实测 customer_profile 了解71/比价62/成交24/决策8 全部命中；深链协议改 `/crm?tab=customer&stage=<原始中文阶段>`
+- **2026-08-20 今日行动新建待办**（commit `8085dc2`）：修复能力断层——手动「新建待办」原只在已隐藏的 FollowUpPage，今日行动无入口。① `getUnifiedSignals` 加 manual 分支：手动待办绕过沉默天数过滤（事实驱动），无客户 → 虚拟 sessionId `todo:<id>` 独立卡（**动态计算不落库**，因 `todoUpdate` 白名单不含 session_id）、绑客户 → 并入客户卡（displayName 回退客户档案名）；② `completeUnifiedSignal` 加 `todo:` 前缀分支按 `getTask(id)` 关单；③ 今日行动 header「新建待办」弹窗（标题必填 + 客户搜索下拉可选 + 截止时间可选）；④ `todayActionStore` 加 todos 状态（fetchToday 顺带刷新，主卡流与侧栏同源同步），TodoSidebar 数据源切 store、checkbox 可点击完成、主卡流完成也同步侧栏；⑤ AIActionCard `todo:` 虚拟卡隐藏「打开聊天」+「AI 分析」；⑥ 老页面 FollowUpPage 保留。新增 `scripts/todo-followup-test.ts` **11/11**（虚拟卡/绑客户卡/关单/老链路兼容）
 
 ---
 
