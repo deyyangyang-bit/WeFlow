@@ -112,6 +112,8 @@ interface ConfigSchema {
   aiInsightWeiboBindings: Record<string, { uid: string; screenName?: string; updatedAt: number }>
   aiInsightFilterMode: 'whitelist' | 'blacklist'
   aiInsightFilterList: string[]
+  /** AI 判定非客户（阶段=未知）后自动加入的黑名单，命中一律不触发 AI 见解 */
+  aiInsightNonCustomerBlacklist: string[]
   aiInsightWhitelistEnabled: boolean
   aiInsightWhitelist: string[]
   /** 活跃分析冷却时间（分钟），0 表示无冷却 */
@@ -284,6 +286,7 @@ export class ConfigService {
       aiInsightAllowSocialContext: false,
       aiInsightFilterMode: 'whitelist',
       aiInsightFilterList: [],
+      aiInsightNonCustomerBlacklist: [],
       aiInsightWhitelistEnabled: false,
       aiInsightWhitelist: [],
       aiInsightCooldownMinutes: 120,

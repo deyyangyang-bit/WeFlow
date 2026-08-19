@@ -194,11 +194,17 @@ class InsightRecordService {
     return this.records.filter((record) => record.accountScope === scope)
   }
 
-  /** 该会话在 windowMs 内是否已有见解记录（用于防重复分析，时间窗通常 12h） */
+  /**
+   * 该会话在 windowMs 内是否已有 AI 见解记录（用于防重复分析，时间窗通常 24h）。
+   * 只统计 sourceType='insight'（AI 自动/手动生成的见解），排除 message_analysis
+   * （用户对单条消息的解析，不视为「已分析过该客户」，不应阻塞后续自动见解）。
+   */
   hasRecentRecord(sessionId: string, windowMs: number): boolean {
     if (!sessionId) return false
     const cutoff = Date.now() - windowMs
-    return this.getScopedRecords().some((r) => r.sessionId === sessionId && r.createdAt >= cutoff)
+    return this.getScopedRecords().some(
+      (r) => (r.sourceType || 'insight') === 'insight' && r.sessionId === sessionId && r.createdAt >= cutoff
+    )
   }
 
   /** 返回所有记录（含 salesStage），供 CRM 回填导入使用 */

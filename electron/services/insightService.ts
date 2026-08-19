@@ -46,7 +46,8 @@ const DB_CHANGE_DEBOUNCE_MS = 2000
 /** 首次沉默扫描延迟（毫秒），避免启动期间抢占资源 */
 const SILENCE_SCAN_INITIAL_DELAY_MS = 3 * 60 * 1000
 // 自动触发见解的重复分析去重窗口（内存冷却重启即丢，故用记录级去重兜底）
-const INSIGHT_RECORD_DEDUP_MS = 12 * 3600 * 1000
+// 24h：同一客户 24 小时内不重复 AI 分析（2026-08-20 需求）
+const INSIGHT_RECORD_DEDUP_MS = 24 * 3600 * 1000
 
 /** 单次 API 请求超时（毫秒） */
 const API_TIMEOUT_MS = 45_000
@@ -81,6 +82,7 @@ const INSIGHT_CONFIG_KEYS = new Set([
   'aiModelApiMaxTokens',
   'aiInsightFilterMode',
   'aiInsightFilterList',
+  'aiInsightNonCustomerBlacklist',
   'aiInsightAllowMomentsContext',
   'aiInsightMomentsContextCount',
   'aiInsightMomentsBindings',
@@ -213,7 +215,7 @@ function normalizeApiMaxTokens(value: unknown): number {
   return Math.min(API_MAX_TOKENS_MAX, Math.max(API_MAX_TOKENS_MIN, Math.floor(numeric)))
 }
 
-function normalizeSessionIdList(value: unknown): string[] {
+export function normalizeSessionIdList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)))
 }
@@ -1201,12 +1203,36 @@ ${afterText}
     return { mode, list }
   }
 
+  /**
+   * AI 判定非客户黑名单：sessionId 命中一律不允许触发见解。
+   * 独立于 whitelist/blacklist 名单（那是用户手动配置），这里是 AI 自动判定的硬屏蔽。
+   */
+  private isNonCustomerBlacklisted(sessionId: string): boolean {
+    const normalized = String(sessionId || '').trim()
+    if (!normalized) return false
+    const list = normalizeSessionIdList(this.config.get('aiInsightNonCustomerBlacklist'))
+    return list.includes(normalized)
+  }
+
   private isSessionAllowed(sessionId: string): boolean {
     const normalizedSessionId = String(sessionId || '').trim()
     if (!normalizedSessionId) return false
+    // AI 判定非客户 → 硬屏蔽，不触发任何见解
+    if (this.isNonCustomerBlacklisted(normalizedSessionId)) return false
     const { mode, list } = this.getInsightFilterConfig()
     if (mode === 'whitelist') return list.includes(normalizedSessionId)
     return !list.includes(normalizedSessionId)
+  }
+
+  /** AI 判定该会话为非客户（阶段=未知）→ 加入非客户黑名单并持久化 */
+  private blacklistNonCustomer(sessionId: string): void {
+    const normalized = String(sessionId || '').trim()
+    if (!normalized) return
+    const list = normalizeSessionIdList(this.config.get('aiInsightNonCustomerBlacklist'))
+    if (list.includes(normalized)) return
+    list.push(normalized)
+    this.config.set('aiInsightNonCustomerBlacklist', list)
+    insightLog('INFO', `AI 判定「${normalized}」为非客户，已加入黑名单，后续不再触发 AI 见解`)
   }
 
   /**
@@ -1866,6 +1892,10 @@ ${afterText}
       if (stageMatch) {
         parsedStage = stageMatch[1]
         insight = insight.replace(/\s*【阶段[：:]\s*(了解|比价|决策|成交|流失|未知)\s*】\s*/, '').trim()
+        // AI 判定非客户（阶段=未知）→ 加入黑名单，后续不再触发 AI 见解
+        if (parsedStage === '未知') {
+          this.blacklistNonCustomer(sessionId)
+        }
         // 自动更新 customer_profile（未知阶段不覆盖已有值）
         if (parsedStage !== '未知') {
           try {

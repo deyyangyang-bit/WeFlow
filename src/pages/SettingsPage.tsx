@@ -330,6 +330,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [insightTriggerResult, setInsightTriggerResult] = useState<{ success: boolean; message: string } | null>(null)
   const [aiInsightFilterMode, setAiInsightFilterMode] = useState<configService.AiInsightFilterMode>('whitelist')
   const [aiInsightFilterList, setAiInsightFilterList] = useState<Set<string>>(new Set())
+  /** AI 自动判定非客户黑名单（阶段=未知 → 自动加入，不触发见解） */
+  const [aiInsightNonCustomerBlacklist, setAiInsightNonCustomerBlacklist] = useState<string[]>([])
   const [insightFilterType, setInsightFilterType] = useState<InsightSessionFilterTypeValue>('all')
   const [insightWhitelistSearch, setInsightWhitelistSearch] = useState('')
   const [aiInsightCooldownMinutes, setAiInsightCooldownMinutes] = useState(120)
@@ -666,6 +668,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiInsightMomentsBindings(savedAiInsightMomentsBindings)
       setAiInsightFilterMode(savedAiInsightFilterMode)
       setAiInsightFilterList(new Set(savedAiInsightFilterList))
+      const savedNonCustomerBlacklist = await configService.getAiInsightNonCustomerBlacklist()
+      setAiInsightNonCustomerBlacklist(savedNonCustomerBlacklist)
       setAiInsightCooldownMinutes(savedAiInsightCooldownMinutes)
       setAiInsightScanIntervalHours(savedAiInsightScanIntervalHours)
       setAiInsightContextCount(savedAiInsightContextCount)
@@ -4194,6 +4198,49 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </div>
         )
       })()}
+
+      {/* AI 自动判定非客户黑名单：AI 判定阶段=未知时自动加入，命中不触发见解；可手动解除（避免 AI 误判永久沉默） */}
+      <div className="form-group" style={{ marginTop: 16 }}>
+        <label>AI 自动判定非客户</label>
+        <span className="form-hint">
+          AI 分析时判定该联系人与采购无关（阶段=未知），会自动加入此黑名单，之后不再对 TA 触发 AI 见解。若被误判，可在此解除。
+        </span>
+        {aiInsightNonCustomerBlacklist.length === 0 ? (
+          <div className="binding-feedback muted" style={{ padding: '8px 0' }}>
+            暂无自动判定为非客户的会话
+          </div>
+        ) : (
+          <div className="insight-nc-blacklist">
+            {aiInsightNonCustomerBlacklist.map((sessionId) => {
+              const matched = sessionFilterOptions.find((s) => s.username === sessionId)
+              return (
+                <div key={sessionId} className="insight-nc-blacklist-item">
+                  <Avatar
+                    src={matched?.avatarUrl}
+                    name={matched ? getSessionDisplayName(matched) : sessionId}
+                    size={24}
+                  />
+                  <span className="insight-nc-blacklist-name">
+                    {matched ? getSessionDisplayName(matched) : sessionId}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={async () => {
+                      const next = aiInsightNonCustomerBlacklist.filter((id) => id !== sessionId)
+                      setAiInsightNonCustomerBlacklist(next)
+                      await configService.setAiInsightNonCustomerBlacklist(next)
+                      showMessage('已解除该会话的 AI 非客户判定，可重新触发见解', true)
+                    }}
+                  >
+                    解除
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="divider" />
 

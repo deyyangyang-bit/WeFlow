@@ -118,6 +118,7 @@ export const CONFIG_KEYS = {
   AI_INSIGHT_ALLOW_SOCIAL_CONTEXT: 'aiInsightAllowSocialContext',
   AI_INSIGHT_FILTER_MODE: 'aiInsightFilterMode',
   AI_INSIGHT_FILTER_LIST: 'aiInsightFilterList',
+  AI_INSIGHT_NON_CUSTOMER_BLACKLIST: 'aiInsightNonCustomerBlacklist',
   AI_INSIGHT_WHITELIST_ENABLED: 'aiInsightWhitelistEnabled',
   AI_INSIGHT_WHITELIST: 'aiInsightWhitelist',
   AI_INSIGHT_COOLDOWN_MINUTES: 'aiInsightCooldownMinutes',
@@ -2184,6 +2185,16 @@ export async function getAiInsightFilterList(): Promise<string[]> {
 
 export async function setAiInsightFilterList(list: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.AI_INSIGHT_FILTER_LIST, normalizeAiInsightFilterList(list))
+}
+
+// AI 自动判定非客户黑名单（阶段=未知 → 自动加入，命中不触发见解）
+export async function getAiInsightNonCustomerBlacklist(): Promise<string[]> {
+  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST)
+  return normalizeAiInsightFilterList(value)
+}
+
+export async function setAiInsightNonCustomerBlacklist(list: string[]): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST, normalizeAiInsightFilterList(list))
 }
 
 // 兼容旧字段命名：内部已映射到新的黑白名单模式
