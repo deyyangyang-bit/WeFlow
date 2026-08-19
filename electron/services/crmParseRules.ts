@@ -215,6 +215,48 @@ const DEAL_WORDS = [
 ]
 // 意向词（≠成交，命中则排除）
 const DEAL_EXCLUDE = ['想要', '要不要', '想买', '考虑', '了解一下', '打算', '再看看', '考虑下', '不要', '不用', '先不', '别急']
+
+// ─── 商机采购信号（P0）：客户消息里表达明确采购意向 → 识别产品/数量/金额 ──────
+const BUY_INTENT_RE = /(采购|要买|准备买|要购置|需要|询价|想了解|了解下|看看价|咨询|什么价格|多少钱|报个价|要几台|要多少台|多少个|什么价|怎么卖|来一台|来几台|先来|能便宜|优惠|便宜点|再低|可以便宜)/
+const BUY_QUANTITY_RE = /(\d+(?:\.\d+)?)\s*(台|辆|个|套|部)/
+// 吨位（独立匹配，中间可隔 "台/的" 等噪声，如 "10台2吨的电动叉车"）
+const BUY_TON_RE = /(\d+(?:\.\d+)?)\s*吨/
+// 设备大类（长词优先）
+const BUY_DEVICE_RE = /(电动叉车|内燃叉车|电动搬运车|手动搬运车|半电动搬运车|堆高车|托盘车|牵引车|升降机|升高机|堆高机|叉车|搬运车)/
+const BUY_NOISE = ['你在吗', '发个图', '发图', '看看图', '店铺', '门店', '怎么联系', '联系方式', '工资', '招聘', '哪个店']
+
+export interface BuySignalInfo { product: string; quantity: number; amount: number; detail: string }
+
+export function parseBuySignal(content: string, isSend: number): BuySignalInfo | null {
+  if (isSend !== 0) return null // 只看客户消息
+  const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ').trim()
+  if (!text || text.length < 4) return null
+  if (!BUY_INTENT_RE.test(text)) return null
+  if (BUY_NOISE.some((w) => text.includes(w))) return null
+  // 数量（第一个命中）
+  let quantity = 0
+  const qm = text.match(BUY_QUANTITY_RE)
+  if (qm) quantity = Math.round(Number(qm[1]))
+  // 金额（客户主动给价，如 "6500我可以考虑"；复用报价金额正则）
+  let amount = 0
+  for (const m of text.matchAll(QUOTE_AMOUNT_RE)) {
+    const unit = m[3] || ''
+    let v = parseFloat(m[2].replace(/,/g, ''))
+    if (!Number.isFinite(v) || v <= 0) continue
+    if (unit.includes('万')) v *= 10000
+    if (!unit && v < 1000) continue
+    amount = v
+    break
+  }
+  // 产品规范化：吨位 + 设备大类（如 "2吨电动叉车"）；无设备时产品留空
+  let product = ''
+  const tonM = text.match(BUY_TON_RE)
+  const devM = text.match(BUY_DEVICE_RE)
+  if (devM) product = `${tonM ? `${tonM[1]}吨` : ''}${devM[1]}`
+  // 门槛：设备词 或 数量 或 客户主动给价（如 "6500我可以考虑"）
+  if (!devM && !quantity && !amount) return null
+  return { product, quantity, amount, detail: text.slice(0, 80) }
+}
 /**
  * 识别客户私聊中的成交信号。只看客户消息（isSend=0），命中明确成交词且无意向词时返回 true。
  * 保守设计：只认最明确的"定了/下单/付款"表达，避免把"考虑买"误判为成交。

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox, Target } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -399,6 +399,16 @@ function Sidebar({ collapsed }: SidebarProps) {
           >
             <span className="nav-icon"><TrendingDown size={20} /></span>
             <span className="nav-label">漏斗</span>
+          </NavLink>
+
+          {/* 商机 - AI 从聊天自动识别采购信号 */}
+          <NavLink
+            to="/opportunities"
+            className={`nav-item ${isActive('/opportunities') ? 'active' : ''}`}
+            title={collapsed ? '商机' : undefined}
+          >
+            <span className="nav-icon"><Target size={20} /></span>
+            <span className="nav-label">商机</span>
           </NavLink>
 
           {/* 跟进待办 - PRD v2 隐藏（合并入今日行动） */}

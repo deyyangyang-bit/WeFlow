@@ -65,6 +65,13 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:stats:overview', async () => crmDbService.statsOverview())
   ipcMain.handle('crm:stats:aiAccuracy', async (_, days?: number) => crmDbService.aiAccuracyStats(Number(days) || 7))
   ipcMain.handle('crm:customers', async () => crmDbService.customers())
+  // 商机模块（P0：AI 从聊天自动识别采购信号 → 商机；列表/详情/事件/漏斗/阶段/关单）
+  ipcMain.handle('crm:opportunity:list', async (_, opts?) => crmDbService.opportunityList(opts))
+  ipcMain.handle('crm:opportunity:get', async (_, id: number) => crmDbService.opportunityById(Number(id)))
+  ipcMain.handle('crm:opportunity:events', async (_, id: number) => crmDbService.opportunityEvents(Number(id)))
+  ipcMain.handle('crm:opportunity:stats', async () => crmDbService.opportunityStats())
+  ipcMain.handle('crm:opportunity:stage', async (_, id: number, stage: string) => crmDbService.opportunityUpdateStage(Number(id), String(stage || ''), 'manual'))
+  ipcMain.handle('crm:opportunity:close', async (_, id: number, status: 'won' | 'lost', reason: string) => crmDbService.opportunityClose(Number(id), status, String(reason || '')))
   // 客户信息自动填充：单客手动补全 / 存量回填（enqueue 串行；引擎内部不 enqueue）
   // 手动编辑客户字段（写入并锁定，AI 不再覆盖）
   ipcMain.handle('crm:enrich:manualSet', async (_, accountId: number, field: string, value: string) =>

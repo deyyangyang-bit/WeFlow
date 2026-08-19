@@ -14,7 +14,7 @@ import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
-  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, type AllocationRow, type ShippingInfo
+  isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { salesDbService } from './salesDbService'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
@@ -168,6 +168,26 @@ async function scanAll(): Promise<number> {
             }
           } else if (isSend === 0) {
             crmDbService.markQuoteReplied(uid, ms)
+          }
+          // 商机采购信号（P0）：客户消息表达采购意向 → 自动创建/累积商机（未建档自动建档）
+          const buySig = parseBuySignal(textForSignal, isSend)
+          if (buySig) {
+            let oppAccountId = accountId
+            if (!oppAccountId && uid && !uid.includes('@chatroom')) {
+              try {
+                const imp = crmDbService.importCustomerFromProfile({ name, sessionId: uid, stage: '了解', reason: '采购信号自动建档' })
+                if (imp.id) oppAccountId = imp.id
+              } catch { /* crmDb 未初始化忽略 */ }
+            }
+            if (oppAccountId) {
+              try {
+                const or = crmDbService.opportunityUpsertBySignal(oppAccountId, name, {
+                  product: buySig.product, quantity: buySig.quantity, amount: buySig.amount,
+                  stage: '了解', detail: buySig.detail
+                })
+                if (or.created) salesLog('INFO', `[CrmParse] 采购信号「${name}」→ 新商机 ${buySig.product}${buySig.quantity ? `×${buySig.quantity}` : ''}（${buySig.detail}）`)
+              } catch (e) { salesLog('WARN', `[CrmParse] 商机识别失败 ${name}: ${e}`) }
+            }
           }
 
           try {

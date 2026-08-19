@@ -1,0 +1,44 @@
+/* 商机页：AI 从聊天自动识别采购信号 → 商机列表/漏斗/详情 */
+.opp-page { padding: 24px; color: #1e293b; }
+.opp-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; h2 { font-size: 16px; margin-right: auto; } }
+.opp-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; color: #1e293b;
+  &.opp-btn--primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  &.opp-btn--win { border-color: #bbf7d0; color: #15803d; }
+  &.opp-btn--lose { border-color: #fecaca; color: #dc2626; } }
+.opp-notice { font-size: 12px; color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 4px 10px; }
+.opp-stats { display: flex; gap: 16px; margin-bottom: 20px; }
+.opp-stat { display: flex; flex-direction: column; align-items: center; background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 10px; padding: 12px 24px;
+  .opp-stat__value { font-size: 22px; font-weight: 700; }
+  .opp-stat__label { font-size: 12px; color: #64748b; } }
+.opp-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; margin-bottom: 16px; }
+.opp-drill-hint { text-align: center; font-size: 12px; color: #94a3b8; padding-bottom: 6px; }
+.opp-empty { color: #94a3b8; padding: 20px; text-align: center; font-size: 13px; }
+.opp-filter { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 10px; color: #1d4ed8; }
+.opp-list { display: flex; flex-direction: column; gap: 8px; }
+.opp-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; transition: box-shadow .15s;
+  &:hover { box-shadow: 0 2px 8px rgba(15, 23, 42, .08); }
+  .opp-card__main { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .opp-card__name { font-weight: 600; font-size: 14px; }
+  .opp-card__product { font-size: 13px; color: #475569; }
+  .opp-card__qty { font-size: 12px; color: #64748b; }
+  .opp-card__sub { display: flex; gap: 12px; align-items: center; }
+  .opp-card__amt { font-size: 13px; font-weight: 600; color: #1e293b; }
+  .opp-card__time { font-size: 11px; color: #94a3b8; margin-left: auto; } }
+.opp-badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; color: #fff;
+  &.opp-badge--了解 { background: #60a5fa; }
+  &.opp-badge--比价 { background: #f59e0b; }
+  &.opp-badge--决策 { background: #ef4444; }
+  &.opp-badge--成交 { background: #16a34a; }
+  &.opp-badge--流失 { background: #94a3b8; } }
+.opp-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.opp-modal__body { background: #fff; border-radius: 12px; padding: 20px; width: 560px; max-height: 80vh; overflow: auto; color: #1e293b;
+  h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }
+.opp-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; margin-bottom: 14px;
+  .opp-detail__row { display: flex; justify-content: space-between; font-size: 13px; span { color: #64748b; } } }
+.opp-actions { display: flex; gap: 8px; margin-bottom: 14px; }
+.opp-events { border-top: 1px solid #f1f5f9; padding-top: 12px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
+.opp-event { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #f1f5f9;
+  .opp-event__tag { background: #eff6ff; color: #2563eb; border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
+  .opp-event__stage { color: #475569; flex-shrink: 0; }
+  .opp-event__detail { color: #334155; flex: 1; }
+  .opp-event__time { color: #94a3b8; font-size: 11px; flex-shrink: 0; } }

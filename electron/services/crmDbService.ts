@@ -65,8 +65,18 @@ CREATE TABLE IF NOT EXISTS contact (
 CREATE TABLE IF NOT EXISTS opportunity (
   id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT,
   amount REAL DEFAULT 0, stage TEXT DEFAULT 'initial', owner_sales TEXT,
+  product TEXT DEFAULT '', quantity INTEGER DEFAULT 0,
+  intent_score INTEGER DEFAULT 0, status TEXT DEFAULT 'active',
+  last_signal_at INTEGER DEFAULT 0, expected_close_at INTEGER DEFAULT 0,
+  main_resistance TEXT DEFAULT '', competitor TEXT DEFAULT '',
   custom_fields TEXT DEFAULT '{}', created_at INTEGER, updated_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS opportunity_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER NOT NULL, event_type TEXT NOT NULL,
+  stage TEXT DEFAULT '', detail TEXT DEFAULT '', created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opp_event_opp ON opportunity_event(opportunity_id);
 CREATE TABLE IF NOT EXISTS contract (
   id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT,
   amount REAL DEFAULT 0, status TEXT DEFAULT 'pending_sign', sign_date INTEGER,
@@ -327,6 +337,16 @@ class CrmDbService {
     }
     // Migration: contract 补 attachment_path（docgen 生成的合同 docx 路径写回用）
     try { this.db.run('ALTER TABLE contract ADD COLUMN attachment_path TEXT') } catch { /* 列已存在 */ }
+    // Migration: opportunity 商机模块列（AI 从聊天自动识别采购信号 → 商机；opportunity_event 表由 SCHEMA_SQL 保证）
+    const oppCols: Array<[string, string]> = [
+      ['product', "TEXT DEFAULT ''"], ['quantity', 'INTEGER DEFAULT 0'],
+      ['intent_score', 'INTEGER DEFAULT 0'], ['status', "TEXT DEFAULT 'active'"],
+      ['last_signal_at', 'INTEGER DEFAULT 0'], ['expected_close_at', 'INTEGER DEFAULT 0'],
+      ['main_resistance', "TEXT DEFAULT ''"], ['competitor', "TEXT DEFAULT ''"]
+    ]
+    for (const [col, type] of oppCols) {
+      try { this.db.run(`ALTER TABLE opportunity ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
     // Migration: lead 旧结构表（空壳 name/company/phone 或中间态 contact_phone/contact_wechat）→ 线索流转结构
     // 旧表缺 contact_type 或 contact_normalized 任一 → 迁移旧数据（如有）后重建为新 SCHEMA。
     // 注意：lead 索引独立于 SCHEMA_SQL（LEAD_INDEXES_SQL），避免旧表上建索引先崩。
@@ -696,6 +716,119 @@ class CrmDbService {
       'SELECT * FROM quote_signal WHERE customer_replied_at = 0 AND quoted_at <= ? AND quoted_at >= ? ORDER BY quoted_at',
       [now - minHours * 3600000, now - maxDays * 86400000]
     )
+  }
+
+  // ─── 商机模块（AI 从聊天自动识别采购信号 → 商机，P0）────────────────────────
+  /** 商机列表（JOIN 客户名），按最近信号倒序。opts.status 默认 active */
+  opportunityList(opts?: { accountId?: number; status?: string }): CrmRow[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (opts?.accountId) { where.push('o.account_id = ?'); params.push(opts.accountId) }
+    if (opts?.status) { where.push('o.status = ?'); params.push(opts.status) }
+    const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    return this.all(
+      `SELECT o.*, a.name AS account_name, a.session_id AS session_id
+       FROM opportunity o LEFT JOIN account a ON a.id = o.account_id ${w}
+       ORDER BY o.last_signal_at DESC, o.id DESC`, params
+    )
+  }
+  /** 单商机详情 */
+  opportunityById(id: number): CrmRow | undefined {
+    if (!id) return undefined
+    return this.all(
+      'SELECT o.*, a.name AS account_name, a.session_id AS session_id FROM opportunity o LEFT JOIN account a ON a.id = o.account_id WHERE o.id = ?',
+      [id]
+    )[0]
+  }
+  /** 商机事件时间线（倒序） */
+  opportunityEvents(oppId: number): CrmRow[] {
+    return this.all('SELECT * FROM opportunity_event WHERE opportunity_id = ? ORDER BY id DESC', [oppId])
+  }
+  /** 追加商机事件（信号累积/阶段变更都留痕：事件驱动，不覆盖式写状态） */
+  opportunityEventAdd(oppId: number, eventType: string, stage = '', detail = ''): void {
+    if (!oppId) return
+    this.run('INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
+      [oppId, eventType, stage, detail.slice(0, 200), Date.now()])
+  }
+  /** 商机漏斗统计：active 商机按阶段分布 + 总金额 */
+  opportunityStats(): { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number } {
+    const rows = this.all<{ stage: string; cnt: number; amt: number }>(
+      "SELECT COALESCE(stage,'unknown') AS stage, COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amt FROM opportunity WHERE status = 'active' GROUP BY stage ORDER BY cnt DESC", [])
+    const total = Number(this.all("SELECT COUNT(*) AS c FROM opportunity WHERE status = 'active'", [])[0]?.c ?? 0)
+    const totalAmount = Number(this.all("SELECT COALESCE(SUM(amount),0) AS s FROM opportunity WHERE status = 'active'", [])[0]?.s ?? 0)
+    return {
+      stageDist: rows.map((r) => ({ stage: String(r.stage || 'unknown'), count: Number(r.cnt) || 0, amount: Number(r.amt) || 0 })),
+      total: Number(total), totalAmount: Number(totalAmount)
+    }
+  }
+  /** 客户当前活跃商机（供阶段联动/列表徽章） */
+  activeOpportunitiesByAccount(accountId: number): CrmRow[] {
+    if (!accountId) return []
+    return this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' ORDER BY last_signal_at DESC", [accountId])
+  }
+  /** 采购信号落库：同客户同产品已有 active 商机 → 累积更新；否则新建。
+   *  amount=0 表示待确认；stage 复用客户阶段（了解/比价/决策）。 */
+  opportunityUpsertBySignal(accountId: number, customerName: string, signal: { product: string; quantity: number; amount: number; stage: string; detail: string }): { id: number; created: boolean } {
+    const product = String(signal.product || '').trim()
+    const now = Date.now()
+    const opp = product
+      ? this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' AND product = ? ORDER BY last_signal_at DESC LIMIT 1", [accountId, product])[0]
+      : undefined
+    if (opp) {
+      const patch: CrmRow = { last_signal_at: now, updated_at: now }
+      if (signal.quantity > 0 && (Number(opp.quantity) === 0 || signal.quantity > Number(opp.quantity))) patch.quantity = signal.quantity
+      if (signal.amount > 0 && (Number(opp.amount) === 0 || signal.amount > Number(opp.amount))) patch.amount = signal.amount
+      this.update('opportunity', Number(opp.id), patch)
+      this.opportunityEventAdd(Number(opp.id), 'signal', String(opp.stage || ''), `${customerName}：${signal.detail}`)
+      return { id: Number(opp.id), created: false }
+    }
+    const name = product ? `${product}采购` : '新商机'
+    const id = this.create('opportunity', {
+      account_id: accountId, name, product,
+      quantity: signal.quantity || 0, amount: signal.amount || 0,
+      stage: signal.stage || '了解', status: 'active',
+      last_signal_at: now, created_at: now, updated_at: now,
+      intent_score: 0, custom_fields: '{}'
+    })
+    if (id) this.opportunityEventAdd(id, 'created', signal.stage || '了解', `AI 识别采购信号：${signal.detail}`)
+    return { id: Number(id), created: true }
+  }
+  /** 商机阶段更新（AI 判定/人工），留痕事件 */
+  opportunityUpdateStage(oppId: number, stage: string, source = 'ai'): boolean {
+    const opp = this.all('SELECT * FROM opportunity WHERE id = ?', [oppId])[0]
+    if (!opp) return false
+    const fromStage = String(opp.stage || '')
+    if (fromStage === stage) return false
+    this.update('opportunity', oppId, { stage, updated_at: Date.now() })
+    this.opportunityEventAdd(oppId, 'stage_change', stage, `${source}：${fromStage} → ${stage}`)
+    return true
+  }
+  /** 关闭商机（成交/丢单）。status: won | lost */
+  opportunityClose(oppId: number, status: 'won' | 'lost', reason: string): boolean {
+    const opp = this.all('SELECT * FROM opportunity WHERE id = ?', [oppId])[0]
+    if (!opp) return false
+    this.update('opportunity', oppId, { status, updated_at: Date.now() })
+    this.opportunityEventAdd(oppId, status === 'won' ? 'won' : 'lost', String(opp.stage || ''), reason)
+    return true
+  }
+  /** 客户阶段 AI 判定后联动：客户 active 商机同步推进。
+   *  了解→比价→决策 顺推；成交→商机 won；流失→商机 lost。 */
+  syncOpportunityStageByAccount(accountId: number, customerStage: string): number {
+    if (!accountId) return 0
+    const opps = this.activeOpportunitiesByAccount(accountId)
+    if (!opps.length) return 0
+    const ORDER = ['了解', '比价', '决策'] as const
+    let changed = 0
+    for (const o of opps) {
+      const cur = String(o.stage || '了解')
+      if (customerStage === '成交') { if (this.opportunityClose(Number(o.id), 'won', '客户阶段判定成交，自动关单')) changed++; continue }
+      if (customerStage === '流失') { if (this.opportunityClose(Number(o.id), 'lost', '客户阶段判定流失，自动关单')) changed++; continue }
+      if (!ORDER.includes(customerStage as (typeof ORDER)[number])) continue
+      const curIdx = ORDER.indexOf(cur as (typeof ORDER)[number])
+      const newIdx = ORDER.indexOf(customerStage as (typeof ORDER)[number])
+      if (newIdx > curIdx && this.opportunityUpdateStage(Number(o.id), customerStage, 'customer_sync')) changed++
+    }
+    return changed
   }
 
   /** 批量按微信会话查 account（灵感信箱徽章用，避免 N+1） */

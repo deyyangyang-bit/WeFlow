@@ -1702,6 +1702,13 @@ ${afterText}
         reason: `AI 见解阶段：${salesStage}`
       })
       salesLog('INFO', `[CrmImport] AI 见解判定「${displayName}」有意向（${salesStage}）→ CRM ${crmStage}（${res.created ? '新建' : '已存在'}）`)
+      // 商机阶段联动（P0）：客户阶段推进 → 活跃商机同步（了解→比价→决策 顺推；成交→won；流失→lost）
+      if (res.id) {
+        try {
+          const synced = crmDbService.syncOpportunityStageByAccount(Number(res.id), salesStage)
+          if (synced > 0) salesLog('INFO', `[CrmImport] 商机阶段联动「${displayName}」(${salesStage}) 更新 ${synced} 个商机`)
+        } catch { /* crmDb 未初始化忽略 */ }
+      }
       return true
     } catch (e) {
       salesLog('WARN', `[CrmImport] 见解导入失败 ${displayName}: ${e}`)
