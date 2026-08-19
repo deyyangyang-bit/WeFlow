@@ -64,7 +64,17 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
   ipcMain.handle('crm:stats:overview', async () => crmDbService.statsOverview())
   ipcMain.handle('crm:stats:aiAccuracy', async (_, days?: number) => crmDbService.aiAccuracyStats(Number(days) || 7))
-  ipcMain.handle('crm:customers', async () => crmDbService.customers())
+  // 客户列表：附带 customer_profile.stage（中文漏斗阶段），与销售漏斗同源，深链下钻不空列表
+  ipcMain.handle('crm:customers', async () => {
+    const rows = crmDbService.customers()
+    try {
+      const stageBySession = new Map<string, string>()
+      for (const p of salesDbService.customerAll()) {
+        if (p.session_id && p.stage) stageBySession.set(String(p.session_id), String(p.stage))
+      }
+      return rows.map((r) => ({ ...r, profile_stage: stageBySession.get(String(r.session_id || '')) || '' }))
+    } catch { return rows }
+  })
   // 商机模块（P0：AI 从聊天自动识别采购信号 → 商机；列表/详情/事件/漏斗/阶段/关单）
   ipcMain.handle('crm:opportunity:list', async (_, opts?) => crmDbService.opportunityList(opts))
   ipcMain.handle('crm:opportunity:get', async (_, id: number) => crmDbService.opportunityById(Number(id)))

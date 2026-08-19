@@ -7,11 +7,6 @@ import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
 import './SalesFunnelPage.scss'
 
-// 漏斗阶段 → CRM 客户列表阶段筛选（下钻深链）
-const FUNNEL_TO_CRM_LABEL: Record<string, string> = {
-  了解: '已沟通', 比价: '已报价', 决策: '谈判中', 成交: '已成交'
-}
-
 interface FunnelData {
   stageDistribution: Array<{ stage: string; count: number }>
   intentTimeline: Array<{ date: string; count: number }>
@@ -70,7 +65,7 @@ export default function SalesFunnelPage() {
     }))
   }, [normalized])
 
-  // ECharts 真漏斗（点击阶段 → 下钻 CRM 客户列表按该阶段筛选）
+  // ECharts 真漏斗（点击阶段 → 下钻 CRM 客户列表按该阶段筛选，传原始中文阶段名，与 customer_profile.stage 同源）
   const funnelOption = useMemo(() => {
     if (!conversion.length) return null
     return {
@@ -91,8 +86,8 @@ export default function SalesFunnelPage() {
   }, [conversion])
   const funnelEvents = useMemo(() => ({
     click: (p: any) => {
-      const label = FUNNEL_TO_CRM_LABEL[String(p?.name || '')]
-      if (label) navigate(`/crm?tab=customer&stage=${encodeURIComponent(label)}`)
+      const stage = String(p?.name || '')
+      if (stage) navigate(`/crm?tab=customer&stage=${encodeURIComponent(stage)}`)
     }
   }), [navigate])
 

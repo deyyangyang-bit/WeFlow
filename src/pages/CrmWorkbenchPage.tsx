@@ -128,7 +128,7 @@ export default function CrmWorkbenchPage() {
         else setNotice('该客户尚未导入 CRM（AI 判定有意向后会自动导入）')
       })
     }
-    // 漏斗下钻深链：/crm?tab=customer&stage=已沟通
+    // 漏斗下钻深链：/crm?tab=customer&stage=比价（customer_profile.stage 中文漏斗阶段，与漏斗同源）
     const stage = searchParams.get('stage')
     if (t === 'customer' && stage) {
       setTab('customers')
@@ -137,8 +137,8 @@ export default function CrmWorkbenchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
-  // 阶段归一化为中文标签（与表格展示一致，未知阶段保留原始值）
-  const stageLabel = (c: any) => STAGE_LABELS[String(c.sales_stage ?? '')] || String(c.sales_stage ?? '') || '未分类'
+  // 阶段优先取 customer_profile.stage（中文漏斗阶段，与销售漏斗同源），无画像时回退 sales_stage 标签
+  const stageLabel = (c: any) => String(c.profile_stage || '') || STAGE_LABELS[String(c.sales_stage ?? '')] || String(c.sales_stage ?? '') || '未分类'
   // 筛选项由当前数据动态生成，未来出现新阶段也能自动出现
   const stageOptions = Array.from(new Set(customers.map(stageLabel))).sort((a, b) => a.localeCompare(b, 'zh'))
   const filteredCustomers = stageFilter ? customers.filter((c) => stageLabel(c) === stageFilter) : customers
