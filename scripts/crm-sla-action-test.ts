@@ -11,7 +11,7 @@ import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
 import { salesDbService } from '../electron/services/salesDbService'
 import { importLeads, scanLeadSla, completeLeadFirstContact } from '../electron/services/crmLeadService'
-import { runFullScan, getTodayActions } from '../electron/services/salesActionEngine'
+import { runFullScan, getUnifiedSignals } from '../electron/services/salesActionEngine'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -50,18 +50,20 @@ async function main(): Promise<void> {
   // ── 幂等：显式 scanLeadSla 不重复建卡 ──────────────────────────────────────
   ok('1e SLA 扫描幂等', scanLeadSla() === 0 && slaCards().length === 2)
 
-  // ── 接通点 3：getTodayActions（今日行动页打开）触发 SLA —— 第三条线索到期 ──
+  // ── 接通点 3：getUnifiedSignals（今日行动页主数据源）触发 SLA —— 第三条线索到期 ──
   crmDbService.update('lead', Number(leads[2].id), { first_contact_deadline: Date.now() - 3600_000 })
-  await getTodayActions()
-  ok('1f getTodayActions 触发 SLA：第三条到期线索出卡', slaCards().length === 3)
+  const unified = await getUnifiedSignals()
+  ok('1f getUnifiedSignals 触发 SLA：第三条到期线索出卡', slaCards().length === 3)
+  ok('1g 统一信号流返回 lead: 首触卡', unified.signals.some((s: any) => String(s.sessionId).startsWith('lead:') && s.sources?.some((x: any) => x.label === '线索首触')))
+  ok('1g2 lead: 首触卡置顶', String(unified.signals[0]?.sessionId || '').startsWith('lead:'))
 
   // ── 闭环：完成 SLA 卡 → lead 置 CONTACTED ──────────────────────────────────
   const card = slaCards().find((c) => Number(c.source_id) === Number(leads[0].id))
-  ok('1g 找到线索 1 的 SLA 卡', !!card)
+  ok('1h 找到线索 1 的 SLA 卡', !!card)
   if (card?.id) {
     completeLeadFirstContact(Number(card.id))
-    ok('1h 完成卡后 lead=CONTACTED', crmDbService.getById('lead', Number(leads[0].id))?.status === 'CONTACTED')
-    ok('1i 完成卡后卡不再是 pending', slaCards().length === 2)
+    ok('1i 完成卡后 lead=CONTACTED', crmDbService.getById('lead', Number(leads[0].id))?.status === 'CONTACTED')
+    ok('1j 完成卡后卡不再是 pending', slaCards().length === 2)
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)

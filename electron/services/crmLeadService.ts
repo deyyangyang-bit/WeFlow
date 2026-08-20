@@ -224,7 +224,7 @@ export function scanLeadSla(): number {
       title: `线索 ${masked} 已超 ${hours} 小时未首触`,
       trigger_type: 'sla_lead',
       source_id: leadId,
-      priority_score: Math.min(140, 50 + hours),
+      priority_score: Math.min(140, 80 + Math.min(hours, 30)),
       due_at: now,
       action_type: 'call_lead',
       created_by: 'sla'

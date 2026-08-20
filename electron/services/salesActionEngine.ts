@@ -687,6 +687,8 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     await enqueueSalesTask(() => runFullScan())
   }
   await enqueueSalesTask(() => lazyScan())
+  // SLA 接通：每次卡流扫描都补一次 SLA 扫描（应用连续运行期间，新到期线索即时出首触卡）
+  await enqueueSalesTask(() => { try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) } })
 
   // 2. 查 pending tasks
   const pendingTasks = salesDbService.todoList({ status: 'pending' })
@@ -889,9 +891,10 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     else sig.urgencyTier = 'normal'
   }
 
-  // 6. 排序 + 截断
+  // 6. 排序：首触 SLA 卡置顶（lead: 虚拟卡，超时未首触是最该立刻处理的跟进；避免被 R1/R2 老库存埋没）
+  const slaBoost = (sid: string): number => String(sid).startsWith('lead:') ? 1000 : 0
   const signals = [...signalMap.values()]
-    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .sort((a, b) => (b.priorityScore + slaBoost(String(b.sessionId))) - (a.priorityScore + slaBoost(String(a.sessionId))))
 
   // 7. Stats
   const allCustomers = salesDbService.customerAll()
