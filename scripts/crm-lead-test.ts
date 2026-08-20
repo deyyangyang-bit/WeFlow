@@ -167,6 +167,17 @@ async function main(): Promise<void> {
   ok('11b 搜索命中', listLeads({ q: '1390' }).length >= 1)
   const detail = leadDetail(pId)
   ok('11c 详情含流水', detail.lead?.id === pId && detail.activities.length >= 1)
+  // 排序：新导入在前（id DESC）+ 超时 NEW 置顶
+  importLeads('抖音', 'sort.txt', [
+    { text: '排序A 13600136000' },
+    { text: '排序B 13500135000' }
+  ])
+  const sorted = listLeads({ limit: 200 })
+  ok('11d 新导入在前（id DESC）', sorted[0].contact_normalized === '13500135000' && sorted[1].contact_normalized === '13600136000')
+  const overLead = crmDbService.all("SELECT * FROM lead WHERE contact_normalized = '13600136000'")[0]
+  crmDbService.update('lead', Number(overLead.id), { status: 'NEW', first_contact_deadline: Date.now() - 3600_000 })
+  const sorted2 = listLeads({ limit: 200 })
+  ok('11e 超时 NEW 线索置顶', sorted2[0].contact_normalized === '13600136000')
 
   console.log(`\nLEAD RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)

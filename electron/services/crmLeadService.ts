@@ -85,8 +85,10 @@ export function listLeads(opts: LeadListOpts = {}): CrmRow[] {
   if (opts.overdueOnly) { where.push("status = 'NEW' AND first_contact_deadline < ?"); params.push(Date.now()) }
   const q = String(opts.q || '').trim()
   if (q) { where.push('(contact_normalized LIKE ? OR name LIKE ? OR tag LIKE ?)'); const like = `%${q}%`; params.push(like, like, like) }
-  const sql = `SELECT * FROM lead${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY first_contact_deadline ASC, id DESC LIMIT ? OFFSET ?`
-  params.push(opts.limit ?? 200, opts.offset ?? 0)
+  // 排序：超时未首触的 NEW 线索置顶（SLA 紧急度优先）→ 其余按 id DESC（新导入在前，方便确认导入结果）
+  const now = Date.now()
+  const sql = `SELECT * FROM lead${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY (CASE WHEN status = 'NEW' AND first_contact_deadline < ? THEN 0 ELSE 1 END) ASC, id DESC LIMIT ? OFFSET ?`
+  params.push(now, opts.limit ?? 200, opts.offset ?? 0)
   return crmDbService.all(sql, params)
 }
 
