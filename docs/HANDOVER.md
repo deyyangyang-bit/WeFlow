@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `bfed14d`（2026-08-20 跟单中心物流卡两行化，见 §2.13；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> 基线 commit `d40cd4d`；最近提交 `57c4e0f`（2026-08-20 信息待确认迁至工作台客户 tab，见 §2.9；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -150,8 +150,8 @@
 
 > 主线：按 PRD-v2「用户不录入、不标记、不操作」原则重塑 CRM 模块——AI 扫描自动填充客户信息并与灵感信箱联动；客户档案升级为 360 单屏视图；工作台增加可视化面板；漏斗换真漏斗图并可下钻。新增测试 `scripts/crm-enrich-test.ts` **48/48**。
 
-- **信息自动填充引擎**（`crmEnrichService.ts` 装配层 + `crmEnrichCore.ts` 纯核心）：AI 从聊天上下文 + 见解记录 + 关系画像结构化提取 12 字段（公司/职位/电话/行业/省市/需求/预算/意向型号/采购时间/竞品/价格敏感度）。置信分级：≥0.85 自动写入 account（正式列 company/position + custom_fields），0.7~0.85 进确认中心「信息待确认」队列人工裁决，<0.7 丢弃。每字段带 来源/置信度/聊天原话证据（`account.enrich_meta`）。手动编辑过的字段 source=manual + locked，AI 永不覆盖（`setAccountFieldManual`）。引擎绝不创建客户（只充实已导入 account）。触发点：见解导入后（insightService）/ 画像导入后（main.ts）/ 档案「AI 补全」按钮 / 「批量 AI 补全」存量回填（限额，enqueue 串行）
-- **确认中心第 5 队列「信息待确认」**：从 account.enrich_meta.pending 派生（不建表），每行 = 客户+字段+AI 值+置信度+证据，操作 采纳/放弃/查看档案
+- **信息自动填充引擎**（`crmEnrichService.ts` 装配层 + `crmEnrichCore.ts` 纯核心）：AI 从聊天上下文 + 见解记录 + 关系画像结构化提取 12 字段（公司/职位/电话/行业/省市/需求/预算/意向型号/采购时间/竞品/价格敏感度）。置信分级：≥0.85 自动写入 account（正式列 company/position + custom_fields），0.7~0.85 进 CRM 工作台客户 tab「信息待确认」队列人工裁决，<0.7 丢弃。每字段带 来源/置信度/聊天原话证据（`account.enrich_meta`）。手动编辑过的字段 source=manual + locked，AI 永不覆盖（`setAccountFieldManual`）。引擎绝不创建客户（只充实已导入 account）。触发点：见解导入后（insightService）/ 画像导入后（main.ts）/ 档案「AI 补全」按钮 / 「批量 AI 补全」存量回填（限额，enqueue 串行）
+- **「信息待确认」迁至工作台客户 tab**（`57c4e0f`，原为确认中心第 5 队列）：从 account.enrich_meta.pending 派生（不建表），每行 = 客户+字段+AI 值+置信度+证据，操作 采纳/放弃/查看档案（`openInfoCustomer` 深链到客户档案）。裁决入口与 AI 补全同页闭环（补全 → 待确认 → 采纳/放弃），客户 tab 顶部可折叠区块，切 tab 自动 `fetchQueues` 刷新；跟单中心不再展示
 - **客户 360 单屏视图**：客户 tab 档案 = 12 字段卡（🤖AI/✍️手动 角标 + 置信度 + 证据悬浮，点击编辑→保存即锁定）+ 动态时间线（CRM 操作 + AI 见解混排倒序 30 条，`crm:customer:profile` 返回 activities + insights 20 条）+ 深度分析/AI 报价入口；客户列表加 公司/AI 填充度 列 + 单客 AI 补全。新建合同零操作化：选客户自动带出名称 + 甲方开票信息，复用已有 account 不重复建客户
 - **深链协议**：`/crm?tab=customer&id=<accountId>`（直达档案）与 `/crm?tab=customer&stage=<原始中文阶段>`（漏斗下钻筛选，`11359fe` 起传 customer_profile.stage 原值，见 §2.14「漏斗深链修复」）；灵感信箱卡片显示「已入 CRM」徽章 + 查看档案按钮（`crm:accounts:bySessions` 批量映射）
 - **可视化**：`crmDbService.statsOverview()`（总量 + 近 8 周到款趋势 + 阶段分布 + 合同管道）；工作台顶部 4 统计卡（客户总数/在途合同额/本月到款/待确认事项）+ ECharts 三图（echarts-for-react，与仪表盘同款）；漏斗页换 ECharts 真漏斗，点击阶段深链下钻 CRM 客户列表
@@ -279,7 +279,7 @@
 | 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
 | 31 | **今日行动分页** | 今日行动信号卡片流底部 | `TodayActionPage.tsx`（`.signal-pagination`，10 条/页） | ✅ |
 | 32 | **客户信息 AI 自动填充** | 导入后自动 / 档案「AI 补全」/ 批量回填 | `crmEnrichService.ts` + `crmEnrichCore.ts` | ✅ |
-| 33 | **信息待确认队列** | 跟单中心第 5 队列 | `crmDbService.infoPendingQueue` + CrmReviewPage | ✅ |
+| 33 | **信息待确认队列** | 工作台客户 tab 顶部（`57c4e0f` 自跟单中心迁入） | `crmDbService.infoPendingQueue` + CrmWorkbenchPage | ✅ |
 | 34 | **客户 360 单屏视图** | CRM 客户 tab | `CrmWorkbenchPage.tsx`（字段卡+时间线+手改锁定+深链） | ✅ |
 | 35 | **CRM 可视化** | 工作台顶部 + 漏斗页 | `statsOverview` + ECharts 三图 + 真漏斗下钻 | ✅ |
 | 36 | **报价跟进 R7（事实驱动）** | 今日行动（私聊扫描自动） | `parseQuoteSignal` + `quote_signal` 表 + R7 规则 | ✅ |
@@ -488,7 +488,7 @@
 | `pages/SalesDashboardPage.tsx` | 仪表盘（移至/dashboard） |
 | `components/sales/ExtractScriptDialog.tsx` | **话术提炼弹窗**（单选/批量双模式，三步流程） |
 | `components/sales/AIActionCard.tsx`（改） | 行动卡：**打开聊天**（跳转微信会话）+ **复制话术**（无话术先生成再复制）+ AI 面板话术行内复制 |
-| `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选、**打开聊天** |
+| `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选、**打开聊天**、客户 tab 顶部**信息待确认**折叠区块（采纳/放弃/查看档案，`57c4e0f` 自跟单中心迁入） |
 | `pages/CrmReviewPage.tsx` | **跟单中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
 | `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
