@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `5ba531b`（2026-08-20 SLA/Action 接通，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> 基线 commit `d40cd4d`；最近提交 `223c158`（2026-08-20 AI 回写 model/sourceId 溯源，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
@@ -272,8 +272,23 @@
 - **缺口 1（后端）**：`scanLeadSla` 此前仅三个触发点（导入后 / IPC 手动 / 启动兜底）——应用连续运行期间，新到期线索不会自动出卡。修复：挂进 Action 引擎两个扫描周期——`runFullScan` 末尾（每日 08:00 全量扫描）+ `getTodayActions` 内 lazyScan 之后（今日行动页每次打开补偿扫描），均 try/catch 防护
 - **不误伤保证**：SLA 卡 `created_by='sla'`，`runFullScan` 清理只滤 `created_by='action_engine'`，重扫不会 superseded SLA 卡（测试覆盖）
 - **缺口 2（前端）**：SLA 卡（虚拟 `lead:<id>`）在今日行动显示无效「打开聊天」按钮（跳空白聊天页）。修复：`AIActionCard` 虚拟卡判断泛化为 `todo:`/`lead:`/`logi:` 前缀，均隐藏「打开聊天」（displayName 已含脱敏联系方式，销售自行微信搜索）
-- **测试**（`scripts/crm-sla-action-test.ts`）：9 项——runFullScan 触发 / 二次扫描不误伤 / 幂等 / getTodayActions 触发 / 完成卡回写 lead=CONTACTED
-- **验证**：sla-action 9/9 + lead 53 + todo-followup 11 + funnel 5 + golden 45 + workbench 48 + opportunity 45 全过，`tsc` 零错误，`vite build` 通过
+- **实测暴露缺口 3（排序埋没）**：卡其实已生成但 priority 51 分被 108 张 110+ 分老库存卡埋没，前端 PAGE_SIZE=10 分页看不到。修复（`678e3f0`）：`getUnifiedSignals` 排序对 `lead:` 前缀 +1000 置顶；`scanLeadSla` 提分至 `min(140, 80+min(hours,30))`，SLA 紧急度直接可见
+- **主数据源校正**：今日行动页主数据源是 `getUnifiedSignals`（IPC `sales:action:getUnified`），不是 `getTodayActions`——SLA 扫描除 runFullScan 外只挂 getUnifiedSignals 的 lazyScan 后即可
+- **测试**（`scripts/crm-sla-action-test.ts`）：11 项——runFullScan 触发 / 二次扫描不误伤 / 幂等 / getUnifiedSignals 触发 + 返回 lead: 首触卡 + 置顶 / 完成卡回写 lead=CONTACTED
+- **验证**：sla-action 11/11 + lead 55 + enrich 61 + todo-followup 11 + funnel 5 + opportunity 45 全过，`tsc` 零错误，`vite build` 通过
+
+---
+
+## 2.18 AI 回写 model/sourceId 溯源（2026-08-20，commit `223c158`）
+
+> P1（AI Writeback 顺手补齐）：兑现 PRD §23「可追溯」——enrich_meta 每条记录明确「哪个模型生成的、基于哪条聊天记录」。
+
+- **数据模型**：`EnrichFieldMetaEntry` / `PendingFieldEntry` / `EnrichIncomingField` 加 `model?`（生成该值的 AI 模型名）+ `sourceId?`（依据的聊天消息 messageKey）；`applyEnrichment` 直接 `JSON.stringify` 落库，无需改写回层
+- **model 来源**：`simpleCompletion` 只回文本，模型名从 `getAiModelConfig(cfg).model` 读用户当前配置（aiModelApiModel / aiInsightApiModel 兜底 deepseek-chat）
+- **sourceId 来源**：`gatherMaterials` 遍历最近 80 条聊天时记录最后一条有效消息的 `messageKey`（chatService.Message 唯一键），作为本次整批提取的溯源锚点
+- **注入点**：`enrichCustomer` 在置信分级循环给每条 AI 结果打 `{ model, sourceId }` 标签（directIncoming 直接写入 + manualPending 进 pending 队列均携带）；`mergeEnrichFields` 四处写点（空目标写入 / 同值刷新 / 高置信覆盖 / pending）透传
+- **测试**（`scripts/crm-enrich-test.ts`）：新增 1d/1e/4b/5b/10e/10f 断言透传 + JSON 序列化保留，enrich 61 项全过
+- **验证**：`tsc` 零错误，`vite build` 通过；lead 55 / sla-action 11 / funnel 5 / opportunity 45 回归全过
 
 ---
 
@@ -325,7 +340,8 @@
 | 42 | **风险预警（竞品/价格/服务）** | 商机详情 | `parseRiskSignal` + crm_risk 表 + 确认处理 | ✅ |
 | 43 | **侧边栏导航收口 7 模块** | 左侧导航 | `Sidebar.tsx`（NAV_GROUPS 数据驱动 + 可展开分组，`09d5600`） | ✅ |
 | 44 | **Customer 360 统一时间线** | 工作台客户档案「动态时间线」 | `crmDbService.accountTimeline` 8 分支聚合 + 前端四色混排，`6c439bf` | ✅ |
-| 45 | **SLA/Action 接通** | 今日行动（SLA 首触卡自动出现） | `scanLeadSla` 挂入 runFullScan + getTodayActions 扫描周期；虚拟卡隐藏无效按钮，`5ba531b` | ✅ |
+| 45 | **SLA/Action 接通** | 今日行动（SLA 首触卡自动出现） | `scanLeadSla` 挂入 runFullScan + getUnifiedSignals 扫描周期；虚拟卡隐藏无效按钮，`5ba531b`；lead: 卡置顶+提分 `678e3f0` | ✅ |
+| 46 | **AI 回写 model/sourceId 溯源** | enrich_meta 每条记录（PRD§23 可追溯） | `mergeEnrichFields` 透传 + `enrichCustomer` 打 `{model,sourceId}` 标签 + `gatherMaterials` 记最近消息 messageKey，`223c158` | ✅ |
 
 ---
 
