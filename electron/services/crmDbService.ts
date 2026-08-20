@@ -208,10 +208,11 @@ export type EnrichField = (typeof ENRICH_FIELDS)[number]
 export const ENRICH_FORMAL_COLUMNS: ReadonlySet<string> = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
 
 export type EnrichFieldSource = 'ai' | 'manual'
-export interface EnrichFieldMetaEntry { source: EnrichFieldSource; confidence: number; at: number; evidence?: string; locked?: boolean }
-export interface PendingFieldEntry { value: string; confidence: number; evidence?: string; at: number }
+/** model：生成该值的 AI 模型名（PRD§23 可追溯）；sourceId：该值依据的聊天消息 messageKey（可追溯到具体聊天） */
+export interface EnrichFieldMetaEntry { source: EnrichFieldSource; confidence: number; at: number; evidence?: string; locked?: boolean; model?: string; sourceId?: string }
+export interface PendingFieldEntry { value: string; confidence: number; evidence?: string; at: number; model?: string; sourceId?: string }
 export interface EnrichMeta { fields?: Record<string, EnrichFieldMetaEntry>; pending?: Record<string, PendingFieldEntry> }
-export interface EnrichIncomingField { value: string; confidence: number; evidence?: string }
+export interface EnrichIncomingField { value: string; confidence: number; evidence?: string; model?: string; sourceId?: string }
 
 export function parseEnrichMeta(raw: string | null | undefined): EnrichMeta {
   if (!raw) return {}
@@ -259,20 +260,20 @@ export function mergeEnrichFields(
     if (m?.locked || m?.source === 'manual') { result.skipped.push(field); continue }
     const cur = String(current[field] ?? '').trim()
     if (!cur) {
-      result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence } }
+      result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence, model: item.model, sourceId: item.sourceId } }
       continue
     }
     if (cur === value) {
       result.refreshed.push(field)
       result.updates[field] = {
         value,
-        meta: { source: 'ai', confidence: Math.max(item.confidence, m?.confidence ?? 0), at: now, evidence: item.evidence || m?.evidence }
+        meta: { source: 'ai', confidence: Math.max(item.confidence, m?.confidence ?? 0), at: now, evidence: item.evidence || m?.evidence, model: item.model || m?.model, sourceId: item.sourceId || m?.sourceId }
       }
       continue
     }
     if (m?.source === 'ai') {
       if (item.confidence >= (m.confidence ?? 0)) {
-        result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence } }
+        result.updates[field] = { value, meta: { source: 'ai', confidence: item.confidence, at: now, evidence: item.evidence, model: item.model, sourceId: item.sourceId } }
       } else {
         result.discarded.push(field)
       }
@@ -280,7 +281,7 @@ export function mergeEnrichFields(
     }
     // 既有值无 AI meta（历史/手动数据）：够置信则进 pending 人工裁决
     if (item.confidence >= threshold) {
-      result.pending[field] = { value, confidence: item.confidence, evidence: item.evidence, at: now }
+      result.pending[field] = { value, confidence: item.confidence, evidence: item.evidence, at: now, model: item.model, sourceId: item.sourceId }
     } else {
       result.discarded.push(field)
     }

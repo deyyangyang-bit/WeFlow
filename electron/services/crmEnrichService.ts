@@ -13,7 +13,7 @@
  * - 执行入口一律 enqueueSalesTask（最外层），引擎内部绝不 enqueue
  * - 只从材料提取、不推测不编造（prompt 铁律 + evidence 随字段落库）
  */
-import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
+import { simpleCompletion, isAiConfigured, getAiModelConfig } from './ai/aiApiClient'
 import { chatService } from './chatService'
 import { crmDbService, ENRICH_FIELDS, parseEnrichMeta, mergeEnrichFields, type CrmRow, type EnrichIncomingField, type EnrichMeta } from './crmDbService'
 import { ENRICH_PROMPT, parseEnrichResult } from './crmEnrichCore'
@@ -50,8 +50,10 @@ export function backfillLimitOf(): number {
 // ─── 材料收集（聊天上下文 + 见解 + 画像，截断控 token）──────────────────────
 const MATERIAL_LIMIT_CHARS = 3000
 
-async function gatherMaterials(sessionId: string, displayName: string): Promise<string> {
+/** 收集结果：material=喂给 AI 的材料文本；lastMsgKey=最近一条有效聊天消息的 messageKey（PRD§23 溯源用） */
+async function gatherMaterials(sessionId: string, displayName: string): Promise<{ material: string; lastMsgKey?: string }> {
   const parts: string[] = []
+  let lastMsgKey: string | undefined
   try {
     const msgs = await chatService.getLatestMessages(sessionId, 80)
     const texts = (msgs?.messages || [])
@@ -59,6 +61,7 @@ async function gatherMaterials(sessionId: string, displayName: string): Promise<
         const content = String(msg.parsedContent || msg.content || '').trim()
         if (!content || /^(<\?xml|<msg\b|<img\b|<emoji\b)/i.test(content)) return ''
         const isSend = Number(msg.isSend ?? msg.computed_is_send ?? msg.is_send ?? 0)
+        lastMsgKey = String(msg.messageKey || '')
         return `${isSend === 1 ? '销售' : displayName}：${content.slice(0, 150)}`
       })
       .filter(Boolean)
@@ -79,7 +82,7 @@ async function gatherMaterials(sessionId: string, displayName: string): Promise<
   } catch { /* ignore */ }
   let material = parts.join('\n\n')
   if (material.length > MATERIAL_LIMIT_CHARS) material = material.slice(0, MATERIAL_LIMIT_CHARS)
-  return material
+  return { material, lastMsgKey }
 }
 
 // ─── 核心：充实单个客户（调用方负责 enqueueSalesTask）───────────────────────
@@ -112,15 +115,18 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
   if (!acc) return { ok: false, reason: '客户未在 CRM（引擎不创建客户）' }
   const accountId = Number(acc.id)
 
-  const material = await gatherMaterials(sessionId, displayName || String(acc.name || ''))
-  if (!material) return { ok: false, reason: '无可用聊天材料', accountId }
+  const g = await gatherMaterials(sessionId, displayName || String(acc.name || ''))
+  if (!g.material) return { ok: false, reason: '无可用聊天材料', accountId }
+  // PRD§23 可追溯：记录本次提取用的模型名 + 依据的最近一条聊天消息 messageKey
+  const model = getAiModelConfig(cfg).model
+  const sourceId = g.lastMsgKey
 
   let out = ''
   try {
     out = await simpleCompletion(
       cfg,
       ENRICH_PROMPT,
-      `客户：${displayName || acc.name}\n\n${material}`,
+      `客户：${displayName || acc.name}\n\n${g.material}`,
       { responseFormatJson: true, temperature: 0.2, maxTokens: 1200 }
     )
   } catch (e) {
@@ -137,8 +143,10 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
   const manualPending: Record<string, EnrichIncomingField> = {}
   const discardedLow: string[] = []
   for (const [field, item] of Object.entries(incoming)) {
-    if (item.confidence >= autoApply) directIncoming[field] = item
-    else if (item.confidence >= threshold) manualPending[field] = item
+    // 每条 AI 提取结果打上 model/sourceId 溯源标签（PRD§23）
+    const tagged: EnrichIncomingField = { ...item, model, sourceId }
+    if (item.confidence >= autoApply) directIncoming[field] = tagged
+    else if (item.confidence >= threshold) manualPending[field] = tagged
     else discardedLow.push(field)
   }
 
@@ -158,7 +166,7 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
   for (const [field, item] of Object.entries(manualPending)) {
     const m = meta.fields?.[field]
     if (m?.locked || m?.source === 'manual') continue // 手动字段不进 pending 打扰
-    pendingMerged[field] = { value: item.value, confidence: item.confidence, evidence: item.evidence, at: now }
+    pendingMerged[field] = { value: item.value, confidence: item.confidence, evidence: item.evidence, at: now, model: item.model, sourceId: item.sourceId }
   }
 
   const updatedFields = Object.keys(merged.updates)

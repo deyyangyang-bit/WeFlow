@@ -24,10 +24,12 @@ async function main(): Promise<void> {
 
   // ── 1 合并规则：空目标直接写入 ─────────────────────────────────────────────
   const now = 1700000000000
-  let r = mergeEnrichFields({ company: null }, {}, { company: { value: '上海普绿包装制品有限公司', confidence: 0.92, evidence: '对方户名' } }, { now })
+  let r = mergeEnrichFields({ company: null }, {}, { company: { value: '上海普绿包装制品有限公司', confidence: 0.92, evidence: '对方户名', model: 'deepseek-chat', sourceId: 'msg_a1b2' } }, { now })
   ok('1a 空目标写入', r.updates.company?.value === '上海普绿包装制品有限公司')
   ok('1b meta source=ai', r.updates.company?.meta.source === 'ai' && r.updates.company.meta.confidence === 0.92)
   ok('1c evidence 落 meta', r.updates.company?.meta.evidence === '对方户名')
+  ok('1d model 透传（PRD§23 可追溯）', r.updates.company?.meta.model === 'deepseek-chat')
+  ok('1e sourceId 透传（溯源到聊天消息）', r.updates.company?.meta.sourceId === 'msg_a1b2')
 
   // ── 2 手动/锁定字段永不覆盖 ────────────────────────────────────────────────
   const manualMeta: EnrichMeta = { fields: { phone: { source: 'manual', confidence: 1, at: now } } }
@@ -47,12 +49,15 @@ async function main(): Promise<void> {
   // ── 4 相同值：仅刷新 meta（置信取高）──────────────────────────────────────
   r = mergeEnrichFields({ city: '无锡' }, aiMeta, { city: { value: '无锡', confidence: 0.95 } }, { now })
   ok('4a 同值 refreshed', r.refreshed.includes('city') && r.updates.city?.meta.confidence === 0.95)
+  r = mergeEnrichFields({ city: '无锡' }, aiMeta, { city: { value: '无锡', confidence: 0.95, model: 'deepseek-r1', sourceId: 'msg_x9' } }, { now })
+  ok('4b 同值刷新透传 model/sourceId', r.updates.city?.meta.model === 'deepseek-r1' && r.updates.city?.meta.sourceId === 'msg_x9')
 
   // ── 5 历史值无 meta：够置信进 pending，否则丢弃 ────────────────────────────
-  r = mergeEnrichFields({ industry: '包装' }, {}, { industry: { value: '包装制品', confidence: 0.75 } }, { threshold: 0.7, now })
+  r = mergeEnrichFields({ industry: '包装' }, {}, { industry: { value: '包装制品', confidence: 0.75, model: 'deepseek-chat', sourceId: 'msg_p1' } }, { threshold: 0.7, now })
   ok('5a 冲突进 pending', r.pending.industry?.value === '包装制品')
+  ok('5b pending 透传 model/sourceId', r.pending.industry?.model === 'deepseek-chat' && r.pending.industry?.sourceId === 'msg_p1')
   r = mergeEnrichFields({ industry: '包装' }, {}, { industry: { value: '包装制品', confidence: 0.5 } }, { threshold: 0.7, now })
-  ok('5b 低置信丢弃', r.discarded.includes('industry') && !r.pending.industry)
+  ok('5c 低置信丢弃', r.discarded.includes('industry') && !r.pending.industry)
 
   // ── 6 空值/非法输入容忍 ────────────────────────────────────────────────────
   r = mergeEnrichFields({}, {}, { company: { value: '   ', confidence: 0.9 } } as any, { now })
@@ -96,8 +101,8 @@ async function main(): Promise<void> {
   const accId = crmDbService.ensureAccount('测试客户张总')
   crmDbService.update('account', accId, { session_id: 'wxid_test_zhang' })
   const applyR = crmDbService.applyEnrichment(accId, {
-    company: { value: '无锡测试机械有限公司', meta: { source: 'ai', confidence: 0.93, at: now, evidence: '公司名称' } },
-    needs: { value: '要 1 台电动叉车', meta: { source: 'ai', confidence: 0.9, at: now, evidence: '想要电叉' } }
+    company: { value: '无锡测试机械有限公司', meta: { source: 'ai', confidence: 0.93, at: now, evidence: '公司名称', model: 'deepseek-chat', sourceId: 'msg_roundtrip' } },
+    needs: { value: '要 1 台电动叉车', meta: { source: 'ai', confidence: 0.9, at: now, evidence: '想要电叉', model: 'deepseek-chat', sourceId: 'msg_roundtrip' } }
   }, {})
   ok('10a applyEnrichment ok', applyR.ok)
   const acc = crmDbService.getById('account', accId)!
@@ -106,6 +111,8 @@ async function main(): Promise<void> {
   ok('10c custom_fields 写入 needs', cf.needs === '要 1 台电动叉车')
   const meta10 = parseEnrichMeta(String(acc.enrich_meta || ''))
   ok('10d meta 记录来源', meta10.fields?.company?.source === 'ai' && meta10.fields?.needs?.evidence === '想要电叉')
+  ok('10e 序列化后 model 保留', meta10.fields?.company?.model === 'deepseek-chat' && meta10.fields?.needs?.model === 'deepseek-chat')
+  ok('10f 序列化后 sourceId 保留', meta10.fields?.company?.sourceId === 'msg_roundtrip' && meta10.fields?.needs?.sourceId === 'msg_roundtrip')
 
   // ── 11 pending 队列派生 + 人工裁决 ────────────────────────────────────────
   crmDbService.applyEnrichment(accId, {}, {
