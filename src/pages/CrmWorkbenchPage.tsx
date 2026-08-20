@@ -13,6 +13,8 @@ interface QuoRow { productId: number; name: string; model?: string; price: numbe
 const STAGE_LABELS: Record<string, string> = {
   contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未知'
 }
+// Customer 360 统一时间线：事件来源标签（crm=业务动作 / lead=线索流转 / opportunity=商机 / insight=AI 见解）
+const TIMELINE_KIND_LABEL: Record<string, string> = { crm: 'CRM', lead: '线索', opportunity: '商机', insight: 'AI 见解' }
 
 export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts, queues, fetchQueues } = useCrmStore()
@@ -648,12 +650,13 @@ export default function CrmWorkbenchPage() {
                       <h4>动态时间线</h4>
                       <div className="crm-timeline">
                         {[
-                          ...(customerProfile.activities || []).map((a: any) => ({ at: Number(a.created_at || 0), kind: 'crm', text: `${a.detail || a.action}` })),
+                          // Customer 360：CRM 业务动作（后端已聚合 6 实体）+ 线索流转 + 商机事件 + AI 见解，一条流混排
+                          ...(customerProfile.activities || []).map((a: any) => ({ at: Number(a.at ?? a.created_at ?? 0), kind: String(a.kind || 'crm'), text: String(a.text || a.detail || a.action || '') })),
                           ...(customerProfile.insights || []).map((i: any) => ({ at: Number(i.createdAt || 0), kind: 'insight', text: String(i.insight || '') }))
-                        ].sort((x: any, y: any) => y.at - x.at).slice(0, 30).map((e: any, idx: number) => (
+                        ].sort((x: any, y: any) => y.at - x.at).slice(0, 40).map((e: any, idx: number) => (
                           <div key={idx} className="crm-timeline__item">
                             <span className="crm-timeline__time">{new Date(e.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className={`crm-timeline__tag ${e.kind}`}>{e.kind === 'insight' ? 'AI 见解' : 'CRM'}</span>
+                            <span className={`crm-timeline__tag ${e.kind}`}>{TIMELINE_KIND_LABEL[e.kind] || 'CRM'}</span>
                             <span className="crm-timeline__text">{e.text}</span>
                           </div>
                         ))}
@@ -676,14 +679,6 @@ export default function CrmWorkbenchPage() {
                         {customerProfile.advice.script && <div className="ai-row"><span className="ai-row__label">话术</span><span>{customerProfile.advice.script}</span></div>}
                         {customerProfile.advice.nextMove && <div className="ai-row"><span className="ai-row__label">下一步</span><span>{customerProfile.advice.nextMove}</span></div>}
                       </div>
-                    </div>
-                  )}
-                  {customerProfile.insights?.length > 0 && (
-                    <div className="crm-profile__section">
-                      <h4>最近见解</h4>
-                      {customerProfile.insights.map((r: any) => (
-                        <div key={r.id} className="crm-row">{new Date(Number(r.createdAt)).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · {r.insight}</div>
-                      ))}
                     </div>
                   )}
                   {customerProfile.todos?.length > 0 && (

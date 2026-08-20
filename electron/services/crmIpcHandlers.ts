@@ -160,9 +160,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
         } as any)
       } catch { /* ignore */ }
 
-      // CRM 操作时间线（导入/AI 填充/人工采纳/合同动作，倒序 30 条）
+      // 统一时间线（Customer 360）：CRM 业务动作 + 线索流转 + 商机事件，一条流倒序 40 条
       let activities: any[] = []
-      try { if (account) activities = crmDbService.activityBy('account', Number(account.id)).slice(-30).reverse() } catch { /* ignore */ }
+      try { if (account) activities = crmDbService.accountTimeline(Number(account.id)).reverse().slice(0, 40) } catch { /* ignore */ }
 
       return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, advice, activities } }
     } catch (e) {

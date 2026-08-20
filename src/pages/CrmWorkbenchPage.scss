@@ -71,6 +71,8 @@
   white-space: nowrap; font-size: 10px; padding: 1px 6px; border-radius: 8px;
   &.insight { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
   &.crm { background: rgba(5, 150, 105, 0.1); color: #059669; }
+  &.lead { background: rgba(217, 119, 6, 0.1); color: #b45309; }
+  &.opportunity { background: rgba(2, 132, 199, 0.1); color: #0369a1; }
 }
 .crm-timeline__text { color: #334155; word-break: break-all; }
 

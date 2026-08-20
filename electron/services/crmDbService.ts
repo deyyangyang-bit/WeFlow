@@ -1027,6 +1027,25 @@ class CrmDbService {
   activityBy(entity: string, entityId: number): CrmRow[] {
     return this.all('SELECT * FROM activity_log WHERE entity = ? AND entity_id = ? ORDER BY id', [entity, entityId])
   }
+  /**
+   * 统一时间线（Customer 360）：一个客户的所有关键事件一条流。
+   * 聚合 CRM 业务动作（activity_log 的 account/contract/logistics/quotation/allocation/payment_record 实体）
+   * + 线索流转（lead_activity）+ 商机事件（opportunity_event）。按时间升序返回。
+   * 返回项：{ at, kind: 'crm'|'lead'|'opportunity', text }
+   */
+  accountTimeline(accountId: number): { at: number; kind: string; text: string }[] {
+    const sql = `
+      SELECT created_at AS at, 'crm' AS kind, detail AS text FROM activity_log WHERE entity='account' AND entity_id=?
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='contract' AND entity_id IN (SELECT id FROM contract WHERE account_id=?)
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='logistics' AND entity_id IN (SELECT id FROM logistics WHERE contract_id IN (SELECT id FROM contract WHERE account_id=?))
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='quotation' AND entity_id IN (SELECT id FROM quotation WHERE contract_id IN (SELECT id FROM contract WHERE account_id=?))
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='allocation' AND entity_id IN (SELECT id FROM allocation WHERE account_id=?)
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='payment_record' AND entity_id IN (SELECT id FROM payment_record WHERE id IN (SELECT payment_record_id FROM allocation WHERE account_id=?))
+      UNION ALL SELECT created_at, 'lead', note FROM lead_activity WHERE lead_id IN (SELECT id FROM lead WHERE account_id=?)
+      UNION ALL SELECT created_at, 'opportunity', detail FROM opportunity_event WHERE opportunity_id IN (SELECT id FROM opportunity WHERE account_id=?)
+      ORDER BY at`
+    return this.all(sql, Array(8).fill(accountId)) as { at: number; kind: string; text: string }[]
+  }
 
   // ─── 合同状态机：全款到账才发货 ────────────────────────────────────────────
   signContract(id: number): { ok: boolean; reason?: string } {
