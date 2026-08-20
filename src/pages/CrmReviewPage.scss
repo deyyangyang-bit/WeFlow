@@ -6,6 +6,12 @@
 .crm-review-page section { margin-bottom: 18px; h3 { font-size: 13px; color: #64748b; margin-bottom: 8px; } }
 .crm-card { display: flex; gap: 8px; align-items: center; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; span { margin-right: auto; } select, input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 6px; font-size: 12px; } }
 .crm-card__src { display: block; font-style: normal; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+/* 物流卡两行化：主行=信息+时间，副行=操作（不再一行挤 5 个元素） */
+.logi-card { flex-direction: column; align-items: stretch; }
+.logi-card__main { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.logi-card__info { font-weight: 500; color: #0f172a; }
+.logi-card__time { font-size: 11px; color: #94a3b8; }
+.logi-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .crm-card__amt { width: 90px; }
 
 .crm-review-page .gtype { font-style: normal; background: #eff6ff; color: #2563eb; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }

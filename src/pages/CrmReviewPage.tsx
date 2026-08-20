@@ -321,16 +321,21 @@ export default function CrmReviewPage() {
           )}
           {logiPg.total === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
           {logiPg.items.map((l) => (
-            <div key={l.id} className="crm-card">
-              <span>{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
-              <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
-                onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
-              <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))}>
-                <option value="">选择合同…</option>
-                {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <button className="crm-btn primary" disabled={!logiContract[l.id]} title={logiContract[l.id] ? '' : '请先选择要认领的合同'} onClick={() => void doClaimLogi(l)}>确认认领</button>
-              <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+            <div key={l.id} className="crm-card logi-card">
+              <div className="logi-card__main">
+                <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
+                <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
+              </div>
+              <div className="logi-card__actions">
+                <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
+                  onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
+                <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))}>
+                  <option value="">选择合同…</option>
+                  {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button className="crm-btn primary" disabled={!logiContract[l.id]} title={logiContract[l.id] ? '' : '请先选择要认领的合同'} onClick={() => void doClaimLogi(l)}>确认认领</button>
+                <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+              </div>
             </div>
           ))}
           <LogiPager page={logiPg.cur} totalPages={logiPg.totalPages} total={logiPg.total} onPage={setLogiPage} />
@@ -338,15 +343,19 @@ export default function CrmReviewPage() {
         <h4 style={{ marginTop: '10px' }}>已认领待签收（{pendingPg.total}）</h4>
         {pendingPg.total === 0 && <div className="crm-card crm-card--empty">暂无待签收物流（发货后 {logiOverdueHours}h 未签收会标红提醒）</div>}
         {pendingPg.items.map((l) => (
-          <div key={l.id} className="crm-card">
-            <span>
-              {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
-              {l.owner_sales ? ` · ${l.owner_sales}` : ''}
-              {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : ''}
+          <div key={l.id} className="crm-card logi-card">
+            <div className="logi-card__main">
+              <span className="logi-card__info">
+                {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+                {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+                {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : ''}
+              </span>
               {l._overdueHours > 0 && <em className="logi-overdue">超期 {l._overdueHours} 小时</em>}
-              <em className="crm-card__src">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
-            </span>
-            <button className="crm-btn primary" onClick={() => void doSignedLogi(l)}>确认签收</button>
+              <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
+            </div>
+            <div className="logi-card__actions">
+              <button className="crm-btn primary" onClick={() => void doSignedLogi(l)}>确认签收</button>
+            </div>
           </div>
         ))}
         <LogiPager page={pendingPg.cur} totalPages={pendingPg.totalPages} total={pendingPg.total} onPage={setPendingPage} />
@@ -360,11 +369,13 @@ export default function CrmReviewPage() {
           signedPg.total === 0
             ? <div className="crm-card crm-card--empty">暂无已签收物流</div>
             : signedPg.items.map((l) => (
-                <div key={l.id} className="crm-card">
-                  <span>{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
-                    {l.owner_sales ? ` · ${l.owner_sales}` : ''}
-                    <em className="crm-card__src">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
-                  </span>
+                <div key={l.id} className="crm-card logi-card">
+                  <div className="logi-card__main">
+                    <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+                      {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+                    </span>
+                    <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
+                  </div>
                 </div>
               ))
         )}
