@@ -161,7 +161,13 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
 
   completeTodo: async (id) => {
     try {
-      await (window as any).electronAPI.sales.todoUpdate(id, { status: 'done' })
+      // SLA 首触卡走线索闭环（卡 done + lead→CONTACTED + 流水），普通待办仅标卡 done
+      const task = get().todos.find((t) => t.id === id)
+      if (task?.trigger_type === 'sla_lead') {
+        await (window as any).electronAPI.crm.leadSlaComplete(id)
+      } else {
+        await (window as any).electronAPI.sales.todoUpdate(id, { status: 'done' })
+      }
     } catch { /* 失败不影响页面 */ }
     await get().fetchTodos()
     await get().fetchToday()

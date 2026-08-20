@@ -21,7 +21,7 @@ import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
-import { completeLeadFirstContact, skipLeadFirstContact, scanLeadSla } from './crmLeadService'
+import { scanLeadSla } from './crmLeadService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -733,31 +733,9 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
       })
       continue
     }
-    // 线索首触 SLA 卡：无 session_id，用虚拟 sessionId lead:<id>（不参与沉默天数过滤）
-    if (task.trigger_type === 'sla_lead') {
-      const leadId = Number(task.source_id || 0)
-      if (!leadId) continue
-      const sid = `lead:${leadId}`
-      const source: SignalSource = {
-        type: 'task',
-        ruleCode: 'LEAD',
-        label: '线索首触',
-        reason: String(task.title || '线索超时未首触'),
-        rawTaskId: task.id ?? 0
-      }
-      signalMap.set(sid, {
-        sessionId: sid,
-        displayName: String(task.display_name || `线索 #${leadId}`),
-        stage: 'lead',
-        silentDays: 0,
-        sources: [source],
-        priorityScore: Math.min(140, Number(task.priority_score || 60)),
-        urgencyTier: 'normal',
-        status: 'pending',
-        analysis: task.analysis ?? ''
-      })
-      continue
-    }
+    // SLA 首触卡不进主卡流：无客户上下文，属散任务，只在今日行动右侧 TodoSidebar 展示
+    // （职责分工 §2.19：主卡流 = 客户动作，散任务 = 侧栏清单）
+    if (task.trigger_type === 'sla_lead') continue
     // 物流超期卡：虚拟 sessionId logi:<logistics_id>（事实驱动，不参与沉默天数过滤）
     if (task.trigger_type === 'rule_r8_logistics_overdue') {
       const sid = String(task.session_id || '')
@@ -891,10 +869,9 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     else sig.urgencyTier = 'normal'
   }
 
-  // 6. 排序：首触 SLA 卡置顶（lead: 虚拟卡，超时未首触是最该立刻处理的跟进；避免被 R1/R2 老库存埋没）
-  const slaBoost = (sid: string): number => String(sid).startsWith('lead:') ? 1000 : 0
+  // 6. 排序：按 priorityScore 降序（lead: 卡已不在卡流，无需置顶兜底）
   const signals = [...signalMap.values()]
-    .sort((a, b) => (b.priorityScore + slaBoost(String(b.sessionId))) - (a.priorityScore + slaBoost(String(a.sessionId))))
+    .sort((a, b) => b.priorityScore - a.priorityScore)
 
   // 7. Stats
   const allCustomers = salesDbService.customerAll()
@@ -931,16 +908,7 @@ export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipp
     if (task?.id) completeAction(task.id, action)
     return
   }
-  // 线索首触 SLA 卡：虚拟 sessionId lead:<id>，走线索闭环（先 crmDb 后 salesDb）
-  if (String(sessionId || '').startsWith('lead:')) {
-    const leadId = Number(String(sessionId).slice(5))
-    const task = salesDbService.slaTaskByLead(leadId)
-    if (task?.id) {
-      if (action === 'done') completeLeadFirstContact(task.id)
-      else skipLeadFirstContact(task.id)
-    }
-    return
-  }
+  // SLA 首触卡不在主卡流（散任务走侧栏，完成闭环走 crm:lead:slaComplete IPC），此处无需 lead: 分支
   // 物流超期卡：虚拟 sessionId logi:<logistics_id>，完成 = 确认签收（卡 done + logistics signed + activity 三一致）
   if (String(sessionId || '').startsWith('logi:')) {
     const logisticsId = Number(String(sessionId).slice(5))

@@ -54,8 +54,8 @@ async function main(): Promise<void> {
   crmDbService.update('lead', Number(leads[2].id), { first_contact_deadline: Date.now() - 3600_000 })
   const unified = await getUnifiedSignals()
   ok('1f getUnifiedSignals 触发 SLA：第三条到期线索出卡', slaCards().length === 3)
-  ok('1g 统一信号流返回 lead: 首触卡', unified.signals.some((s: any) => String(s.sessionId).startsWith('lead:') && s.sources?.some((x: any) => x.label === '线索首触')))
-  ok('1g2 lead: 首触卡置顶', String(unified.signals[0]?.sessionId || '').startsWith('lead:'))
+  ok('1g 主卡流不含 lead: 首触卡（散任务只在右侧侧栏，避免重影）', !unified.signals.some((s: any) => String(s.sessionId).startsWith('lead:')))
+  ok('1g2 SLA 卡仍在 todoList（右侧散任务数据源），移出卡流不丢卡', slaCards().length === 3)
 
   // ── 闭环：完成 SLA 卡 → lead 置 CONTACTED ──────────────────────────────────
   const card = slaCards().find((c) => Number(c.source_id) === Number(leads[0].id))
