@@ -495,11 +495,19 @@ class CrmDbService {
   }
 
   // ─── 客户匹配 / 别名（借 MoChat 归属思路）─────────────────────────────────
-  matchAccountByName(name: string): CrmRow | null {
+  /**
+   * 按名称匹配客户（session 精确未命中时的兜底）。
+   * @param opts.excludeSessionId 传入当前会话 id 时，跳过已绑定【其他】会话的同名客户，
+   *   避免跨会话误关联（多个「张总」「李经理」串客户）。
+   */
+  matchAccountByName(name: string, opts?: { excludeSessionId?: string }): CrmRow | null {
     if (!name) return null
-    const exact = this.all('SELECT * FROM account WHERE name = ?', [name])
+    const sid = opts?.excludeSessionId
+    const sids = sid ? ' AND (session_id IS NULL OR session_id = ?)' : ''
+    const args: unknown[] = sid ? [sid] : []
+    const exact = this.all(`SELECT * FROM account WHERE name = ?${sids}`, [name, ...args])
     if (exact.length) return exact[0]
-    const prefixed = this.all('SELECT * FROM account WHERE name LIKE ?', [name + '%'])
+    const prefixed = this.all(`SELECT * FROM account WHERE name LIKE ?${sids}`, [name + '%', ...args])
     if (prefixed.length) return prefixed[0]
     return null
   }
@@ -567,6 +575,7 @@ class CrmDbService {
       const bySid = this.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [p.sessionId])
       if (bySid.length) acc = bySid[0]
     }
+    // 名称兜底为幂等合并语义（同人多微信号合并到同一 account），不跨会话排除——跨会话防护仅用于 AI enrich
     if (!acc) acc = this.matchAccountByName(name)
     const now = Date.now()
     if (acc) {

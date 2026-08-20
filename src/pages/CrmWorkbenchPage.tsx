@@ -147,6 +147,8 @@ export default function CrmWorkbenchPage() {
 
   // 阶段优先取 customer_profile.stage（中文漏斗阶段，与销售漏斗同源），无画像时回退 sales_stage 标签
   const stageLabel = (c: any) => String(c.profile_stage || '') || STAGE_LABELS[String(c.sales_stage ?? '')] || String(c.sales_stage ?? '') || '未分类'
+  // 名称双轨读取侧统一：优先取画像最新微信备注（跟随备注改名），account.name 作兜底（导入时刻冻结）
+  const displayNameOf = (c: any) => String(c.profile_display_name || '') || String(c.name || '')
   // 筛选项由当前数据动态生成，未来出现新阶段也能自动出现
   const stageOptions = Array.from(new Set(customers.map(stageLabel))).sort((a, b) => a.localeCompare(b, 'zh'))
   const filteredCustomers = stageFilter ? customers.filter((c) => stageLabel(c) === stageFilter) : customers
@@ -465,7 +467,7 @@ export default function CrmWorkbenchPage() {
             }
           }}>
             <option value={0}>选择已有客户（自动带出名称与开票信息）…</option>
-            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` · ${c.company}` : ''}</option>)}
+            {customers.map((c) => <option key={c.id} value={c.id}>{displayNameOf(c)}{c.company ? ` · ${c.company}` : ''}</option>)}
           </select>
           <input placeholder="客户名称" value={newName} onChange={(e) => setNewName(e.target.value)} />
           <input placeholder="合同金额（未填则取型号合计）" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
@@ -574,7 +576,7 @@ export default function CrmWorkbenchPage() {
             <tbody>
               {filteredCustomers.map((c) => (
                 <tr key={c.id} className={selectedCustomer?.id === c.id ? 'active' : ''} onClick={() => void openCustomer(c)}>
-                  <td>{c.name}{c.session_id ? <span className="crm-badge">AI</span> : ''}</td>
+                  <td>{displayNameOf(c)}{c.session_id ? <span className="crm-badge">AI</span> : ''}</td>
                   <td>{c.company || <span className="crm-muted">-</span>}</td>
                   <td>{stageLabel(c)}</td>
                   <td><span className={`crm-fill ${(c.enrich_filled ?? 0) >= 6 ? 'crm-fill--hi' : (c.enrich_filled ?? 0) >= 3 ? 'crm-fill--mid' : 'crm-fill--lo'}`}>{c.enrich_filled ?? 0}/{c.enrich_total ?? 12}</span></td>

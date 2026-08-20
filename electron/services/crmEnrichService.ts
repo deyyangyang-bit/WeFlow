@@ -107,11 +107,11 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
   if (!cfg) return { ok: false, reason: '配置未装配' }
   if (!isAiConfigured(cfg)) return { ok: false, reason: 'AI 未配置' }
 
-  // 只充实已存在客户（session_id 精确 → 名称匹配兜底）
+  // 只充实已存在客户（session_id 精确 → 名称匹配兜底，不跨会话：排除已绑定其他 session 的同名客户）
   let acc: CrmRow | null = null
   const bySid = crmDbService.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [sessionId])
   if (bySid.length) acc = bySid[0]
-  if (!acc && displayName) acc = crmDbService.matchAccountByName(displayName)
+  if (!acc && displayName) acc = crmDbService.matchAccountByName(displayName, { excludeSessionId: sessionId })
   if (!acc) return { ok: false, reason: '客户未在 CRM（引擎不创建客户）' }
   const accountId = Number(acc.id)
 

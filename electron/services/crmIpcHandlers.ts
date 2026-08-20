@@ -64,15 +64,24 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:workbench', async () => crmDbService.workbench())
   ipcMain.handle('crm:stats:overview', async () => crmDbService.statsOverview())
   ipcMain.handle('crm:stats:aiAccuracy', async (_, days?: number) => crmDbService.aiAccuracyStats(Number(days) || 7))
-  // 客户列表：附带 customer_profile.stage（中文漏斗阶段），与销售漏斗同源，深链下钻不空列表
+  // 客户列表：附带 customer_profile.stage（中文漏斗阶段）+ display_name（微信最新备注），
+  // 与销售漏斗同源，深链下钻不空列表；名称双轨读取侧统一：前端展示优先用 profile 名（跟随最新备注）
   ipcMain.handle('crm:customers', async () => {
     const rows = crmDbService.customers()
     try {
       const stageBySession = new Map<string, string>()
+      const nameBySession = new Map<string, string>()
       for (const p of salesDbService.customerAll()) {
-        if (p.session_id && p.stage) stageBySession.set(String(p.session_id), String(p.stage))
+        if (!p.session_id) continue
+        const sid = String(p.session_id)
+        if (p.stage) stageBySession.set(sid, String(p.stage))
+        if (p.display_name) nameBySession.set(sid, String(p.display_name))
       }
-      return rows.map((r) => ({ ...r, profile_stage: stageBySession.get(String(r.session_id || '')) || '' }))
+      return rows.map((r) => ({
+        ...r,
+        profile_stage: stageBySession.get(String(r.session_id || '')) || '',
+        profile_display_name: nameBySession.get(String(r.session_id || '')) || ''
+      }))
     } catch { return rows }
   })
   // 商机模块（P0：AI 从聊天自动识别采购信号 → 商机；列表/详情/事件/漏斗/阶段/关单）

@@ -161,10 +161,14 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
 
   completeTodo: async (id) => {
     try {
-      // SLA 首触卡走线索闭环（卡 done + lead→CONTACTED + 流水），普通待办仅标卡 done
+      // 专项闭环（卡 done + 业务状态流转），普通待办仅标卡 done
       const task = get().todos.find((t) => t.id === id)
       if (task?.trigger_type === 'sla_lead') {
+        // SLA 首触卡：lead→CONTACTED + 流水
         await (window as any).electronAPI.crm.leadSlaComplete(id)
+      } else if (task?.session_id && /^logi:/.test(String(task.session_id))) {
+        // 物流超期卡：完成 = 确认签收（卡 done + logistics signed + activity，与跟单中心「确认签收」同闭环）
+        await (window as any).electronAPI.sales.actionCompleteUnified(String(task.session_id), 'done')
       } else {
         await (window as any).electronAPI.sales.todoUpdate(id, { status: 'done' })
       }

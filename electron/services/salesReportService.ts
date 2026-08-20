@@ -333,7 +333,7 @@ class SalesReportService {
         const profile = profileMap.get(id)
         return {
           sessionId: id,
-          displayName: account?.name || profile?.display_name || nameMap[id] || id,
+          displayName: profile?.display_name || account?.name || nameMap[id] || id,
           avatarUrl: avatarMap[id],
           messageCount: contactMessages.get(id) ?? 0
         }
