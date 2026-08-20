@@ -41,7 +41,6 @@ const BackupPage = lazy(() => import('./pages/BackupPage'))
 const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
-const FollowUpPage = lazy(() => import('./pages/FollowUpPage'))
 const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
 const SalesFunnelPage = lazy(() => import('./pages/SalesFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
@@ -730,7 +729,6 @@ function App() {
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/sales-funnel" element={<SalesFunnelPage />} />
                 <Route path="/opportunities" element={<OpportunityPage />} />
-                <Route path="/follow-up" element={<FollowUpPage />} />
                 <Route path="/customers" element={<CustomerListPage />} />
                 <Route path="/crm" element={<CrmWorkbenchPage />} />
                 <Route path="/crm-review" element={<CrmReviewPage />} />
@@ -742,6 +740,8 @@ function App() {
                 <Route path="/backup" element={<BackupPage />} />
                 <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
                 <Route path="/chat-history-inline/:payloadId" element={<ChatHistoryPage />} />
+                {/* 已删除路由（如 /follow-up）或旧书签 → 回落今日行动，避免空白 */}
+                <Route path="*" element={<Navigate to="/home" replace />} />
               </Routes>
             </Suspense>
           </RouteGuard>

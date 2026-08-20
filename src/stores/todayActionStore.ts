@@ -61,6 +61,8 @@ export interface TodoTask {
   trigger_type?: string
   status: string
   due_at?: number | null
+  /** 客户会话（空/虚拟 todo:/lead:/logi: = 无客户散任务，只进侧栏） */
+  session_id?: string | null
 }
 
 interface TodayActionState {

@@ -391,16 +391,6 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">朋友圈</span>
           </NavLink>}
 
-          {/* 跟进待办 - PRD v2 隐藏（合并入今日行动） */}
-          {false && <NavLink
-            to="/follow-up"
-            className={`nav-item ${isActive('/follow-up') ? 'active' : ''}`}
-            title={collapsed ? '跟进待办' : undefined}
-          >
-            <span className="nav-icon"><Clock size={20} /></span>
-            <span className="nav-label">跟进待办</span>
-          </NavLink>}
-
           {/* 资源浏览 - PRD v2 隐藏 */}
           {false && <NavLink
             to="/resources"

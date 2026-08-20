@@ -69,8 +69,8 @@ export default function SalesDashboardPage() {
   }, [s])
 
   const cards = [
-    { key: 'follow', label: '今日待跟进', value: needFollow, icon: <Clock size={18} />, color: '#4a9eff', to: '/follow-up' },
-    { key: 'overdue', label: '逾期未跟进', value: s?.overdueTodos || 0, icon: <AlertTriangle size={18} />, color: '#e74c3c', to: '/follow-up' },
+    { key: 'follow', label: '今日待跟进', value: needFollow, icon: <Clock size={18} />, color: '#4a9eff', to: '/home' },
+    { key: 'overdue', label: '逾期未跟进', value: s?.overdueTodos || 0, icon: <AlertTriangle size={18} />, color: '#e74c3c', to: '/home' },
     { key: 'high', label: '高意向客户', value: s?.highIntentCount || 0, icon: <TrendingUp size={18} />, color: '#f5a623', to: '/customers?stage=决策' },
     { key: 'new', label: '本周新增', value: s?.newCustomersThisWeek || 0, icon: <UserPlus size={18} />, color: '#27ae60', to: '/customers' }
   ]
