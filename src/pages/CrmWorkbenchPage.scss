@@ -110,3 +110,20 @@
 .crm-accuracy__item { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; background: #f8fafc; border-radius: 8px; }
 .crm-accuracy__value { font-size: 16px; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
 .crm-accuracy__label { font-size: 11px; color: #64748b; }
+
+// ─── 信息待确认（客户 tab 顶部，从跟单中心迁来）──────────────────────────
+.crm-info-pending { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
+.crm-info-pending__head {
+  display: flex; justify-content: space-between; align-items: center; width: 100%;
+  padding: 10px 14px; background: none; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #0f172a;
+  &:hover { background: #f8fafc; }
+}
+.crm-info-pending__toggle { font-size: 11px; color: #94a3b8; font-weight: 400; }
+.crm-info-pending__list { padding: 0 14px 12px; display: flex; flex-direction: column; gap: 6px; }
+.crm-info-pending__item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: #f8fafc; border-radius: 8px; font-size: 13px;
+  span { margin-right: auto; }
+}
+.crm-info-pending__src { display: block; font-style: normal; font-size: 11px; color: #94a3b8; margin-top: 2px; }

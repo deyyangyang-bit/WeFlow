@@ -15,7 +15,7 @@ const STAGE_LABELS: Record<string, string> = {
 }
 
 export default function CrmWorkbenchPage() {
-  const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
+  const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts, queues, fetchQueues } = useCrmStore()
   const navigate = useNavigate()
   // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
   const openChat = (c: any) => {
@@ -58,9 +58,12 @@ export default function CrmWorkbenchPage() {
   const [deepReport, setDeepReport] = useState('')
   const [deepLoading, setDeepLoading] = useState(false)
   const [stageFilter, setStageFilter] = useState('')
+  const [showInfoPending, setShowInfoPending] = useState(true) // 客户 tab「信息待确认」折叠
 
   useEffect(() => { void fetchWorkbench() }, [fetchWorkbench])
   useEffect(() => { void fetchCustomers() }, [])
+  // 客户 tab：拉取 AI 填充待裁决队列（信息待确认，从跟单中心迁来）
+  useEffect(() => { if (tab === 'customers') void fetchQueues() }, [tab, fetchQueues])
 
   // ─── P3 可视化：统计概览 + 三图 ────────────────────────────────────────────
   const [stats, setStats] = useState<any>(null)
@@ -195,11 +198,23 @@ export default function CrmWorkbenchPage() {
     setEditingField('')
     if (selectedCustomer) await openCustomer(selectedCustomer)
   }
+  // 信息待确认裁决（客户 tab 顶部）：采纳=写入档案并锁定，放弃=丢弃该条 AI 填充
+  const applyInfo = async (it: any, action: 'accept' | 'reject') => {
+    const r = await window.electronAPI.crm.infoQueueApply(Number(it.account_id), String(it.field), action)
+    setNotice(r.ok ? (action === 'accept' ? `已采纳「${FIELD_LABELS_WB[it.field] || it.field}」` : '已放弃该条 AI 填充') : `失败：${r.reason}`)
+    await fetchQueues()
+  }
+  const openInfoCustomer = async (accountId: number) => {
+    setTab('customers')
+    const rows = await fetchCustomers()
+    const hit = rows.find((x: any) => Number(x.id) === accountId)
+    if (hit) await openCustomer(hit)
+  }
   const runEnrichOne = async (c: any) => {
     if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 补全'); return }
     setNotice(`AI 正在补全 ${c.name}…`)
     const r = await window.electronAPI.crm.enrichRun(String(c.session_id), c.name)
-    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待跟单中心裁决` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
+    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待确认（客户列表上方处理）` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
     await fetchCustomers()
     if (selectedCustomer?.id === c.id) await openCustomer(c)
   }
@@ -519,6 +534,29 @@ export default function CrmWorkbenchPage() {
 
       {tab === 'customers' && (
         <>
+          {queues.infoPending.length > 0 && (
+            <div className="crm-info-pending">
+              <button className="crm-info-pending__head" onClick={() => setShowInfoPending((v) => !v)}>
+                <span>⚡ 信息待确认（{queues.infoPending.length}）</span>
+                <span className="crm-info-pending__toggle">{showInfoPending ? '收起 ▲' : '展开 ▼'}</span>
+              </button>
+              {showInfoPending && (
+                <div className="crm-info-pending__list">
+                  {queues.infoPending.map((it: any) => (
+                    <div key={`${it.account_id}-${it.field}`} className="crm-info-pending__item">
+                      <span>
+                        <strong>{it.account_name}</strong> · {FIELD_LABELS_WB[it.field] || it.field} → {it.value}
+                        <em className="crm-info-pending__src">置信 {Math.round((it.confidence || 0) * 100)}%{it.evidence ? ` · 证据「${String(it.evidence).slice(0, 40)}」` : ''}</em>
+                      </span>
+                      <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
+                      <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
+                      <button className="crm-btn" onClick={() => void openInfoCustomer(Number(it.account_id))}>查看档案</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="crm-filter-bar">
             <select className="crm-filter-select" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
               <option value="">全部阶段</option>
