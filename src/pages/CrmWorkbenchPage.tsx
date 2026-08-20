@@ -8,7 +8,7 @@ import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmWorkbenchPage.scss'
 
-interface QuoRow { productId: number; name: string; price: number; qty: string }
+interface QuoRow { productId: number; name: string; model?: string; price: number; qty: string }
 
 const STAGE_LABELS: Record<string, string> = {
   contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未知'
@@ -48,6 +48,9 @@ export default function CrmWorkbenchPage() {
   const [showQuo, setShowQuo] = useState(false)
   const [quoRows, setQuoRows] = useState<QuoRow[]>([])
   const [quoSearch, setQuoSearch] = useState('')
+  // 新建合同：勾选的型号行项（创建时自动生成报价单）
+  const [newQuoItems, setNewQuoItems] = useState<QuoRow[]>([])
+  const [newQuoSearch, setNewQuoSearch] = useState('')
   const [customers, setCustomers] = useState<any[]>([])
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
   const [customerProfile, setCustomerProfile] = useState<any>(null)
@@ -226,6 +229,7 @@ export default function CrmWorkbenchPage() {
     setNewBuyerAccount(String(cf.buyer_account || ''))
     setNewBuyerTax(String(cf.tax_no || ''))
     setNewBuyerPhone(String(cf.buyer_phone || c.phone || ''))
+    if (!products.length) void fetchProducts()
     setShowNew(true)
   }
 
@@ -315,6 +319,13 @@ export default function CrmWorkbenchPage() {
 
   const quoTotal = quoRows.reduce((s, r) => s + r.price * (parseFloat(r.qty) || 0), 0)
 
+  // 新建合同：从产品库勾选型号（可多选，同产品去重），创建时自动生成报价单行项
+  const addNewQuoRow = (p: any) => {
+    if (newQuoItems.some((r) => r.productId === p.id)) return
+    setNewQuoItems((rs) => [...rs, { productId: p.id, name: p.name, model: String(p.model || ''), price: Number(p.unit_price ?? 0), qty: '1' }])
+  }
+  const newQuoTotal = newQuoItems.reduce((s, r) => s + r.price * (parseFloat(r.qty) || 0), 0)
+
   const createQuotation = async () => {
     if (!selected) return
     const items = quoRows
@@ -332,7 +343,9 @@ export default function CrmWorkbenchPage() {
   }
 
   const createContract = async () => {
-    const amount = parseFloat(newAmount || '0')
+    // 手填金额优先；未填则取型号合计（勾选的型号创建时自动生成报价单行项）
+    const manualAmount = parseFloat(newAmount)
+    const amount = manualAmount > 0 ? manualAmount : newQuoTotal
     if (!newName.trim()) { setNotice('请填写客户名称'); return }
     // 甲方开票信息只写入非空字段（自动确认引擎也会写 tax_no，键一致）
     const custom_fields: Record<string, string> = {}
@@ -346,9 +359,17 @@ export default function CrmWorkbenchPage() {
     if (!accountId) {
       accountId = await window.electronAPI.crm.create('account', { name: newName.trim(), created_at: Date.now(), updated_at: Date.now() })
     }
-    await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName.trim()}-合同`, amount, status: 'pending_sign', custom_fields: JSON.stringify(custom_fields), created_at: Date.now(), updated_at: Date.now() })
+    const contractId = await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName.trim()}-合同`, amount, status: 'pending_sign', custom_fields: JSON.stringify(custom_fields), created_at: Date.now(), updated_at: Date.now() })
+    // 勾选的型号 → 自动生成报价单（行项单价取产品库）
+    if (newQuoItems.length > 0) {
+      await window.electronAPI.crm.quotationCreate({
+        contract_id: contractId,
+        items: newQuoItems.map((r) => ({ product_id: r.productId, qty: parseFloat(r.qty) || 1 }))
+      })
+    }
     setShowNew(false); setNewName(''); setNewAmount(''); setNewAccountId(0)
     setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
+    setNewQuoItems([]); setNewQuoSearch('')
     await fetchWorkbench()
   }
 
@@ -372,7 +393,7 @@ export default function CrmWorkbenchPage() {
           <button className={`crm-tab ${tab === 'customers' ? 'active' : ''}`} onClick={() => void fetchCustomers().then(() => setTab('customers'))}>客户 ({customers.length})</button>
         </div>
         <button className="crm-btn" onClick={() => { void fetchStats(); void fetchAccuracy(); if (tab === 'contracts') void fetchWorkbench(); else void fetchCustomers() }}><RefreshCw size={14} /> 刷新</button>
-        <button className="crm-btn" onClick={() => setShowNew((v) => !v)}><Plus size={14} /> 新建合同</button>
+        <button className="crm-btn" onClick={() => { setShowNew((v) => !v); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
       {stats && (
@@ -430,7 +451,41 @@ export default function CrmWorkbenchPage() {
             {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.company ? ` · ${c.company}` : ''}</option>)}
           </select>
           <input placeholder="客户名称" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <input placeholder="合同金额" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
+          <input placeholder="合同金额（未填则取型号合计）" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
+          <span className="crm-new-form__divider">型号（从产品库选，可多选；创建即生成报价单）</span>
+          <div className="crm-new-form__quotes">
+            <input className="crm-new-form__search" placeholder="搜索产品/型号…" value={newQuoSearch} onChange={(e) => setNewQuoSearch(e.target.value)} />
+            {products.length === 0 ? (
+              <div className="quo-total">产品库为空，请先到「型号库」添加产品</div>
+            ) : (
+              <div className="quo-list">
+                {products
+                  .filter((p) => {
+                    const q = newQuoSearch.trim().toLowerCase()
+                    if (!q) return true
+                    return String(p.name || '').toLowerCase().includes(q) || String(p.model || '').toLowerCase().includes(q)
+                  })
+                  .slice(0, 20)
+                  .map((p) => (
+                    <div key={p.id} className="quo-item">
+                      <span>{p.name}{p.model ? ` · ${p.model}` : ''} · ¥{Number(p.unit_price ?? 0).toLocaleString()}</span>
+                      <button className="crm-btn" onClick={() => addNewQuoRow(p)} disabled={newQuoItems.some((r) => r.productId === p.id)}>添加</button>
+                    </div>
+                  ))}
+              </div>
+            )}
+            {newQuoItems.map((r) => (
+              <div key={r.productId} className="quo-item">
+                <span>{r.name}{r.model ? ` · ${r.model}` : ''} · ¥{r.price.toLocaleString()}</span>
+                <input type="number" min="1" value={r.qty}
+                  onChange={(e) => setNewQuoItems((rs) => rs.map((x) => x.productId === r.productId ? { ...x, qty: e.target.value } : x))} />
+                <button className="crm-btn" onClick={() => setNewQuoItems((rs) => rs.filter((x) => x.productId !== r.productId))}><X size={12} /></button>
+              </div>
+            ))}
+            {newQuoItems.length > 0 && (
+              <div className="crm-new-form__total">型号合计 ¥{newQuoTotal.toLocaleString()}（未填金额时作为合同金额，可改）</div>
+            )}
+          </div>
           <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
           <input placeholder="单位地址" value={newBuyerAddr} onChange={(e) => setNewBuyerAddr(e.target.value)} />
           <input placeholder="开户银行" value={newBuyerBank} onChange={(e) => setNewBuyerBank(e.target.value)} />
