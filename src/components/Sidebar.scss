@@ -141,6 +141,51 @@
   font-weight: 500;
 }
 
+// ---- 导航分组（收口 7 模块：今日行动/聊天/CRM/跟单/AI·知识/报表/系统）----
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+
+  &:hover { color: var(--text-primary); }
+  &.active { color: var(--text-secondary); }
+
+  &__caret {
+    transition: transform 0.15s ease;
+
+    &.open { transform: rotate(180deg); }
+  }
+}
+
+.nav-group__items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav-item--child {
+  padding-left: 26px;
+}
+
 .nav-badge {
   margin-left: auto;
   min-width: 20px;

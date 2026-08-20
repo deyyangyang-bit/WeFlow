@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox, Target } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -13,6 +13,33 @@ interface SidebarUserProfile {
   alias?: string
   avatarUrl?: string
 }
+
+// ─── 导航收口：7 个一级模块（今日行动 / 聊天 / CRM / 跟单 / AI·知识 / 报表 / 系统）───
+// 多子项模块渲染为可展开分组；collapsed 时全部子项图标平铺，保持原行为
+interface NavItemDef { label: string; path: string; icon: LucideIcon }
+interface NavGroupDef { key: string; label: string; items: NavItemDef[] }
+
+const NAV_GROUPS: NavGroupDef[] = [
+  { key: 'home', label: '今日行动', items: [{ label: '今日行动', path: '/home', icon: Home }] },
+  { key: 'chat', label: '聊天', items: [{ label: '聊天', path: '/chat', icon: MessageSquare }] },
+  { key: 'crm', label: 'CRM', items: [
+    { label: '线索', path: '/leads', icon: Inbox },
+    { label: '客户', path: '/customers', icon: Users },
+    { label: '商机', path: '/opportunities', icon: Target },
+    { label: '漏斗', path: '/sales-funnel', icon: TrendingDown },
+    { label: '合同', path: '/crm', icon: Briefcase }
+  ] },
+  { key: 'review', label: '跟单', items: [{ label: '跟单中心', path: '/crm-review', icon: ClipboardCheck }] },
+  { key: 'ai', label: 'AI / 知识', items: [
+    { label: '洞察', path: '/insight-inbox', icon: Sparkles },
+    { label: '知识库', path: '/knowledge-base', icon: BookOpen }
+  ] },
+  { key: 'report', label: '报表', items: [{ label: '复盘', path: '/sales-report', icon: BarChart3 }] },
+  { key: 'system', label: '系统', items: [
+    { label: '产品库', path: '/crm-product', icon: Package },
+    { label: '通讯录', path: '/contacts', icon: UserCircle }
+  ] }
+]
 
 const SIDEBAR_USER_PROFILE_CACHE_KEY = 'sidebar_user_profile_cache_v1'
 const ACCOUNT_PROFILES_CACHE_KEY = 'account_profiles_cache_v1'
@@ -308,6 +335,20 @@ function Sidebar({ collapsed }: SidebarProps) {
   const isActive = (path: string) => {
     return location.pathname === path || location.pathname.startsWith(`${path}/`)
   }
+  // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
+  const groupActive = (items: NavItemDef[]) => items.some((i) => isActive(i.path))
+  const renderNavItem = (item: NavItemDef, child = false) => (
+    <NavLink
+      key={item.path}
+      to={item.path}
+      className={`nav-item ${child ? 'nav-item--child' : ''} ${isActive(item.path) ? 'active' : ''}`}
+      title={collapsed ? item.label : undefined}
+    >
+      <span className="nav-icon"><item.icon size={20} /></span>
+      <span className="nav-label">{item.label}</span>
+    </NavLink>
+  )
   const exportTaskBadge = activeExportTaskCount > 99 ? '99+' : `${activeExportTaskCount}`
   const lockActionLabel = authEnabled ? '锁定应用' : '开启应用锁'
 
@@ -315,25 +356,30 @@ function Sidebar({ collapsed }: SidebarProps) {
     <>
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
         <nav className="nav-menu">
-          {/* 首页 */}
-          <NavLink
-            to="/home"
-            className={`nav-item ${isActive('/home') ? 'active' : ''}`}
-            title={collapsed ? '首页' : undefined}
-          >
-            <span className="nav-icon"><Home size={20} /></span>
-            <span className="nav-label">今日行动</span>
-          </NavLink>
-
-          {/* 聊天 */}
-          <NavLink
-            to="/chat"
-            className={`nav-item ${isActive('/chat') ? 'active' : ''}`}
-            title={collapsed ? '聊天' : undefined}
-          >
-            <span className="nav-icon"><MessageSquare size={20} /></span>
-            <span className="nav-label">聊天</span>
-          </NavLink>
+          {collapsed
+            ? NAV_GROUPS.flatMap((g) => g.items).map((i) => renderNavItem(i))
+            : NAV_GROUPS.map((g) => {
+                if (g.items.length === 1) return renderNavItem(g.items[0])
+                const open = openGroups[g.key] !== false
+                return (
+                  <div key={g.key} className="nav-group">
+                    <button
+                      type="button"
+                      className={`nav-group-head ${groupActive(g.items) ? 'active' : ''}`}
+                      onClick={() => setOpenGroups((s) => ({ ...s, [g.key]: !(s[g.key] !== false) }))}
+                      aria-expanded={open}
+                    >
+                      <span>{g.label}</span>
+                      <ChevronDown size={13} className={`nav-group-head__caret ${open ? 'open' : ''}`} />
+                    </button>
+                    {open && (
+                      <div className="nav-group__items">
+                        {g.items.map((i) => renderNavItem(i, true))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
 
           {/* 朋友圈 - PRD v2 隐藏 */}
           {false && <NavLink
@@ -345,72 +391,6 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">朋友圈</span>
           </NavLink>}
 
-          {/* 灵感信箱（AI 见解收件箱：含高意向/沉默预警） */}
-          <NavLink
-            to="/insight-inbox"
-            className={`nav-item ${isActive('/insight-inbox') ? 'active' : ''}`}
-            title={collapsed ? '灵感信箱' : undefined}
-          >
-            <span className="nav-icon"><Sparkles size={20} /></span>
-            <span className="nav-label">灵感信箱</span>
-          </NavLink>
-
-          {/* 知识库 */}
-          <NavLink
-            to="/knowledge-base"
-            className={`nav-item ${isActive('/knowledge-base') ? 'active' : ''}`}
-            title={collapsed ? '知识库' : undefined}
-          >
-            <span className="nav-icon"><BookOpen size={20} /></span>
-            <span className="nav-label">知识库</span>
-          </NavLink>
-            <NavLink to="/crm" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? 'CRM' : undefined}>
-              <span className="nav-icon"><Briefcase size={20} /></span>
-              {!collapsed && <span className="nav-label">CRM</span>}
-            </NavLink>
-            <NavLink to="/crm-review" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '跟单中心' : undefined}>
-              <span className="nav-icon"><ClipboardCheck size={20} /></span>
-              {!collapsed && <span className="nav-label">跟单中心</span>}
-            </NavLink>
-            <NavLink to="/crm-product" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '型号库' : undefined}>
-              <span className="nav-icon"><Package size={20} /></span>
-              {!collapsed && <span className="nav-label">产品库</span>}
-            </NavLink>
-            <NavLink to="/leads" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} title={collapsed ? '线索池' : undefined}>
-              <span className="nav-icon"><Inbox size={20} /></span>
-              {!collapsed && <span className="nav-label">线索池</span>}
-            </NavLink>
-
-          {/* 销售报表 */}
-          <NavLink
-            to="/sales-report"
-            className={`nav-item ${isActive('/sales-report') ? 'active' : ''}`}
-            title={collapsed ? '销售报表' : undefined}
-          >
-            <span className="nav-icon"><BarChart3 size={20} /></span>
-            <span className="nav-label">复盘</span>
-          </NavLink>
-
-          {/* 销售漏斗 */}
-          <NavLink
-            to="/sales-funnel"
-            className={`nav-item ${isActive('/sales-funnel') ? 'active' : ''}`}
-            title={collapsed ? '销售漏斗' : undefined}
-          >
-            <span className="nav-icon"><TrendingDown size={20} /></span>
-            <span className="nav-label">漏斗</span>
-          </NavLink>
-
-          {/* 商机 - AI 从聊天自动识别采购信号 */}
-          <NavLink
-            to="/opportunities"
-            className={`nav-item ${isActive('/opportunities') ? 'active' : ''}`}
-            title={collapsed ? '商机' : undefined}
-          >
-            <span className="nav-icon"><Target size={20} /></span>
-            <span className="nav-label">商机</span>
-          </NavLink>
-
           {/* 跟进待办 - PRD v2 隐藏（合并入今日行动） */}
           {false && <NavLink
             to="/follow-up"
@@ -420,26 +400,6 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-icon"><Clock size={20} /></span>
             <span className="nav-label">跟进待办</span>
           </NavLink>}
-
-          {/* 客户管理 */}
-          <NavLink
-            to="/customers"
-            className={`nav-item ${isActive('/customers') ? 'active' : ''}`}
-            title={collapsed ? '客户' : undefined}
-          >
-            <span className="nav-icon"><Users size={20} /></span>
-            <span className="nav-label">客户</span>
-          </NavLink>
-
-          {/* 通讯录 */}
-          <NavLink
-            to="/contacts"
-            className={`nav-item ${isActive('/contacts') ? 'active' : ''}`}
-            title={collapsed ? '通讯录' : undefined}
-          >
-            <span className="nav-icon"><UserCircle size={20} /></span>
-            <span className="nav-label">通讯录</span>
-          </NavLink>
 
           {/* 资源浏览 - PRD v2 隐藏 */}
           {false && <NavLink
