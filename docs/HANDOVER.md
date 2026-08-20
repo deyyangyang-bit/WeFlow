@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `c90e6c9`（2026-08-20 SLA 首触卡移出主卡流、只右侧散任务展示，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> 基线 commit `d40cd4d`；最近提交 `068a403`（2026-08-20 客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
@@ -305,6 +305,21 @@
 
 ---
 
+## 2.20 客户名称统一 + 同名不跨会话 + logi 签收闭环（2026-08-20，commit `068a403`）
+
+> 名称双轨根因：`account.name` 冻结在导入时刻，`customer_profile.display_name` 被每次 AI 扫描重写。展示点各读一边 → 同一客户工作台显示旧名、卡流显示新名；另有同名泛称跨会话误关联 + 侧栏物流卡勾选不真正确认签收。
+
+- **名称双轨读取侧统一**：各展示点统一为「`profile.display_name`（最新微信备注）优先，`account.name` 兜底」。改动点：
+  - `crmIpcHandlers` 的 `crm:customers` 附加 `profile_display_name`（与 `profile_stage` 同循环跨库装配）
+  - `CrmWorkbenchPage` 客户表格 + 建合同客户下拉改用 `displayNameOf(c)`（= `profile_display_name || name`）
+  - `salesReportService` 周报 topContacts 兜底链换序：`profile.display_name` 优先
+  - 主卡流/客户列表本就读 profile 名，无需改
+- **同名不跨会话**：`matchAccountByName` 加 `opts.excludeSessionId`（跳过已绑定其他 session 的同名客户）；**仅 `enrichCustomer` 使用**——AI 充实只写已存在客户，防止多个「张总」串客户（A 会话误充实 B）。`importCustomerFromProfile` 名称兜底**保留幂等合并语义**（同人多微信号 → 合并同一 account，workbench 测试 7d 约束）
+- **logi 物流卡签收闭环**：`completeTodo`（todayActionStore）对 `logi:` 卡改走 `sales.actionCompleteUnified`，复用 `completeUnifiedSignal` 的 logi 分支（卡 done + `markLogisticsSigned` + activity），与跟单中心「确认签收」一致；此前只 `todoUpdate` 标卡 done、物流单仍是 shipped
+- **验证**：`tsc` 零错误；新增 `scripts/crm-name-fix-test.ts` **5/5**（match 层排除/向后兼容/导入合并语义回归）；全系回归通过（workbench 48、logistics 25、sla-action 11 等；product-import 依赖微信本地 xlsx 文件不在本机，与本轮无关）
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -356,6 +371,7 @@
 | 45 | **SLA/Action 接通** | 今日行动右侧「待办清单」（SLA 首触卡自动出现，`c90e6c9` 起只右侧展示） | `scanLeadSla` 挂入 runFullScan + getUnifiedSignals 扫描周期；散任务视图 + 完成闭环 `crm:lead:slaComplete`，`5ba531b`+`678e3f0`+`c90e6c9` | ✅ |
 | 46 | **AI 回写 model/sourceId 溯源** | enrich_meta 每条记录（PRD§23 可追溯） | `mergeEnrichFields` 透传 + `enrichCustomer` 打 `{model,sourceId}` 标签 + `gatherMaterials` 记最近消息 messageKey，`223c158` | ✅ |
 | 47 | **今日行动/待办职责分工** | 今日行动主卡流 + 右侧散任务清单 | `getUnifiedSignals` 唯一动作入口；`TodoSidebar` 只留散任务（无 session 手动/SLA/物流）；FollowUpPage 归档，`1aefef4`+`d5b9f62` | ✅ |
+| 48 | **客户名称统一 + 同名防护 + logi 闭环** | 工作台/周报客户名 + AI enrich + 物流侧栏卡 | 读取侧 `profile.display_name` 优先（工作台/周报）；`enrichCustomer` 同名不跨会话；`completeTodo` logi: 走签收闭环，`068a403` | ✅ |
 
 ---
 
