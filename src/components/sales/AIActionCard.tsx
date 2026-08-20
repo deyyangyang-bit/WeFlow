@@ -125,8 +125,9 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
       ? 'signal-card--high'
       : 'signal-card--normal'
 
-  // 虚拟手动待办（无关联客户）：无聊天对象、无 AI 分析上下文，隐藏对应按钮
-  const isVirtualTodo = String(item.sessionId || '').startsWith('todo:')
+  // 虚拟卡（无真实微信会话）：todo:<id> 手动待办 / lead:<id> 线索首触 SLA / logi:<id> 物流超期
+  // 均无聊天对象 → 隐藏「打开聊天」按钮（SLA 卡 displayName 已含脱敏联系方式，销售自行微信搜索）
+  const isVirtualTodo = ['todo:', 'lead:', 'logi:'].some((p) => String(item.sessionId || '').startsWith(p))
 
   return (
     <div className={`signal-card ${tierClass}`}>

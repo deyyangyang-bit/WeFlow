@@ -21,7 +21,7 @@ import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
-import { completeLeadFirstContact, skipLeadFirstContact } from './crmLeadService'
+import { completeLeadFirstContact, skipLeadFirstContact, scanLeadSla } from './crmLeadService'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -544,6 +544,8 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   }
 
   lastFullScanAt = nowMs
+  // SLA 接通：每日全量扫描顺带扫描超时线索 → 生成首触 SLA 卡（幂等；独立于 action_engine 重扫，created_by='sla' 不受清理）
+  try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) }
   salesLog('INFO', `[ActionEngine] 全量扫描完成，候选 ${customerBest.size} 客户，生成 ${generated} 条任务，R6 ${r6Generated} 条`)
   return { generated, r6Generated }
 }
@@ -983,6 +985,8 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   }
   // 懒扫描：无论是否刚跑完全量，都补扫一次（填补 08:00 后的增量窗口）
   await enqueueSalesTask(() => lazyScan())
+  // SLA 接通：每次卡流扫描都补一次 SLA 扫描（应用连续运行期间，新到期线索即时出首触卡）
+  await enqueueSalesTask(() => { try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) } })
 
   // 查询所有 pending 任务
   const pendingTasks = salesDbService.todoList({ status: 'pending', limit: 100 })
