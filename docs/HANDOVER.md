@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `09d5600`（2026-08-20 侧边栏导航收口 7 模块，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> 基线 commit `d40cd4d`；最近提交 `6c439bf`（2026-08-20 Customer 360 统一时间线，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）。
+> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -253,6 +253,18 @@
 
 ---
 
+## 2.16 Customer 360 统一时间线（2026-08-20，commit `6c439bf`）
+
+> P0-B：客户档案「动态时间线」从只看 account 实体动作 → **一个客户的所有关键事件一条流**（合同/到款/物流/报价/归属/线索流转/商机事件/AI 见解）。
+
+- **查询适配层**（`crmDbService.accountTimeline`）：8 个 UNION ALL 分支聚合 `activity_log` 六实体（account/contract/logistics/quotation/allocation/payment_record，经 contract→account、allocation→payment_record 关联链）+ `lead_activity`（经 lead.account_id）+ `opportunity_event`（经 opportunity.account_id），按时间升序返回 `{ at, kind, text }`。**不新建统一表**，避免双写与迁移
+- **handler**（`crm:customer:profile`）：activities 改用 `accountTimeline(accountId).reverse().slice(0, 40)`，倒序 40 条
+- **前端混排**（`CrmWorkbenchPage.tsx`）：四类标签 `TIMELINE_KIND_LABEL`（CRM 绿 / 线索橙 / 商机蓝 / AI 见解紫，`.crm-timeline__tag` 加 `.lead`/`.opportunity` 色）；删除原「最近见解」重复块（已并入时间线）
+- **测试**（`scripts/crm-timeline-test.ts`）：10 项——6 实体动作 + 线索 + 商机事件聚合正确、时间升序、跨客户隔离
+- **验证**：timeline 10/10 + golden 45 + workbench 48 + lead 53 + opportunity 45 + logistics 25 全过，`tsc` 零错误，`vite build` 通过
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -300,6 +312,7 @@
 | 41 | **意向评分 0-100** | 商机列表/详情 | `intentScore.ts` 纯核心 + 跨库装配 + factors 评分依据展开 | ✅ |
 | 42 | **风险预警（竞品/价格/服务）** | 商机详情 | `parseRiskSignal` + crm_risk 表 + 确认处理 | ✅ |
 | 43 | **侧边栏导航收口 7 模块** | 左侧导航 | `Sidebar.tsx`（NAV_GROUPS 数据驱动 + 可展开分组，`09d5600`） | ✅ |
+| 44 | **Customer 360 统一时间线** | 工作台客户档案「动态时间线」 | `crmDbService.accountTimeline` 8 分支聚合 + 前端四色混排，`6c439bf` | ✅ |
 
 ---
 
