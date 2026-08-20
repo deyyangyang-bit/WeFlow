@@ -1,7 +1,7 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `223c158`（2026-08-20 AI 回写 model/sourceId 溯源，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> 基线 commit `d40cd4d`；最近提交 `d5b9f62`（2026-08-20 今日行动/待办职责分工，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
@@ -233,9 +233,9 @@
 - **已知边界**：风险只附着已建档客户（account_id 非 0）。漏斗深链 bug（customer_profile 中文 stage vs account.sales_stage 英文双轨）已于 `11359fe` 修复：**customer_profile.stage 为唯一阶段真源**（见本段「漏斗深链修复」）
 - **2026-08-20 漏斗数据修复**（commit `c719678`）：① 转化率口径由「阶段间相除」改为「相对漏斗顶部『了解』的比例」（成交 24/了解 71 = 34% 赢单率；原算法在 成交>决策 时算出 300% 失真）；② 近 7 天由「AI 扫描标签条数」改为「新增进漏斗客户数」（`intentTimeline` 按 `MIN(created_at)` 首次打标日期去重，同客户重复扫描只计 1 次）；③ `salesDbService.initialize` wasm 路径加根 `node_modules` 兜底（同 crmDbService 模式）。新增 `scripts/funnel-test.ts` **5/5**
 - **2026-08-20 漏斗深链修复**（commit `11359fe`）：漏斗点阶段 → CRM 客户列表筛空。根因双轨：漏斗用 `customer_profile.stage`（中文 了解/比价/决策/成交），CRM 用 `account.sales_stage`（英文 contacted/quoted/negotiating/won，导入时 比价+决策 都映射成 negotiating），sales_stage **无 quoted**，漏斗「比价」深链「已报价」必空。修复统一 `customer_profile.stage` 为唯一阶段真源：`crm:customers` IPC 附带 `profile_stage`（session_id 关联）；CrmWorkbenchPage `stageLabel` 优先 `profile_stage`、无画像才回退 sales_stage 标签；SalesFunnelPage 下钻直接传原始中文阶段名（删 FUNNEL_TO_CRM_LABEL 映射）。实测 customer_profile 了解71/比价62/成交24/决策8 全部命中；深链协议改 `/crm?tab=customer&stage=<原始中文阶段>`
-- **2026-08-20 今日行动新建待办**（commit `8085dc2`）：修复能力断层——手动「新建待办」原只在已隐藏的 FollowUpPage，今日行动无入口。① `getUnifiedSignals` 加 manual 分支：手动待办绕过沉默天数过滤（事实驱动），无客户 → 虚拟 sessionId `todo:<id>` 独立卡（**动态计算不落库**，因 `todoUpdate` 白名单不含 session_id）、绑客户 → 并入客户卡（displayName 回退客户档案名）；② `completeUnifiedSignal` 加 `todo:` 前缀分支按 `getTask(id)` 关单；③ 今日行动 header「新建待办」弹窗（标题必填 + 客户搜索下拉可选 + 截止时间可选）；④ `todayActionStore` 加 todos 状态（fetchToday 顺带刷新，主卡流与侧栏同源同步），TodoSidebar 数据源切 store、checkbox 可点击完成、主卡流完成也同步侧栏；⑤ AIActionCard `todo:` 虚拟卡隐藏「打开聊天」+「AI 分析」；⑥ 老页面 FollowUpPage 保留。新增 `scripts/todo-followup-test.ts` **11/11**（虚拟卡/绑客户卡/关单/老链路兼容）
+- **2026-08-20 今日行动新建待办**（commit `8085dc2`）：修复能力断层——手动「新建待办」原只在已隐藏的 FollowUpPage，今日行动无入口。① `getUnifiedSignals` 加 manual 分支：手动待办绕过沉默天数过滤（事实驱动），无客户 → 虚拟 sessionId `todo:<id>` 独立卡（**动态计算不落库**，因 `todoUpdate` 白名单不含 session_id）、绑客户 → 并入客户卡（displayName 回退客户档案名）；② `completeUnifiedSignal` 加 `todo:` 前缀分支按 `getTask(id)` 关单；③ 今日行动 header「新建待办」弹窗（标题必填 + 客户搜索下拉可选 + 截止时间可选）；④ `todayActionStore` 加 todos 状态（fetchToday 顺带刷新，主卡流与侧栏同源同步），TodoSidebar 数据源切 store、checkbox 可点击完成、主卡流完成也同步侧栏；⑤ AIActionCard `todo:` 虚拟卡隐藏「打开聊天」+「AI 分析」；⑥ 老页面 FollowUpPage 保留（后于 §2.19 归档）。新增 `scripts/todo-followup-test.ts` **11/11**（虚拟卡/绑客户卡/关单/老链路兼容）
 - **2026-08-20 待办清单分页 + 重叠修复**（commit `6d33074`）：① TodoSidebar 进度条改纯视觉轨道（6px 双色段，数字移除到独立统计行）——原在窄百分比段内嵌 nowrap 文字必现溢出重叠（真实库 pending 106/done 73/total 1389）；② 列表分页 **10 条/页**（prev/next + `N / M`，数据变化自动钳制回合法页）；③ 统计分母排除 superseded/ignored/dismissed 防虚高，文案「已完成 N · 共 M」
-- **2026-08-20 跟进待办页同客户去重 + 分页**（commit `95c9dd6`）：FollowUpPage（老页面）平铺同客户多条待办刷屏（真实库 6 客户各 2 条：urge_customer 催办 + rule_r1/r2 规则卡）。① 去重：同 `session_id` 合并为一组，主卡=最高优一条（全局已按 逾期>疑似>待跟进 + priority_score 排序，首见即最高），其余折叠「同客户还有 N 条」可展开逐条确认/忽略；无 session 手动待办独立成组不合并；② 分页：按去重后组数 **10 条/页**（prev/next + `N / M`），数据变化自动钳制回合法页；③ 纯函数 `src/utils/followUpGroup.ts`（`groupFollowUpTasks`）+ `scripts/followup-group-test.ts` **10/10**
+- **2026-08-20 跟进待办页同客户去重 + 分页**（commit `95c9dd6`）：FollowUpPage（老页面，后于 §2.19 归档）平铺同客户多条待办刷屏（真实库 6 客户各 2 条：urge_customer 催办 + rule_r1/r2 规则卡）。① 去重：同 `session_id` 合并为一组，主卡=最高优一条（全局已按 逾期>疑似>待跟进 + priority_score 排序，首见即最高），其余折叠「同客户还有 N 条」可展开逐条确认/忽略；无 session 手动待办独立成组不合并；② 分页：按去重后组数 **10 条/页**（prev/next + `N / M`），数据变化自动钳制回合法页；③ 纯函数 `src/utils/followUpGroup.ts`（`groupFollowUpTasks`，随 §2.19 归档删除）+ `scripts/followup-group-test.ts` **10/10**
 - **2026-08-20 AI 见解 24h 去重 + 非客户自动黑名单**（commit `f02b13c`）：① **数据源调查结论**——今日行动与灵感邮箱**同源**（都读 `insightRecordService`，JSON 落盘 `weflow-insight-records.json`），今日行动只取最近 24h 未读记录，与 `follow_up_task` 经 `getUnifiedSignals` 合并；② **24h 去重**：`INSIGHT_RECORD_DEDUP_MS` 12h→24h（同客户 24h 内不重复触发 AI 分析），`hasRecentRecord` 加 `sourceType==='insight'` 过滤——手动消息解析（`message_analysis`）不算「已分析过」，不阻塞后续自动 AI 见解；③ **非客户自动黑名单**：AI 输出【阶段=未知】→ `blacklistNonCustomer` 自动加入 `aiInsightNonCustomerBlacklist`（electron-store 持久化，与手动 whitelist/blacklist 名单完全独立）→ `isSessionAllowed` 先查黑名单硬屏蔽，不触发任何见解；④ **设置页可解除**：SettingsPage AI 见解 tab 底部展示黑名单（头像+名称+「解除」按钮），防 AI 误判永久沉默；前端 `src/services/config.ts` 加 `getAiInsightNonCustomerBlacklist`/`setAiInsightNonCustomerBlacklist`。新增 `scripts/insight-dedup-test.ts` **6/6**（a 24h 命中 / b message_analysis 不阻塞 / b2 混存命中 / c 黑名单读写 / d 与手动名单独立）
 - **2026-08-20 销售复盘改造**（commit `9a9fbaf`）：复盘页从「统计报表」升级为「经营分析 + 统计」双能力。**背景**：`generateWeeklyReview`（周复盘，PRD P1 重点）是后端孤岛——定时器每周日 20:00 自动落库，但前端 `sales.reviewGenerate` 已暴露从未调用；且 `weekly_review` 记录混入 reportList 被当「月报」展示、点开 `dailyMessageCounts.length` TypeError **整页白屏**。① **周复盘打通**：复盘页加「生成周复盘」按钮 + `weekly_review` 专属视图（管道/热/冷/放弃 4 统计卡 + 阶段分布条 + 热/冷/放弃明细列表 + AI 复盘正文），`electron.d.ts` 补 reviewGenerate 声明；② **热了改基线对比**：原「本周有新 intent 且阶段∈{quoted,negotiating,won}」无基线误报，现 `intentBefore`（salesDbService 新增，查上周最终阶段）对比——本周阶段前进才热（新进管道也算），后退/无变化/已成交/已流失不算；③ **修复中英混存漏判**：stage 中英混存（insightService 中文 / classifier 英文），原英文列表匹配中文 stage 永不命中，统一 `normalizeStage`（salesActionEngine 导出复用）；④ **非客户过滤**：`filterCustomerSessions` 纯函数，topContacts/活跃客户只留命中 CRM account 或 AI 画像的会话（剔除家人/同事），Top 客户名优先 CRM 客户名；⑤ **崩溃兜底**：`viewReport` 按 period_type 分派 + 结构校验，历史脏 `weekly_review` 仅保留报告头。统计纯函数化 `computeWeeklyReviewStats`/`filterCustomerSessions`。新增 `scripts/report-review-test.ts` **28/28**
 - **2026-08-20 复盘排除非销售联系人**（commit `ed510df`）：新增 `reportExcludedSessions` 配置（electron-store + 前端 config API `get/setReportExcludedSessions`），周报/月报/周复盘统计均剔除。背景：现有非客户过滤只剔「既非 CRM account 也无 AI 画像」的会话，同事/朋友被 AI 误打标建画像后仍混进复盘——排除名单是**人工兜底**，命中一律剔除。**两处生效**：`generate` 经 `filterCustomerSessions` 第四参剔除（activeContacts/Top 列表）；`computeWeeklyReviewStats` 循环顶部跳过（阶段分布/热/冷/放弃/管道数全部不含，pipelineTotal 曾漏已修）。**两个入口**：复盘页「排除联系人」弹窗（`chat.getSessions` 全量单聊过滤群聊/公众号，搜索 + 已排除置顶 + 保存）+ Top 互动客户每条「排除」快捷按钮（前端本地过滤 currentStats 不重复调 AI + 写配置）。`report-review-test.ts` 扩到 **33/33**（A5 排除不进任何统计 / B6 排除优先于 account 命中）
@@ -292,6 +292,18 @@
 
 ---
 
+## 2.19 今日行动/待办职责分工（2026-08-20，commit `1aefef4` + `d5b9f62`）
+
+> 去重：同一批 `follow_up_task` 曾有三处展示（主卡流按客户合并 / TodoSidebar 逐条平铺含 R1-R8 / FollowUpPage 老页），首页同批任务重影。收敛为职责分工：**主卡流 = 唯一动作入口；侧栏 = 散任务清单**。
+
+- **现状**：`getUnifiedSignals` 主卡流按 sessionId 聚合 R1-R8 行动任务 + 24h 未读洞察成信号卡（带优先级/阶段/沉默天数/AI 分析）；TodoSidebar 此前 `sales.todoList({})` 全量逐条平铺，把有真实客户的行动任务又列一遍——同一件事在首页出现两次
+- **散任务判定**（TodoSidebar）：`!session_id`（无客户手动待办 / SLA 卡）或虚拟前缀 `todo:`/`lead:`/`logi:`（物流卡）→ 只进侧栏；有客户会话的行动任务只在主卡流。统计口径（pending/doneCount/进度条）同步只统计散任务，避免 R1-R8 让完成率虚低
+- **FollowUpPage 归档**：删组件 + `/follow-up` 路由 + PUBLIC_ROUTES 项 + `utils/followUpGroup.ts` + 孤儿 `followUpStore` + 失效测试 `followup-group-test`；老页唯一剩余价值「新建手动待办」今日行动 header 已有（§2.13 前 8085dc2）
+- **跳转收口**：Dashboard「今日待跟进/逾期未跟进」改跳 `/home`；Sidebar 删 follow-up 死代码块（PRD v2 已 `{false}` 隐藏）；App 加 `path="*"` fallback 回落 `/home`，防旧书签/链接空白页
+- **验证**：`tsc` 零错误，`vite build` 通过；todo-followup 11/11 回归全过（后端逻辑未动）
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -306,7 +318,7 @@
 | 8 | **客户列表 + 导出Excel** | 侧边栏「客户」 | `CustomerListPage.tsx` | ✅ |
 | 9 | **客户画像卡片** | 聊天详情面板 | `CustomerCard.tsx` | ✅ |
 | 10 | **AI 意向分析** | 画像卡片 + 自动扫描 | `salesIntentService.ts` | ✅ |
-| 11 | **跟进待办** | 侧边栏（已合并入今日行动） | `salesFollowUpService.ts` + `FollowUpPage.tsx` | ✅ |
+| 11 | **跟进待办** | 今日行动右侧「待办清单」（已收敛） | `salesFollowUpService.ts` + `TodoSidebar.tsx`（散任务视图，§2.19 职责分工；老 FollowUpPage 已归档 `1aefef4`） | ✅ |
 | 12 | **销售仪表盘** | `/dashboard`（原首页） | `SalesDashboardPage.tsx` | ✅ |
 | 13 | **销售复盘（周报/月报/周复盘）** | 侧边栏「复盘」 | `SalesReportPage.tsx` + `salesReportService.ts`（周复盘=热/冷/放弃经营分析，`9a9fbaf` 打通；排除同事/朋友等非销售联系人，`ed510df`） | ✅ |
 | 14 | **Windows 适配** | 打包配置 | koffi asarUnpack + dbPathService 多路径检测 | ✅ |
@@ -342,6 +354,7 @@
 | 44 | **Customer 360 统一时间线** | 工作台客户档案「动态时间线」 | `crmDbService.accountTimeline` 8 分支聚合 + 前端四色混排，`6c439bf` | ✅ |
 | 45 | **SLA/Action 接通** | 今日行动（SLA 首触卡自动出现） | `scanLeadSla` 挂入 runFullScan + getUnifiedSignals 扫描周期；虚拟卡隐藏无效按钮，`5ba531b`；lead: 卡置顶+提分 `678e3f0` | ✅ |
 | 46 | **AI 回写 model/sourceId 溯源** | enrich_meta 每条记录（PRD§23 可追溯） | `mergeEnrichFields` 透传 + `enrichCustomer` 打 `{model,sourceId}` 标签 + `gatherMaterials` 记最近消息 messageKey，`223c158` | ✅ |
+| 47 | **今日行动/待办职责分工** | 今日行动主卡流 + 右侧散任务清单 | `getUnifiedSignals` 唯一动作入口；`TodoSidebar` 只留散任务（无 session 手动/SLA/物流）；FollowUpPage 归档，`1aefef4`+`d5b9f62` | ✅ |
 
 ---
 
@@ -535,7 +548,6 @@
 | `components/sales/CustomerCard.tsx` | 客户画像卡片 |
 | `components/sales/ReplySuggestion.tsx` | 回复建议 |
 | `pages/CustomerListPage.tsx` | 客户列表+导出 |
-| `pages/FollowUpPage.tsx` | 跟进待办 |
 | `pages/KnowledgeBasePage.tsx` | 知识库管理 |
 | `pages/SalesReportPage.tsx` | 复盘/报表 |
 | `pages/SalesDashboardPage.tsx` | 仪表盘（移至/dashboard） |
