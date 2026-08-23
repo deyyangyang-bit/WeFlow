@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
 import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
+import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -159,6 +160,24 @@ CREATE TABLE IF NOT EXISTS follow_up_task (
   completed_at INTEGER
 );
 
+-- P0-2C AI 判断记录（append-only 历史；projection 取最新一条）
+-- 只服务 summary/opportunity/risk/next_action，严禁 stage（归 P0-2A Canonical State，CHECK 硬拦截）
+CREATE TABLE IF NOT EXISTS customer_judgment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  judgment_type TEXT NOT NULL CHECK (judgment_type IN ('summary', 'opportunity', 'risk', 'next_action')),
+  value TEXT NOT NULL,
+  confidence REAL,
+  source TEXT NOT NULL,
+  model TEXT,
+  reason TEXT,
+  message_key TEXT,
+  evidence_text TEXT,
+  basis TEXT,
+  generated_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
@@ -167,6 +186,7 @@ CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status);
 CREATE INDEX IF NOT EXISTS idx_todo_due ON follow_up_task(due_at);
 CREATE INDEX IF NOT EXISTS idx_intent_session ON intent_tag_log(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_judgment_session ON customer_judgment(session_id, judgment_type, created_at);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -568,6 +588,76 @@ class SalesDbService {
       'SELECT * FROM intent_tag_log WHERE session_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT 1',
       [sessionId, ts]
     )
+  }
+
+  // ─── AI 判断记录（P0-2C）───────────────────────────────────────────────────
+
+  /**
+   * 追加一条 AI 判断记录（append-only，一行 = 一次判断）。
+   * message_key 为 P0-2B 证据锚点：无可靠 key 必须留空（证据诚实，绝不伪造）。
+   * judgment_type 非法（含 'stage'）→ 抛错（TS 层守卫 + DB CHECK 双拦截）。
+   * createdAt 可选：测试回填历史时间戳用；默认当前时间。
+   */
+  judgmentCreate(input: Omit<CustomerJudgmentRecord, 'id' | 'created_at'> & { createdAt?: number }): CustomerJudgmentRecord {
+    if (!isCustomerJudgmentType(input.judgment_type)) {
+      throw new Error(`[SalesDb] 非法 AI 判断类型: ${input.judgment_type}（P0-2C 仅允许 summary/opportunity/risk/next_action）`)
+    }
+    const created = input.createdAt ?? Date.now()
+    this.run(
+      `INSERT INTO customer_judgment (session_id, judgment_type, value, confidence, source, model, reason, message_key, evidence_text, basis, generated_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.session_id, input.judgment_type, input.value, input.confidence ?? null, input.source,
+       input.model ?? null, input.reason ?? null, input.message_key ?? null, input.evidence_text ?? null,
+       input.basis ?? null, input.generated_at ?? null, created]
+    )
+    const id = this.lastInsertRowId()
+    return this.get<CustomerJudgmentRecord>('SELECT * FROM customer_judgment WHERE id = ?', [id])!
+  }
+
+  /** 当前投影：该 session 该类型最新一条（无则 undefined）。id 兜底同毫秒并列 */
+  judgmentCurrent(sessionId: string, judgmentType: CustomerJudgmentType): CustomerJudgmentRecord | undefined {
+    return this.get<CustomerJudgmentRecord>(
+      'SELECT * FROM customer_judgment WHERE session_id = ? AND judgment_type = ? ORDER BY created_at DESC, id DESC LIMIT 1',
+      [sessionId, judgmentType]
+    )
+  }
+
+  /** 四类型当前投影一次取回（客户 360 / 卡流展示用）：无记录的类型为 undefined */
+  judgmentCurrentAll(sessionId: string): Record<CustomerJudgmentType, CustomerJudgmentRecord | undefined> {
+    const rows = this.all<CustomerJudgmentRecord>(
+      'SELECT * FROM customer_judgment WHERE session_id = ? ORDER BY created_at DESC, id DESC',
+      [sessionId]
+    )
+    const out: Record<CustomerJudgmentType, CustomerJudgmentRecord | undefined> = {
+      summary: undefined, opportunity: undefined, risk: undefined, next_action: undefined
+    }
+    for (const r of rows) {
+      if (out[r.judgment_type as CustomerJudgmentType] === undefined) out[r.judgment_type as CustomerJudgmentType] = r
+    }
+    return out
+  }
+
+  /** 历史（append-only 列表，倒序；可按类型过滤 + limit） */
+  judgmentHistory(sessionId: string, judgmentType?: CustomerJudgmentType, limit: number = 20): CustomerJudgmentRecord[] {
+    if (judgmentType) {
+      return this.all<CustomerJudgmentRecord>(
+        'SELECT * FROM customer_judgment WHERE session_id = ? AND judgment_type = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+        [sessionId, judgmentType, limit]
+      )
+    }
+    return this.all<CustomerJudgmentRecord>(
+      'SELECT * FROM customer_judgment WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+      [sessionId, limit]
+    )
+  }
+
+  /** 去重基础：该 session 该类型 windowMs 内是否已有判断（配合判断再生成节流；参考 hasRecentTask） */
+  hasRecentJudgment(sessionId: string, judgmentType: CustomerJudgmentType, windowMs: number): boolean {
+    const row = this.get<{ c: number }>(
+      'SELECT COUNT(*) as c FROM customer_judgment WHERE session_id = ? AND judgment_type = ? AND created_at >= ?',
+      [sessionId, judgmentType, Date.now() - windowMs]
+    )
+    return (row?.c ?? 0) > 0
   }
 
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
