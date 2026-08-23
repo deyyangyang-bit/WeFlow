@@ -17,6 +17,8 @@ import {
   isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, parseRiskSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { applyDealStageWon } from './legalStageWriters'
+import { salesDbService } from './salesDbService'
+import type { CustomerEventRecord } from '../../shared/customerEvent'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 
@@ -25,6 +27,20 @@ let timer: NodeJS.Timeout | null = null
 let scanning = false
 // 扫描完成钩子（fire-and-forget）：crmIpcHandlers 注入 → 立刻触发确认中心自动确认
 let postScanHook: (() => void) | null = null
+
+/**
+ * E3.2：通用事实事件写入（写失败不阻断原业务链）。
+ * 双写纪律：quote_signal 是报价业务真源（R7 继续消费，不迁移），customer_event 是平行通用事实；
+ * 事件写入失败只 WARN 不抛，绝不回卷原有业务链；幂等拒绝（同 message_key 返回 null）是正常语义，不告警。
+ * message_key 复用上游已构造的 canonical key（P0-2B buildMessageKey），本处不现场拼 key。
+ */
+export function recordCustomerEventSafe(input: Omit<CustomerEventRecord, 'id' | 'created_at'>): void {
+  try {
+    salesDbService.customerEventAdd(input)
+  } catch (e) {
+    salesLog('WARN', `[CrmParse] customer_event 写入失败 ${input.event_type}: ${e}`)
+  }
+}
 
 export function setCrmParseConfig(config: ConfigService): void { configRef = config }
 
@@ -169,9 +185,28 @@ async function scanAll(): Promise<number> {
           if (quoteSig) {
             if (crmDbService.recordQuoteSignal({ msgKey: key, sessionId: uid, accountId, displayName: name, amount: quoteSig.amount, model: quoteSig.model, quotedAt: ms })) {
               salesLog('INFO', `[CrmParse] 报价信号「${name}」¥${quoteSig.amount}${quoteSig.model ? `（${quoteSig.model}）` : ''}`)
+              // E3.2：报价事实 → 通用事实事件（quote_signal 仍为 R7 业务真源，双写平行不迁移）
+              recordCustomerEventSafe({
+                session_id: uid,
+                event_type: 'quote_asked',
+                message_key: key, // 复用上游 canonical messageKey（幂等依赖 E3.1 unique index）
+                evidence_text: textForSignal.slice(0, 200) || null, // 消息原话，非 AI 结论
+                source: 'system',
+                metadata: JSON.stringify({ amount: quoteSig.amount ?? null, model: quoteSig.model ?? null })
+              })
             }
           } else if (isSend === 0) {
-            crmDbService.markQuoteReplied(uid, ms)
+            const closed = crmDbService.markQuoteReplied(uid, ms)
+            // E3.2：客户回复（确实关闭了未回复报价）→ 通用事实事件；quote_signal.customer_replied_at 兼容字段继续更新
+            if (closed > 0) {
+              recordCustomerEventSafe({
+                session_id: uid,
+                event_type: 'customer_replied',
+                message_key: key, // 客户消息自身的 canonical key（幂等防重复扫描重写）
+                evidence_text: content.slice(0, 200) || null, // 客户原话，非 AI 结论
+                source: 'system'
+              })
+            }
           }
           // 商机采购信号（P0）：客户消息表达采购意向 → 自动创建/累积商机（未建档自动建档）
           const buySig = parseBuySignal(textForSignal, isSend)
