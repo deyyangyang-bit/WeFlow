@@ -60,8 +60,10 @@ async function scanAll(): Promise<number> {
       const gid = String(group.group_id)
       if (!byId.has(gid)) { salesLog('INFO', `[CrmParse] skip ${gid} not-in-sessions`); continue }
       const lastScan = Number(group.last_scan || 0)
-      // 按 lastScan 翻页扫增量：getMessages 倒序返回，遇 ms<=lastScan 即增量已扫完，
-      // 避免两次扫描间隔内消息超过单批上限(100)时中间增量被跳过（曾静默丢失到款/发票/物流）
+      // 按 lastScan 翻页扫增量：getMessages 内部 normalizeMessageOrder 会把消息
+      // 升序重排（旧在前），故不能「遇 ms<=lastScan 即 break」（倒序假设已失效，会漏掉
+      // 排在后方的增量）——改为传 startTime=lastScan 让游标只读增量 + 遇旧 continue 跳过。
+      // 传 startTime 是毫秒，getMessages 内部会转成秒级 beginTimestamp 交给原生游标过滤。
       const BATCH = 100
       const MAX_PAGES = 20
       let offset = 0
@@ -69,12 +71,12 @@ async function scanAll(): Promise<number> {
       let reachedEnd = false
       let batchMsgs = 0
       for (let page = 0; page < MAX_PAGES && !reachedEnd; page++) {
-        const msgResult = await chatService.getMessages(gid, offset, BATCH)
+        const msgResult = await chatService.getMessages(gid, offset, BATCH, lastScan)
         salesLog('INFO', `[CrmParse] group=${String(group.group_name)} page=${page + 1} msgs=${String(msgResult?.messages?.length ?? 0)} hasMore=${String(msgResult?.hasMore)}`)
         if (!msgResult?.success || !msgResult.messages?.length) break
         for (const msg of msgResult.messages) {
           const ms = Number(msg.createTime ?? 0) * 1000 // WCDB 秒 → 毫秒
-          if (ms <= lastScan) { reachedEnd = true; break } // 倒序：后续只会更旧
+          if (ms <= lastScan) continue // 升序：头部是已扫过的旧消息，跳过继续处理更晚的
           const key = String(msg.messageKey || `${gid}:${msg.createTime}:${msg.localId}`)
           if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
           try {
@@ -120,18 +122,19 @@ async function scanAll(): Promise<number> {
       const lastScan = crmDbService.getScanState('priv:' + uid)
       if (lastScan && lastAct && lastScan >= lastAct) continue // 无新消息，跳过拉取
       privBudget--
-      // 同样翻页扫增量（倒序，遇 ms<=lastScan 即止）
+      // 同样翻页扫增量：getMessages 升序返回（normalizeMessageOrder 重排），
+      // 传 startTime=lastScan 让游标只读增量 + 遇旧 continue 跳过（不能 break）
       const BATCH = 50
       const MAX_PAGES = 10
       let offset = 0
       let maxMs = lastScan
       let reachedEnd = false
       for (let page = 0; page < MAX_PAGES && !reachedEnd; page++) {
-        const mr = await chatService.getMessages(uid, offset, BATCH)
+        const mr = await chatService.getMessages(uid, offset, BATCH, lastScan)
         if (!mr?.success || !mr.messages?.length) break
         for (const msg of mr.messages) {
           const ms = Number(msg.createTime ?? 0) * 1000
-          if (ms <= lastScan) { reachedEnd = true; break }
+          if (ms <= lastScan) continue // 升序：跳过已扫过的旧消息
           const key = String(msg.messageKey || `${uid}:${String(msg.createTime)}`)
           if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
           const content = String(msg.content ?? msg.parsedContent ?? '')

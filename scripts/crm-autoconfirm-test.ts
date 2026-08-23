@@ -214,6 +214,15 @@ async function main(): Promise<void> {
     const d = evaluateLogistics(getAny('logistics', lid), {})
     ok('L6 无收件人 → review', d.decision === 'needs_review')
   }
+  {
+    // 无合同客户（独立城市，避开 byAccount 城市匹配）：候选只有账户级 → 铁律不自动认领，留人工
+    const accNoC = mkAccount('舟山无合同客户', { city: '舟山市' })
+    crmDbService.saveShippingInfo({ account_id: accNoC, receiver: '周七', phone: '', address: '舟山', city: '舟山市', source_msg_id: 'ship_auto_l7', created_at: Date.now() })
+    const lid = mkLogistics('周七', '舟山市')
+    const d = evaluateLogistics(getAny('logistics', lid), {})
+    ok('L7 无合同仅账户级候选 → review（无候选合同）', d.decision === 'needs_review' && d.reason.includes('无候选合同'))
+    ok('L7 候选确实含账户级', crmDbService.logisticsCandidates('周七', '舟山市').some((c) => String(c.cand_kind) === 'account'))
+  }
 
   // ─── 发票判定 ──────────────────────────────────────────────────────────────
   let iid28 = 0

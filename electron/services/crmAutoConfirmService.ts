@@ -129,12 +129,14 @@ export function evaluatePayment(p: CrmRow, opts?: AutoRunOptions): AutoDecision 
   }
 }
 
-/** 物流判定 L1-L5：唯一候选 → city 消歧 → receiver 词元消歧；兜底/多候选留人工 */
+/** 物流判定 L1-L5：唯一候选 → city 消歧 → receiver 词元消歧；兜底/多候选留人工。
+ * 铁律：自动确认必须挂 active contract——只取合同候选（cand_kind='contract'），
+ * 无合同客户（仅账户级候选）保持 needs_review 待人工认领（与到款归属一致）。 */
 export function evaluateLogistics(l: CrmRow, opts?: AutoRunOptions): AutoDecision {
   const receiver = String(l.receiver || '').trim()
   if (!receiver) return decision('logistics', l, 'needs_review', 0, '无收件人')
   const city = String(l.city || '').trim()
-  const cands = crmDbService.logisticsCandidates(receiver, city)
+  const cands = crmDbService.logisticsCandidates(receiver, city).filter((c) => String(c.cand_kind || 'contract') === 'contract')
   if (cands.length === 0) return decision('logistics', l, 'needs_review', 0, '无候选合同')
   if (cands.length === 1) {
     if (String(cands[0].cand_tier || '') === 'fallback') {
@@ -217,7 +219,7 @@ export function applyDecision(d: AutoDecision, opts?: AutoRunOptions): { ok: boo
       case 'approvePayment':
         return crmDbService.approvePayment(d.id, { autoBy: 'auto' })
       case 'linkLogistics':
-        return crmDbService.linkLogistics(d.id, Number(p.contract_id), { autoBy: 'auto' })
+        return crmDbService.linkLogistics(d.id, { contractId: Number(p.contract_id), autoBy: 'auto' })
       case 'linkInvoice': {
         crmDbService.update('invoice', d.id, { account_id: p.account_id, contract_id: p.contract_id, auto_updated_by: 'auto' })
         if (docgenOf(opts) && docgenRunner) {

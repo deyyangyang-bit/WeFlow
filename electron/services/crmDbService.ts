@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS logistics (
   id INTEGER PRIMARY KEY AUTOINCREMENT, tracking_no TEXT, brand TEXT,
   receiver TEXT, city TEXT, courier TEXT, status TEXT DEFAULT 'shipped',
   latest_update_at INTEGER, source_msg_id TEXT, link_status TEXT DEFAULT 'unlinked',
-  contract_id INTEGER, created_at INTEGER, auto_linked_by TEXT
+  account_id INTEGER, contract_id INTEGER, created_at INTEGER, auto_linked_by TEXT
 );
 CREATE TABLE IF NOT EXISTS product (
   id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, name TEXT, spec TEXT,
@@ -337,9 +337,11 @@ class CrmDbService {
     for (const [table, col, type] of autoConfirmCols) {
       try { this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
-    // Migration: logistics 跟单列（认领销售 + 签收时间；signed_at 0 = 未签收）
+    // Migration: logistics 跟单列（认领销售 + 签收时间 + 认领客户；signed_at 0 = 未签收）
+    // account_id = 物流归属客户（无合同客户也认领），contract_id 可选关联合同
     const logisticsTrackCols: Array<[string, string]> = [
-      ['owner_sales', "TEXT DEFAULT ''"], ['signed_at', 'INTEGER DEFAULT 0']
+      ['owner_sales', "TEXT DEFAULT ''"], ['signed_at', 'INTEGER DEFAULT 0'],
+      ['account_id', 'INTEGER']
     ]
     for (const [col, type] of logisticsTrackCols) {
       try { this.db.run(`ALTER TABLE logistics ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
@@ -1047,14 +1049,14 @@ class CrmDbService {
     const sql = `
       SELECT created_at AS at, 'crm' AS kind, detail AS text FROM activity_log WHERE entity='account' AND entity_id=?
       UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='contract' AND entity_id IN (SELECT id FROM contract WHERE account_id=?)
-      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='logistics' AND entity_id IN (SELECT id FROM logistics WHERE contract_id IN (SELECT id FROM contract WHERE account_id=?))
+      UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='logistics' AND entity_id IN (SELECT id FROM logistics WHERE contract_id IN (SELECT id FROM contract WHERE account_id=?) OR account_id = ?)
       UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='quotation' AND entity_id IN (SELECT id FROM quotation WHERE contract_id IN (SELECT id FROM contract WHERE account_id=?))
       UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='allocation' AND entity_id IN (SELECT id FROM allocation WHERE account_id=?)
       UNION ALL SELECT created_at, 'crm', detail FROM activity_log WHERE entity='payment_record' AND entity_id IN (SELECT id FROM payment_record WHERE id IN (SELECT payment_record_id FROM allocation WHERE account_id=?))
       UNION ALL SELECT created_at, 'lead', note FROM lead_activity WHERE lead_id IN (SELECT id FROM lead WHERE account_id=?)
       UNION ALL SELECT created_at, 'opportunity', detail FROM opportunity_event WHERE opportunity_id IN (SELECT id FROM opportunity WHERE account_id=?)
       ORDER BY at`
-    return this.all(sql, Array(8).fill(accountId)) as { at: number; kind: string; text: string }[]
+    return this.all(sql, Array(9).fill(accountId)) as { at: number; kind: string; text: string }[]
   }
 
   // ─── 合同状态机：全款到账才发货 ────────────────────────────────────────────
@@ -1152,6 +1154,8 @@ class CrmDbService {
     const contracts = this.all('SELECT id FROM contract WHERE account_id = ?', [id])
     for (const c of contracts) removed += this.deleteContractCascade(Number(c.id))
     removed += this.db.run('DELETE FROM alias_map WHERE account_id = ?', [id]).changes
+    // 账户级认领的物流（无合同）随客户删除清理；合同级已由上方 deleteContractCascade 处理
+    removed += this.db.run('DELETE FROM logistics WHERE account_id = ?', [id]).changes
     this.db.run('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['account', id])
     this.db.run('DELETE FROM account WHERE id = ?', [id])
     this.logActivity('account', id, 'deleted', `删除客户「${String(acc.name ?? '')}」（含 ${contracts.length} 份合同）`)
@@ -1190,30 +1194,41 @@ class CrmDbService {
   }
   /**
    * 跟单超期：已发货（status='shipped'）超过 hours 小时未确认签收。
-   * JOIN contract→account 带出客户名 / 归属销售 / session_id（卡片可跳客户档案）。
+   * 客户经 contract→account（合同级）或 l.account_id（账户级认领）带出客户名 / 归属销售 / session_id。
    */
   pendingLogisticsOverdue(hours: number): CrmRow[] {
     const cutoff = Date.now() - hours * 3600 * 1000
     return this.all(
-      `SELECT l.*, c.account_id, a.name AS customer_name, a.session_id, a.owner_sales AS account_owner_sales
+      `SELECT l.*, COALESCE(c.account_id, l.account_id) AS account_id, a.name AS customer_name, a.session_id, a.owner_sales AS account_owner_sales
        FROM logistics l
        LEFT JOIN contract c ON c.id = l.contract_id
-       LEFT JOIN account a ON a.id = c.account_id
+       LEFT JOIN account a ON a.id = COALESCE(c.account_id, l.account_id)
        WHERE l.link_status = 'linked' AND l.status = 'shipped' AND l.latest_update_at < ? AND l.latest_update_at > 0
        ORDER BY l.latest_update_at ASC`,
       [cutoff]
     )
   }
-  linkLogistics(id: number, contractId: number, opts: { autoBy?: string; ownerSales?: string } = {}): { ok: boolean; warning?: string } {
+  /**
+   * 认领物流：归属到客户（account_id 必填其一），合同（contract_id）可选上下文。
+   * 传 contractId 时自动带出其 account_id；两者皆缺返回 ok:false。
+   * 合同级认领保留「未全款已发货」预警；账户级（无合同）正常认领不预警。
+   */
+  linkLogistics(id: number, opts: { accountId?: number; contractId?: number; autoBy?: string; ownerSales?: string } = {}): { ok: boolean; warning?: string; reason?: string } {
     const l = this.getById('logistics', id)
-    if (!l) return { ok: false }
-    const patch: CrmRow = { contract_id: contractId, link_status: 'linked' }
+    if (!l) return { ok: false, reason: '物流单不存在' }
+    const c = opts.contractId ? this.getById('contract', opts.contractId) : null
+    const accountId = opts.accountId ?? (c ? Number(c.account_id) : undefined)
+    if (!accountId && !opts.contractId) return { ok: false, reason: '缺少认领目标（客户或合同）' }
+    const patch: CrmRow = { account_id: accountId, link_status: 'linked' }
+    if (opts.contractId) patch.contract_id = opts.contractId
     if (opts.autoBy) patch.auto_linked_by = opts.autoBy
     if (opts.ownerSales) patch.owner_sales = opts.ownerSales
     this.update('logistics', id, patch)
-    const c = this.getById('contract', contractId)
-    const warning = c && this.creditedTotal(contractId) + 0.005 < Number(c.amount ?? 0) ? '未全款已发货' : undefined
-    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 合同 ${contractId}${opts.ownerSales ? `（${opts.ownerSales}）` : ''}`, opts.autoBy ?? '')
+    const acc = accountId ? this.getById('account', accountId) : null
+    const accName = String(acc?.name ?? accountId ?? '')
+    const warning = c && this.creditedTotal(Number(c.id)) + 0.005 < Number(c.amount ?? 0) ? '未全款已发货' : undefined
+    const suffix = opts.contractId ? `（合同 ${opts.contractId}）` : ''
+    this.logActivity('logistics', id, 'linked', `单号 ${String(l.tracking_no ?? '')} → 客户 ${accName}${suffix}${opts.ownerSales ? `（${opts.ownerSales}）` : ''}`, opts.autoBy ?? '')
     return { ok: true, warning }
   }
   saveShippingInfo(row: CrmRow): number {
@@ -1239,32 +1254,43 @@ class CrmDbService {
   setScanState(key: string, ms: number): void {
     this.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [key, ms])
   }
+  /**
+   * 按收件人自动认领：收件人命中客户（shipping_info/私聊地址）即认领到该客户，
+   * 有 signed/shipped 合同则同时关联合同（发货主体）；无合同只挂客户。写 auto_linked_by 供撤销。
+   */
   autoLinkLogisticsByReceiver(logiId: number, receiver: string): boolean {
     const acc = this.accountByReceiver(receiver)
     if (!acc) return false
     const c = this.all("SELECT * FROM contract WHERE account_id = ? AND status IN ('signed','shipped') ORDER BY id DESC LIMIT 1", [Number(acc.id)])
-    if (!c.length) return false
-    this.update('logistics', logiId, { contract_id: Number(c[0].id), link_status: 'linked' })
+    const patch: CrmRow = { account_id: Number(acc.id), link_status: 'linked', auto_linked_by: 'auto' }
+    if (c.length) patch.contract_id = Number(c[0].id)
+    this.update('logistics', logiId, patch)
+    const l = this.getById('logistics', logiId)
+    this.logActivity('logistics', logiId, 'linked', `单号 ${String(l?.tracking_no ?? '')} → 客户 ${String(acc.name ?? '')}${c.length ? `（合同 ${c[0].id}）` : ''}`, 'auto')
     return true
   }
   /**
-   * 物流候选合同：收件人+城市 → 候选合同（经 account 名称/城市模糊匹配），私聊地址兜底，近期已签约兜底。
-   * 每行附带 account_city / account_name / cand_tier（byAccount|viaShip|fallback），供自动确认引擎消歧与识别兜底。
+   * 物流认领候选：收件人+城市 → 候选合同 或 候选客户。
+   * 返回项统一带 cand_kind（'contract' | 'account'）+ cand_tier（byAccount|viaShip|fallback）：
+   * - byAccount / fallback：合同候选（account 名称/城市模糊匹配 / 近期已签约兜底）
+   * - viaShip：私聊收货地址确定性命中客户 → 有合同返回其合同，无合同返回该客户本身（账户级候选，无合同客户可认领）
+   * contract 候选附带 account_city / account_name，供自动确认引擎消歧与识别兜底。
    */
   logisticsCandidates(receiver: string, city: string): CrmRow[] {
     const byAccount = this.all(
       "SELECT c.*, a.city AS account_city, a.name AS account_name FROM contract c JOIN account a ON a.id = c.account_id WHERE a.name LIKE ? OR (a.city = ? AND ? <> '') ORDER BY c.id DESC LIMIT 5",
       ['%' + (receiver || '') + '%', city || '', city || '']
     )
-    if (byAccount.length) return byAccount.map((r) => ({ ...r, cand_tier: 'byAccount' }))
-    // 私聊收货地址 → 客户 → 合同
+    if (byAccount.length) return byAccount.map((r) => ({ ...r, cand_kind: 'contract', cand_tier: 'byAccount' }))
+    // 私聊收货地址 → 客户 → 合同（无合同则返回客户本身，供无合同客户认领）
     const acc = this.accountByReceiver(receiver || '')
     if (acc) {
       const viaShip = this.all('SELECT * FROM contract WHERE account_id = ? ORDER BY id DESC LIMIT 5', [Number(acc.id)])
-      if (viaShip.length) return viaShip.map((r) => ({ ...r, cand_tier: 'viaShip' }))
+      if (viaShip.length) return viaShip.map((r) => ({ ...r, cand_kind: 'contract', cand_tier: 'viaShip' }))
+      return [{ ...acc, account_id: Number(acc.id), cand_kind: 'account', cand_tier: 'viaShip' } as CrmRow]
     }
     return this.all("SELECT * FROM contract WHERE status IN ('signed','shipped') ORDER BY id DESC LIMIT 5")
-      .map((r) => ({ ...r, cand_tier: 'fallback' }))
+      .map((r) => ({ ...r, cand_kind: 'contract', cand_tier: 'fallback' }))
   }
 
   // ─── 报价单（行项型号必须来自 product）─────────────────────────────────────
@@ -1346,7 +1372,7 @@ class CrmDbService {
     const l = this.getById('logistics', id)
     if (!l) return { ok: false, reason: '物流不存在' }
     if (String(l.auto_linked_by || '') !== 'auto') return { ok: false, reason: '非自动链接，无需撤销' }
-    this.update('logistics', id, { contract_id: null, link_status: 'unlinked', auto_linked_by: null })
+    this.update('logistics', id, { account_id: null, contract_id: null, link_status: 'unlinked', auto_linked_by: null })
     this.logActivity('logistics', id, 'unlinked', `撤销自动链接 ${String(l.tracking_no || '')}`, 'auto')
     this.logAutoConfirm('logistics', id, 'undo', 0, '人工撤销自动链接', 'undoLogistics')
     return { ok: true }

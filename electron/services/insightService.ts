@@ -17,6 +17,7 @@ import https from 'https'
 import http from 'http'
 import { URL } from 'url'
 import { ConfigService } from './config'
+import { isSessionIdLike } from '../../shared/wechatId'
 import { chatService, ChatSession, Message } from './chatService'
 import { snsService } from './snsService'
 import { weiboService } from './social/weiboService'
@@ -1124,8 +1125,21 @@ ${afterText}
   private async resolveInsightSessionDisplayName(sessionId: string, fallbackDisplayName: string): Promise<string> {
     const rawFallback = typeof fallbackDisplayName === 'string' ? fallbackDisplayName : ''
     const fallback = rawFallback.trim() || rawFallback
-    if (fallback && !this.looksLikeWxid(fallback)) {
+    // 常见路径：fallback 是真实名字（非微信号格式）→ 直接采用，不查库
+    if (fallback && !this.isSessionIdLike(fallback)) {
       return fallback
+    }
+
+    // fallback 是微信号（wxid_/自定义微信号/群号）→ 微信真实备注（contact.remark 优先）是名字真相源
+    try {
+      const contact = await chatService.getContactAvatar(sessionId)
+      const rawContactDisplayName = typeof contact?.displayName === 'string' ? contact.displayName : ''
+      const contactDisplayName = rawContactDisplayName.trim() || rawContactDisplayName
+      if (contactDisplayName && !this.isSessionIdLike(contactDisplayName)) {
+        return contactDisplayName
+      }
+    } catch {
+      // ignore display name lookup failures
     }
 
     try {
@@ -1133,19 +1147,8 @@ ${afterText}
       const matched = sessions.find((session) => String(session.username || '').trim() === sessionId)
       const rawCachedDisplayName = typeof matched?.displayName === 'string' ? matched.displayName : ''
       const cachedDisplayName = rawCachedDisplayName.trim() || rawCachedDisplayName
-      if (cachedDisplayName && !this.looksLikeWxid(cachedDisplayName)) {
+      if (cachedDisplayName && !this.isSessionIdLike(cachedDisplayName)) {
         return cachedDisplayName
-      }
-    } catch {
-      // ignore display name lookup failures
-    }
-
-    try {
-      const contact = await chatService.getContactAvatar(sessionId)
-      const rawContactDisplayName = typeof contact?.displayName === 'string' ? contact.displayName : ''
-      const contactDisplayName = rawContactDisplayName.trim() || rawContactDisplayName
-      if (contactDisplayName && !this.looksLikeWxid(contactDisplayName)) {
-        return contactDisplayName
       }
     } catch {
       // ignore display name lookup failures

@@ -4,6 +4,7 @@
  */
 import type { IpcMain } from 'electron'
 import { app } from 'electron'
+import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
 import { setCrmParseConfig, setPostScanHook, startCrmParseScheduler, scanNow } from './crmParseService'
@@ -13,6 +14,7 @@ import { setAutoConfirmConfig, setDocgenRunner, runAutoConfirmNow, startAutoConf
 import { setEnrichConfig, setEnrichAiConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
+import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { generateActionAnalysis } from './salesActionEngine'
@@ -21,6 +23,28 @@ import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import type { ConfigService } from './config'
+
+// 微信备注是客户名真相源：存量 account.name / profile.display_name 若为微信号格式（wan923121735、wxid_xxx），
+// 从 WCDB contact 表取真实备注回填。幂等：只处理微信号格式名字；WCDB 未连接 / 无备注则跳过。
+let displayNameBackfillRan = false
+
+async function backfillWxidDisplayNames(): Promise<number> {
+  const accounts = crmDbService.customers()
+  const need = accounts.filter((a) => a.session_id && isSessionIdLike(a.name))
+  if (need.length === 0) return 0
+  const dn = await wcdbService.getDisplayNames(need.map((a) => String(a.session_id)))
+  if (!dn.success || !dn.map) return -1 // WCDB 未连接：调用方不置位，下次打开重试
+  let updated = 0
+  for (const a of need) {
+    const sid = String(a.session_id)
+    const real = dn.map[sid]
+    if (!real || isSessionIdLike(real) || real === sid) continue
+    crmDbService.update('account', Number(a.id), { name: real })
+    salesDbService.customerUpsert({ session_id: sid, display_name: real })
+    updated++
+  }
+  return updated
+}
 
 export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService): void {
   void crmDbService.initialize(app.getPath('userData'))
@@ -67,6 +91,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // 客户列表：附带 customer_profile.stage（中文漏斗阶段）+ display_name（微信最新备注），
   // 与销售漏斗同源，深链下钻不空列表；名称双轨读取侧统一：前端展示优先用 profile 名（跟随最新备注）
   ipcMain.handle('crm:customers', async () => {
+    // 惰性回填：首次打开客户工作台时，把存量「显示成微信号」的客户名回填为微信真实备注（幂等）
+    if (!displayNameBackfillRan) {
+      const r = await backfillWxidDisplayNames().catch(() => -1)
+      if (r !== -1) displayNameBackfillRan = true // WCDB 未连接（-1）时保留重试
+    }
     const rows = crmDbService.customers()
     try {
       const stageBySession = new Map<string, string>()
@@ -186,7 +215,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:contract:sign', async (_, id: number) => crmDbService.signContract(id))
   ipcMain.handle('crm:contract:delete', async (_, id: number) => crmDbService.deleteContract(id))
   ipcMain.handle('crm:customer:delete', async (_, id: number) => crmDbService.deleteAccount(id))
-  ipcMain.handle('crm:logistics:link', async (_, id: number, contractId: number, opts?: { ownerSales?: string }) => crmDbService.linkLogistics(id, contractId, opts))
+  ipcMain.handle('crm:logistics:link', async (_, id: number, opts?: { accountId?: number; contractId?: number; ownerSales?: string }) => crmDbService.linkLogistics(id, opts))
   ipcMain.handle('crm:logistics:candidates', async (_, receiver: string, city: string) => crmDbService.logisticsCandidates(receiver, city))
   ipcMain.handle('crm:logistics:list', async (_, opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => crmDbService.logisticsList(opts))
   ipcMain.handle('crm:logistics:signed', async (_, id: number) => crmDbService.markLogisticsSigned(id))

@@ -711,7 +711,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     contractSign: (id: number) => ipcRenderer.invoke('crm:contract:sign', id),
     contractDelete: (id: number) => ipcRenderer.invoke('crm:contract:delete', id),
     customerDelete: (id: number) => ipcRenderer.invoke('crm:customer:delete', id),
-    logisticsLink: (id: number, contractId: number, opts?: { ownerSales?: string }) => ipcRenderer.invoke('crm:logistics:link', id, contractId, opts),
+    logisticsLink: (id: number, opts?: { accountId?: number; contractId?: number; ownerSales?: string }) => ipcRenderer.invoke('crm:logistics:link', id, opts),
     logisticsCandidates: (receiver: string, city: string) => ipcRenderer.invoke('crm:logistics:candidates', receiver, city),
     logisticsList: (opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => ipcRenderer.invoke('crm:logistics:list', opts),
     logisticsSigned: (id: number) => ipcRenderer.invoke('crm:logistics:signed', id),

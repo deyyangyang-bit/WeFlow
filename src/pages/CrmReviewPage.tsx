@@ -39,7 +39,9 @@ export default function CrmReviewPage() {
   const [logiLinked, setLogiLinked] = useState<any[]>([]) // 已认领待签收
   const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收（折叠）
   const [showSignedLogi, setShowSignedLogi] = useState(false)
-  const [logiContract, setLogiContract] = useState<Record<number, string>>({}) // logisticsId → 合同 id（认领下拉）
+  const [logiContract, setLogiContract] = useState<Record<number, string>>({}) // logisticsId → 合同 id（认领下拉，可选）
+  const [logiAccount, setLogiAccount] = useState<Record<number, string>>({}) // logisticsId → 客户 id（认领下拉，必选其一）
+  const [logiNewName, setLogiNewName] = useState<Record<number, string>>({}) // logisticsId → 新客户名（建客户并认领）
   const [logiSales, setLogiSales] = useState<Record<number, string>>({}) // logisticsId → 认领销售
   const [logiOverdueHours, setLogiOverdueHours] = useState(24) // 超期阈值（设置页配置）
   const [logiNotice, setLogiNotice] = useState('') // 物流区行内反馈（认领/签收结果就近显示，避免顶部 notice 被滚动遮挡）
@@ -47,6 +49,9 @@ export default function CrmReviewPage() {
   const [pendingPage, setPendingPage] = useState(1) // 已认领待签收分页
   const [signedPage, setSignedPage] = useState(1) // 已签收分页
   const [contractName, setContractName] = useState<Record<number, string>>({}) // contract_id → 名称（跟单视图展示）
+  const [accounts, setAccounts] = useState<any[]>([]) // 全部客户（认领下拉 + 待签收/已签收客户名展示）
+  const [accountName, setAccountName] = useState<Record<number, string>>({}) // account_id → 客户名
+  const displayNameOf = (c: any) => String(c?.profile_display_name || '') || String(c?.name || '')
 
   const TYPE_LABELS: Record<string, string> = { logistics: '物流发货', payment: '货款认领', order: '订单截图' }
 
@@ -96,6 +101,13 @@ export default function CrmReviewPage() {
       for (const c of rows || []) if (c.id) map[Number(c.id)] = String(c.name || '')
       setContractName(map)
     })
+    void window.electronAPI.crm.customers().then((rows) => {
+      const list = (rows || []).filter((c: any) => c && c.id)
+      setAccounts(list)
+      const map: Record<number, string> = {}
+      for (const c of list) map[Number(c.id)] = displayNameOf(c)
+      setAccountName(map)
+    })
     void fetchLogi(logiOverdueHours)
     void getCrmLogisticsOverdueHours().then((h) => { setLogiOverdueHours(h); void fetchLogi(h) })
   }, [fetchQueues, fetchAutoSummary])
@@ -127,20 +139,39 @@ export default function CrmReviewPage() {
   }
   // 物流区行内提示（认领/签收操作反馈就近展示，滚动到列表下方时也能看到）
   const logiToast = (msg: string) => { setLogiNotice(msg) }
+  // 自动匹配：收件人+城市 → 候选（合同优先）；唯一合同候选 → 认领到合同；无合同但唯一客户候选 → 认领到客户
   const linkLogi = async (l: any) => {
     const cands = await window.electronAPI.crm.logisticsCandidates(l.receiver, l.city)
-    if (!cands.length) { logiToast('未找到可关联的合同：请先在「客户工作台」为该客户创建合同'); return }
-    if (cands.length > 1) { logiToast(`命中 ${cands.length} 个候选合同（${cands.map((c: any) => c.name).join('、')}），请用下拉选择`); return }
-    const r = await window.electronAPI.crm.logisticsLink(l.id, cands[0].id, { ownerSales: logiSales[l.id]?.trim() || undefined })
-    logiToast(r.warning ? `已认领，但${r.warning}` : '已认领：物流已关联合同，转入「待签收」')
-    await fetchQueues(); await fetchLogi(logiOverdueHours)
+    const contracts = cands.filter((c: any) => String(c.cand_kind || 'contract') === 'contract')
+    const accounts = cands.filter((c: any) => String(c.cand_kind) === 'account')
+    if (contracts.length === 1) {
+      const r = await window.electronAPI.crm.logisticsLink(l.id, { contractId: Number(contracts[0].id), ownerSales: logiSales[l.id]?.trim() || undefined })
+      logiToast(r.ok ? (r.warning ? `已认领，但${r.warning}` : `已认领：物流已关联「${contracts[0].name}」，转入「待签收」`) : `认领失败：${r.reason || '请重试'}`)
+      await fetchQueues(); await fetchLogi(logiOverdueHours)
+      return
+    }
+    if (accounts.length === 1) {
+      const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId: Number(accounts[0].account_id), ownerSales: logiSales[l.id]?.trim() || undefined })
+      logiToast(r.ok ? `已认领：物流已关联客户「${accounts[0].name}」，转入「待签收」` : `认领失败：${r.reason || '请重试'}`)
+      await fetchQueues(); await fetchLogi(logiOverdueHours)
+      return
+    }
+    if (!contracts.length && !accounts.length) { logiToast('未找到匹配的客户或合同，请手动选择'); return }
+    logiToast(`命中 ${contracts.length + accounts.length} 个候选，请用下拉选择`)
   }
-  // 手动认领：选合同 + 填销售 → 确认
+  // 手动认领：客户（必选其一：下拉已有客户 或 新客户名建档） + 合同（可选） + 填销售 → 确认
   const doClaimLogi = async (l: any) => {
-    const cid = logiContract[l.id]
-    if (!cid) { logiToast('请先在下方选择要认领的合同'); return }
-    const r = await window.electronAPI.crm.logisticsLink(l.id, Number(cid), { ownerSales: logiSales[l.id]?.trim() || undefined })
-    logiToast(r.ok ? (r.warning ? `已认领，但${r.warning}` : '已认领：物流已关联合同，转入「待签收」') : '认领失败，请重试')
+    const newName = logiNewName[l.id]?.trim() || ''
+    const cid = logiContract[l.id] ? Number(logiContract[l.id]) : undefined
+    let accountId: number | undefined = logiAccount[l.id] ? Number(logiAccount[l.id]) : undefined
+    if (!accountId && !cid && !newName) { logiToast('请先选择客户（或填写新客户名）'); return }
+    if (newName) {
+      const created = await window.electronAPI.crm.accountEnsure(newName)
+      if (!created) { logiToast('新建客户失败，请重试'); return }
+      accountId = Number(created)
+    }
+    const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId, contractId: cid, ownerSales: logiSales[l.id]?.trim() || undefined })
+    logiToast(r.ok ? (r.warning ? `已认领，但${r.warning}` : '已认领：物流转入「待签收」') : `认领失败：${r.reason || '请重试'}`)
     await fetchQueues(); await fetchLogi(logiOverdueHours)
   }
   // 确认签收：状态 → signed（销售联系客户/自查快递后标记）
@@ -162,7 +193,7 @@ export default function CrmReviewPage() {
   const logiPg = slicePage(queues.logistics, logiPage)
   const pendingPg = slicePage(logiLinked, pendingPage)
   const signedPg = slicePage(logiSigned, signedPage)
-  const noContract = contracts.length === 0 // 无任何合同 → 认领不可行，给引导
+  const noAccount = accounts.length === 0 // 无任何客户 → 认领不可行，给引导
   const approvePayment = async (p: any) => {
     const r = await window.electronAPI.crm.paymentApprove(p.id)
     setNotice(r.ok ? (r.allocationCreated ? '已确认到款，已转入「归属待确认」' : '已确认到款（该笔已有归属记录）') : `失败：${r.reason}`)
@@ -300,30 +331,41 @@ export default function CrmReviewPage() {
         {logiNotice && <div className="logi-notice">{logiNotice}</div>}
         <div className="logi-queue">
           <h4>待认领（{logiPg.total}）</h4>
-          {noContract && logiPg.total > 0 && (
+          {noAccount && logiPg.total > 0 && (
             <div className="logi-notice logi-notice--warn">
-              当前没有合同，无法认领物流。请先在「客户工作台」为客户创建合同（物流需关联到合同才能进入待签收/超期提醒）。
+              暂无客户，无法认领物流。请先在「客户工作台」创建客户。
             </div>
           )}
           {logiPg.total === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
-          {logiPg.items.map((l) => (
-            <div key={l.id} className="crm-card logi-card">
-              <div className="logi-card__main">
-                <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
-                <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
+          {logiPg.items.map((l) => {
+            const selAcc = logiAccount[l.id] ? Number(logiAccount[l.id]) : undefined
+            const accContracts = selAcc ? contracts.filter((c) => Number(c.account_id) === selAcc) : []
+            const claimReady = Boolean(logiAccount[l.id] || logiNewName[l.id]?.trim() || logiContract[l.id])
+            return (
+              <div key={l.id} className="crm-card logi-card">
+                <div className="logi-card__main">
+                  <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
+                  <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
+                </div>
+                <div className="logi-card__actions">
+                  <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
+                    onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '100px' }} />
+                  <select value={logiAccount[l.id] ?? ''} onChange={(e) => setLogiAccount((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '150px' }}>
+                    <option value="">选择客户…</option>
+                    {accounts.map((c) => <option key={c.id} value={c.id}>{displayNameOf(c)}{c.company ? ` · ${c.company}` : ''}</option>)}
+                  </select>
+                  <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '150px' }}>
+                    <option value="">关联合同（可选）</option>
+                    {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <input placeholder="新客户名（可建）" value={logiNewName[l.id] ?? ''}
+                    onChange={(e) => setLogiNewName((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '130px' }} />
+                  <button className="crm-btn primary" disabled={!claimReady} title={claimReady ? '' : '请先选择客户或填写新客户名'} onClick={() => void doClaimLogi(l)}>确认认领</button>
+                  <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+                </div>
               </div>
-              <div className="logi-card__actions">
-                <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
-                  onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
-                <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))}>
-                  <option value="">选择合同…</option>
-                  {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-                <button className="crm-btn primary" disabled={!logiContract[l.id]} title={logiContract[l.id] ? '' : '请先选择要认领的合同'} onClick={() => void doClaimLogi(l)}>确认认领</button>
-                <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
           <LogiPager page={logiPg.cur} totalPages={logiPg.totalPages} total={logiPg.total} onPage={setLogiPage} />
         </div>
         <h4 style={{ marginTop: '10px' }}>已认领待签收（{pendingPg.total}）</h4>
@@ -334,7 +376,7 @@ export default function CrmReviewPage() {
               <span className="logi-card__info">
                 {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
                 {l.owner_sales ? ` · ${l.owner_sales}` : ''}
-                {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : ''}
+                {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : accountName[Number(l.account_id)] ? ` · ${accountName[Number(l.account_id)]}` : ''}
               </span>
               {l._overdueHours > 0 && <em className="logi-overdue">超期 {l._overdueHours} 小时</em>}
               <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
@@ -359,6 +401,7 @@ export default function CrmReviewPage() {
                   <div className="logi-card__main">
                     <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
                       {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+                      {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : accountName[Number(l.account_id)] ? ` · ${accountName[Number(l.account_id)]}` : ''}
                     </span>
                     <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
                   </div>

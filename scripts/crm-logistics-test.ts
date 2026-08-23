@@ -54,12 +54,12 @@ async function main(): Promise<void> {
     account_id: accountId, name: '成都某搬运设备公司-合同', amount: 12000, status: 'pending_sign',
     created_at: Date.now(), updated_at: Date.now()
   })
-  const r = crmDbService.linkLogistics(id1, contractId, { ownerSales: '张三' })
+  const r = crmDbService.linkLogistics(id1, { contractId, ownerSales: '张三' })
   ok('2a 认领成功', r.ok)
   const l1 = crmDbService.getById('logistics', id1)
   ok('2b owner_sales 落库', String(l1?.owner_sales) === '张三')
   ok('2c link_status=linked', l1?.link_status === 'linked')
-  const r2 = crmDbService.linkLogistics(id3, contractId, {})
+  const r2 = crmDbService.linkLogistics(id3, { contractId })
   ok('2d 不传 owner_sales 认领成功', r2.ok)
   ok('2e 不传 owner_sales 保持空', String(crmDbService.getById('logistics', id3)?.owner_sales) === '')
 
@@ -114,6 +114,42 @@ async function main(): Promise<void> {
   const all = crmDbService.logisticsList()
   ok('5d 全量倒序（首条最新）', all.length >= 6 && Number(all[0].created_at) >= Number(all[all.length - 1].created_at))
   ok('5e pending 不包含已签收 A 单', !pendingList.some((l) => String(l.tracking_no) === 'A001'))
+
+  // ── 6 账户级认领：无合同客户也能认领物流（account_id 落库，合同可选）────────
+  const accNoC = crmDbService.ensureAccount('宁波某无合同客户')
+  crmDbService.update('account', accNoC, { session_id: 'wx_ck_ningbo', owner_sales: '李四' })
+  const idAcc = upsertLogistics({ tracking_no: 'ACCTEST01', brand: '艾驱电动', receiver: '赵六', city: '宁波', latest_update_at: Date.now() - 30 * 3600 * 1000 })
+  const rNoC = crmDbService.linkLogistics(idAcc, { accountId: accNoC, ownerSales: '王五' })
+  ok('6a 认领到客户（无合同）成功', rNoC.ok)
+  const lNoC = crmDbService.getById('logistics', idAcc)
+  ok('6b account_id 落库 + contract_id 空 + linked', Number(lNoC?.account_id) === accNoC && lNoC?.contract_id === null && lNoC?.link_status === 'linked')
+  ok('6c owner_sales 落库', String(lNoC?.owner_sales) === '王五')
+  // 传 contractId → 自动带出 account_id
+  const rDerive = crmDbService.linkLogistics(id1, { contractId })
+  ok('6d 传合同自动带出客户', Number(crmDbService.getById('logistics', id1)?.account_id) === accountId)
+  // 无认领目标 → ok:false
+  const rNone = crmDbService.linkLogistics(idAcc, {})
+  ok('6e 缺认领目标返回失败', rNone.ok === false && Boolean(rNone.reason))
+  // 账户级已认领物流进入超期（带出客户名/归属销售/归属 session）
+  const logiF = crmDbService.create('logistics', { tracking_no: 'F001', brand: '艾驱电动', receiver: '赵六', city: '宁波', courier: '安能物流', status: 'shipped', link_status: 'linked', account_id: accNoC, latest_update_at: Date.now() - 30 * 3600 * 1000, created_at: Date.now() })
+  const fHit = crmDbService.pendingLogisticsOverdue(24).find((l) => String(l.tracking_no) === 'F001')
+  ok('6f 账户级物流进超期', Boolean(fHit))
+  ok('6g 带出客户名/归属销售/归属 session', String(fHit?.customer_name) === '宁波某无合同客户' && String(fHit?.account_owner_sales) === '李四' && String(fHit?.session_id) === 'wx_ck_ningbo')
+  // 时间线：无合同认领的物流出现在客户 360
+  ok('6h 时间线含账户级物流', crmDbService.accountTimeline(accNoC).some((t) => t.text.includes('宁波某无合同客户')))
+  // candidates：viaShip 收件人命中无合同客户 → 返回账户级候选
+  crmDbService.saveShippingInfo({ account_id: accNoC, receiver: '赵六', phone: '', address: '宁波', city: '宁波', source_msg_id: 'ship_nb', created_at: Date.now() })
+  const candAcc = crmDbService.logisticsCandidates('赵六', '宁波')
+  ok('6i 无合同客户返回账户级候选', candAcc.length === 1 && String(candAcc[0].cand_kind) === 'account' && Number(candAcc[0].account_id) === accNoC)
+  // 扫描自动认领：无合同客户按收件人认领到客户（auto_linked_by 落库，可撤销）
+  const idAcc2 = upsertLogistics({ tracking_no: 'ACCTEST02', brand: '艾驱电动', receiver: '赵六', city: '宁波', latest_update_at: Date.now() - 10 * 3600 * 1000 })
+  ok('6j 自动认领无合同客户成功', crmDbService.autoLinkLogisticsByReceiver(idAcc2, '赵六'))
+  const lAcc2 = crmDbService.getById('logistics', idAcc2)
+  ok('6k 自动认领 account_id + auto_linked_by 落库', Number(lAcc2?.account_id) === accNoC && lAcc2?.contract_id === null && String(lAcc2?.auto_linked_by) === 'auto')
+  // 撤销自动链接：同时清 account_id
+  const u = crmDbService.undoLogistics(idAcc2)
+  const lAcc2u = crmDbService.getById('logistics', idAcc2)
+  ok('6l 撤销清 account_id + contract_id', u.ok && lAcc2u?.account_id === null && lAcc2u?.contract_id === null && lAcc2u?.link_status === 'unlinked')
 
   console.log(`LOGISTICS RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
