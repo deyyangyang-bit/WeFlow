@@ -1792,7 +1792,7 @@ export interface ElectronAPI {
 
     // 客户画像
     customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
-    customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
+    customerUpsert: (data: { session_id: string; display_name?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
     dashboardStats: () => Promise<{ success: boolean; stats?: DashboardStats; error?: string }>
     funnelStats: (days?: number) => Promise<{ success: boolean; data?: {

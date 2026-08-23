@@ -111,9 +111,8 @@ export const useCustomerProfileStore = create<CustomerProfileState>((set, get) =
 
   updateStage: async (sessionId: string, stage: string) => {
     try {
-      // 更新 customer_profile 的 stage
-      await window.electronAPI.sales.customerUpsert({ session_id: sessionId, stage })
-      // 记录意向变更日志
+      // P0-2A.5：通用 upsert 已撤销 stage 写权限，阶段编辑只走 intentCorrect（manual 合法写者：
+      // 写 intent_tag_log source=manual + 同步 customer_profile.stage）
       await window.electronAPI.sales.intentCorrect({ session_id: sessionId, stage, reason: '手动切换阶段' })
       // 刷新数据
       set({ sessionId: null }) // 强制重新加载

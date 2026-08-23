@@ -766,7 +766,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 客户画像
     customerGet: (sessionId: string) => ipcRenderer.invoke('sales:customer:get', sessionId),
-    customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) =>
+    customerUpsert: (data: { session_id: string; display_name?: string; tags?: string; notes?: string }) =>
+      // P0-2A.5：类型层撤销 stage 写权限（运行时还有 stripStageFromUpsert 兜底）
       ipcRenderer.invoke('sales:customer:upsert', data),
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) =>
       ipcRenderer.invoke('sales:customer:list', filters),

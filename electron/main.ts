@@ -29,6 +29,7 @@ import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsSe
 
 // ─── 销售助手模块 ─────────────────────────────────────────────────────────────
 import { salesDbService } from './services/salesDbService'
+import { stripStageFromUpsert, type CustomerUpsertInput } from './services/customerUpsertPolicy'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
@@ -4603,7 +4604,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sales:customer:upsert', async (_, data) => {
     try {
-      const profile = salesDbService.customerUpsert(data)
+      // P0-2A.5：通用 upsert 撤销 stage 写权限 —— 运行时剥离（防御式，即使旧调用带 stage 也不应用）。
+      // stage 只由合法写者写入（classifier/intent/manual/deal）；底层 customerUpsert 不动，合法写者仍直接使用。
+      const payload = stripStageFromUpsert(data as CustomerUpsertInput)
+      const profile = salesDbService.customerUpsert(payload)
       return { success: true, profile }
     } catch (e) {
       return { success: false, error: String(e) }
