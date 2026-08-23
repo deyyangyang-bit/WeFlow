@@ -1821,6 +1821,12 @@ export interface ElectronAPI {
     intentAnalyze: (sessionId: string) => Promise<{ success: boolean; tag?: any; error?: string }>
     intentCorrect: (payload: { session_id: string; stage: string; reason?: string }) => Promise<{ success: boolean; tag?: any; error?: string }>
     intentHistory: (sessionId: string, limit?: number) => Promise<{ success: boolean; tags: any[]; error?: string }>
+    // 证据（P0-2B）：统一读入口，只读；找不到返回 unavailable，不伪造
+    evidenceGetByKey: (payload: { session_id: string; message_key: string; evidence_text?: string }) =>
+      Promise<
+        | { status: 'found'; message: any; before: any[]; after: any[] }
+        | { status: 'unavailable'; reason: 'unparseable' | 'message_not_found' | 'reader_error' | 'no_message_key'; evidenceText?: string }
+      >
 
     // 回复建议
     replySuggest: (payload: { session_id: string; context_messages: Array<{ role: string; content: string }> }) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>

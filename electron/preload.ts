@@ -782,6 +782,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:intent:correct', payload),
     intentHistory: (sessionId: string, limit?: number) =>
       ipcRenderer.invoke('sales:intent:history', sessionId, limit),
+    // 证据（P0-2B）：统一读入口，只读
+    evidenceGetByKey: (payload: { session_id: string; message_key: string; evidence_text?: string }) =>
+      ipcRenderer.invoke('sales:evidence:getByKey', payload),
 
     // 回复建议
     replySuggest: (payload: { session_id: string; context_messages: Array<{ role: string; content: string }> }) =>

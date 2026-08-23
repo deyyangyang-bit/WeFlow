@@ -31,6 +31,7 @@ import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsSe
 import { salesDbService } from './services/salesDbService'
 import { stripStageFromUpsert, type CustomerUpsertInput } from './services/customerUpsertPolicy'
 import { applyManualStageCorrection } from './services/legalStageWriters'
+import { createEvidenceResolver } from './services/evidenceResolver'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
@@ -55,6 +56,14 @@ import { normalizeWeiboCookieInput, weiboService } from './services/social/weibo
 import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
+
+// P0-2B：证据链统一读入口。注入真实 chatService（其已具备 getMessageById /
+// getMessageByServerId / getMessagesAround 三个公开原语），仅由 sales:evidence:getByKey 调用。
+const evidenceResolver = createEvidenceResolver({
+  getMessageById: (sessionId, localId) => chatService.getMessageById(sessionId, localId),
+  getMessageByServerId: (sessionId, svrid) => chatService.getMessageByServerId(sessionId, svrid),
+  getMessagesAround: (sessionId, target, count) => chatService.getMessagesAround(sessionId, target, count)
+})
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
 // 原生面板渲染，不经过 Chromium 采集）：默认桌面采集 CPU 预算限制在 50%，
@@ -4800,6 +4809,15 @@ function registerIpcHandlers() {
       return applyManualStageCorrection(payload.session_id, payload.stage, payload.reason)
     } catch (e) {
       return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('sales:evidence:getByKey', async (_, payload: { session_id: string; message_key: string; evidence_text?: string }) => {
+    try {
+      // P0-2B：证据链统一读入口 —— 只读，不写任何业务数据；找不到返回 unavailable，不伪造。
+      return await evidenceResolver.getEvidenceByKey(payload.session_id, payload.message_key, payload.evidence_text)
+    } catch (e) {
+      return { status: 'unavailable', reason: 'reader_error', evidenceText: payload.evidence_text, error: String(e) }
     }
   })
 

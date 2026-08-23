@@ -10737,6 +10737,24 @@ class ChatService {
     }
   }
 
+  /**
+   * P0-2B：按 serverId 查询单条消息的公开包装（历史裸 ID 证据兼容路径）。
+   * 复用既有原语 wcdbService.getMessageByServerId → 私有 parseMessage，非新增读取层。
+   */
+  async getMessageByServerId(sessionId: string, svrid: string): Promise<{ success: boolean; message?: Message; error?: string }> {
+    try {
+      const nativeResult = await wcdbService.getMessageByServerId(sessionId, svrid)
+      if (nativeResult.success && nativeResult.row) {
+        const message = await this.parseMessage(nativeResult.row as Record<string, any>, { source: 'detail', sessionId })
+        if (message.localId !== 0) return { success: true, message }
+      }
+      return { success: false, error: nativeResult.error || '未找到消息' }
+    } catch (e) {
+      console.error('ChatService: getMessageByServerId 失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
   async searchMessages(keyword: string, sessionId?: string, limit?: number, offset?: number, beginTimestamp?: number, endTimestamp?: number): Promise<{ success: boolean; messages?: Message[]; error?: string }> {
     try {
       const result = await wcdbService.searchMessages(keyword, sessionId, limit, offset, beginTimestamp, endTimestamp)
