@@ -24,6 +24,7 @@ import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
 import { normalizeStage } from '../../shared/salesStage'
+import { computeActivityState } from '../../shared/canonicalState'
 export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ const RULES: Rule[] = [
     priority: 'medium',
     match: (p, now) => {
       // 兜底：标准化后仍为 unknown/new 的客户沉默 ≥ 2 天即触发
-      const stage = p.stage ?? 'unknown'
+      const stage = normalizeStage(p.stage)
       if (!['unknown', 'new'].includes(stage)) return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
@@ -165,7 +166,7 @@ const RULES: Rule[] = [
     id: 'rule_r3_new_no_reply',
     priority: 'urgent',
     match: (p, now) => {
-      if (p.stage !== 'new') return false
+      if (normalizeStage(p.stage) !== 'new') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -177,7 +178,7 @@ const RULES: Rule[] = [
     id: 'rule_r1_quoted_followup',
     priority: 'high',
     match: (p, now) => {
-      if (p.stage !== 'quoted') return false
+      if (normalizeStage(p.stage) !== 'quoted') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -189,7 +190,7 @@ const RULES: Rule[] = [
     id: 'rule_r2_negotiating_stall',
     priority: 'high',
     match: (p, now) => {
-      if (p.stage !== 'negotiating') return false
+      if (normalizeStage(p.stage) !== 'negotiating') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -201,7 +202,7 @@ const RULES: Rule[] = [
     id: 'rule_r4_contacted_silent',
     priority: 'medium',
     match: (p, now) => {
-      if (p.stage !== 'contacted') return false
+      if (normalizeStage(p.stage) !== 'contacted') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -213,7 +214,11 @@ const RULES: Rule[] = [
     id: 'rule_r5_dormant_wake',
     priority: 'low',
     match: (p, now) => {
-      if (p.stage !== 'dormant') return false
+      // dormant 是 activityState（P0-2A 拆出），规则显式读状态而非 stage
+      // 已成交/流失不唤醒（原 stage==='dormant' 天然排除，拆出后显式守卫，与 runFullScan won/lost 跳过一致）
+      const stage = normalizeStage(p.stage)
+      if (['won', 'lost'].includes(stage)) return false
+      if (computeActivityState(p.stage, p.last_contact_at, now) !== 'dormant') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -225,8 +230,11 @@ const RULES: Rule[] = [
     id: 'rule_r6_consider_drop',
     priority: 'info',
     match: (p, now) => {
-      // 30 天内第 3 次触发 R4/R5 → 建议放弃
-      if (!['contacted', 'dormant'].includes(p.stage ?? '')) return false
+      // 30 天内第 3 次触发 R4/R5 → 建议放弃（contacted 走 stage，dormant 走 activityState）
+      // 已成交/流失不触发（原 ['contacted','dormant'] 天然排除，拆出后显式守卫）
+      const stage = normalizeStage(p.stage)
+      if (['won', 'lost'].includes(stage)) return false
+      if (stage !== 'contacted' && computeActivityState(p.stage, p.last_contact_at, now) !== 'dormant') return false
       const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
@@ -245,6 +253,11 @@ const RULES: Rule[] = [
     title: (p, days) => `考虑放弃：${p.display_name || '未知'}，多次跟进无响应（${Math.floor(days)}天）`
   }
 ]
+
+/** 测试/诊断用：按 id 取规则（如 scripts/action-rules-test.ts） */
+export function getActionRule(id: string): Rule | undefined {
+  return RULES.find((r) => r.id === id)
+}
 
 // ─── 引擎核心 ─────────────────────────────────────────────────────────────────
 
@@ -602,9 +615,10 @@ async function lazyScan(): Promise<number> {
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
 
-  // 仅取 R1/R2/R4/R5 关心的阶段
-  const targetStages = new Set(['quoted', 'negotiating', 'contacted', 'dormant'])
-  const customers = salesDbService.customerAll().filter(c => targetStages.has(c.stage ?? ''))
+  // 仅取 R1/R2/R4/R5 关心的阶段（阶段口径归一：中英混存统一 canonical；dormant 已拆为 activityState，按时间态覆盖）
+  const targetStages = new Set(['quoted', 'negotiating', 'contacted'])
+  const customers = salesDbService.customerAll().filter(c =>
+    targetStages.has(normalizeStage(c.stage)) || computeActivityState(c.stage, c.last_contact_at, nowSec) === 'dormant')
 
   if (customers.length === 0) return 0
 
@@ -612,6 +626,8 @@ async function lazyScan(): Promise<number> {
   let generated = 0
 
   for (const customer of customers) {
+    // 阶段口径统一 canonical（STAGE_BONUS / 规则比较一致）
+    customer.stage = normalizeStage(customer.stage)
     // 已有今日 pending 任务则跳过（不限规则类型，同客户同天有任一 pending 即跳过）
     const existingToday = salesDbService.todoList({ status: 'pending', session_id: customer.session_id, limit: 3 })
     const hasTaskToday = existingToday.some(t => (t.created_at ?? 0) >= todayStart.getTime())

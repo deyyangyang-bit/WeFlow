@@ -68,6 +68,22 @@ export interface CanonicalStateInput {
 const DAY_SEC = 86400
 
 /**
+ * 活动状态（时间覆盖层，独立于 stage 可叠加）：last_contact_at（秒）+ DORMANT_SILENT_DAYS 阈值。
+ * last_contact_at 缺失但有 legacy dormant 标记（旧 8 值曾写 stage）→ 判 dormant。
+ * 规则层（salesActionEngine）显式读此函数判断沉默状态，不再判 stage === 'dormant'。
+ */
+export function computeActivityState(
+  rawStage: string | null | undefined,
+  lastContactAt: number | null | undefined,
+  nowSec: number
+): ActivityState {
+  if (lastContactAt && lastContactAt > 0) {
+    return (nowSec - lastContactAt) / DAY_SEC >= DORMANT_SILENT_DAYS ? 'dormant' : 'active'
+  }
+  return normalizeStage(rawStage) === 'dormant' ? 'dormant' : 'active'
+}
+
+/**
  * 组装客户当前状态（只读）。
  * - stage：normalizeStage 后只取 6 值；legacy dormant 底层销售阶段已被覆盖 → 如实落 unknown；
  *   unknown 原样落异常位。dormant 只作为时间状态出现在 activityState。
@@ -83,14 +99,7 @@ export function computeCanonicalState(input: CanonicalStateInput): CanonicalStat
   else stage = c
 
   // activityState：时间覆盖层，独立于 stage 可叠加
-  let activityState: ActivityState = 'active'
-  if (input.lastContactAt && input.lastContactAt > 0) {
-    const silentDays = (input.nowSec - input.lastContactAt) / DAY_SEC
-    if (silentDays >= DORMANT_SILENT_DAYS) activityState = 'dormant'
-  } else if (c === 'dormant') {
-    // last_contact_at 缺失但有 legacy dormant 标记 → 如实判 dormant
-    activityState = 'dormant'
-  }
+  const activityState = computeActivityState(input.rawStage, input.lastContactAt, input.nowSec)
 
   // stateMeta：最近「归一化后 == 当前 stage」的 intent 记录
   const matched = input.recentIntents.find((r) => normalizeStage(r.stage) === stage)
