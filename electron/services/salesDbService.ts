@@ -735,7 +735,9 @@ class SalesDbService {
     const last = this.all('SELECT created_at FROM intent_tag_log WHERE session_id = ? ORDER BY id DESC LIMIT 1', [sessionId])[0]
     return computeIntentScore({
       stage: String(p.stage || 'unknown'),
-      lastContactAt: Number(p.last_contact_at || 0),
+      // last_contact_at 生产环境为秒（WCDB createTime 回填，salesActionEngine 亦按秒比较）；
+      // computeIntentScore 内部用 Date.now()（毫秒），秒→毫秒转换，否则衰减恒 30（P0-2A.1 bug2）
+      lastContactAt: (Number(p.last_contact_at) || 0) * 1000,
       recentEventCount: recent,
       lastEventAt: last ? Number(last.created_at) : 0,
       oppCount: opp?.count || 0,

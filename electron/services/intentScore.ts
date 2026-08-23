@@ -4,7 +4,9 @@
  *   阶段基础分 → 近期意向活跃加分 → 久未跟进衰减 → 商机进展加分
  * 每项带 依据（label/delta/reason），前端可展开看「为什么 AI 这么判断」。
  * 纯函数，零 electron 依赖（对齐 crmEnrichCore 风格），便于单测。
+ * P0-2A.1：STAGE_BASE 键改 canonical + 输入过 normalizeStage（修复分类器英文 stage 基础分恒 0）。
  */
+import { normalizeStage, stageLabel } from '../../shared/salesStage'
 export interface ScoreFactor {
   label: string
   delta: number
@@ -16,8 +18,11 @@ export interface IntentScore {
   factors: ScoreFactor[]
 }
 
-// 阶段基础分（AI 见解阶段）
-const STAGE_BASE: Record<string, number> = { 了解: 30, 比价: 60, 决策: 80, 成交: 100, 流失: 5, unknown: 0 }
+// 阶段基础分（canonical 键：new/contacted/quoted/negotiating/won/lost/unknown）
+// P0-2A.1：旧中文键（了解/比价/决策/成交/流失）经输入 normalizeStage 归一，dormant 是活动状态非销售阶段，不参与基础分
+const STAGE_BASE: Record<string, number> = {
+  new: 0, contacted: 30, quoted: 60, negotiating: 80, won: 100, lost: 5, unknown: 0
+}
 // 意向活跃窗口：近 N 天内有意向标记视为活跃
 const ACTIVE_WINDOW_MS = 7 * 86400_000
 // 久未跟进衰减起点：超过 N 天无新意向开始扣分
@@ -36,9 +41,10 @@ export function computeIntentScore(input: {
   const now = Date.now()
   const factors: ScoreFactor[] = []
 
-  // 1. 阶段基础分
-  const base = STAGE_BASE[input.stage] ?? 0
-  if (base > 0) factors.push({ label: '当前阶段', delta: base, reason: `客户阶段：${input.stage}` })
+  // 1. 阶段基础分（输入先归一：classifier 写英文 canonical、AI 见解/手动纠正写中文，统一走 shared 映射）
+  const canonical = normalizeStage(input.stage)
+  const base = STAGE_BASE[canonical] ?? 0
+  if (base > 0) factors.push({ label: '当前阶段', delta: base, reason: `客户阶段：${stageLabel(canonical)}` })
   let score = base
 
   // 2. 近期意向活跃加分（近 7 天，单次 6 分，封顶 20）
