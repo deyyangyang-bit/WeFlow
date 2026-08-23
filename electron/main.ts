@@ -40,6 +40,7 @@ import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
 import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'
 import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
+import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
@@ -4608,6 +4609,17 @@ function registerIpcHandlers() {
     try {
       const profile = salesDbService.customerGetBySession(sessionId)
       return { success: true, profile: profile ?? null }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // P0-3 第一刀：客户当前视图（只读组装层，纯投影不推理；UI 未消费，先验证）
+  ipcMain.handle('sales:customer:currentView', async (_, sessionId: string) => {
+    try {
+      const view = getCustomerCurrentView(String(sessionId || '').trim())
+      if (!view) return { success: false, error: '客户不存在' }
+      return { success: true, data: view }
     } catch (e) {
       return { success: false, error: String(e) }
     }

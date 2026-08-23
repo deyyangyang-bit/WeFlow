@@ -766,6 +766,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 客户画像
     customerGet: (sessionId: string) => ipcRenderer.invoke('sales:customer:get', sessionId),
+    // P0-3：客户当前视图（State+Judgment 组装，纯只读；UI 未消费）
+    customerCurrentView: (sessionId: string) => ipcRenderer.invoke('sales:customer:currentView', sessionId),
     customerUpsert: (data: { session_id: string; display_name?: string; tags?: string; notes?: string }) =>
       // P0-2A.5：类型层撤销 stage 写权限（运行时还有 stripStageFromUpsert 兜底）
       ipcRenderer.invoke('sales:customer:upsert', data),
