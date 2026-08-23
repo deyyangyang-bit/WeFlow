@@ -25,6 +25,7 @@ import { showNotification } from '../windows/notificationWindow'
 import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
+import { applyParsedStageSignal } from './salesInsightWrite'
 import { crmDbService } from './crmDbService'
 import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
@@ -1899,13 +1900,11 @@ ${afterText}
         if (parsedStage === '未知') {
           this.blacklistNonCustomer(sessionId)
         }
-        // 自动更新 customer_profile（未知阶段不覆盖已有值）
+        // P0-2A.4：不再直接修改 customer_profile.stage。AI 阶段判断降级为 signal：
+        // 只建档/改名（display_name）+ intent_tag_log 判断记录；stage 由合法写者维护。
         if (parsedStage !== '未知') {
-          try {
-            salesDbService.customerUpsert({ session_id: sessionId, display_name: resolvedDisplayName, stage: parsedStage })
-            salesDbService.intentCreate({ session_id: sessionId, stage: parsedStage, source: 'ai', confidence: 0.7, reason: '见解扫描自动识别' })
-            insightLog('INFO', `自动更新画像：${resolvedDisplayName} → ${parsedStage}`)
-          } catch { /* salesDb 未初始化时忽略 */ }
+          applyParsedStageSignal(sessionId, resolvedDisplayName, parsedStage)
+          insightLog('INFO', `记录 AI 阶段判断 signal（不覆盖 stage）：${resolvedDisplayName} → ${parsedStage}`)
         }
         // 高意向活跃预警：本次解析出比价/决策阶段时弹窗（受冷却控制）
         if ((parsedStage === '比价' || parsedStage === '决策') && this.shouldAlert(sessionId, parsedStage)) {
