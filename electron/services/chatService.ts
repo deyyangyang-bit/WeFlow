@@ -8,6 +8,7 @@ import * as http from 'http'
 import * as fzstd from 'fzstd'
 import * as crypto from 'crypto'
 import { app, BrowserWindow, dialog } from 'electron'
+import { buildMessageKey } from '../../shared/messageKey'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
 import { MessageCacheService } from './messageCacheService'
@@ -2999,11 +3000,6 @@ class ChatService {
     return withIndex.map((entry) => entry.msg)
   }
 
-  private encodeMessageKeySegment(value: unknown): string {
-    const normalized = String(value ?? '').trim()
-    return encodeURIComponent(normalized)
-  }
-
   private getMessageSourceInfo(row: Record<string, any>): { dbName?: string; tableName?: string; dbPath?: string } {
     const dbPath = String(row._db_path || row.db_path || '').trim()
     const explicitDbName = String(row.db_name || '').trim()
@@ -3014,45 +3010,6 @@ class ChatService {
       tableName: tableName || undefined,
       dbPath: dbPath || undefined
     }
-  }
-
-  private buildMessageKey(input: {
-    localId: number
-    serverId: number
-    createTime: number
-    sortSeq: number
-    senderUsername?: string | null
-    localType: number
-    dbName?: string
-    tableName?: string
-    dbPath?: string
-  }): string {
-    const localId = Number.isFinite(input.localId) ? Math.max(0, Math.floor(input.localId)) : 0
-    const serverId = Number.isFinite(input.serverId) ? Math.max(0, Math.floor(input.serverId)) : 0
-    const createTime = Number.isFinite(input.createTime) ? Math.max(0, Math.floor(input.createTime)) : 0
-    const sortSeq = Number.isFinite(input.sortSeq) ? Math.max(0, Math.floor(input.sortSeq)) : 0
-    const localType = Number.isFinite(input.localType) ? Math.floor(input.localType) : 0
-    const senderUsername = this.encodeMessageKeySegment(input.senderUsername || '')
-    const dbPath = String(input.dbPath || '').trim()
-    const dbName = String(input.dbName || '').trim() || (input.dbPath ? basename(input.dbPath, extname(input.dbPath)) : '')
-    const tableName = String(input.tableName || '').trim()
-    const sourceScope = dbPath || dbName
-
-    if (localId > 0 && sourceScope && tableName) {
-      return `${this.encodeMessageKeySegment(sourceScope)}:${this.encodeMessageKeySegment(tableName)}:${localId}`
-    }
-
-    if (localId > 0 && sourceScope) {
-      // 当底层未返回 table_name 时，避免使用 db:_:localId（会误并同库不同表的消息）。
-      return `local:${this.encodeMessageKeySegment(sourceScope)}:${localId}:${createTime}:${sortSeq}:${senderUsername}:${localType}`
-    }
-
-    if (serverId > 0) {
-      const scopedServer = sourceScope ? `${this.encodeMessageKeySegment(sourceScope)}:${serverId}` : String(serverId)
-      return `server:${scopedServer}:${createTime}:${sortSeq}:${localId}:${senderUsername}:${localType}`
-    }
-
-    return `fallback:${this.encodeMessageKeySegment(sourceScope)}:${createTime}:${sortSeq}:${localId}:${senderUsername}:${localType}`
   }
 
   private logVisibilityAnomaly(sessionId: string, msg: Message): void {
@@ -5472,7 +5429,7 @@ class ChatService {
       const senderUsername = senderFromRow || (isSend === 1 && myWxid ? myWxid : null)
 
       messages.push({
-        messageKey: this.buildMessageKey({
+        messageKey: buildMessageKey({
           localId,
           serverId,
           createTime,
@@ -5721,7 +5678,7 @@ class ChatService {
       const sortSeq = this.getRowInt(row, ['sort_seq'], createTime)
 
       messages.push({
-        messageKey: this.buildMessageKey({
+        messageKey: buildMessageKey({
           localId,
           serverId,
           createTime,
@@ -12530,7 +12487,7 @@ class ChatService {
     const senderUsername = await this.resolveSenderUsernameForMessageRow(row, rawContent)
     const sendState = this.resolveMessageIsSend(rawIsSend === null ? null : parseInt(rawIsSend, 10), senderUsername)
     const msg: Message = {
-      messageKey: this.buildMessageKey({
+      messageKey: buildMessageKey({
         localId,
         serverId,
         createTime,

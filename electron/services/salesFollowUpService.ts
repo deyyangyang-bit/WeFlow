@@ -13,6 +13,7 @@ import { wcdbService } from './wcdbService'
 import { enqueueSalesTask } from './salesQueue'
 import { salesDbService, type FollowUpTask } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
+import { buildMessageKey } from '../../shared/messageKey'
 import { ConfigService } from './config'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -59,26 +60,37 @@ const PROMISE_VERBS = /发给你|发您|给你发|给您发|我发|我整理|我
 // 客户请求（需要我方响应的）
 const REQUEST_PATTERNS = /能不能|可以|麻烦|帮我|帮忙|请问|想了解|想知道|需要|报价|方案|参数|规格|价格|多少钱|怎么卖|有货|现货|交期|样品|资料|图册|选型/
 
-function roughFilter(messages: any[], peerName: string): Array<{ text: string; isSend: number; msgId?: string }> {
-  const candidates: Array<{ text: string; isSend: number; msgId?: string }> = []
+function roughFilter(messages: any[], peerName: string): Array<{ text: string; isSend: number; messageKey: string }> {
+  const candidates: Array<{ text: string; isSend: number; messageKey: string }> = []
 
   for (const msg of messages) {
     const content = extractContent(msg)
     if (!content || content.length < 4) continue
 
     const isSend = getIsSend(msg)
-    const msgId = String(msg.serverId || msg.server_id || msg.localId || msg.local_id || '')
+    // P0-2B：从原生行构造 canonical messageKey（与 chatService 共用同一共享纯函数）。
+    // localId>0 且带 _db_path/table_name → canonical；否则按共享逻辑回退 local:/server:/fallback。
+    const messageKey = buildMessageKey({
+      localId: Number(msg.local_id ?? msg.localId ?? 0),
+      serverId: Number(msg.server_id ?? msg.serverId ?? 0),
+      createTime: Number(msg.create_time ?? msg.createTime ?? 0),
+      sortSeq: Number(msg.sort_seq ?? msg.sortSeq ?? 0),
+      senderUsername: msg.sender_username ?? msg.senderUsername ?? null,
+      localType: Number(msg.local_type ?? msg.localType ?? 0),
+      dbPath: msg._db_path ?? msg.db_path,
+      tableName: msg.table_name
+    })
 
     // 我方消息：包含时间词+承诺动词
     if (isSend === 1) {
       if (TIME_PATTERNS.test(content) && PROMISE_VERBS.test(content)) {
-        candidates.push({ text: content, isSend, msgId })
+        candidates.push({ text: content, isSend, messageKey })
       }
     }
     // 客户消息：包含请求模式（需要我方响应）
     else {
       if (REQUEST_PATTERNS.test(content) && TIME_PATTERNS.test(content)) {
-        candidates.push({ text: content, isSend, msgId })
+        candidates.push({ text: content, isSend, messageKey })
       }
     }
   }
@@ -326,7 +338,7 @@ class SalesFollowUpService {
           salesDbService.todoCreate({
             session_id: sessionId,
             display_name: displayName,
-            source_message_id: candidates2[0]?.msgId || null,
+            source_message_id: candidates2[0]?.messageKey || null,
             promise_summary: item.promise_summary,
             action_type: item.action_type,
             trigger_type: 'ai_detected',

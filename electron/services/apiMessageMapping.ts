@@ -1,6 +1,7 @@
 import { basename, extname } from 'path'
 import * as fzstd from 'fzstd'
 import type { Message } from './chatService'
+import { buildMessageKey } from '../../shared/messageKey'
 
 /**
  * apiMessageMapping —— HTTP API 非媒体消息的「行 -> Message」纯函数映射管线。
@@ -16,11 +17,6 @@ import type { Message } from './chatService'
  * 映射细节，请同步修改本文件（反之亦然）。
  */
 
-function encodeMessageKeySegment(value: unknown): string {
-  const normalized = String(value ?? '').trim()
-  return encodeURIComponent(normalized)
-}
-
 function getMessageSourceInfo(row: Record<string, any>): { dbName?: string; tableName?: string; dbPath?: string } {
   const dbPath = String(row._db_path || row.db_path || '').trim()
   const explicitDbName = String(row.db_name || '').trim()
@@ -31,45 +27,6 @@ function getMessageSourceInfo(row: Record<string, any>): { dbName?: string; tabl
     tableName: tableName || undefined,
     dbPath: dbPath || undefined
   }
-}
-
-function buildMessageKey(input: {
-  localId: number
-  serverId: number
-  createTime: number
-  sortSeq: number
-  senderUsername?: string | null
-  localType: number
-  dbName?: string
-  tableName?: string
-  dbPath?: string
-}): string {
-  const localId = Number.isFinite(input.localId) ? Math.max(0, Math.floor(input.localId)) : 0
-  const serverId = Number.isFinite(input.serverId) ? Math.max(0, Math.floor(input.serverId)) : 0
-  const createTime = Number.isFinite(input.createTime) ? Math.max(0, Math.floor(input.createTime)) : 0
-  const sortSeq = Number.isFinite(input.sortSeq) ? Math.max(0, Math.floor(input.sortSeq)) : 0
-  const localType = Number.isFinite(input.localType) ? Math.floor(input.localType) : 0
-  const senderUsername = encodeMessageKeySegment(input.senderUsername || '')
-  const dbPath = String(input.dbPath || '').trim()
-  const dbName = String(input.dbName || '').trim() || (input.dbPath ? basename(input.dbPath, extname(input.dbPath)) : '')
-  const tableName = String(input.tableName || '').trim()
-  const sourceScope = dbPath || dbName
-
-  if (localId > 0 && sourceScope && tableName) {
-    return `${encodeMessageKeySegment(sourceScope)}:${encodeMessageKeySegment(tableName)}:${localId}`
-  }
-
-  if (localId > 0 && sourceScope) {
-    // 当底层未返回 table_name 时，避免使用 db:_:localId（会误并同库不同表的消息）。
-    return `local:${encodeMessageKeySegment(sourceScope)}:${localId}:${createTime}:${sortSeq}:${senderUsername}:${localType}`
-  }
-
-  if (serverId > 0) {
-    const scopedServer = sourceScope ? `${encodeMessageKeySegment(sourceScope)}:${serverId}` : String(serverId)
-    return `server:${scopedServer}:${createTime}:${sortSeq}:${localId}:${senderUsername}:${localType}`
-  }
-
-  return `fallback:${encodeMessageKeySegment(sourceScope)}:${createTime}:${sortSeq}:${localId}:${senderUsername}:${localType}`
 }
 
 function getRowField(row: Record<string, any>, keys: string[]): any {
