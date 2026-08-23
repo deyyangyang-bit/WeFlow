@@ -38,7 +38,7 @@ import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal, recordUserActionEvent } from './services/salesActionEngine'
 import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
 import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
@@ -4915,6 +4915,14 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sales:action:completeUnified', async (_, sessionId: string, action: 'done' | 'skipped') => {
     completeUnifiedSignal(sessionId, action)
+    return { ok: true }
+  })
+
+  // P0-3 E3.3：销售行动事件上报（script_copied / chat_opened 由前端动作成功点提交；
+  // follow_up_done 不经此通道——由 completeAction 状态转换自动触发，防双写/不可控）
+  ipcMain.handle('sales:action:recordEvent', async (_, p: { sessionId?: string; eventType?: string; messageKey?: string | null }) => {
+    if (!p || typeof p !== 'object') return { ok: false }
+    recordUserActionEvent(String(p.sessionId || ''), p.eventType as any, p.messageKey || null)
     return { ok: true }
   })
 

@@ -120,8 +120,10 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
   }, [item, fetchSuggestion])
 
   // 打开聊天：直达该客户的微信聊天页（一键执行第一步）
+  // P0-3 E3.3：行动成功点后 fire-and-forget 上报 chat_opened（写失败不影响已成功的动作）
   const handleOpenChat = useCallback(() => {
     navigate(`/chat?sessionId=${encodeURIComponent(item.sessionId)}`)
+    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'chat_opened' })
   }, [navigate, item.sessionId])
 
   // 复制话术：无话术先生成再复制，做到"一点即得可粘贴话术"
@@ -148,6 +150,8 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
     }
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+    // P0-3 E3.3：复制成功后才上报 script_copied（fire-and-forget，写失败不影响"已复制"状态）
+    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'script_copied' })
   }, [script, item, fetchSuggestion])
 
   const tierClass = item.urgencyTier === 'urgent'

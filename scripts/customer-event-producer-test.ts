@@ -9,7 +9,7 @@
  *     3  message_key 复用上游 canonical key 变量（不现场拼 key）
  *     4  evidence_text 来自消息原话（textForSignal/content slice），非 AI 结论
  *     5  写失败不阻断：recordCustomerEventSafe 有 try/catch + WARN，绝不抛到调用方
- *     6  R7 不改（salesActionEngine 无 customer_event 引用）
+ *     6  R7 不改（customerEventAdd 仅 1 处且在 E3.3 recordUserActionEvent 内；R7 业务路径零直接事件引用）
  *     7  recordQuoteSignal 内部无事件写（crmDbService 不被事件污染）
  *     8  intent_tag_log 无新写点（crmParseService 不直接 intentCreate）
  *   B 行为（temp 双库，真实生产函数）：
@@ -54,7 +54,12 @@ async function main(): Promise<void> {
     /evidence_text: textForSignal\.slice\(0, 200\)/.test(parseCode) && /evidence_text: content\.slice\(0, 200\)/.test(parseCode))
   ok('A5 写失败不阻断（recordCustomerEventSafe 有 try/catch + WARN，绝不抛）',
     /function recordCustomerEventSafe/.test(parseSrc) && /try \{/.test(parseSrc) && /salesLog\('WARN', `\[CrmParse\] customer_event 写入失败/.test(parseCode))
-  ok('A6 R7 不改（salesActionEngine 无 customer_event 引用）', !/customer_event|customerEventAdd|customerEventsBy/.test(engineSrc))
+  // A6: E3.3 起 salesActionEngine 新增行动事件生产者 recordUserActionEvent（唯一 customerEventAdd 写入点），
+  // R7 业务路径（其定义之前的 completeAction/completeUnifiedSignal 等）零直接事件引用——R7 逻辑未被事件生产污染
+  const engineAddCount = (strip(engineSrc).match(/salesDbService\.customerEventAdd/g) || []).length
+  const engineBeforeRecorder = strip(engineSrc).slice(0, strip(engineSrc).indexOf('export function recordUserActionEvent'))
+  ok('A6 R7 不改（customerEventAdd 仅 1 处且在 recordUserActionEvent 内；R7 路径零直接引用）',
+    engineAddCount === 1 && !/customerEventAdd|customerEventsBy|customer_event/.test(engineBeforeRecorder))
   ok('A7 recordQuoteSignal 内部无事件写（crmDbService 不被事件污染）', !/customerEvent|customer_event/.test(strip(crmDbSrc)))
   ok('A8 intent_tag_log 无新写点（crmParseService 不直接 intentCreate）', !/intentCreate/.test(parseCode))
 

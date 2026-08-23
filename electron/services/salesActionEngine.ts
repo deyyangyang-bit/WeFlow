@@ -1201,13 +1201,47 @@ export async function generateSuggestion(actionItem: ActionItem): Promise<{ sugg
 
 /**
  * 完成/跳过行动项。
+ * P0-3 E3.3：follow_up_done 行动事件在**状态转换成功之后**写入（系统确认"从未完成 → 完成"），
+ * 重复完成（已 done/skipped）不产生新事件——与 last_stage_change_at 同一幂等思想。
  */
 export function completeAction(taskId: number, action: 'done' | 'skipped'): void {
   const now = Date.now()
   if (action === 'done') {
+    const before = salesDbService.getTask(taskId)
     salesDbService.todoUpdate(taskId, { status: 'done', completed_at: now })
+    if (before?.id && before.status !== 'done' && before.status !== 'skipped' && before.session_id) {
+      recordUserActionEvent(before.session_id, 'follow_up_done', null)
+    }
   } else {
     salesDbService.todoUpdate(taskId, { status: 'skipped' })
+  }
+}
+
+/**
+ * P0-3 E3.3：销售行动事件统一写入入口（主进程）。
+ * 白名单校验（防万能日志表：仅行动三事件；follow_up_done 由 completeAction 状态转换触发，不经由此通道）；
+ * 写失败只 WARN 不抛——行动成功与事件写入解耦，绝不影响原业务。
+ * message_key 有消息上下文才传（canonical P0-2B），无可靠 key 必须留空（证据诚实，不伪造）。
+ */
+export function recordUserActionEvent(
+  sessionId: string,
+  eventType: 'script_copied' | 'chat_opened' | 'follow_up_done',
+  messageKey?: string | null
+): void {
+  try {
+    if (!sessionId) return
+    if (!['script_copied', 'chat_opened', 'follow_up_done'].includes(eventType)) {
+      salesLog('WARN', `[ActionEvent] 非法行动事件类型: ${eventType}（P0-3 E3 仅允许行动三事件）`)
+      return
+    }
+    salesDbService.customerEventAdd({
+      session_id: sessionId,
+      event_type: eventType,
+      message_key: messageKey || null,
+      source: 'manual'
+    })
+  } catch (e) {
+    salesLog('WARN', `[ActionEvent] ${eventType} 写入失败: ${e}`)
   }
 }
 
