@@ -16,7 +16,7 @@ import {
   isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
   isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, parseRiskSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
-import { salesDbService } from './salesDbService'
+import { applyDealStageWon } from './legalStageWriters'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 
@@ -148,7 +148,8 @@ async function scanAll(): Promise<number> {
                 if (imp.id) dealAccountId = imp.id
               }
               if (dealAccountId) {
-                try { salesDbService.customerUpsert({ session_id: uid, display_name: name, stage: 'won' }) } catch { /* salesDb 未初始化忽略 */ }
+                // P0-2A.6：deal rule 写者补元数据 —— stage=won + intent_tag_log(source=deal_rule) + last_stage_change_at
+                try { applyDealStageWon(uid, name) } catch { /* salesDb 未初始化忽略 */ }
                 const dr = crmDbService.createDealContract(dealAccountId, content.slice(0, 60))
                 salesLog('INFO', `[CrmParse] 私聊成交信号「${name}」→ ${dr.created ? '新建合同' : '已有合同'}`)
               }

@@ -30,6 +30,7 @@ import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsSe
 // ─── 销售助手模块 ─────────────────────────────────────────────────────────────
 import { salesDbService } from './services/salesDbService'
 import { stripStageFromUpsert, type CustomerUpsertInput } from './services/customerUpsertPolicy'
+import { applyManualStageCorrection } from './services/legalStageWriters'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
@@ -4795,15 +4796,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sales:intent:correct', async (_, payload: { session_id: string; stage: string; reason?: string }) => {
     try {
-      const tag = salesDbService.intentCreate({
-        session_id: payload.session_id,
-        stage: payload.stage,
-        source: 'manual',
-        reason: payload.reason
-      })
-      // 同步更新客户画像的 stage
-      salesDbService.customerUpsert({ session_id: payload.session_id, stage: payload.stage })
-      return { success: true, tag }
+      // P0-2A.6：manual 写者元数据收口 —— 校验值合法性（拒绝非枚举值 + dormant）+ 阶段变更时写 last_stage_change_at
+      return applyManualStageCorrection(payload.session_id, payload.stage, payload.reason)
     } catch (e) {
       return { success: false, error: String(e) }
     }
