@@ -358,7 +358,7 @@ export default function InsightInboxPage() {
                         {crmMap[record.sessionId] && (
                           <button
                             className="insight-action-btn crm"
-                            onClick={() => navigate(`/crm?tab=customer&id=${crmMap[record.sessionId].id}`)}
+                            onClick={() => navigate(`/customers?id=${crmMap[record.sessionId].id}`)}
                             title={`已在 CRM：${crmMap[record.sessionId].name} · 查看档案`}
                           >
                             <UserCheck size={14} />

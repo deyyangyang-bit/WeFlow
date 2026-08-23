@@ -23,6 +23,8 @@ import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
+import { normalizeStage } from '../../shared/salesStage'
+export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -132,26 +134,6 @@ const STAGE_BONUS: Record<string, number> = {
 }
 
 
-/** 中文阶段 → 英文阶段映射（InsightService 写中文，规则用英文） */
-const STAGE_CN_TO_EN: Record<string, string> = {
-  '了解': 'contacted',
-  '比价': 'quoted',
-  '决策': 'negotiating',
-  '成交': 'won',
-  '流失': 'lost',
-  '未知': 'unknown',
-  '新客': 'new',
-  '沉默': 'dormant',
-  '谈判中': 'negotiating',
-  '已报价': 'quoted',
-  '已沟通': 'contacted',
-}
-
-export function normalizeStage(raw: string | null | undefined): string {
-  const s = (raw || '').trim()
-  if (!s) return 'unknown'
-  return STAGE_CN_TO_EN[s] || s  // 已经是英文则原样返回
-}
 
 // ─── 规则定义 ─────────────────────────────────────────────────────────────────
 

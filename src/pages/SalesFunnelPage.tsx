@@ -1,73 +1,63 @@
 /**
- * SalesFunnelPage.tsx —— 销售漏斗：阶段分布 + 转化率 + 近 30 天意向标记趋势
+ * SalesFunnelPage.tsx —— 销售漏斗：历史累计流转漏斗 + 逐级转化率 + 当前客户状态
+ *
+ * 口径：窗口内「曾进入过某档位」的去重客户数（同一客户同一档位只计 1 次，绝不按
+ * intent_tag_log 行数统计）。时间窗口可切换（近30天/近90天/全部）。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
 import './SalesFunnelPage.scss'
 
-interface FunnelData {
-  stageDistribution: Array<{ stage: string; count: number }>
-  intentTimeline: Array<{ date: string; count: number }>
+interface FunnelStats {
+  funnel: Array<{ stage: string; count: number }>
+  conversion: Array<{ from: string; to: string; rate: number }>
+  intentTimeline: Array<{ date: string; stage: string; count: number }>
+  currentDistribution: Array<{ stage: string; count: number }>
   totalCustomers: number
+  newCustomersInWindow: number
 }
 
-// 阶段归一化：中文（AI 见解）与英文（分类器）统一到漏斗 5 档
-const STAGE_NORM: Record<string, string> = {
-  了解: '了解', contacted: '了解', new: '了解',
-  比价: '比价', quoted: '比价',
-  决策: '决策', negotiating: '决策',
-  成交: '成交', won: '成交',
-  流失: '流失', lost: '流失', dormant: '流失',
-  未知: '未知', unknown: '未知'
-}
 const STAGE_ORDER = ['了解', '比价', '决策', '成交'] as const
+// 阶段色（项目既有 categorical theme，漏斗/工作台/商机共用同一套色相）
 const STAGE_COLORS: Record<string, string> = {
   了解: '#60a5fa', 比价: '#f59e0b', 决策: '#ef4444', 成交: '#16a34a', 流失: '#94a3b8', 未知: '#cbd5e1'
 }
+const DAY_OPTIONS = [
+  { label: '近30天', value: 30 },
+  { label: '近90天', value: 90 },
+  { label: '全部', value: 0 }
+] as const
 
 export default function SalesFunnelPage() {
   const navigate = useNavigate()
-  const [data, setData] = useState<FunnelData | null>(null)
+  const [days, setDays] = useState(30)
+  const [data, setData] = useState<FunnelStats | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const fetch = async () => {
+  const fetch = useCallback(async (d: number) => {
     setLoading(true)
     try {
-      const r = await window.electronAPI.sales.funnelStats()
+      const r = await window.electronAPI.sales.funnelStats(d)
       if (r.success && r.data) setData(r.data)
       else setError(r.error || '加载失败')
     } catch (e) { setError(String(e)) }
     setLoading(false)
-  }
+  }, [])
 
-  useEffect(() => { void fetch() }, [])
+  useEffect(() => { void fetch(days) }, [days, fetch])
 
-  const normalized = useMemo(() => {
-    if (!data) return null
-    const counts = new Map<string, number>()
-    for (const row of data.stageDistribution) {
-      const s = STAGE_NORM[row.stage] || '未知'
-      counts.set(s, (counts.get(s) || 0) + row.count)
-    }
-    return STAGE_ORDER.map((s) => ({ stage: s, count: counts.get(s) || 0 }))
-  }, [data])
+  // 转化率：后端相邻相除（了解→比价→决策→成交）
+  const rateOf = useCallback((from: string, to: string) =>
+    data?.conversion.find((c) => c.from === from && c.to === to)?.rate ?? 0, [data])
 
-  // 转化率 = 相对漏斗顶部「了解」的比例（快照非队列，阶段间相除在成交>决策时会失真）
-  const conversion = useMemo(() => {
-    if (!normalized) return []
-    const top = normalized[0]?.count || 0
-    return normalized.map((n, i) => ({
-      ...n,
-      rate: i === 0 ? 100 : top > 0 ? Math.round((n.count / top) * 100) : 0
-    }))
-  }, [normalized])
-
-  // ECharts 真漏斗（点击阶段 → 下钻 CRM 客户列表按该阶段筛选，传原始中文阶段名，与 customer_profile.stage 同源）
+  // ECharts 漏斗（4 档，sort:'none' 保留真实档位大小；跳级使档位人数非严格递减）
   const funnelOption = useMemo(() => {
-    if (!conversion.length) return null
+    if (!data) return null
+    const funnel = data.funnel.filter((f) => (STAGE_ORDER as readonly string[]).includes(f.stage))
+    if (!funnel.length) return null
     return {
       tooltip: { trigger: 'item' as const, formatter: '{b}: {c} 人' },
       series: [{
@@ -76,92 +66,113 @@ export default function SalesFunnelPage() {
         label: { show: true, position: 'inside' as const, fontSize: 12, color: '#fff' },
         itemStyle: { borderWidth: 0 },
         emphasis: { label: { fontSize: 14 } },
-        data: conversion.map((n, i) => ({
+        data: funnel.map((n, i) => ({
           name: n.stage, value: n.count,
           itemStyle: { color: STAGE_COLORS[n.stage] },
-          label: { formatter: `${n.stage}  ${n.count} 人 · 转化 ${conversion[i]?.rate ?? 0}%` }
+          label: {
+            formatter: n.count > 0
+              ? `${n.stage}  ${n.count} 人 · 转化 ${i === 0 ? 100 : rateOf(STAGE_ORDER[i - 1], n.stage)}%`
+              : `${n.stage}  0 人`
+          }
         }))
       }]
     }
-  }, [conversion])
+  }, [data, rateOf])
   const funnelEvents = useMemo(() => ({
-    click: (p: any) => {
+    click: (p: { name?: string }) => {
       const stage = String(p?.name || '')
-      if (stage) navigate(`/crm?tab=customer&stage=${encodeURIComponent(stage)}`)
+      if (stage) navigate(`/customers?stage=${encodeURIComponent(stage)}`)
     }
   }), [navigate])
 
-  // 流失/未分类客户数（不参与漏斗形状，单独展示）
-  const lostCount = useMemo(() => {
-    if (!data) return 0
-    return data.stageDistribution.reduce((s, r) => s + ((STAGE_NORM[r.stage] || '未知') === '流失' ? r.count : 0), 0)
-  }, [data])
-  const unknownCount = useMemo(() => {
-    if (!data) return 0
-    return data.stageDistribution.reduce((s, r) => s + ((STAGE_NORM[r.stage] || '未知') === '未知' ? r.count : 0), 0)
+  // 趋势：窗口内每天进入各档位的去重客户数（按档位堆叠柱状）
+  const trendOption = useMemo(() => {
+    if (!data || !data.intentTimeline.length) return null
+    const dates = Array.from(new Set(data.intentTimeline.map((t) => t.date)))
+    const series = (STAGE_ORDER as readonly string[]).map((stage) => ({
+      name: stage,
+      type: 'bar' as const,
+      stack: 'total',
+      barMaxWidth: 18,
+      itemStyle: { color: STAGE_COLORS[stage], borderRadius: [0, 0, 0, 0] },
+      data: dates.map((d) => data.intentTimeline.find((t) => t.date === d && t.stage === stage)?.count ?? 0)
+    }))
+    return {
+      tooltip: { trigger: 'axis' as const, axisPointer: { type: 'shadow' as const } },
+      legend: { data: [...STAGE_ORDER], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 40, right: 12, top: 32, bottom: 40 },
+      xAxis: { type: 'category' as const, data: dates, axisLabel: { fontSize: 10, formatter: (v: string) => v.slice(5) } },
+      yAxis: { type: 'value' as const, axisLabel: { fontSize: 10 }, minInterval: 1 },
+      series
+    }
   }, [data])
 
-  // 近 7 天每天新增进漏斗客户数（缺失日期补 0，避免柱子稀疏）
-  const weekTrend = useMemo(() => {
-    if (!data) return []
-    const dayCounts = new Map<string, number>()
-    for (const row of data.intentTimeline) {
-      dayCounts.set(row.date, (dayCounts.get(row.date) || 0) + row.count)
-    }
-    const days: Array<{ date: string; count: number }> = []
-    const today = new Date()
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today)
-      d.setDate(d.getDate() - i)
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      days.push({ date: key, count: dayCounts.get(key) || 0 })
-    }
-    return days
-  }, [data])
-  // 柱高按近 7 天最大值相对缩放，封顶 120px（原实现 count*12 会因单日数百条标记把页面撑爆）
-  const maxTrend = Math.max(...weekTrend.map((d) => d.count), 1)
+  // 当前状态卡片（customer_profile 当前阶段，后端已归一化归桶）
+  const currentOf = (s: string) =>
+    data?.currentDistribution.find((c) => c.stage === s)?.count ?? 0
 
   return (
     <div className="funnel-page">
       <div className="funnel-header">
         <h2>销售漏斗</h2>
-        <button className="funnel-btn" onClick={() => void fetch()} disabled={loading}><RefreshCw size={14} /> 刷新</button>
+        <div className="funnel-days">
+          {DAY_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              className={`funnel-days__btn${days === o.value ? ' funnel-days__btn--active' : ''}`}
+              onClick={() => setDays(o.value)}
+            >{o.label}</button>
+          ))}
+        </div>
+        <button className="funnel-btn" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
       </div>
       {error && <div className="funnel-error">{error}</div>}
       {loading && <div className="funnel-empty">加载中…</div>}
 
-      {normalized && (
+      {data && (
         <div className="funnel-body">
           <div className="funnel-stats">
-            <div className="funnel-stat"><span className="funnel-stat__value">{data?.totalCustomers ?? 0}</span><span className="funnel-stat__label">客户总数</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{conversion.find((c) => c.stage === '成交')?.count ?? 0}</span><span className="funnel-stat__label">成交</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{normalized.find((n) => n.stage === '决策')?.count ?? 0}</span><span className="funnel-stat__label">决策中</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{lostCount}</span><span className="funnel-stat__label">流失</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__value">{data.totalCustomers}</span><span className="funnel-stat__label">客户总数</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__value">{data.newCustomersInWindow}</span><span className="funnel-stat__label">窗口新进漏斗</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('成交')}</span><span className="funnel-stat__label">当前成交</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('决策')}</span><span className="funnel-stat__label">当前决策</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('流失')}</span><span className="funnel-stat__label">当前流失</span></div>
           </div>
 
           {funnelOption ? (
             <div className="funnel-chart">
               <ReactECharts option={funnelOption} style={{ height: 300 }} notMerge onEvents={funnelEvents} />
-              <div className="funnel-drill-hint">点击漏斗任一阶段 → 下钻 CRM 客户列表</div>
+              <div className="funnel-drill-hint">点击漏斗任一阶段 → 下钻 CRM 客户列表（当前阶段为该档位的客户）</div>
             </div>
           ) : (
-            <div className="funnel-empty">暂无阶段数据</div>
+            <div className="funnel-empty">当前窗口暂无阶段数据</div>
           )}
           <div className="funnel-footnote">
-            转化为相对漏斗顶部「了解」客户的比例 · 成交 ÷ 了解 = 赢单率 · 流失 {lostCount} 人 / 未分类 {unknownCount} 人未计入漏斗
+            历史累计流转口径：{days === 0 ? '全部历史' : `近 ${days} 天`}内曾进入各档位的去重客户数（同一客户只计 1 次）· 转化率为相邻档位相除，客户可跳级进入故非严格递减 · 当前状态小卡为 customer_profile 现时快照
           </div>
 
-          {weekTrend.length > 0 && (
+          <div className="funnel-current">
+            <h3>当前客户状态（快照）</h3>
+            <div className="funnel-current__cards">
+              {data.currentDistribution.map((c) => (
+                <button
+                  key={c.stage}
+                  className="funnel-current__card"
+                  style={{ borderTopColor: STAGE_COLORS[c.stage] }}
+                  onClick={() => navigate(`/customers?stage=${encodeURIComponent(c.stage)}`)}
+                >
+                  <span className="funnel-current__value">{c.count}</span>
+                  <span className="funnel-current__label">{c.stage}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {trendOption && (
             <div className="funnel-trend">
-              <h3>近 7 天新增进漏斗客户数</h3>
-              <div className="funnel-trend__bars">
-                {weekTrend.map((d) => (
-                  <div key={d.date} className="funnel-trend__col">
-                    <span className="funnel-trend__num">{d.count}</span>
-                    <div className="funnel-trend__bar" style={{ height: `${d.count > 0 ? Math.max(4, (d.count / maxTrend) * 120) : 2}px`, opacity: d.count > 0 ? 1 : 0.35 }} />
-                    <span className="funnel-trend__date">{d.date.slice(5)}</span>
-                  </div>
-                ))}
+              <h3>窗口内每天进入各档位的去重客户数（堆叠）</h3>
+              <div className="funnel-trend__chart">
+                <ReactECharts option={trendOption} style={{ height: 220 }} notMerge />
               </div>
             </div>
           )}

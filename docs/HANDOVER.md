@@ -1,11 +1,11 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；**AI 销售副驾驶产品/开发主线**（下一阶段北极星「有效销售行动」漏斗 + P0 路线 + L0-L3 边界 + 冻结范围）见 §2.26（规划定稿，未提交）；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（未提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（未提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，未提交）；最近提交 `068a403`（2026-08-20 客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **58/58**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **37/37**、opportunity **45/45**、funnel **31/31**（历史累计流转漏斗）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
+> 基线 commit `d40cd4d`；**AI 销售副驾驶产品/开发主线**（下一阶段北极星「有效销售行动」漏斗 + P0 路线 + L0-L3 边界 + 冻结范围）见 §2.26（规划定稿，未提交）；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（未提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（已提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，未提交）；最近提交 `4338921`（2026-08-20 P0-1 AI 证据链：intent_tag_log 证据列 message_key/evidence_text + follow_up_task.source_message_id，三件运行时验证通过，见 §2.26；客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环 `068a403`，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **58/58**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **37/37**、opportunity **45/45**、funnel **40/40**（历史累计流转漏斗 + P0-1 证据断言）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：客户名真相源修复（微信号名回填微信真实备注 + 显示名解析优先微信备注，见 §2.25，未提交）；漏斗改造（历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复，见 §2.24，未提交）；AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`，已被 §2.24 取代）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）；SLA/Action 接通（首触 SLA 扫描接入 Action 引擎每日 08:00 + 今日行动页打开周期，长时间运行不漏卡；lead:/logi: 虚拟卡隐藏无效「打开聊天」，commit `5ba531b`）。
+> **2026-08-20 增量**：客户名真相源修复（微信号名回填微信真实备注 + 显示名解析优先微信备注，见 §2.25，未提交）；漏斗改造（历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复，见 §2.24，已提交）；AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`，已被 §2.24 取代）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）；SLA/Action 接通（首触 SLA 扫描接入 Action 引擎每日 08:00 + 今日行动页打开周期，长时间运行不漏卡；lead:/logi: 虚拟卡隐藏无效「打开聊天」，commit `5ba531b`）。
 > **2026-08-23 增量**：**落 §2.26「AI 销售副驾驶」为下一阶段产品/开发主线**（规划定稿）。定位：AI 观察/理解/判断/准备，销售最终判断与对外执行，L3 自动对客回复明确不做。固化三个关键事实：① P0-1 前置已确认——微信消息读取统一走**应用读取层 `chatService`**（解密 WCDB 只读，产品核心能力；HTTP API 是同一读取层的 HTTP 封装，非独立数据源），无需新增读取层，真正缺口是 AI 记录侧持久化 `messageKey`，`evidenceText` 作历史兜底；② CustomerEvent（P0-3）AI 节流必须复用 `insightService` 12h 机制；③ 自动扫描循环已存在（runFullScan + lazyScan + 每日全量 + 增量），真正缺的是**行动结果回流**（Agent Action → Outcome → Re-evaluation）。北极星升级为「有效销售行动」六段漏斗（发现→生成→采纳→执行→响应），先埋点后看板。§10 待办已按 P0 路线核销/合并/新增。**P0-1 第一刀已提交**：`intent_tag_log` 加 `message_key`/`evidence_text` 两列（幂等 ALTER），透传链路落地（classifier/intentService/actionEngine/insightService urge），`follow_up_task` 用 `source_message_id` 存 messageKey；`funnel-test` 增 9 条 P0-1 证据断言；运行时三件事验证通过（① 新日志带 message_key ✓ ② message_key 回查命中原消息 ✓ ③ evidence_text 为原话非 AI 结论 ✓）。
 >
 > **文档分工**：
@@ -355,7 +355,7 @@
 - **验证**：重启 dev 后日志 `group=艾驱安能物流跟踪群 page=1 msgs=61 hasMore=false` + `scan done scanned=60`（一次补齐 60 条积压）；下一轮 `msgs=1 scanned=0`（`processed_msg` 幂等，无重复）。
 - **不受影响**：HTTP API（`collectRawRows` 直接 `mapRowsLite`，**不经过 normalizeMessageOrder**，保持原生降序）；前端 ChatPage（走 `getLatestMessages` → `getMessagesByOffsetStable` 独立查询）。WCDB 时间戳是秒，`lastScan` 是毫秒（`ms = createTime * 1000` 换算）。
 
-## 2.24 漏斗改造：历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复（2026-08-20，未提交）
+## 2.24 漏斗改造：历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复（2026-08-20，已提交）
 
 > 目标：漏斗从「当前阶段快照分布」升级为「历史累计流转漏斗」，统计单位永远是 `customer_id`（`session_id`），绝不按 `intent_tag_log` 行数。阶段语义收口到唯一的 canonical 语义层，前端/统计统一归桶，中英文不再各页面各自理解。**本小节取代 §2.14 的 `c719678` 转化率口径与 `11359fe` 深链口径。**
 
@@ -375,7 +375,7 @@
 - **下钻修复（A，统一归桶比较）**：漏斗/状态卡点阶段 → 传中文档位名；`CustomerWorkspacePage` 新增 `rowStage(c) = stageToFunnel(profile_stage || sales_stage)`，`:139` 过滤、`:153` 下拉选项、卡片徽章全部改走它（英文 `quoted` 客户也能命中「比价」，修复 `11359fe` 未覆盖的英文双轨空白）；深链过滤前再过一次 `stageToFunnel`（幂等防御旧值）；删除本地 `STAGE_LABELS`。**语义说明**：历史漏斗计「窗口内曾进入」，下钻列表是「当前阶段为该档位」——穿过该档位但现已流失/删除的客户不在下钻列表，下钻人数 ≤ 漏斗人数属正常
 - **前端漏斗页**（`SalesFunnelPage.tsx` + `.scss`）：时间窗口 toggle（近30天/近90天/全部，切换 refetch）；ECharts 真漏斗 4 档 `sort:'none'`（保留真实档位大小，label 带后端相邻转化率，脚注说明跳级可 >100%）；当前客户状态 6 档小卡片（可点击下钻）；窗口内每天进入各档位的去重客户数堆叠趋势；统计卡（客户总数/窗口新进漏斗/当前成交/当前决策/当前流失）
 - **趋势口径统一（D）**：趋势窗口 = 所选统计窗口，与历史累计漏斗同源同口径（intentTimeline）
-- **验证**：`npx tsc --noEmit` 零错误；`npx tsx scripts/funnel-test.ts` **31/31**；回归（crm-workbench 48 / crm-claim 17 / todo-followup 11）全过；`npx vite build` 通过
+- **验证**：`npx tsc --noEmit` 零错误；`npx tsx scripts/funnel-test.ts` **40/40**（含 P0-1 证据断言 5.1-5.9）；回归（crm-workbench 48 / crm-claim 17 / todo-followup 11）全过；`npx vite build` 通过
 
 ---
 
@@ -751,7 +751,7 @@
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 | `crm-lead-test.ts` | **线索流转单测**（**53/53**：清洗/去重/SLA/闭环，2026-08 §2.12） |
 | `crm-opportunity-test.ts` | **商机/评分/风险单测**（**45/45**：意向评分 / parseBuySignal / 商机累积 / 阶段联动 / 漏斗 / 风险，2026-08 §2.14） |
-| `funnel-test.ts` | **漏斗数据单测**（**31/31**：英文 classifier 阶段 / 中英归一 / 独立去重 / 跳级 >100% / 时间窗口 30·90·全部 / 当前快照归桶 / 逐日补零 / 除零，2026-08 §2.24） |
+| `funnel-test.ts` | **漏斗数据单测**（**40/40**：英文 classifier 阶段 / 中英归一 / 独立去重 / 跳级 >100% / 时间窗口 30·90·全部 / 当前快照归桶 / 逐日补零 / 除零 / P0-1 证据断言，2026-08 §2.24） |
 
 ### 资源/脚本（§2.7 新增）
 - `resources/crm-templates/{quotation,contract}.docx` —— 真实模版（docxtemplater 标签已注入，**提交进仓库**，随 extraResources 打包）；改模版用 `python3 scripts/build-crm-templates.py [源目录]`（默认读 `/tmp/crm-tpl-inspect/`）

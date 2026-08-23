@@ -772,7 +772,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:customer:list', filters),
     customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
     dashboardStats: () => ipcRenderer.invoke('sales:dashboard:stats'),
-    funnelStats: () => ipcRenderer.invoke('sales:funnel:stats'),
+    funnelStats: (days?: number) => ipcRenderer.invoke('sales:funnel:stats', days),
     customerExport: () => ipcRenderer.invoke('sales:customer:export'),
 
     // 意向标签

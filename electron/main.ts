@@ -4627,10 +4627,10 @@ function registerIpcHandlers() {
     }
   })
 
-  // 销售漏斗（阶段分布 + 意向标记时间线）
-  ipcMain.handle('sales:funnel:stats', async () => {
+  // 销售漏斗（历史累计流转；days=0 全部历史，默认 30 天）
+  ipcMain.handle('sales:funnel:stats', async (_e, days?: number) => {
     try {
-      return { success: true, data: salesDbService.funnelStats() }
+      return { success: true, data: salesDbService.funnelStats(Number(days) || 0) }
     } catch (e) {
       return { success: false, error: String(e) }
     }

@@ -1,30 +1,18 @@
 /**
- * CrmWorkbenchPage.tsx —— CRM 工作台：合同列表+全款进度+四子资源+发货卡点+文档生成
+ * CrmWorkbenchPage.tsx —— 合同工作台：合同列表+全款进度+四子资源+发货卡点+文档生成
+ * （客户工作台已拆分到 CustomerWorkspacePage /customers，本页专注合同闭环）
  */
 import { useEffect, useState } from 'react'
-import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Sparkles, Trash2, MessageCircle } from 'lucide-react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
 import './CrmWorkbenchPage.scss'
 
 interface QuoRow { productId: number; name: string; model?: string; price: number; qty: string }
 
-const STAGE_LABELS: Record<string, string> = {
-  contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未知'
-}
-// Customer 360 统一时间线：事件来源标签（crm=业务动作 / lead=线索流转 / opportunity=商机 / insight=AI 见解）
-const TIMELINE_KIND_LABEL: Record<string, string> = { crm: 'CRM', lead: '线索', opportunity: '商机', insight: 'AI 见解' }
-
 export default function CrmWorkbenchPage() {
-  const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts, queues, fetchQueues } = useCrmStore()
-  const navigate = useNavigate()
-  // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
-  const openChat = (c: any) => {
-    if (!c.session_id) { setNotice('该客户未关联微信会话，无法打开聊天'); return }
-    navigate(`/chat?sessionId=${encodeURIComponent(c.session_id)}`)
-  }
-  const [tab, setTab] = useState<'contracts' | 'customers'>('contracts')
+  const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
   const [selected, setSelected] = useState<any>(null)
   const [quotations, setQuotations] = useState<any[]>([])
   const [invoices, setInvoices] = useState<any[]>([])
@@ -54,18 +42,9 @@ export default function CrmWorkbenchPage() {
   const [newQuoItems, setNewQuoItems] = useState<QuoRow[]>([])
   const [newQuoSearch, setNewQuoSearch] = useState('')
   const [customers, setCustomers] = useState<any[]>([])
-  const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
-  const [customerProfile, setCustomerProfile] = useState<any>(null)
-  const [profileLoading, setProfileLoading] = useState(false)
-  const [deepReport, setDeepReport] = useState('')
-  const [deepLoading, setDeepLoading] = useState(false)
-  const [stageFilter, setStageFilter] = useState('')
-  const [showInfoPending, setShowInfoPending] = useState(true) // 客户 tab「信息待确认」折叠
 
   useEffect(() => { void fetchWorkbench() }, [fetchWorkbench])
   useEffect(() => { void fetchCustomers() }, [])
-  // 客户 tab：拉取 AI 填充待裁决队列（信息待确认，从跟单中心迁来）
-  useEffect(() => { if (tab === 'customers') void fetchQueues() }, [tab, fetchQueues])
 
   // ─── P3 可视化：统计概览 + 三图 ────────────────────────────────────────────
   const [stats, setStats] = useState<any>(null)
@@ -114,159 +93,34 @@ export default function CrmWorkbenchPage() {
     return rows
   }
 
-  // 深链协议：/crm?tab=customer&id=<accountId>（灵感信箱/跟单中心/行动卡跳入）
+  // 名称双轨读取侧统一：优先取画像最新微信备注（跟随备注改名），account.name 作兜底（导入时刻冻结）
+  // （新建合同「选择已有客户」下拉用）
+  const displayNameOf = (c: any) => String(c.profile_display_name || '') || String(c.name || '')
+
+  // 深链协议：/crm?account=<id>&new=1（客户工作台「建合同」跳入：预选客户 + 打开新建合同弹窗 + 带出开票信息）
   const [searchParams] = useSearchParams()
   useEffect(() => {
-    const t = searchParams.get('tab')
-    const id = Number(searchParams.get('id') || 0)
-    if (t === 'customer' && id > 0) {
-      setTab('customers')
-      void fetchCustomers().then((rows) => {
-        const hit = rows.find((x: any) => Number(x.id) === id)
-        if (hit) void openCustomer(hit)
-      })
-    }
-    // 行动卡深链：/crm?tab=customer&sid=<sessionId>（按微信会话定位客户）
-    const sid = searchParams.get('sid')
-    if (t === 'customer' && !(id > 0) && sid) {
-      setTab('customers')
-      void fetchCustomers().then((rows) => {
-        const hit = rows.find((x: any) => String(x.session_id || '') === sid)
-        if (hit) void openCustomer(hit)
-        else setNotice('该客户尚未导入 CRM（AI 判定有意向后会自动导入）')
-      })
-    }
-    // 漏斗下钻深链：/crm?tab=customer&stage=比价（customer_profile.stage 中文漏斗阶段，与漏斗同源）
-    const stage = searchParams.get('stage')
-    if (t === 'customer' && stage) {
-      setTab('customers')
-      setStageFilter(stage)
-    }
+    const accountId = Number(searchParams.get('account') || 0)
+    if (searchParams.get('new') !== '1' || accountId <= 0) return
+    setNewAccountId(accountId)
+    setShowNew(true)
+    void fetchCustomers().then((rows) => {
+      const hit = rows.find((x: any) => Number(x.id) === accountId)
+      if (hit) {
+        setNewName(hit.name)
+        let cf: Record<string, any> = {}
+        try { cf = JSON.parse(hit.custom_fields || '{}') } catch { /* ignore */ }
+        setNewBuyerAddr(String(cf.buyer_addr || ''))
+        setNewBuyerBank(String(cf.buyer_bank || ''))
+        setNewBuyerAccount(String(cf.buyer_account || ''))
+        setNewBuyerTax(String(cf.tax_no || ''))
+        setNewBuyerPhone(String(cf.buyer_phone || hit.phone || ''))
+      }
+      if (!products.length) void fetchProducts()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
-  // 阶段优先取 customer_profile.stage（中文漏斗阶段，与销售漏斗同源），无画像时回退 sales_stage 标签
-  const stageLabel = (c: any) => String(c.profile_stage || '') || STAGE_LABELS[String(c.sales_stage ?? '')] || String(c.sales_stage ?? '') || '未分类'
-  // 名称双轨读取侧统一：优先取画像最新微信备注（跟随备注改名），account.name 作兜底（导入时刻冻结）
-  const displayNameOf = (c: any) => String(c.profile_display_name || '') || String(c.name || '')
-  // 筛选项由当前数据动态生成，未来出现新阶段也能自动出现
-  const stageOptions = Array.from(new Set(customers.map(stageLabel))).sort((a, b) => a.localeCompare(b, 'zh'))
-  const filteredCustomers = stageFilter ? customers.filter((c) => stageLabel(c) === stageFilter) : customers
-
-  const openCustomer = async (c: any) => {
-    setSelectedCustomer(c)
-    setCustomerProfile(null)
-    if (!c.session_id) return
-    setProfileLoading(true)
-    try {
-      const r = await window.electronAPI.crm.customerProfile(String(c.session_id))
-      if (r?.success) setCustomerProfile(r.data)
-    } catch { /* ignore */ }
-    setProfileLoading(false)
-  }
-
-
-  // ─── 客户 360：AI 填充字段视图 + 手动编辑 + 时间线 ─────────────────────────
-  const FIELD_LABELS_WB: Record<string, string> = {
-    company: '公司', position: '职位', phone: '电话', industry: '行业', province: '省份', city: '城市',
-    needs: '需求', budget: '预算', intent_model: '意向型号', purchase_timeframe: '采购时间',
-    competitor: '竞品', price_sensitive: '价格敏感度'
-  }
-  const ENRICH_FIELD_ORDER = ['company', 'position', 'phone', 'industry', 'province', 'city', 'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive']
-  const FORMAL_SET = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
-
-  const accountFieldView = (acc: any) => {
-    let cf: Record<string, any> = {}
-    try { cf = JSON.parse(acc?.custom_fields || '{}') } catch { /* ignore */ }
-    let meta: any = {}
-    try { meta = JSON.parse(acc?.enrich_meta || '{}') } catch { /* ignore */ }
-    return ENRICH_FIELD_ORDER.map((f) => {
-      const raw = FORMAL_SET.has(f) ? acc?.[f] : cf[f]
-      return {
-        field: f, label: FIELD_LABELS_WB[f],
-        value: raw == null ? '' : String(raw),
-        source: meta.fields?.[f]?.source as string | undefined,
-        confidence: meta.fields?.[f]?.confidence as number | undefined,
-        evidence: meta.fields?.[f]?.evidence as string | undefined,
-        locked: Boolean(meta.fields?.[f]?.locked)
-      }
-    })
-  }
-  const [editingField, setEditingField] = useState('')
-  const [editingValue, setEditingValue] = useState('')
-  const saveFieldManual = async (field: string) => {
-    const accId = Number(customerProfile?.account?.id || 0)
-    if (!accId) return
-    const r = await window.electronAPI.crm.manualSet(accId, field, editingValue)
-    setNotice(r.ok ? '已保存（该字段已锁定，AI 不再覆盖）' : `保存失败：${r.reason}`)
-    setEditingField('')
-    if (selectedCustomer) await openCustomer(selectedCustomer)
-  }
-  // 信息待确认裁决（客户 tab 顶部）：采纳=写入档案并锁定，放弃=丢弃该条 AI 填充
-  const applyInfo = async (it: any, action: 'accept' | 'reject') => {
-    const r = await window.electronAPI.crm.infoQueueApply(Number(it.account_id), String(it.field), action)
-    setNotice(r.ok ? (action === 'accept' ? `已采纳「${FIELD_LABELS_WB[it.field] || it.field}」` : '已放弃该条 AI 填充') : `失败：${r.reason}`)
-    await fetchQueues()
-  }
-  const openInfoCustomer = async (accountId: number) => {
-    setTab('customers')
-    const rows = await fetchCustomers()
-    const hit = rows.find((x: any) => Number(x.id) === accountId)
-    if (hit) await openCustomer(hit)
-  }
-  const runEnrichOne = async (c: any) => {
-    if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 补全'); return }
-    setNotice(`AI 正在补全 ${c.name}…`)
-    const r = await window.electronAPI.crm.enrichRun(String(c.session_id), c.name)
-    setNotice(r.ok ? `${c.name}：自动写入 ${(r.updated || []).length} 项${(r.pending || []).length ? `，${(r.pending || []).length} 项待确认（客户列表上方处理）` : ''}${r.reason && !(r.updated || []).length ? `（${r.reason}）` : ''}` : `AI 补全失败：${r.reason}`)
-    await fetchCustomers()
-    if (selectedCustomer?.id === c.id) await openCustomer(c)
-  }
-  const [backfilling, setBackfilling] = useState(false)
-  const runBackfill = async () => {
-    setBackfilling(true)
-    setNotice('批量 AI 补全进行中（串行执行，可能需要一两分钟）…')
-    try {
-      const r = await window.electronAPI.crm.enrichBackfill()
-      setNotice(`批量 AI 补全完成：处理 ${r.processed} 个客户，有更新 ${r.updated}，失败 ${r.failed}`)
-    } catch (e) { setNotice(`批量补全失败：${e}`) }
-    setBackfilling(false)
-    await fetchCustomers()
-  }
-
-  const createContractForCustomer = (c: any) => {
-    setSelected(null)
-    setTab('contracts')
-    setNewAccountId(Number(c.id))
-    setNewName(c.name)
-    setNewAmount('')
-    // 甲方开票信息自动带出（account.custom_fields 已有则回填）
-    let cf: Record<string, any> = {}
-    try { cf = JSON.parse(c.custom_fields || '{}') } catch { /* ignore */ }
-    setNewBuyerAddr(String(cf.buyer_addr || ''))
-    setNewBuyerBank(String(cf.buyer_bank || ''))
-    setNewBuyerAccount(String(cf.buyer_account || ''))
-    setNewBuyerTax(String(cf.tax_no || ''))
-    setNewBuyerPhone(String(cf.buyer_phone || c.phone || ''))
-    if (!products.length) void fetchProducts()
-    setShowNew(true)
-  }
-
-  const genDeepAnalysis = async (c: any) => {
-    if (!c.session_id) { setNotice('该客户未关联微信会话，无法深度分析'); return }
-    setDeepLoading(true)
-    setDeepReport('')
-    const r = await window.electronAPI.crm.customerDeepAnalysis(String(c.session_id), c.name)
-    setDeepLoading(false)
-    if (r.ok && r.report) setDeepReport(r.report)
-    else setNotice(`深度分析失败：${r.reason}`)
-  }
-
-  // 列表行直接触发：先展开档案（让报告有展示位置），再发起深度分析
-  const genDeepAnalysisFromList = (c: any) => {
-    if (!c.session_id) { setNotice('该客户未关联微信会话，无法深度分析'); return }
-    void openCustomer(c).then(() => genDeepAnalysis(c))
-  }
 
   const deleteContract = async (c: any) => {
     const ok = window.confirm(`确定删除合同「${c.name}」？\n将一并删除该合同的报价单、发票、物流、回款归属等子数据。\n（删除前会自动备份数据库）`)
@@ -274,26 +128,6 @@ export default function CrmWorkbenchPage() {
     const r = await window.electronAPI.crm.contractDelete(c.id)
     setNotice(r.ok ? `已删除合同「${c.name}」（含 ${r.removed ?? 0} 条子资源）` : `删除失败：${r.reason}`)
     if (r.ok) { await fetchWorkbench(); void fetchStats(); if (selected?.id === c.id) setSelected(null) }
-  }
-
-  const deleteCustomer = async (c: any) => {
-    const ok = window.confirm(`确定删除客户「${c.name}」？\n将一并删除该客户的全部合同及其报价单、发票、物流、回款归属等数据。\n（删除前会自动备份数据库）`)
-    if (!ok) return
-    const r = await window.electronAPI.crm.customerDelete(c.id)
-    setNotice(r.ok ? `已删除客户「${c.name}」` : `删除失败：${r.reason}`)
-    if (r.ok) { await fetchCustomers(); if (selectedCustomer?.id === c.id) setSelectedCustomer(null) }
-  }
-
-  const genAiQuotation = async (c: any) => {
-    if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 报价'); return }
-    setNotice('AI 正在提取需求并选型…')
-    const r = await window.electronAPI.crm.quotationAi(String(c.session_id), c.name)
-    if (r.ok) {
-      setNotice(`AI 报价单已生成（${r.matched?.map((m) => m.productName).join('、') || ''}）`)
-      if (selected?.id === c.id) await select(selected)
-    } else {
-      setNotice(`AI 报价失败：${r.reason}`)
-    }
   }
 
   const select = async (c: any) => {
@@ -406,12 +240,8 @@ export default function CrmWorkbenchPage() {
   return (
     <div className="crm-workbench-page">
       <div className="crm-header">
-        <h2><Briefcase size={18} /> CRM 工作台</h2>
-        <div className="crm-tabs">
-          <button className={`crm-tab ${tab === 'contracts' ? 'active' : ''}`} onClick={() => setTab('contracts')}>合同 ({workbench.length})</button>
-          <button className={`crm-tab ${tab === 'customers' ? 'active' : ''}`} onClick={() => void fetchCustomers().then(() => setTab('customers'))}>客户 ({customers.length})</button>
-        </div>
-        <button className="crm-btn" onClick={() => { void fetchStats(); void fetchAccuracy(); if (tab === 'contracts') void fetchWorkbench(); else void fetchCustomers() }}><RefreshCw size={14} /> 刷新</button>
+        <h2><Briefcase size={18} /> 合同工作台</h2>
+        <button className="crm-btn" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
         <button className="crm-btn" onClick={() => { setShowNew((v) => !v); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -514,7 +344,7 @@ export default function CrmWorkbenchPage() {
           <button className="crm-btn primary" onClick={() => void createContract()}>创建</button>
         </div>
       )}
-      {tab === 'contracts' && (<table className="crm-table">
+      <table className="crm-table">
         <thead><tr><th>合同</th><th>金额</th><th>已确认回款</th><th>全款进度</th><th>状态</th><th>预警</th><th>操作</th></tr></thead>
         <tbody>
           {workbench.map((c) => (
@@ -534,181 +364,7 @@ export default function CrmWorkbenchPage() {
             </tr>
           ))}
         </tbody>
-      </table>)}
-
-      {tab === 'customers' && (
-        <>
-          {queues.infoPending.length > 0 && (
-            <div className="crm-info-pending">
-              <button className="crm-info-pending__head" onClick={() => setShowInfoPending((v) => !v)}>
-                <span>⚡ 信息待确认（{queues.infoPending.length}）</span>
-                <span className="crm-info-pending__toggle">{showInfoPending ? '收起 ▲' : '展开 ▼'}</span>
-              </button>
-              {showInfoPending && (
-                <div className="crm-info-pending__list">
-                  {queues.infoPending.map((it: any) => (
-                    <div key={`${it.account_id}-${it.field}`} className="crm-info-pending__item">
-                      <span>
-                        <strong>{it.account_name}</strong> · {FIELD_LABELS_WB[it.field] || it.field} → {it.value}
-                        <em className="crm-info-pending__src">置信 {Math.round((it.confidence || 0) * 100)}%{it.evidence ? ` · 证据「${String(it.evidence).slice(0, 40)}」` : ''}</em>
-                      </span>
-                      <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
-                      <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
-                      <button className="crm-btn" onClick={() => void openInfoCustomer(Number(it.account_id))}>查看档案</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <div className="crm-filter-bar">
-            <select className="crm-filter-select" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
-              <option value="">全部阶段</option>
-              {stageOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <span className="crm-filter-count">共 {filteredCustomers.length} / {customers.length} 个客户</span>
-            <button className="crm-btn crm-filter-backfill" onClick={() => void runBackfill()} disabled={backfilling}>
-              <Sparkles size={13} /> {backfilling ? 'AI 补全中…' : '批量 AI 补全'}
-            </button>
-          </div>
-          <table className="crm-table">
-            <thead><tr><th>客户</th><th>公司</th><th>AI 阶段</th><th>AI 填充度</th><th>合同</th><th>累计回款</th><th>导入时间</th><th>操作</th></tr></thead>
-            <tbody>
-              {filteredCustomers.map((c) => (
-                <tr key={c.id} className={selectedCustomer?.id === c.id ? 'active' : ''} onClick={() => void openCustomer(c)}>
-                  <td>{displayNameOf(c)}{c.session_id ? <span className="crm-badge">AI</span> : ''}</td>
-                  <td>{c.company || <span className="crm-muted">-</span>}</td>
-                  <td>{stageLabel(c)}</td>
-                  <td><span className={`crm-fill ${(c.enrich_filled ?? 0) >= 6 ? 'crm-fill--hi' : (c.enrich_filled ?? 0) >= 3 ? 'crm-fill--mid' : 'crm-fill--lo'}`}>{c.enrich_filled ?? 0}/{c.enrich_total ?? 12}</span></td>
-                  <td>{c.contract_count}</td>
-                  <td>{Number(c.credited_total ?? 0).toLocaleString()}</td>
-                  <td>{c.imported_at ? new Date(Number(c.imported_at)).toLocaleDateString('zh-CN') : '-'}</td>
-                  <td onClick={(e) => e.stopPropagation()}>
-                    <button className="crm-btn" onClick={() => void openChat(c)} disabled={!c.session_id}><MessageCircle size={13} /> 打开聊天</button>
-                    <button className="crm-btn" onClick={() => void runEnrichOne(c)} disabled={!c.session_id}><Sparkles size={13} /> AI 补全</button>
-                    <button className="crm-btn" onClick={() => void genDeepAnalysisFromList(c)}><Sparkles size={13} /> 深度分析</button>
-                    <button className="crm-btn" onClick={() => void createContractForCustomer(c)}><Plus size={13} /> 建合同</button>
-                    <button className="crm-btn danger" onClick={() => void deleteCustomer(c)}><Trash2 size={13} /> 删除</button>
-                  </td>
-                </tr>
-              ))}
-              {filteredCustomers.length === 0 && (
-                <tr><td colSpan={8} className="crm-empty">
-                  {customers.length === 0 ? '暂无客户 —— 在「设置 → AI 画像」生成客户画像后，有意向的客户会自动导入这里' : '该阶段暂无客户'}
-                </td></tr>
-              )}
-            </tbody>
-          </table>
-
-          {selectedCustomer && (
-            <div className="crm-detail">
-              <div className="crm-detail-head">
-                <h3>{selectedCustomer.name} · 客户档案</h3>
-                <div className="crm-detail-actions">
-                  <button className="crm-btn" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
-                  <button className="crm-btn" onClick={() => void runEnrichOne(selectedCustomer)} disabled={!selectedCustomer.session_id}><Sparkles size={13} /> AI 补全</button>
-                  <button className="crm-btn" onClick={() => void genDeepAnalysis(selectedCustomer)}><Sparkles size={13} /> {deepLoading ? '分析中…' : '深度分析'}</button>
-                  <button className="crm-btn" onClick={() => void genAiQuotation(selectedCustomer)}><Sparkles size={13} /> AI 报价</button>
-                  <button className="crm-btn primary" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
-                </div>
-              </div>
-              {profileLoading && <div className="crm-insight">加载档案…</div>}
-              {!selectedCustomer.session_id && <div className="crm-insight">（未关联微信会话，无 AI 档案）</div>}
-              {!profileLoading && selectedCustomer.session_id && customerProfile && (
-                <div className="crm-profile">
-                  <div className="crm-profile__section">
-                    <h4>客户信息 <span className="crm-profile__hint">点击字段可编辑，手改后 AI 不再覆盖</span></h4>
-                    <div className="crm-field-grid">
-                      {accountFieldView(customerProfile.account).map((f) => (
-                        <div key={f.field} className={`crm-field ${f.value ? '' : 'crm-field--empty'}`}>
-                          <div className="crm-field__head">
-                            <span className="crm-field__label">{f.label}</span>
-                            {f.value && f.source === 'ai' && (
-                              <span className="crm-field__badge crm-field__badge--ai" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
-                                🤖 {Math.round((f.confidence ?? 0) * 100)}%
-                              </span>
-                            )}
-                            {f.value && f.source === 'manual' && <span className="crm-field__badge crm-field__badge--manual">✍️ 手动</span>}
-                          </div>
-                          {editingField === f.field ? (
-                            <div className="crm-field__edit">
-                              <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
-                              <button className="crm-btn primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
-                              <button className="crm-btn" onClick={() => setEditingField('')}>取消</button>
-                            </div>
-                          ) : (
-                            <div className="crm-field__value" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
-                              title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
-                              {f.value || '未提取'}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  {(customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
-                    <div className="crm-profile__section">
-                      <h4>动态时间线</h4>
-                      <div className="crm-timeline">
-                        {[
-                          // Customer 360：CRM 业务动作（后端已聚合 6 实体）+ 线索流转 + 商机事件 + AI 见解，一条流混排
-                          ...(customerProfile.activities || []).map((a: any) => ({ at: Number(a.at ?? a.created_at ?? 0), kind: String(a.kind || 'crm'), text: String(a.text || a.detail || a.action || '') })),
-                          ...(customerProfile.insights || []).map((i: any) => ({ at: Number(i.createdAt || 0), kind: 'insight', text: String(i.insight || '') }))
-                        ].sort((x: any, y: any) => y.at - x.at).slice(0, 40).map((e: any, idx: number) => (
-                          <div key={idx} className="crm-timeline__item">
-                            <span className="crm-timeline__time">{new Date(e.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-                            <span className={`crm-timeline__tag ${e.kind}`}>{TIMELINE_KIND_LABEL[e.kind] || 'CRM'}</span>
-                            <span className="crm-timeline__text">{e.text}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {customerProfile.aiProfile && (
-                    <div className="crm-profile__section">
-                      <h4>AI 画像</h4>
-                      <div className="crm-insight">{customerProfile.aiProfile}</div>
-                    </div>
-                  )}
-                  {customerProfile.advice && (customerProfile.advice.nextMove || customerProfile.advice.whyNow) && !customerProfile.advice.notConfigured && (
-                    <div className="crm-profile__section">
-                      <h4>AI 下一步建议</h4>
-                      <div className="crm-insight">
-                        {customerProfile.advice.whyNow && <div className="ai-row"><span className="ai-row__label">为什么现在</span><span>{customerProfile.advice.whyNow}</span></div>}
-                        {customerProfile.advice.opportunity && <div className="ai-row"><span className="ai-row__label">机会</span><span>{customerProfile.advice.opportunity}</span></div>}
-                        {customerProfile.advice.riskSignal && <div className="ai-row"><span className="ai-row__label">风险</span><span>{customerProfile.advice.riskSignal}</span></div>}
-                        {customerProfile.advice.script && <div className="ai-row"><span className="ai-row__label">话术</span><span>{customerProfile.advice.script}</span></div>}
-                        {customerProfile.advice.nextMove && <div className="ai-row"><span className="ai-row__label">下一步</span><span>{customerProfile.advice.nextMove}</span></div>}
-                      </div>
-                    </div>
-                  )}
-                  {customerProfile.todos?.length > 0 && (
-                    <div className="crm-profile__section">
-                      <h4>跟进待办（{customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').length}）</h4>
-                      {customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').map((t: any) => (
-                        <div key={t.id} className="crm-row">{t.promise_summary || t.title} [{t.status}]</div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="crm-profile__section">
-                    <h4>业务</h4>
-                    <div className="crm-row">合同 {customerProfile.contracts?.length ?? 0} 份 · 已确认回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()}</div>
-                  </div>
-                </div>
-              )}
-              {deepReport && (
-                <div className="crm-profile">
-                  <div className="crm-profile__section">
-                    <h4>资深销售助理 · 深度分析</h4>
-                    <div className="crm-insight crm-deep-report">{deepReport}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
+      </table>
 
       {selected && (
         <div className="crm-detail">

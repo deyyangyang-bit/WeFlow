@@ -9,6 +9,7 @@ import { wcdbService } from './wcdbService'
 import { salesDbService, type CustomerProfile } from './salesDbService'
 import { crmDbService } from './crmDbService'
 import { normalizeStage } from './salesActionEngine'
+import { CANONICAL_TO_CN } from '../../shared/salesStage'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
 
@@ -61,10 +62,8 @@ export interface WeeklyReviewStats {
 
 // ─── 阶段语义 ─────────────────────────────────────────────────────────────────
 
-/** 英文阶段 → 中文展示名（customer_profile/intent 存英文或中文混存，统一归一化后转回中文展示） */
-export const STAGE_EN_TO_CN: Record<string, string> = {
-  new: '新客', contacted: '了解', quoted: '比价', negotiating: '决策', won: '成交', lost: '流失', dormant: '沉默', unknown: '未知'
-}
+/** 英文阶段 → 中文展示名（共享层 canonical 唯一源，保留 Record<string,string> 类型兼容索引） */
+export const STAGE_EN_TO_CN: Record<string, string> = { ...CANONICAL_TO_CN }
 
 /** 阶段序：用于「热了」= 本周阶段相对上周前进 判定 */
 const STAGE_ORDER: Record<string, number> = {

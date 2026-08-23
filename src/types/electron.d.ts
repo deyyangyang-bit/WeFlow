@@ -1795,7 +1795,14 @@ export interface ElectronAPI {
     customerUpsert: (data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
     dashboardStats: () => Promise<{ success: boolean; stats?: DashboardStats; error?: string }>
-    funnelStats: () => Promise<{ success: boolean; data?: { stageDistribution: Array<{ stage: string; count: number }>; intentTimeline: Array<{ date: string; stage: string; count: number }>; totalCustomers: number }; error?: string }>
+    funnelStats: (days?: number) => Promise<{ success: boolean; data?: {
+      funnel: Array<{ stage: string; count: number }>
+      conversion: Array<{ from: string; to: string; rate: number }>
+      intentTimeline: Array<{ date: string; stage: string; count: number }>
+      currentDistribution: Array<{ stage: string; count: number }>
+      totalCustomers: number
+      newCustomersInWindow: number
+    }; error?: string }>
     customerExport: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
     customerDetail: (sessionId: string) => Promise<{
       success: boolean;
