@@ -12,8 +12,7 @@
  * 口径真源：electron/services/actionFunnel.ts（§2.36）；本页只消费不重算。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, X, Filter } from 'lucide-react'
-import ReactECharts from 'echarts-for-react'
+import { RefreshCw, X, Filter, ArrowDown, Info } from 'lucide-react'
 import './ActionFunnelPage.scss'
 
 interface FunnelData {
@@ -40,12 +39,19 @@ interface BreakdownData {
 const DAY_OPTIONS = [
   { label: '近7天', value: 7 },
   { label: '近30天', value: 30 },
+  { label: '近90天', value: 90 },
   { label: '全部', value: 0 }
 ] as const
 
-// 五段行为阶段色（渐进蓝→绿：越往下越接近成交；与 CRM stage 漏斗色语义分离）
-const STAGE_COLORS = ['#60a5fa', '#8b5cf6', '#f59e0b', '#ef4444', '#16a34a']
+// 五段行为阶段色：浅蓝→藏青渐变（与销售漏斗同一视觉体系；成交段同款藏青呼应，P0-4.4）
+const STAGE_COLORS = ['#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1e3a8a']
 const STAGE_NAMES = ['行动产生', '销售执行', '客户响应', '有效推进', '成交']
+
+/** 推进/成交段与销售漏斗的映射关系（tooltip 弱化，非常驻文字） */
+const STAGE_MAPPINGS: Partial<Record<string, string>> = {
+  progressed: '有效推进 = 比价→决策→成交 的阶段变更（customer_profile.stage 变更）',
+  won: '成交 = 销售漏斗「成交」档（同一 customer_profile.stage 口径）'
+}
 
 /** 下钻弹层内容（统一结构：说明行 + 可选事件明细 + 可选任务样本 + 口径注）；value 兼容 number（事件计数直传） */
 interface DrillContent {
@@ -90,13 +96,15 @@ function KpiCard({ label, value, note, highlight, onClick }: KpiCardProps) {
   )
 }
 
+type DrillKey = 'executed' | 'responded' | 'created' | 'progressed' | 'won'
+
 export default function ActionFunnelPage() {
   const [days, setDays] = useState(7)
   const [data, setData] = useState<FunnelData | null>(null)
   const [breakdown, setBreakdown] = useState<BreakdownData | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [drill, setDrill] = useState<'executed' | 'responded' | 'created' | 'progressed' | 'won' | null>(null)
+  const [drill, setDrill] = useState<DrillKey | null>(null)
 
   const fetch = useCallback(async (d: number) => {
     setLoading(true)
@@ -115,28 +123,19 @@ export default function ActionFunnelPage() {
 
   useEffect(() => { void fetch(days) }, [days, fetch])
 
-  // ECharts 五段漏斗（sort:'none' 保留真实大小；无样本段不画——分母 0 由 KPI N/A 表达）
-  const funnelOption = useMemo(() => {
+  // 自绘五段漏斗数据（P0-4.4 HTML/CSS 梯形替代 ECharts——hover/点击态/箭头/tooltip 全可控；
+  // 每段 = 段名 + 人数（大字）+ 相邻转化率（小字；第 1 段为源头不显示；N/A = 分母 0 不硬算）
+  const funnelStages = useMemo(() => {
     if (!data) return null
-    const values = [data.stages.created, data.stages.executed, data.stages.responded, data.stages.progressed, data.stages.won]
-    if (!values.some((v) => v > 0)) return null
-    return {
-      tooltip: { trigger: 'item' as const, formatter: (p: { name?: string; value?: number }) => `${p.name}: ${p.value ?? 0} 个行动` },
-      series: [{
-        type: 'funnel', left: '16%', right: '16%', top: 12, bottom: 12,
-        minSize: '16%', maxSize: '100%', sort: 'none' as const, gap: 4,
-        label: { show: true, position: 'inside' as const, fontSize: 12, color: '#fff' },
-        itemStyle: { borderWidth: 0 },
-        emphasis: { label: { fontSize: 14 } },
-        data: values.map((v, i) => ({
-          name: STAGE_NAMES[i],
-          value: v,
-          itemStyle: { color: STAGE_COLORS[i] },
-          label: { formatter: v > 0 ? `${STAGE_NAMES[i]}  ${v}` : `${STAGE_NAMES[i]}  0` }
-        }))
-      }]
-    }
+    return [
+      { key: 'created', name: STAGE_NAMES[0], count: data.stages.created, rate: null as number | null },
+      { key: 'executed', name: STAGE_NAMES[1], count: data.stages.executed, rate: data.rates.execution },
+      { key: 'responded', name: STAGE_NAMES[2], count: data.stages.responded, rate: data.rates.response },
+      { key: 'progressed', name: STAGE_NAMES[3], count: data.stages.progressed, rate: data.rates.progression },
+      { key: 'won', name: STAGE_NAMES[4], count: data.stages.won, rate: data.rates.conversion }
+    ] as Array<{ key: DrillKey; name: string; count: number; rate: number | null }>
   }, [data])
+  const hasAny = funnelStages?.some((s) => s.count > 0) ?? false
 
   // 下钻说明文案（数字可解释，不裸给数字；执行/响应有事件明细，推进/成交只有口径说明）
   const drillContent = useMemo(() => {
@@ -243,10 +242,39 @@ export default function ActionFunnelPage() {
             <span className="af-exposed__hint">（今日行动卡加载无 read 事件，G1 本期不做——不为好看硬算曝光率）</span>
           </div>
 
-          {/* 五段漏斗（不含曝光段——无数字不入图） */}
+          {/* 五段漏斗（自绘梯形 + 段间箭头「链路感」；不含曝光段——无数字不入图） */}
           <div className="af-chart">
-            {funnelOption ? (
-              <ReactECharts option={funnelOption} style={{ height: 320 }} notMerge />
+            {funnelStages && hasAny ? (
+              <div className="af-funnel">
+                {funnelStages.map((s, i) => (
+                  <div className="af-funnel__col" key={s.key}>
+                    <button
+                      className={`af-funnel__stage${drill === s.key ? ' af-funnel__stage--active' : ''}`}
+                      style={{
+                        width: `${100 - i * 12}%`,
+                        background: STAGE_COLORS[i],
+                        clipPath: 'polygon(4% 0, 96% 0, 100% 100%, 0 100%)'
+                      }}
+                      onClick={() => setDrill(s.key)}
+                    >
+                      <span className="af-funnel__name">{s.name}</span>
+                      <span className="af-funnel__count">{s.count}</span>
+                      <span className="af-funnel__rate">
+                        {s.rate === null ? (i === 0 ? '源头' : 'N/A') : `转化 ${Math.round(s.rate * 100)}%`}
+                      </span>
+                    </button>
+                    {STAGE_MAPPINGS[s.key] && (
+                      <span className="af-funnel__map" tabIndex={0} aria-label="口径说明">
+                        <Info size={11} />
+                        <span className="af-funnel__map-tip">{STAGE_MAPPINGS[s.key]}</span>
+                      </span>
+                    )}
+                    {i < funnelStages.length - 1 && (
+                      <div className="af-funnel__arrow"><ArrowDown size={14} /></div>
+                    )}
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="af-empty">暂无行动数据</div>
             )}

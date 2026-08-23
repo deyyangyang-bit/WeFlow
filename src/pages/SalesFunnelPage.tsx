@@ -20,11 +20,12 @@ interface FunnelStats {
 }
 
 const STAGE_ORDER = ['了解', '比价', '决策', '成交'] as const
-// 阶段色（项目既有 categorical theme，漏斗/工作台/商机共用同一套色相）
+// 阶段色：浅蓝→深蓝渐变（进行中档位），成交藏青强调，流失中性灰——与行动漏斗同一视觉体系（P0-4.4）
 const STAGE_COLORS: Record<string, string> = {
-  了解: '#60a5fa', 比价: '#f59e0b', 决策: '#ef4444', 成交: '#16a34a', 流失: '#94a3b8', 未知: '#cbd5e1'
+  了解: '#93c5fd', 比价: '#60a5fa', 决策: '#3b82f6', 成交: '#1e3a8a', 流失: '#94a3b8', 未知: '#cbd5e1'
 }
 const DAY_OPTIONS = [
+  { label: '近7天', value: 7 },
   { label: '近30天', value: 30 },
   { label: '近90天', value: 90 },
   { label: '全部', value: 0 }
@@ -54,6 +55,7 @@ export default function SalesFunnelPage() {
     data?.conversion.find((c) => c.from === from && c.to === to)?.rate ?? 0, [data])
 
   // ECharts 漏斗（4 档，sort:'none' 保留真实档位大小；跳级使档位人数非严格递减）
+  // 每档：段名 + 人数（大字）+ 相邻转化率（小字浅色）；selectedMode 提供点击态视觉反馈
   const funnelOption = useMemo(() => {
     if (!data) return null
     const funnel = data.funnel.filter((f) => (STAGE_ORDER as readonly string[]).includes(f.stage))
@@ -63,17 +65,27 @@ export default function SalesFunnelPage() {
       series: [{
         type: 'funnel', left: '12%', right: '12%', top: 12, bottom: 12,
         minSize: '14%', maxSize: '100%', sort: 'none' as const, gap: 4,
-        label: { show: true, position: 'inside' as const, fontSize: 12, color: '#fff' },
-        itemStyle: { borderWidth: 0 },
-        emphasis: { label: { fontSize: 14 } },
-        data: funnel.map((n, i) => ({
-          name: n.stage, value: n.count,
-          itemStyle: { color: STAGE_COLORS[n.stage] },
-          label: {
-            formatter: n.count > 0
-              ? `${n.stage}  ${n.count} 人 · 转化 ${i === 0 ? 100 : rateOf(STAGE_ORDER[i - 1], n.stage)}%`
-              : `${n.stage}  0 人`
+        label: {
+          show: true, position: 'inside' as const, fontSize: 13, color: '#fff', lineHeight: 18,
+          rich: {
+            sub: { fontSize: 11, color: 'rgba(255,255,255,.85)' }
+          },
+          formatter: (p: { name?: string; value?: number }) => {
+            const i = Math.max(0, (STAGE_ORDER as readonly string[]).indexOf(String(p?.name ?? '')))
+            const rate = i === 0 ? 100 : rateOf(STAGE_ORDER[i - 1], STAGE_ORDER[i])
+            return `${p?.name ?? ''}  ${p?.value ?? 0} 人\n{sub|转化 ${rate}%}`
           }
+        },
+        itemStyle: { borderWidth: 0, borderColor: '#fff' },
+        emphasis: {
+          label: { fontSize: 14 },
+          itemStyle: { borderWidth: 2, borderColor: '#fff', shadowBlur: 10, shadowColor: 'rgba(15, 23, 42, .2)' }
+        },
+        selectedMode: 'single',
+        select: { itemStyle: { borderWidth: 2, borderColor: '#fff', shadowBlur: 10, shadowColor: 'rgba(30, 58, 138, .35)' } },
+        data: funnel.map((n) => ({
+          name: n.stage, value: n.count,
+          itemStyle: { color: STAGE_COLORS[n.stage] }
         }))
       }]
     }
@@ -115,6 +127,7 @@ export default function SalesFunnelPage() {
     <div className="funnel-page">
       <div className="funnel-header">
         <h2>销售漏斗</h2>
+        <span className="funnel-header__sub">客户当前所处销售阶段分布</span>
         <div className="funnel-days">
           {DAY_OPTIONS.map((o) => (
             <button
