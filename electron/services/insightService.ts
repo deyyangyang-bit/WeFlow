@@ -26,6 +26,8 @@ import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
 import { salesDbService } from './salesDbService'
 import { applyParsedStageSignal } from './salesInsightWrite'
+import { extractEvidence, toMessageSnippets } from './salesStageClassifier'
+import { persistSummaryJudgment } from './salesSummaryJudgment'
 import { crmDbService } from './crmDbService'
 import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
@@ -1787,12 +1789,15 @@ ${afterText}
     // ── 构建 prompt ────────────────────────────────────────────────────────────
 
     let contextSection = ''
+    // P0-2C.2：summary 判断的证据（客户最近一条实质消息原话，P0-1 护栏；无可靠 key → unavailable 不伪造）
+    let summaryEvidence: { messageKey?: string; evidenceText?: string } = {}
     if (allowContext) {
       try {
         const msgsResult = await chatService.getLatestMessages(sessionId, contextCount)
         if (msgsResult.success && msgsResult.messages && msgsResult.messages.length > 0) {
           const messages: Message[] = msgsResult.messages
           contextSection = this.buildInsightContextSection(messages, resolvedDisplayName)
+          summaryEvidence = extractEvidence(toMessageSnippets(messages))
           insightLog('INFO', `已加载 ${messages.length} 条上下文消息`)
         }
       } catch (e) {
@@ -1944,6 +1949,21 @@ ${afterText}
         log: recordLog,
         salesStage: finalSalesStage
       })
+
+      // P0-2C.2：summary 判断落 customer_judgment（append-only；证据=客户最近一条实质消息，
+      // 无可靠 messageKey → evidence unavailable 不伪造）。落库失败不阻断见解主流程。
+      try {
+        persistSummaryJudgment({
+          sessionId,
+          insight,
+          model: recordLog.model,
+          generatedAt: recordLog.createdAt,
+          triggerReason,
+          evidence: summaryEvidence
+        })
+      } catch (e) {
+        insightLog('WARN', `summary 判断落库失败（不阻断见解主流程）: ${(e as Error).message}`)
+      }
 
       // AI 见解判定出意向阶段 → 自动导入 CRM（幂等；了解/比价/决策/成交=有意向）
       if (finalSalesStage) crmImported = this.importIntentCustomerToCrm(sessionId, resolvedDisplayName, finalSalesStage)
