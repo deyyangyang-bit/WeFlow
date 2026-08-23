@@ -72,12 +72,13 @@ async function main(): Promise<void> {
   })()
   ok('A1 customerEventAdd 出现点 = 3（定义 + E3.2 helper + E3.3 recordUserActionEvent）', callSites.length === 3)
 
-  // A2: 零消费者（Scope Lock ⑥）
+  // A2: 消费者仅 Action Funnel（Scope Lock ⑥ 四消费者不迁；P0-4.2.2 起 getActionFunnel 为唯一正当只读消费者）
   const consumers = allSource().filter((f) => {
     const code = strip(readFileSync(f, 'utf8'))
     return /customerEventsBySession|customerEventsByType/.test(code)
   }).filter((f) => !f.includes('salesDbService'))
-  ok(`A2 customerEventsBySession/ByType 零消费者（当前 ${consumers.length} 个）`, consumers.length === 0)
+  ok(`A2 customerEventsBySession/ByType 仅 Action Funnel 消费（当前 ${consumers.length} 个：getActionFunnel；四消费者仍不迁）`,
+    consumers.length === 1 && consumers[0].includes('actionFunnel'))
 
   // A3: 无绕过 DDL 的直接 SQL（除 SCHEMA_SQL 定义处）
   const directSql = allSource().filter((f) => {

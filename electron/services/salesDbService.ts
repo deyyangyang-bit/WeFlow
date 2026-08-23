@@ -728,6 +728,12 @@ class SalesDbService {
 
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
 
+  /** P0-4.2.2：窗口内创建的任务（created_at >= ms，ms=null 全量；Action Funnel created 段数据源） */
+  tasksCreatedSince(ms: number | null): FollowUpTask[] {
+    if (ms === null) return this.all<FollowUpTask>('SELECT * FROM follow_up_task ORDER BY created_at ASC')
+    return this.all<FollowUpTask>('SELECT * FROM follow_up_task WHERE created_at >= ? ORDER BY created_at ASC', [ms])
+  }
+
   todoList(filters?: { status?: string; session_id?: string; limit?: number }): FollowUpTask[] {
     let sql = 'SELECT * FROM follow_up_task'
     const params: unknown[] = []
