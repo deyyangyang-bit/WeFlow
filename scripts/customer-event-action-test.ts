@@ -21,6 +21,13 @@
  *     12 script_copied 上报 → 写入成功；无可靠 messageKey 不伪造（null）
  *     13 白名单外类型 → 拒绝写入（不抛错，仅 WARN）
  *     14 空 sessionId → 直接返回不写入（容错）
+ *   P0-4.2.1 correlation（task_id）：
+ *     A2' follow_up_done 携带 before.id（completeAction → recordUserActionEvent 四参）
+ *     A3' IPC 通道透传 taskId（typeof number 才传，其余 → null）
+ *     A4' preload actionRecordEvent 签名含 taskId
+ *     A5' AIActionCard 从 sources[].rawTaskId 提取 taskId（无 task 卡 undefined → NULL）
+ *     B9' follow_up_done 事件 task_id = task.id
+ *     B15 无 taskId 的上报 → task_id NULL（不伪造）
  *
  * 运行：npx tsx scripts/customer-event-action-test.ts
  */
@@ -55,15 +62,24 @@ async function main(): Promise<void> {
     /\['script_copied', 'chat_opened', 'follow_up_done'\]\.includes\(eventType\)/.test(engineCode))
   ok('A2 completeAction 内 before 状态检查 + follow_up_done 写入（状态转换成功后）',
     /const before = salesDbService\.getTask\(taskId\)/.test(engineCode) &&
-    /before\.status !== 'done' && before\.status !== 'skipped'/.test(engineCode) &&
-    /recordUserActionEvent\(before\.session_id, 'follow_up_done', null\)/.test(engineCode))
+    /before\.status !== 'done' && before\.status !== 'skipped'/.test(engineCode))
+  // A2': P0-4.2.1 follow_up_done 携带 before.id（correlation：哪条建议 → 哪次完成）
+  ok("A2' follow_up_done 携带 before.id（recordUserActionEvent 四参）",
+    /recordUserActionEvent\(before\.session_id, 'follow_up_done', null, before\.id\)/.test(engineCode))
   ok('A3 main.ts 有 sales:action:recordEvent IPC 通道（薄调 → recordUserActionEvent）',
     /ipcMain\.handle\('sales:action:recordEvent'/.test(mainCode) &&
-    /recordUserActionEvent\(String\(p\.sessionId \|\| ''\), p\.eventType as any, p\.messageKey \|\| null\)/.test(mainCode))
-  ok('A4 preload 暴露 actionRecordEvent', /actionRecordEvent: \(p: \{ sessionId: string; eventType: string; messageKey\?: string \| null \}\)/.test(preloadSrc))
-  ok('A5 AIActionCard：打开聊天成功 → chat_opened；复制成功 → script_copied',
+    /recordUserActionEvent\(String\(p\.sessionId \|\| ''\), p\.eventType as any, p\.messageKey \|\| null, typeof p\.taskId === 'number' \? p\.taskId : null\)/.test(mainCode))
+  ok("A3' IPC 通道透传 taskId（typeof number 才传，其余 → null）",
+    /taskId\?: number \| null \}/.test(mainCode))
+  ok("A4 preload 暴露 actionRecordEvent（签名含 taskId）",
+    /actionRecordEvent: \(p: \{ sessionId: string; eventType: string; messageKey\?: string \| null; taskId\?: number \| null \}\)/.test(preloadSrc))
+  ok("A5 AIActionCard：打开聊天成功 → chat_opened；复制成功 → script_copied",
     /navigate\(`\/chat\?sessionId=/.test(cardCode) && /eventType: 'chat_opened'/.test(cardCode) &&
     /eventType: 'script_copied'/.test(cardCode) && /setCopied\(true\)/.test(cardCode))
+  ok("A5' AIActionCard 从 sources[].rawTaskId 提取 taskId 并随事件上报（无 task 卡 undefined → NULL）",
+    /const taskId = item\.sources\.find\(s => s\.type === 'task'\)\?\.rawTaskId \?\? undefined/.test(cardCode) &&
+    /\{ sessionId: item\.sessionId, eventType: 'chat_opened', taskId \}/.test(cardCode) &&
+    /\{ sessionId: item\.sessionId, eventType: 'script_copied', taskId \}/.test(cardCode))
   ok('A6 follow_up_done 不经 IPC 通道（前端无 follow_up_done 提交，防双写）', !/follow_up_done/.test(cardCode))
   ok('A7 不新增第二套 action log（salesActionEngine 无新表 INSERT）',
     !/INSERT INTO (activity_log|lead_activity|action_log|user_action)/.test(engineCode))
@@ -85,6 +101,9 @@ async function main(): Promise<void> {
   ok('B9 pending→done 产生恰好一条 follow_up_done（source=manual，session 正确）',
     doneEvents.length === 1 && doneEvents[0].source === 'manual' &&
     doneEvents[0].session_id === 'wx_cea_1' && doneEvents[0].message_key === null)
+  // B9': P0-4.2.1 follow_up_done 事件 task_id = task.id（completeAction 直写 before.id）
+  ok("B9' follow_up_done 事件 task_id = task.id（correlation 直写）",
+    doneEvents[0].task_id === task.id)
 
   // B10: 重复完成 → 不新增
   completeAction(task.id!, 'done')
@@ -101,11 +120,19 @@ async function main(): Promise<void> {
     salesDbService.customerEventsByType('follow_up_done').length === 1)
 
   // B12: script_copied 上报 → 写入成功；无可靠 messageKey 不伪造（null）
-  recordUserActionEvent('wx_cea_3', 'script_copied', null)
-  const copiedEvents = salesDbService.customerEventsByType('script_copied')
+  // P0-4.2.1: 带 taskId 上报 → task_id 落库（前端 rawTaskId 通道等价验证）
+  recordUserActionEvent('wx_cea_3', 'script_copied', null, 42)
+  let copiedEvents = salesDbService.customerEventsByType('script_copied')
   ok('B12 script_copied 写入成功（source=manual，无 messageKey 不伪造→null）',
     copiedEvents.length === 1 && copiedEvents[0].source === 'manual' &&
-    copiedEvents[0].session_id === 'wx_cea_3' && copiedEvents[0].message_key === null)
+    copiedEvents[0].session_id === 'wx_cea_3' && copiedEvents[0].message_key === null &&
+    copiedEvents[0].task_id === 42)
+
+  // B15: 无 taskId 上报（如 insight 卡）→ task_id NULL，不伪造
+  recordUserActionEvent('wx_cea_5', 'chat_opened', null)
+  const openEvents = salesDbService.customerEventsByType('chat_opened')
+  ok('B15 无 taskId 上报 → task_id NULL（insight 卡等无任务上下文，不伪造）',
+    openEvents.length === 1 && openEvents[0].task_id === null)
 
   // B13: 白名单外类型 → 拒绝写入（不抛错，仅 WARN）
   let threw = false
@@ -115,10 +142,11 @@ async function main(): Promise<void> {
   ok('B13 白名单外类型拒绝写入（不抛错，事件不产生）',
     threw === false && salesDbService.customerEventsByType('action_copied' as any).length === 0)
 
-  // B14: 空 sessionId → 直接返回不写入（容错）
+  // B14: 空 sessionId → 直接返回不写入（容错；相对计数——B15 已写入一条 chat_opened）
+  const openBefore = salesDbService.customerEventsByType('chat_opened').length
   recordUserActionEvent('', 'chat_opened', null)
   ok('B14 空 sessionId 直接返回不写入（容错）',
-    salesDbService.customerEventsByType('chat_opened').length === 0)
+    salesDbService.customerEventsByType('chat_opened').length === openBefore)
 
   console.log(`customer-event-action-test: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)

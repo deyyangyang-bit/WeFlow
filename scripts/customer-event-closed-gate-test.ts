@@ -94,8 +94,8 @@ async function main(): Promise<void> {
   ok('A4c script_copied/chat_opened 写点：recordUserActionEvent 白名单 + 前端成功点',
     /eventType: 'script_copied'/.test(cardCode) && /eventType: 'chat_opened'/.test(cardCode) &&
     /\['script_copied', 'chat_opened', 'follow_up_done'\]/.test(engineCode))
-  ok('A4d follow_up_done 写点仅 completeAction 状态转换（engine，before 门控）',
-    /recordUserActionEvent\(before\.session_id, 'follow_up_done', null\)/.test(engineCode))
+  ok('A4d follow_up_done 写点仅 completeAction 状态转换（engine，before 门控，P0-4.2.1 携带 before.id）',
+    /recordUserActionEvent\(before\.session_id, 'follow_up_done', null, before\.id\)/.test(engineCode))
 
   // A5: follow_up_done 不经 IPC（前端零提交）
   ok('A5 follow_up_done 不经 IPC（前端/主进程通道零提交）',

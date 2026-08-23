@@ -121,10 +121,12 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
 
   // 打开聊天：直达该客户的微信聊天页（一键执行第一步）
   // P0-3 E3.3：行动成功点后 fire-and-forget 上报 chat_opened（写失败不影响已成功的动作）
+  // P0-4.2.1：task_id 取卡片首个 task source 的 rawTaskId（correlation key；无 task 卡不伪造 → NULL）
+  const taskId = item.sources.find(s => s.type === 'task')?.rawTaskId ?? undefined
   const handleOpenChat = useCallback(() => {
     navigate(`/chat?sessionId=${encodeURIComponent(item.sessionId)}`)
-    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'chat_opened' })
-  }, [navigate, item.sessionId])
+    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'chat_opened', taskId })
+  }, [navigate, item.sessionId, taskId])
 
   // 复制话术：无话术先生成再复制，做到"一点即得可粘贴话术"
   const handleCopyScript = useCallback(async () => {
@@ -151,8 +153,9 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
     // P0-3 E3.3：复制成功后才上报 script_copied（fire-and-forget，写失败不影响"已复制"状态）
-    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'script_copied' })
-  }, [script, item, fetchSuggestion])
+    // P0-4.2.1：task_id = 卡片 task source 的 rawTaskId（无 task 卡不伪造 → NULL）
+    void (window as any).electronAPI?.sales?.actionRecordEvent?.({ sessionId: item.sessionId, eventType: 'script_copied', taskId })
+  }, [script, item, fetchSuggestion, taskId])
 
   const tierClass = item.urgencyTier === 'urgent'
     ? 'signal-card--urgent'

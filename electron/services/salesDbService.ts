@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS customer_judgment (
 CREATE TABLE IF NOT EXISTS customer_event (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
+  task_id INTEGER,
   event_type TEXT NOT NULL CHECK (event_type IN ('customer_replied', 'quote_asked', 'script_copied', 'chat_opened', 'follow_up_done')),
   message_key TEXT,
   evidence_text TEXT,
@@ -269,6 +270,9 @@ class SalesDbService {
     for (const [col, type] of [['message_key', 'TEXT'], ['evidence_text', 'TEXT']] as const) {
       try { this.db.run(`ALTER TABLE intent_tag_log ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: customer_event 行动关联列（P0-4.2.1 correlation：task_id 串「哪条建议 → 哪次执行」；
+    // NULL 允许——不是每个事件都有行动上下文，禁止伪造）
+    try { this.db.run('ALTER TABLE customer_event ADD COLUMN task_id INTEGER') } catch { /* 列已存在 */ }
     this.persist()
   }
 
@@ -697,8 +701,8 @@ class SalesDbService {
     }
     const created = input.createdAt ?? Date.now()
     this.run(
-      'INSERT INTO customer_event (session_id, event_type, message_key, evidence_text, source, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [input.session_id, input.event_type, input.message_key ?? null, input.evidence_text ?? null,
+      'INSERT INTO customer_event (session_id, task_id, event_type, message_key, evidence_text, source, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [input.session_id, input.task_id ?? null, input.event_type, input.message_key ?? null, input.evidence_text ?? null,
        input.source, input.metadata ?? null, created]
     )
     const id = this.lastInsertRowId()

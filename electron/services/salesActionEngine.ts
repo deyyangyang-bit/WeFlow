@@ -1203,6 +1203,7 @@ export async function generateSuggestion(actionItem: ActionItem): Promise<{ sugg
  * 完成/跳过行动项。
  * P0-3 E3.3：follow_up_done 行动事件在**状态转换成功之后**写入（系统确认"从未完成 → 完成"），
  * 重复完成（已 done/skipped）不产生新事件——与 last_stage_change_at 同一幂等思想。
+ * P0-4.2.1：事件携带 before.id 作 task_id（correlation：哪条建议 → 哪次完成）。
  */
 export function completeAction(taskId: number, action: 'done' | 'skipped'): void {
   const now = Date.now()
@@ -1210,7 +1211,7 @@ export function completeAction(taskId: number, action: 'done' | 'skipped'): void
     const before = salesDbService.getTask(taskId)
     salesDbService.todoUpdate(taskId, { status: 'done', completed_at: now })
     if (before?.id && before.status !== 'done' && before.status !== 'skipped' && before.session_id) {
-      recordUserActionEvent(before.session_id, 'follow_up_done', null)
+      recordUserActionEvent(before.session_id, 'follow_up_done', null, before.id)
     }
   } else {
     salesDbService.todoUpdate(taskId, { status: 'skipped' })
@@ -1222,11 +1223,14 @@ export function completeAction(taskId: number, action: 'done' | 'skipped'): void
  * 白名单校验（防万能日志表：仅行动三事件；follow_up_done 由 completeAction 状态转换触发，不经由此通道）；
  * 写失败只 WARN 不抛——行动成功与事件写入解耦，绝不影响原业务。
  * message_key 有消息上下文才传（canonical P0-2B），无可靠 key 必须留空（证据诚实，不伪造）。
+ * P0-4.2.1：taskId 为 correlation key（关联 follow_up_task.id），无任务上下文不传 → NULL，
+ * 禁止伪造——task_id 不是事件合法性的前置条件。
  */
 export function recordUserActionEvent(
   sessionId: string,
   eventType: 'script_copied' | 'chat_opened' | 'follow_up_done',
-  messageKey?: string | null
+  messageKey?: string | null,
+  taskId?: number | null
 ): void {
   try {
     if (!sessionId) return
@@ -1238,6 +1242,7 @@ export function recordUserActionEvent(
       session_id: sessionId,
       event_type: eventType,
       message_key: messageKey || null,
+      task_id: taskId ?? null,
       source: 'manual'
     })
   } catch (e) {

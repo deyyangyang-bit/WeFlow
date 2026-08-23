@@ -811,7 +811,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     actionGetUnified: () => ipcRenderer.invoke('sales:action:getUnified'),
     actionCompleteUnified: (sessionId: string, action: 'done' | 'skipped') => ipcRenderer.invoke('sales:action:completeUnified', sessionId, action),
     // P0-3 E3.3：销售行动事件上报（script_copied/chat_opened；follow_up_done 由主进程状态转换触发）
-    actionRecordEvent: (p: { sessionId: string; eventType: string; messageKey?: string | null }) =>
+    // P0-4.2.1：taskId 为 correlation key（卡片 sources[].rawTaskId），无任务上下文 NULL
+    actionRecordEvent: (p: { sessionId: string; eventType: string; messageKey?: string | null; taskId?: number | null }) =>
       ipcRenderer.invoke('sales:action:recordEvent', p),
 
     // 周复盘

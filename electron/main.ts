@@ -4920,9 +4920,10 @@ function registerIpcHandlers() {
 
   // P0-3 E3.3：销售行动事件上报（script_copied / chat_opened 由前端动作成功点提交；
   // follow_up_done 不经此通道——由 completeAction 状态转换自动触发，防双写/不可控）
-  ipcMain.handle('sales:action:recordEvent', async (_, p: { sessionId?: string; eventType?: string; messageKey?: string | null }) => {
+  // P0-4.2.1：透传 taskId（前端卡片 sources[].rawTaskId，无任务上下文 NULL——correlation key，非合法性前置）
+  ipcMain.handle('sales:action:recordEvent', async (_, p: { sessionId?: string; eventType?: string; messageKey?: string | null; taskId?: number | null }) => {
     if (!p || typeof p !== 'object') return { ok: false }
-    recordUserActionEvent(String(p.sessionId || ''), p.eventType as any, p.messageKey || null)
+    recordUserActionEvent(String(p.sessionId || ''), p.eventType as any, p.messageKey || null, typeof p.taskId === 'number' ? p.taskId : null)
     return { ok: true }
   })
 

@@ -17,6 +17,12 @@
  *
  * 幂等：有 message_key 的事件天然幂等（DB partial unique index，同 key 拒绝）；
  *   无 key 的手动事件（如手动标记跟进完成）允许重复。
+ *
+ * P0-4.2.1 correlation 三元组（哪条建议 → 哪次执行 → 哪次响应）：
+ *   session_id —— 客户轴（必填）
+ *   task_id    —— 行动轴（行动事件关联 follow_up_task.id；无任务上下文允许 NULL，禁止伪造）
+ *   message_key —— 证据轴（E3.2 客户行为事件；无可靠 key 必须留空）
+ *   task_id 是 correlation key，不是事件合法性的前置条件——不是每个事件都有行动上下文。
  */
 
 /** 首期事件类型（写入契约；排序 = 文档顺序，非业务权重） */
@@ -55,6 +61,8 @@ export interface CustomerEventRecord {
   id?: number
   /** 微信会话（session 轴，与 customer_profile.session_id 对齐） */
   session_id: string
+  /** 行动轴（P0-4.2.1）：关联 follow_up_task.id（哪条 AI 建议 → 哪次执行）；无任务上下文必须留空，禁止伪造 */
+  task_id?: number | null
   event_type: CustomerEventType
   /** 证据锚点：来源消息 messageKey（P0-2B 可回查原话）；无可靠 key 必须留空 */
   message_key?: string | null
