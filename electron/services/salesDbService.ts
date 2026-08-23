@@ -11,6 +11,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
 import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
+import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ export interface CustomerProfile {
   tags?: string
   notes?: string | null
   last_contact_at?: number | null
+  last_stage_change_at?: number | null
   created_at?: number
   updated_at?: number
 }
@@ -743,6 +745,32 @@ class SalesDbService {
       oppCount: opp?.count || 0,
       oppQuantity: opp?.quantity || 0,
       oppAmount: opp?.amount || 0
+    })
+  }
+
+  /**
+   * 客户当前状态读取模型（P0-2A.2）：把现有 stage 存储（中英混存 + dormant 曾混入）解释为
+   * 统一状态 stage(6) + activityState + stateMeta。只读，不改 schema。
+   * nowSec 可注入固定时间（测试）；生产默认 Date.now()/1000。
+   */
+  getCanonicalState(sessionId: string, nowSec?: number): CanonicalState | null {
+    const p = this.customerGetBySession(sessionId)
+    if (!p) return null
+    const recentIntents = this.intentHistory(sessionId, 20).map((r) => ({
+      stage: r.stage,
+      source: r.source ?? null,
+      confidence: r.confidence ?? null,
+      createdAt: r.created_at ?? null,
+      reason: r.reason ?? null,
+      evidenceText: r.evidence_text ?? null,
+      messageKey: r.message_key ?? null
+    }))
+    return computeCanonicalState({
+      rawStage: p.stage,
+      lastContactAt: Number(p.last_contact_at) || 0,
+      lastStageChangeAt: p.last_stage_change_at ?? null,
+      nowSec: nowSec ?? Math.floor(Date.now() / 1000),
+      recentIntents
     })
   }
 
