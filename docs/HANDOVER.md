@@ -1,11 +1,12 @@
 # WeFlow AI 销售助手 · 交接文档（HANDOVER）
 
 > 给**任何接手者 / 新会话 / clone 本仓库的人**看的全局交接文档。
-> 基线 commit `d40cd4d`；最近提交 `068a403`（2026-08-20 客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
-> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **56/56**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **25/25**、opportunity **45/45**、funnel **5/5**（漏斗数据）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
+> 基线 commit `d40cd4d`；**AI 销售副驾驶产品/开发主线**（下一阶段北极星「有效销售行动」漏斗 + P0 路线 + L0-L3 边界 + 冻结范围）见 §2.26（规划定稿，未提交）；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（未提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（未提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，未提交）；最近提交 `068a403`（2026-08-20 客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/HANDOVER-20260818-CRM零操作改造与产品库.md）。
+> `npx tsc --noEmit` 零错误；crm 全系单测：workbench **48/48**、golden **45/45**、claim **17/17**、autoconfirm **58/58**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **37/37**、opportunity **45/45**、funnel **31/31**（历史累计流转漏斗）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）。
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
-> **2026-08-20 增量**：AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）；SLA/Action 接通（首触 SLA 扫描接入 Action 引擎每日 08:00 + 今日行动页打开周期，长时间运行不漏卡；lead:/logi: 虚拟卡隐藏无效「打开聊天」，commit `5ba531b`）。
+> **2026-08-20 增量**：客户名真相源修复（微信号名回填微信真实备注 + 显示名解析优先微信备注，见 §2.25，未提交）；漏斗改造（历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复，见 §2.24，未提交）；AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`，已被 §2.24 取代）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）；SLA/Action 接通（首触 SLA 扫描接入 Action 引擎每日 08:00 + 今日行动页打开周期，长时间运行不漏卡；lead:/logi: 虚拟卡隐藏无效「打开聊天」，commit `5ba531b`）。
+> **2026-08-23 增量**：**落 §2.26「AI 销售副驾驶」为下一阶段产品/开发主线**（规划定稿）。定位：AI 观察/理解/判断/准备，销售最终判断与对外执行，L3 自动对客回复明确不做。固化三个关键事实：① messageKey 保留策略待确认（P0-1 证据链 UI 前置风险）；② CustomerEvent（P0-3）AI 节流必须复用 `insightService` 12h 机制；③ 自动扫描循环已存在（runFullScan + lazyScan + 每日全量 + 增量），真正缺的是**行动结果回流**（Agent Action → Outcome → Re-evaluation）。北极星升级为「有效销售行动」六段漏斗（发现→生成→采纳→执行→响应），先埋点后看板。§10 待办已按 P0 路线核销/合并/新增。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -231,8 +232,8 @@
 - **IPC**：`crm:opportunity:list/get/events/stats/stage/close/intentScore` + `crm:risk:list/resolve`（crmIpcHandlers + preload + electron.d.ts 同步）
 - **验证**：`scripts/crm-opportunity-test.ts` **45/45**（评分 0a-0g / parseBuySignal 1a-1i / 商机累积 2a-2h / 阶段联动 3a-3e / 漏斗 4a-4e / 风险 5a-5k）；`tsc --noEmit` 零错误 + vite build 通过；crm 全系回归通过（lead 53 / workbench 48 / claim 17 / autoconfirm 56 / enrich 55 / docgen 68 / golden 45 / logistics 25 / opportunity 45）
 - **已知边界**：风险只附着已建档客户（account_id 非 0）。漏斗深链 bug（customer_profile 中文 stage vs account.sales_stage 英文双轨）已于 `11359fe` 修复：**customer_profile.stage 为唯一阶段真源**（见本段「漏斗深链修复」）
-- **2026-08-20 漏斗数据修复**（commit `c719678`）：① 转化率口径由「阶段间相除」改为「相对漏斗顶部『了解』的比例」（成交 24/了解 71 = 34% 赢单率；原算法在 成交>决策 时算出 300% 失真）；② 近 7 天由「AI 扫描标签条数」改为「新增进漏斗客户数」（`intentTimeline` 按 `MIN(created_at)` 首次打标日期去重，同客户重复扫描只计 1 次）；③ `salesDbService.initialize` wasm 路径加根 `node_modules` 兜底（同 crmDbService 模式）。新增 `scripts/funnel-test.ts` **5/5**
-- **2026-08-20 漏斗深链修复**（commit `11359fe`）：漏斗点阶段 → CRM 客户列表筛空。根因双轨：漏斗用 `customer_profile.stage`（中文 了解/比价/决策/成交），CRM 用 `account.sales_stage`（英文 contacted/quoted/negotiating/won，导入时 比价+决策 都映射成 negotiating），sales_stage **无 quoted**，漏斗「比价」深链「已报价」必空。修复统一 `customer_profile.stage` 为唯一阶段真源：`crm:customers` IPC 附带 `profile_stage`（session_id 关联）；CrmWorkbenchPage `stageLabel` 优先 `profile_stage`、无画像才回退 sales_stage 标签；SalesFunnelPage 下钻直接传原始中文阶段名（删 FUNNEL_TO_CRM_LABEL 映射）。实测 customer_profile 了解71/比价62/成交24/决策8 全部命中；深链协议改 `/crm?tab=customer&stage=<原始中文阶段>`
+- **2026-08-20 漏斗数据修复**（commit `c719678`，⚠️ 已被 §2.24 漏斗改造取代）：① 转化率口径由「阶段间相除」改为「相对漏斗顶部『了解』的比例」（成交 24/了解 71 = 34% 赢单率；原算法在 成交>决策 时算出 300% 失真）；② 近 7 天由「AI 扫描标签条数」改为「新增进漏斗客户数」（`intentTimeline` 按 `MIN(created_at)` 首次打标日期去重，同客户重复扫描只计 1 次）；③ `salesDbService.initialize` wasm 路径加根 `node_modules` 兜底（同 crmDbService 模式）。新增 `scripts/funnel-test.ts` **5/5**
+- **2026-08-20 漏斗深链修复**（commit `11359fe`，⚠️ 语义与归一化已被 §2.24 取代，历史留档）：漏斗点阶段 → CRM 客户列表筛空。根因双轨：漏斗用 `customer_profile.stage`（中文 了解/比价/决策/成交），CRM 用 `account.sales_stage`（英文 contacted/quoted/negotiating/won，导入时 比价+决策 都映射成 negotiating），sales_stage **无 quoted**，漏斗「比价」深链「已报价」必空。修复统一 `customer_profile.stage` 为唯一阶段真源：`crm:customers` IPC 附带 `profile_stage`（session_id 关联）；CrmWorkbenchPage `stageLabel` 优先 `profile_stage`、无画像才回退 sales_stage 标签；SalesFunnelPage 下钻直接传原始中文阶段名（删 FUNNEL_TO_CRM_LABEL 映射）。实测 customer_profile 了解71/比价62/成交24/决策8 全部命中；深链协议改 `/crm?tab=customer&stage=<原始中文阶段>`
 - **2026-08-20 今日行动新建待办**（commit `8085dc2`）：修复能力断层——手动「新建待办」原只在已隐藏的 FollowUpPage，今日行动无入口。① `getUnifiedSignals` 加 manual 分支：手动待办绕过沉默天数过滤（事实驱动），无客户 → 虚拟 sessionId `todo:<id>` 独立卡（**动态计算不落库**，因 `todoUpdate` 白名单不含 session_id）、绑客户 → 并入客户卡（displayName 回退客户档案名）；② `completeUnifiedSignal` 加 `todo:` 前缀分支按 `getTask(id)` 关单；③ 今日行动 header「新建待办」弹窗（标题必填 + 客户搜索下拉可选 + 截止时间可选）；④ `todayActionStore` 加 todos 状态（fetchToday 顺带刷新，主卡流与侧栏同源同步），TodoSidebar 数据源切 store、checkbox 可点击完成、主卡流完成也同步侧栏；⑤ AIActionCard `todo:` 虚拟卡隐藏「打开聊天」+「AI 分析」；⑥ 老页面 FollowUpPage 保留（后于 §2.19 归档）。新增 `scripts/todo-followup-test.ts` **11/11**（虚拟卡/绑客户卡/关单/老链路兼容）
 - **2026-08-20 待办清单分页 + 重叠修复**（commit `6d33074`）：① TodoSidebar 进度条改纯视觉轨道（6px 双色段，数字移除到独立统计行）——原在窄百分比段内嵌 nowrap 文字必现溢出重叠（真实库 pending 106/done 73/total 1389）；② 列表分页 **10 条/页**（prev/next + `N / M`，数据变化自动钳制回合法页）；③ 统计分母排除 superseded/ignored/dismissed 防虚高，文案「已完成 N · 共 M」
 - **2026-08-20 跟进待办页同客户去重 + 分页**（commit `95c9dd6`）：FollowUpPage（老页面，后于 §2.19 归档）平铺同客户多条待办刷屏（真实库 6 客户各 2 条：urge_customer 催办 + rule_r1/r2 规则卡）。① 去重：同 `session_id` 合并为一组，主卡=最高优一条（全局已按 逾期>疑似>待跟进 + priority_score 排序，首见即最高），其余折叠「同客户还有 N 条」可展开逐条确认/忽略；无 session 手动待办独立成组不合并；② 分页：按去重后组数 **10 条/页**（prev/next + `N / M`），数据变化自动钳制回合法页；③ 纯函数 `src/utils/followUpGroup.ts`（`groupFollowUpTasks`，随 §2.19 归档删除）+ `scripts/followup-group-test.ts` **10/10**
@@ -318,6 +319,151 @@
 - **logi 物流卡签收闭环**：`completeTodo`（todayActionStore）对 `logi:` 卡改走 `sales.actionCompleteUnified`，复用 `completeUnifiedSignal` 的 logi 分支（卡 done + `markLogisticsSigned` + activity），与跟单中心「确认签收」一致；此前只 `todoUpdate` 标卡 done、物流单仍是 shipped
 - **验证**：`tsc` 零错误；新增 `scripts/crm-name-fix-test.ts` **5/5**（match 层排除/向后兼容/导入合并语义回归）；全系回归通过（workbench 48、logistics 25、sla-action 11 等；product-import 依赖微信本地 xlsx 文件不在本机，与本轮无关）
 
+## 2.21 AI 客户工作台收口（2026-08-20）
+
+> 产品定位：**用户不维护 CRM，AI 维护 CRM**——用户只做「看清单、打勾」。客户页回答「谁值得看？为什么现在看？AI 发现了什么？我要做什么？做完系统怎么办？」，不做传统 CRM 管理动作。原两个客户入口并存（CustomerListPage 通讯录 + CrmWorkbenchPage 客户 tab 表格）且无行动视角，已合并收敛。
+
+- **拆分两页**：
+  - **`CustomerWorkspacePage`（/customers，侧边栏「客户」）**：AI 客户工作台。默认「值得跟进」视图（复用 `getUnifiedSignals` 全量 signals，过滤 `todo:`/`logi:`/`lead:` 虚拟前缀后按 `priorityScore` 排序），另有「AI 新发现」（仅 24h 未读洞察）与「全部客户」（有信号置顶，支持搜索/阶段筛选）。客户卡片流（客户名/公司/阶段/沉默天数/当前信号/下一步）+ 一键「完成」走 `sales.actionCompleteUnified`（今日行动→执行→回写闭环）；点击卡片展开 360 档案（字段编辑锁定/AI 画像/动态时间线/AI 下一步建议/待办/合同回款/深度分析/AI 报价/删除）。「更多」菜单收纳批量 AI 补全、导出 Excel、AI 准确率。「建合同」跳 `/crm?account=<id>&new=1`。
+  - **`CrmWorkbenchPage`（/crm，侧边栏「合同」）**：瘦身为合同工作台（统计卡 + 3 图 + AI 准确率 + 合同表格 + 四子资源 + 新建合同），移除客户 tab 与客户 handlers。
+- **归档**：`CustomerListPage.tsx` + `customerListStore.ts` + `CustomerListPage.scss` 删除（git 历史保留）；`CustomerCard` 组件保留（ChatPage 详情面板仍用）；`sales.customerExport` IPC 保留（工作台全量导出）。
+- **深链迁移**（query 参数名不变，路径前缀 `/crm?tab=customer` → `/customers`）：行动卡 `?sid=`（AIActionCard）、漏斗下钻 `?stage=`（SalesFunnelPage）、灵感信箱 `?id=`（InsightInboxPage）。
+- **Customer 360 Timeline**：验证结论=现有已满足（`accountTimeline` 8 分支聚合 6 实体 + lead + opportunity，前端 activities+insights 混排），仅搬页保留，不重写。
+- **验证**：`tsc` 零错误；`vite build` 通过；全系回归通过（name-fix 5、workbench 48、funnel 5、todo-followup 11、timeline 10、opportunity 45、enrich 61、logistics 25、lead 55、autoconfirm 56、claim 17、docgen 68、sla-action 11、report-review 33、insight-dedup 6）。后端无改动、无新增 IPC。
+
+---
+
+## 2.22 物流认领到客户（无合同客户可认领物流）（2026-08-20）
+
+> 痛点：**有的客户不需要合同，但是没有合同又认领不了物流信息**。原物流认领强制依赖合同（`logistics` 只有 `contract_id`，客户归属经 `contract_id → contract.account_id` 间接取得）。本轮将物流认领改为**归属到客户（account_id），合同变为可选上下文**——与到款归属 `allocation`（account_id + contract_id 双列、手动确认可不挂合同）完全同构。
+
+- **数据模型**：`logistics` 表新增 `account_id`（可空，DDL + migration）；认领语义 = 客户必选其一、合同可选（有合同的客户仍关联，保留「未全款已发货」预警 + 合同子资源展示）。
+- **手动认领**（跟单中心物流区）：认领卡片改「认领销售 + 客户下拉（必选）+ 关联合同（可选，按所选客户过滤）+ 新客户名建档（`accountEnsure` 去重建档）+ 确认认领」；无合同客户可直接选客户认领。
+- **自动匹配**（跟单中心按钮）：候选统一带 `cand_kind`（'contract' | 'account'）；唯一合同候选 → 认领到合同；无合同但收件人确定命中客户（viaShip）→ 认领到客户。
+- **扫描自动认领**（`autoLinkLogisticsByReceiver`，私聊收货地址命中）：无合同客户也认领到客户（不再 `return false` 跳过），顺带补 `auto_linked_by='auto'` + activity（撤销链路此前缺失）。
+- **确认中心自动确认引擎**：铁律保持「自动确认必须挂 active contract」——只取合同候选，无合同客户仍 `needs_review`「无候选合同」待人工（与到款归属一致）。
+- **下游适配**：`pendingLogisticsOverdue` JOIN 改 `COALESCE(c.account_id, l.account_id)`（账户级物流进超期 / 今日行动 R8 卡）；`accountTimeline` logistics 分支加 `OR account_id=?`（无合同物流进客户 360 时间线，8→9 占位符）；`undoLogistics` 同时清 account_id；`deleteAccount` 级联清理账户级物流。
+- **IPC**：`crm:logistics:link` 签名升级为 `(id, { accountId?, contractId?, ownerSales? })`（preload / electron.d.ts 同步；调用方全在仓内）。
+- **验证**：`tsc` 零错误；`vite build` 通过；`scripts/crm-logistics-test.ts` **37/37**（原 25 + 账户级认领/超期/时间线/候选/扫描自动认领/撤销 12 例）、`crm-autoconfirm-test.ts` **58/58**（原 56 + L7 无合同仅账户级候选留人工）；全系回归通过（workbench 48、claim 17、timeline 10、enrich 61、docgen 68、golden 45、lead 55、funnel 5、todo-followup 11、sla-action 11、report-review 33、insight-dedup 6、opportunity 45、name-fix 5）。
+
+## 2.23 物流群扫描失效修复：getMessages 升序 + 传 startTime 扫增量（2026-08-20，未提交）
+
+> 现象：crmParse 自动扫描「艾驱安能物流跟踪群」自 8月5日 18:50 起失效（`last_scan` 卡在 `1785927053000`），日志一直 `[CrmParse] ... scanned=0`。数据源本身正常（HTTP API 直拉物流群，最新消息全是 8月5日后）。
+
+- **根因**：`chatService.getMessages` 内部经 `collectVisibleMessagesFromCursor` 末尾 `normalizeMessageOrder` 把消息**升序重排（旧在前）**；而 `crmParseService.scanAll` 原实现假设倒序返回，「遇 `ms <= lastScan` 即 break」——第一页第一条恰是最旧的 7月20日消息，`ms <= lastScan` 直接 break → 排在数组后方的 8月5日 后增量（60 条）被漏掉 → scanned=0。
+- **修复**（`crmParseService.ts`，群扫描 + 私聊扫描同步）：`getMessages(gid, offset, BATCH, lastScan)` 传 **startTime=lastScan**，让原生游标（`beginTimestamp`，内部自动毫秒→秒）只读 lastScan 之后的增量；遇旧消息改 `continue` 跳过（不再 break）。翻页上限 MAX_PAGES=20（群）/10（私聊），页满记 WARN；处理完按 `maxMs` 推进 `last_scan`（`updateGroup` / `setScanState`）。
+- **验证**：重启 dev 后日志 `group=艾驱安能物流跟踪群 page=1 msgs=61 hasMore=false` + `scan done scanned=60`（一次补齐 60 条积压）；下一轮 `msgs=1 scanned=0`（`processed_msg` 幂等，无重复）。
+- **不受影响**：HTTP API（`collectRawRows` 直接 `mapRowsLite`，**不经过 normalizeMessageOrder**，保持原生降序）；前端 ChatPage（走 `getLatestMessages` → `getMessagesByOffsetStable` 独立查询）。WCDB 时间戳是秒，`lastScan` 是毫秒（`ms = createTime * 1000` 换算）。
+
+## 2.24 漏斗改造：历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复（2026-08-20，未提交）
+
+> 目标：漏斗从「当前阶段快照分布」升级为「历史累计流转漏斗」，统计单位永远是 `customer_id`（`session_id`），绝不按 `intent_tag_log` 行数。阶段语义收口到唯一的 canonical 语义层，前端/统计统一归桶，中英文不再各页面各自理解。**本小节取代 §2.14 的 `c719678` 转化率口径与 `11359fe` 深链口径。**
+
+- **canonical 语义层 `shared/salesStage.ts`**（新建，前后端共用、零依赖、纯常量+纯函数）：
+  - `STAGE_CANONICAL` = `new/contacted/quoted/negotiating/won/lost/dormant/unknown`；`FUNNEL_ORDER` = 了解/比价/决策/成交/流失/未知
+  - `normalizeStage(raw)` 中英→canonical 幂等（了解/已沟通→contacted、比价/已报价→quoted、决策/谈判中→negotiating、成交/已成交→won、流失→lost、沉默→dormant、新客→new、未知/未命中→unknown）；**未命中从旧版「返回原串」改为「返回 unknown」**，现有集合判断调用点行为不变
+  - `funnelBucket(canonical)` 桶映射：new→了解、dormant→流失、unknown→未知；`stageToFunnel(raw)` = 一行归一化出档位（下钻统一比较入口）
+  - **「比价」双英文定标 `quoted`**；CRM 侧 `STAGE_TO_CRM`/`BACKFILL_STAGE_TO_CRM`（比价→negotiating）是 CRM `account.sales_stage` 简并枚举（无 quoted 档），保持不动、文档注明
+  - DB 不迁移存量数据（不 UPDATE stage）；DB 存机器语义、UI/统计层归桶展示
+- **`funnelStats(days=30)` 重写**（`salesDbService.ts`，`days=0`=全部历史），新返回结构：`{ funnel, conversion, intentTimeline, currentDistribution, totalCustomers, newCustomersInWindow }`（旧 `stageDistribution` 字段移除）：
+  - `funnel` = 窗口内「曾进入过某档位」的去重客户数（SQL 按窗口过滤 → TS 内存 `firstIn[档位][session_id]=MIN(created_at)` 独立去重）
+  - `conversion` = 相邻档位相除（了解→比价→决策→成交，除零为 0；跳级可 >100%）
+  - `intentTimeline` = 窗口起始日→今日 逐日×逐档位，按首次进入该档位时间落日、缺失补零
+  - `currentDistribution` = `customer_profile.stage` GROUP BY 后归桶（现时快照）；`totalCustomers` = 建档数；`newCustomersInWindow` = 窗口内出现过任意档位记录的去重 session 数
+  - `intentCreate` 加可选 `createdAt`（测试回填历史时间戳用，默认 now）
+- **IPC 透传 days**：`sales:funnel:stats` handler + `preload.funnelStats(days?)` + `electron.d.ts` 签名（顺带修复旧类型不一致：原 d.ts 声称 intentTimeline 有 stage 字段但后端没有）
+- **下钻修复（A，统一归桶比较）**：漏斗/状态卡点阶段 → 传中文档位名；`CustomerWorkspacePage` 新增 `rowStage(c) = stageToFunnel(profile_stage || sales_stage)`，`:139` 过滤、`:153` 下拉选项、卡片徽章全部改走它（英文 `quoted` 客户也能命中「比价」，修复 `11359fe` 未覆盖的英文双轨空白）；深链过滤前再过一次 `stageToFunnel`（幂等防御旧值）；删除本地 `STAGE_LABELS`。**语义说明**：历史漏斗计「窗口内曾进入」，下钻列表是「当前阶段为该档位」——穿过该档位但现已流失/删除的客户不在下钻列表，下钻人数 ≤ 漏斗人数属正常
+- **前端漏斗页**（`SalesFunnelPage.tsx` + `.scss`）：时间窗口 toggle（近30天/近90天/全部，切换 refetch）；ECharts 真漏斗 4 档 `sort:'none'`（保留真实档位大小，label 带后端相邻转化率，脚注说明跳级可 >100%）；当前客户状态 6 档小卡片（可点击下钻）；窗口内每天进入各档位的去重客户数堆叠趋势；统计卡（客户总数/窗口新进漏斗/当前成交/当前决策/当前流失）
+- **趋势口径统一（D）**：趋势窗口 = 所选统计窗口，与历史累计漏斗同源同口径（intentTimeline）
+- **验证**：`npx tsc --noEmit` 零错误；`npx tsx scripts/funnel-test.ts` **31/31**；回归（crm-workbench 48 / crm-claim 17 / todo-followup 11）全过；`npx vite build` 通过
+
+---
+
+## 2.25 客户名真相源修复：微信号名回填 + 显示名解析优先微信备注（2026-08-20，未提交）
+
+> 目标：客户工作台「重复客户 + 客户名不对」反馈的调查结论与修复。数据层确认 100% 无重复客户（「一路向钱」仅 1 条 account id=75，「重复观感」来自该客户 enrich_meta 的 2 条 pending 信息在顶部「信息待确认」区与列表卡同时出现）；「名称不对」根因 = 系统显示名是微信号，WCDB 里有真实微信备注但没被取到。用户确认修复方向：**回填真实备注，保留原样**（保留日期前缀等微信备注原样）。
+
+- **根因**：`resolveInsightSessionDisplayName` 用旧 `looksLikeWxid` 正则判断微信号格式，只匹配 `^wxid_[a-z0-9]+` 与 `@chatroom`，**漏掉自定义微信号**（字母开头 5-20 位，如 `wan923121735`）→ fallback 为微信号时被直接采用，不查 WCDB 备注
+- **共享语义层 `shared/wechatId.ts`**（新建）：`isSessionIdLike(text)` 覆盖三类微信号形态（wxid_ 前缀号含下划线后缀 / 自定义微信号 / 群号 `@chatroom`），中文名/日期前缀/电话/数字开头/超短/空均不命中；微信备注是客户名真相源，微信号格式字符串不可直接当客户名展示/存储
+- **源头修复**（`insightService.resolveInsightSessionDisplayName`）：fallback 非微信号格式走快速路径；微信号格式优先查 `chatService.getContactAvatar`（返回 `remark || nickName || alias`）再查 sessions 缓存，判断全用共享 `isSessionIdLike`
+- **存量回填**（`crmIpcHandlers.ts`）：`crm:customers` handler 首次打开惰性触发 `backfillWxidDisplayNames()`，幂等——只处理 `name` 为微信号格式的 account（真实库 dry-run 确认正好 **13 个**，全部有 WCDB 真实备注可回填）；回填写 `account.name` + `customer_profile.display_name` 双轨；WCDB 未连接返回 -1 不置位，下次打开重试
+- **回填安全**：sql.js 内存库 persist 只在写操作后 500ms 落盘、外部改文件会被应用内存库覆盖 → 回填必须走应用自身链路（`crm:customers` 惰性触发），禁止直接改库文件
+- **验证**：`npx tsc --noEmit` 零错误；`npx tsx scripts/wechat-id-test.ts` **18/18**（wxid_ 前缀/自定义微信号/群号命中，中文/日期前缀/电话/边界不命中）；dry-run 确认 13 个目标 account 全部有 WCDB 真实备注
+
+---
+
+## 2.26 AI 销售副驾驶：产品/开发主线（2026-08-23，规划定稿）
+
+> **定位**：AI 负责观察、理解、判断和准备；销售负责最终判断与对外执行。**L3 自动对客回复当前明确不做**。
+> 本小节是 §2.26 之后阶段的**产品/开发主线**——不是继续堆 AI 功能，而是把现有能力重新组织成闭环。现状成熟度：**骨架 85% / AI 能力 70% / 产品闭环 65%**；自动运行循环已存在（`runFullScan` + `lazyScan` + 每日 8:00 全量 + 新消息增量），**真正缺的不是"自动运行"，而是「执行 → 客户响应 → 再判断」的结果回流**。
+
+### 1. 产品闭环（目标）
+
+```
+客户消息 → AI发现 → AI判断 → 证据 → AI行动包 → 销售判断 → 复制/修改/发送 → 客户响应 → AI识别结果 → 更新客户状态 → 下一次行动
+```
+
+- 现状已具备**前半段**（发现/判断/证据数据层/行动包）；下一阶段重点是**把"执行 → 客户响应 → 再判断"产品化**
+
+### 2. 四层架构
+
+- **L1 感知层**：聊天监听 / 意图 / 客户事件（E3）/ 阶段变化 —— 现状 ✅（`insightService` + `salesStageClassifier` + `intent_tag_log`）
+- **L2 理解层**：AI 当前判断（P0-2）/ 客户关注点 / 风险 / 机会 / 证据链（P0-1）—— 🟡 有字段卡+评分+时间线，**缺聚合理解卡 + 证据链 UI**
+- **L3 准备层**：AI Action Card（补客户关注/跟进目标/证据）/ 话术 / 上下文 / 下一步 —— 🟡 whyNow/阶段/话术/风险/下一步已有，**缺「客户关注①②」列表、跟进目标、证据原文**
+- **L4 执行/回流层**：销售人工判断 / 打开聊天 / 复制/修改 / 发送 / 客户响应 / AI 重新判断 —— ❌ **缺埋点（P0-4）**
+
+### 3. P0 路线（按序）
+
+- **P0-1 E4 证据链 UI**：数据层已备（§2.18 `sourceId/messageKey` 溯源）。做：点击 AI 判断 → 展开客户原话。**前置风险：确认 WCDB 消息保留策略**——若消息可能被清理，`messageKey` 不能是唯一证据载体；**先确认保留策略，再决定是否冗余 `evidenceText`，不拍板复制整段聊天文本**（防库膨胀 + 隐私/一致性问题）
+- **P0-2 客户「AI 当前判断」**：把已有字段 + 意向评分 + 时间线聚合成「AI 对客户当前状态的解释」卡（高意向/决策期 + 最近变化 + 当前机会 + 当前风险 + 下一步 + 查看证据）。重点是**理解层**，不是加字段
+- **P0-3 E3 CustomerEvent**：**扩展 `intent_tag_log`，不是重写**。最小模型 `{event_type, summary, messageKey, source, created_at}`。动手前先评估 **4 个现有消费者**：漏斗 / 意向评分 / 周报 / 今日行动
+- **P0-4 Action 埋点**：**新增 3 个**——`script_copied`（采纳代理）/ `chat_opened`（执行准备）/ `customer_replied`（行动结果）。已有：`intent_tag_log` / `follow_up_task.created_at` / `follow_up_task.status`。最终形成：发现 → 行动生成 → 销售执行 → 客户响应
+- **P0-5 L0-L3 文档**：只文档化，**不做权限系统**；顺手把 R1-R6 当前阈值整理成现状表
+
+### 4. 「有效响应」定义（P0-4 落时定死）
+
+- 第一版：`customer_replied` = **follow_up_task 执行后指定时间窗口（24h/48h）内客户产生的新消息**，只记录，不判"有效"
+- **"客户回复 ≠ 有效响应"**；等数据跑起来后再定义：有效响应 = 客户产生与采购/产品/需求/下一步相关的新信息。**第一版不把指标搞复杂**
+
+### 5. E3 AI 成本节流（必写）
+
+- 禁止「每条消息 → 生成 summary → 调 AI」的高频调用
+- **直接复用 `insightService` 的 12h 节流机制**；后续优化为：新消息 → 规则预筛 → 是否可能产生新事件？→ 是 → AI 事件提取
+- 原则：**CustomerEvent 生成必须具备节流/去重，避免事件模型演变成高频 AI 调用源**
+
+### 6. 北极星（先埋点，后看板，硬原则）
+
+| 阶段 | 数据 | 状态 |
+|---|---|---|
+| AI发现 | `intent_tag_log` | ✅ 已有 |
+| 生成行动 | `follow_up_task.created_at` | ✅ 已有 |
+| 销售采纳 | `script_copied` | ❌ **新增** |
+| 销售执行 | `chat_opened` / `task.status` | ❌ **新增** / ✅ |
+| 客户响应 | `customer_replied` | ❌ **新增** |
+
+- **先定义事件 → 埋点 → 验证数据 → 最后做看板**。不做「今天完成 47 次行动」这种无结果关联的漂亮图
+
+### 7. L0-L3（文档化，不建权限系统）
+
+| 级 | AI 能力 | 是否需要销售 |
+|---|---|---|
+| L0 | AI 观察 | 不需要 |
+| L1 | AI 分析/更新画像 | 不需要 |
+| L2 | AI 准备行动 | 销售确认 |
+| L3 | AI 执行外部动作 | **当前最大边界 = L2；L3 明确禁止 AI 自动向客户发送消息** |
+
+### 8. 冻结范围（P0 闭环完成前暂缓）
+
+自动回复 / 触发规则 UI / 更多 CRM 字段 / 更多 AI 标签 / 复杂 Agent / 向量数据库 / 大量新报表 / 非核心 CRM 增强
+
+> 核心原则：**先把已有 AI 能力串成闭环，不继续堆 AI 功能。**
+
+### 三个固化事实（本次讨论新增，接手者必须知道）
+
+1. **messageKey 保留策略待确认**（P0-1 前置）：WCDB 消息是否会被清理/过期未确认；确认前证据链不得以 messageKey 为唯一载体
+2. **CustomerEvent AI 节流必须复用 `insightService` 12h 机制**（P0-3）：否则事件模型会变成高频 AI 调用源
+3. **自动扫描循环已存在**（`runFullScan` + `lazyScan` + 每日全量 + 增量）：AI"自己跑起来"已基本成立；下一阶段核心是 **Agent Action → Outcome → Re-evaluation**（行动结果回流 → 重新判断），不是"自动运行"
+
 ---
 
 ## 3. 已交付功能清单
@@ -351,7 +497,7 @@
 | 25 | **私域成交检测** | 私聊扫描自动 | `crmParseRules.isDealSignal` + `createDealContract` | ✅ |
 | 26 | **客户档案一屏 + 深度分析** | CRM 客户 tab | `crm:customer:profile` + `crmDeepAnalysisService` 七板块报告 | ✅ |
 | 27 | **AI 报价辅助** | CRM 客户档案「AI 报价」 | `crmQuoteService.aiGenerateQuotation`（需求→选型→报价草稿） | ✅ |
-| 28 | **销售漏斗** | 侧边栏「漏斗」 | `SalesFunnelPage` + `salesDbService.funnelStats` | ✅ |
+| 28 | **销售漏斗** | 侧边栏「漏斗」 | `SalesFunnelPage` + `salesDbService.funnelStats(days)`（历史累计流转 + 逐级转化率 + 当前快照卡 + 堆叠趋势，§2.24） | ✅ |
 | 29 | **CRM 级联删除（自动备份）** | 工作台/跟单中心每行删除 | `deleteContract`/`deleteAccount` + `crm-backups/` 备份 | ✅ |
 | 30 | **行动卡自带 AI 分析** | 今日行动 high/urgent 卡 | `follow_up_task.analysis` 预热渲染（A1） | ✅ |
 | 31 | **今日行动分页** | 今日行动信号卡片流底部 | `TodayActionPage.tsx`（`.signal-pagination`，10 条/页） | ✅ |
@@ -372,6 +518,9 @@
 | 46 | **AI 回写 model/sourceId 溯源** | enrich_meta 每条记录（PRD§23 可追溯） | `mergeEnrichFields` 透传 + `enrichCustomer` 打 `{model,sourceId}` 标签 + `gatherMaterials` 记最近消息 messageKey，`223c158` | ✅ |
 | 47 | **今日行动/待办职责分工** | 今日行动主卡流 + 右侧散任务清单 | `getUnifiedSignals` 唯一动作入口；`TodoSidebar` 只留散任务（无 session 手动/SLA/物流）；FollowUpPage 归档，`1aefef4`+`d5b9f62` | ✅ |
 | 48 | **客户名称统一 + 同名防护 + logi 闭环** | 工作台/周报客户名 + AI enrich + 物流侧栏卡 | 读取侧 `profile.display_name` 优先（工作台/周报）；`enrichCustomer` 同名不跨会话；`completeTodo` logi: 走签收闭环，`068a403` | ✅ |
+| 49 | **AI 客户工作台（Customer Action Workspace）** | 侧边栏「客户」/customers + 「合同」/crm | 两客户入口合并：`CustomerWorkspacePage`（行动区值得跟进/AI 新发现/全部客户卡片流 + 360 档案）；`CrmWorkbenchPage` 瘦身为合同页；CustomerListPage 归档；深链迁移 `/customers?`；复用 `getUnifiedSignals` 闭环，本期（见 §2.21） | ✅ |
+| 50 | **物流认领到客户（无合同可认领）** | 跟单中心物流区 + 客户 360 时间线 | `logistics` 增加 `account_id`、合同可选；手动/自动匹配/扫描均可认领无合同客户；`crm:logistics:link` 签名升级 `(id, {accountId?, contractId?, ownerSales?})`；确认中心引擎铁律保持需合同（见 §2.22） | ✅ |
+| 51 | **客户名真相源修复（微信号名回填真实备注）** | 客户工作台客户名 + AI 见解显示名 | `shared/wechatId.ts` 判别三类微信号形态；`resolveInsightSessionDisplayName` 微信号格式优先查 WCDB 备注；`crm:customers` 惰性回填 13 个 account（双轨写 account.name + profile.display_name，见 §2.25） | ✅ |
 
 ---
 
@@ -384,6 +533,9 @@
     │       │
     │       ▼
     │   salesStageClassifier ──AI──► customer_profile.stage 自动更新
+    │
+    │   （阶段语义层 shared/salesStage.ts：normalizeStage 中英→canonical 幂等，
+    │     funnelBucket/stageToFunnel 归桶；DB 存原值，UI/统计统一归桶）
     │       │
     │       ▼
     │   salesActionEngine.onNewMessage() ──► 增量规则检查 ──► follow_up_task
@@ -440,7 +592,7 @@
 | display_name | TEXT | 显示名 |
 | customer_id | TEXT | 预留CRM |
 | external_source | TEXT | 预留来源 |
-| stage | TEXT | new/contacted/quoted/negotiating/won/lost/dormant |
+| stage | TEXT | new/contacted/quoted/negotiating/won/lost/dormant（**中英混存**：classifier 英文 / AI 见解与手动纠正中文；不迁移存量，语义层 `shared/salesStage.ts` 归桶） |
 | tags | TEXT | JSON数组 |
 | notes | TEXT | 备注 |
 | last_contact_at | INTEGER | 秒时间戳 |
@@ -450,12 +602,14 @@
 ### intent_tag_log（意向日志）
 | 列 | 类型 | 说明 |
 |----|------|------|
-| session_id | TEXT | |
-| stage | TEXT | 阶段 |
+| session_id | TEXT | 微信会话（= customer_id，漏斗去重单位） |
+| stage | TEXT | 阶段（中英混存，见 customer_profile 注） |
 | confidence | REAL | 0-1 |
-| source | TEXT | auto_message_trigger / manual |
+| source | TEXT | auto_message_trigger / manual / ai |
 | reason | TEXT | AI判断依据 |
-| created_at | INTEGER | |
+| created_at | INTEGER | 毫秒（`funnelStats` 窗口过滤/首次进入落日依据；`intentCreate` 可传 `createdAt` 回填历史） |
+
+> 漏斗口径：**append-only 阶段变更日志**，部分写入方（AI/手动）不跳过未变化会重复记录，统计必须按 `session_id` 去重，绝不按行数。`funnelStats` 按窗口内 `MIN(created_at)` 首次进入该档位落日。
 
 ### follow_up_task（跟进待办）
 | 列 | 类型 | 说明 |
@@ -523,12 +677,17 @@
 
 ## 6. 文件地图（二创新增/改动）
 
+### 前后端共享 `shared/`
+| 文件 | 说明 |
+|------|------|
+| `salesStage.ts` | **阶段语义层**（§2.24 新建，零依赖纯模块）：`STAGE_CANONICAL`/`FUNNEL_ORDER`、`normalizeStage`（中英→canonical 幂等）、`stageLabel`/`funnelBucket`/`stageToFunnel`。DB 不迁移，UI/统计统一归桶 |
+
 ### 后端 `electron/services/`
 | 文件 | 说明 |
 |------|------|
-| `salesActionEngine.ts` | **核心**：触发规则引擎 + 今日行动生成 + 增量检查 |
+| `salesActionEngine.ts` | **核心**：触发规则引擎 + 今日行动生成 + 增量检查（阶段归一化已改用 shared `normalizeStage`） |
 | `salesStageClassifier.ts` | **核心**：轻量AI阶段分类（7阶段，≤500token/次） |
-| `salesDbService.ts` | 销售库5表CRUD + migration |
+| `salesDbService.ts` | 销售库5表CRUD + migration + **`funnelStats(days)` 历史累计流转漏斗**（窗口过滤→session 去重→相邻转化率→逐日补零→当前快照；`intentCreate` 支持 `createdAt`） |
 | `salesKnowledgeService.ts` | 知识库CRUD + n-gram检索 + CSV导入 + **话术提炼引擎**（extractScriptsFromChat/generateActionAnalysis） |
 | `salesReportService.ts` | 周报/月报 + **周复盘**（weekly_review） |
 | `salesIntentService.ts` | AI意向分析 |
@@ -572,7 +731,8 @@
 | `components/sales/AIActionCard.tsx`（改） | 行动卡：**打开聊天**（跳转微信会话）+ **复制话术**（无话术先生成再复制）+ AI 面板话术行内复制 |
 | `pages/CrmWorkbenchPage.tsx` | **CRM 工作台**：合同+客户双 tab、档案一屏、深度分析/AI 报价/建合同/删除、阶段筛选、**打开聊天**、客户 tab 顶部**信息待确认**折叠区块（采纳/放弃/查看档案，`57c4e0f` 自跟单中心迁入） |
 | `pages/CrmReviewPage.tsx` | **跟单中心**：归属/物流/到款/发票四队列 + 扫描群配置（含来源显示/金额输入）+ **自动确认摘要块**（运行/历史/撤销） |
-| `pages/SalesFunnelPage.tsx` | **销售漏斗**：阶段分布 + 转化率 + 近 7 天意向趋势 |
+| `pages/SalesFunnelPage.tsx` + `.scss` | **销售漏斗**（§2.24 改造）：时间窗口 toggle（30/90/全部）+ ECharts 真漏斗（4 档，label 带相邻转化率）+ 当前客户状态小卡片 + 窗口每天进入各档位去重客户数堆叠趋势 |
+| `pages/CustomerWorkspacePage.tsx` | **AI 客户工作台**（§2.21）：`rowStage(c)=stageToFunnel(profile_stage||sales_stage)` 统一归桶——阶段筛选/下拉/徽章/深链过滤与漏斗同源（修复英文阶段下钻空白，§2.24） |
 | `stores/todayActionStore.ts` | 行动清单store（解析 sig.analysis JSON 注入卡片） |
 | `pages/CrmLeadPage.tsx` + `.scss` | **线索池页**（§2.12，路由 /leads）：导入 modal（来源下拉/文件/文本粘贴）/ 统计卡 / 筛选 chips / 表格（脱敏+超时徽章+行内操作）/ 详情 + dead modal |
 | `pages/OpportunityPage.tsx` + `.scss` | **商机页**（§2.14，路由 /opportunities）：ECharts 漏斗下钻 + 统计卡 + 商机卡片（意向评分条）+ 详情 modal（阶段推进/成交丢单/事件时间线/评分依据/风险预警区） |
@@ -591,6 +751,7 @@
 | `crm-cleanup-orphans.ts` | 孤儿客户清理 + 备份（一次性脚本） |
 | `crm-lead-test.ts` | **线索流转单测**（**53/53**：清洗/去重/SLA/闭环，2026-08 §2.12） |
 | `crm-opportunity-test.ts` | **商机/评分/风险单测**（**45/45**：意向评分 / parseBuySignal / 商机累积 / 阶段联动 / 漏斗 / 风险，2026-08 §2.14） |
+| `funnel-test.ts` | **漏斗数据单测**（**31/31**：英文 classifier 阶段 / 中英归一 / 独立去重 / 跳级 >100% / 时间窗口 30·90·全部 / 当前快照归桶 / 逐日补零 / 除零，2026-08 §2.24） |
 
 ### 资源/脚本（§2.7 新增）
 - `resources/crm-templates/{quotation,contract}.docx` —— 真实模版（docxtemplater 标签已注入，**提交进仓库**，随 extraResources 打包）；改模版用 `python3 scripts/build-crm-templates.py [源目录]`（默认读 `/tmp/crm-tpl-inspect/`）
@@ -663,19 +824,20 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 ## 10. 未完成 / 待办
 
+> **2026-08-23 重组**：下一阶段主线 = **§2.26 P0 路线**（AI 销售副驾驶）。已核销：话术提炼优化（基础版已交付）、行动卡深链客户档案（§2.17 一键闭环+深链已实现）、漏斗深链（§2.24 已实现）；已合并：零操作闭环实测 + 线索池实测 → 「实测反馈驱动迭代」；已定决策：触发规则配置 UI 冻结（L0-L3 文档化）、跟单中心增强拆分保留发票解析（到款/归属合并暂缓）、灵感信箱保留暂缓。
+
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
-| **P1** | **实测零操作闭环** | 用户用几天实测：自动确认判定是否符合预期（阈值可调）、行动卡打开聊天/复制话术是否顺滑、撤销是否好用，有反馈再迭代 |
-| **P1** | **跟单中心 P2 增强** | 到款/归属两队列合并为一个入口、发票金额自动解析（PDF/文本） |
+| **P0 主线** | **§2.26 P0-1 → P0-5** | AI 销售副驾驶主线（2026-08-23 定稿，权威规划见 §2.26）：P0-1 E4 证据链 UI → P0-2 客户「AI 当前判断」→ P0-3 E3 CustomerEvent（扩展 intent_tag_log，复用 12h 节流）→ P0-4 Action 埋点（新增 script_copied/chat_opened/customer_replied）→ P0-5 L0-L3 文档化 |
+| **P0 主线** | **北极星埋点验收锚点** | 六段漏斗「发现→生成→采纳→执行→响应」：**先埋点 → 验证数据 → 后看板**（硬原则）。前置：opportunity 表加 `source` 字段（区分 AI 发现 vs 手动）；「有效响应」第一版只记 `customer_replied` 不判有效。闭环完成判定 = 北极星各段有真实数据 |
+| P1 | **实测反馈驱动迭代** | 原「零操作闭环实测」+「线索池实测」合并：用户实测自动确认判定（阈值可调）、行动卡打开聊天/复制话术/撤销、线索池清洗去重，有反馈再迭代 |
+| P1 | **发票金额自动解析** | 跟单中心增强拆分保留项（PDF/文本）；到款/归属两队列合并**暂缓**（§2.26 冻结范围） |
 | P1 | 深度分析结果缓存 | 同客户 N 小时内不重复调 AI（避免反复点重复花费），可加缓存列 |
 | P1 | CRM 客户黑名单 | 删除后的客户若会话还在、AI 见解再标有意向会被重新导入——需黑名单机制 |
-| P1 | 今日行动卡深链客户档案 | 行动卡客户名点击 → 跳 CRM 客户档案一屏 |
-| P1 | 话术提炼优化 | v2已完成基础版，待优化：提炼结果反馈闭环、提炼历史去重 |
-| P1 | 触发规则配置UI | v1硬编码，验证有效后开放 |
-| P1 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
 | P2 | 优先级公式重设计 | 等 customer_value_score 有真实数据源后 |
 | P2 | 知识库增量补充 | 已有353条产品参数，需持续补充叉车行业话术/FAQ |
-| P2 | 线索池实测迭代 | §2.12 首版已交付，实测后按需补：导入预览、导入批次统计、公海/回收（团队版演进见设计稿 §10） |
+| 暂缓 | 触发规则配置 UI | **§2.26 L0-L3 文档化决策**：v1 硬编码，先验证有效再评估，P0 闭环前冻结 |
+| 暂缓 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
 | 大后期 | CRM双向同步 | 仅预留字段 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -689,7 +851,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
 6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户
-7. **继续开发**：按 §10 待办优先级推进
+7. **继续开发**：先读 **§2.26「AI 销售副驾驶」产品/开发主线**，按其中 P0 路线（P0-1 → P0-5）推进；其余按 §10 待办优先级
 
 ---
 
