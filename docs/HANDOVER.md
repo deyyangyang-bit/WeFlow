@@ -511,7 +511,7 @@
 - **② 真实 DB 只读盘点 + 运行时验证**（脚本 `scripts/p0-2-real-db-audit.ts`，sql.js 内存加载纯只读）：**200 客户**，canonical stage 分布 contacted=76/quoted=67/won=26/lost=21/negotiating=9/**unknown=1**（六档齐全，存量脏值几乎清零）；intent_tag_log 1131 条，P0-1 透传真实生效（evidence=客户原话）；**应用以 P0-2C+ 代码重启后 → P0-2 runtime CLOSED**：`customer_judgment` 自动建表 + CHECK 硬门禁生效，**18 条判断真实产出**（6 客户 × opportunity/risk/next_action，source=ai，model 溯源，basis 含 taskId），evidence 100% 带 key 且 **6/6 P0-2B 可解析**、evidence_text=客户原话，去重 0 冲突 0 orphan；summary 0 条待见解链触发时机（非缺陷）；判断覆盖 6/200=预热高/紧急任务池，与设计一致。观察项：follow_up_task 新任务锚点仍 0（归 P0-4）；evidence 存在 `[视频]` 样本（P0-3 设计时图片/视频视为非文本证据）。
 - **③ 架构护栏封死**（8 条 ❌ 条款，见收口文档 §③）：upsert 禁写 stage / insight 禁抢 stage / 禁 customer_judgment.stage / 判断必须能回答"为什么"（无 key 标 unavailable 不伪造）/ judgment append-only 不 UPDATE / 禁再造 messageKey / UI 禁直读 stage 与现场 LLM / 三层真源互不冒充。新代码不得违反。
 - **观察（非本范围，记录不修复）**：`follow_up_task.source_message_id` 今日 0/15（P0-1 锚点写点在任务触发路径未实际生效；C.3 证据解析器已有兜底不影响判断链）→ 建议归入 P0-4 Action 埋点治理。
-- **下一刀**：**P0-3 Current Judgment Consumer Layer**（`getCustomerCurrentView()` 组装 State+Evidence+Judgment 为单一客户当前视图，UI 只消费该视图）。
+- **下一刀**：**P0-3 Current Judgment Consumer Layer**（盘点完成 `docs/P0-3-Current-Judgment-Consumer-盘点.md`：消费者清单——360 现场 advice / SalesContextStrip suggest / 今日行动 analysis JSON / 收件箱 JSON 文件四处分裂数据形态；**Current ≠ Latest** 语义设计——每类型最新一条 + freshness(24h 窗口)/evidenceStatus/source 三维派生，投影不做推理；API 契约草案 `getCustomerCurrentView()`；5 项待拍板：freshness 阈值 / 空态 / 证据回查触发点 / IPC 通道 / summary 空态接受度。**拍板后才进第一刀，不直接编码**）。
 
 ---
 
