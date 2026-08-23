@@ -24,6 +24,7 @@ import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
 import { normalizeStage } from '../../shared/salesStage'
+import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
 export { normalizeStage }
 
@@ -518,6 +519,14 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
           const analysis = await generateActionAnalysis(item)
           if (analysis && !analysis.notConfigured && !analysis.error) {
             salesDbService.todoUpdate(id, { analysis: JSON.stringify(analysis) })
+            // P0-2C.3：预热路径三判断（机会/风险/下一步）统一落 customer_judgment，
+            // 与 follow_up_task.analysis 旧链路并存；失败不阻断预热循环。
+            await persistActionAnalysisJudgments({
+              item,
+              analysis,
+              channel: 'preheat',
+              model: configRef ? String(configRef.get('aiModelApiModel') || '').trim() || undefined : undefined
+            })
           }
         } catch { /* 预热失败不影响扫描 */ }
       }

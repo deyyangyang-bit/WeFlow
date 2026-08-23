@@ -39,6 +39,7 @@ import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
 import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal } from './services/salesActionEngine'
+import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
@@ -4907,6 +4908,20 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sales:action:suggest', async (_, item: any) => {
     const r = await generateActionAnalysis(item)
+    // P0-2C.3：suggest 为手动通道 → 三判断（机会/风险/下一步）落 customer_judgment
+    // （source=manual，跳过去重窗口保留覆盖权利）；失败不阻断建议返回。
+    if (r && !r.notConfigured && !r.error) {
+      try {
+        await persistActionAnalysisJudgments({
+          item,
+          analysis: r,
+          channel: 'suggest',
+          model: String(configService?.get('aiModelApiModel') || '').trim() || undefined
+        })
+      } catch (e) {
+        salesLog('WARN', `[ActionJudgment] suggest 落库失败（不阻断建议）: ${(e as Error).message}`)
+      }
+    }
     return { success: true, ...r }
   })
 

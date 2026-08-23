@@ -18,6 +18,7 @@ import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { generateActionAnalysis } from './salesActionEngine'
+import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
@@ -184,18 +185,29 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
       // AI 下一步建议（轻量，复用五字段分析）
       let advice: any = null
       const displayName = profile?.display_name || account?.name || sessionId
+      const adviceItem = {
+        id: 0, sessionId,
+        displayName,
+        stage: profile?.stage || account?.sales_stage || 'unknown',
+        triggerType: 'customer_profile',
+        title: `客户「${displayName}」`,
+        reason: '客户档案 AI 建议',
+        suggestion: '',
+        priority: 'high', priorityScore: 60, silentDays: 0,
+        createdAt: Date.now(), status: 'pending'
+      }
       try {
-        advice = await generateActionAnalysis({
-          id: 0, sessionId,
-          displayName,
-          stage: profile?.stage || account?.sales_stage || 'unknown',
-          triggerType: 'customer_profile',
-          title: `客户「${displayName}」`,
-          reason: '客户档案 AI 建议',
-          suggestion: '',
-          priority: 'high', priorityScore: 60, silentDays: 0,
-          createdAt: Date.now(), status: 'pending'
-        } as any)
+        advice = await generateActionAnalysis(adviceItem as any)
+        // P0-2C.3：客户 360 三判断（机会/风险/下一步）统一落 customer_judgment；
+        // 失败不阻断 360 返回（advice 仍现场生成展示）。
+        if (advice && !advice.notConfigured && !advice.error) {
+          await persistActionAnalysisJudgments({
+            item: adviceItem,
+            analysis: advice,
+            channel: 'customer_360',
+            model: String(config.get('aiModelApiModel') || '').trim() || undefined
+          })
+        }
       } catch { /* ignore */ }
 
       // 统一时间线（Customer 360）：CRM 业务动作 + 线索流转 + 商机事件，一条流倒序 40 条
