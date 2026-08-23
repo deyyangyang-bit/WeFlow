@@ -93,7 +93,7 @@ async function main(): Promise<void> {
     const keys = q('SELECT DISTINCT message_key FROM customer_judgment WHERE message_key IS NOT NULL AND message_key != \'\'')
     let parseable = 0
     for (const k of keys) {
-      try { if (parseEvidenceKey(String(k.message_key)).ok) parseable++ } catch { /* 解析失败计数 */ }
+      try { if (parseEvidenceKey(String(k.message_key)).kind !== 'unparseable') parseable++ } catch { /* 解析失败计数 */ }
     }
     console.log(`message_key 可解析 ${parseable}/${keys.length}（P0-2B 格式）`)
 
