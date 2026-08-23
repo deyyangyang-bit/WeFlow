@@ -11,7 +11,7 @@
 import { useCallback, useState } from 'react'
 import { Check, ChevronDown, ChevronUp, Clock, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { useTodayActionStore, type ActionItem, type SignalSource } from '../../stores/todayActionStore'
+import { useTodayActionStore, type ActionItem, type SignalSource, type JudgmentValue } from '../../stores/todayActionStore'
 import './AIActionCard.scss'
 
 const STAGE_LABELS: Record<string, { text: string; color: string }> = {
@@ -69,14 +69,45 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
   const [expanded, setExpanded] = useState(false)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
   const [copied, setCopied] = useState(false)
+  // P0-3.4 证据回查：判断只带 messageKey 锚点，点击才走 P0-2B 拉原话（与 360/上下文条同语义）
+  const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
+  const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
   // 话术 = AI 分析生成的可粘贴话术（无 insightText 时也常显示 suggestion）
   const script = item.suggestion || ''
 
   const stage = STAGE_LABELS[item.stage] || STAGE_LABELS.unknown
   const hasInsight = item.sources.some(s => s.type === 'insight' && (s as any).insightText)
   const insightText = item.sources.find(s => s.type === 'insight' && (s as any).insightText)
-  const insightContent = (insightText as any)?.insightText || item.suggestion || ''
-  const hasAnalysis = !!insightContent || !!item.whyNow
+  // P0-3.4：面板可展开 = 有当前判断投影或有话术（不再以 analysis JSON 快照/insight 文本判定）
+  const judgments = item.judgments
+  const hasJudgments = !!(judgments && (judgments.summary || judgments.opportunity || judgments.risk || judgments.nextAction))
+  const hasAnalysis = hasJudgments || !!item.suggestion
+
+  // 判断证据回查（与 Customer 360 判断卡同语义）
+  const toggleEvidence = async (j: JudgmentValue) => {
+    if (!j?.messageKey || !item.sessionId) return
+    if (evidenceKey === j.messageKey) { setEvidenceKey(null); setEvidenceMsg(null); return }
+    setEvidenceKey(j.messageKey)
+    setEvidenceMsg('正在回查原话…')
+    try {
+      const r = await (window as any).electronAPI.sales.evidenceGetByKey({
+        session_id: item.sessionId,
+        message_key: j.messageKey,
+        evidence_text: j.value ? `判断：${j.value}` : undefined
+      })
+      if (r?.status === 'found') {
+        const m = r.message
+        const text = String(m?.parsedContent || m?.content || m?.rawContent || '')
+        const t = Number(m?.createTime || 0)
+        const time = t ? new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''
+        setEvidenceMsg(`原话（${time}）：${text}`)
+      } else {
+        setEvidenceMsg(`未找到原话（${r?.reason || 'unavailable'}）；判断依据句：${j.value}`)
+      }
+    } catch (e) {
+      setEvidenceMsg(`回查失败：${String(e)}`)
+    }
+  }
 
   const handleComplete = useCallback(() => completeItem(item.sessionId, 'done'), [item.sessionId, completeItem])
   const handleSkip = useCallback(() => completeItem(item.sessionId, 'skipped'), [item.sessionId, completeItem])
@@ -194,13 +225,40 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
         </div>
       </div>
 
-      {/* AI 五字段折叠面板 */}
+      {/* P0-3.4 折叠面板：判断只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
+          空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断） */}
       {expanded && hasAnalysis && (
         <div className="signal-card__ai-panel">
-          {item.whyNow && <div className="ai-row"><span className="ai-row__label">为什么现在</span><span>{item.whyNow}</span></div>}
-          {item.opportunity && <div className="ai-row"><span className="ai-row__label">机会</span><span>{item.opportunity}</span></div>}
-          {item.riskSignal && <div className="ai-row ai-row--risk"><span className="ai-row__label">风险</span><span>{item.riskSignal}</span></div>}
-          {(insightText as any)?.insightText && !item.whyNow && <div className="ai-row"><span className="ai-row__label">AI 洞察</span><span>{(insightText as any)?.insightText}</span></div>}
+          {hasJudgments && (
+            <div className="signal-card__judgments">
+              {([
+                { label: '总结', v: judgments.summary },
+                { label: '机会', v: judgments.opportunity },
+                { label: '风险', v: judgments.risk },
+                { label: '下一步', v: judgments.nextAction }
+              ] as Array<{ label: string; v: JudgmentValue | null }>)
+              .filter((c): c is { label: string; v: JudgmentValue } => !!c.v).map((c) => {
+                return (
+                <div key={c.label} className="ai-row">
+                  <span className="ai-row__label">{c.label}</span>
+                  <span className="ai-row__value">
+                    {String(c.v.value || '')}
+                    {c.v.freshness === 'stale' && <span className="signal-card__j-badge signal-card__j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
+                    {c.v.source === 'manual' && <span className="signal-card__j-badge signal-card__j-badge--manual">人工</span>}
+                    {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
+                      <button className="signal-card__j-evidence" onClick={() => void toggleEvidence(c.v)}>
+                        {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '有据可查'}
+                      </button>
+                    )}
+                  </span>
+                  {evidenceKey === c.v.messageKey && evidenceMsg && (
+                    <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
+                  )}
+                </div>
+                )
+              })}
+            </div>
+          )}
           {script && (
             <div className="ai-row ai-row--script">
               <span className="ai-row__label">话术</span>
@@ -210,8 +268,6 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
               </button>
             </div>
           )}
-          {item.nextMove && <div className="ai-row"><span className="ai-row__label">下一步</span><span>{item.nextMove}</span></div>}
-          {item.degradationNote && <div className="ai-degradation">{item.degradationNote}</div>}
         </div>
       )}
     </div>

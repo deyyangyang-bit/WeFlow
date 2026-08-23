@@ -25,13 +25,27 @@ export interface ActionItem {
   suggestion: string
   suggestionError?: string
   notConfigured?: boolean
-  whyNow?: string
-  opportunity?: string
-  riskSignal?: string
-  nextMove?: string
-  degradationNote?: string
+  /** P0-3.4：当前 AI 判断投影（主进程随 signal 组装；虚拟卡/无判断为 null） */
+  judgments: ItemJudgments | null
   priority: 'urgent' | 'high' | 'medium' | 'low' | 'info'
   createdAt: number
+}
+
+/** 当前判断投影的最小 UI 类型（形状与 electron CustomerCurrentView['judgments'] 一致，IPC JSON 透传） */
+export interface ItemJudgments {
+  summary: JudgmentValue | null
+  opportunity: JudgmentValue | null
+  risk: JudgmentValue | null
+  nextAction: JudgmentValue | null
+}
+
+/** 单条判断的视图值（最新一条投影，不合并不加工） */
+export interface JudgmentValue {
+  value: string
+  freshness: 'fresh' | 'stale'
+  source: 'ai' | 'manual'
+  evidenceStatus: 'ok' | 'unavailable'
+  messageKey: string | null
 }
 
 export interface ActionStats {
@@ -109,15 +123,11 @@ function mapSignal(sig: any): ActionItem {
     title: sig.sources?.[0]?.reason || '',
     reason: sig.sources?.[0]?.reason || '',
     suggestion: '',
+    // P0-3.4：判断只消费主进程组装的 currentView 投影（analysis JSON 快照是任务自身历史，
+    // 不再 Object.assign 进卡片冒充当前判断）
+    judgments: sig.judgments || null,
     priority: tierToPriority(sig.urgencyTier),
     createdAt: Date.now()
-  }
-  // 预热 analysis（后端已生成五字段）→ 合并展开字段，卡片打开即带原因+建议
-  if (sig.analysis) {
-    try {
-      const parsed = JSON.parse(sig.analysis) as Partial<ActionItem>
-      Object.assign(base, parsed)
-    } catch { /* 预热分析解析失败忽略 */ }
   }
   return base
 }
@@ -233,19 +243,18 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   fetchSuggestion: async (item: ActionItem) => {
     try {
       const result = await (window as any).electronAPI.sales.actionSuggest(item)
-      const analysis = {
-        suggestion: result?.script || result?.suggestion || '',
-        whyNow: result?.whyNow || '',
-        opportunity: result?.opportunity || '',
-        riskSignal: result?.riskSignal || '',
-        nextMove: result?.nextMove || '',
-        suggestionError: result?.error,
-        notConfigured: result?.notConfigured,
-        degradationNote: result?.degradationNote
-      }
+      // P0-3.4：suggest 落库（customer_judgment append）→ 重读 currentView 刷新判断。
+      // 生成 → 持久化 → 当前视图 → UI 的闭环在列表页成立，判断不留在 item 里冒充
+      let judgments: ItemJudgments | null = null
+      try {
+        const v = await (window as any).electronAPI.sales.customerCurrentView(item.sessionId)
+        if (v?.success) judgments = v.data?.judgments || null
+      } catch { /* 刷新失败保留旧判断 */ }
       set(state => ({
         items: state.items.map(i =>
-          i.sessionId === item.sessionId ? { ...i, ...analysis } : i
+          i.sessionId === item.sessionId
+            ? { ...i, suggestion: result?.script || result?.suggestion || '', suggestionError: result?.error, notConfigured: result?.notConfigured, judgments }
+            : i
         )
       }))
     } catch (e: any) {

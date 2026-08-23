@@ -26,6 +26,7 @@ import { scanLeadSla } from './crmLeadService'
 import { normalizeStage } from '../../shared/salesStage'
 import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
+import { getCustomerCurrentView, type CustomerCurrentView } from './customerCurrentView'
 export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -79,8 +80,10 @@ export interface UnifiedSignal {
   priorityScore: number
   urgencyTier: 'urgent' | 'high' | 'normal'
   status: string
-  /** 预热生成的五字段分析（JSON 字符串） */
+  /** 预热生成的五字段分析（JSON 字符串）——任务自身的历史快照，不再作为当前判断消费 */
   analysis?: string
+  /** P0-3.4：当前 AI 判断投影（系统已形成的当前视图；无客户/虚拟卡为 null） */
+  judgments?: CustomerCurrentView['judgments'] | null
 }
 
 export interface UnifiedStats {
@@ -878,6 +881,17 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     if (sig.priorityScore >= 100) sig.urgencyTier = 'urgent'
     else if (sig.priorityScore >= 60) sig.urgencyTier = 'high'
     else sig.urgencyTier = 'normal'
+  }
+
+  // 5.5 P0-3.4：判断展示消费系统已形成的当前视图（不把 analysis JSON 历史快照当当前判断）。
+  // 主进程同步投影一次组装：真实会话 → judgments；虚拟卡（todo:/logi:/lead:）/无客户 → 查无客户 → null
+  for (const sig of signalMap.values()) {
+    try {
+      const view = getCustomerCurrentView(sig.sessionId)
+      sig.judgments = view?.judgments ?? null
+    } catch {
+      sig.judgments = null
+    }
   }
 
   // 6. 排序：按 priorityScore 降序（lead: 卡已不在卡流，无需置顶兜底）

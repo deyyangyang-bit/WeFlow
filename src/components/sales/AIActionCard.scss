@@ -265,7 +265,20 @@
   }
 
   &--risk span:last-child { color: var(--wf-urgent, #DC2626); }
+
+  &__value {
+    min-width: 0;
+    line-height: 1.6;
+  }
 }
+
+// P0-3.4：判断徽标/证据回查（与 Customer 360 判断卡同视觉）
+.signal-card__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 8px; font-size: 11px; vertical-align: 1px; }
+.signal-card__j-badge--stale { background: #fef3c7; color: #92400e; }
+.signal-card__j-badge--manual { background: #dbeafe; color: #1e40af; }
+.signal-card__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: #2563eb; background: #eff6ff; border: none; border-radius: 8px; cursor: pointer; }
+.signal-card__j-evidence:hover { background: #dbeafe; }
+.signal-card__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: #f8fafc; border-left: 3px solid #93c5fd; border-radius: 6px; font-size: 13px; color: #475569; white-space: pre-wrap; word-break: break-all; }
 
 .ai-row--script {
   align-items: flex-start;
@@ -276,13 +289,4 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
-}
-
-.ai-degradation {
-  font-size: 12px;
-  color: var(--wf-muted, #94A3B8);
-  background: #fff;
-  border: 1px dashed var(--wf-border, #E7E9EE);
-  border-radius: 6px;
-  padding: 6px 10px;
 }
