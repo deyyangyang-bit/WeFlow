@@ -13,6 +13,7 @@ import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intent
 import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
+import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType } from '../../shared/customerEvent'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -178,6 +179,20 @@ CREATE TABLE IF NOT EXISTS customer_judgment (
   created_at INTEGER NOT NULL
 );
 
+-- P0-3 E3 客户事件（append-only；客观发生的事实，非判断/状态——四者不互相冒充）
+-- 硬门禁：event_type 只允许五类（新增类型必须走迁移）；message_key 为 P0-2B 证据锚点
+-- 幂等：有 key 的事件同 key 拒绝（partial unique）；无 key 的手动事件允许重复
+CREATE TABLE IF NOT EXISTS customer_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK (event_type IN ('customer_replied', 'quote_asked', 'script_copied', 'chat_opened', 'follow_up_done')),
+  message_key TEXT,
+  evidence_text TEXT,
+  source TEXT NOT NULL,
+  metadata TEXT,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
@@ -187,6 +202,9 @@ CREATE INDEX IF NOT EXISTS idx_todo_due ON follow_up_task(due_at);
 CREATE INDEX IF NOT EXISTS idx_intent_session ON intent_tag_log(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_judgment_session ON customer_judgment(session_id, judgment_type, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_msgkey ON customer_event(message_key) WHERE message_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_event_session ON customer_event(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_event_type ON customer_event(event_type, created_at);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -658,6 +676,50 @@ class SalesDbService {
       [sessionId, judgmentType, Date.now() - windowMs]
     )
     return (row?.c ?? 0) > 0
+  }
+
+  // ─── 客户事件（P0-3 E3.1：客观事实，append-only）──────────────────────────────
+
+  /**
+   * 追加一条客户事件（append-only，一行 = 一次客观事实）。
+   * event_type 非法（含 stage / judgment 类）→ 抛错（TS 层守卫 + DB CHECK 双拦截，防万能日志表）。
+   * message_key 为 P0-2B 证据锚点：无可靠 key 必须留空（证据诚实）。
+   * 幂等：message_key 已存在（partial unique）→ 返回 null 拒绝重复写；无 key 的手动事件允许重复。
+   * createdAt 可选：测试回填历史时间戳用；默认当前时间。
+   */
+  customerEventAdd(input: Omit<CustomerEventRecord, 'id' | 'created_at'> & { createdAt?: number }): CustomerEventRecord | null {
+    if (!isCustomerEventType(input.event_type)) {
+      throw new Error(`[SalesDb] 非法客户事件类型: ${input.event_type}（P0-3 E3 仅允许 customer_replied/quote_asked/script_copied/chat_opened/follow_up_done）`)
+    }
+    if (input.message_key) {
+      const dup = this.get<{ c: number }>('SELECT COUNT(*) as c FROM customer_event WHERE message_key = ?', [input.message_key])
+      if ((dup?.c ?? 0) > 0) return null // 幂等拒绝：同 key 已存在
+    }
+    const created = input.createdAt ?? Date.now()
+    this.run(
+      'INSERT INTO customer_event (session_id, event_type, message_key, evidence_text, source, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [input.session_id, input.event_type, input.message_key ?? null, input.evidence_text ?? null,
+       input.source, input.metadata ?? null, created]
+    )
+    const id = this.lastInsertRowId()
+    return this.get<CustomerEventRecord>('SELECT * FROM customer_event WHERE id = ?', [id])!
+  }
+
+  /** 事件流：该 session 全部事件（倒序；append-only 历史） */
+  customerEventsBySession(sessionId: string, limit: number = 50): CustomerEventRecord[] {
+    return this.all<CustomerEventRecord>(
+      'SELECT * FROM customer_event WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+      [sessionId, limit]
+    )
+  }
+
+  /** 按类型查询事件（sinceMs 可选：只取该时刻之后；E3.2+ 生产者验证 / P0-4 漏斗用） */
+  customerEventsByType(eventType: CustomerEventType, sinceMs?: number, limit: number = 100): CustomerEventRecord[] {
+    const sql = sinceMs !== undefined
+      ? 'SELECT * FROM customer_event WHERE event_type = ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?'
+      : 'SELECT * FROM customer_event WHERE event_type = ? ORDER BY created_at DESC, id DESC LIMIT ?'
+    const params: unknown[] = sinceMs !== undefined ? [eventType, sinceMs, limit] : [eventType, limit]
+    return this.all<CustomerEventRecord>(sql, params)
   }
 
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
