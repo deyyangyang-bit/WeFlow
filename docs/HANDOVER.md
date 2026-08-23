@@ -6,7 +6,7 @@
 > Mac + Windows 双平台打包验证通过。
 > **2026-08-13 增量**：确认中心零操作化（自动确认引擎 + 三触发点 + 前端摘要/历史/撤销）+ 行动卡一键闭环（打开聊天/复制话术）+ Electron 闪退真因修正（见 §2.6）。
 > **2026-08-20 增量**：客户名真相源修复（微信号名回填微信真实备注 + 显示名解析优先微信备注，见 §2.25，未提交）；漏斗改造（历史累计流转 + 逐级转化率 + canonical 语义层 + 下钻修复，见 §2.24，未提交）；AI 销售助手 V1 P0 三缺口落地——商机闭环（采购信号→商机→阶段联动→漏斗）、意向评分 0-100、风险预警结构化（见 §2.14）；漏斗数据修复（转化率相对顶部 + 近7天去重，commit `c719678`，已被 §2.24 取代）；漏斗深链修复（阶段统一 customer_profile.stage，commit `11359fe`）；今日行动新建待办（手动待办进信号流 + 侧栏可勾选，commit `8085dc2`）；AI 见解 24h 去重 + 非客户自动黑名单（commit `f02b13c`）；销售复盘改造（周复盘打通 + 非客户过滤 + 崩溃兜底，commit `9a9fbaf`）；复盘排除非销售联系人（手动排除名单，同事/朋友聊天剔除出统计，commit `ed510df`）；新建合同选型号（工作台从产品库勾选，创建即自动生成报价单，commit `3e44a12`）；跟单中心物流卡两行化（信息/时间与操作分区，commit `bfed14d`）；信息待确认迁至工作台客户 tab（裁决与 AI 补全同页闭环，跟单中心不再展示，commit `57c4e0f`）；侧边栏导航收口 7 模块（今日行动/聊天/CRM/跟单/AI·知识/报表/系统，数据驱动 NAV_GROUPS，commit `09d5600`）；Customer 360 统一时间线（客户档案时间线聚合合同/到款/物流/报价/线索流转/商机事件/AI 见解一条流，前端四色混排并删重复「最近见解」块，commit `6c439bf`）；SLA/Action 接通（首触 SLA 扫描接入 Action 引擎每日 08:00 + 今日行动页打开周期，长时间运行不漏卡；lead:/logi: 虚拟卡隐藏无效「打开聊天」，commit `5ba531b`）。
-> **2026-08-23 增量**：**落 §2.26「AI 销售副驾驶」为下一阶段产品/开发主线**（规划定稿）。定位：AI 观察/理解/判断/准备，销售最终判断与对外执行，L3 自动对客回复明确不做。固化三个关键事实：① P0-1 前置已确认——WeFlow HTTP API 已能安全读微信消息（无需新增读取层），真正缺口是 AI 记录侧持久化 `messageKey`，`evidenceText` 作历史兜底；② CustomerEvent（P0-3）AI 节流必须复用 `insightService` 12h 机制；③ 自动扫描循环已存在（runFullScan + lazyScan + 每日全量 + 增量），真正缺的是**行动结果回流**（Agent Action → Outcome → Re-evaluation）。北极星升级为「有效销售行动」六段漏斗（发现→生成→采纳→执行→响应），先埋点后看板。§10 待办已按 P0 路线核销/合并/新增。
+> **2026-08-23 增量**：**落 §2.26「AI 销售副驾驶」为下一阶段产品/开发主线**（规划定稿）。定位：AI 观察/理解/判断/准备，销售最终判断与对外执行，L3 自动对客回复明确不做。固化三个关键事实：① P0-1 前置已确认——微信消息读取统一走**应用读取层 `chatService`**（解密 WCDB 只读，产品核心能力；HTTP API 是同一读取层的 HTTP 封装，非独立数据源），无需新增读取层，真正缺口是 AI 记录侧持久化 `messageKey`，`evidenceText` 作历史兜底；② CustomerEvent（P0-3）AI 节流必须复用 `insightService` 12h 机制；③ 自动扫描循环已存在（runFullScan + lazyScan + 每日全量 + 增量），真正缺的是**行动结果回流**（Agent Action → Outcome → Re-evaluation）。北极星升级为「有效销售行动」六段漏斗（发现→生成→采纳→执行→响应），先埋点后看板。§10 待办已按 P0 路线核销/合并/新增。**P0-1 第一刀已提交**：`intent_tag_log` 加 `message_key`/`evidence_text` 两列（幂等 ALTER），透传链路落地（classifier/intentService/actionEngine/insightService urge），`follow_up_task` 用 `source_message_id` 存 messageKey；`funnel-test` 增 9 条 P0-1 证据断言；运行时三件事验证通过（① 新日志带 message_key ✓ ② message_key 回查命中原消息 ✓ ③ evidence_text 为原话非 AI 结论 ✓）。
 >
 > **文档分工**：
 > - **本文件** = 项目是什么 / 做了什么 / 架构 / 数据模型 / 进度 / 待办（全局视图）
@@ -414,7 +414,7 @@
 
 ### 3. P0 路线（按序）
 
-- **P0-1 E4 证据链 UI**：数据层已备（§2.18 `sourceId/messageKey` 溯源）。做：点击 AI 判断 → 展开客户原话。**前置已确认（2026-08-23 实证）**：WeFlow 自带 HTTP API（`/api/v1/messages`，返回 `localId/serverId/createTime/parsedContent`）已提供安全的微信消息读取能力，**无需新增 WCDB 读取层**——证据回查 = `messageKey → WeFlow API → 原消息/上下文`。下一步重点是 **AI 记录侧持久化 `messageKey`**（实测：1000 条 AI 见解记录 0 条带 messageKey，仅 AI 补全字段 `sourceId` 有），并以 **`evidenceText` 作为历史兜底**（防微信清理/设备变化致 messageKey 失效），只存判断依据句（≤3 段×80 字），**不复制整段聊天文本**
+- **P0-1 E4 证据链 UI**：数据层已备（§2.18 `sourceId/messageKey` 溯源）。做：点击 AI 判断 → 展开客户原话。**读取路径（2026-08-23 实证 + 用户定标）**：微信消息读取统一走**应用读取层 `chatService`**（主进程内 `decryptKey` 解密 WCDB，只读 + 游标分页；本产品核心能力，所有功能共用）；项目自身 HTTP API `/api/v1/messages`（返回 `localId/serverId/createTime/parsedContent`）**是同一读取层的 HTTP 封装**（`127.0.0.1` + `access_token` 鉴权），**不是独立数据源**——不存在"走 API = 不碰微信库"的路径。证据回查 = `messageKey → 应用读取层 → 原消息/上下文`。**第一刀（2026-08-23 已实现并提交，P0-1）**：AI 记录侧持久化 `messageKey` + `evidenceText`（`intent_tag_log` 加 2 列，幂等 ALTER，历史数据不动）；透传链路 = `onNewMessage → chatService.getLatestMessages → toMessageSnippets（保留 messageKey）→ salesStageClassifier → intent_tag_log`、`salesIntentService.analyzeIntent → chatService.getMessages → intent_tag_log`、`follow_up_task.source_message_id`（R3 / urge_customer）。证据约束：`evidence_text` 只存判断依据关键句（客户原话/转述，≤200 字），**不存 AI reason/结论、不存聊天摘要**。保持不动：insightService 聚合扫描 / crmLeadService / message_analysis。运行时验证三件事已通过（① 新日志带 message_key ✓ ② message_key 回查命中原消息 ✓ ③ evidence_text 为原话非 AI 结论 ✓）→ 进入 P0-2
 - **P0-2 客户「AI 当前判断」**：把已有字段 + 意向评分 + 时间线聚合成「AI 对客户当前状态的解释」卡（高意向/决策期 + 最近变化 + 当前机会 + 当前风险 + 下一步 + 查看证据）。重点是**理解层**，不是加字段
 - **P0-3 E3 CustomerEvent**：**扩展 `intent_tag_log`，不是重写**。最小模型 `{event_type, summary, messageKey, source, created_at}`。动手前先评估 **4 个现有消费者**：漏斗 / 意向评分 / 周报 / 今日行动
 - **P0-4 Action 埋点**：**新增 3 个**——`script_copied`（采纳代理）/ `chat_opened`（执行准备）/ `customer_replied`（行动结果）。已有：`intent_tag_log` / `follow_up_task.created_at` / `follow_up_task.status`。最终形成：发现 → 行动生成 → 销售执行 → 客户响应
@@ -460,7 +460,7 @@
 
 ### 三个固化事实（本次讨论新增，接手者必须知道）
 
-1. **消息读取能力已具备，messageKey 持久化需补**（P0-1 前置，2026-08-23 实证）：WeFlow 自带 HTTP API（`/api/v1/messages` 含 `localId`）可安全读微信聊天记录，证据链**无需新增 WCDB 读取层**；真正缺口是 **AI 记录侧未持久化 `messageKey`**（实测 1000 条见解记录 0 条带，仅 AI 补全字段 `sourceId` 有）——E4 与 E3 是同一件事的两面：E3 记录「AI 发现了什么（含 messageKey/evidenceText）」，E4 把证据展示给销售
+1. **消息读取能力已具备，messageKey 持久化需补**（P0-1 前置，2026-08-23 实证）：微信消息读取统一走**应用读取层 `chatService`**（解密 WCDB，只读，本产品核心能力）；HTTP API `/api/v1/messages` 是同一读取层的 HTTP 封装（`127.0.0.1`+token），**非独立数据源**——证据链**无需新增 WCDB 读取层**，销售功能复用 `chatService` 即可（不新增读取路径）。真正缺口是 **AI 记录侧未持久化 `messageKey`**（实测 1000 条见解记录 0 条带，仅 AI 补全字段 `sourceId` 有）——E4 与 E3 是同一件事的两面：E3 记录「AI 发现了什么（含 messageKey/evidenceText）」，E4 把证据展示给销售
 2. **CustomerEvent AI 节流必须复用 `insightService` 12h 机制**（P0-3）：否则事件模型会变成高频 AI 调用源
 3. **自动扫描循环已存在**（`runFullScan` + `lazyScan` + 每日全量 + 增量）：AI"自己跑起来"已基本成立；下一阶段核心是 **Agent Action → Outcome → Re-evaluation**（行动结果回流 → 重新判断），不是"自动运行"
 
@@ -828,7 +828,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 | 优先级 | 项目 | 说明 |
 |--------|------|------|
-| **P0 主线** | **§2.26 P0-1 → P0-5** | AI 销售副驾驶主线（2026-08-23 定稿，权威规划见 §2.26）：P0-1 E4 证据链 UI → P0-2 客户「AI 当前判断」→ P0-3 E3 CustomerEvent（扩展 intent_tag_log，复用 12h 节流）→ P0-4 Action 埋点（新增 script_copied/chat_opened/customer_replied）→ P0-5 L0-L3 文档化 |
+| **P0 主线** | **§2.26 P0-1 → P0-5** | AI 销售副驾驶主线（2026-08-23 定稿，权威规划见 §2.26）：P0-1 E4 证据链 UI（**第一刀已实现并提交**：intent_tag_log 证据列 + 透传 + source_message_id；运行时验证三件事通过，见 §2.26）→ P0-2 客户「AI 当前判断」→ P0-3 E3 CustomerEvent（扩展 intent_tag_log，复用 12h 节流）→ P0-4 Action 埋点（新增 script_copied/chat_opened/customer_replied）→ P0-5 L0-L3 文档化 |
 | **P0 主线** | **北极星埋点验收锚点** | 六段漏斗「发现→生成→采纳→执行→响应」：**先埋点 → 验证数据 → 后看板**（硬原则）。前置：opportunity 表加 `source` 字段（区分 AI 发现 vs 手动）；「有效响应」第一版只记 `customer_replied` 不判有效。闭环完成判定 = 北极星各段有真实数据 |
 | P1 | **实测反馈驱动迭代** | 原「零操作闭环实测」+「线索池实测」合并：用户实测自动确认判定（阈值可调）、行动卡打开聊天/复制话术/撤销、线索池清洗去重，有反馈再迭代 |
 | P1 | **发票金额自动解析** | 跟单中心增强拆分保留项（PDF/文本）；到款/归属两队列合并**暂缓**（§2.26 冻结范围） |

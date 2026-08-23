@@ -16,7 +16,8 @@ import { salesDbService, type CustomerProfile, type FollowUpTask } from './sales
 import { salesLog } from './salesLogger'
 import { wcdbService } from './wcdbService'
 import { enqueueSalesTask } from './salesQueue'
-import { classifyStage, toMessageSnippets, persistClassification, type CustomerStage } from './salesStageClassifier'
+import { classifyStage, toMessageSnippets, persistClassification, extractEvidence, type CustomerStage } from './salesStageClassifier'
+import { chatService } from './chatService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
@@ -559,13 +560,15 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
 
   return enqueueSalesTask(async () => {
     try {
-      // 1. 拉取最近消息
-      const msgResult = await wcdbService.getMessages(sessionId, 10, 0)
+      // 1. 拉取最近消息（chatService 构造 messageKey，P0-1 证据可回查原话）
+      const msgResult = await chatService.getLatestMessages(sessionId, 10)
       if (!msgResult?.success || !msgResult.messages?.length) return
 
       // 2. AI 阶段分类
       const snippets = toMessageSnippets(msgResult.messages)
       if (snippets.length === 0) return
+      // P0-1 证据：客户最近一条消息 key（R3 卡 source_message_id 回查原话用）
+      const evidence = extractEvidence(snippets)
 
       const classification = await classifyStage(configRef!, snippets, sessionId)
       if (!classification) return
@@ -590,7 +593,8 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
             title: r3.title(profile, silentDays),
             status: 'pending',
             priority_score: PRIORITY_WEIGHT[r3.priority] + 10,
-            created_by: 'action_engine'
+            created_by: 'action_engine',
+            source_message_id: evidence.messageKey
           })
           salesLog('INFO', `[ActionEngine] 增量触发 R3: ${displayName}`)
         }

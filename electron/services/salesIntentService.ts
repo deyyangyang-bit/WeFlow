@@ -6,10 +6,12 @@
  */
 
 import { wcdbService } from './wcdbService'
+import { chatService } from './chatService'
 import { enqueueSalesTask } from './salesQueue'
 import { salesDbService, type IntentTagLog } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
+import { toMessageSnippets, extractEvidence } from './salesStageClassifier'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -137,8 +139,8 @@ class SalesIntentService {
         return { success: false, error: '微信数据库未连接' }
       }
 
-      // 3. 拉取最近消息
-      const msgResult = await wcdbService.getMessages(sessionId, MAX_MESSAGES, 0)
+      // 3. 拉取最近消息（chatService 构造 messageKey，P0-1 证据可回查原话）
+      const msgResult = await chatService.getMessages(sessionId, 0, MAX_MESSAGES, 0, 0, false)
       if (!msgResult.success || !msgResult.messages || msgResult.messages.length === 0) {
         return { success: false, error: '没有可用的聊天记录' }
       }
@@ -175,13 +177,18 @@ class SalesIntentService {
         return { success: false, error: `AI 响应解析失败: ${aiResponse.slice(0, 100)}` }
       }
 
-      // 8. 存储意向标签
+      // 7.5 P0-1 证据：客户最近一条实质消息（原话，非 AI 结论）
+      const evidence = extractEvidence(toMessageSnippets(messages))
+
+      // 8. 存储意向标签（message_key 可回查原话，evidence_text 为判断依据句）
       const tag = salesDbService.intentCreate({
         session_id: sessionId,
         stage: parsed.stage,
         confidence: parsed.confidence,
         source: 'ai',
-        reason: parsed.reason
+        reason: parsed.reason,
+        message_key: evidence.messageKey,
+        evidence_text: evidence.evidenceText
       })
 
       // 9. 同步更新客户画像的 stage

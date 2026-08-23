@@ -56,6 +56,10 @@ export interface IntentTagLog {
   confidence?: number | null
   source: string
   reason?: string | null
+  /** 证据：来源消息 messageKey（可回查原话） */
+  message_key?: string | null
+  /** 证据：判断依据关键句（客户原话/转述，非 AI 结论） */
+  evidence_text?: string | null
   created_at?: number
 }
 
@@ -127,6 +131,8 @@ CREATE TABLE IF NOT EXISTS intent_tag_log (
   confidence REAL,
   source TEXT NOT NULL,
   reason TEXT,
+  message_key TEXT,
+  evidence_text TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -218,6 +224,10 @@ class SalesDbService {
     try { this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_ft_sla_once ON follow_up_task(trigger_type, source_id) WHERE status = 'pending'") } catch { /* 已存在 */ }
     // Migration: customer_profile 增加 last_stage_change_at
     try { this.db.run('ALTER TABLE customer_profile ADD COLUMN last_stage_change_at INTEGER') } catch { /* 列已存在 */ }
+    // Migration: intent_tag_log 证据列（message_key 可回查原话 / evidence_text 判断依据句，P0-1 第一刀）
+    for (const [col, type] of [['message_key', 'TEXT'], ['evidence_text', 'TEXT']] as const) {
+      try { this.db.run(`ALTER TABLE intent_tag_log ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
     this.persist()
   }
 
@@ -522,12 +532,14 @@ class SalesDbService {
 
   // ─── 意向标签 ─────────────────────────────────────────────────────────────
 
-  intentCreate(tag: Omit<IntentTagLog, 'id' | 'created_at'>): IntentTagLog {
-    const now = Date.now()
+  /** createdAt 可选：测试回填历史时间戳用；默认当前时间。message_key/evidence_text 为 P0-1 证据透传，可空 */
+  intentCreate(tag: Omit<IntentTagLog, 'id' | 'created_at'> & { createdAt?: number }): IntentTagLog {
+    const created = tag.createdAt ?? Date.now()
     this.run(
-      `INSERT INTO intent_tag_log (session_id, stage, confidence, source, reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [tag.session_id, tag.stage, tag.confidence ?? null, tag.source, tag.reason ?? null, now]
+      `INSERT INTO intent_tag_log (session_id, stage, confidence, source, reason, message_key, evidence_text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [tag.session_id, tag.stage, tag.confidence ?? null, tag.source, tag.reason ?? null,
+       tag.message_key ?? null, tag.evidence_text ?? null, created]
     )
     const id = this.lastInsertRowId()
     return this.get<IntentTagLog>('SELECT * FROM intent_tag_log WHERE id = ?', [id])!

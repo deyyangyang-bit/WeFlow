@@ -2115,7 +2115,9 @@ ${afterText}
             created_by: 'ai',
             confidence: 0.6,
             priority_score: 0.5,
-            due_at: null
+            due_at: null,
+            // P0-1 证据：最近一条我方未获回复消息的 messageKey（回查原话）
+            source_message_id: String(last.messageKey || '') || null
           })
           created++
           insightLog('INFO', `催办待办生成：${name}`)
