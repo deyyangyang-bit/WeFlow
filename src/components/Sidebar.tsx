@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
@@ -34,7 +34,10 @@ const NAV_GROUPS: NavGroupDef[] = [
     { label: '洞察', path: '/insight-inbox', icon: Sparkles },
     { label: '知识库', path: '/knowledge-base', icon: BookOpen }
   ] },
-  { key: 'report', label: '报表', items: [{ label: '复盘', path: '/sales-report', icon: BarChart3 }] },
+  { key: 'report', label: '报表', items: [
+    { label: '复盘', path: '/sales-report', icon: BarChart3 },
+    { label: '行动漏斗', path: '/action-funnel', icon: Filter }
+  ] },
   { key: 'system', label: '系统', items: [
     { label: '产品库', path: '/crm-product', icon: Package },
     { label: '通讯录', path: '/contacts', icon: UserCircle }

@@ -776,6 +776,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
     dashboardStats: () => ipcRenderer.invoke('sales:dashboard:stats'),
     funnelStats: (days?: number) => ipcRenderer.invoke('sales:funnel:stats', days),
+    // P0-4.2.2/4.3：Action Funnel（Task-level 六段聚合 + 下钻；纯只读）
+    actionFunnelGet: (days?: number | null) => ipcRenderer.invoke('sales:actionFunnel:get', days),
+    actionFunnelBreakdown: (days?: number | null) => ipcRenderer.invoke('sales:actionFunnel:breakdown', days),
     customerExport: () => ipcRenderer.invoke('sales:customer:export'),
 
     // 意向标签

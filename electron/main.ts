@@ -29,6 +29,7 @@ import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsSe
 
 // ─── 销售助手模块 ─────────────────────────────────────────────────────────────
 import { salesDbService } from './services/salesDbService'
+import { getActionFunnel, getActionFunnelBreakdown } from './services/actionFunnel'
 import { stripStageFromUpsert, type CustomerUpsertInput } from './services/customerUpsertPolicy'
 import { applyManualStageCorrection } from './services/legalStageWriters'
 import { createEvidenceResolver } from './services/evidenceResolver'
@@ -4658,6 +4659,24 @@ function registerIpcHandlers() {
   ipcMain.handle('sales:funnel:stats', async (_e, days?: number) => {
     try {
       return { success: true, data: salesDbService.funnelStats(Number(days) || 0) }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // P0-4.2.2 Action Funnel 聚合视图（Task-level 六段；days=null 全量；纯只读不调 LLM）
+  ipcMain.handle('sales:actionFunnel:get', async (_e, days?: number | null) => {
+    try {
+      return { success: true, data: getActionFunnel(typeof days === 'number' && days > 0 ? days : null) }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  // P0-4.3 Action Funnel 下钻（KPI 点击 → 事件类型计数 + 任务样本；与聚合共享判定行）
+  ipcMain.handle('sales:actionFunnel:breakdown', async (_e, days?: number | null) => {
+    try {
+      return { success: true, data: getActionFunnelBreakdown(typeof days === 'number' && days > 0 ? days : null) }
     } catch (e) {
       return { success: false, error: String(e) }
     }

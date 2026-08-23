@@ -43,6 +43,7 @@ const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
 const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
 const SalesFunnelPage = lazy(() => import('./pages/SalesFunnelPage'))
+const ActionFunnelPage = lazy(() => import('./pages/ActionFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
 const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
 const CustomerWorkspacePage = lazy(() => import('./pages/CustomerWorkspacePage'))
@@ -728,6 +729,7 @@ function App() {
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/sales-funnel" element={<SalesFunnelPage />} />
+                <Route path="/action-funnel" element={<ActionFunnelPage />} />
                 <Route path="/opportunities" element={<OpportunityPage />} />
                 <Route path="/customers" element={<CustomerWorkspacePage />} />
                 <Route path="/crm" element={<CrmWorkbenchPage />} />

@@ -33,7 +33,7 @@ import { join } from 'path'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { salesDbService } from '../electron/services/salesDbService'
-import { getActionFunnel, ACTION_FUNNEL_SOURCES } from '../electron/services/actionFunnel'
+import { getActionFunnel, getActionFunnelBreakdown, ACTION_FUNNEL_SOURCES } from '../electron/services/actionFunnel'
 // last_stage_change_at 唯一合法写路径 = legalStageWriters（generic upsert 已移除 stage 资格，P0-2A.5）
 import { applyManualStageCorrection } from '../electron/services/legalStageWriters'
 
@@ -166,6 +166,29 @@ async function main(): Promise<void> {
     f.stages.created === 0 && f.window.days === 7 && f.window.startMs === futureNow - 7 * 86400_000)
   f = getActionFunnel(7)
   ok('B14b 默认 now → 全部 task 在窗口内', f.stages.created > 0)
+
+  // ── B16-B21: P0-4.3 breakdown 下钻（与聚合共享判定行，口径严格一致）──────────
+  const bd = getActionFunnelBreakdown()
+  ok('B16 breakdown 计数与聚合一致（executed.count=stages.executed / responded.count=stages.responded）',
+    bd.executed.count === f12.stages.executed && bd.responded.count === f12.stages.responded &&
+    bd.executed.unexecuted === f12.stages.created - f12.stages.executed &&
+    bd.responded.unresponded === f12.stages.executed - f12.stages.responded)
+  // 执行事件类型计数：wx_b(script_copied) + t1(script_copied+chat_opened) + wx_a(chat_opened)；
+  // t2 无 task_id 不计、t4 task 前事件时序守卫不计、follow_up_done 无样本
+  ok('B17 executed.eventTypeCounts 精确（script_copied=2 / chat_opened=2 / follow_up_done=0——无 task_id 与时序守卫均不计）',
+    bd.executed.eventTypeCounts.script_copied === 2 && bd.executed.eventTypeCounts.chat_opened === 2 &&
+    bd.executed.eventTypeCounts.follow_up_done === 0)
+  // 响应事件类型计数：wx_a(customer_replied) + wx_f1 同 session(customer_replied+quote_asked)；t4 时序守卫不计
+  ok('B18 responded.eventTypeCounts 精确（customer_replied=2 / quote_asked=1）',
+    bd.responded.eventTypeCounts.customer_replied === 2 && bd.responded.eventTypeCounts.quote_asked === 1)
+  // samples：createdAt 降序 + 同 task 多事件类型去重展示（t1 的 eventTypes 恰两型）
+  ok('B19 samples 排序（createdAt 降序）且 t1 事件类型去重（script_copied+chat_opened）',
+    bd.executed.samples.length > 0 &&
+    bd.executed.samples.every((s, i, a) => i === 0 || a[i - 1].createdAt >= s.createdAt) &&
+    bd.executed.samples.some((s) => s.eventTypes.length === 2 && s.eventTypes.includes('script_copied') && s.eventTypes.includes('chat_opened')))
+  ok('B20 samples 含任务标识（taskId/sessionId/title）——数字可追溯到任务', bd.executed.samples.every((s) => s.taskId > 0 && !!s.sessionId && !!s.title))
+  const bd7 = getActionFunnelBreakdown(7)
+  ok('B21 breakdown 窗口传递（days 与 window 一致）', bd7.window.days === 7 && bd.window.days === null)
 
   console.log(`action-funnel-test: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)

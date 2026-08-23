@@ -61,13 +61,13 @@ async function main(): Promise<void> {
     /from '\.\/salesDbService'/.test(funnelCode) && /normalizeStage/.test(funnelCode) &&
     /import type \{ CustomerEventType \}/.test(funnelCode))
 
-  // A2: getActionFunnel 体内零写方法（read model 不写库）
+  // A2: 全文件零写方法（P0-4.3 起 getActionFunnel/collectTaskRows/getActionFunnelBreakdown 共享判定行，
+  // 数据访问只在 collectTaskRows 内经 salesDbService 读方法白名单——整文件检查更严格）
   const writeMethods = ['customerUpsert', 'intentCreate', 'judgmentCreate', 'customerEventAdd',
     'todoCreate', 'todoUpdate', 'updateStageChangeTime', 'kbCreate', 'reportCreate', 'flushNow']
-  const fnBody = funnelCode.slice(funnelCode.indexOf('export function getActionFunnel'), funnelCode.length)
-  ok('A2 getActionFunnel 体内零写方法（customerUpsert/intentCreate/judgmentCreate/customerEventAdd/todoCreate/todoUpdate/updateStageChangeTime/kbCreate/reportCreate/flushNow 零出现）',
-    writeMethods.every((m) => !new RegExp(`\\b${m}\\(`).test(fnBody)) &&
-    /tasksCreatedSince/.test(fnBody) && /customerEventsByType/.test(fnBody) && /customerGetBySession/.test(fnBody))
+  ok('A2 全文件零写方法 + 读访问仅白名单三原语（tasksCreatedSince/customerEventsByType/customerGetBySession）',
+    writeMethods.every((m) => !new RegExp(`\\b${m}\\(`).test(funnelCode)) &&
+    /tasksCreatedSince/.test(funnelCode) && /customerEventsByType/.test(funnelCode) && /customerGetBySession/.test(funnelCode))
 
   // A3: 执行/响应事件白名单不膨胀（source 级正则，防新类型静默混入漏斗）
   ok('A3 执行事件白名单恰三类型（script_copied/chat_opened/follow_up_done）',

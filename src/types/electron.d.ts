@@ -1805,6 +1805,27 @@ export interface ElectronAPI {
       newCustomersInWindow: number
     }; error?: string }>
     customerExport: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
+    // P0-4.2.2/4.3：Action Funnel（Task-level 六段聚合 + 下钻；纯只读不调 LLM；rate null = 分母 0）
+    actionFunnelGet: (days?: number | null) => Promise<{ success: boolean; data?: {
+      window: { days: number | null; startMs: number | null }
+      stages: { created: number; exposed: null; executed: number; responded: number; progressed: number; won: number }
+      rates: { exposure: null; execution: number | null; response: number | null; progression: number | null; conversion: number | null }
+      sources: { created: string; exposed: string; executed: string; responded: string; progressed: string; won: string }
+      supersededCount: number
+    }; error?: string }>
+    actionFunnelBreakdown: (days?: number | null) => Promise<{ success: boolean; data?: {
+      window: { days: number | null; startMs: number | null }
+      executed: {
+        count: number; unexecuted: number
+        eventTypeCounts: { script_copied: number; chat_opened: number; follow_up_done: number }
+        samples: Array<{ taskId: number; sessionId: string; title: string; createdAt: number; eventTypes: string[] }>
+      }
+      responded: {
+        count: number; unresponded: number
+        eventTypeCounts: { customer_replied: number; quote_asked: number }
+        samples: Array<{ taskId: number; sessionId: string; title: string; createdAt: number }>
+      }
+    }; error?: string }>
     customerDetail: (sessionId: string) => Promise<{
       success: boolean;
       data?: {
