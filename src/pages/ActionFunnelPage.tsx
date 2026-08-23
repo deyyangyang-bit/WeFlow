@@ -12,7 +12,7 @@
  * 口径真源：electron/services/actionFunnel.ts（§2.36）；本页只消费不重算。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, X, Filter, ArrowDown, Info } from 'lucide-react'
+import { RefreshCw, X, Filter, ChevronDown, Info } from 'lucide-react'
 import './ActionFunnelPage.scss'
 
 interface FunnelData {
@@ -45,7 +45,11 @@ const DAY_OPTIONS = [
 
 // 五段行为阶段色：浅蓝→藏青渐变（与销售漏斗同一视觉体系；成交段同款藏青呼应，P0-4.4）
 const STAGE_COLORS = ['#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1e3a8a']
+// 每段渐变浅端（与销售漏斗统一色板；配合深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
+const STAGE_GRADIENT_LIGHT = ['#a8cbfe', '#7cb3fb', '#5b95f8', '#497af0', '#31509b']
 const STAGE_NAMES = ['行动产生', '销售执行', '客户响应', '有效推进', '成交']
+// 梯形固定比例收窄（纯装饰分层，不与数值绑定——跳级/转化率>100% 不改变形状；修复版规格）
+const STAGE_WIDTHS = [100, 85, 70, 55, 40] as const
 
 /** 推进/成交段与销售漏斗的映射关系（tooltip 弱化，非常驻文字） */
 const STAGE_MAPPINGS: Partial<Record<string, string>> = {
@@ -248,29 +252,44 @@ export default function ActionFunnelPage() {
               <div className="af-funnel">
                 {funnelStages.map((s, i) => (
                   <div className="af-funnel__col" key={s.key}>
-                    <button
-                      className={`af-funnel__stage${drill === s.key ? ' af-funnel__stage--active' : ''}`}
-                      style={{
-                        width: `${100 - i * 12}%`,
-                        background: STAGE_COLORS[i],
-                        clipPath: 'polygon(4% 0, 96% 0, 100% 100%, 0 100%)'
-                      }}
-                      onClick={() => setDrill(s.key)}
-                    >
-                      <span className="af-funnel__name">{s.name}</span>
-                      <span className="af-funnel__count">{s.count}</span>
-                      <span className="af-funnel__rate">
-                        {s.rate === null ? (i === 0 ? '源头' : 'N/A') : `转化 ${Math.round(s.rate * 100)}%`}
-                      </span>
-                    </button>
-                    {STAGE_MAPPINGS[s.key] && (
-                      <span className="af-funnel__map" tabIndex={0} aria-label="口径说明">
-                        <Info size={11} />
-                        <span className="af-funnel__map-tip">{STAGE_MAPPINGS[s.key]}</span>
-                      </span>
-                    )}
+                    <div className="af-funnel__wrap" style={{ width: `${STAGE_WIDTHS[i]}%` }}>
+                      <button
+                        className="af-funnel__stage"
+                        onClick={() => setDrill(s.key)}
+                      >
+                        {/* svg 梯形：渐变 + 同色描边 round join = 2-4px 圆角（clip-path 无法圆角，改用 svg path） */}
+                        <svg className="af-funnel__stage-bg" viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true">
+                          <defs>
+                            <linearGradient id={`af-grad-${s.key}`} x1="0" y1="0" x2="1" y2="1">
+                              <stop offset="0%" stopColor={STAGE_GRADIENT_LIGHT[i]} />
+                              <stop offset="100%" stopColor={STAGE_COLORS[i]} />
+                            </linearGradient>
+                          </defs>
+                          <path
+                            d="M 4 0 L 96 0 L 100 60 L 0 60 Z"
+                            fill={`url(#af-grad-${s.key})`}
+                            stroke={`url(#af-grad-${s.key})`}
+                            strokeWidth="4"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        <span className="af-funnel__content">
+                          <span className="af-funnel__name">{s.name}</span>
+                          <span className="af-funnel__count">{s.count}</span>
+                          <span className="af-funnel__rate">
+                            {s.rate === null ? (i === 0 ? '源头' : 'N/A') : `转化 ${Math.round(s.rate * 100)}%`}
+                          </span>
+                        </span>
+                      </button>
+                      {STAGE_MAPPINGS[s.key] && (
+                        <span className="af-funnel__map" tabIndex={0} aria-label="口径说明">
+                          <Info size={11} />
+                          <span className="af-funnel__map-tip">{STAGE_MAPPINGS[s.key]}</span>
+                        </span>
+                      )}
+                    </div>
                     {i < funnelStages.length - 1 && (
-                      <div className="af-funnel__arrow"><ArrowDown size={14} /></div>
+                      <div className="af-funnel__arrow"><ChevronDown size={16} /></div>
                     )}
                   </div>
                 ))}

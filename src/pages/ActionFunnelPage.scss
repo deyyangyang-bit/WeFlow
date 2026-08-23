@@ -14,8 +14,8 @@
 .af-days__btn--active { background: #2563eb; color: #fff; }
 
 // KPI 卡（可点击 = 有下钻）
-.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.af-kpi { display: flex; flex-direction: column; gap: 4px; text-align: left; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; cursor: default; transition: box-shadow .15s, border-color .15s;
+.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.af-kpi { display: flex; flex-direction: column; gap: 4px; text-align: left; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; cursor: default; box-shadow: 0 1px 3px rgba(15, 23, 42, .05); transition: box-shadow .15s, border-color .15s;
   &--clickable { cursor: pointer; &:hover { border-color: #2563eb; box-shadow: 0 1px 6px rgba(37, 99, 235, .12); } }
   &--star { border-color: #f59e0b; background: #fffbeb;
     .af-kpi__label { color: #b45309; }
@@ -27,34 +27,40 @@
 .af-kpi__note { font-size: 11px; color: #94a3b8; }
 
 // 曝光段（G1 未埋点，诚实 N/A）
-.af-exposed { display: flex; align-items: baseline; gap: 8px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.af-exposed { display: flex; align-items: baseline; gap: 8px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px 14px; margin-bottom: 20px; flex-wrap: wrap; }
 .af-exposed__label { font-size: 12px; color: #64748b; font-weight: 600; }
 .af-exposed__value { font-size: 13px; color: #94a3b8; font-weight: 600; }
 .af-exposed__hint { font-size: 12px; color: #94a3b8; }
 
 // 五段漏斗卡片（P0-4.4 起 HTML/CSS 自绘梯形替代 ECharts——hover/点击态/箭头/tooltip 全可控）
-.af-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; }
+.af-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
 
-// 自绘漏斗：梯形按钮（width/clip-path 由 TSX 内联）+ 段间箭头 + 段右上角映射标注徽标
-.af-funnel { display: flex; flex-direction: column; align-items: center; padding: 14px 8px 10px; }
-.af-funnel__col { position: relative; display: flex; flex-direction: column; align-items: center; }
-.af-funnel__stage { border: 0; padding: 12px 0 16px; cursor: pointer; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; transition: filter .12s, transform .1s;
+// 自绘漏斗（P0-4.4 修复版）：梯形固定比例收窄（宽度由 TSX 内联 STAGE_WIDTHS，纯装饰不与数值绑定）
+// ⚠️ col 必须显式 width:100%——否则 shrink-to-fit 下 wrap 的百分比宽度无法解析（每段退化为内容宽，漏斗不呈梯形）
+.af-funnel { display: flex; flex-direction: column; align-items: center; padding: 18px 10px 14px; }
+.af-funnel__col { width: 100%; display: flex; flex-direction: column; align-items: center; }
+.af-funnel__wrap { position: relative; display: flex; }
+// svg 梯形（TSX 内联 path + 渐变 + 同色描边 round join 圆角）；文字在 content 层（relative 叠在 svg 上）
+.af-funnel__stage { position: relative; width: 100%; border: 0; padding: 0; cursor: pointer; background: transparent; transition: filter .12s, transform .1s;
   &:hover { filter: brightness(1.08); }
   &:active { transform: scale(.99); }
-  &--active { filter: drop-shadow(0 2px 6px rgba(30, 58, 138, .45)); z-index: 1; }
 }
-.af-funnel__name { font-size: 13px; font-weight: 600; letter-spacing: .5px; }
-.af-funnel__count { font-size: 22px; font-weight: 700; line-height: 1.15; text-shadow: 0 1px 2px rgba(15, 23, 42, .18); }
-.af-funnel__rate { font-size: 11px; opacity: .9; }
-.af-funnel__arrow { display: flex; justify-content: center; color: #94a3b8; margin: 3px 0; }
-// 推进/成交映射标注：段右上角小 Info 徽标，hover/focus 出 tooltip（弱化说明，非常驻文字）；
-// 徽标必须放在按钮外——clip-path 会裁掉溢出按钮的 tooltip
-.af-funnel__map { position: absolute; top: 6px; right: 10px; display: inline-flex; color: rgba(255, 255, 255, .85); cursor: help; z-index: 5; }
+.af-funnel__stage-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.af-funnel__content { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 14px 0 16px; color: #fff; }
+.af-funnel__name { font-size: 13px; font-weight: 600; letter-spacing: .5px; white-space: nowrap; }
+// 主数字：+20% 字号、纯白；转化率小字：白色 70% 透明度——明显主次对比
+.af-funnel__count { font-size: 26px; font-weight: 700; line-height: 1.15; color: #fff; text-shadow: 0 1px 2px rgba(15, 23, 42, .18); white-space: nowrap; }
+.af-funnel__rate { font-size: 11px; color: rgba(255, 255, 255, .7); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+// 段间小三角箭头（区分「行动漏斗=过程链路」与「销售漏斗=状态分布」）：加大 + 主题蓝，链路感更明显
+.af-funnel__arrow { display: flex; justify-content: center; align-items: center; height: 16px; margin: 2px 0; color: #3b82f6; }
+// 推进/成交映射标注：段右上角 Info 徽标，hover/focus 出 tooltip（弱化说明，非常驻文字）；
+// 徽标放按钮外（wrap 内）——clip-path 会裁掉溢出按钮的 tooltip
+.af-funnel__map { position: absolute; top: 6px; right: 10px; display: inline-flex; color: rgba(255, 255, 255, .9); cursor: help; z-index: 5; }
 .af-funnel__map-tip { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; max-width: 250px; background: #1e293b; color: #e2e8f0; font-size: 11px; line-height: 1.5; padding: 6px 10px; border-radius: 6px; box-shadow: 0 4px 12px rgba(15, 23, 42, .28); opacity: 0; pointer-events: none; transition: opacity .12s;
   .af-funnel__map:hover &, .af-funnel__map:focus-within & { opacity: 1; }
 }
 
-.af-footnote { font-size: 12px; color: #94a3b8; margin-top: 12px; line-height: 1.7; }
+.af-footnote { font-size: 12px; color: #94a3b8; margin-top: 16px; line-height: 1.7; overflow-wrap: break-word; }
 
 // 下钻弹层
 .af-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }

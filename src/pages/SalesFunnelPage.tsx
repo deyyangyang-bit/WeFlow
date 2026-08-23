@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
+import * as echarts from 'echarts'
 import './SalesFunnelPage.scss'
 
 interface FunnelStats {
@@ -24,6 +25,10 @@ const STAGE_ORDER = ['了解', '比价', '决策', '成交'] as const
 const STAGE_COLORS: Record<string, string> = {
   了解: '#93c5fd', 比价: '#60a5fa', 决策: '#3b82f6', 成交: '#1e3a8a', 流失: '#94a3b8', 未知: '#cbd5e1'
 }
+// 梯形固定比例收窄（P0-4.4 修复版）：宽度纯装饰不绑数值——客户可跳级/转化率>100% 时形状不变（决策 14→成交 28 不再"突然变宽"）
+const STAGE_WIDTHS = [100, 85, 70, 55] as const
+// 每段渐变浅端（与行动漏斗统一色板；深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
+const STAGE_GRADIENT_LIGHT = ['#a8cbfe', '#7cb3fb', '#5b95f8', '#497af0', '#31509b']
 const DAY_OPTIONS = [
   { label: '近7天', value: 7 },
   { label: '近30天', value: 30 },
@@ -54,26 +59,32 @@ export default function SalesFunnelPage() {
   const rateOf = useCallback((from: string, to: string) =>
     data?.conversion.find((c) => c.from === from && c.to === to)?.rate ?? 0, [data])
 
-  // ECharts 漏斗（4 档，sort:'none' 保留真实档位大小；跳级使档位人数非严格递减）
-  // 每档：段名 + 人数（大字）+ 相邻转化率（小字浅色）；selectedMode 提供点击态视觉反馈
+  // ECharts 漏斗（4 档，sort:'none' 按顺序排布；宽度 = 固定比例 STAGE_WIDTHS，不随人数变化——修复跳级变宽）
+  // 每档：段名 + 人数（大字，取 data.real）+ 相邻转化率（小字浅色）；selectedMode 提供点击态视觉反馈
   const funnelOption = useMemo(() => {
     if (!data) return null
     const funnel = data.funnel.filter((f) => (STAGE_ORDER as readonly string[]).includes(f.stage))
     if (!funnel.length) return null
     return {
-      tooltip: { trigger: 'item' as const, formatter: '{b}: {c} 人' },
+      tooltip: {
+        trigger: 'item' as const,
+        formatter: (p: { name?: string; data?: { real?: number } }) =>
+          `${p?.name ?? ''}: ${p?.data?.real ?? 0} 人`
+      },
       series: [{
         type: 'funnel', left: '12%', right: '12%', top: 12, bottom: 12,
-        minSize: '14%', maxSize: '100%', sort: 'none' as const, gap: 4,
+        // minSize 0：宽度 = value/max × 100% 严格等于 STAGE_WIDTHS 固定比例（14% 会让比例偏移）
+        minSize: 0, maxSize: '100%', sort: 'none' as const, gap: 2,
         label: {
-          show: true, position: 'inside' as const, fontSize: 13, color: '#fff', lineHeight: 18,
+          show: true, position: 'inside' as const, fontSize: 16, color: '#fff', lineHeight: 20,
           rich: {
-            sub: { fontSize: 11, color: 'rgba(255,255,255,.85)' }
+            // 转化率小字：缩小 + 白色 70% 透明度，与主数字（16px 纯白）形成明显主次
+            sub: { fontSize: 10, color: 'rgba(255,255,255,.7)' }
           },
-          formatter: (p: { name?: string; value?: number }) => {
+          formatter: (p: { name?: string; data?: { real?: number } }) => {
             const i = Math.max(0, (STAGE_ORDER as readonly string[]).indexOf(String(p?.name ?? '')))
             const rate = i === 0 ? 100 : rateOf(STAGE_ORDER[i - 1], STAGE_ORDER[i])
-            return `${p?.name ?? ''}  ${p?.value ?? 0} 人\n{sub|转化 ${rate}%}`
+            return `${p?.name ?? ''}  ${p?.data?.real ?? 0} 人\n{sub|转化 ${rate}%}`
           }
         },
         itemStyle: { borderWidth: 0, borderColor: '#fff' },
@@ -83,9 +94,16 @@ export default function SalesFunnelPage() {
         },
         selectedMode: 'single',
         select: { itemStyle: { borderWidth: 2, borderColor: '#fff', shadowBlur: 10, shadowColor: 'rgba(30, 58, 138, .35)' } },
-        data: funnel.map((n) => ({
-          name: n.stage, value: n.count,
-          itemStyle: { color: STAGE_COLORS[n.stage] }
+        data: funnel.map((n, idx) => ({
+          name: n.stage, value: STAGE_WIDTHS[idx] ?? 0, real: n.count,
+          itemStyle: {
+            // 极细微渐变（左上→右下轻微加深，与行动漏斗同一色板）+ 小圆角柔和边缘
+            color: new echarts.graphic.LinearGradient(0, 0, 1, 1, [
+              { offset: 0, color: STAGE_GRADIENT_LIGHT[idx] ?? STAGE_COLORS[n.stage] },
+              { offset: 1, color: STAGE_COLORS[n.stage] }
+            ]),
+            borderRadius: 2
+          }
         }))
       }]
     }

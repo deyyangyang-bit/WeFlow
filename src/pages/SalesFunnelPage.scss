@@ -12,19 +12,19 @@
 .funnel-days__btn { border: 0; background: #fff; padding: 4px 12px; font-size: 12px; cursor: pointer; color: #64748b; & + & { border-left: 1px solid #e2e8f0; } }
 .funnel-days__btn--active { background: #2563eb; color: #fff; }
 
-.funnel-stats { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
-.funnel-stat { display: flex; flex-direction: column; align-items: center; background: #f8fafc; border: 1px solid #eef2f7; border-radius: 10px; padding: 12px 24px; box-shadow: 0 1px 3px rgba(15, 23, 42, .05); }
+.funnel-stats { display: flex; gap: 20px; margin-bottom: 24px; flex-wrap: wrap; }
+.funnel-stat { display: flex; flex-direction: column; align-items: center; background: #f8fafc; border: 1px solid #eef2f7; border-radius: 10px; padding: 12px 24px; box-shadow: 0 2px 8px rgba(15, 23, 42, .06); }
 .funnel-stat__value { font-size: 22px; font-weight: 700; }
 .funnel-stat__label { font-size: 12px; color: #64748b; }
 
-.funnel-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; margin-top: 16px; }
+.funnel-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; margin-top: 20px; }
 .funnel-drill-hint { text-align: center; font-size: 12px; color: #94a3b8; padding-bottom: 6px; }
-.funnel-footnote { font-size: 12px; color: #94a3b8; margin-top: 12px; line-height: 1.6; }
+.funnel-footnote { font-size: 12px; color: #94a3b8; margin-top: 16px; line-height: 1.6; overflow-wrap: break-word; }
 
 // 当前客户状态小卡片
 .funnel-current { margin-top: 24px; h3 { font-size: 14px; margin-bottom: 12px; } }
 .funnel-current__cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
-.funnel-current__card { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 1px solid #e2e8f0; border-top: 3px solid #94a3b8; border-radius: 8px; background: #fff; padding: 10px 8px; cursor: pointer; transition: box-shadow .15s, border-color .15s, transform .1s; &:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(15, 23, 42, .1); transform: translateY(-1px); } &:active { transform: translateY(0); } }
+.funnel-current__card { display: flex; flex-direction: column; align-items: center; gap: 2px; border: 1px solid #e2e8f0; border-top: 3px solid #94a3b8; border-radius: 8px; background: #fff; padding: 10px 8px; cursor: pointer; box-shadow: 0 1px 3px rgba(15, 23, 42, .05); transition: box-shadow .15s, border-color .15s, transform .1s; &:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(15, 23, 42, .1); transform: translateY(-1px); } &:active { transform: translateY(0); } }
 .funnel-current__value { font-size: 20px; font-weight: 700; }
 .funnel-current__label { font-size: 12px; color: #64748b; }
 
