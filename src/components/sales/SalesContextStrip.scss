@@ -102,3 +102,16 @@
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 }
+
+  /* P0-3.3 AI 当前判断卡（消费 currentView.judgments；evidence 点击才回查 P0-2B） */
+  &__judgments { margin: 4px 0 8px; }
+  &__j-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
+  &__j-label { flex-shrink: 0; color: #2563eb; font-weight: 500; min-width: 48px; }
+  &__j-value { color: var(--text-primary, #333); line-height: 1.5; }
+  &__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 8px; font-size: 11px; vertical-align: 1px; }
+  &__j-badge--stale { background: #fef3c7; color: #92400e; }
+  &__j-badge--manual { background: #dbeafe; color: #1e40af; }
+  &__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: #2563eb; background: #eff6ff; border: none; border-radius: 8px; cursor: pointer; }
+  &__j-evidence:hover { background: #dbeafe; }
+  &__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: #f8fafc; border-left: 3px solid #93c5fd; border-radius: 6px; font-size: 12px; color: #475569; white-space: pre-wrap; word-break: break-all; }
+  &__empty { color: #94a3b8; font-size: 12px; margin-bottom: 8px; }
