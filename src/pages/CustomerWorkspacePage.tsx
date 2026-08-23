@@ -173,11 +173,16 @@ export default function CustomerWorkspacePage() {
   const [editingValue, setEditingValue] = useState('')
   const [deepReport, setDeepReport] = useState('')
   const [deepLoading, setDeepLoading] = useState(false)
+  // P0-3.2 证据回查（AI 当前判断卡「有据可查」）：视图只带 messageKey 锚点，点击才走 P0-2B 拉原话
+  const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
+  const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
 
   const openCustomer = async (c: any) => {
     setSelectedCustomer(c)
     setCustomerProfile(null)
     setDeepReport('')
+    setEvidenceKey(null)
+    setEvidenceMsg(null)
     if (!c.session_id) return
     setProfileLoading(true)
     try {
@@ -185,6 +190,32 @@ export default function CustomerWorkspacePage() {
       if (r?.success) setCustomerProfile(r.data)
     } catch { /* ignore */ }
     setProfileLoading(false)
+  }
+
+  // 判断卡证据回查：messageKey → sales:evidence:getByKey（原话+时间）；再点收起
+  const toggleEvidence = async (j: any) => {
+    if (!j?.messageKey || !selectedCustomer?.session_id) return
+    if (evidenceKey === j.messageKey) { setEvidenceKey(null); setEvidenceMsg(null); return }
+    setEvidenceKey(j.messageKey)
+    setEvidenceMsg('正在回查原话…')
+    try {
+      const r = await window.electronAPI.sales.evidenceGetByKey({
+        session_id: String(selectedCustomer.session_id),
+        message_key: j.messageKey,
+        evidence_text: j.value ? `判断：${j.value}` : undefined
+      })
+      if (r?.status === 'found') {
+        const m = r.message
+        const text = String(m?.parsedContent || m?.content || m?.rawContent || '')
+        const t = Number(m?.createTime || 0)
+        const time = t ? new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''
+        setEvidenceMsg(`原话（${time}）：${text}`)
+      } else {
+        setEvidenceMsg(`未找到原话（${r?.reason || 'unavailable'}）；判断依据句：${j.value}`)
+      }
+    } catch (e) {
+      setEvidenceMsg(`回查失败：${String(e)}`)
+    }
   }
 
   // 客户信息字段视图（account + custom_fields + enrich_meta 装配）
@@ -505,15 +536,41 @@ export default function CustomerWorkspacePage() {
                   <div className="crm-insight">{customerProfile.aiProfile}</div>
                 </div>
               )}
-              {customerProfile.advice && (customerProfile.advice.nextMove || customerProfile.advice.whyNow) && !customerProfile.advice.notConfigured && (
+              {customerProfile.currentView && (
                 <div className="crm-profile__section">
-                  <h4>AI 下一步建议</h4>
+                  <h4>AI 当前判断</h4>
                   <div className="crm-insight">
-                    {customerProfile.advice.whyNow && <div className="ai-row"><span className="ai-row__label">为什么现在</span><span>{customerProfile.advice.whyNow}</span></div>}
-                    {customerProfile.advice.opportunity && <div className="ai-row"><span className="ai-row__label">机会</span><span>{customerProfile.advice.opportunity}</span></div>}
-                    {customerProfile.advice.riskSignal && <div className="ai-row"><span className="ai-row__label">风险</span><span>{customerProfile.advice.riskSignal}</span></div>}
-                    {customerProfile.advice.script && <div className="ai-row"><span className="ai-row__label">话术</span><span>{customerProfile.advice.script}</span></div>}
-                    {customerProfile.advice.nextMove && <div className="ai-row"><span className="ai-row__label">下一步</span><span>{customerProfile.advice.nextMove}</span></div>}
+                    {(() => {
+                      const j: any = customerProfile.currentView.judgments || {}
+                      const cards = [
+                        { label: '总结', v: j.summary },
+                        { label: '机会', v: j.opportunity },
+                        { label: '风险', v: j.risk },
+                        { label: '下一步', v: j.nextAction }
+                      ]
+                      const present = cards.filter((c) => c.v)
+                      if (!present.length) {
+                        return <div className="ai-row"><span className="cws-j-empty">暂无 AI 判断（系统扫描/预热时生成，打开档案不现场生成）</span></div>
+                      }
+                      return present.map((c) => (
+                        <div key={c.label} className="ai-row">
+                          <span className="ai-row__label">{c.label}</span>
+                          <span className="ai-row__value">
+                            {String(c.v.value || '')}
+                            {c.v.freshness === 'stale' && <span className="cws-j-badge cws-j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
+                            {c.v.source === 'manual' && <span className="cws-j-badge cws-j-badge--manual">人工</span>}
+                            {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
+                              <button className="cws-j-evidence" onClick={() => void toggleEvidence(c.v)}>
+                                {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '有据可查'}
+                              </button>
+                            )}
+                          </span>
+                          {evidenceKey === c.v.messageKey && evidenceMsg && (
+                            <div className="cws-j-evidence-text">{evidenceMsg}</div>
+                          )}
+                        </div>
+                      ))
+                    })()}
                   </div>
                 </div>
               )}
