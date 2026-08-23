@@ -711,9 +711,10 @@
 - **① 时间窗口**：两个漏斗窗口选项都用 **7/30/90/全部 四档**（不互相阉割——90 天对 B2B 叉车长决策链是季度结构观察关键窗口）；**行动漏斗默认 7 天，销售漏斗默认 30 天**
 - **② 配色统一但语义保留**：两漏斗同一蓝系渐变——`#93c5fd → #60a5fa → #3b82f6 → #2563eb → #1e3a8a`（了解→比价→决策→成交，成交藏青呼应）；流失/未知中性灰（`#94a3b8`/`#cbd5e1`）；无警报红
 - **③ 行动漏斗 ECharts → HTML/CSS 自绘**（hover/点击态/箭头/tooltip 全可控，不依赖 echarts-for-react）；销售漏斗保留 ECharts（趋势堆叠柱仍 ECharts）
-- **实现**：
-  - `SalesFunnelPage`：DAY_OPTIONS 四档（默认 30）+ 副标题「客户当前所处销售阶段分布」+ STAGE_COLORS 渐变 + ECharts funnel **rich label 双行**（`段名 人数人` 大字 + `转化 X%` 小字半透明白；第一档恒 100%）+ `selectedMode:'single'` 点击态（选中藏青光晕）+ 统计卡阴影 + 状态卡 hover 上浮/active 归位（顶部色条随阶段色）
-  - `ActionFunnelPage`：DAY_OPTIONS 四档（默认 7）+ STAGE_COLORS 蓝系渐变 + **自绘五段梯形**（`clip-path: polygon(4% 0, 96% 0, 100% 100%, 0 100%)`，宽度 `100-i*12%` 递减，段间 ArrowDown 箭头「链路感」，段内：段名 + 人数大字（text-shadow 可读性）+ 转化率小字，源头段显示「源头」、分母 0 显示 N/A）+ 每段可点击 → 与 KPI 共用下钻弹层（`--active` drop-shadow 高亮）+ **推进/成交段右上角 Info 徽标 → hover/focus 出 tooltip**（弱化口径映射说明：progressed=比价→决策→成交 stage 变更 / won=销售漏斗同口径；徽标渲染在按钮外——clip-path 会裁掉溢出按钮的 tooltip）
+- **实现**（2026-08-24 验收三轮打磨后的最终形态，`e0736b3` 后两次修正提交（`828b6bb`））：
+  - 通用：两漏斗**梯形固定比例收窄**（`STAGE_WIDTHS` 纯装饰不绑数值——跳级/转化率>100% 不改变形状）+ 每段**极细微渐变**（左上→右下轻微加深，浅端 `STAGE_GRADIENT_LIGHT` 两图共用同一色板，深端 = STAGE_COLORS 基准色）+ **数字层级**（主数字 26px/16px 纯白粗体；转化率 10-11px 白色 70% 透明度，主次分明）+ 统计/KPI/状态卡轻投影 + 间距呼吸感
+  - `SalesFunnelPage`：DAY_OPTIONS 四档（默认 30）+ 副标题「客户当前所处销售阶段分布」+ ECharts funnel **rich label 双行**（`段名 人数人` 大字 + `转化 X%` 小字半透明白；第一档恒 100%）+ `value` 传固定比例 + `data.real` 存真实人数（label/tooltip 均取 real）+ `minSize: 0` 使宽度严格等于固定比例 + itemStyle `LinearGradient` + `borderRadius: 2` + `gap: 2` + `selectedMode:'single'` 点击态 + 状态卡 hover 上浮/active 归位（顶部色条随阶段色）
+  - `ActionFunnelPage`：DAY_OPTIONS 四档（默认 7）+ **自绘五段梯形**（svg path 梯形 + 同色描边 `strokeWidth:4` `strokeLinejoin: round` = 2-4px 圆角——clip-path 无法圆角故改 svg；`width: STAGE_WIDTHS[i]%` 固定比例；⚠️ col 必须显式 `width:100%`——否则 shrink-to-fit 下百分比宽度无法解析，每段退化为内容宽不呈梯形）+ 段间**主题蓝小三角箭头**（ChevronDown 16px，链路感——行动漏斗=过程链路 vs 销售漏斗=状态分布）+ 段内：段名 + 人数大字 + 转化率小字（源头段显示「源头」、分母 0 显示 N/A）+ 每段可点击 → 与 KPI 共用下钻弹层（hover 亮度高亮）+ **推进/成交段右上角 Info 徽标 → hover/focus 出 tooltip**（弱化口径映射说明：progressed=比价→决策→成交 stage 变更 / won=销售漏斗同口径；徽标在 wrap 层、按钮外——描边/裁剪会裁掉溢出按钮的 tooltip）
 - **验证**：tsc 双 gate（root **0** / node 162 基线不变）+ funnel **40/40** + action-funnel **25/25** + 两 scss sass 独立编译通过 + vite HMR 无编译错误
 - **观察期纪律**：P0-4 冻结清单不变（观察期内不改 Judgment Prompt / Action 推荐 / Funnel 口径 / Event schema / Summary 生成逻辑；唯一例外=埋点/数据完整性 Bug）
 
