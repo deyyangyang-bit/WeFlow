@@ -144,9 +144,9 @@ async function main(): Promise<void> {
   const crm = new SQL.Database(readFileSync(CRM_DB_PATH))
   const db2 = new SQL.Database(readFileSync(DB_PATH)) // DDL 模拟副本
 
-  // B11: customer_event 0 基线
-  const evTables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_event'")
-  ok('B11 customer_event 表 0 基线（表待应用重启激活，属部署时序）', evTables.length === 0)
+  // B11: customer_event 0 行基线（A1 清理后归零；表由应用建表 DDL 创建——2026-08-24 更新：表已存在，校验归零而非无表）
+  const evRows = db.exec("SELECT COUNT(*) FROM customer_event")
+  ok('B11 customer_event 0 行基线（A1 清理后归零）', evRows.length > 0 && Number(evRows[0].values[0][0]) === 0)
 
   // B12: quote_signal 分流兼容（customer_replied_at 字段在真实数据继续工作）
   const quotes = crm.exec('SELECT COUNT(*) FROM quote_signal')[0].values[0][0] as number

@@ -46,8 +46,12 @@ async function main(): Promise<void> {
   const crmDbSrc = readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')
 
   ok('A1 quote_asked 写入点存在（recordQuoteSignal 成功块后双写）', /recordCustomerEventSafe\(\{[^}]*event_type: 'quote_asked'/.test(parseCode))
-  ok('A2 customer_replied 写入点存在（markQuoteReplied 后 closed > 0 才写）',
-    /const closed = crmDbService\.markQuoteReplied/.test(parseCode) && /event_type: 'customer_replied'/.test(parseCode) && /if \(closed > 0\)/.test(parseCode))
+  ok('A2 customer_replied 写入点存在（markQuoteReplied 后 closed > 0 && accountId 才写——无名 session 不写）',
+    /const closed = crmDbService\.markQuoteReplied/.test(parseCode) && /event_type: 'customer_replied'/.test(parseCode) && /if \(closed > 0 && accountId\)/.test(parseCode))
+  ok('A9 无名 session 门控（accountId=0 不写 customer_event——观察期防污染；quote_asked/customer_replied 双写均受控，quote_signal 业务真源不受门控影响）',
+    /if \(accountId\) \{\n\s*recordCustomerEventSafe\(\{[\s\S]{0,120}?event_type: 'quote_asked'/.test(parseCode) &&
+    /if \(closed > 0 && accountId\) \{\n\s*recordCustomerEventSafe\(\{[\s\S]{0,120}?event_type: 'customer_replied'/.test(parseCode) &&
+    !/if \(accountId\) \{\n\s*if \(crmDbService\.recordQuoteSignal/.test(parseCode))
   ok('A3 message_key 复用上游 canonical key 变量（不现场拼 key）',
     /message_key: key,/.test(parseCode) && !/message_key: \`\$\{uid/.test(parseCode))
   ok('A4 evidence_text 来自消息原话（textForSignal/content slice，非 AI 结论）',

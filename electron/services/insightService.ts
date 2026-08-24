@@ -24,7 +24,7 @@ import { weiboService } from './social/weiboService'
 import { showNotification } from '../windows/notificationWindow'
 import { salesLog } from './salesLogger'
 import { insightProfileService } from './insightProfileService'
-import { salesDbService } from './salesDbService'
+import { salesDbService, type CustomerProfile } from './salesDbService'
 import { applyParsedStageSignal } from './salesInsightWrite'
 import { extractEvidence, toMessageSnippets } from './salesStageClassifier'
 import { persistSummaryJudgment } from './salesSummaryJudgment'
@@ -1476,8 +1476,9 @@ ${afterText}
         let salesStage: string | undefined
         let effectiveThresholdMs = thresholdMs
         let stageWeight = 3  // 默认最低优先级
+        let profile: CustomerProfile | undefined
         try {
-          const profile = salesDbService.customerGetBySession(sessionId)
+          profile = salesDbService.customerGetBySession(sessionId)
           if (profile?.stage) {
             salesStage = profile.stage
             // 流失客户直接跳过
@@ -1488,6 +1489,8 @@ ${afterText}
             else if (profile.stage === '了解') { stageWeight = 2 }
           }
         } catch { /* salesDb 未初始化时忽略 */ }
+        // 无名 session（salesDb 无客户档案）跳过沉默扫描——见解链只服务已识别客户（观察期防污染）
+        if (!profile) continue
 
         // 下限：未达到沉默阈值
         if (silentMs < effectiveThresholdMs) continue
@@ -1682,6 +1685,10 @@ ${afterText}
       for (const session of candidateSessions.slice(0, 10)) {
         const sessionId = session.username?.trim() || ''
         if (!sessionId) continue
+        // 无名 session（salesDb 无客户档案）跳过见解链——只服务已识别客户（观察期防污染）
+        let hasProfile = false
+        try { hasProfile = !!salesDbService.customerGetBySession(sessionId) } catch { /* salesDb 未初始化视为无名 */ }
+        if (!hasProfile) continue
 
         const currentTimestamp = session.lastTimestamp || 0
         const lastSeen = this.lastSeenTimestamp.get(sessionId) ?? 0

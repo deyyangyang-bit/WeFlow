@@ -186,19 +186,23 @@ async function scanAll(): Promise<number> {
             if (crmDbService.recordQuoteSignal({ msgKey: key, sessionId: uid, accountId, displayName: name, amount: quoteSig.amount, model: quoteSig.model, quotedAt: ms })) {
               salesLog('INFO', `[CrmParse] 报价信号「${name}」¥${quoteSig.amount}${quoteSig.model ? `（${quoteSig.model}）` : ''}`)
               // E3.2：报价事实 → 通用事实事件（quote_signal 仍为 R7 业务真源，双写平行不迁移）
-              recordCustomerEventSafe({
-                session_id: uid,
-                event_type: 'quote_asked',
-                message_key: key, // 复用上游 canonical messageKey（幂等依赖 E3.1 unique index）
-                evidence_text: textForSignal.slice(0, 200) || null, // 消息原话，非 AI 结论
-                source: 'system',
-                metadata: JSON.stringify({ amount: quoteSig.amount ?? null, model: quoteSig.model ?? null })
-              })
+              // 无名 session（accountId=0：displayName/alias/contact 均未匹配到 CRM 联系人）不写 customer_event——观察期防污染（A1 已清 3 条）；quote_signal 业务真源不受影响
+              if (accountId) {
+                recordCustomerEventSafe({
+                  session_id: uid,
+                  event_type: 'quote_asked',
+                  message_key: key, // 复用上游 canonical messageKey（幂等依赖 E3.1 unique index）
+                  evidence_text: textForSignal.slice(0, 200) || null, // 消息原话，非 AI 结论
+                  source: 'system',
+                  metadata: JSON.stringify({ amount: quoteSig.amount ?? null, model: quoteSig.model ?? null })
+                })
+              }
             }
           } else if (isSend === 0) {
             const closed = crmDbService.markQuoteReplied(uid, ms)
             // E3.2：客户回复（确实关闭了未回复报价）→ 通用事实事件；quote_signal.customer_replied_at 兼容字段继续更新
-            if (closed > 0) {
+            // 无名 session（accountId=0）不写 customer_event——观察期防污染（与 quote_asked 同门控）
+            if (closed > 0 && accountId) {
               recordCustomerEventSafe({
                 session_id: uid,
                 event_type: 'customer_replied',
