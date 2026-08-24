@@ -250,7 +250,7 @@ export default function CrmWorkbenchPage() {
           <div className="crm-stats-row">
             <div className="crm-stat-card"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div>
             <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div>
-            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月已确认到款</span></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月到账（已认领）</span></div>
             <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div>
           </div>
           <div className="crm-overview-charts">

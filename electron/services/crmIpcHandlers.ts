@@ -7,10 +7,10 @@ import { app } from 'electron'
 import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
-import { setCrmParseConfig, setPostScanHook, startCrmParseScheduler, scanNow } from './crmParseService'
+import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
 import { generateDoc, ensureTemplates } from './crmDocGenService'
 import { enqueueSalesTask } from './salesQueue'
-import { setAutoConfirmConfig, setDocgenRunner, runAutoConfirmNow, startAutoConfirmScheduler, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
+import { setDocgenRunner, runAutoConfirmNow, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
 import { setEnrichConfig, setEnrichAiConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
 import { simpleCompletion, callChatCompletion, getAiModelConfig } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
@@ -51,15 +51,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ensureTemplates(app.getPath('userData'))
   setCrmParseConfig(config)
   startCrmParseScheduler()
-  // ── 确认中心自动确认装配：config 三键 / docgen 回调 / 扫后钩子 / 60s 兜底调度 ──
-  setAutoConfirmConfig({
-    get: (k) => {
-      if (k === 'crmAutoConfirmEnabled') return config.get('crmAutoConfirmEnabled')
-      if (k === 'crmAutoConfirmThreshold') return config.get('crmAutoConfirmThreshold')
-      if (k === 'crmAutoConfirmInvoiceDocgen') return config.get('crmAutoConfirmInvoiceDocgen')
-      return undefined
-    }
-  })
+  // ── 2026-08-24 起停用 AI 自动确认（用户拍板：销售手动认领）——扫后钩子/60s 调度器移除，仅保留 docgen 回调 ──
   setDocgenRunner((type, recordId) => generateDoc(type, recordId))
   // 客户信息自动填充装配：enrich 配置 shim + 完整 config（AI 调用需要 apiBaseUrl/apiKey）
   setEnrichAiConfig(config)
@@ -74,9 +66,6 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   })
   // 线索流转装配：SLA 小时数从配置读取
   setLeadConfig({ get: (k) => (k === 'crmLeadSlaHours' ? config.get('crmLeadSlaHours') : undefined) })
-  // 扫完立刻触发（fire-and-forget；enqueue 串行 + runAutoConfirmNow 内置批前快照）
-  setPostScanHook(() => { void enqueueSalesTask(() => runAutoConfirmNow()) })
-  startAutoConfirmScheduler()
 
   ipcMain.handle('crm:entity:list', async (_, entity: string, opts?) => crmDbService.list(entity, opts || {}))
   ipcMain.handle('crm:entity:get', async (_, entity: string, id: number) => crmDbService.getById(entity, id))
@@ -198,6 +187,60 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   })
   ipcMain.handle('crm:allocation:confirm', async (_, id: number, patch) => crmDbService.confirmAllocation(id, patch || {}))
   ipcMain.handle('crm:payment:approve', async (_, id: number) => crmDbService.approvePayment(id))
+  ipcMain.handle('crm:payments:byDay', async (_, days?: number) => crmDbService.paymentsByDay(days))
+  ipcMain.handle('crm:payment:claim', async (_, id: number, patch) => crmDbService.claimPayment(id, patch || {}))
+  // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
+  // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
+  const resolveMySalesName = async (): Promise<string> => {
+    const myWxid = String(config.get('myWxid') || '').trim()
+    if (!myWxid) return ''
+    const dn = await wcdbService.getDisplayNames([myWxid])
+    if (!dn.success || !dn.map) return ''
+    const real = dn.map[myWxid]
+    return real && !isSessionIdLike(real) && real !== myWxid ? real : ''
+  }
+  ipcMain.handle('crm:currentSalesName', async () => resolveMySalesName())
+  // 销售团队名单（跟单中心）：历史认领记录非 wxid 人名词条 ∪ 当前登录账户，附每人单数/金额；
+  // 显式新增进 salesTeamAdded，离职/移除进 salesTeamRemoved（两名单均持久化，覆盖历史推断）
+  ipcMain.handle('crm:sales:team', async () => {
+    const rows = crmDbService.all(
+      "SELECT sales_name AS n, COUNT(*) AS cnt, COALESCE(SUM(credited_amount),0) AS amt FROM allocation WHERE sales_name IS NOT NULL AND sales_name != '' GROUP BY sales_name")
+    const team: Array<{ name: string; orderCount: number; amount: number }> = []
+    const seen = new Set<string>()
+    for (const r of rows) {
+      const n = String(r.n).trim()
+      if (!n || isSessionIdLike(n) || seen.has(n)) continue // 裸 wxid 旧数据不进名单
+      seen.add(n)
+      team.push({ name: n, orderCount: Number(r.cnt), amount: Number(r.amt) })
+    }
+    const me = await resolveMySalesName()
+    if (me && !seen.has(me)) team.push({ name: me, orderCount: 0, amount: 0 })
+    const removed = new Set<string>(config.get('salesTeamRemoved') || [])
+    const added = new Set<string>(config.get('salesTeamAdded') || [])
+    const active = team.filter((m) => added.has(m.name) || !removed.has(m.name))
+    for (const a of added) if (!active.some((m) => m.name === a)) active.push({ name: a, orderCount: 0, amount: 0 })
+    active.sort((a, b) => b.amount - a.amount)
+    return { team: active, removed: [...removed] }
+  })
+  ipcMain.handle('crm:sales:team:add', (_, name: string) => {
+    const n = String(name || '').trim()
+    if (!n) return { ok: false, reason: '销售名为空' }
+    const added = new Set<string>(config.get('salesTeamAdded') || [])
+    added.add(n)
+    const removed = new Set<string>(config.get('salesTeamRemoved') || [])
+    removed.delete(n) // 重新添加 = 撤销离职
+    config.set('salesTeamAdded', [...added])
+    config.set('salesTeamRemoved', [...removed])
+    return { ok: true }
+  })
+  ipcMain.handle('crm:sales:team:remove', (_, name: string) => {
+    const n = String(name || '').trim()
+    if (!n) return { ok: false, reason: '销售名为空' }
+    const removed = new Set<string>(config.get('salesTeamRemoved') || [])
+    removed.add(n)
+    config.set('salesTeamRemoved', [...removed])
+    return { ok: true }
+  })
   ipcMain.handle('crm:account:ensure', async (_, name: string) => crmDbService.ensureAccount(String(name || '')))
   ipcMain.handle('crm:allocation:reject', async (_, id: number) => crmDbService.rejectAllocation(id))
   ipcMain.handle('crm:contract:ship', async (_, id: number) => crmDbService.shipContract(id))

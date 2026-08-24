@@ -1,57 +1,136 @@
 /**
- * CrmReviewPage.tsx —— 跟单中心：归属待确认/物流待链接+待签收/到款待审核/发票待开
+ * CrmReviewPage.tsx —— 跟单中心：到款认领（7 天一页，销售认领+开票状态）/ 物流跟单（7 天一页，待认领+待签收+已签收）/ 发票待开
+ * 2026-08-24 改造：去掉 AI 自动确认（销售手动认领），到款按天分组展示，认领后显示开票状态（订单群 PDF 发票解析）。
  */
-import { useEffect, useState } from 'react'
-import { ClipboardCheck, RefreshCw, Radio, Sparkles, Users, X } from 'lucide-react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { ClipboardCheck, RefreshCw, Radio, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import { getCrmLogisticsOverdueHours } from '../services/config'
+import CustomerPicker from '../components/sales/CustomerPicker'
 import './CrmReviewPage.scss'
 
-// 物流区分页：每页 10 条（待认领 / 待签收 / 已签收 三区共用）
-const LOGI_PAGE_SIZE = 10
-/** 分页控件：总条数 ≤ 每页条数时不渲染 */
-function LogiPager(props: { page: number; totalPages: number; total: number; onPage: (p: number) => void }) {
-  const { page, totalPages, total, onPage } = props
-  if (total <= LOGI_PAGE_SIZE) return null
+// 一页七天（到款认领 / 物流三队列共用）：以今天为基准滚动 7 天窗口分页（第 0 页 = 今天往前 6 天，如 8/18~8/24），
+// 页内每天一个折叠行（默认折叠，点击展开当天明细）；跨窗口翻页（上一页/下一页）。
+const DAY_MS = 24 * 3600 * 1000
+const WEEK_MS = 7 * DAY_MS
+/** 时间戳 → 所在自然日零点（作天 key，跨时区/夏令时安全） */
+const dayStartOf = (ms: number): number => {
+  const d = new Date(Number(ms))
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+/** 第 page 页的 7 个自然日零点（从最早到最晚；page 0 = 今天往前 6 天） */
+const weekDaysOf = (page: number): number[] => {
+  const today = dayStartOf(Date.now())
+  const start = today - (page + 1) * WEEK_MS + DAY_MS
+  return [...Array(7)].map((_, i) => start + i * DAY_MS)
+}
+/** 日标签：8/24（今天）· 8/23（昨天）· 8/16 */
+const dayLabelOf = (start: number): string => {
+  const diff = Math.round((dayStartOf(Date.now()) - start) / DAY_MS)
+  const label = `${new Date(start).getMonth() + 1}/${new Date(start).getDate()}`
+  if (diff === 0) return `${label}（今天）`
+  if (diff === 1) return `${label}（昨天）`
+  return label
+}
+
+/**
+ * 一页七天折叠列表（到款认领 / 物流三队列共用）：每页 7 个自然日，每天一行（默认折叠，点 header 展开当天明细）；
+ * 翻页按 7 天窗口前移，上限 = 最老一条所在页；forceOpen 用于筛选模式强制全展开。
+ */
+function WeekDayGroups(props: {
+  items: any[]
+  timeOf: (it: any) => number
+  render: (it: any) => ReactNode
+  headerInfo?: (list: any[]) => ReactNode
+  forceOpen?: boolean
+}) {
+  const { items, timeOf, render, headerInfo, forceOpen } = props
+  const [page, setPage] = useState(0) // 0 = 最近 7 天窗口
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set()) // 用户显式展开的天 key
+  if (items.length === 0) return null
+  // 按天分组（key = 日零点时间戳）
+  const byDay = (() => {
+    const m = new Map<string, any[]>()
+    for (const it of items) {
+      const k = String(dayStartOf(timeOf(it)))
+      const list = m.get(k) || []
+      list.push(it)
+      m.set(k, list)
+    }
+    return m
+  })()
+  // 最老一条所在页（翻页下限）；当前页越界自动收敛
+  const oldest = Math.min(...items.map((it) => dayStartOf(timeOf(it))))
+  const maxPage = Math.max(0, Math.floor((dayStartOf(Date.now()) - oldest) / WEEK_MS))
+  const cur = Math.min(page, maxPage)
+  const days = weekDaysOf(cur)
+  // 页内倒序展示（最新/今天在最上）；pager 标签仍用升序窗口范围
+  const displayDays = [...days].reverse()
+  const toggle = (k: string) => {
+    setExpandedDays((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  }
   return (
-    <div className="crm-pager">
-      <button className="crm-btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
-      <span className="crm-pager-info">第 {page} / {totalPages} 页 · 共 {total} 条</span>
-      <button className="crm-btn" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>下一页</button>
+    <div>
+      {displayDays.filter((d) => byDay.has(String(d))).map((d) => {
+        const k = String(d)
+        const list = byDay.get(k)!
+        const open = !!forceOpen || expandedDays.has(k)
+        return (
+          <div key={k}>
+            <h4 className="day-header" onClick={() => toggle(k)} title={open ? '点击收起' : '点击展开'}>
+              <span className="day-arrow">{open ? '▾' : '▸'}</span> {dayLabelOf(d)} · {list.length} 笔
+              {headerInfo ? headerInfo(list) : null}
+            </h4>
+            {open && list.map((it) => <Fragment key={it.id}>{render(it)}</Fragment>)}
+          </div>
+        )
+      })}
+      {maxPage > 0 && (
+        <div className="crm-pager">
+          <button className="crm-btn" disabled={cur >= maxPage} onClick={() => setPage(cur + 1)}>上一页</button>
+          <span className="crm-pager-info">{dayLabelOf(days[0])} ~ {dayLabelOf(days[6])} · 第 {cur + 1} / {maxPage + 1} 页</span>
+          <button className="crm-btn" disabled={cur <= 0} onClick={() => setPage(cur - 1)}>下一页</button>
+        </div>
+      )}
     </div>
   )
 }
 
 export default function CrmReviewPage() {
-  const { queues, fetchQueues, fetchWorkbench, scanNow, loading, notice, setNotice, autoSummary, fetchAutoSummary, runAutoConfirm, undoAutoConfirm } = useCrmStore()
+  const { queues, fetchQueues, scanNow, loading, notice, setNotice } = useCrmStore()
   const [contracts, setContracts] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
   const [showPick, setShowPick] = useState(false)
   const [pickSearch, setPickSearch] = useState('')
   const [groupSessions, setGroupSessions] = useState<any[]>([])
   const [pickType, setPickType] = useState<Record<string, string>>({})
-  const [allocContract, setAllocContract] = useState<Record<number, string>>({}) // allocationId → 合同 id（下拉选中）
   const [invoiceContract, setInvoiceContract] = useState<Record<number, string>>({})
   const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
-  const [running, setRunning] = useState(false) // 运行自动确认中
-  const [showHistory, setShowHistory] = useState(false) // 自动确认历史展开
+  // ── 每日到款：按天分组清单 + 认领控件 state ─────────────────────────────────
+  const [payments, setPayments] = useState<any[]>([]) // paymentsByDay 平铺（带认领/开票状态）
+  const [claimCustomer, setClaimCustomer] = useState<Record<number, string>>({}) // paymentId → 客户名（匹配已有客户或直接建档）
+  const [claimContract, setClaimContract] = useState<Record<number, string>>({}) // paymentId → 合同 id
+  const [claimSales, setClaimSales] = useState<Record<number, string>>({}) // paymentId → 认领销售（不填=默认本人，认领不一定是自己的）
+  const [onlyUnclaimed, setOnlyUnclaimed] = useState(false) // 只看未认领
+  const [salesTeam, setSalesTeam] = useState<Array<{ name: string; orderCount: number; amount: number }>>([]) // 销售团队名单
+  const [teamOpen, setTeamOpen] = useState(false) // 销售团队下拉展开
+  const [addSalesName, setAddSalesName] = useState('') // 添加销售输入
   // ── 物流跟单 ─────────────────────────────────────────────────────────────
   const [logiLinked, setLogiLinked] = useState<any[]>([]) // 已认领待签收
-  const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收（折叠）
-  const [showSignedLogi, setShowSignedLogi] = useState(false)
+  const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收
   const [logiContract, setLogiContract] = useState<Record<number, string>>({}) // logisticsId → 合同 id（认领下拉，可选）
-  const [logiAccount, setLogiAccount] = useState<Record<number, string>>({}) // logisticsId → 客户 id（认领下拉，必选其一）
-  const [logiNewName, setLogiNewName] = useState<Record<number, string>>({}) // logisticsId → 新客户名（建客户并认领）
-  const [logiSales, setLogiSales] = useState<Record<number, string>>({}) // logisticsId → 认领销售
+  const [logiCustomer, setLogiCustomer] = useState<Record<number, string>>({}) // logisticsId → 客户名（匹配已有客户或直接建档）
+  const [logiSales, setLogiSales] = useState<Record<number, string>>({}) // logisticsId → 认领销售（不填=默认本人）
+  const [mySalesName, setMySalesName] = useState('') // 当前登录账户显示名（认领销售自动带，单人团队不用手输）
   const [logiOverdueHours, setLogiOverdueHours] = useState(24) // 超期阈值（设置页配置）
   const [logiNotice, setLogiNotice] = useState('') // 物流区行内反馈（认领/签收结果就近显示，避免顶部 notice 被滚动遮挡）
-  const [logiPage, setLogiPage] = useState(1) // 待认领分页
-  const [pendingPage, setPendingPage] = useState(1) // 已认领待签收分页
-  const [signedPage, setSignedPage] = useState(1) // 已签收分页
   const [contractName, setContractName] = useState<Record<number, string>>({}) // contract_id → 名称（跟单视图展示）
   const [accounts, setAccounts] = useState<any[]>([]) // 全部客户（认领下拉 + 待签收/已签收客户名展示）
   const [accountName, setAccountName] = useState<Record<number, string>>({}) // account_id → 客户名
   const displayNameOf = (c: any) => String(c?.profile_display_name || '') || String(c?.name || '')
+  // 客户名 → 已有客户 id（精确匹配）；无匹配返回 undefined（认领时按输入名建档）
+  const customerIdOf = (name: string) => accounts.find((a) => displayNameOf(a).toLowerCase() === name.trim().toLowerCase())?.id
 
   const TYPE_LABELS: Record<string, string> = { logistics: '物流发货', payment: '货款认领', order: '订单截图' }
 
@@ -91,10 +170,64 @@ export default function CrmReviewPage() {
     setLogiSigned((signed || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
   }
 
+  // ── 款项认领清单：平铺按 pay_time 7 天窗口分组（组内时间倒序）────
+  const fetchPayments = async () => setPayments((await window.electronAPI.crm.paymentsByDay(30)) || [])
+  // 销售团队名单（header 下拉）：历史认领人名词条 + 当前登录账户，可新增/移除（离职）
+  const fetchSalesTeam = async () => {
+    const r = await window.electronAPI.crm.salesTeam()
+    if (r) setSalesTeam(r.team || [])
+  }
+  const addSalesMember = async () => {
+    const n = addSalesName.trim()
+    if (!n) return
+    const r = await window.electronAPI.crm.salesTeamAdd(n)
+    if (!r?.ok) { setNotice(`添加失败：${r?.reason || '未知错误'}`); return }
+    setAddSalesName('')
+    await fetchSalesTeam()
+  }
+  const removeSalesMember = async (name: string) => {
+    const r = await window.electronAPI.crm.salesTeamRemove(name)
+    if (!r?.ok) { setNotice(`移除失败：${r?.reason || '未知错误'}`); return }
+    await fetchSalesTeam()
+  }
+  // 可认领 = 无归属 / 归属待确认 / 旧自动确认遗留（confirmed 但未挂客户合同）
+  const isClaimable = (p: any) => !p.alloc_status || p.alloc_status === 'pending' || (p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id)
+  // 已确认到款 = 已认领且挂上客户或合同（确认收到款项集中罗列，与每日流水分开）
+  const claimedPayments = payments.filter((p) => p.alloc_status === 'confirmed' && (p.account_id || p.contract_id))
+  // 只看未认领：行数已很少，强制全展开（折叠不挡筛选结果）
+  const claimablePayments = payments.filter(isClaimable)
+  // 开票状态：认领后按订单群 PDF 发票解析结果展示（invoice_status='issued' 即已开票）；
+  // 旧自动确认遗留（confirmed 无客户合同）补认领前不显示开票状态
+  const invoiceBadgeOf = (p: any) => {
+    if (!p.alloc_status || p.alloc_status === 'pending') return null
+    if (p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id) return null
+    if (p.invoice_status === 'issued') return <em className="logi-card__time invoice-ok">已开票 {p.invoice_no ? `· ${p.invoice_no}` : ''}</em>
+    if (p.invoice_status) return <em className="logi-card__time">开票中</em>
+    return <em className="logi-card__time">未开票</em>
+  }
+  // 到款显示金额：拆单认领场景 credited_amount 是解析出的客户实际付款额（银行聚合流水拆单），
+  // 未认领/无拆单时回退 amount_net——统计卡（SUM credited_amount）与清单口径一致
+  const shownAmountOf = (p: any) => Number(p.credited_amount ?? p.amount_net)
+  // 销售手动认领：选客户（下拉或新客户名建档） + 合同（可选，按客户过滤） + 销售名
+  const doClaimPayment = async (p: any) => {
+    const name = claimCustomer[p.id]?.trim() || ''
+    const cid = claimContract[p.id] ? Number(claimContract[p.id]) : undefined
+    if (!name) { setNotice('请输入客户名'); return }
+    let accountId: number | undefined = customerIdOf(name)
+    if (!accountId) {
+      const created = await window.electronAPI.crm.accountEnsure(name)
+      if (!created) { setNotice('新建客户失败，请重试'); return }
+      accountId = Number(created)
+    }
+    const r = await window.electronAPI.crm.paymentClaim(p.id, { account_id: accountId, contract_id: cid, sales_name: claimSales[p.id]?.trim() || mySalesName || undefined })
+    setNotice(r.ok ? (r.linked ? `已认领 ¥${shownAmountOf(p).toLocaleString()}：计入合同回款` : '已认领（未关联合同，回款未计入）') : `认领失败：${r.reason}`)
+    await fetchPayments(); await fetchQueues()
+  }
+
   useEffect(() => {
     void fetchQueues()
     void fetchGroups()
-    void fetchAutoSummary()
+    void fetchPayments()
     void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => {
       setContracts(rows || [])
       const map: Record<number, string> = {}
@@ -108,35 +241,12 @@ export default function CrmReviewPage() {
       for (const c of list) map[Number(c.id)] = displayNameOf(c)
       setAccountName(map)
     })
+    void window.electronAPI.crm.currentSalesName().then((n) => { if (n) setMySalesName(n) })
+    void fetchSalesTeam()
     void fetchLogi(logiOverdueHours)
     void getCrmLogisticsOverdueHours().then((h) => { setLogiOverdueHours(h); void fetchLogi(h) })
-  }, [fetchQueues, fetchAutoSummary])
+  }, [fetchQueues])
 
-  const confirmAlloc = async (a: any, contractId?: number) => {
-    const cid = contractId ? Number(contractId) : undefined
-    // 未选合同且客户未确定 → 确认后钱不会计入任何合同，二次确认
-    if (!cid && !a.account_id) {
-      if (!window.confirm('未选择合同且客户未确定，确认后这笔归属不会计入任何合同回款。仍要确认吗？')) return
-    }
-    const r = await window.electronAPI.crm.allocationConfirm(a.id, {
-      sales_name: a.sales_hint || a.sales_name,
-      ...(cid ? { contract_id: cid } : {})
-    })
-    setNotice(r.ok ? (r.linked ? '归属已确认，已计入合同回款' : '归属已确认（未关联合同，回款未计入）') : `失败：${r.reason}`)
-    await fetchQueues(); await fetchWorkbench()
-  }
-  const bindAccount = async (a: any, contractId?: number) => {
-    const hint = String(a.customer_hint || '').trim()
-    if (!hint) { setNotice('客户名为空，无法建客户'); return }
-    const accountId = await window.electronAPI.crm.accountEnsure(hint) // 去重：同名客户不重复建
-    await window.electronAPI.crm.aliasLearn(hint, accountId)
-    const r = await window.electronAPI.crm.allocationConfirm(a.id, {
-      account_id: accountId, sales_name: a.sales_hint || a.sales_name,
-      ...(contractId ? { contract_id: contractId } : {})
-    })
-    setNotice(r.ok ? (r.linked ? '客户已建立并计入合同回款' : '客户已建立（暂无待签约合同，回款待关联）') : `失败：${r.reason}`)
-    await fetchQueues(); await fetchWorkbench()
-  }
   // 物流区行内提示（认领/签收操作反馈就近展示，滚动到列表下方时也能看到）
   const logiToast = (msg: string) => { setLogiNotice(msg) }
   // 自动匹配：收件人+城市 → 候选（合同优先）；唯一合同候选 → 认领到合同；无合同但唯一客户候选 → 认领到客户
@@ -145,13 +255,13 @@ export default function CrmReviewPage() {
     const contracts = cands.filter((c: any) => String(c.cand_kind || 'contract') === 'contract')
     const accounts = cands.filter((c: any) => String(c.cand_kind) === 'account')
     if (contracts.length === 1) {
-      const r = await window.electronAPI.crm.logisticsLink(l.id, { contractId: Number(contracts[0].id), ownerSales: logiSales[l.id]?.trim() || undefined })
+      const r = await window.electronAPI.crm.logisticsLink(l.id, { contractId: Number(contracts[0].id), ownerSales: logiSales[l.id]?.trim() || mySalesName || undefined })
       logiToast(r.ok ? (r.warning ? `已认领，但${r.warning}` : `已认领：物流已关联「${contracts[0].name}」，转入「待签收」`) : `认领失败：${r.reason || '请重试'}`)
       await fetchQueues(); await fetchLogi(logiOverdueHours)
       return
     }
     if (accounts.length === 1) {
-      const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId: Number(accounts[0].account_id), ownerSales: logiSales[l.id]?.trim() || undefined })
+      const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId: Number(accounts[0].account_id), ownerSales: logiSales[l.id]?.trim() || mySalesName || undefined })
       logiToast(r.ok ? `已认领：物流已关联客户「${accounts[0].name}」，转入「待签收」` : `认领失败：${r.reason || '请重试'}`)
       await fetchQueues(); await fetchLogi(logiOverdueHours)
       return
@@ -161,16 +271,16 @@ export default function CrmReviewPage() {
   }
   // 手动认领：客户（必选其一：下拉已有客户 或 新客户名建档） + 合同（可选） + 填销售 → 确认
   const doClaimLogi = async (l: any) => {
-    const newName = logiNewName[l.id]?.trim() || ''
+    const name = logiCustomer[l.id]?.trim() || ''
     const cid = logiContract[l.id] ? Number(logiContract[l.id]) : undefined
-    let accountId: number | undefined = logiAccount[l.id] ? Number(logiAccount[l.id]) : undefined
-    if (!accountId && !cid && !newName) { logiToast('请先选择客户（或填写新客户名）'); return }
-    if (newName) {
-      const created = await window.electronAPI.crm.accountEnsure(newName)
+    if (!name && !cid) { logiToast('请先输入客户名'); return }
+    let accountId: number | undefined = name ? customerIdOf(name) : undefined
+    if (name && !accountId) {
+      const created = await window.electronAPI.crm.accountEnsure(name)
       if (!created) { logiToast('新建客户失败，请重试'); return }
       accountId = Number(created)
     }
-    const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId, contractId: cid, ownerSales: logiSales[l.id]?.trim() || undefined })
+    const r = await window.electronAPI.crm.logisticsLink(l.id, { accountId, contractId: cid, ownerSales: logiSales[l.id]?.trim() || mySalesName || undefined })
     logiToast(r.ok ? (r.warning ? `已认领，但${r.warning}` : '已认领：物流转入「待签收」') : `认领失败：${r.reason || '请重试'}`)
     await fetchQueues(); await fetchLogi(logiOverdueHours)
   }
@@ -183,40 +293,42 @@ export default function CrmReviewPage() {
   }
   // 超期未签收统计（顶部徽章）
   const logiOverdueCount = logiLinked.filter((l: any) => l._overdueHours > 0).length
-  // ── 物流三区分页切片（每页 10 条，page 越界自动收敛）────────────────────────
-  const slicePage = (list: any[], page: number) => {
-    const total = list.length
-    const totalPages = Math.max(1, Math.ceil(total / LOGI_PAGE_SIZE))
-    const cur = Math.min(page, totalPages)
-    return { total, totalPages, cur, items: list.slice((cur - 1) * LOGI_PAGE_SIZE, cur * LOGI_PAGE_SIZE) }
-  }
-  const logiPg = slicePage(queues.logistics, logiPage)
-  const pendingPg = slicePage(logiLinked, pendingPage)
-  const signedPg = slicePage(logiSigned, signedPage)
   const noAccount = accounts.length === 0 // 无任何客户 → 认领不可行，给引导
-  const approvePayment = async (p: any) => {
-    const r = await window.electronAPI.crm.paymentApprove(p.id)
-    setNotice(r.ok ? (r.allocationCreated ? '已确认到款，已转入「归属待确认」' : '已确认到款（该笔已有归属记录）') : `失败：${r.reason}`)
-    await fetchQueues(); await fetchWorkbench()
-  }
-
-  // ── 自动确认：手动一键运行 / 历史撤销 ──────────────────────────────────────
-  const ENTITY_LABELS: Record<string, string> = { allocation: '归属', payment: '到款', logistics: '物流', invoice: '发票' }
-  const doRunAuto = async () => {
-    setRunning(true)
-    try { await runAutoConfirm() } catch { setNotice('自动确认运行失败') } finally { setRunning(false) }
-  }
-  const doUndoAuto = async (h: any) => {
-    if (!window.confirm(`撤销这条自动${ENTITY_LABELS[String(h.entity)] || h.entity}处理？`)) return
-    const r = await undoAutoConfirm(h.entity, h.entity_id)
-    setNotice(r.ok ? '已撤销，条目恢复待处理' : `撤销失败：${r.reason}`)
-  }
 
   return (
     <div className="crm-review-page">
       <div className="crm-header">
         <h2><ClipboardCheck size={18} /> 跟单中心</h2>
         <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
+        <div className="sales-team-wrap">
+          <button className="crm-btn" onClick={() => setTeamOpen((v) => !v)} title="销售团队名单（认领默认销售）">
+            <Users size={14} /> 销售团队（{salesTeam.length}）{teamOpen ? '▴' : '▾'}
+          </button>
+          {teamOpen && (
+            <div className="sales-team-drop">
+              <div className="sales-team-drop__title">
+                在职销售 {salesTeam.length} 人
+                {mySalesName ? <em>当前认领默认：{mySalesName}</em> : null}
+              </div>
+              {salesTeam.length === 0 && <div className="customer-picker__empty">暂无销售成员</div>}
+              {salesTeam.map((m) => (
+                <div key={m.name} className="sales-team-drop__row">
+                  <button className="sales-team-drop__pick" onClick={() => { setMySalesName(m.name); setTeamOpen(false) }}>
+                    {m.name}
+                    <em>{m.orderCount} 单 · ¥{m.amount.toLocaleString()}</em>
+                  </button>
+                  <button className="sales-team-drop__rm" title="移除（离职）" onClick={() => void removeSalesMember(m.name)}>移除</button>
+                </div>
+              ))}
+              <div className="sales-team-drop__add">
+                <input placeholder="添加销售（输入姓名）" value={addSalesName}
+                  onChange={(e) => setAddSalesName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void addSalesMember() }} />
+                <button className="crm-btn" onClick={() => void addSalesMember()}>添加</button>
+              </div>
+            </div>
+          )}
+        </div>
         <button className="crm-btn" onClick={() => void fetchQueues()}><RefreshCw size={14} /> 刷新</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -235,41 +347,6 @@ export default function CrmReviewPage() {
           </div>
         ))}
         <button className="crm-btn" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
-      </section>
-
-      <section className="crm-auto">
-        <h3>
-          <Sparkles size={14} /> 自动确认
-          {autoSummary.lastRun && (
-            <em className="crm-auto__sum">上次自动处理 {autoSummary.lastRun.auto} 条，仍待人工 {autoSummary.lastRun.reviewed} 条</em>
-          )}
-          <button className="crm-btn primary" onClick={() => void doRunAuto()} disabled={running}>{running ? '运行中…' : '运行自动确认'}</button>
-          <button className="crm-btn" onClick={() => setShowHistory(!showHistory)}>历史 {showHistory ? '收起' : `（${autoSummary.history.length}）`}</button>
-        </h3>
-        {autoSummary.lastRun && (
-          <div className="crm-auto__byentity">
-            {(['allocation', 'payment', 'logistics', 'invoice'] as const).map((k) => {
-              const e = autoSummary.lastRun?.byEntity?.[k]
-              if (!e || (e.auto === 0 && e.reviewed === 0)) return null
-              return <span key={k}>{ENTITY_LABELS[k]}：自动 {e.auto} / 待审 {e.reviewed}</span>
-            })}
-          </div>
-        )}
-        {showHistory && (
-          <div className="crm-auto__history">
-            {autoSummary.history.length === 0 && <em className="crm-card__src">暂无自动确认记录（扫描新消息或点「运行自动确认」触发）</em>}
-            {autoSummary.history.map((h) => (
-              <div key={h.id} className="crm-card">
-                <span>{ENTITY_LABELS[String(h.entity)] || h.entity} #{h.entity_id} · {h.decision === 'auto_confirm' ? '自动' : h.decision} · 置信 {Math.round(Number(h.confidence ?? 0) * 100)}% · {h.action || '-'}
-                  <em className="crm-card__src">{h.reason}{h.created_at ? ` · ${fmtTime(h.created_at)}` : ''}</em>
-                </span>
-                {h.decision === 'auto_confirm' && (
-                  <button className="crm-btn" onClick={() => void doUndoAuto(h)}>撤销</button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       {showPick && (
@@ -303,24 +380,6 @@ export default function CrmReviewPage() {
       )}
 
       <section>
-        <h3>归属待确认（{queues.allocations.length}）</h3>
-        {queues.allocations.map((a) => (
-          <div key={a.id} className="crm-card">
-            <span>{a.customer_hint} · {Number(a.amount_hint).toLocaleString()} · 销售 {a.sales_hint || a.sales_name || '?'}
-              {(a.src_group_id || a.src_time) && <em className="crm-card__src">{groupName(a.src_group_id)}{a.src_time ? ` · ${fmtTime(a.src_time)}` : ''}{a.src_raw ? ` · 「${String(a.src_raw).slice(0, 40)}」` : ''}</em>}
-            </span>
-            <select value={allocContract[a.id] ?? ''} onChange={(e) => setAllocContract((m) => ({ ...m, [a.id]: e.target.value }))}>
-              <option value="">关联合同…</option>
-              {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <button className="crm-btn primary" onClick={() => void confirmAlloc(a, allocContract[a.id] ? Number(allocContract[a.id]) : undefined)}>确认</button>
-            <button className="crm-btn" onClick={() => void bindAccount(a, allocContract[a.id] ? Number(allocContract[a.id]) : undefined)}>建新客户并确认</button>
-            <button className="crm-btn" onClick={() => { void window.electronAPI.crm.allocationReject(a.id).then(fetchQueues) }}>驳回</button>
-          </div>
-        ))}
-      </section>
-
-      <section>
         <h3>
           物流跟单
           <em className="logi-stats">
@@ -330,48 +389,44 @@ export default function CrmReviewPage() {
         </h3>
         {logiNotice && <div className="logi-notice">{logiNotice}</div>}
         <div className="logi-queue">
-          <h4>待认领（{logiPg.total}）</h4>
-          {noAccount && logiPg.total > 0 && (
+          <h4>待认领（{queues.logistics.length}）</h4>
+          {noAccount && queues.logistics.length > 0 && (
             <div className="logi-notice logi-notice--warn">
               暂无客户，无法认领物流。请先在「客户工作台」创建客户。
             </div>
           )}
-          {logiPg.total === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
-          {logiPg.items.map((l) => {
-            const selAcc = logiAccount[l.id] ? Number(logiAccount[l.id]) : undefined
+          {queues.logistics.length === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
+          <WeekDayGroups items={queues.logistics} timeOf={(l) => Number(l.latest_update_at)} render={(l) => {
+            const selAcc = logiCustomer[l.id]?.trim() ? customerIdOf(logiCustomer[l.id]) : undefined
             const accContracts = selAcc ? contracts.filter((c) => Number(c.account_id) === selAcc) : []
-            const claimReady = Boolean(logiAccount[l.id] || logiNewName[l.id]?.trim() || logiContract[l.id])
+            const claimReady = Boolean(logiCustomer[l.id]?.trim() || logiContract[l.id])
             return (
-              <div key={l.id} className="crm-card logi-card">
+              <div className="crm-card logi-card">
                 <div className="logi-card__main">
                   <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
                   <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
                 </div>
                 <div className="logi-card__actions">
-                  <input placeholder="认领销售" value={logiSales[l.id] ?? ''}
-                    onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '100px' }} />
-                  <select value={logiAccount[l.id] ?? ''} onChange={(e) => setLogiAccount((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '150px' }}>
-                    <option value="">选择客户…</option>
-                    {accounts.map((c) => <option key={c.id} value={c.id}>{displayNameOf(c)}{c.company ? ` · ${c.company}` : ''}</option>)}
-                  </select>
+                  <input placeholder="认领销售（默认本人）" value={logiSales[l.id] ?? ''}
+                    onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
+                  <div style={{ width: '160px' }}>
+                    <CustomerPicker accounts={accounts} value={logiCustomer[l.id] ?? ''} onChange={(name) => setLogiCustomer((m) => ({ ...m, [l.id]: name }))} displayNameOf={displayNameOf} />
+                  </div>
                   <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '150px' }}>
                     <option value="">关联合同（可选）</option>
                     {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  <input placeholder="新客户名（可建）" value={logiNewName[l.id] ?? ''}
-                    onChange={(e) => setLogiNewName((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '130px' }} />
-                  <button className="crm-btn primary" disabled={!claimReady} title={claimReady ? '' : '请先选择客户或填写新客户名'} onClick={() => void doClaimLogi(l)}>确认认领</button>
+                  <button className="crm-btn primary" disabled={!claimReady} title={claimReady ? '' : '请先输入客户名'} onClick={() => void doClaimLogi(l)}>确认认领</button>
                   <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
                 </div>
               </div>
             )
-          })}
-          <LogiPager page={logiPg.cur} totalPages={logiPg.totalPages} total={logiPg.total} onPage={setLogiPage} />
+          }} />
         </div>
-        <h4 style={{ marginTop: '10px' }}>已认领待签收（{pendingPg.total}）</h4>
-        {pendingPg.total === 0 && <div className="crm-card crm-card--empty">暂无待签收物流（发货后 {logiOverdueHours}h 未签收会标红提醒）</div>}
-        {pendingPg.items.map((l) => (
-          <div key={l.id} className="crm-card logi-card">
+        <h4 style={{ marginTop: '10px' }}>已认领待签收（{logiLinked.length}）</h4>
+        {logiLinked.length === 0 && <div className="crm-card crm-card--empty">暂无待签收物流（发货后 {logiOverdueHours}h 未签收会标红提醒）</div>}
+        <WeekDayGroups items={logiLinked} timeOf={(l) => Number(l.latest_update_at)} render={(l) => (
+          <div className="crm-card logi-card">
             <div className="logi-card__main">
               <span className="logi-card__info">
                 {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
@@ -385,42 +440,106 @@ export default function CrmReviewPage() {
               <button className="crm-btn primary" onClick={() => void doSignedLogi(l)}>确认签收</button>
             </div>
           </div>
-        ))}
-        <LogiPager page={pendingPg.cur} totalPages={pendingPg.totalPages} total={pendingPg.total} onPage={setPendingPage} />
-        <h4 style={{ marginTop: '10px' }}>
-          已签收（{signedPg.total}）
-          <button className="crm-btn" style={{ marginLeft: '8px' }} onClick={() => setShowSignedLogi(!showSignedLogi)}>
-            {showSignedLogi ? '收起' : '展开'}
-          </button>
-        </h4>
-        {showSignedLogi && (
-          signedPg.total === 0
-            ? <div className="crm-card crm-card--empty">暂无已签收物流</div>
-            : signedPg.items.map((l) => (
-                <div key={l.id} className="crm-card logi-card">
-                  <div className="logi-card__main">
-                    <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
-                      {l.owner_sales ? ` · ${l.owner_sales}` : ''}
-                      {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : accountName[Number(l.account_id)] ? ` · ${accountName[Number(l.account_id)]}` : ''}
-                    </span>
-                    <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
-                  </div>
+        )} />
+        <h4 style={{ marginTop: '10px' }}>已签收（{logiSigned.length}）</h4>
+        {logiSigned.length === 0
+          ? <div className="crm-card crm-card--empty">暂无已签收物流</div>
+          : <WeekDayGroups items={logiSigned} timeOf={(l) => Number(l.latest_update_at)} render={(l) => (
+              <div className="crm-card logi-card">
+                <div className="logi-card__main">
+                  <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+                    {l.owner_sales ? ` · ${l.owner_sales}` : ''}
+                    {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : accountName[Number(l.account_id)] ? ` · ${accountName[Number(l.account_id)]}` : ''}
+                  </span>
+                  <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)} · 签收 {fmtTime(l.signed_at)}</em>
                 </div>
-              ))
-        )}
-        {showSignedLogi && <LogiPager page={signedPg.cur} totalPages={signedPg.totalPages} total={signedPg.total} onPage={setSignedPage} />}
+              </div>
+            )} />}
       </section>
 
       <section>
-        <h3>到款待审核（{queues.payments.length}）</h3>
-        {queues.payments.map((p) => (
-          <div key={p.id} className="crm-card">
-            <span>{p.payer || '(截图/未知)'} · {Number(p.amount_net).toLocaleString()} · {p.source}
-              {(p.group_id || p.pay_time) && <em className="crm-card__src">{groupName(p.group_id)}{p.pay_time ? ` · ${fmtTime(p.pay_time)}` : ''}{p.raw_content ? ` · 「${String(p.raw_content).slice(0, 40)}」` : ''}</em>}
-            </span>
-            <button className="crm-btn primary" onClick={() => void approvePayment(p)}>确认到款</button>
+        <h3>
+          款项认领（7 天一页）
+          <em className="logi-stats">近 30 天 {payments.length} 笔 · 待认领 {payments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length} 笔</em>
+          <button className={`crm-btn${onlyUnclaimed ? ' primary' : ''}`} style={{ marginLeft: 8 }} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
+        </h3>
+        {payments.length === 0 && <div className="crm-card crm-card--empty">近 30 天无到款记录</div>}
+        <WeekDayGroups
+          items={onlyUnclaimed ? claimablePayments : payments}
+          timeOf={(p) => Number(p.pay_time)}
+          forceOpen={onlyUnclaimed}
+          headerInfo={(list) => {
+            const dayTotal = list.reduce((s, p) => s + shownAmountOf(p), 0)
+            const unclaimed = list.filter(isClaimable).length
+            return (
+              <>
+                · ¥{dayTotal.toLocaleString()}
+                {unclaimed > 0 && <em className="logi-card__time day-unclaimed">· {unclaimed} 未认领</em>}
+              </>
+            )
+          }}
+          render={(p) => {
+                const claimable = isClaimable(p)
+                const claimed = !claimable
+                const selAcc = claimCustomer[p.id]?.trim() ? customerIdOf(claimCustomer[p.id]) : undefined
+                const accContracts = selAcc ? contracts.filter((c) => Number(c.account_id) === selAcc) : []
+                return (
+                  <div key={p.id} className="crm-card logi-card">
+                    <div className="logi-card__main">
+                      <span className="logi-card__info">
+                        {p.payer || '(截图/未知)'} · ¥{shownAmountOf(p).toLocaleString()}
+                        {claimed && <span className="claim-ok">
+                          {p.account_name ? ` · 客户「${p.account_name}」` : ''}{p.contract_name ? ` · 合同「${p.contract_name}」` : ''}
+                          {p.sales_name ? ` · 销售 ${p.sales_name}` : ''}
+                        </span>}
+                        {invoiceBadgeOf(p)}
+                        {p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id && <em className="logi-card__time">旧自动认领遗留 · 请补认领</em>}
+                      </span>
+                      <em className="logi-card__time">{groupName(p.group_id)}{p.pay_time ? ` · ${fmtTime(p.pay_time)}` : ''}</em>
+                      {p.raw_content && <em className="crm-card__src">「{String(p.raw_content).slice(0, 40)}」</em>}
+                    </div>
+                    {!claimed && (
+                      <div className="logi-card__actions">
+                        <input placeholder="认领销售（默认本人）" value={claimSales[p.id] ?? ''}
+                          onChange={(e) => setClaimSales((m) => ({ ...m, [p.id]: e.target.value }))} style={{ width: '110px' }} />
+                        <div style={{ width: '160px' }}>
+                          <CustomerPicker accounts={accounts} value={claimCustomer[p.id] ?? ''} onChange={(name) => setClaimCustomer((m) => ({ ...m, [p.id]: name }))} displayNameOf={displayNameOf} />
+                        </div>
+                        <select value={claimContract[p.id] ?? ''} onChange={(e) => setClaimContract((m) => ({ ...m, [p.id]: e.target.value }))} style={{ width: '150px' }}>
+                          <option value="">关联合同（可选）</option>
+                          {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                        <button className="crm-btn primary" disabled={!Boolean(claimCustomer[p.id]?.trim())}
+                          title={claimCustomer[p.id]?.trim() ? '' : '请先输入客户名'} onClick={() => void doClaimPayment(p)}>认领</button>
+                      </div>
+                    )}
+                  </div>
+                )
+          }}
+        />
+        {claimedPayments.length > 0 && (
+          <div className="claimed-section">
+            <h4 className="day-header">
+              <span className="day-arrow">✓</span> 已确认到款（{claimedPayments.length} 笔 · ¥
+              {claimedPayments.reduce((s, p) => s + shownAmountOf(p), 0).toLocaleString()}）
+            </h4>
+            {claimedPayments.map((p) => (
+              <div key={p.id} className="crm-card logi-card">
+                <div className="logi-card__main">
+                  <span className="logi-card__info">
+                    {p.payer || '(截图/未知)'} · ¥{shownAmountOf(p).toLocaleString()}
+                    <span className="claim-ok">
+                      {p.account_name ? ` · 客户「${p.account_name}」` : ''}{p.contract_name ? ` · 合同「${p.contract_name}」` : ''}
+                      {p.sales_name ? ` · 销售 ${p.sales_name}` : ''}
+                    </span>
+                    {invoiceBadgeOf(p)}
+                  </span>
+                  <em className="logi-card__time">{p.pay_time ? `到账 ${fmtTime(p.pay_time)}` : ''}</em>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </section>
 
       <section>

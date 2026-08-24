@@ -1736,6 +1736,12 @@ export interface ElectronAPI {
     allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
     allocationReject: (id: number) => Promise<void>
     paymentApprove: (id: number) => Promise<{ ok: boolean; reason?: string; allocationCreated?: boolean }>
+    paymentsByDay: (days?: number) => Promise<Array<{ id: number; payer: string; amount_net: number; pay_time: number; group_id?: string; source?: string; pay_channel?: string; needs_review: number; allocation_id?: number; alloc_status?: string; account_id?: number; contract_id?: number; sales_name?: string; account_name?: string; contract_name?: string; invoice_id?: number; invoice_no?: string; invoice_status?: string }>>
+    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string }) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
+    currentSalesName: () => Promise<string>
+    salesTeam: () => Promise<{ team: Array<{ name: string; orderCount: number; amount: number }>; removed: string[] }>
+    salesTeamAdd: (name: string) => Promise<{ ok: boolean; reason?: string }>
+    salesTeamRemove: (name: string) => Promise<{ ok: boolean; reason?: string }>
     accountEnsure: (name: string) => Promise<number>
     contractShip: (id: number) => Promise<{ ok: boolean; gap?: number; reason?: string }>
     contractSign: (id: number) => Promise<{ ok: boolean; reason?: string }>

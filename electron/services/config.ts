@@ -63,6 +63,10 @@ interface ConfigSchema {
   exportDefaultDisplayNamePreference: 'group-nickname' | 'remark' | 'nickname'
   analyticsExcludedUsernames: string[]
 
+  // 销售团队（跟单中心认领）：显式新增名单 + 离职/移除名单（从历史推断名单中排除）
+  salesTeamAdded: string[]
+  salesTeamRemoved: string[]
+
   // 安全相关
   authEnabled: boolean
   authPassword: string      // SHA-256 hash（safeStorage 加密）
@@ -249,6 +253,8 @@ export class ConfigService {
       exportDefaultPathStyle: 'auto',
       exportDefaultDisplayNamePreference: 'remark',
       analyticsExcludedUsernames: [],
+      salesTeamAdded: [],
+      salesTeamRemoved: [],
       authEnabled: false,
       authPassword: '',
       authUseHello: false,

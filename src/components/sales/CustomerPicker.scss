@@ -1,0 +1,12 @@
+/* 客户名输入（认领表单）：常驻输入框 + 联想候选 + 建档提示 */
+.customer-picker { position: relative; width: 100%; }
+.customer-picker input { width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; background: #fff; border-radius: 6px;
+  padding: 4px 10px; font-size: 12px; color: #334155; outline: none; &:focus { border-color: #2563eb; } }
+.customer-picker__drop { position: absolute; z-index: 30; top: calc(100% + 2px); left: 0; right: 0; background: #fff;
+  border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08); padding: 6px; }
+.customer-picker__list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.customer-picker__list button { text-align: left; border: none; background: none; padding: 5px 8px; font-size: 12px;
+  border-radius: 4px; cursor: pointer; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  &:hover { background: #eff6ff; } }
+.customer-picker__empty { font-size: 12px; color: #94a3b8; padding: 8px; }
+.customer-picker__matched { font-size: 12px; color: #15803d; padding: 8px; }

@@ -990,6 +990,57 @@ class CrmDbService {
     this.logActivity('payment_record', id, 'approved', `确认到款 ${String(p.payer || '')} ¥${Number(p.amount_net ?? 0)}，${created ? '已转入归属待确认' : '已有归属记录'}`, opts.autoBy ?? '')
     return { ok: true, allocationCreated: created }
   }
+  /**
+   * 每日到款清单（销售认领视图）：近 N 天 payment_record 平铺，带认领状态 + 客户/合同/开票状态。
+   * 开票判定：该认领账户最近一张非作废发票（订单群 PDF 归档 → status='issued' 即已开票）。
+   * 未认领（allocation 为空）时 invoice 各列为 null——开票状态认领后可见。
+   */
+  paymentsByDay(days = 30): CrmRow[] {
+    const startMs = Date.now() - days * 24 * 3600 * 1000
+    return this.all(
+      `SELECT pr.id, pr.payer, pr.amount_net, pr.pay_time, pr.group_id, pr.source, pr.raw_content,
+              pr.pay_channel, pr.needs_review,
+              al.id AS allocation_id, al.status AS alloc_status, al.account_id, al.contract_id,
+              al.sales_name, al.confirmed_at, al.credited_amount,
+              ac.name AS account_name, c.name AS contract_name,
+              iv.id AS invoice_id, iv.invoice_no, iv.status AS invoice_status
+       FROM payment_record pr
+       LEFT JOIN allocation al ON al.payment_record_id = pr.id
+       LEFT JOIN account ac ON ac.id = al.account_id
+       LEFT JOIN contract c ON c.id = al.contract_id
+       LEFT JOIN invoice iv ON iv.id = (
+         SELECT id FROM invoice WHERE account_id = al.account_id AND status != 'voided'
+         ORDER BY id DESC LIMIT 1)
+       WHERE pr.pay_time >= ?
+       ORDER BY pr.pay_time DESC`, [startMs])
+  }
+
+  /**
+   * 销售手动认领到款：无归属则先建（approvePayment），已确认的拒绝重复认领，
+   * 然后确认归属到客户/合同。返回 linked 表示已计入合同回款。
+   * 历史遗留：AutoConfirm 确认过但未挂客户/合同的行（仅 confirmed + 公司名）允许补认领。
+   */
+  claimPayment(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
+    const p = this.getById('payment_record', id)
+    if (!p) return { ok: false, reason: '到款不存在' }
+    let alloc = this.all('SELECT * FROM allocation WHERE payment_record_id = ? LIMIT 1', [id])[0] || null
+    if (!alloc) {
+      const approved = this.approvePayment(id)
+      if (!approved.ok) return approved
+      alloc = this.all('SELECT * FROM allocation WHERE payment_record_id = ? LIMIT 1', [id])[0] || null
+      if (!alloc) return { ok: false, reason: '归属创建失败' }
+    }
+    if (alloc.status === 'confirmed' && (alloc.account_id || alloc.contract_id)) return { ok: false, reason: '该笔到款已认领' }
+    if (alloc.status === 'confirmed') {
+      // 旧自动确认遗留：confirmed 但未挂客户/合同 → 手动补挂
+      this.update('allocation', alloc.id, { ...patch, confirmed_at: Number(alloc.confirmed_at) })
+      this.logActivity('allocation', alloc.id, 'confirmed',
+        `补认领 ${String(alloc.customer_hint || '')} → ${patch.contract_id ? `合同 ${patch.contract_id}` : '客户'}`,
+        patch.sales_name ?? '')
+      return { ok: true, linked: Boolean(patch.contract_id) }
+    }
+    return this.confirmAllocation(Number(alloc.id), patch)
+  }
   rejectAllocation(id: number): void {
     this.update('allocation', id, { status: 'conflict' })
     this.logActivity('allocation', id, 'rejected', `驳回归属 ${String(this.getById('allocation', id)?.customer_hint ?? '')}`)
@@ -1455,7 +1506,10 @@ class CrmDbService {
     const active = this.all("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS n FROM contract WHERE status IN ('pending_sign','signed')")[0]
     const now = new Date()
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
-    const monthPaid = Number(this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE status = 'confirmed' AND confirmed_at >= ?", [monthStart])[0]?.s ?? 0)
+    // 口径：只计已人工认领（account_id 非空）+ 按**到款日**（pay_time）归类——
+    // 历史补扫入库后集中认领的款按真实到账日进月/周统计，不冒充当月；旧 AutoConfirm 遗留 confirmed 无客户/合同不算
+    const monthPaid = Number(this.all(
+      "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ?", [monthStart])[0]?.s ?? 0)
     const q = this.reviewQueues()
     const pendingReview = q.allocations.length + q.logistics.length + q.payments.length + q.invoices.length + q.infoPending.length
     // 近 8 周到款趋势（周一为一周起点）
@@ -1464,7 +1518,8 @@ class CrmDbService {
     const paidWeekly: Array<{ week: string; amount: number }> = []
     for (let i = 7; i >= 0; i--) {
       const start = thisMonday - i * weekMs
-      const r = this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE status = 'confirmed' AND confirmed_at >= ? AND confirmed_at < ?", [start, start + weekMs])
+      const r = this.all(
+        "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ? AND pr.pay_time < ?", [start, start + weekMs])
       const d = new Date(start)
       paidWeekly.push({ week: `${d.getMonth() + 1}/${d.getDate()}`, amount: Number(r[0]?.s ?? 0) })
     }

@@ -2,6 +2,18 @@
 .crm-review-page { padding: 24px; color: var(--text-primary, #1e293b); }
 .crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
 .crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+/* 销售团队下拉（header 扫描按钮旁）：成员名单 + 新增/移除管理 */
+.sales-team-wrap { position: relative; }
+.sales-team-drop { position: absolute; z-index: 40; top: calc(100% + 4px); right: 0; width: 260px; background: #fff;
+  border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 8px; }
+.sales-team-drop__title { font-size: 12px; color: #64748b; padding: 2px 6px 6px; display: flex; justify-content: space-between; gap: 8px; em { font-style: normal; color: #2563eb; } }
+.sales-team-drop__row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.sales-team-drop__pick { flex: 1; text-align: left; border: none; background: none; padding: 5px 8px; font-size: 12px;
+  border-radius: 4px; cursor: pointer; color: #334155; display: flex; justify-content: space-between; gap: 8px;
+  em { font-style: normal; font-size: 11px; color: #94a3b8; } &:hover { background: #eff6ff; } }
+.sales-team-drop__rm { border: 1px solid #fecaca; background: #fff; color: #dc2626; font-size: 11px; border-radius: 4px; padding: 2px 6px; cursor: pointer; &:hover { background: #fef2f2; } }
+.sales-team-drop__add { display: flex; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid #f1f5f9;
+  input { flex: 1; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 8px; font-size: 12px; outline: none; &:focus { border-color: #2563eb; } } }
 .crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &:disabled { opacity: 0.5; cursor: not-allowed; } }
 .crm-review-page section { margin-bottom: 18px; h3 { font-size: 13px; color: #64748b; margin-bottom: 8px; } }
 .crm-card { display: flex; gap: 8px; align-items: center; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; span { margin-right: auto; } select, input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 6px; font-size: 12px; } }
@@ -39,6 +51,9 @@
 }
 .logi-overdue { font-style: normal; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca;
   border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 8px; font-weight: 600; }
+.claim-ok { font-weight: 500; color: #334155; }
+.invoice-ok { font-style: normal; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
+  border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; }
 .logi-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px;
   margin-bottom: 8px; font-size: 13px; color: #1d4ed8; }
 .logi-notice--warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
@@ -46,3 +61,9 @@
 /* 物流三区分页（待认领/待签收/已签收 每页 10 条） */
 .crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 0; }
 .crm-pager-info { font-size: 12px; color: #64748b; }
+
+/* 每日到款：可折叠分组 header（默认只展开今天，header 带未认领数，认领入口不丢） */
+.day-header { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin: 10px 0 6px;
+  padding: 4px 8px; border-radius: 6px; &:hover { background: #f1f5f9; } }
+.day-arrow { width: 14px; text-align: center; color: #94a3b8; font-size: 12px; }
+.day-unclaimed { color: #dc2626; font-weight: 600; }
