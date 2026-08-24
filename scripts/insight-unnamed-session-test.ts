@@ -12,6 +12,8 @@
  *   3  两处门控都基于 salesDbService.customerGetBySession（同一"客户档案"判定）
  *   4  profile 变量声明提升到 try 外（try 内赋值，catch 不吞判定）
  *   5  whitelist 模式（用户显式配置）不引入 hasProfile 门控——不改变用户有意选择
+ *   6  零 this.isSessionIdLike 调用（isSessionIdLike 是模块函数，this. 前缀运行时 TypeError，
+ *      曾致活跃分析整链报错 [ERROR] this.isSessionIdLike is not a function）
  *
  * 运行：npx tsx scripts/insight-unnamed-session-test.ts
  */
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
   // ⑤ whitelist 模式不引入 hasProfile 门控（用户显式配置的名单不受无名门控影响）
   const whitelistZone = src.slice(src.indexOf("filterMode === 'whitelist' && filterList.length > 0"), src.indexOf('// blacklist 模式'))
   ok('5 whitelist 模式不引入 hasProfile 门控（显式配置不受影响）', !/hasProfile/.test(strip(whitelistZone)))
+  // ⑥ isSessionIdLike 是模块级函数（shared/wechatId），零 this. 前缀调用（运行时 TypeError 回归护栏）
+  ok('6 零 this.isSessionIdLike 调用（模块函数不走 this）', !/this\.isSessionIdLike/.test(src) && /!isSessionIdLike\(/.test(code))
 
   console.log(`insight-unnamed-session-test: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)

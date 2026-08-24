@@ -1129,7 +1129,7 @@ ${afterText}
     const rawFallback = typeof fallbackDisplayName === 'string' ? fallbackDisplayName : ''
     const fallback = rawFallback.trim() || rawFallback
     // 常见路径：fallback 是真实名字（非微信号格式）→ 直接采用，不查库
-    if (fallback && !this.isSessionIdLike(fallback)) {
+    if (fallback && !isSessionIdLike(fallback)) {
       return fallback
     }
 
@@ -1138,7 +1138,7 @@ ${afterText}
       const contact = await chatService.getContactAvatar(sessionId)
       const rawContactDisplayName = typeof contact?.displayName === 'string' ? contact.displayName : ''
       const contactDisplayName = rawContactDisplayName.trim() || rawContactDisplayName
-      if (contactDisplayName && !this.isSessionIdLike(contactDisplayName)) {
+      if (contactDisplayName && !isSessionIdLike(contactDisplayName)) {
         return contactDisplayName
       }
     } catch {
@@ -1150,7 +1150,7 @@ ${afterText}
       const matched = sessions.find((session) => String(session.username || '').trim() === sessionId)
       const rawCachedDisplayName = typeof matched?.displayName === 'string' ? matched.displayName : ''
       const cachedDisplayName = rawCachedDisplayName.trim() || rawCachedDisplayName
-      if (cachedDisplayName && !this.isSessionIdLike(cachedDisplayName)) {
+      if (cachedDisplayName && !isSessionIdLike(cachedDisplayName)) {
         return cachedDisplayName
       }
     } catch {
