@@ -119,6 +119,13 @@ const DAILY_LIMIT = 15
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000 // 24h
 const DAY_SEC = 86400
 
+/** 最后联系时间（秒）：last_contact_at 优先，缺失回退 created_at，皆无为 0。
+ *  唯一口径源：六条规则 match、全量扫描、懒扫描、R3 增量共用，
+ *  杜绝「match 用回退值、title 用裸值」的口径漂移（线上 20689 天 bug）。 */
+export function lastContactSec(p: CustomerProfile): number {
+  return p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+}
+
 const PRIORITY_WEIGHT: Record<string, number> = {
   urgent: 100,
   high: 80,
@@ -159,7 +166,7 @@ const RULES: Rule[] = [
       // 兜底：标准化后仍为 unknown/new 的客户沉默 ≥ 2 天即触发
       const stage = normalizeStage(p.stage)
       if (!['unknown', 'new'].includes(stage)) return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 2
@@ -171,7 +178,7 @@ const RULES: Rule[] = [
     priority: 'urgent',
     match: (p, now) => {
       if (normalizeStage(p.stage) !== 'new') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 1
@@ -183,7 +190,7 @@ const RULES: Rule[] = [
     priority: 'high',
     match: (p, now) => {
       if (normalizeStage(p.stage) !== 'quoted') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 2
@@ -195,7 +202,7 @@ const RULES: Rule[] = [
     priority: 'high',
     match: (p, now) => {
       if (normalizeStage(p.stage) !== 'negotiating') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 2
@@ -207,7 +214,7 @@ const RULES: Rule[] = [
     priority: 'medium',
     match: (p, now) => {
       if (normalizeStage(p.stage) !== 'contacted') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 5
@@ -223,7 +230,7 @@ const RULES: Rule[] = [
       const stage = normalizeStage(p.stage)
       if (['won', 'lost'].includes(stage)) return false
       if (computeActivityState(p.stage, p.last_contact_at, now) !== 'dormant') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       return silentDays >= 30 && silentDays <= 90
@@ -239,7 +246,7 @@ const RULES: Rule[] = [
       const stage = normalizeStage(p.stage)
       if (['won', 'lost'].includes(stage)) return false
       if (stage !== 'contacted' && computeActivityState(p.stage, p.last_contact_at, now) !== 'dormant') return false
-      const lastContact = p.last_contact_at || (p.created_at ? Math.floor(p.created_at / 1000) : 0)
+      const lastContact = lastContactSec(p)
       if (lastContact === 0) return false
       const silentDays = (now - lastContact) / DAY_SEC
       if (silentDays < 30) return false
@@ -383,7 +390,7 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
     customer.stage = normalizeStage(customer.stage)
     // 成交/流失客户直接跳过
     if (['won', 'lost'].includes(customer.stage)) continue
-    const lastContact = customer.last_contact_at || (customer.created_at ? Math.floor(customer.created_at / 1000) : 0)
+    const lastContact = lastContactSec(customer)
     const silentDays = lastContact > 0 ? (nowSec - lastContact) / DAY_SEC : 0
     // 沉默不足1天的跳过
     if (silentDays < 1) continue
@@ -592,7 +599,8 @@ export async function onNewMessage(sessionId: string, displayName: string): Prom
       const r3 = RULES.find(r => r.id === 'rule_r3_new_no_reply')!
       if (r3.match(profile, nowSec)) {
         if (!salesDbService.hasRecentTask(sessionId, r3.id, nowMs - DEDUP_WINDOW_MS)) {
-          const silentDays = (nowSec - (profile.last_contact_at ?? 0)) / DAY_SEC
+          const lcR3 = lastContactSec(profile)
+          const silentDays = lcR3 > 0 ? (nowSec - lcR3) / DAY_SEC : 0
           salesDbService.todoCreate({
             session_id: sessionId,
             display_name: displayName || null,
@@ -621,7 +629,7 @@ const LAZY_SCAN_RULE_IDS = ['rule_r1_quoted_followup', 'rule_r2_negotiating_stal
  * 首页打开时轻量增量检查：弥补 08:00 全量扫描后到下次打开首页之间的发现延迟。
  * 只检查 R1/R2/R4/R5 中"已越过阈值但今日尚未生成任务"的客户，不做 AI 阶段分类。
  */
-async function lazyScan(): Promise<number> {
+export async function lazyScan(): Promise<number> {
   const nowSec = Math.floor(Date.now() / 1000)
   const nowMs = Date.now()
   const todayStart = new Date()
@@ -645,8 +653,8 @@ async function lazyScan(): Promise<number> {
     const hasTaskToday = existingToday.some(t => (t.created_at ?? 0) >= todayStart.getTime())
     if (hasTaskToday) continue
 
-    const lastContact = customer.last_contact_at ?? 0
-    const silentDays = (nowSec - lastContact) / DAY_SEC
+    const lastContact = lastContactSec(customer)
+    const silentDays = lastContact > 0 ? (nowSec - lastContact) / DAY_SEC : 0
 
     for (const rule of lazyRules) {
       try {

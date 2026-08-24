@@ -477,7 +477,7 @@ class SalesDbService {
     return this.get<CustomerProfile>('SELECT * FROM customer_profile WHERE session_id = ?', [sessionId])
   }
 
-  customerUpsert(data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string; customer_id?: string; external_source?: string; last_contact_at?: number }): CustomerProfile {
+  customerUpsert(data: { session_id: string; display_name?: string; stage?: string; tags?: string; notes?: string; customer_id?: string; external_source?: string; last_contact_at?: number; created_at?: number }): CustomerProfile {
     const existing = this.customerGetBySession(data.session_id)
     const now = Date.now()
 
@@ -495,10 +495,12 @@ class SalesDbService {
       params.push(existing.id)
       this.run(`UPDATE customer_profile SET ${fields.join(', ')} WHERE id = ?`, params)
     } else {
+      // created_at 可选覆盖（默认 now）：AI 导入等场景保留真实建档时间；lastContactSec 回退链依赖它
+      const createdMs = data.created_at ?? now
       this.run(
         `INSERT INTO customer_profile (session_id, display_name, customer_id, external_source, stage, tags, notes, last_contact_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [data.session_id, data.display_name ?? null, data.customer_id ?? null, data.external_source ?? null, data.stage ?? 'unknown', data.tags ?? '[]', data.notes ?? null, data.last_contact_at ?? null, now, now]
+        [data.session_id, data.display_name ?? null, data.customer_id ?? null, data.external_source ?? null, data.stage ?? 'unknown', data.tags ?? '[]', data.notes ?? null, data.last_contact_at ?? null, createdMs, now]
       )
     }
     return this.customerGetBySession(data.session_id)!

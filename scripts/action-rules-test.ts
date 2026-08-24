@@ -14,7 +14,7 @@ import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { salesDbService, type CustomerProfile } from '../electron/services/salesDbService'
-import { getActionRule, runFullScan } from '../electron/services/salesActionEngine'
+import { getActionRule, runFullScan, lazyScan, lastContactSec } from '../electron/services/salesActionEngine'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -102,6 +102,18 @@ async function main(): Promise<void> {
   ok('4f 流失 客户 → 无跟进任务（lost 跳过）', taskOf('wx_c5').length === 0)
   ok('4g quoted 英文客户 → R1 命中（与中文 比价 行为一致）', taskOf('wx_c6').includes('rule_r1_quoted_followup'))
   ok('4h 新客 客户 → R3 命中（urgent 压过 R0）', taskOf('wx_c7').includes('rule_r3_new_no_reply'))
+
+  // ──  last_contact_at 缺失口径漂移回归（线上 20689 天 bug）─────────────────
+  const createdMs3d = (NOW_SEC - 3 * DAY_SEC) * 1000
+  const pNull: CustomerProfile = { session_id: 'wx_null_lc', display_name: '空最后联系客户', stage: '比价', last_contact_at: null, created_at: createdMs3d }
+  const lcNull = lastContactSec(pNull)
+  ok('6a lastContactSec 在 last_contact_at=null 时回退 created_at（非 0）', lcNull > 0 && Math.abs(lcNull - (NOW_SEC - 3 * DAY_SEC)) <= 2)
+  ok('6b R1 命中 last_contact 为 null 的客户', !!getActionRule('rule_r1_quoted_followup') && getActionRule('rule_r1_quoted_followup')!.match(pNull, NOW_SEC))
+  salesDbService.customerUpsert({ session_id: 'wx_lazy_null', display_name: '懒扫描空最后联系', stage: '比价', last_contact_at: null, created_at: createdMs3d })
+  await lazyScan()
+  const lazyTasks = salesDbService.todoList({ session_id: 'wx_lazy_null', limit: 5 })
+  ok('6c 懒扫描为 last_contact=null 客户生成任务', lazyTasks.length === 1)
+  ok('6d 标题用回退 3 天而非纪元 20689 天', !!lazyTasks[0] && lazyTasks[0].title.includes('3天') && !lazyTasks[0].title.includes('20689'))
 
   console.log(`\naction-rules-test: ${pass}/${pass + fail} 通过`)
   process.exit(fail > 0 ? 1 : 0)

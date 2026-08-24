@@ -114,11 +114,12 @@ async function main(): Promise<void> {
   const DB_PATH = join(os.homedir(), 'Library/Application Support/weflow/weflow-sales.db')
   const db = new SQL.Database(readFileSync(DB_PATH))
 
-  // B11: customer_event 0 基线（E3 后 app 未重启 → executed/responded 无样本的根因，属部署时序；
-  // 表可能尚未创建（CREATE 待应用重启激活），查 sqlite_master 而非直接 SELECT）
+  // B11: customer_event 表激活校验（2026-08-24 观察期开始后 0 基线断言已过时——id=4 真实事件已积累；
+  // 语义迁移：schema 激活仍校验，0 基线/行数增长移交数据侧 T0/T+n 快照跟踪）
   const evTables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_event'")
   const evCount = evTables.length === 0 ? 0 : db.exec("SELECT COUNT(*) FROM customer_event")[0].values[0][0] as number
-  ok('B11 customer_event 0 基线（表不存在或空行，部署时序，E3/legalStageWriters 激活后才有样本）', evCount === 0)
+  ok('B11 customer_event 表已激活（E3 部署完成，观察期真实事件开始积累）', evTables.length > 0)
+  console.log('  B11 快照：customer_event 行数 =', evCount)
 
   // B12: created 全量口径闭合（getActionFunnel 跳过 superseded → created = 非 superseded 计数）
   const total = db.exec('SELECT COUNT(*) FROM follow_up_task')[0].values[0][0] as number
@@ -142,8 +143,9 @@ async function main(): Promise<void> {
   ok(`B14 窗口结构不变量（7d=${w7} <= 30d=${w30} <= 全量 ${created}；窗口只过滤 created 不截断生命周期）`,
     w7 > 0 && w7 <= w30 && w30 <= created)
 
-  // B15: executed/responded = 0（customer_event 空表 → 无样本；rates 全 null 语义在真实数据成立）
-  ok('B15 executed/responded = 0（customer_event 0 基线 → 无执行/响应样本，rates 全 null 不误报 0%）', evCount === 0)
+  // B15: executed/responded 消费链路可用（表激活 + 行数可读；rates 全 null 语义由 actionFunnel 单测覆盖，
+  // 真实库样本量随 T0/T+n 快照跟踪——观察期不再断言 0）
+  ok('B15 executed/responded 链路可消费（customer_event 表激活 + 行数可读）', evTables.length > 0 && evCount >= 0)
 
   // B16: progressed 前置 = last_stage_change_at 非空 0（legalStageWriters 未激活，部署时序）
   const stageChanged = db.exec('SELECT COUNT(*) FROM customer_profile WHERE last_stage_change_at IS NOT NULL')[0].values[0][0] as number
