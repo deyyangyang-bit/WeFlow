@@ -31,6 +31,15 @@ out
 release
 tmp/
 
+# TypeScript 编译产物（node tsc 原位 emit 的中间态；main 入口走 dist-electron，不进 git；
+# 已跟踪的 wasm/第三方 .d.ts 不受 ignore 影响，新增真实 .d.ts 用 git add -f）
+electron/**/*.js
+electron/**/*.d.ts
+shared/**/*.js
+shared/**/*.d.ts
+vite.config.js
+vite.config.d.ts
+
 # electron-liquid-glass 是嵌套的独立 git 仓库（发布到 npm，WeFlow 走 registry 依赖），
 # 不能被外层仓库跟踪（会变成悬空 gitlink）
 /packages/electron-liquid-glass/
