@@ -11,6 +11,7 @@
  * 数据：sales:actionFunnel:get（聚合）+ sales:actionFunnel:breakdown（下钻），纯只读不调 LLM。
  * 口径真源：electron/services/actionFunnel.ts（§2.36）；本页只消费不重算。
  */
+import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, X, Filter, ChevronDown, Info } from 'lucide-react'
 import './ActionFunnelPage.scss'
@@ -44,9 +45,10 @@ const DAY_OPTIONS = [
 ] as const
 
 // 五段行为阶段色：浅蓝→藏青渐变（与销售漏斗同一视觉体系；成交段同款藏青呼应，P0-4.4）
-const STAGE_COLORS = ['#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1e3a8a']
+// 色板单一真源：shared/funnelPalette（与销售漏斗同族 Apple 蓝；页面不硬编码品牌色）
+const STAGE_COLORS = [...FUNNEL_STAGE_COLORS]
 // 每段渐变浅端（与销售漏斗统一色板；配合深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
-const STAGE_GRADIENT_LIGHT = ['#a8cbfe', '#7cb3fb', '#5b95f8', '#497af0', '#31509b']
+const STAGE_GRADIENT_LIGHT = [...FUNNEL_STAGE_GRADIENT_LIGHT]
 const STAGE_NAMES = ['行动产生', '销售执行', '客户响应', '有效推进', '成交']
 // 梯形固定比例收窄（纯装饰分层，不与数值绑定——跳级/转化率>100% 不改变形状；修复版规格）
 const STAGE_WIDTHS = [100, 85, 70, 55, 40] as const

@@ -4,6 +4,7 @@
  * 口径：窗口内「曾进入过某档位」的去重客户数（同一客户同一档位只计 1 次，绝不按
  * intent_tag_log 行数统计）。时间窗口可切换（近30天/近90天/全部）。
  */
+import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT, SALES_STAGE_COLOR_INDEX } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
@@ -22,13 +23,15 @@ interface FunnelStats {
 
 const STAGE_ORDER = ['了解', '比价', '决策', '成交'] as const
 // 阶段色：浅蓝→深蓝渐变（进行中档位），成交藏青强调，流失中性灰——与行动漏斗同一视觉体系（P0-4.4）
+// 色板单一真源：shared/funnelPalette（与行动漏斗同族 Apple 蓝；页面不硬编码品牌色）
 const STAGE_COLORS: Record<string, string> = {
-  了解: '#93c5fd', 比价: '#60a5fa', 决策: '#3b82f6', 成交: '#1e3a8a', 流失: '#94a3b8', 未知: '#cbd5e1'
+  ...Object.fromEntries(Object.entries(SALES_STAGE_COLOR_INDEX).map(([k, i]) => [k, FUNNEL_STAGE_COLORS[i]])),
+  流失: FUNNEL_NEUTRAL, 未知: FUNNEL_NEUTRAL_LIGHT
 }
 // 梯形固定比例收窄（P0-4.4 修复版）：宽度纯装饰不绑数值——客户可跳级/转化率>100% 时形状不变（决策 14→成交 28 不再"突然变宽"）
 const STAGE_WIDTHS = [100, 85, 70, 55] as const
 // 每段渐变浅端（与行动漏斗统一色板；深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
-const STAGE_GRADIENT_LIGHT = ['#a8cbfe', '#7cb3fb', '#5b95f8', '#497af0', '#31509b']
+const STAGE_GRADIENT_LIGHT = FUNNEL_STAGE_GRADIENT_LIGHT
 const DAY_OPTIONS = [
   { label: '近7天', value: 7 },
   { label: '近30天', value: 30 },

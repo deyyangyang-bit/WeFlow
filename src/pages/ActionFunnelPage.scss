@@ -1,39 +1,40 @@
 // ActionFunnelPage —— P0-4.3 Action Funnel 展示（风格与 SalesFunnelPage 同一套视觉语言）
-.af-page { padding: 24px; color: #1e293b; }
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
+.af-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
 .af-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;
   h2 { font-size: 16px; margin-right: 4px; }
 }
-.af-header__sub { font-size: 12px; color: #94a3b8; margin-right: auto; }
-.af-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &:disabled { opacity: .6; cursor: default; } }
-.af-error { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #dc2626; margin-bottom: 12px; }
-.af-empty { color: #94a3b8; padding: 24px; text-align: center; }
+.af-header__sub { font-size: 12px; color: var(--color-text-secondary); margin-right: auto; }
+.af-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; &:disabled { opacity: .6; cursor: default; } }
+.af-error { background: var(--color-danger-bg); border: 1px solid var(--color-danger-border); border-radius: var(--radius-small); padding: 10px 14px; font-size: 13px; color: var(--color-danger); margin-bottom: 12px; }
+.af-empty { color: var(--color-text-tertiary); padding: 24px; text-align: center; }
 
-// 时间窗口 toggle（复用漏斗页惯例）
-.af-days { display: inline-flex; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; }
-.af-days__btn { border: 0; background: #fff; padding: 4px 12px; font-size: 12px; cursor: pointer; color: #64748b; & + & { border-left: 1px solid #e2e8f0; } }
-.af-days__btn--active { background: #2563eb; color: #fff; }
+// 时间窗口 toggle（复用漏斗页惯例：iOS 分段控件）
+.af-days { display: inline-flex; background: var(--color-bg-inset); border-radius: 9px; padding: 3px; gap: 2px; }
+.af-days__btn { border: 0; background: transparent; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--color-text-secondary); border-radius: 7px; transition: color .15s; }
+.af-days__btn--active { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); }
 
 // KPI 卡（可点击 = 有下钻）
 .af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.af-kpi { display: flex; flex-direction: column; gap: 4px; text-align: left; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; cursor: default; box-shadow: 0 1px 3px rgba(15, 23, 42, .05); transition: box-shadow .15s, border-color .15s;
-  &--clickable { cursor: pointer; &:hover { border-color: #2563eb; box-shadow: 0 1px 6px rgba(37, 99, 235, .12); } }
-  &--star { border-color: #f59e0b; background: #fffbeb;
-    .af-kpi__label { color: #b45309; }
+.af-kpi { display: flex; flex-direction: column; gap: 4px; text-align: left; background: var(--color-bg-surface-muted); border: 1px solid transparent; border-radius: 14px; padding: 12px 14px; cursor: default; box-shadow: none; transition: box-shadow .15s, border-color .15s;
+  &--clickable { cursor: pointer; &:hover { border-color: var(--color-accent-border); box-shadow: var(--shadow-card); } }
+  &--star { border-color: var(--color-warning-border); background: var(--color-warning-bg);
+    .af-kpi__label { color: var(--color-warning); }
   }
 }
-.af-kpi__label { font-size: 12px; color: #64748b; display: inline-flex; align-items: center; gap: 4px; }
-.af-kpi__star { color: #f59e0b; font-size: 13px; }
-.af-kpi__value { font-size: 24px; font-weight: 700; line-height: 1.1; }
-.af-kpi__note { font-size: 11px; color: #94a3b8; }
+.af-kpi__label { font-size: 12px; color: var(--color-text-secondary); display: inline-flex; align-items: center; gap: 4px; }
+.af-kpi__star { color: var(--color-warning); font-size: 13px; }
+.af-kpi__value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.af-kpi__note { font-size: 11px; color: var(--color-text-secondary); }
 
 // 曝光段（G1 未埋点，诚实 N/A）
-.af-exposed { display: flex; align-items: baseline; gap: 8px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px 14px; margin-bottom: 20px; flex-wrap: wrap; }
-.af-exposed__label { font-size: 12px; color: #64748b; font-weight: 600; }
-.af-exposed__value { font-size: 13px; color: #94a3b8; font-weight: 600; }
-.af-exposed__hint { font-size: 12px; color: #94a3b8; }
+.af-exposed { display: flex; align-items: baseline; gap: 8px; background: var(--color-bg-inset); border: 1px dashed var(--color-chart-neutral); border-radius: var(--radius-small); padding: 8px 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.af-exposed__label { font-size: 12px; color: var(--color-text-secondary); font-weight: 600; }
+.af-exposed__value { font-size: 13px; color: var(--color-text-tertiary); font-weight: 600; }
+.af-exposed__hint { font-size: 12px; color: var(--color-text-tertiary); }
 
 // 五段漏斗卡片（P0-4.4 起 HTML/CSS 自绘梯形替代 ECharts——hover/点击态/箭头/tooltip 全可控）
-.af-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
+.af-chart { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 12px; }
 
 // 自绘漏斗（P0-4.4 修复版）：梯形固定比例收窄（宽度由 TSX 内联 STAGE_WIDTHS，纯装饰不与数值绑定）
 // ⚠️ col 必须显式 width:100%——否则 shrink-to-fit 下 wrap 的百分比宽度无法解析（每段退化为内容宽，漏斗不呈梯形）
@@ -46,35 +47,61 @@
   &:active { transform: scale(.99); }
 }
 .af-funnel__stage-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+// 彩色梯形面上的文字：字面白保持字面（不随 light/dark 反转），见 DESIGN-SPEC-MINI §颜色
 .af-funnel__content { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 14px 0 16px; color: #fff; }
 .af-funnel__name { font-size: 13px; font-weight: 600; letter-spacing: .5px; white-space: nowrap; }
 // 主数字：+20% 字号、纯白；转化率小字：白色 70% 透明度——明显主次对比
 .af-funnel__count { font-size: 26px; font-weight: 700; line-height: 1.15; color: #fff; text-shadow: 0 1px 2px rgba(15, 23, 42, .18); white-space: nowrap; }
 .af-funnel__rate { font-size: 11px; color: rgba(255, 255, 255, .7); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 // 段间小三角箭头（区分「行动漏斗=过程链路」与「销售漏斗=状态分布」）：加大 + 主题蓝，链路感更明显
-.af-funnel__arrow { display: flex; justify-content: center; align-items: center; height: 16px; margin: 2px 0; color: #3b82f6; }
+.af-funnel__arrow { display: flex; justify-content: center; align-items: center; height: 16px; margin: 2px 0; color: var(--color-accent); }
 // 推进/成交映射标注：段右上角 Info 徽标，hover/focus 出 tooltip（弱化说明，非常驻文字）；
 // 徽标放按钮外（wrap 内）——clip-path 会裁掉溢出按钮的 tooltip
 .af-funnel__map { position: absolute; top: 6px; right: 10px; display: inline-flex; color: rgba(255, 255, 255, .9); cursor: help; z-index: 5; }
-.af-funnel__map-tip { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; max-width: 250px; background: #1e293b; color: #e2e8f0; font-size: 11px; line-height: 1.5; padding: 6px 10px; border-radius: 6px; box-shadow: 0 4px 12px rgba(15, 23, 42, .28); opacity: 0; pointer-events: none; transition: opacity .12s;
+.af-funnel__map-tip { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; max-width: 250px; background: var(--color-tooltip-bg); color: var(--color-tooltip-text); font-size: 11px; line-height: 1.5; padding: 6px 10px; border-radius: 6px; box-shadow: var(--shadow-menu); opacity: 0; pointer-events: none; transition: opacity .12s;
   .af-funnel__map:hover &, .af-funnel__map:focus-within & { opacity: 1; }
 }
 
-.af-footnote { font-size: 12px; color: #94a3b8; margin-top: 16px; line-height: 1.7; overflow-wrap: break-word; }
+.af-footnote { font-size: 12px; color: var(--color-text-secondary); margin-top: 16px; line-height: 1.7; overflow-wrap: break-word; }
 
-// 下钻弹层
-.af-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
-.af-modal__panel { background: #fff; border-radius: 12px; width: 480px; max-width: 100%; max-height: 80vh; overflow-y: auto; padding: 18px 20px; box-shadow: 0 12px 40px rgba(15, 23, 42, .25); }
-.af-modal__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; h3 { font-size: 15px; display: inline-flex; align-items: center; gap: 6px; } }
-.af-modal__close { border: 0; background: #f1f5f9; border-radius: 6px; padding: 4px; cursor: pointer; color: #64748b; display: inline-flex; &:hover { background: #e2e8f0; } }
-.af-modal__rows { display: flex; flex-direction: column; gap: 6px; }
-.af-modal__row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 6px; background: #f8fafc; b { font-size: 15px; } }
-.af-modal__events { margin-top: 14px; }
-.af-modal__samples { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
-.af-modal__section-title { font-size: 12px; color: #64748b; font-weight: 600; margin-bottom: 8px; }
-.af-modal__sample { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; }
-.af-modal__sample-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-.af-modal__sample-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: #94a3b8; flex-wrap: wrap; }
+// 下钻弹层（毛玻璃背景 + 入场动效 + 层级/排版精修；纯样式，零逻辑/结构改动）
+.af-modal { position: fixed; inset: 0; background: var(--color-overlay); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; animation: af-fade-in .18s ease-out; }
+.af-modal__panel { background: var(--color-bg-elevated); border-radius: var(--radius-card); width: 480px; max-width: 100%; max-height: 80vh; overflow-y: auto; padding: 20px 22px; box-shadow: var(--shadow-pop); animation: af-pop-in .22s cubic-bezier(.2, .9, .3, 1.15);
+  &::-webkit-scrollbar { width: 8px; }
+  &::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 4px; &:hover { background: var(--color-scrollbar-thumb-hover); } }
+}
+@keyframes af-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes af-pop-in { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .af-modal, .af-modal__panel { animation: none; } }
+
+// 头部：标题加主题蓝图标 + 分隔线，关闭按钮圆润化
+.af-modal__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--color-divider);
+  h3 { font-size: 15px; font-weight: 700; color: var(--color-text-primary); letter-spacing: .2px; display: inline-flex; align-items: center; gap: 7px;
+    svg { color: var(--color-accent); } } }
+.af-modal__close { border: 0; background: var(--color-bg-inset); border-radius: var(--radius-small); padding: 5px; cursor: pointer; color: var(--color-text-secondary); display: inline-flex; transition: background .15s, color .15s, transform .1s;
+  &:hover { background: var(--color-bg-inset-strong); color: var(--color-text-primary); }
+  &:active { transform: scale(.94); } }
+
+// 数据行：加大留白与数字层级（tabular-nums 对齐），hover 微反馈
+.af-modal__rows { display: flex; flex-direction: column; gap: 8px; }
+.af-modal__row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 10px 12px; border-radius: var(--radius-control); background: var(--color-bg-inset); transition: background .15s;
+  &:hover { background: var(--color-bg-inset-strong); }
+  span { color: var(--color-text-secondary); }
+  b { font-size: 17px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; } }
+
+.af-modal__events { margin-top: 16px; }
+.af-modal__samples { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+// 小节标题：主题蓝竖条锚点，扫读更快
+.af-modal__section-title { font-size: 12px; color: var(--color-text-secondary); font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  &::before { content: ''; width: 3px; height: 12px; border-radius: 2px; background: var(--color-accent); } }
+
+// 任务样本卡：hover 轻浮起 + 会话 ID 等宽字体
+.af-modal__sample { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 10px 12px; transition: border-color .15s, box-shadow .15s;
+  &:hover { border-color: var(--color-accent-border); box-shadow: var(--shadow-card); } }
+.af-modal__sample-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); line-height: 1.5; margin-bottom: 6px; }
+.af-modal__sample-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--color-text-tertiary); flex-wrap: wrap;
+  span:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.2px; } }
 .af-modal__sample-tags { display: inline-flex; gap: 4px; }
-.af-modal__tag { font-style: normal; background: #eff6ff; color: #1d4ed8; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
-.af-modal__note { font-size: 12px; color: #94a3b8; margin-top: 14px; line-height: 1.6; border-top: 1px solid #f1f5f9; padding-top: 10px; }
+.af-modal__tag { font-style: normal; background: var(--color-accent-bg); color: var(--color-accent); border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 500; }
+
+.af-modal__note { font-size: 12px; color: var(--color-text-tertiary); margin-top: 16px; line-height: 1.6; border-top: 1px solid var(--color-divider); padding-top: 10px; }

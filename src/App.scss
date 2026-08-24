@@ -7,13 +7,8 @@
   overflow: hidden;
   
   // 为整个应用主窗口的最外层添加精致的 1px 边框线作为与操作系统的过渡
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--color-border);
   box-sizing: border-box;
-}
-
-[data-mode="dark"] .app-container {
-  // 深色模式下使用带微弱暖色调的暗金灰边框，与整体黑金奢华调性完美融合
-  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .window-drag-region {
@@ -39,19 +34,15 @@
   overflow: auto;
   padding: 24px 32px;
   position: relative;
-  background: var(--bg-primary);
+  background: radial-gradient(circle at center, var(--color-bg-page) 0%, var(--color-bg-page-deep) 100%); /* 页面画布：light 灰 / dark 深灰，双套 token 自动切换 */
   border-top-left-radius: 16px; /* 为主内容区域左上角添加优雅的圆角过渡 */
   border-bottom-left-radius: 16px; /* 为主内容区域左下角添加优雅的圆角过渡 */
   box-shadow: -4px 0 16px rgba(0, 0, 0, 0.03); /* 侧边栏与主内容区域交界处的微弱阴影过渡 */
-  
-  // 增加平滑的背景渐变，与最外层容器形成柔和的过渡，消除生硬感
-  background: radial-gradient(circle at center, var(--bg-primary) 0%, var(--bg-secondary) 100%);
 }
 
 [data-mode="dark"] .content {
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.25); /* 深色模式下更深邃的阴影过渡 */
-  border-left: 1px solid rgba(255, 255, 255, 0.03); /* 极细的微光边界线 */
-  background: radial-gradient(circle at center, #1c1c1e 0%, #151516 100%); /* 调配深邃且柔和的黑金底色过渡 */
+  border-left: 1px solid var(--color-divider); /* 极细的微光边界线 */
 }
 
 .export-keepalive-page {

@@ -1,14 +1,17 @@
-// Redesigned sidebar — premium feel with left accent bar, refined spacing
+// Redesigned sidebar — 毛玻璃 + 整块 accent 选中态（2026-08-24 UI 美化）
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .sidebar {
   width: var(--sidebar-width, 260px);
-  background: var(--bg-sidebar, var(--bg-secondary));
+  background: var(--color-glass);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
   display: flex;
   flex-direction: column;
   padding: 0;
   transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--color-border);
 
   &.collapsed {
     width: 68px;
@@ -64,10 +67,17 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 12px 10px;
+  gap: 2px;
+  padding: 10px 8px;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 3px;
+    &:hover { background: var(--color-scrollbar-thumb-hover); } }
 }
 
 .nav-item {
@@ -75,9 +85,9 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 14px;
-  border-radius: 10px;
-  color: var(--text-secondary);
+  padding: 7px 12px;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
   text-decoration: none;
   transition: background 0.15s ease, color 0.15s ease;
   white-space: nowrap;
@@ -85,8 +95,8 @@
   background: transparent;
   cursor: pointer;
   font-family: inherit;
-  font-size: 14px;
-  margin: 1px 0;
+  font-size: 13px;
+  margin: 0;
 
   // Left accent bar for active state
   &::before {
@@ -98,26 +108,26 @@
     width: 3px;
     height: 16px;
     border-radius: 0 2px 2px 0;
-    background: var(--primary);
+    background: var(--color-accent);
     transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   &:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 
   &.active {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
     font-weight: 600;
 
     &::before {
-      transform: translateY(-50%) scaleY(1);
+      display: none; // 去掉旧左侧 accent 条，选中态改为整块浅 accent 底
     }
 
     .nav-icon {
-      color: var(--primary);
+      color: var(--color-accent);
     }
   }
 }
@@ -154,7 +164,7 @@
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 10px 14px 4px;
+  padding: 12px 12px 4px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -164,10 +174,10 @@
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 
-  &:hover { color: var(--text-primary); }
-  &.active { color: var(--text-secondary); }
+  &:hover { color: var(--color-text-primary); }
+  &.active { color: var(--color-text-secondary); }
 
   &__caret {
     transition: transform 0.15s ease;
@@ -192,8 +202,8 @@
   height: 20px;
   border-radius: 999px;
   padding: 0 6px;
-  background: #ef4444;
-  color: #ffffff;
+  background: var(--color-danger);
+  color: var(--color-text-on-accent);
   font-size: 11px;
   font-weight: 700;
   display: inline-flex;
@@ -211,7 +221,7 @@
   height: 16px;
   padding: 0 4px;
   font-size: 10px;
-  box-shadow: 0 0 0 2px var(--bg-sidebar, var(--bg-secondary));
+  box-shadow: 0 0 0 2px var(--color-bg-page);
 }
 
 .sidebar-lock-action {
@@ -221,7 +231,7 @@
 // ---- Footer ----
 .sidebar-footer {
   padding: 4px 10px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--color-border);
   padding-top: 8px;
   margin-top: 4px;
   display: flex;
@@ -243,14 +253,14 @@
   bottom: calc(100% + 8px);
   width: max(100%, var(--sidebar-user-menu-width));
   z-index: 12;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--color-border);
   border-radius: 12px;
-  background: var(--bg-secondary-solid, var(--bg-secondary));
+  background: var(--color-bg-elevated);
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-menu);
   opacity: 0;
   transform: translateY(6px) scale(0.97);
   pointer-events: none;
@@ -268,7 +278,7 @@
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   padding: 8px 10px;
   display: flex;
   align-items: center;
@@ -280,14 +290,14 @@
   transition: background 0.15s ease;
 
   &:hover {
-    background: var(--bg-hover);
+    background: var(--color-bg-hover);
   }
 
   &.danger {
-    color: #ef4444;
+    color: var(--color-danger);
 
     &:hover {
-      background: rgba(239, 68, 68, 0.08);
+      background: var(--color-danger-bg);
     }
   }
 }
@@ -306,11 +316,11 @@
   transition: background 0.15s ease;
 
   &:hover {
-    background: var(--bg-hover);
+    background: var(--color-bg-hover);
   }
 
   &.menu-open {
-    background: var(--bg-hover);
+    background: var(--color-bg-hover);
   }
 
   .user-avatar {
@@ -318,12 +328,12 @@
     height: 34px;
     border-radius: 50%;
     overflow: hidden;
-    background: var(--primary);
+    background: var(--color-accent);
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    box-shadow: 0 0 0 2px var(--bg-sidebar, var(--bg-secondary));
+    box-shadow: 0 0 0 2px var(--color-bg-page);
 
     img {
       width: 100%;
@@ -332,7 +342,7 @@
     }
 
     span {
-      color: var(--on-primary);
+      color: var(--color-text-on-accent);
       font-size: 13px;
       font-weight: 600;
     }
@@ -345,7 +355,7 @@
 
   .user-name {
     font-size: 13px;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
@@ -355,14 +365,14 @@
   .user-wxid {
     margin-top: 1px;
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .user-menu-caret {
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     display: inline-flex;
     transition: transform 0.15s ease;
 
