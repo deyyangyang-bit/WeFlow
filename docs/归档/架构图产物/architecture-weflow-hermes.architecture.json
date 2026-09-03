@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "WeFlow × Hermes 企业销售系统架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1180, 660],
+    "views": [
+      { "id": "data-up", "label": "数据上行主链路", "focus": ["wechat", "weflow", "localdb", "pg", "weknora"], "note": "微信聊天经本机解密提炼为业务事实，outbox 同步上行，confirmed 档案投影进知识库。" },
+      { "id": "governance", "label": "治理与检索", "focus": ["hermes", "gateway", "weknora", "llm"], "note": "Hermes 只经网关检索与提案：RBAC 判权限、ACL 判范围、风险级判确认，AI 无 publish 权限。" },
+      { "id": "allocation", "label": "资源分配链路", "focus": ["alloc", "weflow", "users"], "note": "计时裁决在中央，检测执行在本地：销售机拉取分配、本机检测加好友并上报。" }
+    ]
+  },
+  "components": [
+    { "id": "users", "type": "external", "label": "销售 / 主管", "sublabel": "每人一机 · 多微信号", "pos": [40, 250], "size": [130, 60] },
+    { "id": "wechat", "type": "external", "label": "微信聊天", "sublabel": "一手数据源", "pos": [40, 110], "size": [130, 60] },
+    { "id": "weflow", "type": "frontend", "label": "WeFlow 工作台", "sublabel": "Electron · 按微信号分库", "pos": [240, 110], "size": [170, 64] },
+    { "id": "action", "type": "backend", "label": "行动引擎", "sublabel": "R0–R12 · SLA · 回收", "pos": [240, 250], "size": [170, 64] },
+    { "id": "hermes", "type": "backend", "label": "Hermes 智能体", "sublabel": "触发 → 工具 → LLM → 人落锤", "pos": [240, 390], "size": [170, 64] },
+    { "id": "localdb", "type": "database", "label": "本地库 sql.js", "sublabel": "双库 + outbox 事件队列", "pos": [470, 250], "size": [170, 64] },
+    { "id": "llm", "type": "external", "label": "DeepSeek API", "sublabel": "aiApiClient 统一收口", "pos": [470, 510], "size": [150, 56] },
+    { "id": "alloc", "type": "backend", "label": "轻量分配服务", "sublabel": "资源池 · 两段 SLA 计时", "pos": [720, 60], "size": [170, 64] },
+    { "id": "pg", "type": "database", "label": "PostgreSQL", "sublabel": "企业事实库（唯一事实源）", "pos": [720, 230], "size": [170, 64] },
+    { "id": "gateway", "type": "security", "label": "Knowledge Gateway", "sublabel": "RBAC · ACL · 风险分级 · 审计", "pos": [720, 400], "size": [170, 64] },
+    { "id": "backup", "type": "cloud", "label": "加密备份", "sublabel": "RAID1 + 异地副本", "pos": [950, 230], "size": [140, 60] },
+    { "id": "weknora", "type": "backend", "label": "WeKnora", "sublabel": "staging / published 双库", "pos": [950, 400], "size": [150, 64] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "销售个人电脑（分布式节点 × N）", "wraps": ["weflow", "action", "hermes", "localdb"] },
+    { "kind": "region", "label": "NAS 企业层", "wraps": ["alloc", "pg", "backup", "weknora"] }
+  ],
+  "connections": [
+    { "id": "c-wechat-weflow", "from": "wechat", "to": "weflow", "label": "WCDB 只读解密 · chatService", "variant": "emphasis", "labelAt": [205, 192] },
+    { "id": "c-users-action", "from": "users", "to": "action", "label": "操作 / 审批确认", "fromSide": "right", "toSide": "left", "labelAt": [205, 334] },
+    { "id": "c-weflow-action", "from": "weflow", "to": "action", "label": "定时 + 事件触发", "labelAt": [325, 190] },
+    { "id": "c-weflow-localdb", "from": "weflow", "to": "localdb", "label": "业务事实落库", "fromSide": "right", "toSide": "top" },
+    { "id": "c-action-hermes", "from": "action", "to": "hermes", "label": "行动卡 + 知识提议", "labelAt": [325, 330] },
+    { "id": "c-hermes-llm", "from": "hermes", "to": "llm", "label": "理解与生成", "variant": "dashed", "fromSide": "bottom", "toSide": "left" },
+    { "id": "c-weflow-alloc", "from": "weflow", "to": "alloc", "label": "拉取分配 / 上报加好友", "fromSide": "right", "toSide": "left" },
+    { "id": "c-localdb-pg", "from": "localdb", "to": "pg", "label": "outbox 事件同步（上行/下行）", "fromSide": "right", "toSide": "left", "labelAt": [680, 330] },
+    { "id": "c-pg-weknora", "from": "pg", "to": "weknora", "label": "confirmed 档案投影（单向）", "fromSide": "right", "toSide": "top" },
+    { "id": "c-pg-backup", "from": "pg", "to": "backup", "label": "每日备份" },
+    { "id": "c-hermes-gateway", "from": "hermes", "to": "gateway", "label": "检索 / 提案（MCP）", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [434, 470] },
+    { "id": "c-gateway-weknora", "from": "gateway", "to": "weknora", "label": "published 过滤 + 条目 ACL", "fromSide": "right", "toSide": "left", "labelAt": [920, 480] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "个人节点（每台销售机）", "items": ["聊天原文不出本机，WeFlow 是个人工作台", "规则引擎管时机，Hermes 管知识与话术", "NAS 离线照常工作，恢复后补报"] },
+    { "dot": "emerald", "title": "企业层（NAS）", "items": ["PostgreSQL 是唯一事实源：客户/归属/成交/报价/审计", "WeKnora 只做知识检索与档案只读副本", "分配服务独立轻量：一张表 + 两个接口"] },
+    { "dot": "rose", "title": "治理红线", "items": ["AI 可提议一切，落锤权在人", "高风险操作必须人工确认，全程审计", "先审后发：staging → 审核 → published"] }
+  ]
+}

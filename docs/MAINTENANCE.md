@@ -1,6 +1,6 @@
 # WeFlow AI 销售助手 · 维护与打包手册
 
-> 二次开发交接文档。配合 `docs/PRD-v0.2-AI销售助手.md` 阅读。
+> 二次开发交接文档。配合 `docs/归档/prd旧版/PRD-v0.2-AI销售助手.md` 阅读。
 > 基线：WeFlow v5.0.0 fork（`deyyangyang-bit/WeFlow`，**origin 指向上游，禁止 push**）。
 
 ## 0. 一句话定位
@@ -46,7 +46,10 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
   rm -rf release dist dist-electron
   ```
 - **mac（Apple Silicon）**：`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac` → 出 dmg+zip（未签名，单机自用足够）。快速验证可加 `--dir` 只出 .app。
-- **⚠️ GitHub 下载 electron 超时（600s Timeout awaiting request）**：加镜像 `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/` 前缀再跑（2026-08 实测 mac/win 均通）。
+- **⚠️ GitHub 下载 electron 超时（600s Timeout awaiting request）**：加镜像 `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/` 前缀再跑（2026-08 实测 mac/win 均通）。**注意镜像只覆盖 electron zip**——electron dist 下完后 `got` 还会请求 electron-builder-binaries 组件（winCodeSign 等），该请求不走 `ELECTRON_MIRROR`，无代理时同样 600s 卡死（2026-08-29 实测，症状：卡在 `unpacking default Electron distribution` 后，DEBUG 日志才有 `downloaded progress=100%`）；解法 = 构建时带系统代理（本机 Bitz Net）：
+  ```bash
+  HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897 NO_PROXY=localhost,127.0.0.1 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
+  ```
 - **win（在 mac 上交叉编译）**：`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64` → 出 nsis 安装包 `.exe`。**win 只打 x64**（`resources/key/win32/` 只有 x64 的解密 key，arm64 缺 key 会解密失败）。需联网下载 electron + nsis 资源。
 - **⚠️ win 交叉编译前必须安装 koffi win32 原生包**（mac 上 `npm install` 不会自动装）：
   ```bash
@@ -77,6 +80,7 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
 6. **队列死锁**：`enqueueSalesTask` 只加在最外层入口；被排队函数内部**绝不能再 enqueue**。故 `batchProfile` 拆成 enqueue 外壳 + `batchProfileCore` 内核，`runSilenceScan` 内部回填调内核。
 7. **诊断代码勿留**：`process.on('uncaughtException')` 会让进程该死不死、掩盖真崩溃。维护时若见 main.ts 含 `[CRASH]`/`[PROCESS EXIT]` 或 salesIntentService 含 `console.log('[SalesIntent]'`，请删除（这些是历史排查残留）。
 8. **⛔ `ELECTRON_RUN_AS_NODE=1` 铁律**（曾误判为"dist 损坏"的元凶）：该环境变量让 Electron 以 Node 模式启动——GUI 不出现、`--version` 输出内嵌 Node 版本（v24.17.0）而非 Electron 版本。某些 CLI/工具会话会注入它（`echo $ELECTRON_RUN_AS_NODE` 可查）。**防御已落地**：`vite.config.ts` 在 spawn Electron 前 `delete process.env.ELECTRON_RUN_AS_NODE`（Linux 侧同款见 `keyServiceLinux.ts`）。**不要再删除 `node_modules/electron/dist` 重建**——dist 从未损坏，那只是误判（详见 HANDOVER-20260731 §四 修正版）。
+9. **`electron/**` 陈旧 tsc 产物 `.js` 静默遮蔽 `.ts` 源码**（2026-08-27 复现）：tsc 原位 emit 出的 `electron/**/*.js`（gitignore 内）会被 vite resolve.extensions（`.js` 先于 `.ts`）优先加载——dev/build 全部读旧编译代码，改源码不生效（现象如 "No handler registered for 'crm:xxx'"、preload 有新代码而 main.js 没有）。症状自查：`ls -l electron/main.js`（产物）mtime 落后于 `electron/main.ts`。修复：删除带 `.ts` 兄弟的 `.js`/`.d.ts` 产物后全量重启 dev——**删除前先 `git ls-files electron | grep -E '\.(js|d\.ts)$'` 对照白名单**（`sql-js.d.ts`、`nodert.d.ts`、`types/*.d.ts`、`assets/wasm/wasm_video_decode.js` 是 git-tracked 真实文件，删了即崩）。另：`vite-plugin-electron` 的 `reload()` 只刷新渲染进程，electron 主进程改动必须杀掉 Electron 重启整个 dev 会话才生效。
 
 ## 5. 配置项（设置 → AI 见解 / 确认中心自动确认）
 `aiInsightSilenceDays`(沉默下限,默认3) · `aiInsightSilenceMaxDays`(上限,默认30) · `aiInsightScanLimit`(每次扫描上限,默认50) · `aiInsightCooldownMinutes`(冷却,**建议 10080=7天**) · `aiInsightScanIntervalHours`(扫描间隔,默认4)。高意向动态阈值硬编码：决策 1 天 / 比价 2 天。

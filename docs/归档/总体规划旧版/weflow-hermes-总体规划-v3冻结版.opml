@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>WeFlow × Hermes 总体规划 v3（冻结版）</title>
+  </head>
+  <body>
+    <outline text="〇、定位与分层">
+      <outline text="一句话定位：以微信聊天为一手数据源、WeFlow 为工作节点、PostgreSQL 为企业事实层、WeKnora 为知识服务、Hermes 为行动 Agent、Governance 为控制面的 AI 销售系统">
+      </outline>
+      <outline text="五层架构">
+        <outline text="⑤ AI / Hermes：理解、决策、生成、调用工具">
+        </outline>
+        <outline text="④ Governance：RBAC / ACL / Audit / Approval / Policy">
+        </outline>
+        <outline text="③ Business Fact：Customer / Identity / Ownership / Opportunity / Stage / Deal / Quote / After-sale">
+        </outline>
+        <outline text="② Knowledge：WeKnora / Published / Staging">
+        </outline>
+        <outline text="① Data Source：WeFlow / 微信聊天 / 本地数据库">
+        </outline>
+      </outline>
+      <outline text="各层角色定位">
+        <outline text="微信聊天：数据源，不是企业共享数据库">
+        </outline>
+        <outline text="WeFlow：个人工作台，不是多人数据库">
+        </outline>
+        <outline text="PostgreSQL：企业事实层">
+        </outline>
+        <outline text="WeKnora：企业知识服务 + 客户档案可检索副本（Postgres 单向投影，副本只读）">
+        </outline>
+        <outline text="Hermes：行动 Agent，不直接操作数据库">
+        </outline>
+        <outline text="Governance：所有 Agent 与人工操作的闸门">
+        </outline>
+      </outline>
+      <outline text="多人协作核心原则">
+        <outline text="口诀：个人数据本地化、企业事实集中化、聊天原文不共享、业务事实可同步、企业归属集中管理">
+        </outline>
+        <outline text="高风险操作必须审批">
+        </outline>
+        <outline text="客户 owner 只有企业层可最终确认">
+        </outline>
+        <outline text="AI 只能提议，不能成为最终事实来源">
+        </outline>
+        <outline text="跨设备变化走事件同步，不同步数据库文件">
+        </outline>
+        <outline text="Backup 是 Sync 的技术基础，但 Backup ≠ Sync">
+        </outline>
+        <outline text="对外叙事：WeFlow Sales OS；对内纪律：Phase 制，两者不混用">
+        </outline>
+      </outline>
+    </outline>
+    <outline text="一、现有能力（28 项已上线，不变）">
+      <outline text="数据底座">
+        <outline text="微信聊天解密存档（WCDB 只读）">
+        </outline>
+        <outline text="防撤回 + 群聊分析">
+        </outline>
+        <outline text="消息 / 联系人 / 朋友圈导出">
+        </outline>
+        <outline text="本地 HTTP API（5031）+ SSE 推送">
+        </outline>
+        <outline text="AI 调用收口（aiApiClient · DeepSeek）">
+        </outline>
+        <outline text="语音转写 + 中文分词 / 年度报告">
+        </outline>
+      </outline>
+      <outline text="获客与线索">
+        <outline text="线索池（群扫描入池）→ Phase 1 升级为资源分配">
+        </outline>
+        <outline text="首触 SLA 24h（超期出卡）">
+        </outline>
+      </outline>
+      <outline text="跟进与转化（成交前）">
+        <outline text="客户 360 + 阶段分类 / 意向评分 + 风险预警">
+        </outline>
+        <outline text="今日行动引擎 R0–R8（规则出卡 + AI 分析预热）">
+        </outline>
+        <outline text="AI 回复建议 / 话术提炼 / 承诺提取待办 / 客户洞察画像">
+        </outline>
+      </outline>
+      <outline text="成交与交付">
+        <outline text="跟单中心 · 款项认领 / 物流认领 / R8 签收超期提醒">
+        </outline>
+      </outline>
+      <outline text="知识与 AI / 管理与团队">
+        <outline text="知识库关键词版（产品参数 / 话术 / FAQ）/ AI 话术提炼">
+        </outline>
+        <outline text="销售漏斗 / 周复盘报表 / 逾期统计 / 团队名单">
+        </outline>
+      </outline>
+      <outline text="架构">
+        <outline text="单机双库按微信号分库 / Electron 主进程即后端 / 文档生成">
+        </outline>
+      </outline>
+    </outline>
+    <outline text="二、Phase 0 · 数据宪法（Data Contract Freeze · 1~2 周）">
+      <outline text="只解决四件事：Identity / Ownership / State / Evidence">
+      </outline>
+      <outline text="11 个核心对象">
+        <outline text="① customer（客户是谁）">
+        </outline>
+        <outline text="② customer_identity（phone 优先 / wxid 兜底 / 后补关联，含 source / confidence / status）">
+        </outline>
+        <outline text="③ lead（线索 ≠ 客户，多来源归并到同一身份）">
+        </outline>
+        <outline text="④ assignment（分配记录）">
+        </outline>
+        <outline text="⑤ ownership（当前归属，带有效期 start_at / end_at）">
+        </outline>
+        <outline text="⑥ ownership_history（谁开发的 vs 谁现在负责）">
+        </outline>
+        <outline text="⑦ stage_history（每次转换留痕）">
+        </outline>
+        <outline text="⑧ evidence（message_key / 摘要 / 时间，统一格式）">
+        </outline>
+        <outline text="⑨ outbox_event（含 event_seq / idempotency_key，本阶段只记录不发送）">
+        </outline>
+        <outline text="⑩ audit_event（不可删除）">
+        </outline>
+        <outline text="⑪ opportunity（一笔生意；成交后复购开新 opportunity，不回退旧阶段）">
+        </outline>
+      </outline>
+      <outline text="Identity Resolution Policy（身份解析规则）">
+        <outline text="一人多微信 / 一号多微信 / 换微信 都靠 identity 表承载">
+        </outline>
+        <outline text="AI 只能提 merge proposal，合并客户是高风险操作，必须人工批准">
+        </outline>
+      </outline>
+      <outline text="Stage Transition Policy（阶段转换策略，非严格状态机）">
+        <outline text="canonical：opportunity.stage；customer 层阶段为派生投影（修订前案 account.sales_stage）">
+        </outline>
+        <outline text="允许跳级（新客→成交可一步到位），留 stage_history">
+        </outline>
+        <outline text="合理回退允许（决策→比价，标记异常关注）">
+        </outline>
+        <outline text="成交→成交前：禁止直连，复购开新 opportunity">
+        </outline>
+        <outline text="流失→成交前 / 流失→成交：人工确认">
+        </outline>
+        <outline text="目的：不是阻止走错路，而是异常路径可解释、可追溯、可治理">
+        </outline>
+      </outline>
+      <outline text="SSOT 规则（单一事实源）">
+        <outline text="一个业务事实只有一个 Canonical Source；其余只能是 proposal / signal / history / cache / projection">
+        </outline>
+        <outline text="同时写入 WeFlow 仓库 AGENTS.md 铁律区（AI 编码助手必读）">
+        </outline>
+      </outline>
+      <outline text="AI 字段治理 A/B/C 三档">
+        <outline text="A 类（低风险：行业/地区/职位/摘要）→ auto_committed；依据 = 证据质量 + 规则校验，LLM confidence 只是辅助指标，不是授权条件">
+        </outline>
+        <outline text="B 类（业务判断：customer_type / intent_score / stage）→ proposed → 人确认 → confirmed">
+        </outline>
+        <outline text="C 类（高风险：owner / 合并 / 删除 / 发布 / 对外发送）→ request → 审批">
+        </outline>
+        <outline text="auto_committed ≠ confirmed：采纳率与自动落地错误率分开统计；A 类错误率超阈值降级回 B">
+        </outline>
+      </outline>
+      <outline text="Soft Delete：业务数据不真删除，一律 status=archived；审计日志不可删除">
+      </outline>
+      <outline text="Feature Gate（新需求七问）">
+        <outline text="属于哪个 Phase / 为什么现在做 / 是否引入未来架构 / 是否改变数据宪法 / 是否新增事实源 / 是否新增权限边界 / 挤掉什么">
+        </outline>
+        <outline text="铁律：不得因技术上顺手就提前实现未来 Phase 的能力">
+        </outline>
+      </outline>
+      <outline text="明确不做（预留边界即可）：Offline Sync / Conflict Resolution / aggregate_version / NAS 多人 / WeKnora 部署 / MCP">
+      </outline>
+      <outline text="修宪程序：Frozen ≠ 不可改；修改须过 Feature Gate + 版本递增 + 变更记录">
+      </outline>
+    </outline>
+    <outline text="三、Phase 1 · 单机可靠性（约 2 周 · 纯规则零 AI 风险）">
+      <outline text="NAS 自动备份（最高优先；NAS 到货前过渡：外接硬盘 / 另一台电脑，改路径即切换）">
+      </outline>
+      <outline text="Lead Allocation Domain · 客户资源分配">
+        <outline text="权限：分配员（权限组，默认主管兼任，可转授助理）录入与分配；销售只读本人资源；管理员看全部">
+        </outline>
+        <outline text="录入：批量导入 Excel / 粘贴清单，自动查重">
+        </outline>
+        <outline text="分配引擎三模式：比例权重（默认可调）/ 轮询 / 按负载均衡">
+        </outline>
+        <outline text="两段接力 SLA：分配后管「加了没有」（24h×3 次提醒，第 3 次抄送主管，3 次后回收改派他人）；加好友后管「聊了没有」（首触 SLA 24h）">
+        </outline>
+        <outline text="检测加好友：手机号匹配本地联系人库，客户主动添加也算">
+        </outline>
+        <outline text="审计：录入人 / 分配对象 / 认领时间 / 回收记录">
+        </outline>
+      </outline>
+      <outline text="售后生命周期：成交 → 已交付 → 待回访 → 复购/老客">
+      </outline>
+      <outline text="R9 经销商拿货提醒（签收后第 10 天预警，15 天 deadline；前置：客户类型字段 dealer / end_user）">
+      </outline>
+      <outline text="R10 定期回访（成交后 15/30/90 天；与 R5 互斥，已成交不再触发沉默唤醒）">
+      </outline>
+      <outline text="R11 阶段停滞卡（比价&gt;14 天 / 决策&gt;21 天；纳入统一 Action Policy 去重压制）">
+      </outline>
+      <outline text="成交登记结构化（成交额 / 型号 / 数量 / 交期）+ 报价版本管理（版本 / 生效期 / 证据链）">
+      </outline>
+      <outline text="owner 字段 + 离职客户移交（单机期本地直改）">
+      </outline>
+      <outline text="local_outbox 事件队列：本阶段只记录不发送，Backup + Outbox 同时落">
+      </outline>
+      <outline text="Action Policy Engine 最小版：priority + dedup 两个字段，R 系列统一接入">
+      </outline>
+    </outline>
+    <outline text="四、Phase 2 · Hermes 与知识治理（约 3~4 周）">
+      <outline text="Hermes 三段式：触发层（事件/定时/人工）→ 工具层（Tool Gateway，读+写薄封装）→ 判断层（LLM 走 aiApiClient）→ 人落锤">
+      </outline>
+      <outline text="与现有功能的关系：不替代只调用；确定性内核保留；交互层瘦身（对话栏统一入口 + 保留行动卡/确认队列/审核 Tab/客户360）">
+      </outline>
+      <outline text="权限链：User → RBAC → ACL → Tool Permission → Risk Level → Policy Engine → 执行/审批">
+      </outline>
+      <outline text="知识治理：status / authority / version / TTL + published 过滤 + 审核 Tab + rejected 状态（拒因反哺 Hermes 优化）">
+      </outline>
+      <outline text="反哺回路：聊天发现 → proposal → 人审 → 发布；AI 无 publish 权限">
+      </outline>
+      <outline text="认领 24h 后 AI 首次分类：复用现有分类器/洞察服务；proposed 本机暂存，confirmed 后才上行">
+      </outline>
+      <outline text="档案持续更新机制：阶段变化/新报价/成交/回访完成/沉默超阈值触发更新提案 → 确认 → 版本+1">
+      </outline>
+      <outline text="Human Adoption Loop（采用率埋点，与 Hermes 同天上）">
+        <outline text="三类漏斗：AI Proposal / Knowledge Proposal / Action 均记录 generated→viewed→accepted|modified|rejected→expired">
+        </outline>
+        <outline text="三大指标：建议采纳率 / 审核及时率 / 行动执行率">
+        </outline>
+        <outline text="Governance SLA：先 Telemetry Only 观测 2 周（P50/P75/P90/P95），再从数据定阈值；提醒阶梯 Normal→Due Soon→Overdue→Escalated">
+        </outline>
+      </outline>
+      <outline text="效果回流：知识使用埋点 × 阶段结果归因；TTL 主动巡检">
+      </outline>
+    </outline>
+    <outline text="五、Phase 3 · 企业层">
+      <outline text="Phase 3a · 同步通道与客户档案库（先行）">
+        <outline text="NAS PostgreSQL：客户档案 / 成交 / 报价 / 归属 / 审计">
+        </outline>
+        <outline text="双向同步：local_outbox → Sync Service → Change Feed → 各 WeFlow">
+        </outline>
+        <outline text="上行：成交登记 / 报价版本 / confirmed 档案 / 知识提案 / 审计事件">
+        </outline>
+        <outline text="下行：归属 / 移交结果 / 锁定 / 企业标签 / 主管修正（不静默覆盖，本地确认）/ 权限变化">
+        </outline>
+        <outline text="禁止跨销售互写；原始聊天记录不上行">
+        </outline>
+        <outline text="本阶段才设计：Offline Sync Contract / aggregate_version / 冲突裁决 / 幂等消费">
+        </outline>
+        <outline text="离线可用：NAS 是企业事实中心，但不是个人 WeFlow 的实时运行依赖">
+        </outline>
+      </outline>
+      <outline text="Phase 3b · 知识底座与权限（后行）">
+        <outline text="WeKnora 部署 NAS：Docker 5 核心容器 + MCP 单独起">
+        </outline>
+        <outline text="staging / published 双库物理隔离（staging 即 WeKnora 暂存库）">
+        </outline>
+        <outline text="模型：DeepSeek + bge-m3 向量 + bge-reranker 重排">
+        </outline>
+        <outline text="客户档案检索副本：confirmed 档案单向投影，副本只读，owner_sales 标签 + Gateway 条目级 ACL，敏感字段脱敏，移交/作废同步失效">
+        </outline>
+        <outline text="Hermes 经 MCP 接入；接口策略：工具层与 API/MCP 同源">
+        </outline>
+        <outline text="100 条评测集验收：答案正确率 ≥85% / 过期命中=0 / 越权=0 / 档案越权检索=0">
+        </outline>
+      </outline>
+      <outline text="多人三大问题">
+        <outline text="撞单仲裁提前到分配/认领：唯一身份 → owner 仲裁">
+        </outline>
+        <outline text="离职交接：申请 → 主管批准 → NAS 落锤 → 同步 → A 失权 B 获得">
+        </outline>
+        <outline text="并发修改：version 乐观锁 + event_seq 按序 + 幂等">
+        </outline>
+      </outline>
+      <outline text="RBAC 权限矩阵">
+        <outline text="销售：本人客户全部 / 读 published / 不可见成本 / 可提 proposal / 只读本人资源">
+        </outline>
+        <outline text="分配员：权限组非独立角色，默认主管兼任，可转授助理">
+        </outline>
+        <outline text="主管：团队只读（不看聊天原文）/ 审核 / 移交审批 / 可见成本 / 默认持分配员权限">
+        </outline>
+        <outline text="管理员：归属 / 账号 / 密钥 / 全部知识库 / 分配规则">
+        </outline>
+        <outline text="系统/AI 账号：只经 Gateway，无人工登录，永不授予分配与发布权限">
+        </outline>
+      </outline>
+    </outline>
+    <outline text="六、Phase 4 · 经营深化（约 3 周）">
+      <outline text="目标管理（目标 vs 达成）">
+      </outline>
+      <outline text="售后工单（维修/保养/配件）+ 复购信号">
+      </outline>
+      <outline text="沉默客户前兆预警 / 竞对情报建档 / 知识缺口清单">
+      </outline>
+      <outline text="客户公海（与分配回收统一为一套回收规则引擎）/ 知识运营看板 / 多渠道线索录入">
+      </outline>
+    </outline>
+    <outline text="七、NAS 部署与采购">
+      <outline text="四层：① 企业事实库 PostgreSQL ② 企业知识库 WeKnora ③ staging（即 WeKnora 暂存库）④ backup 加密备份">
+      </outline>
+      <outline text="边界：WeKnora 不变成 CRM 数据库，业务事实只在 PostgreSQL">
+      </outline>
+      <outline text="采购规格：必须 x86（WeKnora 镜像 amd64，ARM 硬排斥）/ 内存 ≥16GB / 支持 Docker / SSD 跑库 + HDD 备份 / RAID1 起步 / 2.5G 网口优先">
+      </outline>
+      <outline text="到货节点：Phase 2 结束前部署完成即可；Phase 0~2 不依赖 NAS">
+      </outline>
+    </outline>
+    <outline text="八、三个闭环（对外叙事用）">
+      <outline text="数据闭环：微信 → WeFlow → Evidence → Business Fact → NAS">
+      </outline>
+      <outline text="AI 闭环：Fact+Chat → Hermes → Proposal → Human → Confirmed Fact">
+      </outline>
+      <outline text="经营闭环：Action → 行为 → 结果 → 效果归因 → 知识/策略 → 下一次行动">
+      </outline>
+      <outline text="护城河：微信真实对话 × 业务结果的配对数据，而非任何单一组件">
+      </outline>
+    </outline>
+    <outline text="九、核心原则">
+      <outline text="规则负责什么时候该行动；Hermes 负责带什么知识；效果回流负责下次更聪明">
+      </outline>
+      <outline text="知识是服务不是文件；先审后发；AI 可提议一切，落锤权在人">
+      </outline>
+      <outline text="底座可替换，治理逻辑是自己的资产">
+      </outline>
+      <outline text="工程风险 ≠ 产品落地风险；人（采用率）是 P0 风险">
+      </outline>
+      <outline text="下一步：按此宪法编写 docs/DATA-CONSTITUTION.md（11 对象字段级契约），冻结后开工">
+      </outline>
+    </outline>
+  </body>
+</opml>

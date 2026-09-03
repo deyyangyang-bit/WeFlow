@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow · Phase 1 资源分配闭环 · UI 设计稿</title>
+<style>
+  :root{
+    --bg-page:#F5F5F7; --bg-surface:#FFFFFF; --bg-surface-muted:#FAFAFC; --bg-inset:#F0F0F3;
+    --text-primary:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --border:#E5E5EA; --divider:#EEEEF2;
+    --accent:#0071E3; --accent-bg:#E8F1FC; --accent-border:#B8D4F5;
+    --success:#34C759; --success-bg:#E9F9EE;
+    --warning:#FF9500; --warning-bg:#FFF4E5;
+    --danger:#FF3B30; --danger-bg:#FFEDEC;
+    --radius-card:16px; --radius-control:10px; --radius-small:8px;
+    --shadow-card:0 4px 16px rgba(0,0,0,.08);
+    --shadow-pop:0 12px 40px rgba(0,0,0,.16);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;background:var(--bg-page);color:var(--text-primary);font-size:13px;line-height:1.5}
+  .page{max-width:1280px;margin:0 auto;padding:24px}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ===== 设计稿框架（非产品 UI） ===== */
+  .doc-header{padding:32px 0 8px}
+  .doc-header h1{font-size:22px;font-weight:700}
+  .doc-header p{color:var(--text-secondary);margin-top:6px}
+  .screen{margin:36px 0}
+  .screen-title{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .screen-title .idx{font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:2px 8px}
+  .screen-title h2{font-size:16px;font-weight:700}
+  .req-map{display:inline-block;font-size:11px;color:var(--accent);background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:6px;padding:2px 8px;margin-left:4px}
+  .screen-note{color:var(--text-secondary);font-size:12px;margin-bottom:14px;max-width:900px}
+  .frame{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card);overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface-muted)}
+  .frame-bar .dot{width:10px;height:10px;border-radius:50%}
+  .frame-bar .path{font-size:11px;color:var(--text-tertiary);margin-left:8px}
+  .frame-body{padding:20px 24px;background:var(--bg-page)}
+
+  /* ===== 产品 UI 元件（对齐 DESIGN-SPEC-MINI） ===== */
+  .card{background:var(--bg-surface);border-radius:var(--radius-card);padding:16px 18px}
+  .card + .card{margin-top:14px}
+  .card-title{font-size:13px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .hint{font-size:11px;color:var(--text-tertiary);font-weight:400}
+  .btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:7px 14px;border-radius:var(--radius-control);border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);cursor:default}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.ghost{background:transparent}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px}
+  .pill.blue{background:var(--accent-bg);color:var(--accent)}
+  .pill.green{background:var(--success-bg);color:var(--success)}
+  .pill.amber{background:var(--warning-bg);color:var(--warning)}
+  .pill.red{background:var(--danger-bg);color:var(--danger)}
+  .pill.gray{background:var(--bg-inset);color:var(--text-secondary)}
+  .seg{display:inline-flex;background:var(--bg-inset);border-radius:var(--radius-control);padding:3px;gap:2px}
+  .seg span{font-size:12px;font-weight:600;padding:6px 16px;border-radius:8px;color:var(--text-secondary)}
+  .seg span.on{background:var(--bg-surface);color:var(--accent);box-shadow:0 1px 4px rgba(0,0,0,.1)}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:11px;font-weight:600;color:var(--text-tertiary);text-align:left;padding:8px 10px;border-bottom:1px solid var(--divider)}
+  td{font-size:12px;padding:10px;border-bottom:1px solid var(--divider);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  td .sub{font-size:11px;color:var(--text-tertiary)}
+  .stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+  .stat{background:var(--bg-surface);border-radius:var(--radius-card);padding:14px 18px}
+  .stat .k{font-size:11px;color:var(--text-tertiary)}
+  .stat .v{font-size:26px;font-weight:700;margin-top:2px}
+  .stat .v small{font-size:12px;font-weight:400;color:var(--text-tertiary)}
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .toolbar .spacer{flex:1}
+  .input{border:1px solid var(--border);border-radius:var(--radius-control);padding:7px 12px;font-size:12px;background:var(--bg-surface);color:var(--text-tertiary);min-width:220px}
+  .banner{display:flex;gap:10px;align-items:flex-start;border-radius:var(--radius-control);padding:12px 14px;font-size:12px;margin-bottom:14px}
+  .banner.amber{background:var(--warning-bg);color:#8A5600}
+  .banner.blue{background:var(--accent-bg);color:#0B4FA0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .slider-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--divider)}
+  .slider-row:last-child{border-bottom:none}
+  .slider-row .name{width:120px;font-size:12px;font-weight:600}
+  .slider{flex:1;height:6px;border-radius:3px;background:var(--bg-inset);position:relative}
+  .slider i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--accent)}
+  .slider b{position:absolute;top:-4px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid var(--accent)}
+  .slider-row .pct{width:56px;text-align:right;font-size:13px;font-weight:700;color:var(--accent)}
+  .load{font-size:11px;color:var(--text-tertiary);width:150px;text-align:right}
+  .lead-card{display:flex;align-items:center;gap:14px;background:var(--bg-surface);border-radius:var(--radius-card);padding:14px 18px}
+  .lead-card + .lead-card{margin-top:10px}
+  .lead-main{flex:1}
+  .lead-main .t1{font-size:13px;font-weight:600}
+  .lead-main .t2{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+  .countdown{text-align:center;width:110px}
+  .countdown .t{font-size:18px;font-weight:700}
+  .countdown .l{font-size:10px;color:var(--text-tertiary)}
+  .countdown.ok .t{color:var(--success)} .countdown.warn .t{color:var(--warning)} .countdown.over .t{color:var(--danger)}
+  .modal-mask{border-radius:var(--radius-card);background:rgba(0,0,0,.32);padding:48px 0;display:flex;justify-content:center}
+  .modal{background:var(--bg-surface);border-radius:var(--radius-card);box-shadow:var(--shadow-pop);width:460px;padding:22px}
+  .modal h3{font-size:15px;font-weight:700;margin-bottom:4px}
+  .modal .m-sub{font-size:12px;color:var(--text-secondary);margin-bottom:16px}
+  .drop{border:1px solid var(--border);border-radius:var(--radius-control);margin-top:8px;overflow:hidden}
+  .drop-item{padding:9px 12px;font-size:12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--divider)}
+  .drop-item:last-child{border-bottom:none}
+  .drop-item.on{background:var(--accent-bg)}
+  .avatar{width:26px;height:26px;border-radius:50%;background:var(--accent-bg);color:var(--accent);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+  .timeline{position:relative;padding-left:18px}
+  .timeline:before{content:"";position:absolute;left:4px;top:6px;bottom:6px;width:2px;background:var(--border)}
+  .tl-item{position:relative;padding:8px 0 8px 12px;font-size:12px}
+  .tl-item:before{content:"";position:absolute;left:-17px;top:14px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+  .tl-item .when{font-size:11px;color:var(--text-tertiary)}
+  .check-line{display:flex;gap:8px;align-items:center;padding:8px 0;font-size:12px;border-bottom:1px solid var(--divider)}
+  .check-line:last-child{border-bottom:none}
+  .toc td:first-child{font-weight:600}
+  .foot{color:var(--text-tertiary);font-size:11px;text-align:center;padding:32px 0 8px}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ========== 0. 封面与需求映射总表 ========== -->
+  <div class="doc-header">
+    <h1>WeFlow · Phase 1「资源分配闭环」UI 设计稿</h1>
+    <p>2026-09-02 · 状态：<b>已拍板</b>，本稿升级为前端实现的<b>验收标准</b>（实现后逐屏截图比对，不一致即打回）。每屏右上角标注对应需求条目。视觉语言沿用现有应用规范（DESIGN-SPEC-MINI，默认 Apple 蓝）。</p>
+  </div>
+
+  <div class="screen">
+    <div class="screen-title"><span class="idx">0</span><h2>需求映射总表</h2></div>
+    <div class="screen-note">先看这张表：左边是 PRD 里定下的需求，右边是它在设计稿里的落点。有遗漏或画多了的，在这里最容易看出来。</div>
+    <div class="frame"><div class="frame-body">
+      <table class="toc">
+        <tr><th style="width:110px">需求编号</th><th>需求内容（PRD v3.4）</th><th style="width:220px">设计稿落点</th><th style="width:90px">状态</th></tr>
+        <tr><td>1.2a</td><td>本地身份档案：姓名 + 角色（销售/主管/分配员），首次启动建立</td><td>屏 1 弹窗</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>1.3</td><td>分配员录入（Excel/粘贴、自动查重）→ 三模式分配 → 销售机拉取 → 回收改派；存量 4,281 条群扫线索回池、先 200 条试分配</td><td>屏 2 / 屏 3 / 屏 6</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>1.4</td><td>两段接力 SLA：第一段「加了没有」24h 机械计时；第二段「聊了没有」LLM 扫对话判断，低置信转人工</td><td>屏 4 / 屏 5</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>1.4a</td><td>加好友判定双路：自动扫分库匹配 + 手动「绑定微信」（昵称搜索 → 下拉本机联系人 → 确认）</td><td>屏 4 / 屏 5</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>宪法 §1.3</td><td>assignment 状态：assigned / claimed / recycled / transferred</td><td>屏 4 状态徽章</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>宪法 §1.8/§1.12</td><td>归属变更留痕（ownership_history）+ 统一审计（audit_event）</td><td>屏 6 / 屏 7</td><td><span class="pill green">已覆盖</span></td></tr>
+        <tr><td>决策 B</td><td>群资源扫描下线：录入只走分配员 Excel/粘贴导入，线索页不再有「扫描群资源」「管理归属」</td><td>屏 2 注记</td><td><span class="pill blue">请确认</span></td></tr>
+        <tr><td>1.6 / R9-R11</td><td>售后生命周期、经销商拿货预警、回访、阶段停滞</td><td>—</td><td><span class="pill gray">本期未画</span></td></tr>
+        <tr><td>2.x</td><td>知识治理 / AI 分类 / 评测集等</td><td>—</td><td><span class="pill gray">Phase 2</span></td></tr>
+      </table>
+    </div></div>
+  </div>
+
+  <!-- ========== 1. 首次启动 · 本地身份档案 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">1</span><h2>首次启动 · 本地身份档案</h2><span class="req-map">需求 1.2a</span></div>
+    <div class="screen-note">首次启动（或之后在设置页）建立本机操作人档案：姓名 + 角色。用途：分配员是谁、审计留痕署谁的名、审批确认显示谁点的。和现有应用锁完全独立；Phase 3a 接 NAS 时字段不变、平滑升级成企业账号。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">首次启动 · 仅出现一次，之后可在 设置 → 身份档案 修改</span></div>
+      <div class="frame-body">
+        <div class="modal-mask">
+          <div class="modal">
+            <h3>建立你的身份档案</h3>
+            <div class="m-sub">本机操作留痕与资源分配都以此为准，不联网、不影响微信。</div>
+            <div style="margin-bottom:14px">
+              <div style="font-size:12px;font-weight:600;margin-bottom:6px">姓名</div>
+              <div class="input" style="width:100%;color:var(--text-primary)">杨青</div>
+            </div>
+            <div style="margin-bottom:18px">
+              <div style="font-size:12px;font-weight:600;margin-bottom:6px">角色</div>
+              <div class="seg"><span>销售</span><span>主管</span><span class="on">分配员</span></div>
+              <div class="hint" style="margin-top:6px">分配员可录入资源、执行分配与回收（通常由主管兼任）。</div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:10px">
+              <span class="btn ghost">稍后再说</span><span class="btn primary">保存并进入</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 2. 分配员 · 资源池与录入 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">2</span><h2>分配员 · 资源池（录入 + 查重）</h2><span class="req-map">需求 1.3 前半段</span></div>
+    <div class="screen-note">资源池 = 待分配的线索总池。录入只有两条路：Excel 导入 / 粘贴文本（<b>原「扫描群资源」按钮已随决策 B 下线</b>）。导入时自动查重（对已有客户手机号去重）。存量群扫线索约 4,281 条全部回池、<b>不直接落归属</b>，按 1.3 先小批量试分配 200 条。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 资源池（新页面，分配员/主管可见）</span></div>
+      <div class="frame-body">
+        <div class="stat-row">
+          <div class="stat"><div class="k">待分配</div><div class="v num">4,213</div></div>
+          <div class="stat"><div class="k">已分配·待认领</div><div class="v num">168</div></div>
+          <div class="stat"><div class="k">跟进中</div><div class="v num">52</div></div>
+          <div class="stat"><div class="k">已回收</div><div class="v num">17 <small>可改派</small></div></div>
+        </div>
+        <div class="banner amber">⚠ <div><b>存量线索小批量验证中</b>（需求 1.3）：首批试分配 200 条，验证「可加率 / 首触率」达标后再放量；不达标先补数据质量，不整批下发。当前进度：已试分配 200 / 4,281。</div></div>
+        <div class="card">
+          <div class="toolbar">
+            <span class="seg"><span class="on">待分配</span><span>已分配</span><span>跟进中</span><span>已回收</span></span>
+            <span class="spacer"></span>
+            <span class="input">搜索 手机号 / 微信号 / 备注…</span>
+            <span class="btn">📋 粘贴导入</span>
+            <span class="btn primary">⬆ Excel 导入</span>
+          </div>
+          <div class="banner blue">✓ 最近导入批次 #20260902-01：粘贴 320 条 → 有效 296 条 · <b>查重拦截 21 条</b>（已是客户 14 / 池内重复 7）· 格式无效 3 条。查重报告可下载。</div>
+          <table>
+            <tr><th>联系方式</th><th>来源</th><th>需求标签</th><th>备注</th><th>入池时间</th><th>入池方式</th></tr>
+            <tr><td class="num">152****5273<div class="sub">wxid 未知</div></td><td>奋斗群存量</td><td><span class="pill gray">叉车改装</span></td><td>群里留的手机号</td><td class="num">08-27（回池）</td><td>存量迁移</td></tr>
+            <tr><td class="num">138****0061<div class="sub">wxid 未知</div></td><td>奋斗群存量</td><td><span class="pill gray">—</span></td><td>—</td><td class="num">08-27（回池）</td><td>存量迁移</td></tr>
+            <tr><td class="num">186****3345<div class="sub">昵称：冷链-老刘</div></td><td>抖音</td><td><span class="pill gray">整车</span></td><td>问 3 吨电动叉车</td><td class="num">09-02 10:12</td><td>批次 #20260902-01</td></tr>
+            <tr><td class="num">135****8890<div class="sub">wxid 未知</div></td><td>视频号</td><td><span class="pill gray">冷库改装</span></td><td>「我们冷库」</td><td class="num">09-02 10:12</td><td>批次 #20260902-01</td></tr>
+          </table>
+          <div class="hint" style="margin-top:10px">注：「需求标签」列 = 宪法裁决后的 lead.tag（仅需求/来源语义，不再表示归属）。存量行只有昵称/联系方式、无客户名称资料（1.3 数据质量说明）。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 3. 分配员 · 分配控制台 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">3</span><h2>分配员 · 分配控制台（三模式）</h2><span class="req-map">需求 1.3 中段</span></div>
+    <div class="screen-note">三种分配模式：<b>比例权重（默认，可调）</b> / 轮询 / 按负载均衡。选模式 → 预览分配结果 → 确认执行。执行后线索状态变为「已分配·待认领」，等销售在自己机器上拉取认领（不是推到销售机上硬塞）。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 分配控制台</span></div>
+      <div class="frame-body">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">分配模式 <span class="hint">默认：比例权重</span></div>
+            <div class="seg" style="margin-bottom:14px"><span class="on">比例权重</span><span>轮询</span><span>负载均衡</span></div>
+            <div class="slider-row"><span class="name">李林辉</span><div class="slider"><i style="width:40%"></i><b style="left:calc(40% - 7px)"></b></div><span class="pct num">40%</span><span class="load num">在手 21 条</span></div>
+            <div class="slider-row"><span class="name">杨青</span><div class="slider"><i style="width:35%"></i><b style="left:calc(35% - 7px)"></b></div><span class="pct num">35%</span><span class="load num">在手 18 条</span></div>
+            <div class="slider-row"><span class="name">许丽娟</span><div class="slider"><i style="width:25%"></i><b style="left:calc(25% - 7px)"></b></div><span class="pct num">25%</span><span class="load num">在手 13 条</span></div>
+            <div class="hint" style="margin-top:10px">离职成员（丁帅）已从名单移除，不参分；权重调整属 C 类操作，留审计。</div>
+          </div>
+          <div class="card">
+            <div class="card-title">本次分配预览</div>
+            <table>
+              <tr><th>销售</th><th>分得</th><th>按</th></tr>
+              <tr><td>李林辉</td><td class="num"><b>80</b> 条</td><td class="sub">权重 40%</td></tr>
+              <tr><td>杨青</td><td class="num"><b>70</b> 条</td><td class="sub">权重 35%</td></tr>
+              <tr><td>许丽娟</td><td class="num"><b>50</b> 条</td><td class="sub">权重 25%</td></tr>
+            </table>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+              <span class="hint">从「待分配」取</span><span class="pill blue num">200 条</span><span class="hint">（首批试分配量）</span>
+              <span style="flex:1"></span>
+              <span class="btn ghost">取消</span><span class="btn primary">执行分配</span>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">最近分配记录 <span class="hint">每次执行一行，可追溯到操作人</span></div>
+          <table>
+            <tr><th>时间</th><th>批次</th><th>模式</th><th>数量</th><th>分给</th><th>操作人</th></tr>
+            <tr><td class="num">09-02 10:30</td><td>#A0003</td><td>比例权重</td><td class="num">200</td><td>李 80 / 杨 70 / 许 50</td><td>杨青（分配员）</td></tr>
+            <tr><td class="num">09-01 16:02</td><td>#A0002</td><td>负载均衡</td><td class="num">60</td><td>许丽娟 60</td><td>杨青（分配员）</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 4. 销售 · 我的资源卡（第一段 SLA） ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">4</span><h2>销售 · 我的资源卡（认领 + 第一段 SLA「加了没有」）</h2><span class="req-map">需求 1.3 后半段 / 1.4 第一段</span></div>
+    <div class="screen-note">销售在自己机器上看到的待办。每张卡 = 一条 assignment（宪法 §1.3）。第一段 SLA：分配后 24h 内加好友——倒计时机械计时；超时提醒，每 24h 复查，第 3 次抄送主管，3 次后自动回收改派（卡上会看到自己处于第几次提醒）。「绑定微信」= 1.4a 手动路。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 我的资源（销售视角）</span></div>
+      <div class="frame-body">
+        <div class="toolbar"><span class="seg"><span class="on">待认领 8</span><span>跟进中 21</span><span>已回收 2</span></span><span class="spacer"></span><span class="hint">分配员：杨青 · 批次 #A0003</span></div>
+
+        <div class="lead-card">
+          <div class="lead-main">
+            <div class="t1 num">186****3345 <span class="pill blue">待认领</span></div>
+            <div class="t2">抖音 · 问 3 吨电动叉车 · 分配于 09-02 10:30</div>
+          </div>
+          <div class="countdown ok"><div class="t num">22:41:06</div><div class="l">认领后 24h 内加好友</div></div>
+          <span class="btn primary">认领</span>
+        </div>
+
+        <div class="lead-card">
+          <div class="lead-main">
+            <div class="t1 num">135****8890 <span class="pill amber">已认领·未加好友</span></div>
+            <div class="t2">视频号 · 「我们冷库」 · 认领于 09-02 11:02</div>
+          </div>
+          <div class="countdown warn"><div class="t num">03:12:48</div><div class="l">加好友倒计时 · 临近超时</div></div>
+          <span class="btn">🔗 绑定微信</span>
+        </div>
+
+        <div class="lead-card">
+          <div class="lead-main">
+            <div class="t1 num">152****5273 <span class="pill red">第 2 次超时提醒</span></div>
+            <div class="t2">奋斗群存量 · 再超 1 次将抄送主管；累计 3 次自动回收</div>
+          </div>
+          <div class="countdown over"><div class="t num">已超时</div><div class="l">24h 复查中 · 2/3</div></div>
+          <span class="btn">🔗 绑定微信</span>
+        </div>
+
+        <div class="lead-card">
+          <div class="lead-main">
+            <div class="t1 num">139****2210 <span class="pill green">已加好友 ✓</span></div>
+            <div class="t2">小红书 · 自动判定：本机分库手机号匹配命中（09-02 09:14），第一段 SLA 停表</div>
+          </div>
+          <div class="countdown ok"><div class="t">—</div><div class="l">进入第二段「聊了没有」</div></div>
+          <span class="btn ghost">查看对话</span>
+        </div>
+        <div class="hint" style="margin-top:10px">加好友判定双路（1.4a）：① 系统自动扫本机全部微信号分库匹配手机号/wxid（如第 4 张卡）；② 手动点「绑定微信」（见屏 5）。任一命中即停表，全程审计留痕。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 5. 绑定微信弹窗 + 第二段 SLA ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">5</span><h2>绑定微信（1.4a 手动路）+ 第二段 SLA「聊了没有」</h2><span class="req-map">需求 1.4a / 1.4 第二段</span></div>
+    <div class="screen-note">左：手动绑定——昵称关键词搜索 → 下拉列本机全部微信号分库的联系人 → 确认。内部绑 wxid，昵称只用于显示，对方改名不失效。右：第二段 SLA 不做机械计时，由 LLM 扫对话判断跟进状态；低置信一律转人工，不瞎判。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">绑定微信弹窗 / 资源卡 · 跟进状态区</span></div>
+      <div class="frame-body">
+        <div class="grid2">
+          <div class="modal-mask" style="padding:24px 0">
+            <div class="modal">
+              <h3>绑定微信 · 186****3345</h3>
+              <div class="m-sub">从本机微信联系人中选出这位客户，绑定后第一段 SLA 停表。</div>
+              <div class="input" style="width:100%;color:var(--text-primary)">🔍 叉车</div>
+              <div class="drop">
+                <div class="drop-item on"><span class="avatar">王</span><div><div style="font-weight:600">王师傅-叉车租赁</div><div class="hint">wxid_8f3****a1 · 微信号 2</div></div><span style="flex:1"></span><span class="pill blue">选中</span></div>
+                <div class="drop-item"><span class="avatar">叉</span><div><div style="font-weight:600">叉车配件-小赵</div><div class="hint">zhaox****21 · 微信号 1</div></div></div>
+                <div class="drop-item"><span class="avatar">A</span><div><div style="font-weight:600">AAA叉车维修</div><div class="hint">wxid_7k2****9m · 微信号 1</div></div></div>
+              </div>
+              <div class="hint" style="margin-top:8px">绑定写入客户身份档案（customer_identity，标记「手动绑定 · 可信」），改名不影响；操作人记入审计。</div>
+              <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px">
+                <span class="btn ghost">取消</span><span class="btn primary">确认绑定</span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">跟进状态（LLM 扫对话，非计时器）</div>
+            <div class="check-line"><span class="pill green">已有效触达</span><div style="flex:1">139****2210 · 昨天确认过报价细节<div class="hint">依据：客户 09-01 14:22「价格多少」→ 已回复报价单 · 证据可回查</div></div></div>
+            <div class="check-line"><span class="pill amber">需介入</span><div style="flex:1">135****8890 · 加微 5 天，客户 3 次问价未获回复<div class="hint">建议：今日内回复；已生成行动卡</div></div></div>
+            <div class="check-line"><span class="pill gray">低置信 · 转人工</span><div style="flex:1">150****7721 · 对话过短，AI 不判断<div class="hint">请人工看一眼再定状态</div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 6. 主管 · 回收改派 + 归属留痕 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">6</span><h2>主管 · 超时回收与改派（含归属留痕）</h2><span class="req-map">需求 1.3 尾段 / 宪法 §1.8</span></div>
+    <div class="screen-note">第一段 SLA 满 3 次未加好友 → 自动回收，改派时<b>优先给其他人</b>（防止同一销售循环占位）。第 3 次提醒抄送主管。每次归属变化都进留痕时间线（ownership_history），谁改的、为什么、什么时候，随时可查。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 回收改派（主管/分配员）</span></div>
+      <div class="frame-body">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">待改派 <span class="pill red num">3</span></div>
+            <table>
+              <tr><th>线索</th><th>原归属</th><th>回收原因</th><th>改派给</th><th></th></tr>
+              <tr><td class="num">152****5273</td><td>李林辉</td><td><span class="pill red">3 次超时未加</span></td><td><span class="pill gray">许丽娟（建议）</span><div class="sub">负载最低 · 非原归属</div></td><td><span class="btn primary">确认改派</span></td></tr>
+              <tr><td class="num">138****0061</td><td>杨青</td><td><span class="pill red">3 次超时未加</span></td><td><span class="pill gray">李林辉（建议）</span></td><td><span class="btn primary">确认改派</span></td></tr>
+              <tr><td class="num">137****5520</td><td>李林辉</td><td><span class="pill amber">主管手动回收</span></td><td><span class="pill gray">待选择</span></td><td><span class="btn">选择销售</span></td></tr>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-title">归属留痕 · 152****5273 <span class="hint">ownership_history，只增不删</span></div>
+            <div class="timeline">
+              <div class="tl-item"><b>改派</b>：李林辉 → 许丽娟<span class="when"> · 09-02 14:00 · 操作人：主管（回收改派）· 理由：3 次超时未加</span></div>
+              <div class="tl-item"><b>回收</b>：李林辉 → 资源池<span class="when"> · 09-02 13:58 · 系统自动 · 第 3 次超时</span></div>
+              <div class="tl-item"><b>提醒抄送</b>：第 3 次超时提醒已抄送主管<span class="when"> · 09-02 09:00 · 系统自动</span></div>
+              <div class="tl-item"><b>分配</b>：资源池 → 李林辉<span class="when"> · 08-28 10:20 · 操作人：杨青（分配员）· 批次 #A0001 · 比例权重</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 7. 审计流水 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">7</span><h2>审计流水（audit_event）</h2><span class="req-map">宪法 §1.12</span></div>
+    <div class="screen-note">全系统敏感操作的统一流水：谁（姓名+角色）、做了什么、对哪条数据、细节是什么。只增不删不改。管理员/主管可查；旧的两套日志（activity_log / auto_confirm_log）封存只读，新记录一律进这里。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">设置 · 审计流水（管理员/主管）</span></div>
+      <div class="frame-body">
+        <div class="card">
+          <div class="toolbar"><span class="input">搜索 操作人 / 对象…</span><span class="seg"><span class="on">全部</span><span>分配</span><span>绑定</span><span>回收</span><span>权重调整</span></span></div>
+          <table>
+            <tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>细节</th></tr>
+            <tr><td class="num">09-02 14:00</td><td>主管</td><td>改派确认</td><td class="num">lead 152****5273</td><td>李林辉 → 许丽娟 · 理由：3 次超时</td></tr>
+            <tr><td class="num">09-02 11:26</td><td>杨青（销售）</td><td>绑定微信</td><td class="num">lead 135****8890</td><td>绑定 wxid_8f3****a1（手动 · 可信）</td></tr>
+            <tr><td class="num">09-02 10:30</td><td>杨青（分配员）</td><td>执行分配</td><td>批次 #A0003</td><td>比例权重 40/35/25 · 200 条</td></tr>
+            <tr><td class="num">09-02 10:12</td><td>杨青（分配员）</td><td>资源录入</td><td>批次 #20260902-01</td><td>粘贴 320 条 · 有效 296 · 查重拦截 21</td></tr>
+            <tr><td class="num">09-01 18:40</td><td>系统</td><td>自动判定加好友</td><td class="num">lead 139****2210</td><td>手机号匹配命中 · 第一段 SLA 停表</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 附：实现规格（开发必读） ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附</span><h2>实现规格（开发必读，与本稿同效力）</h2></div>
+    <div class="frame"><div class="frame-body">
+      <table>
+        <tr><th style="width:180px">项</th><th>硬约束</th></tr>
+        <tr><td>视觉 token</td><td>唯一来源 = <code>src/styles/main.scss</code>「前进视觉 tokens」（--color-* 族）；<b>禁止硬编码品牌色/字面 hex</b>（DESIGN-SPEC-MINI 红线 2/3）；品牌色走 <code>--primary</code> alias 继承，默认 Apple 蓝 #0071E3</td></tr>
+        <tr><td>字号层级</td><td>统计主数字 26px/700 tabular-nums · 页标题 16px/700 · 正文 13-14px · 辅助 12px · 元信息 11px；数字一律 tabular-nums</td></tr>
+        <tr><td>圆角/间距/布局</td><td>圆角：卡 16 / 控件 10 / 小件 8；页面 padding 24、卡间距 14；页面限宽 1280 居中；表格数字列右对齐（SearchTable 惯例）</td></tr>
+        <tr><td>控件惯例</td><td>分段控件 = 灰底 + 选中浮起 + accent 文字；pill 徽章五语义（蓝=信息 / 绿=正常 / 琥珀=临近或待办 / 红=超时或异常 / 灰=中性）；卡片弱底无边框、hover 才浮起描边；弹层 = overlay + blur + shadow-pop</td></tr>
+        <tr><td>双模式</td><td>所有新组件必须 light / dark 双验（DESIGN-SPEC-MINI 红线 4）</td></tr>
+        <tr><td>数据口径</td><td>一律以 <code>docs/DATA-CONSTITUTION.md</code> 为准：assignment 状态 ∈ {assigned, claimed, recycled, transferred}；倒计时读两段 SLA 计时字段；留痕读 ownership_history；审计读 audit_event；<b>前端不改口径、不另造状态值</b></td></tr>
+        <tr><td>路由注册</td><td>新页面三处必改：<code>App.tsx</code> 路由 + <code>Sidebar.tsx</code> NAV_GROUPS + <code>RouteGuard.tsx</code>（AGENTS.md 技术约定）</td></tr>
+        <tr><td>验收方式</td><td>实现后无头浏览器逐屏截图（1440 宽），与本稿并排比对：布局结构 / 文案 / 状态徽标不一致即打回；「差不多」不验收</td></tr>
+      </table>
+    </div></div>
+  </div>
+
+  <div class="foot">WeFlow · Phase 1 资源分配闭环 · 设计稿 v1（2026-09-02 拍板）· 本稿 + 实现规格 = 前端验收标准</div>
+</div>
+</body>
+</html>

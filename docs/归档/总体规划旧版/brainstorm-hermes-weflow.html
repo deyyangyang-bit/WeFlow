@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow × Hermes · 头脑风暴 — 从知识闭环到生意闭环</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;1,9..144,400&family=Noto+Serif+SC:wght@300;400;600;700&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cream:#FDFBF7;
+    --cream-deep:#F5F1E8;
+    --ink:#1C1917;
+    --ink-soft:#44403C;
+    --ink-faint:#78716C;
+    --sage:#5B6B5A;
+    --sage-deep:#3E4B3D;
+    --espresso:#292524;
+    --gold:#A97E3F;
+    --hairline:rgba(28,25,23,.08);
+    --spring:cubic-bezier(0.32,0.72,0,1);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--cream);
+    color:var(--ink);
+    font-family:'Noto Sans SC',sans-serif;
+    font-weight:300;
+    line-height:1.75;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  /* 纸面颗粒 */
+  body::after{
+    content:"";
+    position:fixed;inset:0;z-index:50;pointer-events:none;
+    opacity:.035;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .serif{font-family:'Fraunces','Noto Serif SC',serif;}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 clamp(20px,5vw,64px);}
+
+  /* ===== 浮动导航 ===== */
+  nav{
+    position:fixed;top:24px;left:50%;transform:translateX(-50%);
+    z-index:40;
+    display:flex;align-items:center;gap:8px;
+    padding:8px 10px;
+    background:rgba(253,251,247,.72);
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    border:1px solid var(--hairline);
+    border-radius:999px;
+    box-shadow:0 1px 2px rgba(28,25,23,.04), 0 12px 40px -12px rgba(28,25,23,.10);
+  }
+  nav .brand{
+    font-family:'Fraunces',serif;font-weight:600;font-size:13px;letter-spacing:.08em;
+    padding:6px 14px;color:var(--ink);
+  }
+  nav a{
+    text-decoration:none;color:var(--ink-soft);font-size:12px;font-weight:400;
+    padding:7px 14px;border-radius:999px;letter-spacing:.04em;
+    transition:all .5s var(--spring);
+  }
+  nav a:hover{background:rgba(28,25,23,.05);color:var(--ink);}
+  @media(max-width:768px){ nav a{display:none;} }
+
+  /* ===== Hero ===== */
+  .hero{
+    min-height:100dvh;
+    display:flex;flex-direction:column;justify-content:center;
+    padding:140px 0 96px;position:relative;
+  }
+  .hero::before{
+    content:"";position:absolute;top:-20%;right:-10%;
+    width:640px;height:640px;border-radius:50%;
+    background:radial-gradient(circle,rgba(91,107,90,.14),transparent 65%);
+    pointer-events:none;
+  }
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:10px;
+    width:max-content;
+    font-size:10px;font-weight:500;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--sage-deep);
+    border:1px solid rgba(91,107,90,.28);
+    border-radius:999px;padding:8px 18px;
+    margin-bottom:40px;
+  }
+  .eyebrow::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--sage);}
+  h1{
+    font-family:'Fraunces','Noto Serif SC',serif;
+    font-weight:300;
+    font-size:clamp(44px,8.4vw,112px);
+    line-height:1.08;letter-spacing:-.015em;
+    max-width:14em;
+  }
+  h1 em{font-style:italic;font-weight:400;color:var(--sage-deep);}
+  .hero-sub{
+    margin-top:44px;max-width:560px;
+    font-size:16px;color:var(--ink-faint);
+  }
+  .hero-meta{
+    margin-top:64px;display:flex;gap:48px;flex-wrap:wrap;
+  }
+  .hero-meta .m b{
+    display:block;font-family:'Fraunces',serif;font-weight:600;
+    font-size:34px;line-height:1;color:var(--ink);
+  }
+  .hero-meta .m span{font-size:11px;letter-spacing:.14em;color:var(--ink-faint);text-transform:uppercase;}
+
+  /* ===== 章节骨架 ===== */
+  section{padding:110px 0;}
+  .sec-head{max-width:720px;margin-bottom:72px;}
+  .sec-num{
+    font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:var(--gold);
+    display:block;margin-bottom:18px;letter-spacing:.06em;
+  }
+  h2{
+    font-family:'Fraunces','Noto Serif SC',serif;font-weight:400;
+    font-size:clamp(30px,4.6vw,52px);line-height:1.18;letter-spacing:-.01em;
+  }
+  .sec-head p{margin-top:22px;color:var(--ink-faint);font-size:15px;max-width:56em;}
+
+  /* ===== 闭环对比 ===== */
+  .loops{display:grid;grid-template-columns:1fr 1fr;gap:32px;}
+  @media(max-width:860px){.loops{grid-template-columns:1fr;}}
+  .bezel{
+    background:rgba(28,25,23,.035);
+    border:1px solid var(--hairline);
+    border-radius:2rem;padding:8px;
+  }
+  .bezel-inner{
+    background:var(--cream);
+    border-radius:calc(2rem - 8px);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.9);
+    padding:clamp(28px,4vw,48px);height:100%;
+  }
+  .loop-tag{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:10px;font-weight:500;letter-spacing:.22em;text-transform:uppercase;
+    padding:6px 14px;border-radius:999px;margin-bottom:26px;
+  }
+  .loop-ok .loop-tag{background:rgba(91,107,90,.12);color:var(--sage-deep);}
+  .loop-gap .loop-tag{background:rgba(169,126,63,.12);color:var(--gold);}
+  .bezel h3{font-family:'Noto Serif SC',serif;font-weight:600;font-size:22px;margin-bottom:10px;}
+  .bezel .desc{font-size:14px;color:var(--ink-faint);margin-bottom:32px;}
+  .flow{display:flex;flex-direction:column;gap:0;}
+  .flow .step{
+    display:flex;align-items:flex-start;gap:16px;position:relative;
+    padding:14px 0 14px 0;
+  }
+  .flow .step:not(:last-child)::before{
+    content:"";position:absolute;left:13px;top:44px;bottom:-6px;
+    width:1px;background:var(--hairline);
+  }
+  .flow .dot{
+    flex:none;width:27px;height:27px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Fraunces',serif;font-size:11px;font-style:italic;
+    border:1px solid var(--hairline);background:var(--cream-deep);color:var(--ink-soft);
+  }
+  .loop-ok .flow .dot{background:rgba(91,107,90,.12);border-color:rgba(91,107,90,.25);color:var(--sage-deep);}
+  .flow .step.missing .dot{background:rgba(169,126,63,.14);border-color:rgba(169,126,63,.35);color:var(--gold);}
+  .flow .step.missing .txt b{color:var(--gold);}
+  .flow .txt b{display:block;font-weight:500;font-size:14.5px;color:var(--ink);}
+  .flow .txt small{font-size:12.5px;color:var(--ink-faint);}
+
+  /* ===== Bento 点子网格 ===== */
+  .bento{display:grid;grid-template-columns:repeat(12,1fr);gap:20px;}
+  .card{grid-column:span 4;}
+  .card.wide{grid-column:span 8;}
+  .card.half{grid-column:span 6;}
+  @media(max-width:960px){.card,.card.wide,.card.half{grid-column:span 12;}}
+  .card .bezel-inner{display:flex;flex-direction:column;gap:14px;}
+  .card .idx{
+    font-family:'Fraunces',serif;font-style:italic;font-size:13px;color:var(--gold);
+  }
+  .card h4{font-family:'Noto Serif SC',serif;font-weight:600;font-size:18.5px;line-height:1.45;}
+  .card p{font-size:13.5px;color:var(--ink-faint);line-height:1.8;}
+  .card .chips{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap;padding-top:6px;}
+  .chip{
+    font-size:10.5px;letter-spacing:.06em;color:var(--ink-soft);
+    border:1px solid var(--hairline);border-radius:999px;padding:4px 12px;
+    background:var(--cream-deep);
+  }
+  .card{transition:transform .7s var(--spring);}
+  .card:hover{transform:translateY(-4px);}
+
+  /* ===== Top3 ===== */
+  .top3{background:var(--espresso);color:var(--cream);border-radius:2.5rem;margin:0 clamp(12px,3vw,40px);}
+  .top3 .sec-head h2{color:var(--cream);}
+  .top3 .sec-head p{color:rgba(253,251,247,.55);}
+  .podium{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+  @media(max-width:960px){.podium{grid-template-columns:1fr;}}
+  .pick{
+    border-radius:2rem;padding:8px;
+    background:rgba(253,251,247,.05);
+    border:1px solid rgba(253,251,247,.10);
+    transition:transform .7s var(--spring);
+  }
+  .pick:hover{transform:translateY(-5px);}
+  .pick-in{
+    background:#322e2b;border-radius:calc(2rem - 8px);
+    box-shadow:inset 0 1px 1px rgba(253,251,247,.08);
+    padding:38px 32px;height:100%;
+    display:flex;flex-direction:column;gap:16px;
+  }
+  .pick .rank{
+    font-family:'Fraunces',serif;font-style:italic;font-size:44px;font-weight:300;
+    color:var(--gold);line-height:1;
+  }
+  .pick h4{font-family:'Noto Serif SC',serif;font-weight:600;font-size:20px;}
+  .pick p{font-size:13.5px;color:rgba(253,251,247,.6);line-height:1.85;}
+  .pick .why{
+    margin-top:auto;padding-top:18px;border-top:1px solid rgba(253,251,247,.10);
+    font-size:12px;letter-spacing:.1em;color:rgba(253,251,247,.45);text-transform:uppercase;
+  }
+
+  /* ===== 元观察 ===== */
+  .meta-obs{padding:120px 0 40px;text-align:center;}
+  .meta-obs blockquote{
+    font-family:'Fraunces','Noto Serif SC',serif;font-weight:300;
+    font-size:clamp(24px,3.6vw,42px);line-height:1.5;
+    max-width:22em;margin:0 auto;letter-spacing:-.01em;
+  }
+  .meta-obs blockquote em{font-style:italic;color:var(--sage-deep);}
+  .meta-obs cite{
+    display:block;margin-top:36px;font-style:normal;font-family:'Noto Sans SC';
+    font-size:11px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink-faint);
+  }
+
+  footer{
+    padding:64px 0 80px;text-align:center;
+    font-size:12px;color:var(--ink-faint);letter-spacing:.08em;
+  }
+
+  /* ===== 入场动画 ===== */
+  .reveal{opacity:0;transform:translateY(56px);filter:blur(6px);}
+  .reveal.in{
+    opacity:1;transform:translateY(0);filter:blur(0);
+    transition:opacity 1s var(--spring),transform 1s var(--spring),filter 1s var(--spring);
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="brand">W×H</span>
+  <a href="#loops">闭环诊断</a>
+  <a href="#ring1">近圈</a>
+  <a href="#ring2">能力外扩</a>
+  <a href="#ring3">结构机会</a>
+  <a href="#ring4">狂野区</a>
+  <a href="#top3">收敛</a>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero wrap">
+  <span class="eyebrow reveal">WeFlow × Hermes · 头脑风暴 · 2026.08</span>
+  <h1 class="reveal">从<em>知识闭环</em>，<br>到<em>生意闭环</em>。</h1>
+  <p class="hero-sub reveal">
+    十四个点子，四个圈层，一个元观察。围绕「WeFlow 销售助手 + Hermes 知识智能体 + 企业知识库」的组合，从半年内够得着的延伸，到值得记下来的狂野设想。
+  </p>
+  <div class="hero-meta reveal">
+    <div class="m"><b>14</b><span>IDEAS</span></div>
+    <div class="m"><b>4</b><span>RINGS</span></div>
+    <div class="m"><b>3</b><span>TOP PICKS</span></div>
+    <div class="m"><b>1</b><span>MOAT</span></div>
+  </div>
+</header>
+
+<!-- ============ 闭环诊断 ============ -->
+<section id="loops" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">00 — 起点</span>
+    <h2>先认清：闭的是哪一圈</h2>
+    <p>当前设计闭的是「知识循环」——知识被消费，消费产生新知识，新知识经审核回流。但销售业务循环断在「效果回流」一棒：知识被用了没有、用了之后客户买不买账，没有数据流回来。</p>
+  </div>
+  <div class="loops">
+    <div class="bezel loop-ok reveal">
+      <div class="bezel-inner">
+        <span class="loop-tag">● 已成立 · 知识治理闭环</span>
+        <h3>知识循环</h3>
+        <p class="desc">Knowledge Loop — Hermes 的双向职责，可以按规划开工。</p>
+        <div class="flow">
+          <div class="step"><span class="dot">1</span><div class="txt"><b>消费</b><small>published（已发布）知识 → 销售问答 / 回复建议，强制带引用</small></div></div>
+          <div class="step"><span class="dot">2</span><div class="txt"><b>发现</b><small>聊天里出现新知识：竞品、新需求、价格异议</small></div></div>
+          <div class="step"><span class="dot">3</span><div class="txt"><b>提案</b><small>生成 proposal（知识提案）推入 Review Queue（审核队列）</small></div></div>
+          <div class="step"><span class="dot">4</span><div class="txt"><b>审核发布</b><small>人工审核通过 → publish，回流为可消费知识 · AI 无发布权限</small></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="bezel loop-gap reveal">
+      <div class="bezel-inner">
+        <span class="loop-tag">◐ 断了一棒 · 销售业务闭环</span>
+        <h3>生意循环</h3>
+        <p class="desc">Business Loop — 缺「效果归因」，知识好坏与生意结果互不感知。</p>
+        <div class="flow">
+          <div class="step"><span class="dot">1</span><div class="txt"><b>客户信号</b><small>聊天 / 商机变化触发</small></div></div>
+          <div class="step"><span class="dot">2</span><div class="txt"><b>行动建议</b><small>Hermes 查知识 → 话术 / 报价 / 跟进策略</small></div></div>
+          <div class="step"><span class="dot">3</span><div class="txt"><b>执行</b><small>销售发出回复、报价、约访</small></div></div>
+          <div class="step missing"><span class="dot">✕</span><div class="txt"><b>效果归因 · 缺失</b><small>这条知识/话术到底管不管用？应回流知识库（调置信度）与行动策略</small></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 第一圈 ============ -->
+<section id="ring1" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">Ring 01 — 半年内够得着</span>
+    <h2>现有闭环的直接延伸</h2>
+    <p>不需要新架构，吃现有数据就能长出来的四块肉。</p>
+  </div>
+  <div class="bento">
+    <div class="card half reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 1</span><h4>话术效果的 A/B 自然实验</h4>
+      <p>同一个客户异议（"太贵了"），不同销售用了不同话术。全部聊天记录 × 阶段分类器，天然算出哪条话术后续 7 天推进率高。销售不需要改变任何行为，数据自己长出来——这是效果回流的第一块肉。</p>
+      <div class="chips"><span class="chip">效果回流</span><span class="chip">零行为成本</span></div>
+    </div></div></div>
+    <div class="card half reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 2</span><h4>"沉默客户"知识挖掘</h4>
+      <p>客户突然不回了，是销售业务里最贵的信号。扫历史聊天：沉默前最后三轮出现了什么——价格？交期？竞品名？把「沉默前兆模式」提炼成知识提案，审核后变成预警规则，比意向评分更靠前。</p>
+      <div class="chips"><span class="chip">离钱最近</span><span class="chip">预警规则</span></div>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 3</span><h4>报价单的版本血统</h4>
+      <p>"上次不是 1200 吗"——每次报价作为带 effective_from（生效时间）的知识版本挂上客户 360，争议时 10 秒调出证据链，直接跳到原聊天。</p>
+      <div class="chips"><span class="chip">版本链</span><span class="chip">证据溯源</span></div>
+    </div></div></div>
+    <div class="card wide reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 4</span><h4>竞对情报自动建档</h4>
+      <p>聊天里提到"杭叉""合力""林德"，自动进竞对知识库：客户提到它时的语境（比价 / 忠诚度 / 痛点）、出现频率趋势。这是销售晨会最有价值的一页 PPT——现在没人有数据做。竞对条目同样走 proposal → 审核 → publish 的治理管线，保证情报可信。</p>
+      <div class="chips"><span class="chip">竞对情报</span><span class="chip">治理管线复用</span></div>
+    </div></div></div>
+  </div>
+</section>
+
+<!-- ============ 第二圈 ============ -->
+<section id="ring2" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">Ring 02 — 能力外扩</span>
+    <h2>Hermes 的边界之外</h2>
+    <p>知识智能体站稳之后，自然向外长的四只手。</p>
+  </div>
+  <div class="bento">
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 5</span><h4>从知识智能体到谈判陪练</h4>
+      <p>用真实成交/流失对话做素材，Hermes 扮演难缠客户。知识库是它的"客户人设库"——真实异议、真实压价套路。数据别人抄不走。</p>
+      <div class="chips"><span class="chip">新人培训</span></div>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 6</span><h4>群聊里的"潜水销售"</h4>
+      <p>监听群聊（已有防撤回 + 群分析基础），识别商机信号并生成行动卡推到今日行动引擎——把群从噪音源变成线索池。</p>
+      <div class="chips"><span class="chip">线索池</span></div>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 7</span><h4>知识期货：TTL 主动巡检</h4>
+      <p>每条知识有保质期，到期前 Hermes 主动问负责人："交期还是 15 天吗？"知识维护从"出错才发现"变成"到期自动续期确认"——治理层最便宜的高质量机制。</p>
+      <div class="chips"><span class="chip">治理必做</span><span class="chip">低成本</span></div>
+    </div></div></div>
+    <div class="card wide reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 8</span><h4>客户提问预测</h4>
+      <p>基于客户所在阶段 × 历史同类客户的提问序列，预测"他下一句大概率问什么"，提前把答案和证据备好。销售体验从「查知识库」变成「知识库预判你」——检索的终点是不需要检索。</p>
+      <div class="chips"><span class="chip">体验跃迁</span><span class="chip">阶段分类复用</span></div>
+    </div></div></div>
+  </div>
+</section>
+
+<!-- ============ 第三圈 ============ -->
+<section id="ring3" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">Ring 03 — 一年维度</span>
+    <h2>结构性机会</h2>
+    <p>改变产品形态和商业模式的三个支点。</p>
+  </div>
+  <div class="bento">
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 9</span><h4>行业知识资产化</h4>
+      <p>叉车/仓储设备垂直领域跑一年积累的「异议-应对-成交率」数据集，本身就是可售卖的产品。同行买的不是软件，是这个知识库——比 SaaS 订阅值钱。</p>
+      <div class="chips"><span class="chip">商业模式</span></div>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 10</span><h4>MCP 生态位</h4>
+      <p>WeFlow 暴露 MCP server 后，任何 AI 都能查客户/商机/知识。从「一个工具」变成「销售数据的基础设施」——谁接进来，谁就离不开。</p>
+      <div class="chips"><span class="chip">平台化</span></div>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 11</span><h4>多 Agent 分工</h4>
+      <p>Hermes（知识）之外自然长出：调度 Agent（行动引擎 AI 化）、风控 Agent（回款/合同异常）、复盘 Agent（周报自动生成）。知识库是它们共享的内存——五层架构图的完整形态。</p>
+      <div class="chips"><span class="chip">架构终局</span></div>
+    </div></div></div>
+  </div>
+</section>
+
+<!-- ============ 第四圈 ============ -->
+<section id="ring4" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">Ring 04 — 狂野区</span>
+    <h2>值得记下来的</h2>
+    <p>现在不做，但五年后回头看可能是最早写下来的那批。</p>
+  </div>
+  <div class="bento">
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 12</span><h4>数字分身销售</h4>
+      <p>顶级销售的聊天风格 + 知识 + 决策模式训练成"分身"。他休假时分身顶着，至少不掉单。</p>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 13</span><h4>反向知识库</h4>
+      <p>不只存"我们知道什么"，还存"我们不知道什么"——答不上来的问题自动进「知识缺口清单」，直接指导产品部门。</p>
+    </div></div></div>
+    <div class="card reveal"><div class="bezel"><div class="bezel-inner">
+      <span class="idx">№ 14</span><h4>客户侧 Agent 对谈</h4>
+      <p>未来客户公司也用 AI 采购助手。两个 Agent 先谈一轮参数和交期，人类只谈价格。</p>
+    </div></div></div>
+  </div>
+</section>
+
+<!-- ============ TOP 3 ============ -->
+<section id="top3" class="top3">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-num">收敛 — 只能挑三个</span>
+      <h2>先吃这三块</h2>
+      <p>发散之后必须收敛。入选标准：数据已有、行为成本为零、离钱最近。</p>
+    </div>
+    <div class="podium">
+      <div class="pick reveal"><div class="pick-in">
+        <span class="rank">01</span>
+        <h4>话术效果归因</h4>
+        <p>效果回流闭环的发动机。零行为改变成本，聊天记录和阶段数据都在手里，第一周就能开始建关联表。</p>
+        <div class="why">№1 · 效果回流 · 发动机</div>
+      </div></div>
+      <div class="pick reveal"><div class="pick-in">
+        <span class="rank">02</span>
+        <h4>TTL 主动巡检</h4>
+        <p>知识库"活着"的最低成本机制。治理层必做，不做的话知识库半年就会悄悄烂掉。</p>
+        <div class="why">№7 · 治理层 · 必做</div>
+      </div></div>
+      <div class="pick reveal"><div class="pick-in">
+        <span class="rank">03</span>
+        <h4>沉默客户前兆</h4>
+        <p>离钱最近，销售体感最强，POC 阶段就能讲出一个让管理层立刻听懂的故事。</p>
+        <div class="why">№2 · 预警 · 离钱最近</div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 元观察 ============ -->
+<section class="meta-obs wrap">
+  <blockquote class="reveal">
+    WeFlow 真正的护城河不是 AI 能力，是<em>「微信聊天数据 × 业务结果」的配对数据</em>——别人有聊天记录工具，别人有 CRM，但把"说了什么"和"成了没有"连起来的，只有这个位置能长出来。
+  </blockquote>
+  <cite class="reveal">Meta Observation · 所有值得做的点子都在吃这个数据配对</cite>
+</section>
+
+<footer>
+  WeFlow × Hermes Brainstorm · 2026-08-31 · 发散完毕，等待收敛决策
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries)=>{
+    entries.forEach((e)=>{
+      if(e.isIntersecting){
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  },{threshold:0.12, rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.reveal').forEach((el,i)=>{
+    el.style.transitionDelay = (i%4)*0.08+'s';
+    io.observe(el);
+  });
+</script>
+</body>
+</html>

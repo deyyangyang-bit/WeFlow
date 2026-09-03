@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow 功能全景蓝图 v2 — 现有能力 × 规划增量</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#050505;
+    --ink:#F5F4F0;
+    --ink-70:rgba(245,244,240,.7);
+    --ink-45:rgba(245,244,240,.45);
+    --ink-25:rgba(245,244,240,.25);
+    --line:rgba(245,244,240,.09);
+    --emerald:#4ADE80;
+    --emerald-deep:#166534;
+    --gold:#E8B25C;
+    --violet:#A78BFA;
+    --spring:cubic-bezier(0.32,0.72,0,1);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:'Noto Sans SC',sans-serif;font-weight:300;line-height:1.75;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  /* 背景光晕 */
+  .glow{position:fixed;border-radius:50%;pointer-events:none;z-index:0;}
+  .glow.a{top:-15%;left:-10%;width:700px;height:700px;background:radial-gradient(circle,rgba(74,222,128,.07),transparent 65%);}
+  .glow.b{top:35%;right:-15%;width:800px;height:800px;background:radial-gradient(circle,rgba(167,139,250,.06),transparent 65%);}
+  .glow.c{bottom:-10%;left:20%;width:600px;height:600px;background:radial-gradient(circle,rgba(232,178,92,.05),transparent 65%);}
+  .mono{font-family:'Space Grotesk',monospace;}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 clamp(20px,5vw,56px);position:relative;z-index:1;}
+
+  /* ===== 浮动导航 ===== */
+  nav{
+    position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:40;
+    display:flex;align-items:center;gap:4px;
+    padding:7px 9px;border-radius:999px;
+    background:rgba(10,10,10,.65);
+    backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);
+    border:1px solid var(--line);
+  }
+  nav .brand{font-family:'Space Grotesk';font-weight:700;font-size:12px;letter-spacing:.1em;padding:6px 14px;color:var(--emerald);}
+  nav a{
+    text-decoration:none;color:var(--ink-70);font-size:11.5px;font-weight:400;
+    padding:7px 13px;border-radius:999px;letter-spacing:.03em;
+    transition:all .5s var(--spring);white-space:nowrap;
+  }
+  nav a:hover{background:rgba(245,244,240,.07);color:var(--ink);}
+  @media(max-width:900px){nav a{display:none;}}
+
+  /* ===== Hero ===== */
+  .hero{min-height:100dvh;display:flex;flex-direction:column;justify-content:center;padding:150px 0 90px;}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:10px;width:max-content;
+    font-family:'Space Grotesk';font-size:10px;font-weight:500;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--emerald);border:1px solid rgba(74,222,128,.25);
+    border-radius:999px;padding:8px 18px;margin-bottom:42px;
+    background:rgba(74,222,128,.05);
+  }
+  .eyebrow::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--emerald);box-shadow:0 0 12px var(--emerald);}
+  h1{
+    font-family:'Space Grotesk','Noto Sans SC';font-weight:300;
+    font-size:clamp(40px,7.6vw,96px);line-height:1.1;letter-spacing:-.02em;
+  }
+  h1 b{font-weight:700;}
+  h1 .grad{background:linear-gradient(100deg,var(--emerald),#86EFAC);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .hero-sub{margin-top:40px;max-width:600px;font-size:15.5px;color:var(--ink-45);}
+  .legend{margin-top:56px;display:flex;gap:14px;flex-wrap:wrap;}
+  .legend .lg{
+    display:inline-flex;align-items:center;gap:9px;
+    font-size:12px;color:var(--ink-70);
+    border:1px solid var(--line);border-radius:999px;padding:8px 18px;
+    background:rgba(245,244,240,.03);
+  }
+  .dot{width:8px;height:8px;border-radius:50%;}
+  .dot.ok{background:var(--emerald);box-shadow:0 0 10px rgba(74,222,128,.6);}
+  .dot.new{background:var(--gold);box-shadow:0 0 10px rgba(232,178,92,.6);}
+
+  /* ===== 章节 ===== */
+  section{padding:96px 0;}
+  .sec-head{margin-bottom:56px;max-width:760px;}
+  .sec-num{font-family:'Space Grotesk';font-style:italic;font-size:13px;color:var(--emerald);display:block;margin-bottom:16px;letter-spacing:.15em;}
+  h2{font-family:'Noto Serif SC',serif;font-weight:600;font-size:clamp(28px,4.2vw,46px);line-height:1.2;letter-spacing:-.01em;}
+  .sec-head p{margin-top:18px;color:var(--ink-45);font-size:14.5px;}
+
+  /* ===== 双 bezel 卡片 ===== */
+  .bezel{
+    background:rgba(245,244,240,.04);
+    border:1px solid var(--line);
+    border-radius:1.75rem;padding:7px;
+    transition:transform .7s var(--spring),border-color .7s var(--spring);
+  }
+  .bezel:hover{transform:translateY(-3px);border-color:rgba(245,244,240,.16);}
+  .bezel-in{
+    background:#0B0B0B;border-radius:calc(1.75rem - 7px);
+    box-shadow:inset 0 1px 0 rgba(245,244,240,.06);
+    padding:clamp(24px,3.4vw,40px);height:100%;
+  }
+
+  /* ===== 功能域网格 ===== */
+  .domain{margin-bottom:28px;}
+  .domain .bezel-in{display:block;}
+  .dom-head{display:flex;align-items:baseline;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:28px;}
+  .dom-head h3{font-family:'Noto Serif SC',serif;font-weight:700;font-size:21px;display:flex;align-items:center;gap:14px;}
+  .dom-head .idx{font-family:'Space Grotesk';font-style:italic;font-weight:300;font-size:15px;color:var(--ink-25);}
+  .dom-stats{display:flex;gap:8px;}
+  .stat-pill{font-family:'Space Grotesk';font-size:10.5px;letter-spacing:.08em;padding:5px 12px;border-radius:999px;border:1px solid var(--line);color:var(--ink-45);}
+  .stat-pill b{font-weight:700;margin-right:4px;}
+  .stat-pill.has b{color:var(--emerald);}
+  .stat-pill.add b{color:var(--gold);}
+
+  .items{display:grid;grid-template-columns:1fr 1fr;gap:0;}
+  @media(max-width:760px){.items{grid-template-columns:1fr;}}
+  .item{
+    display:flex;gap:14px;align-items:flex-start;
+    padding:15px 4px;border-top:1px solid var(--line);
+  }
+  .item:nth-child(-n+2){border-top:none;}
+  @media(max-width:760px){.item:nth-child(n+2){border-top:1px solid var(--line);}.item:first-child{border-top:none;}}
+  .item .mark{flex:none;width:20px;height:20px;border-radius:50%;margin-top:4px;display:flex;align-items:center;justify-content:center;font-size:10px;}
+  .item .mark.ok{background:rgba(74,222,128,.12);color:var(--emerald);}
+  .item .mark.new{background:rgba(232,178,92,.12);color:var(--gold);}
+  .item .mark.gap{background:rgba(167,139,250,.12);color:var(--violet);}
+  .item b{display:block;font-weight:500;font-size:14px;color:var(--ink);}
+  .item small{font-size:12.5px;color:var(--ink-45);line-height:1.7;display:block;margin-top:2px;}
+  .item .tag{
+    display:inline-block;font-family:'Space Grotesk';font-size:9.5px;letter-spacing:.1em;
+    color:var(--ink-25);margin-left:8px;text-transform:uppercase;vertical-align:2px;
+  }
+
+  /* ===== 断崖警示带 ===== */
+  .cliff{
+    margin:110px clamp(12px,3vw,40px);
+    border-radius:2rem;padding:7px;
+    background:linear-gradient(120deg,rgba(232,178,92,.10),rgba(167,139,250,.08));
+    border:1px solid rgba(232,178,92,.18);
+  }
+  .cliff-in{
+    background:#0C0A08;border-radius:calc(2rem - 7px);
+    padding:clamp(36px,5vw,72px);
+    display:grid;grid-template-columns:1.2fr 1fr;gap:48px;align-items:center;
+  }
+  @media(max-width:860px){.cliff-in{grid-template-columns:1fr;}}
+  .cliff h3{font-family:'Noto Serif SC',serif;font-weight:700;font-size:clamp(24px,3.4vw,38px);line-height:1.3;}
+  .cliff h3 em{font-style:normal;color:var(--gold);}
+  .cliff p{color:var(--ink-45);font-size:14.5px;margin-top:18px;}
+  .cliff-bar{display:flex;flex-direction:column;gap:18px;}
+  .cb .lbl{display:flex;justify-content:space-between;font-size:12px;color:var(--ink-70);margin-bottom:7px;font-family:'Space Grotesk';}
+  .cb .track{height:8px;border-radius:999px;background:rgba(245,244,240,.06);overflow:hidden;}
+  .cb .fill{height:100%;border-radius:999px;width:0;transition:width 1.4s var(--spring);}
+  .cb.pre .fill{background:linear-gradient(90deg,var(--emerald-deep),var(--emerald));}
+  .cb.post .fill{background:linear-gradient(90deg,#7C2D12,var(--gold));}
+  .cb.after .fill{background:linear-gradient(90deg,var(--gold),#FDE68A);}
+
+  /* ===== Roadmap ===== */
+  .road{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;}
+  @media(max-width:1020px){.road{grid-template-columns:1fr 1fr;}}
+  @media(max-width:640px){.road{grid-template-columns:1fr;}}
+  .phase .bezel-in{display:flex;flex-direction:column;gap:0;padding:0;overflow:hidden;}
+  .phase .ph-head{padding:26px 26px 20px;border-bottom:1px solid var(--line);}
+  .phase .ph-num{font-family:'Space Grotesk';font-style:italic;font-size:12px;color:var(--gold);letter-spacing:.15em;}
+  .phase h4{font-family:'Noto Serif SC',serif;font-weight:700;font-size:18px;margin-top:8px;}
+  .phase .ph-time{font-size:11px;color:var(--ink-25);margin-top:6px;font-family:'Space Grotesk';letter-spacing:.08em;}
+  .phase ul{list-style:none;padding:18px 26px 26px;display:flex;flex-direction:column;}
+  .phase li{
+    font-size:12.5px;color:var(--ink-70);padding:9px 0 9px 20px;position:relative;
+    border-top:1px dashed rgba(245,244,240,.06);
+  }
+  .phase li:first-child{border-top:none;}
+  .phase li::before{content:"→";position:absolute;left:0;color:var(--emerald);font-size:11px;top:10px;}
+  .phase li small{display:block;color:var(--ink-25);font-size:11px;margin-top:1px;}
+
+  /* ===== 结尾 ===== */
+  .final{padding:110px 0 60px;text-align:center;}
+  .final blockquote{
+    font-family:'Noto Serif SC',serif;font-weight:600;
+    font-size:clamp(22px,3.2vw,36px);line-height:1.55;max-width:24em;margin:0 auto;
+  }
+  .final blockquote em{font-style:normal;color:var(--emerald);}
+  .final cite{display:block;margin-top:34px;font-style:normal;font-family:'Space Grotesk';font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--ink-25);}
+  footer{padding:56px 0 72px;text-align:center;font-size:11.5px;color:var(--ink-25);letter-spacing:.1em;}
+
+  /* ===== 入场 ===== */
+  .reveal{opacity:0;transform:translateY(52px);filter:blur(5px);}
+  .reveal.in{opacity:1;transform:translateY(0);filter:blur(0);transition:opacity 1s var(--spring),transform 1s var(--spring),filter 1s var(--spring);}
+</style>
+</head>
+<body>
+<div class="glow a"></div><div class="glow b"></div><div class="glow c"></div>
+
+<nav>
+  <span class="brand">WF·v2</span>
+  <a href="#map">功能全景</a>
+  <a href="#cliff">核心诊断</a>
+  <a href="#road">迭代路线</a>
+  <a href="#final">结语</a>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero wrap">
+  <span class="eyebrow reveal">WeFlow Blueprint · v2 · 2026.08</span>
+  <h1 class="reveal">功能全景蓝图<br><span class="grad">现有能力 × 规划增量</span></h1>
+  <p class="hero-sub reveal">
+    八大功能域全盘点：已上线能力逐条核对，本轮讨论的售后闭环、Hermes 知识智能体、效果回流、管理看板全部并入规划。一张图看清 WeFlow 的现在和下一步。
+  </p>
+  <div class="legend reveal">
+    <span class="lg"><span class="dot ok"></span>已上线 · 28 项</span>
+    <span class="lg"><span class="dot new"></span>本版新增规划 · 19 项</span>
+  </div>
+</header>
+
+<!-- ============ 功能全景 ============ -->
+<section id="map" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">PART 01 — CAPABILITY MAP</span>
+    <h2>八大功能域</h2>
+    <p>按客户旅程排序：数据底座 → 获客 → 转化 → 交付 → 售后 → 知识 → 管理 → 架构。</p>
+  </div>
+
+  <!-- 域 1 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">01</span>数据底座</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>6</b>已上线</span><span class="stat-pill add"><b>1</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>微信聊天解密存档</b><small>WCDB 只读解密，客户资源落库到公司设备</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>防撤回 + 群聊分析</b><small>消息留痕，群活跃度与成员分析</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>消息 / 联系人 / 朋友圈导出</b><small>完整数据出口</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>本地 HTTP API + SSE 推送</b><small>5031 端口，外部系统的统一接入点</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>AI 调用收口</b><small>aiApiClient 统一走 DeepSeek，语音转写 + 中文分词</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>年度报告</b><small>聊天数据回顾</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>自动备份到 NAS<span class="tag">P0 最高优先</span></b><small>客户资产全部在单机 sql.js——机器坏了 = 客户没了，必须最先堵</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 2 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">02</span>获客与线索</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>2</b>已上线</span><span class="stat-pill add"><b>2</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>线索池</b><small>群昵称扫描自动入池、归属移交、未分配标记</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>首触 SLA 24h</b><small>新线索 24 小时未首触自动出卡</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>客户公海<span class="tag">P2</span></b><small>超期未跟进的线索/客户自动标红回收，不烂在私人手里</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>多渠道线索录入<span class="tag">P2</span></b><small>名片、展会、老客户介绍的手工/批量入口</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 3 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">03</span>跟进与转化 · 成交前</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>6</b>已上线</span><span class="stat-pill add"><b>4</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>客户 360 + 阶段分类</b><small>新客→了解→比价→决策→成交/流失</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>意向评分 + 风险预警</b><small>AI 打分，异常信号前置</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>今日行动引擎 R0–R8</b><small>规则扫描出卡 + AI 深度分析预热</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>AI 回复建议 / 话术提炼</b><small>从成交聊天提炼话术入库</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>承诺提取待办</b><small>"我下周发你"→ 自动待办 → 到期 AI 核验</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>客户洞察画像</b><small>12 字段 AI 补全 + 证据溯源</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>R11 阶段停滞卡<span class="tag">迭代一</span></b><small>比价>14 天 / 决策>21 天未推进出卡——last_stage_change_at 字段现成，只差这条规则</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>报价版本管理<span class="tag">迭代一</span></b><small>每次报价结构化存档（版本/生效期/证据链），争议时 10 秒调证</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>沉默客户前兆挖掘<span class="tag">P2</span></b><small>沉默前最后三轮对话模式 → 预警规则</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>竞对情报自动建档<span class="tag">P2</span></b><small>聊天提及竞对 → 语境/频率趋势入知识库</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 4 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">04</span>成交与交付</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>3</b>已上线</span><span class="stat-pill add"><b>3</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>跟单中心 · 款项认领</b><small>付款记录 → 销售认领归属</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>跟单中心 · 物流认领</b><small>发货单 → 归属 → 签收状态</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>R8 签收超期提醒</b><small>发货 24h 未签收出高优先级卡</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>客户类型字段<span class="tag">迭代一 · 前置</span></b><small>dealer（经销商）/ end_user（终端客户），所有差异化规则的地基</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>R9 经销商拿货提醒<span class="tag">迭代一</span></b><small>签收后第 10 天预警、15 天 deadline，复用 R8 模式</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>成交登记结构化<span class="tag">迭代一</span></b><small>成交额/型号/数量/交期落字段——业绩统计与复购预测的数据源头</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 5 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">05</span>售后与复购 <span style="font-family:'Space Grotesk';font-style:italic;font-weight:300;font-size:13px;color:var(--gold)">— 原断崖区，本次补齐</span></h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>0</b>已上线</span><span class="stat-pill add"><b>3</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark new">+</span><div><b>售后生命周期<span class="tag">迭代一</span></b><small>成交 → 已交付 → 待回访 → 复购/老客，规则驱动不碰 AI</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>R10 定期回访<span class="tag">迭代一</span></b><small>成交后 15 / 30 / 90 天出回访卡，经销商与终端不同节奏</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>售后工单 + 复购信号<span class="tag">P2</span></b><small>维修/保养/配件工单；配件周期、扩产信号（"再租个仓库"）→ 复购线索。叉车售后是高利润区</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 6 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">06</span>知识与 AI · Hermes</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>2</b>已上线</span><span class="stat-pill add"><b>5</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>知识库（关键词版）</b><small>产品参数 / 销售话术 / FAQ 三类</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>AI 话术提炼入库</b><small>从聊天记录提炼，人工确认</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>知识治理升级<span class="tag">迭代二</span></b><small>status / authority（权威等级）/ version（版本链）/ TTL（保质期）+ published 过滤 + 审核 Tab</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>Hermes 消费与反哺<span class="tag">迭代二</span></b><small>带引用问答；聊天发现新知识 → proposal（提案）→ 人审 → 发布。AI 无发布权限</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>效果回流<span class="tag">迭代二</span></b><small>知识使用埋点 × 客户阶段结果归因——哪条话术在赚钱，失效话术自动提请复核</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>TTL 主动巡检<span class="tag">迭代二</span></b><small>知识到期前主动问负责人"这条还成立吗"</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>知识缺口清单<span class="tag">P2</span></b><small>答不上来的客户问题自动收集，反哺产品部门</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 7 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">07</span>管理与团队</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>4</b>已上线</span><span class="stat-pill add"><b>3</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>销售漏斗</b><small>了解→比价→决策→成交 全量转化视图</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>周复盘报表</b><small>AI 生成，行动与结果回顾</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>逾期任务统计</b><small>follow_up_task 到期未做 → overdue</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>销售团队名单</b><small>成员管理，可移除离职成员</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>离职客户移交<span class="tag">迭代一</span></b><small>customer_profile 加 owner（负责人）+ 批量转移，复用线索移交逻辑</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>目标管理<span class="tag">P2</span></b><small>月度目标 vs 达成，"还差多少"管理层一眼可见</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>知识运营看板<span class="tag">P2</span></b><small>待审提案积压量、知识新鲜度（过期条目占比）——治理的人肉半边也要有仪表盘</small></div></div>
+    </div>
+  </div></div></div>
+
+  <!-- 域 8 -->
+  <div class="domain reveal"><div class="bezel"><div class="bezel-in">
+    <div class="dom-head">
+      <h3><span class="idx">08</span>架构与协作</h3>
+      <div class="dom-stats"><span class="stat-pill has"><b>3</b>已上线</span><span class="stat-pill add"><b>2</b>新增</span></div>
+    </div>
+    <div class="items">
+      <div class="item"><span class="mark ok">✓</span><div><b>单机双库</b><small>销售库 + CRM 库，按微信号分库隔离</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>Electron 主进程即后端</b><small>重活走 worker 线程，无独立服务器依赖</small></div></div>
+      <div class="item"><span class="mark ok">✓</span><div><b>文档生成</b><small>docxtemplater / exceljs 报价与报表输出</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>WeKnora 企业知识库 + MCP<span class="tag">P3</span></b><small>NAS 部署，staging/published 双库，Hermes 走 MCP 接入（POC 验证后）</small></div></div>
+      <div class="item"><span class="mark new">+</span><div><b>团队版评估<span class="tag">P3</span></b><small>多销售数据互通（PRD 已有 Twenty 底座设想），单机验证完再启动</small></div></div>
+    </div>
+  </div></div></div>
+</section>
+
+<!-- ============ 核心诊断 ============ -->
+<div id="cliff" class="cliff reveal"><div class="cliff-in">
+  <div>
+    <h3>能力偏科在<em>成交前</em>，<br>成交后曾是断崖。</h3>
+    <p>叉车这类设备生意，售后、配件、复购、转介绍才是利润大头。本轮新增的售后生命周期、定期回访、拿货提醒、成交登记，就是补这个断崖的最小切口——全部走规则引擎增量，不动 AI 架构，不等 WeKnora。</p>
+  </div>
+  <div class="cliff-bar">
+    <div class="cb pre"><div class="lbl"><span>成交前能力覆盖</span><span>~85%</span></div><div class="track"><div class="fill" data-w="85%"></div></div></div>
+    <div class="cb post"><div class="lbl"><span>成交后能力覆盖 · 现状</span><span>~10%</span></div><div class="track"><div class="fill" data-w="10%"></div></div></div>
+    <div class="cb after"><div class="lbl"><span>成交后能力覆盖 · 本版后</span><span>~65%</span></div><div class="track"><div class="fill" data-w="65%"></div></div></div>
+  </div>
+</div></div>
+
+<!-- ============ 迭代路线 ============ -->
+<section id="road" class="wrap">
+  <div class="sec-head reveal">
+    <span class="sec-num">PART 02 — ROADMAP</span>
+    <h2>四次迭代，全部落地</h2>
+    <p>原则：先堵裸奔风险，再补业务断崖，再上 AI 治理，最后才碰服务器架构。</p>
+  </div>
+  <div class="road">
+    <div class="phase reveal"><div class="bezel"><div class="bezel-in">
+      <div class="ph-head">
+        <span class="ph-num">迭代一 · SPRINT 1</span>
+        <h4>守护与补断崖</h4>
+        <div class="ph-time">约 2 周 · 纯规则与字段，零 AI 风险</div>
+      </div>
+      <ul>
+        <li>NAS 自动备份<small>最高优先，半天能出最小版</small></li>
+        <li>owner 字段 + 离职移交</li>
+        <li>客户类型字段（经销商/终端）</li>
+        <li>售后生命周期四阶段</li>
+        <li>R9 拿货 / R10 回访 / R11 停滞</li>
+        <li>成交登记结构化 + 报价版本</li>
+      </ul>
+    </div></div></div>
+    <div class="phase reveal"><div class="bezel"><div class="bezel-in">
+      <div class="ph-head">
+        <span class="ph-num">迭代二 · SPRINT 2</span>
+        <h4>Hermes 与知识治理</h4>
+        <div class="ph-time">约 3~4 周 · 本地闭环，不等服务器</div>
+      </div>
+      <ul>
+        <li>知识库治理字段 + published 过滤</li>
+        <li>审核 Tab（人审后发布）</li>
+        <li>Hermes 带引用问答</li>
+        <li>知识发现 → proposal 反哺</li>
+        <li>效果回流埋点 × 归因</li>
+        <li>TTL 主动巡检</li>
+      </ul>
+    </div></div></div>
+    <div class="phase reveal"><div class="bezel"><div class="bezel-in">
+      <div class="ph-head">
+        <span class="ph-num">迭代三 · SPRINT 3</span>
+        <h4>经营深化</h4>
+        <div class="ph-time">约 3 周 · 管理与利润区</div>
+      </div>
+      <ul>
+        <li>目标管理（目标 vs 达成）</li>
+        <li>售后工单 + 复购信号</li>
+        <li>沉默客户前兆预警</li>
+        <li>竞对情报库</li>
+        <li>知识缺口清单</li>
+        <li>客户公海 + 知识运营看板</li>
+      </ul>
+    </div></div></div>
+    <div class="phase reveal"><div class="bezel"><div class="bezel-in">
+      <div class="ph-head">
+        <span class="ph-num">迭代四 · SPRINT 4</span>
+        <h4>企业级底座</h4>
+        <div class="ph-time">POC 4 周 · 先评测后迁移</div>
+      </div>
+      <ul>
+        <li>WeKnora 部署（本机 → NAS）</li>
+        <li>staging / published 双库隔离</li>
+        <li>Hermes 走 MCP 接入企业库</li>
+        <li>100 条评测集达标线验收</li>
+        <li>团队版（多销售互通）评估</li>
+      </ul>
+    </div></div></div>
+  </div>
+</section>
+
+<!-- ============ 结语 ============ -->
+<section id="final" class="final wrap">
+  <blockquote class="reveal">
+    规则负责「什么时候该行动」，<br>Hermes 负责「行动时带什么知识」，<br><em>效果回流负责「下次行动更聪明」。</em>
+  </blockquote>
+  <cite class="reveal">三层各司其职 · 护城河 = 聊天数据 × 业务结果的配对</cite>
+</section>
+
+<footer>
+  WeFlow Blueprint v2 · 28 项已上线 + 19 项规划 · 2026-08-31
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries)=>{
+    entries.forEach((e)=>{
+      if(e.isIntersecting){
+        e.target.classList.add('in');
+        e.target.querySelectorAll('.fill').forEach(f=>{ f.style.width = f.dataset.w; });
+        io.unobserve(e.target);
+      }
+    });
+  },{threshold:0.1, rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.reveal').forEach((el,i)=>{
+    el.style.transitionDelay = (i%3)*0.09+'s';
+    io.observe(el);
+  });
+</script>
+</body>
+</html>
