@@ -719,6 +719,14 @@ export class BackupService {
         'weflow-sales.db', 'weflow-crm.db', 'WeFlow-config.json',
         'weflow-insight-profiles.json', 'weflow-insight-records.json', 'weflow-group-summary-records.json'
       ]
+      // §2.40 微信号分库：按账号命名的业务库（weflow-crm-<wxid>.db / weflow-sales-<wxid>.db）一并纳入备份
+      // （.archived-<时间戳>.db 归档件本身就是备份，排除不重复打包）
+      try {
+        for (const entry of readdirSync(userData)) {
+          if (entry.includes('.archived-')) continue
+          if (/^weflow-(crm|sales)-[^/\\]+\.db$/i.test(entry) && !names.includes(entry)) names.push(entry)
+        }
+      } catch { /* 目录不可读时跳过，固定名单照常备份 */ }
       const dir = join(stagingDir, 'sales-data')
       mkdirSync(dir, { recursive: true })
       const copied: string[] = []

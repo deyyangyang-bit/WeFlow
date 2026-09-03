@@ -22,6 +22,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import os from 'os'
 import initSqlJs from 'sql.js'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -136,7 +137,10 @@ async function main(): Promise<void> {
 
   // ── B. 真实库只读（与 crmDbService.paymentsByDay 同款 SQL，同步维护）──────────
   const SQL = await initSqlJs()
-  const DB_PATH = join(os.homedir(), 'Library/Application Support/weflow/weflow-crm.db')
+  // §2.40 分库：按账号命名的业务库优先（多个账号取最近使用），回退 legacy 名
+  const USER_DATA = join(os.homedir(), 'Library/Application Support/weflow')
+  const DB_PATH = findExistingBusinessDb(USER_DATA, 'crm')
+  if (!DB_PATH) { console.error(`未找到 CRM 业务库（weflow-crm-*.db / weflow-crm.db）：${USER_DATA}`); process.exit(1) }
   const db = new SQL.Database(readFileSync(DB_PATH))
 
   const rows = db.exec(`SELECT pr.id, pr.payer, pr.amount_net, pr.pay_time, pr.needs_review,

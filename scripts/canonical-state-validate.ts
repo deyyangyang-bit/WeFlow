@@ -18,13 +18,14 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { homedir } from 'os'
 import { salesDbService } from '../electron/services/salesDbService'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import { normalizeStage, stageLabel, stageToFunnel, funnelBucket } from '../shared/salesStage'
 
 const DEFAULT_DIR = join(homedir(), 'Library', 'Application Support', 'weflow')
 
 async function main(): Promise<void> {
   const userDataPath = process.argv[2] || DEFAULT_DIR
-  const src = join(userDataPath, 'weflow-sales.db')
+  const src = findExistingBusinessDb(userDataPath, 'sales') ?? join(userDataPath, 'weflow-sales.db')
   if (!existsSync(src)) {
     console.error(`DB 不存在：${src}（可用参数指定 userDataPath）`)
     process.exit(1)

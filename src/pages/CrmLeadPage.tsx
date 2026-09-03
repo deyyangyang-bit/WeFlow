@@ -1,6 +1,7 @@
 /**
  * CrmLeadPage.tsx —— 线索池（单机线索流转）
  * 导入（Excel/CSV/文本粘贴）→ 线索池列表（状态/来源/超时筛选）→ 首触 SLA → 转客户。
+ * 群资源扫描已下线（2026-09-02 决策 B，宪法 §4.2）：录入只走分配员 Excel/粘贴导入。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, X, FileSpreadsheet, AlertTriangle } from 'lucide-react'
@@ -85,6 +86,7 @@ export default function CrmLeadPage() {
   const [search, setSearch] = useState('')
   const [statusChip, setStatusChip] = useState('全部')
   const [sourceChip, setSourceChip] = useState('全部')
+  const [tagChip, setTagChip] = useState('全部')
   const [notice, setNotice] = useState('')
   const [showImport, setShowImport] = useState(false)
   const [importTab, setImportTab] = useState<'file' | 'paste'>('paste')
@@ -130,10 +132,21 @@ export default function CrmLeadPage() {
     return leads.filter((l) => {
       if (statusChip !== '全部' && l.status !== statusChip) return false
       if (sourceChip !== '全部' && String(l.source) !== sourceChip) return false
+      if (tagChip !== '全部' && String(l.tag || '').trim() !== tagChip) return false
       if (!q) return true
       return [l.name, l.contact_normalized, l.tag, l.source].some((v) => String(v || '').toLowerCase().includes(q))
     })
-  }, [leads, search, statusChip, sourceChip])
+  }, [leads, search, statusChip, sourceChip, tagChip])
+  // 标签筛选 chips：按 tag 计数倒序（tag=需求标签，Excel 导入语义；归属语义已随决策 B 退役）
+  const tagChips = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const l of leads) {
+      const t = String(l.tag || '').trim()
+      if (!t) continue
+      counts.set(t, (counts.get(t) || 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, count }))
+  }, [leads])
   // 前端分页：筛选后切片，page 越界自动收敛到最后一页
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const curPage = Math.min(page, totalPages)
@@ -220,6 +233,14 @@ export default function CrmLeadPage() {
             <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
             {ov.sources.map((s) => (
               <button key={s.source} className={`chip ${sourceChip === s.source ? 'active' : ''}`} onClick={() => { setSourceChip(s.source); setPage(1) }}>{s.source} ({s.count})</button>
+            ))}
+          </div>
+        )}
+        {tagChips.length > 0 && (
+          <div className="crm-chips src">
+            <button className={`chip ${tagChip === '全部' ? 'active' : ''}`} onClick={() => { setTagChip('全部'); setPage(1) }}>全部标签</button>
+            {tagChips.map((c) => (
+              <button key={c.value} className={`chip ${tagChip === c.value ? 'active' : ''}`} title="按标签（需求标签）筛选" onClick={() => { setTagChip(c.value); setPage(1) }}>{c.value} ({c.count})</button>
             ))}
           </div>
         )}

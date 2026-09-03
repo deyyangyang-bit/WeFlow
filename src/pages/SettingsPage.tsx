@@ -253,6 +253,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isLoading, setIsLoadingState] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isDetectingPath, setIsDetectingPath] = useState(false)
+  const [isArchivingBusinessData, setIsArchivingBusinessData] = useState(false)
   const [isFetchingDbKey, setIsFetchingDbKey] = useState(false)
   const [isFetchingImageKey, setIsFetchingImageKey] = useState(false)
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
@@ -2543,6 +2544,44 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           />
         </div>
         <button className="btn btn-secondary btn-sm" onClick={() => handleScanWxid()}><Search size={14} /> 扫描 wxid</button>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
+        <label>业务数据归档</label>
+        <span className="form-hint">
+          客户/商机/跟进等业务数据按微信号分库存放。把当前账号的业务库改名归档为 .archived 备份文件（不删除，需要时可手动改回），
+          然后立即重开一套空库——适用于升级后旧账号数据被归到当前账号名下、想要一套干净数据的情况。
+        </span>
+        <button
+          className="btn btn-secondary btn-sm"
+          disabled={isArchivingBusinessData}
+          onClick={async () => {
+            if (isArchivingBusinessData) return
+            if (!window.confirm('确定归档当前账号的业务数据吗？\n\n当前账号的客户/商机/线索/跟进卡等业务库将改名备份为 .archived 文件（不删除），应用内立即变为一套空库。其他微信号的业务数据不受影响。')) return
+            setIsArchivingBusinessData(true)
+            try {
+              const result = await window.electronAPI.chat.archiveBusinessData()
+              if (result.success) {
+                const names = (result.archived || []).map((a) => a.to.split(/[\\/]/).pop()).filter(Boolean)
+                showMessage(names.length > 0 ? `业务数据已归档：${names.join('、')}，应用内已重开空库` : '业务库无数据文件，已重开空库', true)
+                clearAnalyticsStoreCache()
+                resetChatStore()
+                window.dispatchEvent(new CustomEvent('wxid-changed', { detail: { wxid: await configService.getMyWxid() } }))
+              } else {
+                showMessage(`归档失败：${result.error || '未知错误'}`, false)
+              }
+            } catch (e: any) {
+              showMessage(`归档失败：${e}`, false)
+            } finally {
+              setIsArchivingBusinessData(false)
+            }
+          }}
+        >
+          {isArchivingBusinessData ? <Loader2 size={14} className="spin" /> : <Database size={14} />}
+          {isArchivingBusinessData ? '归档中...' : '归档当前账号业务数据'}
+        </button>
       </div>
 
       <div className="form-group">

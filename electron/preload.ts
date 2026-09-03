@@ -251,6 +251,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getCachedMessages: (sessionId: string) => ipcRenderer.invoke('chat:getCachedMessages', sessionId),
     clearCurrentAccountData: (options: { clearCache?: boolean; clearExports?: boolean }) =>
       ipcRenderer.invoke('chat:clearCurrentAccountData', options),
+    // §2.40 微信号分库：当前账号业务数据归档（两库改名 .archived-<时间戳>.db 后重开新空库）
+    archiveBusinessData: () => ipcRenderer.invoke('chat:archiveBusinessData'),
     close: () => ipcRenderer.invoke('chat:close'),
     getSessionDetail: (sessionId: string) => ipcRenderer.invoke('chat:getSessionDetail', sessionId),
     getSessionDetailFast: (sessionId: string) => ipcRenderer.invoke('chat:getSessionDetailFast', sessionId),

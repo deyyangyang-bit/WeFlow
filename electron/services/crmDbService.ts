@@ -4,11 +4,12 @@
  * 蓝本：Cordys(领域骨架/表单形态) 悟空-11(财务字段) MoChat(归属状态机) Twenty(增量元数据)。
  * 合规：数据本地；删除为级联且删除前自动备份（crm-backups/）；时间戳统一毫秒。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { readdirSync } from 'fs'
-import { dirname, join } from 'path'
+import { basename, dirname, join } from 'path'
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { salesLog } from './salesLogger'
+import { archivedDbName, businessDbPath } from './businessDbPath'
 
 // ─── 建表 SQL ────────────────────────────────────────────────────────────────
 const SCHEMA_SQL = `
@@ -177,6 +178,87 @@ CREATE TABLE IF NOT EXISTS quote_signal (
   customer_replied_at INTEGER DEFAULT 0, created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_crm_quote_session ON quote_signal(session_id, quoted_at);
+-- ── Phase 0 D3（宪法 §4.1，2026-09-02）新建 6 表 ─────────────────────────────
+-- 通用五列：source/updated_by/updated_at/version/deleted；append-only 表例外见宪法 §2.2
+-- （ownership_history/outbox_event/audit_event 无删除标记；沿用 intent_tag_log/customer_event
+--   先例只带 source/时间列，不设永不更新的 version/updated_by 死列——防 lead 四死列教训）
+CREATE TABLE IF NOT EXISTS customer (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '',
+  type TEXT DEFAULT '',
+  brand TEXT DEFAULT '',
+  vehicle_age INTEGER,
+  modified INTEGER DEFAULT 0,
+  source TEXT DEFAULT '',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_customer_name ON customer(name);
+CREATE TABLE IF NOT EXISTS customer_identity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity_type TEXT NOT NULL CHECK (identity_type IN ('phone', 'wxid')),
+  identity_value TEXT NOT NULL,
+  customer_id INTEGER,
+  source TEXT DEFAULT 'auto',
+  confidence REAL DEFAULT 1.0,
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cust_ident_pair ON customer_identity(identity_type, identity_value);
+CREATE INDEX IF NOT EXISTS idx_cust_ident_customer ON customer_identity(customer_id);
+CREATE TABLE IF NOT EXISTS assignment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL,
+  sales_name TEXT DEFAULT '',
+  mode TEXT DEFAULT '',
+  sla1_deadline INTEGER,
+  sla2_scan_ref TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'claimed', 'recycled', 'transferred')),
+  source TEXT DEFAULT '',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_assignment_lead ON assignment(lead_id);
+CREATE TABLE IF NOT EXISTS ownership_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  old_owner TEXT DEFAULT '',
+  new_owner TEXT DEFAULT '',
+  reason TEXT DEFAULT '',
+  actor TEXT DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ownhist_entity ON ownership_history(entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS outbox_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_seq INTEGER,
+  idempotency_key TEXT,
+  payload TEXT DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+  source TEXT DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idem ON outbox_event(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_event(status);
+CREATE TABLE IF NOT EXISTS audit_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor TEXT DEFAULT '',
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id INTEGER,
+  detail TEXT DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_event(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at);
 `
 
 // lead 索引独立于 SCHEMA_SQL：旧空壳 lead 表无 contact_type 列，若在 SCHEMA_SQL 中建索引
@@ -194,7 +276,8 @@ const ENTITIES = [
   'lead', 'lead_activity', 'import_batch',
   'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
-  'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk'
+  'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk',
+  'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -293,11 +376,26 @@ class CrmDbService {
   private db: SqlJsDatabase | null = null
   private dbPath: string | null = null
   private saveTimer: NodeJS.Timeout | null = null
+  // 并发护栏：main.ts 启动 await 与 crmIpcHandlers void 双路径会同时 initialize，
+  // 分库后两次加载的是不同账号库，必须去重为同一次加载
+  private initPromise: Promise<void> | null = null
 
-  async initialize(userDataPath: string): Promise<void> {
+  async initialize(userDataPath: string, wxid?: string): Promise<void> {
     if (this.db) return
+    if (this.initPromise) return this.initPromise
+    this.initPromise = this.doInitialize(userDataPath, wxid)
+    try {
+      await this.initPromise
+    } catch (e) {
+      this.initPromise = null // 失败允许后续重试
+      throw e
+    }
+  }
+
+  private async doInitialize(userDataPath: string, wxid?: string): Promise<void> {
     if (!existsSync(userDataPath)) mkdirSync(userDataPath, { recursive: true })
-    this.dbPath = join(userDataPath, 'weflow-crm.db')
+    // §2.40 微信号分库：wxid 空（未完成引导）回退 legacy 名
+    this.dbPath = businessDbPath(userDataPath, wxid, 'crm')
     // 打包态 wasm 在 electron/node_modules；dev/测试态在项目根 node_modules
     const wasmCandidates = [
       join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
@@ -358,6 +456,37 @@ class CrmDbService {
     for (const [col, type] of oppCols) {
       try { this.db.run(`ALTER TABLE opportunity ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // Migration: Phase 0 D3（宪法 §4.1，2026-09-02）存量表补列（幂等 ALTER 吞错；6 新表由 SCHEMA_SQL 保证）
+    // ① account.customer_id 可空挂接（宪法 §1.1/§4.3：Phase 1 迁移回填，account 本体 28 项能力照旧）
+    try { this.db.run('ALTER TABLE account ADD COLUMN customer_id INTEGER') } catch { /* 列已存在 */ }
+    // ② opportunity 补列（宪法 §1.5：发现来源 / 整车改装类型 / 多币种金额 / 主车型 / 订单与发货量 /
+    //    预期发货窗口 / 报价版本与 customer 挂接；逻辑外键，不建 FK 约束——跨库与既有表铁律）
+    const oppPhase0Cols: Array<[string, string]> = [
+      ['source', "TEXT DEFAULT ''"], ['type', "TEXT DEFAULT ''"],
+      ['amount_cny', 'REAL DEFAULT 0'], ['original_currency', "TEXT DEFAULT ''"],
+      ['original_amount', 'REAL DEFAULT 0'], ['rate_note', "TEXT DEFAULT ''"],
+      ['main_model', "TEXT DEFAULT ''"], ['order_qty', 'INTEGER DEFAULT 0'],
+      ['shipped_qty', 'INTEGER DEFAULT 0'], ['expected_ship_start', 'INTEGER DEFAULT 0'],
+      ['expected_ship_end', 'INTEGER DEFAULT 0'], ['delivery_date', 'INTEGER DEFAULT 0'],
+      ['quote_version_id', 'INTEGER'], ['customer_id', 'INTEGER']
+    ]
+    for (const [col, type] of oppPhase0Cols) {
+      try { this.db.run(`ALTER TABLE opportunity ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    // ②' quotation 版本模型补列 + contract.quote_version_id（宪法 §1.6）。
+    // 权威方向 = contract.quote_version_id → quotation 版本行；既有反向链 quotation.contract_id 过渡期
+    // 双写只读兼容。双写起止（D3 拍板）：Phase 1 版本链写入路径上线起，同一事务双写两侧；
+    // Phase 2 读路径全部切换到新方向后，quotation.contract_id 退役（只读留档）。
+    const quotePhase0Cols: Array<[string, string]> = [
+      ['version', 'INTEGER DEFAULT 1'], ['effective_from', 'INTEGER DEFAULT 0'],
+      ['effective_to', 'INTEGER DEFAULT 0'], ['pdf_hash', "TEXT DEFAULT ''"]
+    ]
+    for (const [col, type] of quotePhase0Cols) {
+      try { this.db.run(`ALTER TABLE quotation ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    try { this.db.run('ALTER TABLE contract ADD COLUMN quote_version_id INTEGER') } catch { /* 列已存在 */ }
+    // 决策 B（宪法 §4.2，2026-09-02）：群资源扫描整功能下线，清理遗留游标（幂等；服务已删，键不再产生）
+    try { this.db.run("DELETE FROM scan_state WHERE key LIKE 'leadScan:%'") } catch { /* ignore */ }
     // Migration: lead 旧结构表（空壳 name/company/phone 或中间态 contact_phone/contact_wechat）→ 线索流转结构
     // 旧表缺 contact_type 或 contact_normalized 任一 → 迁移旧数据（如有）后重建为新 SCHEMA。
     // 注意：lead 索引独立于 SCHEMA_SQL（LEAD_INDEXES_SQL），避免旧表上建索引先崩。
@@ -432,6 +561,47 @@ class CrmDbService {
     if (!this.db || !this.dbPath) return
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     try { writeFileSync(this.dbPath, Buffer.from(this.db.export())) } catch (e) { console.error('[CrmDb] persistNow error:', e) }
+  }
+
+  /** 当前业务库文件绝对路径（未初始化为 null；归档 IPC / 备份用） */
+  currentDbPath(): string | null { return this.dbPath }
+
+  /**
+   * §2.40 微信号分库切换：落盘 → 卸载当前库 → 以新 wxid 重新 initialize。
+   * 调用方必须经 enqueueSalesTask 串行，避免扫描中途换库。
+   */
+  async reopenForWxid(userDataPath: string, wxid?: string): Promise<void> {
+    this.persistNow()
+    this.detach()
+    await this.initialize(userDataPath, wxid)
+  }
+
+  /**
+   * §2.40 归档逃生舱：落盘 → 卸载 → 当前库整文件改名 .archived-<时间戳>.db。
+   * 返回归档文件路径；未初始化或文件不存在返回 null（不抛错）。调用方随后 reopenForWxid 重开新空库。
+   */
+  archiveCurrentDb(at: Date = new Date()): string | null {
+    const from = this.dbPath
+    if (!from) return null
+    this.persistNow()
+    this.detach()
+    if (!existsSync(from)) return null
+    const to = join(dirname(from), archivedDbName(basename(from), at))
+    try {
+      renameSync(from, to)
+      return to
+    } catch (e) {
+      console.error('[CrmDb] 归档失败:', e)
+      return null
+    }
+  }
+
+  /** 卸载当前库（不落盘——调用方负责先 persistNow；同时清 initPromise 允许重新加载） */
+  private detach(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
+    this.db = null
+    this.dbPath = null
+    this.initPromise = null
   }
 
   // ─── 通用 SQL 助手 ─────────────────────────────────────────────────────────
@@ -786,14 +956,15 @@ class CrmDbService {
     if (!accountId) return []
     return this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' ORDER BY last_signal_at DESC", [accountId])
   }
-  /** 采购信号落库：同客户同产品已有 active 商机 → 累积更新；否则新建。
+  /** 采购信号落库：同客户同产品已有 active 商机 → 累积更新；product 未知时累积到最近的无产品
+   *  active 商机（否则每条信号都新建出重复商机）；否则新建。
    *  amount=0 表示待确认；stage 复用客户阶段（了解/比价/决策）。 */
   opportunityUpsertBySignal(accountId: number, customerName: string, signal: { product: string; quantity: number; amount: number; stage: string; detail: string }): { id: number; created: boolean } {
     const product = String(signal.product || '').trim()
     const now = Date.now()
     const opp = product
       ? this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' AND product = ? ORDER BY last_signal_at DESC LIMIT 1", [accountId, product])[0]
-      : undefined
+      : this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' AND (product = '' OR product IS NULL) ORDER BY last_signal_at DESC LIMIT 1", [accountId])[0]
     if (opp) {
       const patch: CrmRow = { last_signal_at: now, updated_at: now }
       if (signal.quantity > 0 && (Number(opp.quantity) === 0 || signal.quantity > Number(opp.quantity))) patch.quantity = signal.quantity

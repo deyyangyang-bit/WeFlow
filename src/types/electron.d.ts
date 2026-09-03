@@ -645,6 +645,12 @@ export interface ElectronAPI {
       warning?: string
       error?: string
     }>
+    /** §2.40 微信号分库：当前账号业务数据归档（两库改名 .archived-<时间戳>.db 后重开新空库） */
+    archiveBusinessData: () => Promise<{
+      success: boolean
+      archived?: Array<{ from: string; to: string }>
+      error?: string
+    }>
     getContact: (username: string) => Promise<Contact | null>
     getContactAvatar: (username: string, chatroomId?: string) => Promise<{ avatarUrl?: string; displayName?: string } | null>
     updateMessage: (sessionId: string, localId: number, createTime: number, newContent: string) => Promise<{ success: boolean; error?: string }>

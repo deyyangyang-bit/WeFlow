@@ -31,6 +31,10 @@ const QUOTE_INTENT_RE = /(报价|报个价|价格如下|给你算|优惠价|含�
 const ASK_QUOTE_RE = /(你报个价|给我报个价|能报价吗|报个价看看|发个报价|想要报价|求报价|多少钱)/
 const EQUIP_HINT_RE = /(吨|叉车|搬运|堆高|托盘|电动|内燃|CPD|CPC|台|辆)/
 const QUOTE_AMOUNT_RE = /(¥|￥|人民币)?\s*(\d[\d,]*(?:\.\d+)?)\s*(万\s*元|万元|万|元|块钱|块)?/g
+/** 手机号（如「15202635273 春发采购」首触消息）不当金额——Windows 打包版真实案例 ¥15,202,635,273 */
+const PHONE_NUM_RE = /1[3-9]\d{9}/
+/** 金额合理性上限（1 亿）：叉车业务不可能，兜底订单号/长数字串 */
+const AMOUNT_MAX = 1e8
 
 export interface QuoteSignalInfo { amount: number; model: string | null }
 
@@ -52,7 +56,9 @@ export function parseQuoteSignal(content: string, isSend: number): QuoteSignalIn
     const unit = m[3] || ''
     let v = parseFloat(m[2].replace(/,/g, ''))
     if (!Number.isFinite(v) || v <= 0) continue
+    if (PHONE_NUM_RE.test(m[2])) continue // 手机号不是金额
     if (unit.includes('万')) v *= 10000
+    if (v >= AMOUNT_MAX) continue
     if (!unit && !hasCurrency && v < 1000) continue // 数量/天数类小额数字不认
     amount = v
     matched = true
@@ -262,7 +268,9 @@ export function parseBuySignal(content: string, isSend: number): BuySignalInfo |
     const unit = m[3] || ''
     let v = parseFloat(m[2].replace(/,/g, ''))
     if (!Number.isFinite(v) || v <= 0) continue
+    if (PHONE_NUM_RE.test(m[2])) continue // 手机号不是金额
     if (unit.includes('万')) v *= 10000
+    if (v >= AMOUNT_MAX) continue
     if (!unit && v < 1000) continue
     amount = v
     break

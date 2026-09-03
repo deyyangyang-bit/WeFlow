@@ -18,10 +18,11 @@ import { readFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import initSqlJs from 'sql.js'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import { normalizeStage } from '../shared/salesStage'
 import { parseEvidenceKey } from '../shared/evidenceKey'
 
-const dbPath = process.argv[2] || join(homedir(), 'Library', 'Application Support', 'weflow', 'weflow-sales.db')
+const dbPath = process.argv[2] || findExistingBusinessDb(join(homedir(), 'Library', 'Application Support', 'weflow'), 'sales') || join(homedir(), 'Library', 'Application Support', 'weflow', 'weflow-sales.db')
 
 async function main(): Promise<void> {
   if (!existsSync(dbPath)) {

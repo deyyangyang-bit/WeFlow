@@ -7,13 +7,14 @@
  */
 
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
-import { join } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { join, basename, dirname } from 'path'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
 import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
 import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType } from '../../shared/customerEvent'
+import { archivedDbName, businessDbPath } from './businessDbPath'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,32 @@ export interface FollowUpTask {
   feedback_log?: string
   created_at?: number
   completed_at?: number | null
+}
+
+/** D7 商机评测集（宪法 §3 特许扩展行）：AI 预标注（ai_*）与人工确认（label/evidence_*）分存 */
+export interface OpportunityEvalCase {
+  id?: number
+  session_id: string
+  /** 候选锚点消息 messageKey（P0-2B 体系）；对照样本（无信号会话）为 '' */
+  anchor_key?: string
+  /** 人工确认结果：'' / has（有商机）/ none（无商机）/ uncertain（不确定） */
+  label?: string
+  /** 人工挑的证据：JSON 数组，纯 messageKey 引用（宪法 §1.10） */
+  evidence_message_keys?: string
+  /** 客户原话快照 ≤200 字（PIPL），非 AI 结论 */
+  evidence_text?: string
+  /** AI 预标注建议（与人工确认分存，防锚定偏差） */
+  ai_label?: string
+  ai_evidence_keys?: string
+  annotated_by?: string
+  /** pending（待标注）/ prelabeled（AI 已预标注）/ confirmed（人工已确认） */
+  status?: string
+  source?: string
+  updated_by?: string
+  updated_at?: number
+  version?: number
+  deleted?: number
+  created_at?: number
 }
 
 // ─── Migration SQL ───────────────────────────────────────────────────────────
@@ -194,6 +221,29 @@ CREATE TABLE IF NOT EXISTS customer_event (
   created_at INTEGER NOT NULL
 );
 
+-- Phase 0 D7 商机评测集（宪法 §3 特许扩展行，非业务事实表；与 intent_tag_log 同库，
+-- evidence_message_keys 为 P0-2B messageKey 纯 key 引用、同库闭环，宪法 §1.10）。
+-- AI 预标注（ai_*）与人工确认（label/evidence_*）分开存，防锚定偏差；人工确认后 status=confirmed。
+-- evidence_text 只存客户原话快照 ≤200 字（PIPL，坑清单 #8），非 AI 结论。
+CREATE TABLE IF NOT EXISTS opportunity_eval_case (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',
+  anchor_key TEXT DEFAULT '',
+  label TEXT NOT NULL DEFAULT '' CHECK (label IN ('', 'has', 'none', 'uncertain')),
+  evidence_message_keys TEXT DEFAULT '[]',
+  evidence_text TEXT DEFAULT '',
+  ai_label TEXT NOT NULL DEFAULT '' CHECK (ai_label IN ('', 'has', 'none', 'uncertain')),
+  ai_evidence_keys TEXT DEFAULT '[]',
+  annotated_by TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'prelabeled', 'confirmed')),
+  source TEXT DEFAULT 'manual',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
@@ -206,6 +256,9 @@ CREATE INDEX IF NOT EXISTS idx_judgment_session ON customer_judgment(session_id,
 CREATE UNIQUE INDEX IF NOT EXISTS idx_event_msgkey ON customer_event(message_key) WHERE message_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_event_session ON customer_event(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_event_type ON customer_event(event_type, created_at);
+-- D7 评测集幂等键：(session_id, anchor_key) 唯一，供标注回写幂等 upsert
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_case_anchor ON opportunity_eval_case(session_id, anchor_key);
+CREATE INDEX IF NOT EXISTS idx_eval_case_status ON opportunity_eval_case(status, updated_at);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -214,18 +267,31 @@ class SalesDbService {
   private db: SqlJsDatabase | null = null
   private dbPath: string | null = null
   private saveTimer: NodeJS.Timeout | null = null
+  // 并发护栏：多个入口会同时 initialize，分库后两次加载的是不同账号库，必须去重为同一次加载
+  private initPromise: Promise<void> | null = null
 
   /**
-   * 初始化数据库（异步加载 WASM + 读取/创建文件）
+   * 初始化数据库（异步加载 WASM + 读取/创建文件）。
+   * §2.40 微信号分库：wxid 决定库文件（weflow-sales-<wxid>.db），空值回退 legacy 名。
    */
-  async initialize(userDataPath: string): Promise<void> {
+  async initialize(userDataPath: string, wxid?: string): Promise<void> {
     if (this.db) return
+    if (this.initPromise) return this.initPromise
+    this.initPromise = this.doInitialize(userDataPath, wxid)
+    try {
+      await this.initPromise
+    } catch (e) {
+      this.initPromise = null // 失败允许后续重试
+      throw e
+    }
+  }
 
+  private async doInitialize(userDataPath: string, wxid?: string): Promise<void> {
     if (!existsSync(userDataPath)) {
       mkdirSync(userDataPath, { recursive: true })
     }
 
-    this.dbPath = join(userDataPath, 'weflow-sales.db')
+    this.dbPath = businessDbPath(userDataPath, wxid, 'sales')
 
     // sql.js 需要定位 WASM 二进制文件。打包态在 electron/node_modules；dev/测试态在项目根 node_modules
     const wasmCandidates = [
@@ -273,6 +339,10 @@ class SalesDbService {
     // Migration: customer_event 行动关联列（P0-4.2.1 correlation：task_id 串「哪条建议 → 哪次执行」；
     // NULL 允许——不是每个事件都有行动上下文，禁止伪造）
     try { this.db.run('ALTER TABLE customer_event ADD COLUMN task_id INTEGER') } catch { /* 列已存在 */ }
+    // Migration: D7 opportunity_eval_case 表体由 SCHEMA_SQL CREATE IF NOT EXISTS 幂等覆盖；
+    // 此处兜底确保唯一索引存在（库若建于索引入 schema 之前，CREATE IF NOT EXISTS 不重建表）
+    try { this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_case_anchor ON opportunity_eval_case(session_id, anchor_key)') } catch { /* 已存在 */ }
+    try { this.db.run('CREATE INDEX IF NOT EXISTS idx_eval_case_status ON opportunity_eval_case(status, updated_at)') } catch { /* 已存在 */ }
     this.persist()
   }
 
@@ -307,6 +377,47 @@ class SalesDbService {
     } catch (e) {
       console.error('[SalesDb] persistNow error:', e)
     }
+  }
+
+  /** 当前业务库文件绝对路径（未初始化为 null；归档 IPC / 备份用） */
+  currentDbPath(): string | null { return this.dbPath }
+
+  /**
+   * §2.40 微信号分库切换：落盘 → 卸载当前库 → 以新 wxid 重新 initialize。
+   * 调用方必须经 enqueueSalesTask 串行，避免扫描中途换库。
+   */
+  async reopenForWxid(userDataPath: string, wxid?: string): Promise<void> {
+    this.persistNow()
+    this.detach()
+    await this.initialize(userDataPath, wxid)
+  }
+
+  /**
+   * §2.40 归档逃生舱：落盘 → 卸载 → 当前库整文件改名 .archived-<时间戳>.db。
+   * 返回归档文件路径；未初始化或文件不存在返回 null（不抛错）。调用方随后 reopenForWxid 重开新空库。
+   */
+  archiveCurrentDb(at: Date = new Date()): string | null {
+    const from = this.dbPath
+    if (!from) return null
+    this.persistNow()
+    this.detach()
+    if (!existsSync(from)) return null
+    const to = join(dirname(from), archivedDbName(basename(from), at))
+    try {
+      renameSync(from, to)
+      return to
+    } catch (e) {
+      console.error('[SalesDb] 归档失败:', e)
+      return null
+    }
+  }
+
+  /** 卸载当前库（不落盘——调用方负责先 persistNow；同时清 initPromise 允许重新加载） */
+  private detach(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
+    this.db = null
+    this.dbPath = null
+    this.initPromise = null
   }
 
   /**
@@ -614,6 +725,14 @@ class SalesDbService {
     )
   }
 
+  /** D7 评测集导出候选①：带证据锚点（message_key 非空）的意向打标，倒序 */
+  intentWithEvidence(limit: number = 500): IntentTagLog[] {
+    return this.all<IntentTagLog>(
+      "SELECT * FROM intent_tag_log WHERE message_key IS NOT NULL AND message_key != '' ORDER BY created_at DESC LIMIT ?",
+      [limit]
+    )
+  }
+
   // ─── AI 判断记录（P0-2C）───────────────────────────────────────────────────
 
   /**
@@ -728,6 +847,98 @@ class SalesDbService {
     return this.all<CustomerEventRecord>(sql, params)
   }
 
+  // ─── 商机评测集（Phase 0 D7，宪法 §3 特许扩展行，非业务事实表）─────────────────
+
+  /**
+   * 评测集幂等 upsert：按 UNIQUE 键 (session_id, anchor_key) 命中更新、未命中插入。
+   * 纪律：ai_*（AI 预标注）与人工确认字段（label/evidence_message_keys/evidence_text/annotated_by）
+   * 分存互不覆盖——入参只更新显式提供的字段（undefined = 不动）；防锚定偏差（宪法 §1.10 / D7）。
+   * label/status/ai_label 非法值由 DB CHECK 硬门禁拦截（sql.js 抛错）。
+   */
+  evalCaseUpsert(input: {
+    session_id: string
+    anchor_key?: string
+    label?: string
+    evidence_message_keys?: string
+    evidence_text?: string
+    ai_label?: string
+    ai_evidence_keys?: string
+    annotated_by?: string
+    status?: string
+    source?: string
+    updated_by?: string
+  }): OpportunityEvalCase {
+    const anchorKey = input.anchor_key ?? ''
+    const existing = this.get<OpportunityEvalCase>(
+      'SELECT * FROM opportunity_eval_case WHERE session_id = ? AND anchor_key = ? AND deleted = 0',
+      [input.session_id, anchorKey]
+    )
+    const now = Date.now()
+    if (existing) {
+      // 只更新显式提供的字段；updated_at/version 恒推进
+      const cols: Array<[string, unknown]> = [
+        ['label', input.label],
+        ['evidence_message_keys', input.evidence_message_keys],
+        ['evidence_text', input.evidence_text],
+        ['ai_label', input.ai_label],
+        ['ai_evidence_keys', input.ai_evidence_keys],
+        ['annotated_by', input.annotated_by],
+        ['status', input.status],
+        ['source', input.source],
+        ['updated_by', input.updated_by],
+      ]
+      const sets: string[] = ['updated_at = ?', 'version = version + 1']
+      const params: unknown[] = [now]
+      for (const [col, val] of cols) {
+        if (val === undefined) continue
+        sets.push(`${col} = ?`)
+        params.push(val)
+      }
+      params.push(existing.id)
+      this.run(`UPDATE opportunity_eval_case SET ${sets.join(', ')} WHERE id = ?`, params)
+      return this.get<OpportunityEvalCase>('SELECT * FROM opportunity_eval_case WHERE id = ?', [existing.id])!
+    }
+    // 插入：status 未显式给时按内容推导（有人工结论=confirmed；仅 AI 预标注=prelabeled；否则 pending）
+    const status = input.status ?? (input.label ? 'confirmed' : input.ai_label ? 'prelabeled' : 'pending')
+    this.run(
+      `INSERT INTO opportunity_eval_case
+         (session_id, anchor_key, label, evidence_message_keys, evidence_text,
+          ai_label, ai_evidence_keys, annotated_by, status, source, updated_by, updated_at, version, deleted, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)`,
+      [input.session_id, anchorKey, input.label ?? '', input.evidence_message_keys ?? '[]',
+       input.evidence_text ?? '', input.ai_label ?? '', input.ai_evidence_keys ?? '[]',
+       input.annotated_by ?? '', status, input.source ?? 'manual', input.updated_by ?? '', now, now]
+    )
+    const id = this.lastInsertRowId()
+    return this.get<OpportunityEvalCase>('SELECT * FROM opportunity_eval_case WHERE id = ?', [id])!
+  }
+
+  /** 按幂等键取单条（未软删） */
+  evalCaseGet(sessionId: string, anchorKey: string = ''): OpportunityEvalCase | undefined {
+    return this.get<OpportunityEvalCase>(
+      'SELECT * FROM opportunity_eval_case WHERE session_id = ? AND anchor_key = ? AND deleted = 0',
+      [sessionId, anchorKey]
+    )
+  }
+
+  /** 评测集列表（status 过滤可选；默认排除软删，倒序） */
+  evalCaseList(filters?: { status?: string; limit?: number }): OpportunityEvalCase[] {
+    let sql = 'SELECT * FROM opportunity_eval_case WHERE deleted = 0'
+    const params: unknown[] = []
+    if (filters?.status) { sql += ' AND status = ?'; params.push(filters.status) }
+    sql += ' ORDER BY created_at DESC, id DESC'
+    if (filters?.limit) { sql += ' LIMIT ?'; params.push(filters.limit) }
+    return this.all<OpportunityEvalCase>(sql, params)
+  }
+
+  /** 评测集计数（status 过滤可选；排除软删） */
+  evalCaseCount(status?: string): number {
+    const sql = status
+      ? 'SELECT COUNT(*) AS c FROM opportunity_eval_case WHERE deleted = 0 AND status = ?'
+      : 'SELECT COUNT(*) AS c FROM opportunity_eval_case WHERE deleted = 0'
+    return Number(this.all<{ c: number }>(sql, status ? [status] : [])[0]?.c ?? 0)
+  }
+
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────
 
   /** P0-4.2.2：窗口内创建的任务（created_at >= ms，ms=null 全量；Action Funnel created 段数据源） */
@@ -792,6 +1003,8 @@ class SalesDbService {
       this.db.close()
       this.db = null
     }
+    // close 后必须允许下一次 initialize 真正重开（否则 initPromise 短路，db 停留 null）
+    this.initPromise = null
   }
 
   /**

@@ -313,15 +313,16 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
   ws.mergeCells(`B${rPay}:B${rPay + 1}`)
   ws.getCell(`B${rPay}`).value = '货款情况'
   ws.getCell(`C${rPay}`).value = '未汇款  '
-  ws.getCell(`D${rPay}`).value = ' □'
   ws.getCell(`E${rPay}`).value = '预计日期：'
   ws.mergeCells(`F${rPay}:G${rPay}`)
   ws.getCell(`H${rPay}`).value = '款项来源：'
   ws.getCell(`I${rPay}`).value = data.source || '对公转账'
   ws.getCell(`C${rPay + 1}`).value = '已汇款  '
-  ws.getCell(`D${rPay + 1}`).value = ' R'
+  // 收款状态：有收款日期才打 R 并填日期；默认按真实业务惯例填「未收款」（先开票后付款），勾选框留空
+  ws.getCell(`D${rPay + 1}`).value = data.paid_date ? ' R' : ''
   ws.getCell(`E${rPay + 1}`).value = '收款日期：'
   ws.mergeCells(`F${rPay + 1}:G${rPay + 1}`)
+  ws.getCell(`F${rPay + 1}`).value = data.paid_date || '未收款'
   ws.getCell(`H${rPay + 1}`).value = '财务确认：'
 
   // 汇款单位名称 r{+3}

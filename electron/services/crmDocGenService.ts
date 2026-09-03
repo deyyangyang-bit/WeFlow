@@ -10,35 +10,22 @@ import { join } from 'path'
 import { app } from 'electron'
 import { crmDbService } from './crmDbService'
 import { salesLog } from './salesLogger'
-import { DOC_TYPES, buildPlaceholderTemplate, generateDocBuffer, type DocType } from './crmDocGenCore'
+import { DOC_TYPES, generateDocBuffer, type DocType } from './crmDocGenCore'
 
 export { DOC_TYPES }
 export type { DocType }
 
-export function ensureTemplates(resourcesDir: string): void {
-  const dir = join(resourcesDir, 'crm-templates')
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  for (const t of DOC_TYPES) {
-    if (t === 'invoice-app') continue // Excel 类型，运行时生成，无 docx 模版
-    const f = join(dir, `${t}.docx`)
-    if (!existsSync(f)) writeFileSync(f, buildPlaceholderTemplate(t))
-  }
-}
-
 function templatePath(type: DocType): string {
-  // 开发态 resources 在项目根；打包态 process.resourcesPath（extraResources 已含 resources/）
+  // 打包态：extraResources 将 resources/ 原样映射到 Contents/Resources/resources/（即 process.resourcesPath/resources/）；
+  // 开发态：resources 在项目根（app.getAppPath() 或 __dirname 上两级）
   const candidates = [
-    join(process.resourcesPath || '', 'crm-templates', `${type}.docx`),
+    join(process.resourcesPath || '', 'resources', 'crm-templates', `${type}.docx`),
     join(app.getAppPath(), 'resources', 'crm-templates', `${type}.docx`),
     join(__dirname, '..', 'resources', 'crm-templates', `${type}.docx`),
   ]
   for (const c of candidates) if (existsSync(c)) return c
-  const fallback = join(app.getPath('userData'), 'crm-templates', `${type}.docx`)
-  if (!existsSync(fallback)) {
-    mkdirSync(join(app.getPath('userData'), 'crm-templates'), { recursive: true })
-    writeFileSync(fallback, buildPlaceholderTemplate(type))
-  }
-  return fallback
+  // 响亮失败：模版缺失必须让调用方/用户看到错误，绝不静默生成占位文档
+  throw new Error(`模版缺失: ${type}.docx（已查找: ${candidates.join(' , ')}）`)
 }
 
 export async function generateDoc(type: string, recordId: number): Promise<{ ok: boolean; path?: string; reason?: string }> {

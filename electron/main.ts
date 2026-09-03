@@ -54,6 +54,7 @@ import { judgeAndImportCrmCustomer, backfillImportFromInsightRecords, collectInt
 import { enrichCustomer } from './services/crmEnrichService'
 import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
+import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
@@ -2034,8 +2035,27 @@ function registerIpcHandlers() {
     return configService?.get(key as any)
   })
 
+  // §2.40 微信号分库：业务库归属 wxid（清洗后；空 = 未完成引导，回退 legacy 名）
+  const currentBusinessWxid = (): string => (configService ? configService.getMyWxidCleaned() : '').trim()
+
+  // §2.40 微信号分库切换：迁移 legacy 库 + 重开两业务库。
+  // 走 enqueueSalesTask 串行，防扫描中途换库；切账号必经 setMyWxid → config:set，渲染层零改动。
+  const switchBusinessDbsForWxid = async (wxid: string): Promise<void> => {
+    const userData = app.getPath('userData')
+    await enqueueSalesTask(async () => {
+      const moved = migrateLegacyBusinessDbs(userData, wxid)
+      if (moved.length > 0) {
+        console.log('[Sales] legacy 业务库已迁移到按账号命名:', moved.map((m) => `${m.kind} → ${m.to}`).join(', '))
+      }
+      await crmDbService.reopenForWxid(userData, wxid)
+      await salesDbService.reopenForWxid(userData, wxid)
+      console.log(`[Sales] 业务库已切换到账号 ${wxid || '(未设置)'}`)
+    })
+  }
+
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     let result: unknown
+    const previousMyWxid = key === 'myWxid' ? String(configService?.get('myWxid') ?? '') : ''
     if (key === 'launchAtStartup') {
       result = applyLaunchAtStartupPreference(value === true)
     } else {
@@ -2043,6 +2063,14 @@ function registerIpcHandlers() {
     }
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
+    }
+    // §2.40 微信号分库：myWxid 实际变化 → 迁移 + 重开两业务库（失败不阻塞配置写入）
+    if (key === 'myWxid' && configService && String(value ?? '') !== previousMyWxid) {
+      try {
+        await switchBusinessDbsForWxid(currentBusinessWxid())
+      } catch (e) {
+        console.error('[Sales] myWxid 变更后切换业务库失败:', e)
+      }
     }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
@@ -3014,6 +3042,33 @@ function registerIpcHandlers() {
       success: true,
       removedPaths,
       warning: warnings.length > 0 ? warnings.join('; ') : undefined
+    }
+  })
+
+  // §2.40 归档逃生舱：当前账号两业务库整文件改名 .archived-<时间戳>.db → 原账号重开新空库。
+  // 用途：升级后历史库被归到错误账号名下（如 Windows 已先切号），点一次归档即得干净新库；
+  // .archived 备份不删，需回看可手动把文件名改回去。
+  ipcMain.handle('chat:archiveBusinessData', async () => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    const userData = app.getPath('userData')
+    const wxid = (configService.getMyWxidCleaned() || '').trim()
+    try {
+      return await enqueueSalesTask(async () => {
+        const archived: Array<{ from: string; to: string }> = []
+        for (const svc of [crmDbService, salesDbService]) {
+          const from = svc.currentDbPath()
+          const to = svc.archiveCurrentDb()
+          if (from && to) archived.push({ from, to })
+        }
+        await crmDbService.reopenForWxid(userData, wxid)
+        await salesDbService.reopenForWxid(userData, wxid)
+        console.log(`[Sales] 业务数据已归档（账号 ${wxid || '(未设置)'}）：${archived.map((a) => a.to).join(', ') || '无库文件'}`)
+        return { success: true, archived }
+      })
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      console.error('[Sales] 业务数据归档失败:', e)
+      return { success: false, error }
     }
   })
 
@@ -5411,14 +5466,20 @@ app.whenReady().then(async () => {
 
   // 初始化销售助手数据库
   try {
-    await salesDbService.initialize(app.getPath('userData'))
+    // §2.40 微信号分库：升级后首次启动把 legacy 单库改名到当前账号 suffixed 库（幂等，两者共存不动）
+    const startupWxid = (configService ? configService.getMyWxidCleaned() : '').trim()
+    const movedDbs = migrateLegacyBusinessDbs(app.getPath('userData'), startupWxid)
+    if (movedDbs.length > 0) {
+      console.log('[Sales] legacy 业务库已迁移到按账号命名:', movedDbs.map((m) => `${m.kind} → ${m.to}`).join(', '))
+    }
+    await salesDbService.initialize(app.getPath('userData'), startupWxid)
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
     // 启动今日行动引擎
     setActionEngineConfig(configService)
     registerCrmIpcHandlers(ipcMain, configService)
     // 内部人员名单（同事）：手动名单 + 内部群成员，CRM 导入自动跳过
-    await crmDbService.initialize(app.getPath('userData'))
+    await crmDbService.initialize(app.getPath('userData'), startupWxid)
     try {
       const manualList = Array.from(configService.get('crmInternalList') || [])
       const groupMembers = await collectInternalGroupMembers(configService.get('crmInternalGroups'))
@@ -5434,7 +5495,7 @@ app.whenReady().then(async () => {
     // 回填导入：把往期灵感信箱里判定出销售意向的记录补导入 CRM（幂等）
     // 必须先 await crmDbService.initialize（registerCrmIpcHandlers 内是异步不等待的），否则 db 未就绪全部静默失败
     try {
-      await crmDbService.initialize(app.getPath('userData'))
+      await crmDbService.initialize(app.getPath('userData'), startupWxid)
       const backfill = backfillImportFromInsightRecords(insightRecordService.getAllRecordsForBackfill())
       if (backfill.imported > 0 || backfill.existing > 0) {
         console.log(`[Sales] 灵感信箱回填导入 CRM：新建 ${backfill.imported}，已存在 ${backfill.existing}`)

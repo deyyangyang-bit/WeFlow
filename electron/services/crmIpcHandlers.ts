@@ -8,7 +8,7 @@ import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
 import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
-import { generateDoc, ensureTemplates } from './crmDocGenService'
+import { generateDoc } from './crmDocGenService'
 import { enqueueSalesTask } from './salesQueue'
 import { setDocgenRunner, runAutoConfirmNow, undoAutoConfirm, type AutoEntity } from './crmAutoConfirmService'
 import { setEnrichConfig, setEnrichAiConfig, enrichCustomer, backfillEnrich } from './crmEnrichService'
@@ -47,8 +47,8 @@ async function backfillWxidDisplayNames(): Promise<number> {
 }
 
 export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService): void {
-  void crmDbService.initialize(app.getPath('userData'))
-  ensureTemplates(app.getPath('userData'))
+  // §2.40 微信号分库：按当前账号库初始化（空 wxid 回退 legacy 名）；与 main.ts 启动初始化由 initPromise 去重
+  void crmDbService.initialize(app.getPath('userData'), config.getMyWxidCleaned() || undefined)
   setCrmParseConfig(config)
   startCrmParseScheduler()
   // ── 2026-08-24 起停用 AI 自动确认（用户拍板：销售手动认领）——扫后钩子/60s 调度器移除，仅保留 docgen 回调 ──

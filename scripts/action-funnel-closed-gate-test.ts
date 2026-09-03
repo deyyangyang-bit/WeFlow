@@ -28,6 +28,7 @@
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import os from 'os'
 import initSqlJs from 'sql.js'
 import { ACTION_FUNNEL_SOURCES } from '../electron/services/actionFunnel'
@@ -111,7 +112,10 @@ async function main(): Promise<void> {
 
   // ── B. 真实库运行态（sql.js 字节进内存只读）──────────────────────────────
   const SQL = await initSqlJs()
-  const DB_PATH = join(os.homedir(), 'Library/Application Support/weflow/weflow-sales.db')
+  // §2.40 分库：按账号命名的业务库优先（多个账号取最近使用），回退 legacy 名
+  const USER_DATA = join(os.homedir(), 'Library/Application Support/weflow')
+  const DB_PATH = findExistingBusinessDb(USER_DATA, 'sales')
+  if (!DB_PATH) { console.error(`未找到销售业务库（weflow-sales-*.db / weflow-sales.db）：${USER_DATA}`); process.exit(1) }
   const db = new SQL.Database(readFileSync(DB_PATH))
 
   // B11: customer_event 表激活校验（2026-08-24 观察期开始后 0 基线断言已过时——id=4 真实事件已积累；

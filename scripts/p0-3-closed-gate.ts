@@ -17,11 +17,12 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import initSqlJs from 'sql.js'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import { parseEvidenceKey } from '../shared/evidenceKey'
 
 const ROOT = join(__dirname, '..')
 const SRC = join(ROOT, 'src')
-const dbPath = process.argv[2] || join(homedir(), 'Library', 'Application Support', 'weflow', 'weflow-sales.db')
+const dbPath = process.argv[2] || findExistingBusinessDb(join(homedir(), 'Library', 'Application Support', 'weflow'), 'sales') || join(homedir(), 'Library', 'Application Support', 'weflow', 'weflow-sales.db')
 const CURRENT_JUDGMENT_FRESH_MS = 24 * 3600 * 1000
 
 let pass = 0, fail = 0

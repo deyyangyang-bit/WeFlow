@@ -28,6 +28,7 @@ import { join } from 'path'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import os from 'os'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import path from 'path'
 import initSqlJs from 'sql.js'
 import { salesDbService } from '../electron/services/salesDbService'
@@ -138,8 +139,11 @@ async function main(): Promise<void> {
   // ── B. 真实库运行态（sql.js 字节进内存只读）──────────────────────────────
   const SQL = await initSqlJs()
   const HOME = os.homedir()
-  const DB_PATH = path.join(HOME, 'Library/Application Support/weflow/weflow-sales.db')
-  const CRM_DB_PATH = path.join(HOME, 'Library/Application Support/weflow/weflow-crm.db')
+  // §2.40 分库：按账号命名的业务库优先（多个账号取最近使用），回退 legacy 名
+  const USER_DATA = path.join(HOME, 'Library/Application Support/weflow')
+  const DB_PATH = findExistingBusinessDb(USER_DATA, 'sales')
+  const CRM_DB_PATH = findExistingBusinessDb(USER_DATA, 'crm')
+  if (!DB_PATH || !CRM_DB_PATH) { console.error(`未找到业务库（weflow-{sales,crm}-*.db / legacy）：${USER_DATA}`); process.exit(1) }
   const db = new SQL.Database(readFileSync(DB_PATH))
   const crm = new SQL.Database(readFileSync(CRM_DB_PATH))
   const db2 = new SQL.Database(readFileSync(DB_PATH)) // DDL 模拟副本

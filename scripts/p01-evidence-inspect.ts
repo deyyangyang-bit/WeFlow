@@ -16,9 +16,10 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import initSqlJs from 'sql.js'
+import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 
 const appData = join(homedir(), 'Library/Application Support/weflow')
-const dbPath = process.argv[2] || join(appData, 'weflow-sales.db')
+const dbPath = process.argv[2] || findExistingBusinessDb(appData, 'sales') || join(appData, 'weflow-sales.db')
 const limit = Math.min(50, Math.max(1, Number(process.argv[3] || 20)))
 
 // 读配置拿 httpApiToken（curl 命令用）

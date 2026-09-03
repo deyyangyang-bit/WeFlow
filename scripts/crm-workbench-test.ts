@@ -3,7 +3,7 @@
  * 覆盖：归属绑定合同后 creditedTotal 上涨、签约状态机、activeContractForAccount、发票挂合同
  * 运行：npx tsx scripts/crm-workbench-test.ts
  */
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
@@ -14,6 +14,19 @@ function ok(name: string, cond: boolean): void {
 }
 
 async function main(): Promise<void> {
+  // ── 0 合同列表套用 SearchTable 骨架（静态断言：引入 + 筛选栏 + 分页）──────
+  const pageSrc = readFileSync(join(__dirname, '..', 'src/pages/CrmWorkbenchPage.tsx'), 'utf8')
+  const compSrc = readFileSync(join(__dirname, '..', 'src/components/crm/SearchTable.tsx'), 'utf8')
+  ok('0a 合同工作台引入并使用 SearchTable（含筛选栏/分页/行点击）',
+    /from '\.\.\/components\/crm\/SearchTable'/.test(pageSrc) &&
+    /<SearchTable/.test(pageSrc) && /filterBar=\{/.test(pageSrc) &&
+    /onPageChange=\{setTablePage\}/.test(pageSrc) && /onRowClick=\{\(c\) => void select\(c\)\}/.test(pageSrc))
+  ok('0b SearchTable 骨架要素齐全（筛选栏/工具栏/表格/分页条 + 前端分页切片）',
+    /function SearchTable</.test(compSrc) && /filterBar\?/.test(compSrc) &&
+    /toolbar\?/.test(compSrc) && /search-table__pager/.test(compSrc) &&
+    /data\.slice\(\(cur - 1\) \* pageSize, cur \* pageSize\)/.test(compSrc) &&
+    /emptyText = '暂无数据'/.test(compSrc))
+
   const dir = mkdtempSync(join(tmpdir(), 'crm-workbench-'))
   await crmDbService.initialize(dir)
 
