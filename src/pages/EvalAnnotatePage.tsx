@@ -145,6 +145,7 @@ export default function EvalAnnotatePage() {
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
   const cardRefs = useRef(new Map<number, HTMLDivElement>())
+  const annotatorRef = useRef<HTMLInputElement>(null)
 
   const reload = useCallback(async () => {
     const [lr, sr] = await Promise.all([
@@ -179,7 +180,13 @@ export default function EvalAnnotatePage() {
   /** 点击即写库，成功后自动跳到下一张未标注卡 */
   const doLabel = async (item: EvalCaseRow, label: string) => {
     const by = annotator.trim()
-    if (!by) { setNotice('请先在右上角填写标注人姓名'); return }
+    if (!by) {
+      // 未填标注人：滚回顶部 + 聚焦姓名框 + 红圈提示（原来只在顶部出提示条，滚下去后看不见，像「点不动」）
+      setNotice('请先在右上角填写标注人姓名，再点标注按钮')
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      annotatorRef.current?.focus()
+      return
+    }
     window.localStorage.setItem(ANNOTATOR_KEY, by)
     setBusy(true)
     setNotice('')
@@ -206,6 +213,9 @@ export default function EvalAnnotatePage() {
       } else {
         setNotice(r.error || '标注失败')
       }
+    } catch (e) {
+      // IPC 异常也亮出来（原来无 catch，失败静默 = 「点不动」）
+      setNotice(`标注失败：${String(e)}`)
     } finally { setBusy(false) }
   }
 
@@ -213,11 +223,12 @@ export default function EvalAnnotatePage() {
     <div className="eval-annotate-page">
       <div className="crm-header">
         <h2><ClipboardCheck size={18} /> 评测标注 <span className="count">已标 {stats?.confirmed ?? 0} / 共 {stats?.total ?? 0}</span></h2>
-        <label className="ea-annotator">
+        <label className={`ea-annotator${annotator.trim() ? '' : ' need'}`}>
           <UserCircle size={14} /> 标注人
           <input
+            ref={annotatorRef}
             value={annotator}
-            placeholder="姓名"
+            placeholder="姓名（必填）"
             onChange={(e) => {
               setAnnotator(e.target.value)
               window.localStorage.setItem(ANNOTATOR_KEY, e.target.value.trim())

@@ -10,6 +10,8 @@
     width: 110px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
     &:focus { border-color: var(--color-accent-border); }
   }
+  /* 未填标注人时红圈提醒（标注按钮需要姓名才能写库） */
+  &.need input { border-color: #e5534b; box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.15); }
 }
 
 /* 顶部统计（对齐 lead-cards 语言：白卡浮起 + 26px 主数字） */
