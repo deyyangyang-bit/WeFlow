@@ -1,22 +1,28 @@
 /**
- * AIActionCard.scss — 统一信号流卡片样式(v4 token)
- * CSS 变量由 .today-action-page 提供,此处均带 fallback
+ * AIActionCard.scss — 统一信号流卡片样式
+ * 2026-09-02 UI 美化（批次 B）：迁出 --wf-* 私有变量与字面 hex，全量消费「前进视觉」tokens
+ * （src/styles/main.scss；规范 docs/DESIGN-SPEC-MINI.md）。纯样式，零逻辑/结构改动。
  */
 
 .spinning { animation: wf-spin 1s linear infinite; }
 @keyframes wf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+// 信号卡：白卡浮起 + shadow-card + radius 16；左侧 4px 状态条按紧急度走语义色
 .signal-card {
-  background: var(--wf-card, #fff);
-  border: 1px solid var(--wf-border, #E7E9EE);
-  border-left: 4px solid var(--wf-normal, #64748B);
-  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid transparent;
+  border-left: 4px solid var(--color-chart-neutral);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   margin-bottom: 12px;
   overflow: hidden;
+  transition: transform 0.15s, box-shadow 0.15s;
 
-  &--urgent { border-left-color: var(--wf-urgent, #DC2626); }
-  &--high { border-left-color: var(--wf-high, #D97706); }
-  &--normal { border-left-color: var(--wf-normal, #64748B); }
+  &:hover { transform: translateY(-1px); }
+
+  &--urgent { border-left-color: var(--color-danger); }
+  &--high { border-left-color: var(--color-warning); }
+  &--normal { border-left-color: var(--color-chart-neutral); }
 
   &__body {
     display: flex;
@@ -40,13 +46,14 @@
   &__name {
     font-weight: 700;
     font-size: 15px;
-    color: var(--wf-ink, #101728);
+    color: var(--color-text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 320px;
     white-space: nowrap;
   }
 
+  // 阶段 pill：底色/文字色由 TSX 从阶段色板内联注入，这里只管形状
   &__stage {
     font-size: 11px;
     font-weight: 600;
@@ -57,26 +64,27 @@
 
   &__silence {
     font-size: 12px;
-    color: var(--wf-muted, #94A3B8);
+    color: var(--color-text-tertiary);
     display: flex;
     align-items: center;
     gap: 3px;
     font-variant-numeric: tabular-nums;
   }
 
+  // AI 判断条：蓝 = 信息
   &__insight {
     display: flex;
     gap: 8px;
     align-items: flex-start;
-    background: var(--wf-teal-soft, #ECFAF7);
-    border: 1px solid var(--wf-teal-border, #CDF0EA);
-    border-radius: 8px;
+    background: var(--color-accent-bg);
+    border: 1px solid var(--color-accent-border);
+    border-radius: var(--radius-small);
     padding: 8px 10px;
     margin-bottom: 10px;
 
     span {
       font-size: 13px;
-      color: var(--wf-teal-ink, #0F5F58);
+      color: var(--color-accent);
       line-height: 1.5;
     }
   }
@@ -84,7 +92,7 @@
   &__insight-icon {
     margin-top: 2px;
     flex-shrink: 0;
-    color: var(--wf-teal, #0F766E);
+    color: var(--color-accent);
   }
 
   &__sources {
@@ -112,12 +120,12 @@
 
   &__score-label {
     font-size: 10px;
-    color: var(--wf-muted, #94A3B8);
+    color: var(--color-text-tertiary);
   }
 
   &__ai-panel {
-    border-top: 1px solid var(--wf-border-soft, #F1F5F9);
-    background: var(--wf-canvas, #F5F6F8);
+    border-top: 1px solid var(--color-divider);
+    background: var(--color-bg-surface-muted);
     padding: 12px 18px;
     display: flex;
     flex-direction: column;
@@ -136,7 +144,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--wf-mono, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
     font-size: 17px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -144,28 +151,29 @@
   }
 }
 
+// 来源 pill：任务 = 中性灰；见解 = 琥珀（临近/提示）
 .source-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  border-radius: 6px;
+  border-radius: 999px;
   padding: 3px 8px;
   max-width: 100%;
 
   &--task {
-    background: var(--wf-task-bg, #EAF0F5);
-    color: var(--wf-task, #3E5C76);
+    background: var(--color-bg-inset);
+    color: var(--color-text-secondary);
   }
 
   &--insight {
-    background: var(--wf-insight-bg, #FBF1DF);
-    color: var(--wf-insight, #C77A17);
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
   }
 
   &__code {
     font-weight: 700;
-    font-family: var(--wf-mono, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
+    font-variant-numeric: tabular-nums;
   }
 
   &__label { font-weight: 600; white-space: nowrap; }
@@ -187,7 +195,7 @@
   font-size: 13px;
   font-weight: 600;
   padding: 7px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
@@ -195,52 +203,52 @@
   &:disabled { opacity: 0.5; cursor: default; }
 
   &--done {
-    background: var(--wf-ink, #101728);
-    color: #fff;
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
 
-    &:hover:not(:disabled) { background: #232d42; }
-    &:active:not(:disabled) { background: #0a0f1c; }
+    &:hover:not(:disabled) { background: var(--color-accent-hover); }
+    &:active:not(:disabled) { background: var(--color-accent-hover); }
   }
 
   &--skip {
-    background: #fff;
-    color: var(--wf-normal, #64748B);
-    border-color: #E2E8F0;
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    border-color: var(--color-border);
 
-    &:hover:not(:disabled) { background: var(--wf-border-soft, #F1F5F9); color: var(--wf-ink, #101728); }
-    &:active:not(:disabled) { background: #E2E8F0; }
+    &:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-primary); }
+    &:active:not(:disabled) { background: var(--color-bg-inset); }
   }
 
   &--ai {
-    background: #fff;
-    color: var(--wf-teal, #0F766E);
-    border-color: var(--wf-teal, #0F766E);
+    background: var(--color-bg-surface);
+    color: var(--color-accent);
+    border-color: var(--color-accent-border);
 
-    &:hover:not(:disabled) { background: var(--wf-teal-soft, #ECFAF7); }
-    &:active:not(:disabled) { background: #d7f2ec; }
+    &:hover:not(:disabled) { background: var(--color-accent-bg); }
+    &:active:not(:disabled) { background: var(--color-accent-bg); }
   }
 
   &--chat {
-    background: #fff;
-    color: #2563eb;
-    border-color: #2563eb;
+    background: var(--color-bg-surface);
+    color: var(--color-accent);
+    border-color: var(--color-accent-border);
 
-    &:hover:not(:disabled) { background: #eff6ff; }
-    &:active:not(:disabled) { background: #dbeafe; }
+    &:hover:not(:disabled) { background: var(--color-accent-bg); }
+    &:active:not(:disabled) { background: var(--color-accent-bg); }
   }
 
   &--copy {
-    background: var(--wf-teal, #0F766E);
-    color: #fff;
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
 
-    &:hover:not(:disabled) { background: #0d695e; }
-    &:active:not(:disabled) { background: #0b534b; }
+    &:hover:not(:disabled) { background: var(--color-accent-hover); }
+    &:active:not(:disabled) { background: var(--color-accent-hover); }
   }
 
   &--sm {
     font-size: 11px;
     padding: 3px 10px;
-    border-radius: 6px;
+    border-radius: var(--radius-small);
     flex-shrink: 0;
   }
 }
@@ -249,22 +257,22 @@
   display: flex;
   gap: 8px;
   font-size: 13px;
-  color: var(--wf-body, #475569);
+  color: var(--color-text-secondary);
   line-height: 1.5;
 
   &__label {
     flex-shrink: 0;
     font-weight: 700;
-    color: var(--wf-ink, #101728);
+    color: var(--color-text-primary);
     font-size: 12px;
     padding: 1px 6px;
-    background: #fff;
-    border: 1px solid var(--wf-border, #E7E9EE);
-    border-radius: 6px;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     height: fit-content;
   }
 
-  &--risk span:last-child { color: var(--wf-urgent, #DC2626); }
+  &--risk span:last-child { color: var(--color-danger); }
 
   &__value {
     min-width: 0;
@@ -272,13 +280,13 @@
   }
 }
 
-// P0-3.4：判断徽标/证据回查（与 Customer 360 判断卡同视觉）
-.signal-card__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 8px; font-size: 11px; vertical-align: 1px; }
-.signal-card__j-badge--stale { background: #fef3c7; color: #92400e; }
-.signal-card__j-badge--manual { background: #dbeafe; color: #1e40af; }
-.signal-card__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: #2563eb; background: #eff6ff; border: none; border-radius: 8px; cursor: pointer; }
-.signal-card__j-evidence:hover { background: #dbeafe; }
-.signal-card__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: #f8fafc; border-left: 3px solid #93c5fd; border-radius: 6px; font-size: 13px; color: #475569; white-space: pre-wrap; word-break: break-all; }
+// P0-3.4：判断徽标/证据回查（pill 语义：琥珀=过期提醒、蓝=信息）
+.signal-card__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-size: 11px; vertical-align: 1px; }
+.signal-card__j-badge--stale { background: var(--color-warning-bg); color: var(--color-warning); }
+.signal-card__j-badge--manual { background: var(--color-accent-bg); color: var(--color-accent); }
+.signal-card__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: none; border-radius: var(--radius-small); cursor: pointer; }
+.signal-card__j-evidence:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
+.signal-card__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: var(--radius-small); font-size: 13px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
 
 .ai-row--script {
   align-items: flex-start;

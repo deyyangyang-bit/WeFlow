@@ -1,9 +1,13 @@
+// ChatAnalyticsHubPage —— 前进视觉迁移（UI 美化批次 C；纯样式，零逻辑/结构改动）
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .analytics-hub {
   min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 40px 24px;
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
 }
 
 .analytics-hub-inner {
@@ -19,14 +23,14 @@
 .analytics-hub-title {
   font-size: 28px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   margin: 0 0 10px;
   letter-spacing: -0.5px;
 }
 
 .analytics-hub-desc {
   margin: 0;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   font-size: 15px;
   line-height: 1.7;
 }
@@ -41,7 +45,7 @@
 .analytics-hub-perspectives-label {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 0 4px;
@@ -54,20 +58,20 @@
   gap: 14px;
   padding: 14px 16px;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   background: transparent;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   cursor: pointer;
   text-align: left;
   transition: background 0.15s ease;
   width: 100%;
 
   &:hover {
-    background: var(--bg-hover);
+    background: var(--color-bg-hover);
 
     .analytics-hub-row-arrow {
       transform: translateX(3px);
-      color: var(--text-secondary);
+      color: var(--color-text-secondary);
     }
   }
 }
@@ -80,18 +84,14 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: var(--primary-light);
-  color: var(--primary);
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
 
+  // group 视角原固定蓝色，并入 accent 族（默认主题同为蓝色系，dark 由 token 自动覆盖）
   &--group {
-    background: rgba(59, 130, 246, 0.1);
-    color: #3b82f6;
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
   }
-}
-
-[data-mode="dark"] .analytics-hub-row-icon--group {
-  background: rgba(96, 165, 250, 0.12);
-  color: #60a5fa;
 }
 
 .analytics-hub-row-body {
@@ -102,18 +102,18 @@
 .analytics-hub-row-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   margin-bottom: 2px;
 }
 
 .analytics-hub-row-desc {
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   line-height: 1.5;
 }
 
 .analytics-hub-row-arrow {
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   flex-shrink: 0;
   transition: transform 0.15s ease, color 0.15s ease;
 }

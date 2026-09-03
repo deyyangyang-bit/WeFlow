@@ -1,4 +1,5 @@
-// KnowledgeBasePage.scss
+// KnowledgeBasePage —— 前进视觉迁移（UI 美化批次 C；纯样式，零逻辑/结构改动）
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 
 .kb-page {
   display: flex;
@@ -6,6 +7,8 @@
   height: 100%;
   padding: 20px 24px;
   overflow: hidden;
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
 }
 
 .kb-page-header {
@@ -27,10 +30,10 @@
 
   .kb-page-count {
     font-size: 13px;
-    color: var(--text-tertiary, #999);
-    background: var(--bg-secondary, #f5f5f5);
+    color: var(--color-text-tertiary);
+    background: var(--color-bg-inset);
     padding: 2px 8px;
-    border-radius: 10px;
+    border-radius: var(--radius-control);
   }
 }
 
@@ -47,17 +50,17 @@
   flex: 1;
   max-width: 360px;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--bg-secondary, #f5f5f5);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-inset);
   border: 1px solid transparent;
   transition: border-color 0.2s;
 
   &:focus-within {
-    border-color: var(--accent-color, #007aff);
+    border-color: var(--color-accent-border);
   }
 
   svg {
-    color: var(--text-tertiary, #999);
+    color: var(--color-text-tertiary);
     flex-shrink: 0;
   }
 
@@ -67,10 +70,10 @@
     background: transparent;
     outline: none;
     font-size: 14px;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
 
     &::placeholder {
-      color: var(--text-tertiary, #999);
+      color: var(--color-text-tertiary);
     }
   }
 
@@ -79,31 +82,31 @@
     align-items: center;
     justify-content: center;
     border: none;
-    background: var(--bg-tertiary, #e0e0e0);
+    background: var(--color-bg-inset-strong);
     border-radius: 50%;
     width: 20px;
     height: 20px;
     cursor: pointer;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
 
     &:hover {
-      background: var(--bg-quaternary, #d0d0d0);
+      background: var(--color-bg-hover);
     }
   }
 }
 
 .kb-category-filter {
   padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #e0e0e0);
-  background: var(--bg-primary, #fff);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
   font-size: 13px;
-  color: var(--text-primary, #333);
+  color: var(--color-text-primary);
   cursor: pointer;
   outline: none;
 
   &:focus {
-    border-color: var(--accent-color, #007aff);
+    border-color: var(--color-accent-border);
   }
 }
 
@@ -114,7 +117,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -128,30 +131,30 @@
 }
 
 .kb-btn-primary {
-  background: var(--accent-color, #007aff);
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
 
   &:hover:not(:disabled) {
-    opacity: 0.9;
+    background: var(--color-accent-hover);
   }
 }
 
 .kb-btn-accent {
-  background: linear-gradient(135deg, #f5f3ff, #ede9fe);
-  color: #7c3aed;
-  border: 1px solid #ddd6fe;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent-border);
 
   &:hover:not(:disabled) {
-    background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+    border-color: var(--color-accent);
   }
 }
 
 .kb-btn-secondary {
-  background: var(--bg-secondary, #f5f5f5);
-  color: var(--text-primary, #333);
+  background: var(--color-bg-inset);
+  color: var(--color-text-primary);
 
   &:hover:not(:disabled) {
-    background: var(--bg-tertiary, #e8e8e8);
+    background: var(--color-bg-hover);
   }
 }
 
@@ -171,7 +174,7 @@
   justify-content: center;
   gap: 12px;
   padding: 60px 20px;
-  color: var(--text-tertiary, #999);
+  color: var(--color-text-tertiary);
   font-size: 14px;
 }
 
@@ -181,18 +184,18 @@
   gap: 16px;
 }
 
-// ─── 卡片 ────────────────────────────────────────────────────────────────────
+// ─── 卡片（弱底无边框，hover 才描边上浮）──────────────────────────────────────
 
 .kb-card {
-  background: var(--bg-primary, #fff);
-  border: 1px solid var(--border-color, #e8e8e8);
-  border-radius: 12px;
+  background: var(--color-bg-surface-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
   padding: 16px;
   transition: box-shadow 0.2s, border-color 0.2s;
 
   &:hover {
-    border-color: var(--accent-color, #007aff);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-color: var(--color-accent-border);
+    box-shadow: var(--shadow-card);
   }
 }
 
@@ -207,20 +210,20 @@
 .kb-card-icon {
   display: flex;
   align-items: center;
-  color: var(--accent-color, #007aff);
+  color: var(--color-accent);
 }
 
 .kb-card-category {
-  color: var(--accent-color, #007aff);
+  color: var(--color-accent);
   font-weight: 500;
 }
 
 .kb-card-product-line,
 .kb-card-scene {
-  color: var(--text-tertiary, #999);
-  background: var(--bg-secondary, #f5f5f5);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-inset);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
 }
 
 .kb-card-actions {
@@ -242,19 +245,19 @@
   width: 26px;
   height: 26px;
   border: none;
-  background: var(--bg-secondary, #f5f5f5);
-  border-radius: 6px;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-small);
   cursor: pointer;
-  color: var(--text-secondary, #666);
+  color: var(--color-text-secondary);
   transition: all 0.15s;
 
   &:hover {
-    background: var(--bg-tertiary, #e0e0e0);
+    background: var(--color-bg-hover);
   }
 
   &.danger {
-    background: #fee;
-    color: #e53e3e;
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
   }
 }
 
@@ -262,13 +265,13 @@
   font-size: 15px;
   font-weight: 600;
   margin: 0 0 8px;
-  color: var(--text-primary, #333);
+  color: var(--color-text-primary);
 }
 
 .kb-card-content {
   font-size: 13px;
   line-height: 1.6;
-  color: var(--text-secondary, #666);
+  color: var(--color-text-secondary);
   margin: 0 0 12px;
   display: -webkit-box;
   -webkit-line-clamp: 4;
@@ -289,15 +292,15 @@
   align-items: center;
   gap: 3px;
   font-size: 11px;
-  color: var(--text-secondary, #666);
-  background: var(--bg-secondary, #f5f5f5);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-inset);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
 }
 
 .kb-card-footer {
   font-size: 11px;
-  color: var(--text-tertiary, #999);
+  color: var(--color-text-tertiary);
 }
 
 // ─── 表单弹窗 ────────────────────────────────────────────────────────────────
@@ -305,23 +308,23 @@
 .kb-form-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--color-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(3px);
 }
 
 .kb-form-dialog {
-  background: var(--bg-primary, #fff);
-  border-radius: 16px;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
   width: 520px;
   max-width: 90vw;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-pop);
 }
 
 .kb-form-header {
@@ -344,13 +347,13 @@
   width: 28px;
   height: 28px;
   border: none;
-  background: var(--bg-secondary, #f5f5f5);
+  background: var(--color-bg-inset);
   border-radius: 50%;
   cursor: pointer;
-  color: var(--text-secondary, #666);
+  color: var(--color-text-secondary);
 
   &:hover {
-    background: var(--bg-tertiary, #e0e0e0);
+    background: var(--color-bg-hover);
   }
 }
 
@@ -371,28 +374,28 @@
   label {
     font-size: 13px;
     font-weight: 500;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
   }
 
   input,
   select,
   textarea {
     padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color, #e0e0e0);
-    background: var(--bg-primary, #fff);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
     font-size: 14px;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
     outline: none;
     transition: border-color 0.2s;
     font-family: inherit;
 
     &:focus {
-      border-color: var(--accent-color, #007aff);
+      border-color: var(--color-accent-border);
     }
 
     &::placeholder {
-      color: var(--text-tertiary, #999);
+      color: var(--color-text-tertiary);
     }
   }
 
@@ -407,30 +410,30 @@
   justify-content: flex-end;
   gap: 10px;
   padding: 16px 24px 20px;
-  border-top: 1px solid var(--border-color, #e8e8e8);
+  border-top: 1px solid var(--color-border);
 }
 
-// ─── 批量导入 toast ─────────────────────────────────────────────────────────
+// ─── 批量导入 toast（success 语义）────────────────────────────────────────────
 .kb-import-toast {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 0 0 12px;
   padding: 8px 14px;
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
-  border-radius: 8px;
+  background: var(--color-success-bg);
+  border: 1px solid var(--color-success-border);
+  border-radius: var(--radius-control);
   font-size: 13px;
-  color: #065f46;
+  color: var(--color-success);
 
   button {
     margin-left: auto;
     background: none;
     border: none;
     cursor: pointer;
-    color: #065f46;
+    color: var(--color-success);
     padding: 2px;
-    border-radius: 4px;
-    &:hover { background: #d1fae5; }
+    border-radius: var(--radius-small);
+    &:hover { background: var(--color-success-border); }
   }
 }

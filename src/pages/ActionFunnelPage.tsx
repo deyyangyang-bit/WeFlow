@@ -11,9 +11,9 @@
  * 数据：sales:actionFunnel:get（聚合）+ sales:actionFunnel:breakdown（下钻），纯只读不调 LLM。
  * 口径真源：electron/services/actionFunnel.ts（§2.36）；本页只消费不重算。
  */
-import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, X, Filter, ChevronDown, Info } from 'lucide-react'
+import { RefreshCw, X, Filter } from 'lucide-react'
+import FunnelCylinder from '../components/FunnelCylinder'
 import './ActionFunnelPage.scss'
 
 interface FunnelData {
@@ -44,14 +44,10 @@ const DAY_OPTIONS = [
   { label: '全部', value: 0 }
 ] as const
 
-// 五段行为阶段色：浅蓝→藏青渐变（与销售漏斗同一视觉体系；成交段同款藏青呼应，P0-4.4）
-// 色板单一真源：shared/funnelPalette（与销售漏斗同族 Apple 蓝；页面不硬编码品牌色）
-const STAGE_COLORS = [...FUNNEL_STAGE_COLORS]
-// 每段渐变浅端（与销售漏斗统一色板；配合深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
-const STAGE_GRADIENT_LIGHT = [...FUNNEL_STAGE_GRADIENT_LIGHT]
+// 五段行为阶段：色板由 FunnelCylinder 组件内部统一取 shared/funnelPalette（页面不碰色值）
 const STAGE_NAMES = ['行动产生', '销售执行', '客户响应', '有效推进', '成交']
 // 梯形固定比例收窄（纯装饰分层，不与数值绑定——跳级/转化率>100% 不改变形状；修复版规格）
-const STAGE_WIDTHS = [100, 85, 70, 55, 40] as const
+const STAGE_WIDTHS = [100, 76, 56, 40, 28] as const
 
 /** 推进/成交段与销售漏斗的映射关系（tooltip 弱化，非常驻文字） */
 const STAGE_MAPPINGS: Partial<Record<string, string>> = {
@@ -129,8 +125,8 @@ export default function ActionFunnelPage() {
 
   useEffect(() => { void fetch(days) }, [days, fetch])
 
-  // 自绘五段漏斗数据（P0-4.4 HTML/CSS 梯形替代 ECharts——hover/点击态/箭头/tooltip 全可控；
-  // 每段 = 段名 + 人数（大字）+ 相邻转化率（小字；第 1 段为源头不显示；N/A = 分母 0 不硬算）
+  // 立体圆柱漏斗数据（A048 风格，2026-09-03 拍板；宽度固定比例纯装饰，不与数值绑定）
+  // 每段 = 段名 + 人数（大字）；段间标注 = 相邻转化率（第 1 段为源头不显示；N/A = 分母 0 不硬算）
   const funnelStages = useMemo(() => {
     if (!data) return null
     return [
@@ -142,6 +138,14 @@ export default function ActionFunnelPage() {
     ] as Array<{ key: DrillKey; name: string; count: number; rate: number | null }>
   }, [data])
   const hasAny = funnelStages?.some((s) => s.count > 0) ?? false
+  const cylinderStages = useMemo(() =>
+    funnelStages?.map((s, i) => ({
+      key: s.key,
+      name: s.name,
+      countText: String(s.count),
+      gapText: i === 0 ? null : (s.rate === null ? 'N/A' : `转化 ${(s.rate * 100).toFixed(1)}%`),
+      hint: STAGE_MAPPINGS[s.key]
+    })), [funnelStages])
 
   // 下钻说明文案（数字可解释，不裸给数字；执行/响应有事件明细，推进/成交只有口径说明）
   const drillContent = useMemo(() => {
@@ -239,63 +243,18 @@ export default function ActionFunnelPage() {
             <KpiCard label="执行 → 响应" value={fmtRate(data.rates.response)} note={`${data.stages.responded}/${data.stages.executed} 响应`} highlight onClick={() => setDrill('responded')} />
             <KpiCard label="响应 → 推进" value={fmtRate(data.rates.progression)} note={`${data.stages.progressed}/${data.stages.responded} 推进`} onClick={() => setDrill('progressed')} />
             <KpiCard label="成交数" value={String(data.stages.won)} note="当前 stage=成交" onClick={() => setDrill('won')} />
+            {/* 曝光段：G1 未埋点，诚实 N/A 不硬算——第 6 张 KPI 卡，与其余卡同格呈现（设计稿对齐） */}
+            <KpiCard label="曝光" value="N/A" note="当前未埋点——不为好看硬算曝光率" />
           </div>
 
-          {/* 曝光段：G1 未埋点，诚实 N/A 不硬算 */}
-          <div className="af-exposed">
-            <span className="af-exposed__label">行动曝光</span>
-            <span className="af-exposed__value">N/A · 当前未埋点</span>
-            <span className="af-exposed__hint">（今日行动卡加载无 read 事件，G1 本期不做——不为好看硬算曝光率）</span>
-          </div>
-
-          {/* 五段漏斗（自绘梯形 + 段间箭头「链路感」；不含曝光段——无数字不入图） */}
+          {/* 五段漏斗（A048 立体圆柱，共用组件 FunnelCylinder；不含曝光段——无数字不入图） */}
           <div className="af-chart">
-            {funnelStages && hasAny ? (
-              <div className="af-funnel">
-                {funnelStages.map((s, i) => (
-                  <div className="af-funnel__col" key={s.key}>
-                    <div className="af-funnel__wrap" style={{ width: `${STAGE_WIDTHS[i]}%` }}>
-                      <button
-                        className="af-funnel__stage"
-                        onClick={() => setDrill(s.key)}
-                      >
-                        {/* svg 梯形：渐变 + 同色描边 round join = 2-4px 圆角（clip-path 无法圆角，改用 svg path） */}
-                        <svg className="af-funnel__stage-bg" viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true">
-                          <defs>
-                            <linearGradient id={`af-grad-${s.key}`} x1="0" y1="0" x2="1" y2="1">
-                              <stop offset="0%" stopColor={STAGE_GRADIENT_LIGHT[i]} />
-                              <stop offset="100%" stopColor={STAGE_COLORS[i]} />
-                            </linearGradient>
-                          </defs>
-                          <path
-                            d="M 4 0 L 96 0 L 100 60 L 0 60 Z"
-                            fill={`url(#af-grad-${s.key})`}
-                            stroke={`url(#af-grad-${s.key})`}
-                            strokeWidth="4"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                        <span className="af-funnel__content">
-                          <span className="af-funnel__name">{s.name}</span>
-                          <span className="af-funnel__count">{s.count}</span>
-                          <span className="af-funnel__rate">
-                            {s.rate === null ? (i === 0 ? '源头' : 'N/A') : `转化 ${Math.round(s.rate * 100)}%`}
-                          </span>
-                        </span>
-                      </button>
-                      {STAGE_MAPPINGS[s.key] && (
-                        <span className="af-funnel__map" tabIndex={0} aria-label="口径说明">
-                          <Info size={11} />
-                          <span className="af-funnel__map-tip">{STAGE_MAPPINGS[s.key]}</span>
-                        </span>
-                      )}
-                    </div>
-                    {i < funnelStages.length - 1 && (
-                      <div className="af-funnel__arrow"><ChevronDown size={16} /></div>
-                    )}
-                  </div>
-                ))}
-              </div>
+            {cylinderStages && hasAny ? (
+              <FunnelCylinder
+                stages={cylinderStages}
+                widths={STAGE_WIDTHS}
+                onStageClick={(k) => setDrill(k as DrillKey)}
+              />
             ) : (
               <div className="af-empty">暂无行动数据</div>
             )}

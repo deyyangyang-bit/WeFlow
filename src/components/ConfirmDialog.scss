@@ -1,11 +1,13 @@
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .confirm-dialog-overlay {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  background: var(--color-overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -21,8 +23,8 @@
   .confirm-dialog {
     width: 100%;
     // 半透明背景透出玻璃折射，阴影由 LiquidGlass 提供
-    background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
-    border-radius: 20px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 80%, transparent);
+    border-radius: var(--radius-card);
     position: relative;
     overflow: hidden;
 
@@ -30,9 +32,9 @@
       position: absolute;
       top: 16px;
       right: 16px;
-      background: rgba(0, 0, 0, 0.05);
+      background: var(--color-bg-inset);
       border: none;
-      color: var(--text-secondary);
+      color: var(--color-text-secondary);
       cursor: pointer;
       width: 32px;
       height: 32px;
@@ -43,24 +45,24 @@
       transition: all 0.2s;
 
       &:hover {
-        background: rgba(0, 0, 0, 0.1);
-        color: var(--text-primary);
+        background: var(--color-bg-inset-strong);
+        color: var(--color-text-primary);
       }
     }
 
     .dialog-title {
       padding: 40px 40px 16px;
-      font-size: 18px;
-      font-weight: 600;
-      color: var(--text-primary);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--color-text-primary);
     }
 
     .dialog-content {
       padding: 0 40px 24px;
 
       p {
-        font-size: 15px;
-        color: var(--text-primary);
+        font-size: 14px;
+        color: var(--color-text-primary);
         line-height: 1.6;
         margin: 0 0 16px 0;
 
@@ -77,29 +79,30 @@
       gap: 12px;
 
       button {
-        padding: 12px 24px;
-        border-radius: 12px;
-        font-size: 15px;
+        padding: 10px 22px;
+        border-radius: var(--radius-control);
+        font-size: 14px;
         font-weight: 600;
         cursor: pointer;
         transition: all 0.2s;
         border: none;
 
         &.btn-cancel {
-          background: var(--bg-tertiary);
-          color: var(--text-secondary);
+          background: var(--color-bg-inset);
+          color: var(--color-text-secondary);
 
           &:hover {
-            background: var(--bg-hover);
+            background: var(--color-bg-inset-strong);
+            color: var(--color-text-primary);
           }
         }
 
         &.btn-confirm {
-          background: var(--primary);
-          color: var(--on-primary);
+          background: var(--color-accent);
+          color: var(--color-text-on-accent);
 
           &:hover {
-            background: var(--primary-hover);
+            background: var(--color-accent-hover);
           }
 
           &:active {
@@ -124,5 +127,12 @@
   to {
     transform: translateY(0);
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-dialog-overlay,
+  .confirm-dialog-overlay .confirm-dialog-glass {
+    animation: none;
   }
 }

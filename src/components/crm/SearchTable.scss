@@ -1,0 +1,49 @@
+/* SearchTable —— 搜索表格页骨架（借鉴 Arco Design Pro search-table） */
+.search-table { }
+/* 顶部栏：左筛选右操作（换行不挤压） */
+.search-table__bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 10px; }
+.search-table__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.search-table__toolbar { display: flex; gap: 8px; }
+/* 表格（观感沿用 crm-table：细边框、13px、选中行高亮） */
+.search-table__grid { overflow-x: auto; }
+.search-table__grid table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.search-table__grid th, .search-table__grid td { border-bottom: 1px solid var(--color-border); padding: 8px 10px; text-align: left; }
+.search-table__grid tr.active { background: var(--color-bg-inset); }
+.search-table__grid td .warn { color: var(--color-danger); font-weight: 600; }
+.search-table__state { text-align: center; color: var(--color-text-tertiary); padding: 24px 0 !important; }
+/* 分页条 */
+.search-table__pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0 0; }
+.search-table__pager-info { font-size: 12px; color: var(--color-text-secondary); }
+
+/* 2026-08-29 UI 美化：数字列右对齐（列 className='num' 同步作用于 th/td） */
+.search-table__grid th.num, .search-table__grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.search-table__grid td.num { font-weight: 600; }
+.search-table__grid th { font-size: 11px; font-weight: 600; color: var(--color-text-tertiary); }
+.search-table__grid tbody tr { transition: background .12s; }
+.search-table__grid tbody tr:hover { background: var(--color-bg-hover); }
+.search-table__grid tr.active { background: var(--color-accent-bg) !important; }
+.search-table__grid td .warn { color: var(--color-danger); }
+.search-table__pager-info { color: var(--color-text-secondary); }
+.search-table__state { color: var(--color-text-tertiary); }
+
+/* 2026-08-30：筛选栏裸 select/input 统一皮肤（圆角 + muted 底 + focus 环，对齐设计稿） */
+.search-table__bar select,
+.search-table__bar input {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 7px 12px;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.search-table__bar select { cursor: pointer; }
+.search-table__bar input { width: 320px; }
+.search-table__bar input::placeholder { color: var(--color-text-tertiary); }
+.search-table__bar select:focus,
+.search-table__bar input:focus {
+  border-color: var(--color-accent-border);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}

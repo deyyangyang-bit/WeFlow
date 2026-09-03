@@ -8,6 +8,8 @@ import ReactECharts from 'echarts-for-react'
 import { BarChart3, Calendar, RefreshCw, Trash2, Sparkles, Users, MessageSquare, TrendingUp, AlertCircle, Flame, Snowflake, Layers, UserX, EyeOff, SlidersHorizontal, X } from 'lucide-react'
 import { useSalesReportStore, type ReportStats, type WeeklyReviewStats } from '../stores/salesReportStore'
 import { Avatar } from '../components/Avatar'
+// 图表色单一真源（红线 3：页面不硬编码品牌色）
+import { FUNNEL_STAGE_COLORS } from '../../shared/funnelPalette'
 import './SalesReportPage.scss'
 
 interface ExcludeSession {
@@ -68,7 +70,7 @@ function DailyChart({ data }: { data: Array<{ date: string; count: number }> }) 
     series: [{
       type: 'bar',
       data: data.map(d => d.count),
-      itemStyle: { borderRadius: [4, 4, 0, 0], color: '#007aff' },
+      itemStyle: { borderRadius: [4, 4, 0, 0], color: FUNNEL_STAGE_COLORS[2] },
       barMaxWidth: 32
     }]
   }), [data])
@@ -90,7 +92,7 @@ function TopContactsChart({ contacts }: { contacts: ReportStats['topContacts'] }
     series: [{
       type: 'bar',
       data: top5.map(c => c.messageCount),
-      itemStyle: { borderRadius: [0, 4, 4, 0], color: '#34c759' },
+      itemStyle: { borderRadius: [0, 4, 4, 0], color: FUNNEL_STAGE_COLORS[1] },
       barMaxWidth: 24
     }]
   }), [top5])
@@ -129,10 +131,10 @@ function ReviewSections({ stats }: { stats: WeeklyReviewStats }) {
   return (
     <>
       <div className="sr-review-metrics">
-        <StatCard icon={Layers} label="管道客户" value={stats.pipelineTotal} color="#007aff" />
-        <StatCard icon={Flame} label="本周热了" value={stats.hotCount} color="#ff3b30" />
-        <StatCard icon={Snowflake} label="变冷(>30天)" value={stats.coldCount} color="#34c759" />
-        <StatCard icon={UserX} label="建议放弃" value={stats.dropCount} color="#8e8e93" />
+        <StatCard icon={Layers} label="管道客户" value={stats.pipelineTotal} color="var(--color-accent)" />
+        <StatCard icon={Flame} label="本周热了" value={stats.hotCount} color="var(--color-danger)" />
+        <StatCard icon={Snowflake} label="变冷(>30天)" value={stats.coldCount} color="var(--color-accent)" />
+        <StatCard icon={UserX} label="建议放弃" value={stats.dropCount} color="var(--color-text-tertiary)" />
       </div>
 
       {stageEntries.length > 0 && (
@@ -248,7 +250,7 @@ export default function SalesReportPage() {
           </div>
 
           <button
-            className="sr-btn sr-btn-primary"
+            className="sr-btn sr-btn-plain"
             onClick={handleGenerate}
             disabled={generating}
           >
@@ -257,7 +259,7 @@ export default function SalesReportPage() {
           </button>
 
           <button
-            className="sr-btn sr-btn-review"
+            className="sr-btn sr-btn-primary"
             onClick={handleReview}
             disabled={generating}
           >
@@ -319,13 +321,13 @@ export default function SalesReportPage() {
               currentStats && (
                 <>
                   <div className="sr-stats-grid">
-                    <StatCard icon={MessageSquare} label="消息总量" value={currentStats.totalMessages} color="#007aff" />
-                    <StatCard icon={Users} label="活跃客户" value={currentStats.activeContacts} color="#34c759" />
+                    <StatCard icon={MessageSquare} label="消息总量" value={currentStats.totalMessages} color="var(--color-accent)" />
+                    <StatCard icon={Users} label="活跃客户" value={currentStats.activeContacts} color="var(--color-success)" />
                     <StatCard icon={TrendingUp} label="日均消息" value={
                       currentStats.dailyMessageCounts.length > 0
                         ? Math.round(currentStats.totalMessages / currentStats.dailyMessageCounts.length)
                         : 0
-                    } color="#ff9500" />
+                    } color="var(--color-warning)" />
                   </div>
 
                   {currentReport.ai_summary && (

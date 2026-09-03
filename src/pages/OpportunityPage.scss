@@ -1,72 +1,120 @@
-/* 商机页：AI 从聊天自动识别采购信号 → 商机列表/漏斗/详情 */
-.opp-page { padding: 24px; color: #1e293b; }
-.opp-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; h2 { font-size: 16px; margin-right: auto; } }
-.opp-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; color: #1e293b;
-  &.opp-btn--primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-  &.opp-btn--win { border-color: #bbf7d0; color: #15803d; }
-  &.opp-btn--lose { border-color: #fecaca; color: #dc2626; } }
-.opp-notice { font-size: 12px; color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 4px 10px; }
-.opp-stats { display: flex; gap: 16px; margin-bottom: 20px; }
-.opp-stat { display: flex; flex-direction: column; align-items: center; background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 10px; padding: 12px 24px;
-  .opp-stat__value { font-size: 22px; font-weight: 700; }
-  .opp-stat__label { font-size: 12px; color: #64748b; } }
-.opp-chart { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; margin-bottom: 16px; }
-.opp-drill-hint { text-align: center; font-size: 12px; color: #94a3b8; padding-bottom: 6px; }
-.opp-empty { color: #94a3b8; padding: 20px; text-align: center; font-size: 13px; }
-.opp-filter { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 10px; color: #1d4ed8; }
-.opp-list { display: flex; flex-direction: column; gap: 8px; }
-.opp-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; transition: box-shadow .15s;
-  &:hover { box-shadow: 0 2px 8px rgba(15, 23, 42, .08); }
-  .opp-card__main { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .opp-card__name { font-weight: 600; font-size: 14px; }
-  .opp-card__product { font-size: 13px; color: #475569; }
-  .opp-card__qty { font-size: 12px; color: #64748b; }
-  .opp-card__sub { display: flex; gap: 12px; align-items: center; }
-  .opp-card__amt { font-size: 13px; font-weight: 600; color: #1e293b; }
-    .opp-card__time { font-size: 11px; color: #94a3b8; margin-left: auto; } }
-/* 意向评分条 */
-.opp-score { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
-  &.opp-score--高意向 .opp-score__fill { background: #16a34a; }
-  &.opp-score--中意向 .opp-score__fill { background: #f59e0b; }
-  &.opp-score--低意向 .opp-score__fill { background: #f97316; }
-  .opp-score__bar { width: 60px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; display: inline-block; }
-  .opp-score__fill { height: 100%; background: #94a3b8; border-radius: 3px; }
-  .opp-score__num { color: #475569; } }
+/* 商机页：AI 从聊天自动识别采购信号 → 商机列表/漏斗/详情（2026-08-29 UI 美化：token 化 + 卡片浮起语言） */
+.opp-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
+.opp-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; h2 { font-size: 16px; font-weight: 700; margin-right: auto; } }
+.opp-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; transition: background .15s, border-color .15s;
+  &:hover { background: var(--color-bg-hover); }
+  &.opp-btn--primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); font-weight: 600; &:hover { background: var(--color-accent-hover); } }
+  &.opp-btn--win { border-color: var(--color-success-border); color: var(--color-success); &:hover { background: var(--color-success-bg); } }
+  &.opp-btn--lose { border-color: var(--color-danger-border); color: var(--color-danger); &:hover { background: var(--color-danger-bg); } } }
+.opp-notice { font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 4px 10px; }
+.opp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+.opp-stat { display: flex; align-items: center; gap: 12px; background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 14px 22px; transition: transform .15s, border-color .15s;
+  &:hover { transform: translateY(-1px); border-color: var(--color-accent-border); }
+  &__ico { width: 38px; height: 38px; border-radius: 12px; flex: none; display: flex; align-items: center; justify-content: center; background: var(--color-accent-bg); color: var(--color-accent);
+    &.neu { background: var(--color-bg-inset); color: var(--color-text-secondary); } }
+  &__body { display: flex; flex-direction: column; gap: 2px; }
+  .opp-stat__value { font-size: 26px; font-weight: 700; letter-spacing: -.3px; color: var(--color-text-primary); font-variant-numeric: tabular-nums; line-height: 1.15; white-space: nowrap; }
+  .opp-stat__label { font-size: 12px; color: var(--color-text-tertiary); } }
+.opp-chart { background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 16px; margin-bottom: 16px; }
+/* CSS 阶段漏斗（对齐设计稿/行动漏斗视觉语言）：宽度按数据比例、点击筛选、段间递进箭头
+   ⚠️ 每段的包裹层必须显式 width:100% —— shrink-to-fit 下百分比宽度无法解析（同 ActionFunnelPage 的坑） */
+.opp-funnel { display: flex; flex-direction: column; align-items: center; max-width: 560px; margin: 0 auto; }
+.opp-funnel > div { width: 100%; display: flex; flex-direction: column; align-items: center; }
+.opp-funnel__stage {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  height: 46px; border: 0; border-radius: 10px; cursor: pointer;
+  color: #fff; white-space: nowrap;
+  transition: filter .12s, transform .1s, outline .1s; outline: 2px solid transparent;
+  &:hover { filter: brightness(1.08); }
+  &:active { transform: scale(.99); }
+  &.active { outline-color: var(--color-accent-border); filter: brightness(1.1); }
+}
+.opp-funnel__name { font-size: 12.5px; font-weight: 600; }
+.opp-funnel__count { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.opp-funnel__arrow { text-align: center; font-size: 11px; color: var(--color-text-tertiary); margin: 4px 0;
+  b { color: var(--color-accent); } }
+.opp-drill-hint { text-align: center; font-size: 12px; color: var(--color-text-tertiary); padding-bottom: 6px; }
+.opp-empty { color: var(--color-text-tertiary); padding: 20px; text-align: center; font-size: 13px; }
+.opp-filter { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 10px; color: var(--color-accent); }
+.opp-list { display: flex; flex-direction: column; gap: 10px; }
+.opp-card { border: 1px solid transparent; border-radius: var(--radius-card); padding: 12px 16px; cursor: pointer; background: var(--color-bg-surface); box-shadow: var(--shadow-card); transition: box-shadow .15s, border-color .15s, transform .15s;
+  &:hover { border-color: var(--color-accent-border); transform: translateY(-1px); }
+  .opp-card__main { display: flex; gap: 14px; align-items: center; }
+  .opp-card__date { font-size: 11px; color: var(--color-text-tertiary); width: 40px; flex: none; font-variant-numeric: tabular-nums; }
+  .opp-card__name { font-weight: 600; font-size: 13.5px; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opp-card__product { font-size: 12.5px; color: var(--color-text-secondary); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+  .opp-card__qty { font-size: 12px; color: var(--color-text-secondary); flex: none; }
+  // 金额推到右侧：金额 → 意向度 → 最近信号 三段右对齐
+  .opp-card__amt { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; flex: none;
+    &--pending { color: var(--color-text-tertiary); font-weight: 600; } }
+  .opp-card__time { font-size: 11px; color: var(--color-text-tertiary); width: 118px; text-align: right; flex: none; } }
+/* 意向评分条：统一品牌色 + 上标题下进度条（mockup 六段之一） */
+.opp-score { display: inline-flex; flex-direction: column; gap: 4px; width: 110px; flex: none;
+  .opp-score__t { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--color-text-tertiary); }
+  .opp-score__bar { width: 100%; height: 6px; background: var(--color-bg-inset); border-radius: 999px; overflow: hidden; display: block; }
+  .opp-score__fill { height: 100%; border-radius: 999px; background: var(--color-accent); display: block; }
+  .opp-score__num { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; font-weight: 600; } }
 /* 详情页：意向评分依据 */
-.opp-factors { border-top: 1px solid #f1f5f9; padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
+.opp-factors { border-top: 1px solid var(--color-divider); padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
 .opp-factor { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0;
-  .opp-factor__label { color: #475569; width: 64px; flex-shrink: 0; }
-  .opp-factor__delta { font-weight: 600; width: 40px; flex-shrink: 0; text-align: right; &.pos { color: #16a34a; } &.neg { color: #dc2626; } }
-  .opp-factor__reason { color: #64748b; } }
-.opp-badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; color: #fff;
-  &.opp-badge--了解 { background: #60a5fa; }
-  &.opp-badge--比价 { background: #f59e0b; }
-  &.opp-badge--决策 { background: #ef4444; }
-  &.opp-badge--成交 { background: #16a34a; }
-  &.opp-badge--流失 { background: #94a3b8; } }
-.opp-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .4); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.opp-modal__body { background: #fff; border-radius: 12px; padding: 20px; width: 560px; max-height: 80vh; overflow: auto; color: #1e293b;
+  .opp-factor__label { color: var(--color-text-secondary); width: 64px; flex-shrink: 0; }
+  .opp-factor__delta { font-weight: 600; width: 40px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; &.pos { color: var(--color-success); } &.neg { color: var(--color-danger); } }
+  .opp-factor__reason { color: var(--color-text-secondary); } }
+/* 阶段徽标：背景色由 TSX 从 shared/funnelPalette 内联注入（单一真源），这里只管 pill 形状 */
+.opp-badge { font-size: 11px; border-radius: 999px; padding: 2px 9px; color: #fff; font-weight: 500; white-space: nowrap; flex: none; }
+.opp-modal { position: fixed; inset: 0; background: var(--color-overlay); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.opp-modal__body { background: var(--color-bg-elevated); border-radius: var(--radius-card); padding: 20px; width: 560px; max-height: 80vh; overflow: auto; color: var(--color-text-primary); box-shadow: var(--shadow-pop);
   h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }
 .opp-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; margin-bottom: 14px;
-  .opp-detail__row { display: flex; justify-content: space-between; font-size: 13px; span { color: #64748b; } } }
+  .opp-detail__row { display: flex; justify-content: space-between; font-size: 13px; span { color: var(--color-text-secondary); } } }
 .opp-actions { display: flex; gap: 8px; margin-bottom: 14px; }
-.opp-events { border-top: 1px solid #f1f5f9; padding-top: 12px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
-.opp-event { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed #f1f5f9;
-  .opp-event__tag { background: #eff6ff; color: #2563eb; border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
-  .opp-event__stage { color: #475569; flex-shrink: 0; }
-  .opp-event__detail { color: #334155; flex: 1; }
-  .opp-event__time { color: #94a3b8; font-size: 11px; flex-shrink: 0; } }
-/* 风险预警（P0）：类型标签 + 严重度 + 确认处理 */
-.opp-risks { border-top: 1px solid #f1f5f9; padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: #475569; } }
-.opp-risk { border: 1px solid #f1f5f9; border-left-width: 3px; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px;
-  &.opp-risk--high { border-left-color: #dc2626; }
-  &.opp-risk--medium { border-left-color: #f59e0b; }
-  &.opp-risk--low { border-left-color: #94a3b8; }
+.opp-events { border-top: 1px solid var(--color-divider); padding-top: 12px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
+.opp-event { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--color-divider);
+  .opp-event__tag { background: var(--color-accent-bg); color: var(--color-accent); border-radius: 999px; padding: 1px 8px; flex-shrink: 0; }
+  .opp-event__stage { color: var(--color-text-secondary); flex-shrink: 0; }
+  .opp-event__detail { color: var(--color-text-primary); flex: 1; }
+  .opp-event__time { color: var(--color-text-tertiary); font-size: 11px; flex-shrink: 0; } }
+/* 风险预警（P0）：类型标签 + 严重度 + 确认处理（语义色 = 状态，保留） */
+.opp-risks { border-top: 1px solid var(--color-divider); padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
+.opp-risk { border: 1px solid var(--color-divider); border-left-width: 3px; border-radius: var(--radius-small); padding: 6px 8px; margin-bottom: 6px;
+  &.opp-risk--high { border-left-color: var(--color-danger); }
+  &.opp-risk--medium { border-left-color: var(--color-warning); }
+  &.opp-risk--low { border-left-color: var(--color-chart-neutral); }
   &.is-resolved { opacity: .55; }
   .opp-risk__head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-  .opp-risk__type { background: #fef2f2; color: #dc2626; border-radius: 4px; padding: 1px 6px; font-weight: 600; }
-  .opp-risk__severity { color: #475569; }
-  .opp-risk__time { color: #94a3b8; font-size: 11px; }
-  .opp-risk__resolve { margin-left: auto; font-size: 11px; color: #2563eb; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
-  .opp-risk__done { margin-left: auto; color: #16a34a; font-size: 11px; }
-  .opp-risk__detail { font-size: 12px; color: #475569; margin-top: 4px; white-space: pre-wrap; } }
+  .opp-risk__type { background: var(--color-danger-bg); color: var(--color-danger); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+  .opp-risk__severity { color: var(--color-text-secondary); }
+  .opp-risk__time { color: var(--color-text-tertiary); font-size: 11px; }
+  .opp-risk__resolve { margin-left: auto; font-size: 11px; color: var(--color-accent); border: 1px solid var(--color-accent-border); background: var(--color-accent-bg); border-radius: var(--radius-small); padding: 1px 8px; cursor: pointer; }
+  .opp-risk__done { margin-left: auto; color: var(--color-success); font-size: 11px; }
+  .opp-risk__detail { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; white-space: pre-wrap; } }
+
+/* 商机列表卡（对齐设计稿：单卡容器 + 分隔行；行内不再各自成卡） */
+.opp-list-card {
+  background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card); padding: 16px 18px; margin-top: 14px;
+  > h4 { font-size: 13px; font-weight: 600; color: var(--color-text-primary); margin: 0 0 6px; }
+  .opp-list-count { font-size: 11px; color: var(--color-text-tertiary); font-weight: 400; margin-left: 6px; }
+  .opp-list { gap: 0; margin-top: 4px; }
+  .opp-card { box-shadow: none; border-radius: 0; border: 0; border-bottom: 1px solid var(--color-divider); padding: 12px 4px;
+    &:last-child { border-bottom: 0; }
+    &:hover { transform: none; background: var(--color-bg-hover); border-color: transparent; border-bottom: 1px solid var(--color-divider); } }
+  .opp-empty { padding: 20px 4px; }
+}
+
+/* 刷新 ghost（对齐稿：hover 才显边） */
+.opp-btn--ghost { border-color: transparent; background: transparent; color: var(--color-text-secondary);
+  &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); } }
+
+/* 待确认金额 = 琥珀 pill（对齐稿）；高意向徽标。
+   特异性须压过 .opp-card 内嵌套的 .opp-card__amt--pending 灰字规则（0,2,0），否则渲染成琥珀底灰字 */
+.opp-card .opp-card__amt--pending { background: var(--color-warning-bg); color: var(--color-warning); border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 600; }
+.opp-card__intent { margin-left: 0; }
+
+/* pill 基础 + 语义变体（商机页自含——.crm-pill 定义在合同页样式文件里，单页直连商机时不可依赖） */
+.opp-list-card .crm-pill,
+.opp-card .crm-pill { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 9px; white-space: nowrap; flex: none; }
+.opp-list-card .crm-pill--ok,
+.opp-card .crm-pill--ok { background: var(--color-success-bg); color: var(--color-success); }
+.opp-list-card .crm-pill--warn,
+.opp-card .crm-pill--warn { background: var(--color-warning-bg); color: var(--color-warning); }

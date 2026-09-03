@@ -1,24 +1,28 @@
 // ExtractScriptDialog.scss — 话术提炼弹窗样式
+// 2026-09-02 UI 美化（批次 B）：紫色系字面 hex (#7c3aed 等) → 品牌 accent 族，
+// 旧族 var(--bg-*/--text-*) → 前进视觉 tokens。纯样式，零逻辑/结构改动。
 
 .extract-dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--color-overlay);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(3px);
 }
 
 .extract-dialog {
-  background: var(--bg-primary, #fff);
-  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
+  border-radius: var(--radius-card);
   width: 600px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 
   &__header {
@@ -26,14 +30,15 @@
     align-items: center;
     justify-content: space-between;
     padding: 16px 24px;
-    border-bottom: 1px solid var(--border-color, #e5e7eb);
+    border-bottom: 1px solid var(--color-divider);
     h3 {
       margin: 0;
       font-size: 16px;
+      font-weight: 700;
       display: flex;
       align-items: center;
       gap: 8px;
-      color: var(--text-primary, #1a1a1a);
+      color: var(--color-text-primary);
     }
   }
 
@@ -41,10 +46,10 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     padding: 4px;
-    border-radius: 6px;
-    &:hover { background: var(--bg-hover, #f0f0f0); }
+    border-radius: var(--radius-small);
+    &:hover { background: var(--color-bg-hover); }
   }
 }
 
@@ -57,7 +62,7 @@
 
   &__desc {
     font-size: 13px;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
     margin: 0 0 16px;
     line-height: 1.5;
   }
@@ -68,7 +73,7 @@
     gap: 10px;
     margin-top: 20px;
     padding-top: 16px;
-    border-top: 1px solid var(--border-color, #e5e7eb);
+    border-top: 1px solid var(--color-divider);
   }
 }
 
@@ -79,24 +84,27 @@
   align-items: center;
   gap: 6px;
   padding: 8px 18px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   font-size: 13px;
   cursor: pointer;
-  border: 1px solid var(--border-color, #e5e7eb);
-  transition: all 0.12s;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 
   &--primary {
-    background: #7c3aed;
-    color: #fff;
-    border-color: #7c3aed;
-    &:hover { background: #6d28d9; }
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    border-color: var(--color-accent);
+    font-weight: 600;
+    &:hover { background: var(--color-accent-hover); }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 
   &--secondary {
-    background: var(--bg-primary, #fff);
-    color: var(--text-secondary, #666);
-    &:hover { background: var(--bg-hover, #f5f5f5); }
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    &:hover { background: var(--color-bg-hover); }
   }
 }
 
@@ -107,11 +115,11 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--bg-secondary, #f8f9fa);
-  border-radius: 8px;
+  background: var(--color-bg-surface-muted);
+  border-radius: var(--radius-control);
   margin-bottom: 12px;
-  border: 1px solid var(--border-color, #e5e7eb);
-  color: var(--text-secondary, #999);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-tertiary);
 
   input {
     border: none;
@@ -119,8 +127,8 @@
     outline: none;
     flex: 1;
     font-size: 13px;
-    color: var(--text-primary, #333);
-    &::placeholder { color: #9ca3af; }
+    color: var(--color-text-primary);
+    &::placeholder { color: var(--color-text-tertiary); }
   }
 }
 
@@ -137,23 +145,24 @@
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 8px;
-  border: none;
+  border-radius: var(--radius-control);
+  border: 1px solid transparent;
   background: none;
   cursor: pointer;
   text-align: left;
   transition: background 0.1s;
 
-  &:hover { background: var(--bg-hover, #f5f5f5); }
-  &.selected { background: #f5f3ff; border: 1px solid #ddd6fe; }
+  &:hover { background: var(--color-bg-hover); }
+  &.selected { background: var(--color-accent-bg); border-color: var(--color-accent-border); }
 }
 
+// 头像：原紫蓝渐变 → 品牌纯色（彩色面，白字用 text-on-accent）
 .extract-contact-avatar {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -165,7 +174,7 @@
 .extract-contact-name {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--color-text-primary);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -174,24 +183,24 @@
 
 .extract-contact-wxid {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
 
 .extract-contact-empty {
   text-align: center;
   padding: 32px 0;
-  color: #9ca3af;
+  color: var(--color-text-tertiary);
   font-size: 13px;
 }
 
 .extract-error {
-  color: #dc2626;
+  color: var(--color-danger);
   font-size: 12px;
   margin-top: 8px;
   padding: 8px 12px;
-  background: #fef2f2;
-  border-radius: 6px;
+  background: var(--color-danger-bg);
+  border-radius: var(--radius-small);
 }
 
 // ─── Step 2: AI 分析中 ──────────────────────────────────────────────────────────
@@ -206,14 +215,14 @@
 }
 
 .extract-analyzing-icon {
-  color: #7c3aed;
+  color: var(--color-accent);
   margin-bottom: 16px;
 }
 
 .extract-analyzing-title {
   font-size: 16px;
   font-weight: 600;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--color-text-primary);
   margin: 0 0 24px;
 }
 
@@ -230,11 +239,11 @@
   align-items: center;
   gap: 10px;
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--color-text-tertiary);
   transition: color 0.2s;
 
-  &.active { color: #7c3aed; font-weight: 500; }
-  &.done { color: #059669; }
+  &.active { color: var(--color-accent); font-weight: 500; }
+  &.done { color: var(--color-success); }
 }
 
 .extract-progress-dot {
@@ -250,19 +259,19 @@
 
 .extract-analyzing-hint {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--color-text-tertiary);
 }
 
 .extract-error-title {
   font-size: 16px;
   font-weight: 600;
-  color: #dc2626;
+  color: var(--color-danger);
   margin: 0 0 8px;
 }
 
 .extract-error-msg {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--color-text-secondary);
   margin: 0 0 20px;
   max-width: 400px;
   line-height: 1.5;
@@ -276,7 +285,7 @@
   gap: 12px;
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  border-bottom: 1px solid var(--color-divider);
   font-size: 13px;
 }
 
@@ -285,17 +294,17 @@
   align-items: center;
   gap: 4px;
   font-weight: 600;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--color-text-primary);
 }
 
 .extract-preview-count {
-  color: var(--text-secondary, #666);
+  color: var(--color-text-secondary);
   flex: 1;
 }
 
 .extract-select-all {
   font-size: 12px;
-  color: #7c3aed;
+  color: var(--color-accent);
   background: none;
   border: none;
   cursor: pointer;
@@ -314,17 +323,17 @@
   display: flex;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
   transition: border-color 0.12s;
-  background: var(--bg-primary, #fff);
+  background: var(--color-bg-surface);
 
-  &.selected { border-color: #c4b5fd; background: #faf9ff; }
+  &.selected { border-color: var(--color-accent-border); background: var(--color-accent-bg); }
 
   &__check {
     padding-top: 2px;
     flex-shrink: 0;
-    input { cursor: pointer; accent-color: #7c3aed; }
+    input { cursor: pointer; accent-color: var(--color-accent); }
   }
 
   &__body { flex: 1; min-width: 0; }
@@ -342,34 +351,36 @@
     background: none;
     font-size: 14px;
     font-weight: 600;
-    color: var(--text-primary, #1a1a1a);
+    color: var(--color-text-primary);
     padding: 2px 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-small);
     outline: none;
-    &:focus { border-color: #c4b5fd; background: #fff; }
+    &:focus { border-color: var(--color-accent-border); background: var(--color-bg-surface); }
   }
 
+  // 场景标签：灰 = 中性
   &__scene {
     font-size: 11px;
-    background: #f3f4f6;
-    color: #6b7280;
+    background: var(--color-bg-inset);
+    color: var(--color-text-secondary);
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-small);
     flex-shrink: 0;
   }
 
   &__content {
     width: 100%;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     padding: 8px 10px;
     font-size: 12px;
     line-height: 1.5;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
+    background: var(--color-bg-surface);
     resize: vertical;
     outline: none;
     font-family: inherit;
-    &:focus { border-color: #c4b5fd; }
+    &:focus { border-color: var(--color-accent-border); }
   }
 
   &__meta {
@@ -386,9 +397,10 @@
     flex-wrap: wrap;
   }
 
+  // 疑似重复：琥珀 = 临近/提示
   &__dup {
     font-size: 11px;
-    color: #f59e0b;
+    color: var(--color-warning);
     display: flex;
     align-items: center;
     gap: 3px;
@@ -396,21 +408,21 @@
 
   &__toggle-original {
     font-size: 11px;
-    color: #9ca3af;
+    color: var(--color-text-tertiary);
     background: none;
     border: none;
     cursor: pointer;
     margin-left: auto;
-    &:hover { color: #6b7280; }
+    &:hover { color: var(--color-text-secondary); }
   }
 
   &__original {
     margin-top: 8px;
     padding: 8px 10px;
-    background: #f9fafb;
-    border-radius: 6px;
+    background: var(--color-bg-surface-muted);
+    border-radius: var(--radius-small);
     font-size: 11px;
-    color: #9ca3af;
+    color: var(--color-text-tertiary);
     line-height: 1.5;
     max-height: 100px;
     overflow-y: auto;
@@ -419,12 +431,13 @@
   }
 }
 
+// 话术标签：蓝 = 信息
 .extract-tag {
   font-size: 10px;
-  background: #ede9fe;
-  color: #7c3aed;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
 }
 
 .extract-import-warning {
@@ -432,10 +445,10 @@
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #f59e0b;
+  color: var(--color-warning);
   padding: 8px 12px;
-  background: #fffbeb;
-  border-radius: 6px;
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-small);
   margin-top: 12px;
 }
 
@@ -447,24 +460,25 @@
   gap: 8px;
   margin-bottom: 12px;
   font-size: 13px;
-  label { color: var(--text-secondary, #666); flex-shrink: 0; }
+  label { color: var(--color-text-secondary); flex-shrink: 0; }
   input[type="date"] {
-    border: 1px solid #d1d5db;
-    border-radius: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     padding: 4px 8px;
     font-size: 12px;
-    color: var(--text-primary, #333);
+    color: var(--color-text-primary);
+    background: var(--color-bg-surface);
   }
-  span { color: #9ca3af; }
+  span { color: var(--color-text-tertiary); }
 }
 
 .extract-date-clear {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--color-text-tertiary);
   background: none;
   border: none;
   cursor: pointer;
-  &:hover { color: #6b7280; text-decoration: underline; }
+  &:hover { color: var(--color-text-secondary); text-decoration: underline; }
 }
 
 // ─── 候选确认步骤 ──────────────────────────────────────────────────────────────
@@ -478,31 +492,33 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: var(--text-secondary, #666);
+    color: var(--color-text-secondary);
   }
   input {
-    border: 1px solid #d1d5db;
-    border-radius: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     padding: 2px 6px;
     font-size: 13px;
     text-align: center;
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
   }
 }
 
 .extract-candidate-warn {
   font-size: 12px;
-  color: #f59e0b;
-  background: #fffbeb;
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   margin-bottom: 8px;
 }
 
 .extract-candidate-list {
   max-height: 320px;
   overflow-y: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
   margin-bottom: 12px;
 }
 
@@ -511,11 +527,11 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: #f9fafb;
-  border-bottom: 1px solid #e5e7eb;
+  background: var(--color-bg-surface-muted);
+  border-bottom: 1px solid var(--color-border);
   font-size: 11px;
   font-weight: 600;
-  color: #6b7280;
+  color: var(--color-text-secondary);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -527,10 +543,10 @@
   gap: 6px;
   padding: 7px 12px;
   cursor: pointer;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--color-divider);
   font-size: 12px;
   transition: background 0.1s;
-  &:hover { background: #faf9ff; }
+  &:hover { background: var(--color-bg-hover); }
   &:last-child { border-bottom: none; }
 }
 
@@ -544,7 +560,7 @@
 
 .extract-candidate-name {
   font-weight: 500;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--color-text-primary);
 }
 
 // ─── 批量提炼进度 ──────────────────────────────────────────────────────────────
@@ -557,14 +573,14 @@
 .extract-batch-bar {
   width: 100%;
   height: 6px;
-  background: #e5e7eb;
+  background: var(--color-bg-inset);
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 12px;
 
   &__fill {
     height: 100%;
-    background: linear-gradient(90deg, #7c3aed, #a78bfa);
+    background: var(--color-accent);
     border-radius: 3px;
     transition: width 0.3s ease;
   }
@@ -573,23 +589,23 @@
 .extract-batch-status {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--color-text-primary);
   margin: 0 0 4px;
 }
 
 .extract-batch-contact {
   font-size: 12px;
-  color: var(--text-secondary, #666);
+  color: var(--color-text-secondary);
   margin: 0 0 4px;
 }
 
 .extract-batch-found {
   font-size: 12px;
-  color: #059669;
+  color: var(--color-success);
   margin: 0;
 }
 
-// ─── 版本切换 ──────────────────────────────────────────────────────────────────
+// ─── 版本切换（分段控件惯例：选中浮起 + accent 文字） ─────────────────────────────
 
 .extract-version-tabs {
   display: flex;
@@ -600,23 +616,23 @@
 .extract-version-tab {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 4px;
-  border: 1px solid #e5e7eb;
-  background: var(--bg-primary, #fff);
-  color: #6b7280;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.1s;
-  &:hover { background: #f5f3ff; color: #7c3aed; }
-  &.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  &:hover { background: var(--color-accent-bg); color: var(--color-accent); }
+  &.active { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); }
 }
 
-// ─── 分析诊断 ──────────────────────────────────────────────────────────────────
+// ─── 分析诊断（蓝 = 信息） ──────────────────────────────────────────────────────
 
 .extract-analysis {
   font-size: 11px;
-  color: #6366f1;
-  background: #f5f3ff;
-  border-radius: 6px;
+  color: var(--color-accent);
+  background: var(--color-accent-bg);
+  border-radius: var(--radius-small);
   padding: 6px 10px;
   margin-top: 6px;
   line-height: 1.5;
@@ -630,9 +646,9 @@
 
 .extract-original-ref {
   font-size: 11px;
-  color: #9ca3af;
-  background: #f9fafb;
-  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-surface-muted);
+  border-radius: var(--radius-small);
   padding: 6px 10px;
   margin-top: 4px;
   line-height: 1.5;
@@ -644,14 +660,14 @@
   font-style: normal;
 }
 
-// ─── 来源联系人标签 ─────────────────────────────────────────────────────────────
+// ─── 来源联系人标签（绿 = 正常） ─────────────────────────────────────────────────
 
 .extract-candidate__source {
   font-size: 10px;
-  background: #f0fdf4;
-  color: #059669;
+  background: var(--color-success-bg);
+  color: var(--color-success);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
   max-width: 80px;
   overflow: hidden;
   text-overflow: ellipsis;

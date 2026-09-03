@@ -79,7 +79,10 @@ function WeekDayGroups(props: {
         return (
           <div key={k}>
             <h4 className="day-header" onClick={() => toggle(k)} title={open ? '点击收起' : '点击展开'}>
-              <span className="day-arrow">{open ? '▾' : '▸'}</span> {dayLabelOf(d)} · {list.length} 笔
+              <span className="day-arrow">{open ? '▾' : '▸'}</span> <span className="day-date">{dayLabelOf(d).replace('（今天）', '').replace('（昨天）', '')}</span>
+              {dayLabelOf(d).includes('（今天）') && <span className="day-pill">今天</span>}
+              {dayLabelOf(d).includes('（昨天）') && <span className="day-pill day-pill--muted">昨天</span>}
+              <span className="day-count">{list.length} 笔</span>
               {headerInfo ? headerInfo(list) : null}
             </h4>
             {open && list.map((it) => <Fragment key={it.id}>{render(it)}</Fragment>)}
@@ -113,6 +116,9 @@ export default function CrmReviewPage() {
   const [claimContract, setClaimContract] = useState<Record<number, string>>({}) // paymentId → 合同 id
   const [claimSales, setClaimSales] = useState<Record<number, string>>({}) // paymentId → 认领销售（不填=默认本人，认领不一定是自己的）
   const [onlyUnclaimed, setOnlyUnclaimed] = useState(false) // 只看未认领
+  // 2026-08-29 对齐设计稿：款项认领 / 物流跟单 分 Tab（默认款项认领）
+  const [reviewTab, setReviewTab] = useState<'payments' | 'logistics'>('payments')
+  const [claimedOpen, setClaimedOpen] = useState(true) // 已确认到款默认展开、可折叠（header 复用每日分组样式，须真实可点）
   const [salesTeam, setSalesTeam] = useState<Array<{ name: string; orderCount: number; amount: number }>>([]) // 销售团队名单
   const [teamOpen, setTeamOpen] = useState(false) // 销售团队下拉展开
   const [addSalesName, setAddSalesName] = useState('') // 添加销售输入
@@ -329,10 +335,18 @@ export default function CrmReviewPage() {
             </div>
           )}
         </div>
-        <button className="crm-btn" onClick={() => void fetchQueues()}><RefreshCw size={14} /> 刷新</button>
+        <div className="cws-tabs">
+          {([['payments', '💰 款项认领'], ['logistics', '🚚 物流跟单']] as const).map(([key, label]) => (
+            <button key={key} className={`cws-tab ${reviewTab === key ? 'active' : ''}`} onClick={() => setReviewTab(key)}>{label}</button>
+          ))}
+        </div>
+        <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
 
+
+      {reviewTab === 'logistics' && (
+      <>
       <section>
         <h3>扫描群聊（{groups.filter((g) => Number(g.enabled) === 1).length}/{groups.length} 启用）· 物流发货 / 货款认领固定群</h3>
         {groups.map((g) => (
@@ -378,7 +392,10 @@ export default function CrmReviewPage() {
           </div>
         </div>
       )}
+      </>
+      )}
 
+      {reviewTab === 'logistics' && (
       <section>
         <h3>
           物流跟单
@@ -456,7 +473,9 @@ export default function CrmReviewPage() {
               </div>
             )} />}
       </section>
+      )}
 
+      {reviewTab === 'payments' && (
       <section>
         <h3>
           款项认领（7 天一页）
@@ -519,29 +538,34 @@ export default function CrmReviewPage() {
         />
         {claimedPayments.length > 0 && (
           <div className="claimed-section">
-            <h4 className="day-header">
-              <span className="day-arrow">✓</span> 已确认到款（{claimedPayments.length} 笔 · ¥
+            <h4 className="day-header" onClick={() => setClaimedOpen((v) => !v)}>
+              <span className="day-arrow">{claimedOpen ? '▾' : '▸'}</span> 已确认到款（{claimedPayments.length} 笔 · ¥
               {claimedPayments.reduce((s, p) => s + shownAmountOf(p), 0).toLocaleString()}）
             </h4>
-            {claimedPayments.map((p) => (
-              <div key={p.id} className="crm-card logi-card">
+            {claimedOpen && claimedPayments.map((p) => (
+              <div key={p.id} className="crm-card claimed-row">
+                <span className="claimed-row__ico">¥</span>
                 <div className="logi-card__main">
-                  <span className="logi-card__info">
-                    {p.payer || '(截图/未知)'} · ¥{shownAmountOf(p).toLocaleString()}
+                  <span className="logi-card__info claimed-row__amt">
+                    ¥{shownAmountOf(p).toLocaleString()}
                     <span className="claim-ok">
                       {p.account_name ? ` · 客户「${p.account_name}」` : ''}{p.contract_name ? ` · 合同「${p.contract_name}」` : ''}
-                      {p.sales_name ? ` · 销售 ${p.sales_name}` : ''}
                     </span>
-                    {invoiceBadgeOf(p)}
                   </span>
-                  <em className="logi-card__time">{p.pay_time ? `到账 ${fmtTime(p.pay_time)}` : ''}</em>
+                  <span className="logi-card__time">
+                    {p.payer || '(截图/未知)'}{p.sales_name ? ` · 销售 ${p.sales_name}` : ''}
+                  </span>
                 </div>
+                {invoiceBadgeOf(p)}
+                <em className="logi-card__time claimed-row__time">{p.pay_time ? `到账 ${fmtTime(p.pay_time)}` : ''}</em>
               </div>
             ))}
           </div>
         )}
       </section>
+      )}
 
+      {reviewTab === 'payments' && (
       <section>
         <h3>发票待开（{queues.invoices.length}）</h3>
         {queues.invoices.map((i) => (
@@ -568,7 +592,8 @@ export default function CrmReviewPage() {
             <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-app', i.id).then((r) => setNotice(r.ok ? `开票申请单：${r.path}` : '生成失败')) }}>开票申请</button>
           </div>
         ))}
-      </section>
+        </section>
+      )}
     </div>
   )
 }

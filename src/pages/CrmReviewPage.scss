@@ -1,69 +1,93 @@
 
-.crm-review-page { padding: 24px; color: var(--text-primary, #1e293b); }
+.crm-review-page { padding: 24px; color: var(--text-primary, var(--color-text-primary)); }
 .crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
-.crm-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
 /* 销售团队下拉（header 扫描按钮旁）：成员名单 + 新增/移除管理 */
 .sales-team-wrap { position: relative; }
-.sales-team-drop { position: absolute; z-index: 40; top: calc(100% + 4px); right: 0; width: 260px; background: #fff;
-  border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 8px; }
-.sales-team-drop__title { font-size: 12px; color: #64748b; padding: 2px 6px 6px; display: flex; justify-content: space-between; gap: 8px; em { font-style: normal; color: #2563eb; } }
+.sales-team-drop { position: absolute; z-index: 40; top: calc(100% + 4px); right: 0; width: 260px; background: var(--color-bg-surface);
+  border: 1px solid var(--color-border); border-radius: 8px; box-shadow: var(--shadow-menu); padding: 8px; }
+.sales-team-drop__title { font-size: 12px; color: var(--color-text-secondary); padding: 2px 6px 6px; display: flex; justify-content: space-between; gap: 8px; em { font-style: normal; color: var(--color-accent); } }
 .sales-team-drop__row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .sales-team-drop__pick { flex: 1; text-align: left; border: none; background: none; padding: 5px 8px; font-size: 12px;
-  border-radius: 4px; cursor: pointer; color: #334155; display: flex; justify-content: space-between; gap: 8px;
-  em { font-style: normal; font-size: 11px; color: #94a3b8; } &:hover { background: #eff6ff; } }
-.sales-team-drop__rm { border: 1px solid #fecaca; background: #fff; color: #dc2626; font-size: 11px; border-radius: 4px; padding: 2px 6px; cursor: pointer; &:hover { background: #fef2f2; } }
-.sales-team-drop__add { display: flex; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid #f1f5f9;
-  input { flex: 1; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 8px; font-size: 12px; outline: none; &:focus { border-color: #2563eb; } } }
-.crm-btn { border: 1px solid #e2e8f0; background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; &.primary { background: #2563eb; color: #fff; border-color: #2563eb; } &:disabled { opacity: 0.5; cursor: not-allowed; } }
-.crm-review-page section { margin-bottom: 18px; h3 { font-size: 13px; color: #64748b; margin-bottom: 8px; } }
-.crm-card { display: flex; gap: 8px; align-items: center; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; span { margin-right: auto; } select, input { border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 6px; font-size: 12px; } }
-.crm-card__src { display: block; font-style: normal; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+  border-radius: 4px; cursor: pointer; color: var(--color-text-primary); display: flex; justify-content: space-between; gap: 8px;
+  em { font-style: normal; font-size: 11px; color: var(--color-text-tertiary); } &:hover { background: var(--color-accent-bg); } }
+.sales-team-drop__rm { border: 1px solid var(--color-danger-border); background: var(--color-bg-surface); color: var(--color-danger); font-size: 11px; border-radius: 4px; padding: 2px 6px; cursor: pointer; &:hover { background: var(--color-danger-bg); } }
+.sales-team-drop__add { display: flex; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--color-bg-inset);
+  input { flex: 1; border: 1px solid var(--color-border); border-radius: 6px; padding: 4px 8px; font-size: 12px; outline: none; &:focus { border-color: var(--color-accent); } } }
+.crm-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; &.primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); } &:disabled { opacity: 0.5; cursor: not-allowed; } }
+.crm-review-page section { margin-bottom: 18px; h3 { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 8px; } }
+.crm-card { display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; span { margin-right: auto; } select, input { border: 1px solid var(--color-border); border-radius: 6px; padding: 3px 6px; font-size: 12px; } }
+.crm-card__src { display: block; font-style: normal; font-size: 11px; color: var(--color-text-tertiary); margin-top: 2px; }
 /* 物流卡两行化：主行=信息+时间，副行=操作（不再一行挤 5 个元素） */
 .logi-card { flex-direction: column; align-items: stretch; }
 .logi-card__main { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
-.logi-card__info { font-weight: 500; color: #0f172a; }
-.logi-card__time { font-size: 11px; color: #94a3b8; }
+.logi-card__info { font-weight: 500; color: var(--color-text-primary); }
+.logi-card__time { font-size: 11px; color: var(--color-text-tertiary); }
 .logi-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .crm-card__amt { width: 90px; }
 
-.crm-review-page .gtype { font-style: normal; background: #eff6ff; color: #2563eb; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+.crm-review-page .gtype { font-style: normal; background: var(--color-accent-bg); color: var(--color-accent); border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
 .crm-review-page .gswitch { font-size: 12px; display: flex; gap: 4px; align-items: center; }
-.crm-review-page .crm-search { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; font-size: 13px; width: 100%; margin-bottom: 10px; }
+.crm-review-page .crm-search { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; width: 100%; margin-bottom: 10px; }
 .crm-review-page .pick-list { max-height: 50vh; overflow: auto; }
-.crm-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.crm-modal-body { background: #fff; border-radius: 12px; padding: 20px; width: 640px; max-height: 80vh; overflow: auto; color: #1e293b; h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }
+.crm-modal { position: fixed; inset: 0; background: var(--color-overlay); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.crm-modal-body { background: var(--color-bg-elevated); border-radius: var(--radius-card); padding: 20px; width: 640px; max-height: 80vh; overflow: auto; color: var(--color-text-primary); box-shadow: var(--shadow-pop); h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 12px; } }
 
 // 自动确认摘要块
 .crm-auto {
-  border: 1px dashed #c7d2fe; background: #f5f3ff; border-radius: 8px; padding: 10px 12px;
+  border: 1px dashed var(--color-accent-border); background: var(--color-accent-bg); border-radius: 8px; padding: 10px 12px;
   h3 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .crm-auto__sum { font-style: normal; font-size: 12px; color: #6d28d9; margin-right: auto; }
-  .crm-btn { border-color: #c7d2fe; }
+  .crm-auto__sum { font-style: normal; font-size: 12px; color: var(--color-accent); margin-right: auto; }
+  .crm-btn { border-color: var(--color-accent-border); }
 }
 .crm-auto__byentity { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
-  span { font-size: 11px; background: #ede9fe; color: #5b21b6; border-radius: 4px; padding: 2px 8px; } }
+  span { font-size: 11px; background: var(--color-accent-bg); color: var(--color-accent); border-radius: 4px; padding: 2px 8px; } }
 .crm-auto__history { max-height: 40vh; overflow: auto; margin-top: 6px; }
-.crm-card--empty { justify-content: center; color: #94a3b8; background: #f8fafc; border-style: dashed; }
+.crm-card--empty { justify-content: center; color: var(--color-text-tertiary); background: var(--color-bg-surface-muted); border-style: dashed; }
 
 /* ─── 物流跟单 ──────────────────────────────────────────────────────────── */
-.logi-stats { font-style: normal; font-size: 12px; color: #64748b; margin-left: 10px; font-weight: 400;
-  .logi-stats__overdue { color: #dc2626; font-weight: 600; }
+.logi-stats { font-style: normal; font-size: 12px; color: var(--color-text-secondary); margin-left: 10px; font-weight: 400;
+  .logi-stats__overdue { color: var(--color-danger); font-weight: 600; }
 }
-.logi-overdue { font-style: normal; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca;
+.logi-overdue { font-style: normal; background: var(--color-danger-bg); color: var(--color-danger); border: 1px solid var(--color-danger-border);
   border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 8px; font-weight: 600; }
-.claim-ok { font-weight: 500; color: #334155; }
-.invoice-ok { font-style: normal; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
+.claim-ok { font-weight: 500; color: var(--color-text-primary); }
+.invoice-ok { font-style: normal; background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--color-success-border);
   border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; }
-.logi-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 12px;
-  margin-bottom: 8px; font-size: 13px; color: #1d4ed8; }
-.logi-notice--warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+.logi-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px;
+  margin-bottom: 8px; font-size: 13px; color: var(--color-accent); }
+.logi-notice--warn { background: var(--color-warning-bg); border-color: var(--color-warning-border); color: var(--color-warning); }
 
 /* 物流三区分页（待认领/待签收/已签收 每页 10 条） */
 .crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 0; }
-.crm-pager-info { font-size: 12px; color: #64748b; }
+.crm-pager-info { font-size: 12px; color: var(--color-text-secondary); }
 
-/* 每日到款：可折叠分组 header（默认只展开今天，header 带未认领数，认领入口不丢） */
-.day-header { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin: 10px 0 6px;
-  padding: 4px 8px; border-radius: 6px; &:hover { background: #f1f5f9; } }
-.day-arrow { width: 14px; text-align: center; color: #94a3b8; font-size: 12px; }
-.day-unclaimed { color: #dc2626; font-weight: 600; }
+/* 每日到款：可折叠分组 header（默认只展开今天，header 带未认领数，认领入口不丢）
+   2026-08-29 对齐设计稿：muted 卡行 + 日期加粗 + hover 反馈 */
+.day-header { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; margin: 10px 0 8px;
+  padding: 9px 14px; border-radius: var(--radius-control); background: var(--color-bg-surface-muted);
+  border: 1px solid var(--color-divider); font-size: 12.5px; color: var(--color-text-primary);
+  &:hover { background: var(--color-bg-hover); } }
+.day-arrow { width: 14px; text-align: center; color: var(--color-text-tertiary); font-size: 12px; }
+.day-unclaimed { color: var(--color-danger); font-weight: 600; margin-left: auto; }
+/* 已确认到款行：图标芯片 + 两行信息 + 开票 pill + 到账时间（mockup 布局；不用 logi-card——它的纵向排列会挤垮行） */
+.claimed-row { display: flex; align-items: center; gap: 12px; }
+.claimed-row .logi-card__main { display: flex; flex-direction: column; gap: 3px; margin-right: auto; min-width: 0; }
+/* 提高特异性覆盖 .crm-card span 的 margin-right:auto——否则图标和金额之间被双 auto margin 撑出大空隙 */
+.claimed-row .claimed-row__ico { width: 34px; height: 34px; border-radius: 10px; flex: none; display: flex; align-items: center; justify-content: center; margin-right: 0;
+  background: var(--color-success-bg); color: var(--color-success); font-size: 14px; font-weight: 700; }
+.claimed-row__amt { font-weight: 600; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.claimed-row__time { margin-left: 0; width: 118px; text-align: right; font-style: normal; flex: none; }
+/* 每日 header：日期加粗 + 今天/昨天 pill + 笔数弱化（对齐设计稿） */
+.day-date { font-weight: 700; }
+.day-pill { background: var(--color-accent); color: var(--color-text-on-accent); font-size: 10.5px; border-radius: 6px; padding: 2px 7px; font-weight: 600; }
+.day-pill--muted { background: var(--color-bg-inset-strong); color: var(--color-text-secondary); }
+.day-count { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+/* 分页信息 pill */
+.crm-pager-info { background: var(--color-bg-inset); border-radius: 999px; padding: 4px 14px; font-size: 12px; }
+
+// 2026-08-29 对齐设计稿：ghost 按钮（刷新/表格操作——hover 才显边）+ 页头副标题
+.crm-btn--ghost { border-color: transparent; background: transparent; color: var(--color-text-secondary);
+  &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  &.danger:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: transparent; } }
+.crm-header__sub { font-size: 12px; color: var(--color-text-tertiary); margin-right: auto; }

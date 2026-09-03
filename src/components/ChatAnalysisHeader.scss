@@ -1,3 +1,4 @@
+// ChatAnalysisHeader —— 前进视觉 tokens 版（2026-09-02 UI 美化批次 D；纯样式，零逻辑/结构改动）
 .chat-analysis-header {
   position: relative;
   display: flex;
@@ -17,17 +18,17 @@
   gap: 4px;
   padding: 4px 8px 4px 4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
   font-size: 13px;
   font-weight: 500;
 
   &:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 }
 
@@ -36,7 +37,7 @@
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 
   .chat-analysis-breadcrumb-separator {
     opacity: 0.5;
@@ -54,16 +55,16 @@
   gap: 4px;
   padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
   transition: background 0.15s ease, color 0.15s ease;
 
   .current {
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 
   svg {
@@ -71,8 +72,8 @@
   }
 
   &:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 
   &.open svg {
@@ -86,10 +87,10 @@
   right: 0;
   min-width: 120px;
   padding: 4px;
-  background: var(--bg-secondary-solid, var(--bg-secondary));
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  box-shadow: var(--shadow-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
   z-index: 20;
 }
 
@@ -98,9 +99,9 @@
   display: block;
   padding: 8px 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   text-align: left;
   cursor: pointer;
   font-size: 13px;
@@ -108,7 +109,7 @@
   transition: background 0.15s ease;
 
   &:hover {
-    background: var(--bg-hover);
+    background: var(--color-bg-hover);
   }
 }
 

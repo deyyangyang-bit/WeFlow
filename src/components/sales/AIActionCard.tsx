@@ -29,17 +29,17 @@ const STAGE_LABELS: Record<string, { text: string; color: string }> = {
 /** 环形 gauge：score 原始分居中，环按 /140 归一化 */
 function RingGauge({ score }: { score: number }) {
   const color = score >= 100
-    ? 'var(--wf-urgent, #DC2626)'
+    ? 'var(--color-danger)'
     : score >= 60
-      ? 'var(--wf-high, #D97706)'
-      : 'var(--wf-normal, #64748B)'
+      ? 'var(--color-warning)'
+      : 'var(--color-chart-neutral)'
   const R = 26
   const C = 2 * Math.PI * R
   const pct = Math.min(1, score / 140)
   return (
     <div className="ring-gauge">
       <svg width={64} height={64} viewBox="0 0 64 64">
-        <circle cx={32} cy={32} r={R} fill="none" stroke="var(--wf-gauge-track, #EEF0F3)" strokeWidth={6} />
+        <circle cx={32} cy={32} r={R} fill="none" stroke="var(--color-bg-inset)" strokeWidth={6} />
         <circle
           cx={32} cy={32} r={R} fill="none"
           stroke={color} strokeWidth={6} strokeLinecap="round"

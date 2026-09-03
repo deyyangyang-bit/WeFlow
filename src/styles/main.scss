@@ -49,14 +49,6 @@
 
   // ---- Layout ----
   --sidebar-width: 200px;
-
-  // ---- Gold Premium Theme ----
-  --gold-start: #c3aa87;
-  --gold-mid: #a88c64;
-  --gold-end: #7c6340;
-  --glow-color: rgba(168, 140, 100, 0.03);
-  --desc-text: #a8a29e;
-  --brand-text: #d6d3d1;
 }
 
 // =============================================
@@ -93,14 +85,6 @@
   --card-inner-bg: #353535;
   --sent-card-bg: var(--primary);
   --on-primary: #ffffff;
-
-  // ---- Gold Premium Theme ----
-  --gold-start: #e5d2b8;
-  --gold-mid: #cca87a;
-  --gold-end: #997750;
-  --glow-color: rgba(204, 168, 122, 0.03);
-  --desc-text: #57534e;
-  --brand-text: #292524;
 }
 
 // =============================================
@@ -443,6 +427,7 @@ body {
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.08);
   --shadow-pop: 0 24px 64px rgba(15, 23, 42, 0.28), 0 2px 8px rgba(15, 23, 42, 0.08);
   --font-app: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 // ---- Dark：表面/文本/线条/语义/滚动条/阴影 全量覆盖（品牌 alias 自动继承） ----
@@ -486,4 +471,27 @@ body {
   --shadow-control: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.45);
   --shadow-pop: 0 24px 64px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+// ─── 2026-08-30 对齐设计稿：CRM/报表页内容限宽居中（稿式 1240 布局，聊天/今日行动不受影响）───
+.crm-workbench-page,
+.crm-review-page,
+.opp-page,
+.crm-lead-page,
+.cws-page,
+.af-page,
+.funnel-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+// ─── 分段控件（cws-tabs）：全局定义一次 —— 客户工作台三 Tab 与跟单中心款项/物流两 Tab 复用。
+// 页面均为 lazy 加载，跨页类放页级 scss 会在冷启动直连另一页时丢样式（2026-08-30 跟单中心踩坑）───
+.cws-tabs { display: flex; gap: 2px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; background: var(--color-bg-inset); border-radius: 10px; padding: 3px; }
+.cws-tab {
+  border: none; background: transparent; border-radius: 8px;
+  padding: 6px 14px; font-size: 12.5px; font-weight: 500; color: var(--color-text-secondary); cursor: pointer; transition: color .15s, background .15s, box-shadow .15s;
+  &:hover { color: var(--color-text-primary); }
+  &.active { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); }
 }

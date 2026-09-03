@@ -1,9 +1,12 @@
+// ChatHistoryPage —— 前进视觉 tokens 版（2026-09-02 UI 美化批次 D；纯样式，零逻辑/结构改动）
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .chat-history-page {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  color: var(--text-primary);
-  background: var(--bg-primary);
+  color: var(--color-text-primary);
+  background: var(--color-bg-page);
+  font-family: var(--font-app);
 
   .history-list {
     flex: 1;
@@ -16,15 +19,15 @@
     .status-msg {
       text-align: center;
       padding: 40px 20px;
-      color: var(--text-tertiary);
+      color: var(--color-text-tertiary);
       font-size: 14px;
 
       &.error {
-        color: var(--danger);
+        color: var(--color-danger);
       }
 
       &.empty {
-        color: var(--text-tertiary);
+        color: var(--color-text-tertiary);
       }
     }
   }
@@ -37,9 +40,9 @@
 
     &.error-item {
       padding: 12px;
-      background: var(--bg-secondary);
-      border-radius: 8px;
-      color: var(--text-tertiary);
+      background: var(--color-bg-surface-muted);
+      border-radius: var(--radius-small);
+      color: var(--color-text-tertiary);
       font-size: 13px;
       text-align: center;
       justify-content: center;
@@ -48,12 +51,12 @@
     .history-avatar {
       width: 36px;
       height: 36px;
-      border-radius: 8px;
+      border-radius: var(--radius-small);
       overflow: hidden;
       flex-shrink: 0;
       border: none;
       box-shadow: none;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-hover) 100%);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -77,7 +80,7 @@
       flex: 1;
       min-width: 0;
       padding-bottom: 18px;
-      border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+      border-bottom: 1px solid var(--color-divider);
 
       .header {
         display: flex;
@@ -89,13 +92,13 @@
         .sender {
           font-size: 13px;
           font-weight: 400;
-          color: color-mix(in srgb, var(--text-secondary) 82%, transparent);
+          color: var(--color-text-secondary);
           line-height: 1.3;
         }
 
         .time {
           font-size: 12px;
-          color: color-mix(in srgb, var(--text-tertiary) 92%, transparent);
+          color: var(--color-text-tertiary);
           flex-shrink: 0;
           margin-left: 8px;
           line-height: 1.3;
@@ -118,7 +121,7 @@
         .text-content {
           font-size: 15px;
           line-height: 1.7;
-          color: var(--text-primary);
+          color: var(--color-text-primary);
           white-space: pre-wrap;
           word-break: break-word;
         }
@@ -129,34 +132,34 @@
             max-height: 320px;
             border-radius: 12px;
             display: block;
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
-            background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+            box-shadow: var(--shadow-menu);
+            background: var(--color-bg-surface-muted);
           }
 
           .media-tip {
             padding: 6px 0;
-            color: var(--text-tertiary);
+            color: var(--color-text-tertiary);
             font-size: 13px;
           }
         }
 
         .media-placeholder {
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--color-text-secondary);
           padding: 4px 0 0;
         }
 
         .nested-chat-record-card {
           min-width: 220px;
           max-width: 320px;
-          background: var(--card-bg);
-          border: 1px solid var(--border-color);
-          border-radius: 14px;
+          background: var(--color-bg-surface-muted);
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-card);
           overflow: hidden;
           padding: 0;
           text-align: left;
           cursor: default;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+          box-shadow: var(--shadow-card);
 
           &.clickable {
             cursor: pointer;
@@ -164,13 +167,13 @@
 
             &:hover {
               transform: translateY(-1px);
-              box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
-              border-color: color-mix(in srgb, var(--primary) 28%, var(--border-color));
+              box-shadow: var(--shadow-menu);
+              border-color: var(--color-accent-border);
             }
           }
 
           &:disabled {
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--color-border);
             opacity: 1;
           }
         }
@@ -179,7 +182,7 @@
           padding: 13px 15px 9px;
           font-size: 14px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--color-text-primary);
         }
 
         .nested-chat-record-list {
@@ -187,13 +190,13 @@
           display: flex;
           flex-direction: column;
           gap: 4px;
-          border-bottom: 1px solid var(--border-color);
+          border-bottom: 1px solid var(--color-divider);
         }
 
         .nested-chat-record-line {
           font-size: 13px;
           line-height: 1.45;
-          color: var(--text-secondary);
+          color: var(--color-text-secondary);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -202,7 +205,7 @@
         .nested-chat-record-footer {
           padding: 8px 15px 11px;
           font-size: 12px;
-          color: var(--text-tertiary);
+          color: var(--color-text-tertiary);
         }
       }
     }

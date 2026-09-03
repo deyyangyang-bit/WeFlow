@@ -1,37 +1,17 @@
 /**
- * TodayActionPage.scss — 统一信号流首页样式(v4 token)
- * 信号流专用 CSS 变量(不影响全局主题),仅浅色
+ * TodayActionPage.scss — 统一信号流首页样式
+ * 2026-09-02 UI 美化（批次 B）：迁出页面私有 --wf-* 色板，全量消费「前进视觉」tokens
+ * （token 真源 src/styles/main.scss；规范 docs/DESIGN-SPEC-MINI.md）。纯样式，零逻辑/结构改动。
+ * 语义映射：品牌 teal → accent；紧急 → danger；高优 → warning；中性 → chart-neutral/text-secondary。
  */
 
 .today-action-page {
-  // v4 design tokens
-  --wf-ink: #101728;
-  --wf-canvas: #F5F6F8;
-  --wf-card: #FFFFFF;
-  --wf-border: #E7E9EE;
-  --wf-border-soft: #F1F5F9;
-  --wf-teal: #0F766E;
-  --wf-teal-soft: #ECFAF7;
-  --wf-teal-border: #CDF0EA;
-  --wf-teal-ink: #0F5F58;
-  --wf-urgent: #DC2626;
-  --wf-high: #D97706;
-  --wf-normal: #64748B;
-  --wf-muted: #94A3B8;
-  --wf-body: #475569;
-  --wf-gauge-track: #EEF0F3;
-  --wf-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  // 来源分布配色(沿用原语义)
-  --wf-task: #3E5C76;
-  --wf-task-bg: #EAF0F5;
-  --wf-insight: #C77A17;
-  --wf-insight-bg: #FBF1DF;
-  --wf-merged: #0F766E;
-
-  background: var(--wf-canvas);
-  padding: 24px 28px;
+  background: var(--color-bg-page);
+  padding: 24px;
   height: 100%;
   overflow-y: auto;
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
   font-variant-numeric: tabular-nums;
 
   &__header {
@@ -43,15 +23,15 @@
   }
 
   &__title {
-    font-size: 22px;
-    font-weight: 800;
-    color: var(--wf-ink);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--color-text-primary);
     margin: 0;
   }
 
   &__subtitle {
     font-size: 13px;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
     margin: 4px 0 0;
   }
 
@@ -62,18 +42,18 @@
   }
 
   &__refresh {
-    background: #fff;
-    border: 1px solid #E2E8F0;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
     cursor: pointer;
-    color: var(--wf-normal);
+    color: var(--color-text-secondary);
     padding: 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-control);
     display: flex;
     align-items: center;
     transition: background 0.15s, color 0.15s;
 
-    &:hover { background: var(--wf-border-soft); color: var(--wf-ink); }
-    &:active { background: #E2E8F0; }
+    &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+    &:active { background: var(--color-bg-inset); }
     &:disabled { opacity: 0.5; cursor: default; }
   }
 
@@ -95,10 +75,10 @@
   }
 
   &__error {
-    background: #FEF2F2;
-    border: 1px solid #FECACA;
-    color: var(--wf-urgent);
-    border-radius: 10px;
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+    color: var(--color-danger);
+    border-radius: var(--radius-control);
     padding: 12px 16px;
     font-size: 13px;
     display: flex;
@@ -107,16 +87,16 @@
     margin-bottom: 12px;
 
     button {
-      background: #fff;
-      border: 1px solid #FECACA;
-      color: var(--wf-urgent);
-      border-radius: 6px;
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-danger-border);
+      color: var(--color-danger);
+      border-radius: var(--radius-small);
       padding: 4px 10px;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
 
-      &:hover { background: #FFF5F5; }
+      &:hover { background: var(--color-danger-bg); }
     }
   }
 
@@ -126,7 +106,7 @@
     align-items: center;
     gap: 10px;
     padding: 60px 0;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
 
     p { margin: 0; font-size: 13px; }
   }
@@ -143,30 +123,31 @@
   font-size: 13px;
   font-weight: 600;
   padding: 7px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s;
 
   &--teal {
-    background: #fff;
-    color: var(--wf-teal);
-    border-color: var(--wf-teal);
+    background: var(--color-bg-surface);
+    color: var(--color-accent);
+    border-color: var(--color-accent-border);
 
-    &:hover { background: var(--wf-teal-soft); }
-    &:active { background: #d7f2ec; }
+    &:hover { background: var(--color-accent-bg); }
+    &:active { background: var(--color-accent-bg); }
   }
 }
 
-// KPI 单行条
+// KPI 单行条：白卡浮起 + shadow-card + radius 16；主数字 26px/700 tabular
 .kpi-strip {
   display: flex;
   align-items: center;
   gap: 24px;
   flex-wrap: wrap;
-  background: var(--wf-card);
-  border: 1px solid var(--wf-border);
-  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   padding: 14px 20px;
   margin-bottom: 14px;
 
@@ -176,61 +157,62 @@
     gap: 8px;
 
     // 图标按序着色:高优/沉默/活跃/待处理
-    &:nth-of-type(1) svg { color: var(--wf-urgent); }
-    &:nth-of-type(2) svg { color: var(--wf-high); }
-    &:nth-of-type(3) svg { color: var(--wf-teal); }
-    &:nth-of-type(4) svg { color: var(--wf-normal); }
+    &:nth-of-type(1) svg { color: var(--color-danger); }
+    &:nth-of-type(2) svg { color: var(--color-warning); }
+    &:nth-of-type(3) svg { color: var(--color-accent); }
+    &:nth-of-type(4) svg { color: var(--color-chart-neutral); }
   }
 
   &__value {
-    font-family: var(--wf-mono);
     font-weight: 700;
-    font-size: 16px;
-    color: var(--wf-ink);
+    font-size: 26px;
+    color: var(--color-text-primary);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.3px;
     line-height: 1;
   }
 
   &__label {
-    font-size: 11px;
-    color: var(--wf-muted);
+    font-size: 12px;
+    color: var(--color-text-tertiary);
     margin-top: 2px;
   }
 
   &__divider {
     width: 1px;
     align-self: stretch;
-    background: #EEF0F3;
+    background: var(--color-divider);
   }
 }
 
-// 高意向提示条
+// 高意向提示条（蓝 = 信息）
 .signal-notice {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--wf-teal-soft);
-  border: 1px solid var(--wf-teal-border);
-  color: var(--wf-teal-ink);
+  background: var(--color-accent-bg);
+  border: 1px solid var(--color-accent-border);
+  color: var(--color-accent);
   font-size: 13px;
   font-weight: 600;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   padding: 10px 14px;
   margin-bottom: 14px;
   cursor: pointer;
   transition: background 0.15s;
 
-  &:hover { background: #d7f2ec; }
+  &:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
 
   &__dismiss {
     margin-left: auto;
     font-size: 11px;
     font-weight: 400;
-    color: var(--wf-teal);
+    color: var(--color-accent);
     opacity: 0.7;
   }
 }
 
-// 筛选 chips
+// 筛选 chips：分段控件惯例（灰底 + 选中浮起 + accent 文字）
 .signal-chips {
   display: flex;
   gap: 8px;
@@ -244,49 +226,50 @@
   padding: 6px 14px;
   border-radius: 999px;
   cursor: pointer;
-  background: #fff;
-  color: var(--wf-body);
-  border: 1px solid #E2E8F0;
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+  border: 1px solid transparent;
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 
-  &:hover { background: var(--wf-border-soft); }
+  &:hover { color: var(--color-text-primary); }
 
   &--active {
-    background: var(--wf-ink);
-    color: #fff;
-    border-color: var(--wf-ink);
+    background: var(--color-bg-surface);
+    color: var(--color-accent);
+    box-shadow: var(--shadow-control);
 
-    &:hover { background: #232d42; }
+    &:hover { color: var(--color-accent); }
 
-    .signal-chip__count { color: rgba(255, 255, 255, 0.7); }
+    .signal-chip__count { color: inherit; opacity: 0.7; }
   }
 
   &__count {
-    font-family: var(--wf-mono);
     font-size: 11px;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
+    font-variant-numeric: tabular-nums;
   }
 }
 
 // 空状态
 .signal-empty {
-  background: var(--wf-card);
-  border: 1px dashed var(--wf-border);
-  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   padding: 48px 20px;
   text-align: center;
   font-size: 14px;
-  color: var(--wf-muted);
+  color: var(--color-text-tertiary);
 }
 
 // 客户名可点击（深链到客户 360 档案）
 .signal-card__name--link {
   cursor: pointer;
   transition: color 0.15s;
-  &:hover { color: var(--wf-accent, #2563eb); text-decoration: underline; }
+  &:hover { color: var(--color-accent); text-decoration: underline; }
 }
 
 // 分页
@@ -304,30 +287,31 @@
     font-size: 13px;
     font-weight: 600;
     padding: 6px 14px;
-    border-radius: 8px;
+    border-radius: var(--radius-control);
     cursor: pointer;
-    background: var(--wf-card, #fff);
-    color: var(--wf-body, #475569);
-    border: 1px solid var(--wf-border, #E7E9EE);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
     transition: background 0.15s, border-color 0.15s;
 
-    &:hover:not(:disabled) { background: var(--wf-canvas, #F5F6F8); border-color: var(--wf-muted, #94A3B8); }
+    &:hover:not(:disabled) { background: var(--color-bg-hover); border-color: var(--color-accent-border); }
     &:disabled { opacity: 0.4; cursor: default; }
   }
 
   &__info {
     font-size: 12px;
-    color: var(--wf-muted, #94A3B8);
+    color: var(--color-text-tertiary);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 }
 
-// 可折叠数据概览
+// 可折叠数据概览：白卡浮起
 .overview-card {
-  background: var(--wf-card);
-  border: 1px solid var(--wf-border);
-  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   margin-bottom: 14px;
 
   &__toggle {
@@ -339,21 +323,21 @@
     background: transparent;
     border: none;
     cursor: pointer;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
     transition: background 0.15s;
 
-    &:hover { background: var(--wf-canvas); }
+    &:hover { background: var(--color-bg-hover); }
   }
 
   &__title {
     font-size: 13px;
     font-weight: 700;
-    color: var(--wf-ink);
+    color: var(--color-text-primary);
     display: flex;
     align-items: center;
     gap: 6px;
 
-    svg { color: var(--wf-teal); }
+    svg { color: var(--color-accent); }
   }
 }
 
@@ -365,9 +349,9 @@
 }
 
 .overview-section {
-  background: var(--wf-canvas);
-  border: 1px solid var(--wf-border-soft);
-  border-radius: 10px;
+  background: var(--color-bg-surface-muted);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-control);
   padding: 12px 14px;
 
   &--wide { grid-column: 1 / -1; }
@@ -375,7 +359,7 @@
   &__title {
     display: block;
     font-size: 11px;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
     margin-bottom: 8px;
   }
 
@@ -384,19 +368,20 @@
     height: 6px;
     border-radius: 3px;
     overflow: hidden;
-    background: var(--wf-border-soft);
+    background: var(--color-bg-inset);
   }
 
-  &__seg--task { background: var(--wf-task); }
-  &__seg--merged { background: var(--wf-merged); }
-  &__seg--insight { background: var(--wf-insight); }
+  // 来源分布配色（语义近似：任务=中性灰、双重信号=品牌蓝、见解=琥珀）
+  &__seg--task { background: var(--color-chart-neutral); }
+  &__seg--merged { background: var(--color-accent); }
+  &__seg--insight { background: var(--color-warning); }
 
   &__legend {
     display: flex;
     gap: 12px;
     margin-top: 8px;
     font-size: 11px;
-    color: var(--wf-body);
+    color: var(--color-text-secondary);
     flex-wrap: wrap;
     align-items: center;
   }
@@ -408,9 +393,9 @@
     display: inline-block;
     margin-right: 4px;
 
-    &--task { background: var(--wf-task); }
-    &--merged { background: var(--wf-merged); }
-    &--insight { background: var(--wf-insight); }
+    &--task { background: var(--color-chart-neutral); }
+    &--merged { background: var(--color-accent); }
+    &--insight { background: var(--color-warning); }
   }
 
   &__urgency {
@@ -429,21 +414,21 @@
     height: 8px;
     border-radius: 50%;
 
-    &--urgent { background: var(--wf-urgent); }
-    &--high { background: var(--wf-high); }
-    &--normal { background: var(--wf-normal); }
+    &--urgent { background: var(--color-danger); }
+    &--high { background: var(--color-warning); }
+    &--normal { background: var(--color-chart-neutral); }
   }
 
   &__urgency-num {
-    font-family: var(--wf-mono);
     font-weight: 700;
     font-size: 14px;
-    color: var(--wf-ink);
+    color: var(--color-text-primary);
+    font-variant-numeric: tabular-nums;
   }
 
   &__urgency-label {
     font-size: 11px;
-    color: var(--wf-body);
+    color: var(--color-text-secondary);
   }
 
   &__stages {
@@ -461,14 +446,14 @@
   &__stage-label {
     width: 36px;
     font-size: 12px;
-    color: var(--wf-body);
+    color: var(--color-text-secondary);
     flex-shrink: 0;
   }
 
   &__stage-track {
     flex: 1;
     height: 8px;
-    background: #E9EDF2;
+    background: var(--color-bg-inset);
     border-radius: 4px;
     overflow: hidden;
   }
@@ -479,10 +464,10 @@
   }
 
   &__stage-count {
-    font-family: var(--wf-mono);
     font-size: 12px;
     font-weight: 700;
-    color: var(--wf-ink);
+    color: var(--color-text-primary);
+    font-variant-numeric: tabular-nums;
     width: 24px;
     text-align: right;
   }
@@ -490,19 +475,19 @@
 
 // 新建待办按钮（header 区）
 .ta-btn--todo {
-  background: #fff;
-  color: var(--wf-ink);
-  border-color: var(--wf-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
 
-  &:hover { background: #F5F7FA; }
-  &:active { background: #EDF0F4; }
+  &:hover { background: var(--color-bg-hover); }
+  &:active { background: var(--color-bg-inset); }
 }
 
 // 新建待办弹窗
 .ta-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--color-overlay);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -513,9 +498,9 @@
 .ta-modal {
   width: 440px;
   max-width: calc(100vw - 32px);
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -534,7 +519,7 @@
     margin: 0;
     font-size: 15px;
     font-weight: 700;
-    color: var(--wf-ink);
+    color: var(--color-text-primary);
   }
 
   &__close {
@@ -544,12 +529,12 @@
     width: 26px;
     height: 26px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--radius-small);
     background: transparent;
-    color: var(--wf-muted);
+    color: var(--color-text-tertiary);
     cursor: pointer;
 
-    &:hover { background: #F1F4F8; }
+    &:hover { background: var(--color-bg-hover); }
   }
 
   &__input {
@@ -557,17 +542,18 @@
     box-sizing: border-box;
     padding: 9px 12px;
     font-size: 13px;
-    border: 1px solid var(--wf-border);
-    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
     outline: none;
-    color: var(--wf-ink);
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
 
-    &:focus { border-color: var(--wf-teal); box-shadow: 0 0 0 3px var(--wf-teal-soft); }
+    &:focus { border-color: var(--color-accent-border); box-shadow: 0 0 0 3px var(--color-accent-bg); }
   }
 
   &__error {
     font-size: 12px;
-    color: #e74c3c;
+    color: var(--color-danger);
   }
 
   &__actions {
@@ -580,27 +566,27 @@
   &__cancel {
     padding: 7px 14px;
     font-size: 13px;
-    border-radius: 8px;
-    border: 1px solid var(--wf-border);
-    background: #fff;
-    color: var(--wf-body);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
     cursor: pointer;
 
-    &:hover { background: #F5F7FA; }
+    &:hover { background: var(--color-bg-hover); }
   }
 
   &__submit {
     padding: 7px 16px;
     font-size: 13px;
     font-weight: 600;
-    border-radius: 8px;
+    border-radius: var(--radius-control);
     border: none;
-    background: var(--wf-teal);
-    color: #fff;
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
     cursor: pointer;
 
     &:disabled { opacity: 0.5; cursor: not-allowed; }
-    &:hover:not(:disabled) { filter: brightness(0.95); }
+    &:hover:not(:disabled) { background: var(--color-accent-hover); }
   }
 }
 
@@ -616,10 +602,10 @@
   right: 0;
   max-height: 220px;
   overflow-y: auto;
-  background: #fff;
-  border: 1px solid var(--wf-border);
-  border-radius: 8px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
   z-index: 10;
 }
 
@@ -636,8 +622,8 @@
   cursor: pointer;
   font-size: 13px;
 
-  &:hover { background: var(--wf-teal-soft); }
+  &:hover { background: var(--color-accent-bg); }
 
-  &__name { color: var(--wf-ink); font-weight: 600; }
-  &__sid { color: var(--wf-muted); font-family: var(--wf-mono); font-size: 11px; }
+  &__name { color: var(--color-text-primary); font-weight: 600; }
+  &__sid { color: var(--color-text-tertiary); font-size: 11px; }
 }

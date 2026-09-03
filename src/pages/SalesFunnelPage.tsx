@@ -4,12 +4,12 @@
  * 口径：窗口内「曾进入过某档位」的去重客户数（同一客户同一档位只计 1 次，绝不按
  * intent_tag_log 行数统计）。时间窗口可切换（近30天/近90天/全部）。
  */
-import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT, SALES_STAGE_COLOR_INDEX } from '../../shared/funnelPalette'
+import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT, SALES_STAGE_COLOR_INDEX } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
-import * as echarts from 'echarts'
+import FunnelCylinder from '../components/FunnelCylinder'
 import './SalesFunnelPage.scss'
 
 interface FunnelStats {
@@ -30,8 +30,6 @@ const STAGE_COLORS: Record<string, string> = {
 }
 // 梯形固定比例收窄（P0-4.4 修复版）：宽度纯装饰不绑数值——客户可跳级/转化率>100% 时形状不变（决策 14→成交 28 不再"突然变宽"）
 const STAGE_WIDTHS = [100, 85, 70, 55] as const
-// 每段渐变浅端（与行动漏斗统一色板；深端 = STAGE_COLORS 基准色，左上→右下极轻微加深）
-const STAGE_GRADIENT_LIGHT = FUNNEL_STAGE_GRADIENT_LIGHT
 const DAY_OPTIONS = [
   { label: '近7天', value: 7 },
   { label: '近30天', value: 30 },
@@ -62,61 +60,19 @@ export default function SalesFunnelPage() {
   const rateOf = useCallback((from: string, to: string) =>
     data?.conversion.find((c) => c.from === from && c.to === to)?.rate ?? 0, [data])
 
-  // ECharts 漏斗（4 档，sort:'none' 按顺序排布；宽度 = 固定比例 STAGE_WIDTHS，不随人数变化——修复跳级变宽）
-  // 每档：段名 + 人数（大字，取 data.real）+ 相邻转化率（小字浅色）；selectedMode 提供点击态视觉反馈
-  const funnelOption = useMemo(() => {
+  // 立体圆柱漏斗数据（A048 风格，2026-09-03 拍板；宽度固定比例纯装饰，段间标注 = 相邻转化率）
+  const cylinderStages = useMemo(() => {
     if (!data) return null
     const funnel = data.funnel.filter((f) => (STAGE_ORDER as readonly string[]).includes(f.stage))
     if (!funnel.length) return null
-    return {
-      tooltip: {
-        trigger: 'item' as const,
-        formatter: (p: { name?: string; data?: { real?: number } }) =>
-          `${p?.name ?? ''}: ${p?.data?.real ?? 0} 人`
-      },
-      series: [{
-        type: 'funnel', left: '12%', right: '12%', top: 12, bottom: 12,
-        // minSize 0：宽度 = value/max × 100% 严格等于 STAGE_WIDTHS 固定比例（14% 会让比例偏移）
-        minSize: 0, maxSize: '100%', sort: 'none' as const, gap: 2,
-        label: {
-          show: true, position: 'inside' as const, fontSize: 16, color: '#fff', lineHeight: 20,
-          rich: {
-            // 转化率小字：缩小 + 白色 70% 透明度，与主数字（16px 纯白）形成明显主次
-            sub: { fontSize: 10, color: 'rgba(255,255,255,.7)' }
-          },
-          formatter: (p: { name?: string; data?: { real?: number } }) => {
-            const i = Math.max(0, (STAGE_ORDER as readonly string[]).indexOf(String(p?.name ?? '')))
-            const rate = i === 0 ? 100 : rateOf(STAGE_ORDER[i - 1], STAGE_ORDER[i])
-            return `${p?.name ?? ''}  ${p?.data?.real ?? 0} 人\n{sub|转化 ${rate}%}`
-          }
-        },
-        itemStyle: { borderWidth: 0, borderColor: '#fff' },
-        emphasis: {
-          label: { fontSize: 14 },
-          itemStyle: { borderWidth: 2, borderColor: '#fff', shadowBlur: 10, shadowColor: 'rgba(15, 23, 42, .2)' }
-        },
-        selectedMode: 'single',
-        select: { itemStyle: { borderWidth: 2, borderColor: '#fff', shadowBlur: 10, shadowColor: 'rgba(30, 58, 138, .35)' } },
-        data: funnel.map((n, idx) => ({
-          name: n.stage, value: STAGE_WIDTHS[idx] ?? 0, real: n.count,
-          itemStyle: {
-            // 极细微渐变（左上→右下轻微加深，与行动漏斗同一色板）+ 小圆角柔和边缘
-            color: new echarts.graphic.LinearGradient(0, 0, 1, 1, [
-              { offset: 0, color: STAGE_GRADIENT_LIGHT[idx] ?? STAGE_COLORS[n.stage] },
-              { offset: 1, color: STAGE_COLORS[n.stage] }
-            ]),
-            borderRadius: 2
-          }
-        }))
-      }]
-    }
+    return funnel.map((n, idx) => ({
+      key: n.stage,
+      name: n.stage,
+      countText: `${n.count} 人`,
+      colorIndex: SALES_STAGE_COLOR_INDEX[n.stage] ?? idx,
+      gapText: idx === 0 ? null : `转化 ${rateOf(funnel[idx - 1].stage, n.stage)}%`
+    }))
   }, [data, rateOf])
-  const funnelEvents = useMemo(() => ({
-    click: (p: { name?: string }) => {
-      const stage = String(p?.name || '')
-      if (stage) navigate(`/customers?stage=${encodeURIComponent(stage)}`)
-    }
-  }), [navigate])
 
   // 趋势：窗口内每天进入各档位的去重客户数（按档位堆叠柱状）
   const trendOption = useMemo(() => {
@@ -166,16 +122,20 @@ export default function SalesFunnelPage() {
       {data && (
         <div className="funnel-body">
           <div className="funnel-stats">
-            <div className="funnel-stat"><span className="funnel-stat__value">{data.totalCustomers}</span><span className="funnel-stat__label">客户总数</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{data.newCustomersInWindow}</span><span className="funnel-stat__label">窗口新进漏斗</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('成交')}</span><span className="funnel-stat__label">当前成交</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('决策')}</span><span className="funnel-stat__label">当前决策</span></div>
-            <div className="funnel-stat"><span className="funnel-stat__value">{currentOf('流失')}</span><span className="funnel-stat__label">当前流失</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__label">客户总数</span><span className="funnel-stat__value">{data.totalCustomers}</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__label">窗口新进漏斗</span><span className="funnel-stat__value">{data.newCustomersInWindow}</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__label">当前成交</span><span className="funnel-stat__value">{currentOf('成交')}</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__label">当前决策</span><span className="funnel-stat__value">{currentOf('决策')}</span></div>
+            <div className="funnel-stat"><span className="funnel-stat__label">当前流失</span><span className="funnel-stat__value">{currentOf('流失')}</span></div>
           </div>
 
-          {funnelOption ? (
+          {cylinderStages ? (
             <div className="funnel-chart">
-              <ReactECharts option={funnelOption} style={{ height: 300 }} notMerge onEvents={funnelEvents} />
+              <FunnelCylinder
+                stages={cylinderStages}
+                widths={STAGE_WIDTHS}
+                onStageClick={(k) => navigate(`/customers?stage=${encodeURIComponent(k)}`)}
+              />
               <div className="funnel-drill-hint">点击漏斗任一阶段 → 下钻 CRM 客户列表（当前阶段为该档位的客户）</div>
             </div>
           ) : (

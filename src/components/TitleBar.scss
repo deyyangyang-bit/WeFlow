@@ -46,7 +46,7 @@
 .titles {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   letter-spacing: -0.01em;
 }
 
@@ -55,9 +55,9 @@
   height: 32px;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -67,8 +67,8 @@
   -webkit-app-region: no-drag;
 
   &:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 }
 
@@ -86,9 +86,9 @@
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -98,12 +98,12 @@
   -webkit-app-region: no-drag;
 
   &:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 
   &.is-close:hover {
-    background: #e5484d;
+    background: var(--color-danger);
     color: #fff;
   }
 }
@@ -119,18 +119,18 @@
   button {
     background: transparent;
     border: none;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     cursor: pointer;
     padding: 6px;
-    border-radius: 6px;
+    border-radius: var(--radius-small);
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.15s;
 
     &:hover {
-      background: var(--bg-hover);
-      color: var(--text-primary);
+      background: var(--color-bg-hover);
+      color: var(--color-text-primary);
     }
 
     &:disabled {
@@ -139,15 +139,15 @@
     }
 
     &.live-play-btn.active {
-      background: var(--primary-light);
-      color: var(--primary);
+      background: var(--color-accent-bg);
+      color: var(--color-accent);
     }
   }
 
   .scale-text {
     min-width: 50px;
     text-align: center;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
@@ -155,7 +155,7 @@
   .divider {
     width: 1px;
     height: 14px;
-    background: var(--border-color);
+    background: var(--color-border);
     margin: 0 4px;
   }
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type ThemeId = 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water' | 'blossom-dream' | 'geist'
+export type ThemeId = 'default' | 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water' | 'blossom-dream' | 'geist'
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface ThemeInfo {
@@ -15,6 +15,13 @@ export interface ThemeInfo {
 }
 
 export const themes: ThemeInfo[] = [
+  {
+    id: 'default',
+    name: '默认 · Apple 蓝',
+    description: 'WeFlow 品牌色（W1 拍板 #0071E3）',
+    primaryColor: '#0071E3',
+    bgColor: '#F5F5F7'
+  },
   {
     id: 'cloud-dancer',
     name: '云上舞白',
@@ -78,14 +85,17 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({
-      currentTheme: 'cloud-dancer',
+      currentTheme: 'default',
       themeMode: 'light',
       setTheme: (theme) => set({ currentTheme: theme }),
       setThemeMode: (mode) => set({ themeMode: mode }),
       toggleThemeMode: () => set({ themeMode: get().themeMode === 'light' ? 'dark' : 'light' })
     }),
     {
-      name: 'echotrace-theme'
+      name: 'echotrace-theme',
+      version: 1,
+      // v1：出厂默认从 cloud-dancer（棕金）改为 default（Apple 蓝）——旧持久化一并重置
+      migrate: (persisted) => ({ ...(persisted as object), currentTheme: 'default' }) as ThemeState
     }
   )
 )

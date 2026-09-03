@@ -1,11 +1,16 @@
+// MyFootprintPage —— 前进视觉 token 化（2026-09 UI 美化批次 E；纯样式，零逻辑/结构改动）
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
+// 时间线类别色取语义最近 token：提及=warning（琥珀）、私聊=accent（品牌蓝）、发出=success（绿）
 .my-footprint-page {
-  --timeline-mention: #f59e0b; /* muted orange */
-  --timeline-private: #3b82f6; /* muted blue */
+  --timeline-mention: var(--color-warning);
+  --timeline-private: var(--color-accent);
 
   min-height: 100%;
   margin: -24px -24px 0;
   padding: 32px 40px;
-  background: var(--bg-primary); /* Pure minimal background */
+  background: var(--color-bg-page);
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -29,7 +34,7 @@
   flex-direction: column;
   gap: 20px;
   padding: 10px 0 20px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 40%, transparent);
+  border-bottom: 1px solid var(--color-divider);
   animation: footprintFadeSlideUp 0.22s ease both;
 }
 
@@ -44,12 +49,12 @@
     font-weight: 600;
     line-height: 1.3;
     letter-spacing: 0;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 
   p {
     margin: 0;
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     font-size: 14px;
   }
 }
@@ -66,33 +71,35 @@
   gap: 16px;
 }
 
+// 时间范围预设：iOS 分段控件（inset 灰底 + 浮起选中项 + accent 文字）
 .range-preset-group {
   display: flex;
-  gap: 4px;
-  background: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
-  padding: 4px;
-  border-radius: 8px;
+  gap: 2px;
+  background: var(--color-bg-inset);
+  padding: 3px;
+  border-radius: var(--radius-control);
 }
 
 .preset-chip {
   background: transparent;
   border: none;
-  color: var(--text-secondary);
-  border-radius: 6px;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-small);
   padding: 6px 14px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 
   &:hover {
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 
   &.active {
-    color: var(--text-primary);
-    background: var(--bg-primary);
-    box-shadow: none;
+    color: var(--color-accent);
+    font-weight: 600;
+    background: var(--color-bg-surface);
+    box-shadow: var(--shadow-control);
   }
 }
 
@@ -102,7 +109,7 @@
   gap: 10px;
 
   span {
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     font-size: 13px;
     font-weight: 500;
   }
@@ -110,9 +117,9 @@
   input[type="date"] {
     font-family: inherit;
     border: 1px solid transparent;
-    background: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
-    color: var(--text-primary);
-    border-radius: 8px;
+    background: var(--color-bg-inset);
+    color: var(--color-text-primary);
+    border-radius: var(--radius-control);
     padding: 6px 10px;
     font-size: 13px;
     font-weight: 500;
@@ -121,14 +128,14 @@
     box-shadow: none;
 
     &:hover {
-      background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+      background: var(--color-bg-inset-strong);
     }
 
     &:focus {
       outline: none;
-      background: color-mix(in srgb, var(--primary) 4%, transparent);
-      border-color: color-mix(in srgb, var(--primary) 30%, transparent);
-      color: var(--primary);
+      background: var(--color-accent-bg);
+      border-color: var(--color-accent-border);
+      color: var(--color-accent);
     }
 
     &::-webkit-calendar-picker-indicator {
@@ -143,7 +150,7 @@
 
     &::-webkit-calendar-picker-indicator:hover {
       opacity: 0.9;
-      background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+      background: var(--color-bg-inset-strong);
     }
   }
 }
@@ -160,26 +167,26 @@
   align-items: center;
   gap: 8px;
   border: none;
-  background: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
-  border-radius: 8px;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-control);
   padding: 8px 12px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   transition: background 0.15s ease, color 0.15s ease;
 
   &:focus-within {
-    background: color-mix(in srgb, var(--primary) 8%, transparent);
-    color: var(--primary);
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
   }
 
   input {
     min-width: 180px;
     border: none;
     background: transparent;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
     font-size: 13px;
 
     &::placeholder {
-      color: var(--text-tertiary);
+      color: var(--color-text-tertiary);
     }
     &:focus {
       outline: none;
@@ -190,9 +197,9 @@
 .action-btn,
 .jump-btn {
   border: none;
-  background: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
-  color: var(--text-secondary);
-  border-radius: 8px;
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-control);
   padding: 8px 12px;
   font-size: 13px;
   font-weight: 500;
@@ -203,8 +210,8 @@
   transition: background 0.15s ease, color 0.15s ease;
 
   &:hover {
-    background: color-mix(in srgb, var(--text-tertiary) 15%, transparent);
-    color: var(--text-primary);
+    background: var(--color-bg-inset-strong);
+    color: var(--color-text-primary);
   }
 
   &:disabled {
@@ -218,7 +225,7 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
   padding: 18px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 40%, transparent);
+  border-bottom: 1px solid var(--color-divider);
 }
 
 .kpi-card {
@@ -230,7 +237,7 @@
   align-items: flex-start;
   gap: 8px;
   text-align: left;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   animation: footprintKpiIn 0.3s ease both;
   transition: opacity 0.2s ease;
   cursor: pointer;
@@ -240,15 +247,16 @@
   }
 
   strong {
-    font-size: 30px;
-    font-weight: 300;
+    font-size: 26px;
+    font-weight: 700;
     line-height: 1;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
     letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
   }
 
   small {
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     font-size: 12px;
   }
 }
@@ -258,10 +266,10 @@
 }
 
 .footprint-ai-result {
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   padding: 14px 16px;
-  background: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 40%, transparent);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-divider);
 
   .footprint-ai-head {
     display: flex;
@@ -271,12 +279,12 @@
 
     strong {
       font-size: 14px;
-      color: var(--text-primary);
+      color: var(--color-text-primary);
     }
 
     span {
       font-size: 12px;
-      color: var(--text-tertiary);
+      color: var(--color-text-tertiary);
     }
   }
 
@@ -284,25 +292,25 @@
     margin: 0;
     white-space: pre-wrap;
     line-height: 1.6;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     font-size: 13px;
   }
 
   &.footprint-ai-result-error {
-    border-color: color-mix(in srgb, #ef4444 50%, transparent);
+    border-color: var(--color-danger-border);
   }
 }
 
 .kpi-label {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kpi-diagnostics {
   cursor: default;
   &:hover { opacity: 1; }
-  border-left: 1px solid color-mix(in srgb, var(--border-color) 40%, transparent);
+  border-left: 1px solid var(--color-divider);
   padding-left: 20px;
 }
 
@@ -342,33 +350,35 @@
   display: none;
 }
 
+// 时间线粒度切换：iOS 分段控件（同 range-preset-group 语言）
 .timeline-mode-row {
   display: flex;
-  gap: 4px;
-  background: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
+  gap: 2px;
+  background: var(--color-bg-inset);
   padding: 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
 }
 
 .timeline-mode-chip {
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 500;
   padding: 6px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-small);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 
   &:hover {
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 
   &.active {
-    color: var(--text-primary);
-    background: var(--bg-primary);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    color: var(--color-accent);
+    font-weight: 600;
+    background: var(--color-bg-surface);
+    box-shadow: var(--shadow-control);
   }
 }
 
@@ -383,7 +393,7 @@
     top: 0;
     bottom: 0;
     width: 2px;
-    background: color-mix(in srgb, var(--text-tertiary) 20%, transparent);
+    background: color-mix(in srgb, var(--color-text-tertiary) 20%, transparent);
   }
 }
 
@@ -397,10 +407,11 @@
 
 .timeline-time {
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   text-align: right;
   padding-top: 5px;
   height: 100%;
+  font-variant-numeric: tabular-nums;
 }
 
 .timeline-time-private {
@@ -417,7 +428,7 @@
 
 .timeline-time-main,
 .timeline-time-end {
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   font-weight: 500;
   line-height: 1;
 }
@@ -438,7 +449,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--text-tertiary);
+  background: var(--color-text-tertiary);
   position: relative;
   z-index: 1;
   flex-shrink: 0;
@@ -458,7 +469,7 @@
 }
 
 .timeline-dot-private-outbound_only {
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .timeline-dot-private-both {
@@ -468,7 +479,7 @@
 .timeline-dot-start,
 .timeline-dot-end {
   background: transparent;
-  border: 1.5px solid var(--text-tertiary);
+  border: 1.5px solid var(--color-text-tertiary);
   width: 10px;
   height: 10px;
   margin-top: -1px;
@@ -494,7 +505,7 @@
 }
 
 .timeline-dot-range-line-outbound_only {
-  background: #22c55e;
+  background: color-mix(in srgb, var(--color-success) 55%, transparent);
 }
 
 .timeline-dot-range-line-both {
@@ -512,7 +523,7 @@
 
 .timeline-boundary {
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   padding: 4px 0;
 }
 
@@ -544,11 +555,11 @@
   height: 28px;
   border-radius: 50%; /* Modern circle avatars */
   overflow: hidden;
-  background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
+  background: var(--color-bg-inset);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 
   img {
     width: 100%;
@@ -570,12 +581,12 @@
 .timeline-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
 }
 
 .timeline-subtitle {
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 }
 
 .timeline-right-tools {
@@ -586,25 +597,26 @@
 
 .timeline-count-badge {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .timeline-jump-btn {
   padding: 4px 10px;
   font-size: 12px;
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 
   &:hover {
-    background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
-    color: var(--text-primary);
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
   }
 }
 
 .timeline-message {
   font-size: 13px;
   line-height: 1.5;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   padding: 0;
   margin-top: 4px;
   background: transparent;
@@ -614,11 +626,11 @@
 }
 
 .mention-message {
-  color: var(--text-primary);
+  color: var(--color-text-primary);
 }
 
 .private-message {
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 }
 
 @keyframes timelineSwitchFade {
@@ -641,7 +653,7 @@
 .panel-empty-state {
   text-align: center;
   padding: 60px 0;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   font-size: 14px;
 }
 
@@ -658,8 +670,8 @@
 
 .kpi-skeleton-card {
   height: 60px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-inset);
 }
 
 .timeline-skeleton-list {
@@ -670,15 +682,17 @@
 
 .timeline-skeleton-item {
   height: 80px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-inset);
 }
 
 .footprint-export-modal-mask {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: color-mix(in srgb, #000 36%, transparent);
+  background: var(--color-overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -687,10 +701,10 @@
 
 .footprint-export-modal {
   width: min(520px, 100%);
-  border-radius: 10px;
-  background: var(--bg-primary);
-  border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.16);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-pop);
   padding: 18px 18px 16px;
   display: flex;
   flex-direction: column;
@@ -701,12 +715,12 @@
     margin: 0;
     font-size: 17px;
     font-weight: 600;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 
   p {
     margin: 0;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     font-size: 14px;
     line-height: 1.5;
   }
@@ -715,39 +729,39 @@
 .export-modal-icon {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .export-modal-icon-progress {
-  color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .export-modal-icon-success {
-  color: #16a34a;
-  background: color-mix(in srgb, #16a34a 18%, transparent);
+  color: var(--color-success);
+  background: var(--color-success-bg);
 }
 
 .export-modal-icon-error {
-  color: #ef4444;
-  background: color-mix(in srgb, #ef4444 18%, transparent);
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
 }
 
 .export-modal-path {
   display: block;
   margin-top: 2px;
   padding: 9px 11px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   font-family: inherit;
   font-weight: 500;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--text-tertiary);
-  background: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-color) 40%, transparent);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-divider);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -769,7 +783,7 @@
     background: linear-gradient(
       90deg,
       transparent,
-      color-mix(in srgb, var(--bg-primary) 50%, transparent),
+      color-mix(in srgb, var(--color-bg-surface) 50%, transparent),
       transparent
     );
     transform: translateX(-100%);

@@ -14,8 +14,9 @@
  *  - 行动信号：sales.actionGetUnified()（getUnifiedSignals，全量不截断，过滤 todo:/logi:/lead: 虚拟前缀）
  *  - 360 档案：crm.customerProfile(sessionId)
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Clock } from 'lucide-react'
+import { Avatar } from '../components/Avatar'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import { stageToFunnel } from '../../shared/salesStage'
@@ -173,6 +174,7 @@ export default function CustomerWorkspacePage() {
   const [editingValue, setEditingValue] = useState('')
   const [deepReport, setDeepReport] = useState('')
   const [deepLoading, setDeepLoading] = useState(false)
+  const deepReqRef = useRef(-1) // 最近一次深度分析的目标客户 id：切换客户后旧请求作废，防止报告写错抽屉
   // P0-3.2 证据回查（AI 当前判断卡「有据可查」）：视图只带 messageKey 锚点，点击才走 P0-2B 拉原话
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
   const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
@@ -181,6 +183,8 @@ export default function CustomerWorkspacePage() {
     setSelectedCustomer(c)
     setCustomerProfile(null)
     setDeepReport('')
+    deepReqRef.current = Number(c?.id ?? -1) // 使在途的旧客户深度分析请求失效
+    setDeepLoading(false)
     setEvidenceKey(null)
     setEvidenceMsg(null)
     if (!c.session_id) return
@@ -268,9 +272,11 @@ export default function CustomerWorkspacePage() {
   }
   const genDeepAnalysis = async (c: any) => {
     if (!c.session_id) { setNotice('该客户未关联微信会话，无法深度分析'); return }
+    deepReqRef.current = Number(c.id)
     setDeepLoading(true)
     setDeepReport('')
     const r = await window.electronAPI.crm.customerDeepAnalysis(String(c.session_id), c.name)
+    if (deepReqRef.current !== Number(c.id)) return // 期间已切换客户：丢弃过期报告（loading 已由 openCustomer 复位）
     setDeepLoading(false)
     if (r.ok && r.report) setDeepReport(r.report)
     else setNotice(`深度分析失败：${r.reason}`)
@@ -336,12 +342,7 @@ export default function CustomerWorkspacePage() {
     <div className="cws-page">
       <div className="crm-header">
         <h2><Users size={18} /> 客户工作台</h2>
-        <div className="cws-badges">
-          <span className={`cws-badge cws-badge--follow`}>值得跟进 {followList.length}</span>
-          <span className={`cws-badge cws-badge--insight`}>AI 新发现 {insightList.length}</span>
-          <span className="cws-badge">全部客户 {customers.length}</span>
-        </div>
-        <button className="crm-btn" onClick={() => { void fetchAll(); void fetchQueues() }}><RefreshCw size={14} /> 刷新</button>
+        <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchAll(); void fetchQueues() }}><RefreshCw size={14} /> 刷新</button>
         <div className="cws-more">
           <button className="crm-btn" onClick={() => setShowMore((v) => !v)}><Plus size={14} /> 更多</button>
           {showMore && (
@@ -381,34 +382,11 @@ export default function CustomerWorkspacePage() {
         </div>
       )}
 
-      {queues.infoPending.length > 0 && (
-        <div className="crm-info-pending">
-          <button className="crm-info-pending__head" onClick={() => setShowInfoPending((v) => !v)}>
-            <span>⚡ 信息待确认（{queues.infoPending.length}）</span>
-            <span className="crm-info-pending__toggle">{showInfoPending ? '收起 ▲' : '展开 ▼'}</span>
-          </button>
-          {showInfoPending && (
-            <div className="crm-info-pending__list">
-              {queues.infoPending.map((it: any) => (
-                <div key={`${it.account_id}-${it.field}`} className="crm-info-pending__item">
-                  <span>
-                    <strong>{it.account_name}</strong> · {FIELD_LABELS_WB[it.field] || it.field} → {it.value}
-                    <em className="crm-info-pending__src">置信 {Math.round((it.confidence || 0) * 100)}%{it.evidence ? ` · 证据「${String(it.evidence).slice(0, 40)}」` : ''}</em>
-                  </span>
-                  <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
-                  <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
-                  <button className="crm-btn" onClick={() => void openInfoCustomer(Number(it.account_id))}>查看档案</button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="cws-tabs">
         {(['follow', 'insight', 'all'] as ViewTab[]).map((t) => (
           <button key={t} className={`cws-tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-            {t === 'follow' ? '值得跟进' : t === 'insight' ? 'AI 新发现' : '全部客户'} ({countBadge(t)})
+            {t === 'follow' ? '⚡ 值得跟进' : t === 'insight' ? '✨ AI 新发现' : '👥 全部客户'} ({countBadge(t)})
           </button>
         ))}
         {tab === 'all' && (
@@ -422,6 +400,37 @@ export default function CustomerWorkspacePage() {
         )}
       </div>
 
+      {queues.infoPending.length > 0 && (
+        <div className="crm-info-pending">
+          <button className="crm-info-pending__head" onClick={() => setShowInfoPending((v) => !v)}>
+            <span>⚡ 信息待确认 {queues.infoPending.length} 条 · AI 中置信发现，采纳后写入档案</span>
+            <span className="crm-info-pending__toggle">{showInfoPending ? '收起 ▲' : '展开 ▼'}</span>
+          </button>
+          {showInfoPending && (
+            <div className="crm-info-pending__list">
+              {queues.infoPending.map((it: any) => (
+                <div key={`${it.account_id}-${it.field}`} className="crm-info-pending__item">
+                  <div className="crm-info-pending__main">
+                    <div className="crm-info-pending__title">
+                      <strong>{it.account_name}</strong> · {FIELD_LABELS_WB[it.field] || it.field} → {it.value}
+                      <span className="crm-pill crm-pill--warn">待确认</span>
+                      <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>置信 {Math.round((it.confidence || 0) * 100)}%</span>
+                    </div>
+                    {it.evidence && <div className="crm-info-pending__evi">证据 ·「{String(it.evidence).slice(0, 40)}」</div>}
+                  </div>
+                  <div className="crm-info-pending__ops">
+                    <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
+                    <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
+                    <button className="crm-btn" onClick={() => void openInfoCustomer(Number(it.account_id))}>查看档案</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+
       <div className="cws-grid">
         {list.map((c: any) => {
           const sig = signalOf(c)
@@ -432,6 +441,7 @@ export default function CustomerWorkspacePage() {
           return (
             <div key={c.id} className={`cws-card ${active ? 'active' : ''}`} onClick={() => void openCustomer(c)}>
               <div className="cws-card__head">
+                <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={32} />
                 <span className="cws-card__name" title="查看客户 360 档案">{displayNameOf(c)}{c.session_id ? <span className="crm-badge">AI</span> : ''}</span>
                 <span className="crm-badge cws-card__stage">{rowStage(c)}</span>
               </div>
@@ -452,6 +462,7 @@ export default function CustomerWorkspacePage() {
                   </button>
                 )}
                 <button className="crm-btn" onClick={() => void openChat(c)} disabled={!c.session_id}><MessageCircle size={13} /> 打开聊天</button>
+                <button className="crm-btn" onClick={() => { void openCustomer(c); void genDeepAnalysis(c) }}><Sparkles size={13} /> AI 深度分析</button>
               </div>
             </div>
           )

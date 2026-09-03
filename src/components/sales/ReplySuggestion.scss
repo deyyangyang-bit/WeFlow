@@ -1,3 +1,5 @@
+// ReplySuggestion — 聊天页 AI 回复建议浮层
+// 2026-09-02 UI 美化（批次 B）：旧族 var(--primary-color/--text-* 等) → 前进视觉 tokens。纯样式。
 .reply-suggestion {
   position: absolute;
   bottom: 16px;
@@ -12,19 +14,19 @@
     height: 40px;
     border-radius: 50%;
     border: none;
-    background: var(--primary-color, #4a9eff);
-    color: #fff;
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
     cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    box-shadow: var(--shadow-menu);
     transition: transform 0.15s, box-shadow 0.15s;
 
     &:hover {
       transform: scale(1.08);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-pop);
     }
 
     &.active {
-      background: var(--primary-dark, #3580d4);
+      background: var(--color-accent-hover);
     }
   }
 
@@ -34,10 +36,10 @@
     right: 0;
     width: 320px;
     max-height: 360px;
-    background: var(--card-bg, #fff);
-    border: 1px solid var(--border-color, #e5e5e5);
-    border-radius: 10px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-pop);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -47,12 +49,12 @@
       align-items: center;
       justify-content: space-between;
       padding: 10px 12px;
-      border-bottom: 1px solid var(--border-color, #eee);
+      border-bottom: 1px solid var(--color-divider);
 
       .rs-panel-title {
         font-size: 13px;
         font-weight: 600;
-        color: var(--text-primary, #333);
+        color: var(--color-text-primary);
       }
 
       .rs-panel-actions {
@@ -70,12 +72,12 @@
           border: none;
           background: none;
           cursor: pointer;
-          color: var(--text-secondary, #888);
-          border-radius: 4px;
+          color: var(--color-text-secondary);
+          border-radius: var(--radius-small);
 
           &:hover {
-            background: var(--hover-bg, rgba(0, 0, 0, 0.05));
-            color: var(--text-primary, #333);
+            background: var(--color-bg-hover);
+            color: var(--color-text-primary);
           }
 
           &:disabled {
@@ -97,23 +99,23 @@
         gap: 8px;
         padding: 16px 0;
         justify-content: center;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         font-size: 12px;
       }
 
       .rs-error {
         padding: 8px;
         font-size: 12px;
-        color: #e74c3c;
-        background: rgba(231, 76, 60, 0.06);
-        border-radius: 6px;
+        color: var(--color-danger);
+        background: var(--color-danger-bg);
+        border-radius: var(--radius-small);
       }
 
       .rs-empty {
         padding: 16px 0;
         text-align: center;
         font-size: 12px;
-        color: var(--text-tertiary, #bbb);
+        color: var(--color-text-tertiary);
       }
 
       .rs-list {
@@ -123,14 +125,14 @@
 
         .rs-item {
           padding: 8px 10px;
-          background: var(--stat-bg, #f8f9fa);
-          border-radius: 8px;
-          border: 1px solid var(--border-color, #eee);
+          background: var(--color-bg-surface-muted);
+          border-radius: var(--radius-control);
+          border: 1px solid var(--color-divider);
 
           .rs-item-text {
             font-size: 12px;
             line-height: 1.5;
-            color: var(--text-primary, #333);
+            color: var(--color-text-primary);
             margin-bottom: 6px;
             white-space: pre-wrap;
             word-break: break-word;
@@ -141,16 +143,16 @@
             align-items: center;
             gap: 3px;
             padding: 2px 8px;
-            border: 1px solid var(--border-color, #ddd);
-            border-radius: 4px;
-            background: var(--card-bg, #fff);
-            color: var(--text-secondary, #666);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-small);
+            background: var(--color-bg-surface);
+            color: var(--color-text-secondary);
             font-size: 10px;
             cursor: pointer;
 
             &:hover {
-              border-color: var(--primary-color, #4a9eff);
-              color: var(--primary-color, #4a9eff);
+              border-color: var(--color-accent-border);
+              color: var(--color-accent);
             }
           }
         }

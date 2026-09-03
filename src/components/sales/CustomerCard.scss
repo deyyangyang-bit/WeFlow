@@ -1,12 +1,14 @@
+// CustomerCard — 聊天页右侧客户卡
+// 2026-09-02 UI 美化（批次 B）：旧族 var(--border-color/--text-*/--primary-color 等) → 前进视觉 tokens。纯样式。
 .customer-card {
   margin-top: 12px;
-  border-top: 1px solid var(--border-color, #e5e5e5);
+  border-top: 1px solid var(--color-divider);
   padding-top: 10px;
 
   .cc-loading {
     padding: 12px;
     text-align: center;
-    color: var(--text-secondary, #888);
+    color: var(--color-text-secondary);
     font-size: 12px;
   }
 
@@ -16,29 +18,30 @@
     gap: 6px;
     padding: 6px 8px;
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: var(--radius-small);
     user-select: none;
 
     &:hover {
-      background: var(--hover-bg, rgba(0, 0, 0, 0.04));
+      background: var(--color-bg-hover);
     }
 
     .cc-header-icon {
-      color: var(--primary-color, #4a9eff);
+      color: var(--color-accent);
     }
 
     .cc-header-title {
       font-size: 13px;
       font-weight: 600;
-      color: var(--text-primary, #333);
+      color: var(--color-text-primary);
       flex: 1;
     }
 
+    // 阶段徽标：底色由 TSX 按阶段内联注入（彩色面），字面白文字保留
     .cc-stage-badge {
       font-size: 10px;
       color: #fff;
       padding: 1px 6px;
-      border-radius: 8px;
+      border-radius: 999px;
       font-weight: 500;
     }
   }
@@ -55,7 +58,7 @@
       align-items: center;
       gap: 4px;
       font-size: 11px;
-      color: var(--text-secondary, #888);
+      color: var(--color-text-secondary);
       margin-bottom: 4px;
       font-weight: 500;
       text-transform: uppercase;
@@ -66,16 +69,16 @@
   .cc-stage-select {
     width: 100%;
     padding: 5px 8px;
-    border: 1px solid var(--border-color, #ddd);
-    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     font-size: 12px;
-    background: var(--input-bg, #fff);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
     cursor: pointer;
     outline: none;
 
     &:focus {
-      border-color: var(--primary-color, #4a9eff);
+      border-color: var(--color-accent-border);
     }
   }
 
@@ -90,9 +93,9 @@
       align-items: center;
       gap: 2px;
       padding: 2px 6px;
-      background: var(--tag-bg, #e8f4fd);
-      color: var(--tag-color, #2980b9);
-      border-radius: 4px;
+      background: var(--color-accent-bg);
+      color: var(--color-accent);
+      border-radius: var(--radius-small);
       font-size: 11px;
 
       .cc-tag-remove {
@@ -118,51 +121,51 @@
       align-items: center;
       gap: 2px;
       padding: 2px 6px;
-      border: 1px dashed var(--border-color, #ccc);
-      border-radius: 4px;
+      border: 1px dashed var(--color-border);
+      border-radius: var(--radius-small);
       background: none;
-      color: var(--text-secondary, #888);
+      color: var(--color-text-secondary);
       font-size: 11px;
       cursor: pointer;
 
       &:hover {
-        border-color: var(--primary-color, #4a9eff);
-        color: var(--primary-color, #4a9eff);
+        border-color: var(--color-accent-border);
+        color: var(--color-accent);
       }
     }
 
     .cc-tag-input {
       width: 70px;
       padding: 2px 6px;
-      border: 1px solid var(--primary-color, #4a9eff);
-      border-radius: 4px;
+      border: 1px solid var(--color-accent-border);
+      border-radius: var(--radius-small);
       font-size: 11px;
       outline: none;
-      background: var(--input-bg, #fff);
-      color: var(--text-primary, #333);
+      background: var(--color-bg-surface);
+      color: var(--color-text-primary);
     }
   }
 
   .cc-notes {
     width: 100%;
     padding: 6px 8px;
-    border: 1px solid var(--border-color, #ddd);
-    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     font-size: 12px;
     resize: vertical;
     min-height: 40px;
-    background: var(--input-bg, #fff);
-    color: var(--text-primary, #333);
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
     outline: none;
     font-family: inherit;
     line-height: 1.4;
 
     &:focus {
-      border-color: var(--primary-color, #4a9eff);
+      border-color: var(--color-accent-border);
     }
 
     &::placeholder {
-      color: var(--text-tertiary, #bbb);
+      color: var(--color-text-tertiary);
     }
   }
 
@@ -176,18 +179,19 @@
       flex-direction: column;
       align-items: center;
       padding: 6px 4px;
-      background: var(--stat-bg, #f8f9fa);
-      border-radius: 6px;
+      background: var(--color-bg-inset);
+      border-radius: var(--radius-small);
 
       .cc-stat-value {
         font-size: 12px;
         font-weight: 600;
-        color: var(--text-primary, #333);
+        color: var(--color-text-primary);
+        font-variant-numeric: tabular-nums;
       }
 
       .cc-stat-label {
         font-size: 10px;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         margin-top: 2px;
       }
     }
@@ -195,8 +199,8 @@
 
   .cc-section {
     margin-bottom: 8px;
-    border: 1px solid var(--border-color, #eee);
-    border-radius: 6px;
+    border: 1px solid var(--color-divider);
+    border-radius: var(--radius-small);
     overflow: hidden;
 
     .cc-section-header {
@@ -206,18 +210,18 @@
       padding: 6px 8px;
       cursor: pointer;
       font-size: 12px;
-      color: var(--text-primary, #333);
-      background: var(--section-bg, #fafafa);
+      color: var(--color-text-primary);
+      background: var(--color-bg-surface-muted);
       user-select: none;
 
       &:hover {
-        background: var(--hover-bg, rgba(0, 0, 0, 0.03));
+        background: var(--color-bg-hover);
       }
 
       .cc-section-icon {
         display: flex;
         align-items: center;
-        color: var(--text-secondary, #666);
+        color: var(--color-text-secondary);
       }
 
       .cc-section-title {
@@ -235,7 +239,7 @@
       align-items: center;
       gap: 4px;
       font-size: 10px;
-      color: var(--text-secondary, #999);
+      color: var(--color-text-tertiary);
       margin-bottom: 6px;
       flex-wrap: wrap;
     }
@@ -243,7 +247,7 @@
     .cc-ai-text {
       font-size: 12px;
       line-height: 1.6;
-      color: var(--text-primary, #444);
+      color: var(--color-text-primary);
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 200px;
@@ -267,9 +271,10 @@
         top: 16px;
         bottom: -4px;
         width: 1px;
-        background: var(--border-color, #e5e5e5);
+        background: var(--color-divider);
       }
 
+      // 时间线圆点/阶段名颜色由 TSX 按阶段内联注入
       .cc-timeline-dot {
         width: 9px;
         height: 9px;
@@ -290,22 +295,23 @@
         }
 
         .cc-timeline-source {
-          color: var(--text-secondary, #999);
+          color: var(--color-text-tertiary);
           font-size: 10px;
           padding: 0 3px;
-          background: var(--stat-bg, #f0f0f0);
+          background: var(--color-bg-inset);
           border-radius: 3px;
         }
 
         .cc-timeline-reason {
-          color: var(--text-secondary, #666);
+          color: var(--color-text-secondary);
           font-style: italic;
         }
 
         .cc-timeline-time {
-          color: var(--text-tertiary, #aaa);
+          color: var(--color-text-tertiary);
           font-size: 10px;
           width: 100%;
+          font-variant-numeric: tabular-nums;
         }
       }
     }
@@ -323,7 +329,7 @@
       &.done {
         .cc-todo-title {
           text-decoration: line-through;
-          color: var(--text-tertiary, #aaa);
+          color: var(--color-text-tertiary);
         }
       }
 
@@ -336,12 +342,12 @@
         border: none;
         background: none;
         cursor: pointer;
-        color: var(--text-secondary, #888);
+        color: var(--color-text-secondary);
         padding: 0;
         margin-top: 1px;
 
         &:hover {
-          color: var(--primary-color, #4a9eff);
+          color: var(--color-accent);
         }
       }
 
@@ -352,7 +358,7 @@
 
         .cc-todo-title {
           font-size: 12px;
-          color: var(--text-primary, #333);
+          color: var(--color-text-primary);
         }
 
         .cc-todo-due {
@@ -360,7 +366,7 @@
           align-items: center;
           gap: 2px;
           font-size: 10px;
-          color: var(--text-secondary, #999);
+          color: var(--color-text-tertiary);
         }
       }
     }
@@ -372,17 +378,17 @@
     align-items: center;
     gap: 3px;
     padding: 2px 8px;
-    border: 1px solid var(--primary-color, #4a9eff);
-    border-radius: 4px;
+    border: 1px solid var(--color-accent-border);
+    border-radius: var(--radius-small);
     background: none;
-    color: var(--primary-color, #4a9eff);
+    color: var(--color-accent);
     font-size: 10px;
     cursor: pointer;
     white-space: nowrap;
 
     &:hover:not(:disabled) {
-      background: var(--primary-color, #4a9eff);
-      color: #fff;
+      background: var(--color-accent);
+      color: var(--color-text-on-accent);
     }
 
     &:disabled {
@@ -400,15 +406,15 @@
   .cc-error {
     padding: 6px 8px;
     font-size: 11px;
-    color: #e74c3c;
-    background: rgba(231, 76, 60, 0.06);
-    border-radius: 4px;
+    color: var(--color-danger);
+    background: var(--color-danger-bg);
+    border-radius: var(--radius-small);
     margin: 4px 8px;
   }
   .cc-empty {
     padding: 8px;
     text-align: center;
     font-size: 11px;
-    color: var(--text-tertiary, #bbb);
+    color: var(--color-text-tertiary);
   }
 }

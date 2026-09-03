@@ -24,7 +24,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--text-primary);
+            color: var(--color-text-primary);
 
             .download-icon {
                 animation: capsulePulse 2s infinite ease-in-out;
@@ -40,26 +40,26 @@
             .percent-text {
                 font-size: 15px;
                 font-weight: 700;
-                color: var(--text-primary);
+                color: var(--color-text-primary);
                 font-variant-numeric: tabular-nums;
             }
 
             .speed-text {
                 font-size: 13px;
-                color: var(--text-tertiary);
+                color: var(--color-text-tertiary);
                 font-weight: 500;
                 font-variant-numeric: tabular-nums;
             }
 
             .error-text {
                 font-size: 15px;
-                color: #ff4d4f;
+                color: var(--color-danger);
                 font-weight: 600;
             }
 
             .available-text {
                 font-size: 15px;
-                color: var(--text-primary);
+                color: var(--color-text-primary);
                 font-weight: 600;
             }
         }
@@ -70,11 +70,11 @@
             left: 0;
             right: 0;
             height: 3px;
-            background: rgba(0, 0, 0, 0.05);
+            background: var(--color-bg-hover);
 
             .progress-fill {
                 height: 100%;
-                background: var(--primary);
+                background: var(--color-accent);
                 transition: width 0.3s ease;
             }
         }
@@ -90,11 +90,11 @@
             transition: all 0.2s ease;
             display: flex;
             align-items: center;
-            color: var(--text-secondary);
+            color: var(--color-text-secondary);
 
             &:hover {
                 opacity: 1;
-                background: var(--bg-tertiary);
+                background: var(--color-bg-inset);
                 border-radius: 50%;
             }
         }
@@ -103,16 +103,16 @@
     // State Modifiers（改为半透明色调叠加在玻璃之上）
     &.state-available {
         .capsule-content {
-            background: color-mix(in srgb, var(--primary) 82%, transparent);
-            color: white;
+            background: color-mix(in srgb, var(--color-accent) 82%, transparent);
+            color: #fff;
 
             .icon-wrapper {
-                color: white;
+                color: #fff;
             }
 
             .info-wrapper {
                 .available-text {
-                    color: white;
+                    color: #fff;
                 }
             }
 
@@ -128,18 +128,18 @@
 
     &.state-error {
         .capsule-content {
-            background: color-mix(in srgb, #ff4d4f 14%, transparent);
+            background: var(--color-danger-bg);
 
             .icon-wrapper {
-                color: #ff4d4f;
+                color: var(--color-danger);
             }
 
             .info-wrapper .error-text {
-                color: #cf1322;
+                color: var(--color-danger);
             }
 
             .capsule-close {
-                color: #cf1322;
+                color: var(--color-danger);
             }
         }
     }
@@ -168,5 +168,15 @@
     50% {
         transform: translateY(2px);
         opacity: 0.6;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .update-progress-capsule {
+        animation: none;
+    }
+
+    .update-progress-capsule .download-icon {
+        animation: none;
     }
 }

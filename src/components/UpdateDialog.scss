@@ -1,11 +1,13 @@
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .update-dialog-overlay {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(4px);
+    background: var(--color-overlay);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -20,15 +22,15 @@
 
     .update-dialog {
         width: 100%;
-        border-radius: 24px;
+        border-radius: var(--radius-card);
         overflow: hidden;
         position: relative;
         display: flex;
         flex-direction: column;
 
-        /* Top Section (White/Gradient)，半透明以透出玻璃折射 */
+        /* Top Section，半透明以透出玻璃折射 */
         .dialog-header {
-            background: color-mix(in srgb, var(--bg-primary, #ffffff) 78%, transparent);
+            background: color-mix(in srgb, var(--color-bg-elevated) 78%, transparent);
             padding: 40px 20px 30px;
             display: flex;
             flex-direction: column;
@@ -36,7 +38,7 @@
             text-align: center;
             position: relative;
 
-            /* Subtle radial gradient effect in top left as seen in image */
+            /* 左上角柔和光晕（品牌色调，随 light/dark 自适应） */
             &::before {
                 content: '';
                 position: absolute;
@@ -44,16 +46,16 @@
                 left: -50px;
                 width: 200px;
                 height: 200px;
-                background: radial-gradient(circle, rgba(255, 235, 220, 0.15) 0%, rgba(255, 255, 255, 0) 70%);
+                background: radial-gradient(circle, var(--color-accent-bg) 0%, transparent 70%);
                 opacity: 0.5;
                 pointer-events: none;
             }
 
             .version-tag {
-                background: var(--bg-tertiary, #f0eee9);
-                color: var(--text-tertiary, #8c7b6e);
+                background: var(--color-bg-inset);
+                color: var(--color-text-tertiary);
                 padding: 4px 16px;
-                border-radius: 12px;
+                border-radius: var(--radius-control);
                 font-size: 13px;
                 font-weight: 600;
                 margin-bottom: 24px;
@@ -61,23 +63,23 @@
             }
 
             h2 {
-                font-size: 32px;
-                font-weight: 800;
-                color: var(--text-primary, #333333);
+                font-size: 26px;
+                font-weight: 700;
+                color: var(--color-text-primary);
                 margin: 0 0 12px;
                 letter-spacing: -0.5px;
             }
 
             .subtitle {
-                font-size: 15px;
-                color: var(--text-secondary, #999999);
+                font-size: 14px;
+                color: var(--color-text-secondary);
                 font-weight: 400;
             }
         }
 
-        /* Content Section (Light Gray)，半透明以透出玻璃折射 */
+        /* Content Section，半透明以透出玻璃折射 */
         .dialog-content {
-            background: color-mix(in srgb, var(--bg-tertiary, #f2f2f2) 72%, transparent);
+            background: color-mix(in srgb, var(--color-bg-inset) 72%, transparent);
             padding: 24px 40px 40px;
             flex: 1;
             display: flex;
@@ -90,17 +92,17 @@
                 margin-bottom: 30px;
 
                 .icon-box {
-                    background: var(--bg-primary, #fbfbfb);
+                    background: var(--color-bg-surface);
                     width: 48px;
                     height: 48px;
-                    border-radius: 16px;
+                    border-radius: var(--radius-card);
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     margin-right: 20px;
                     flex-shrink: 0;
-                    color: var(--text-tertiary, #8c7b6e);
-                    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
+                    color: var(--color-text-tertiary);
+                    box-shadow: var(--shadow-card);
 
                     svg {
                         opacity: 0.8;
@@ -111,7 +113,7 @@
                     flex: 1;
 
                     h1, h2, h3, h4, h5, h6 {
-                        color: var(--text-primary, #333333);
+                        color: var(--color-text-primary);
                         font-weight: 700;
                         margin: 16px 0 8px;
 
@@ -130,7 +132,7 @@
 
                     p {
                         font-size: 14px;
-                        color: var(--text-secondary, #666666);
+                        color: var(--color-text-secondary);
                         line-height: 1.6;
                         margin: 4px 0;
                     }
@@ -141,7 +143,7 @@
 
                         li {
                             font-size: 14px;
-                            color: var(--text-secondary, #666666);
+                            color: var(--color-text-secondary);
                             line-height: 1.6;
                         }
                     }
@@ -156,19 +158,19 @@
                     justify-content: space-between;
                     margin-bottom: 8px;
                     font-size: 12px;
-                    color: var(--text-secondary, #888);
+                    color: var(--color-text-secondary);
                     font-weight: 500;
                 }
 
                 .progress-bar-bg {
                     height: 6px;
-                    background: var(--border-color, #e0e0e0);
+                    background: var(--color-bg-inset-strong);
                     border-radius: 3px;
                     overflow: hidden;
 
                     .progress-bar-fill {
                         height: 100%;
-                        background: var(--text-primary, #000000);
+                        background: var(--color-accent);
                         border-radius: 3px;
                         transition: width 0.3s ease;
                     }
@@ -178,7 +180,7 @@
                     text-align: center;
                     margin-top: 12px;
                     font-size: 13px;
-                    color: var(--text-secondary, #666);
+                    color: var(--color-text-secondary);
                 }
             }
 
@@ -189,19 +191,19 @@
 
                 .btn-ignore {
                     background: transparent;
-                    color: var(--text-secondary, #666666);
-                    border: 1px solid var(--border-color, #d0d0d0);
-                    padding: 16px 32px;
-                    border-radius: 20px;
-                    font-size: 16px;
+                    color: var(--color-text-secondary);
+                    border: 1px solid var(--color-border);
+                    padding: 12px 24px;
+                    border-radius: var(--radius-control);
+                    font-size: 14px;
                     font-weight: 600;
                     cursor: pointer;
                     transition: all 0.2s;
 
                     &:hover {
-                        background: var(--bg-hover, #f5f5f5);
-                        border-color: var(--text-secondary, #999999);
-                        color: var(--text-primary, #333333);
+                        background: var(--color-bg-hover);
+                        border-color: var(--color-text-tertiary);
+                        color: var(--color-text-primary);
                     }
 
                     &:active {
@@ -210,20 +212,21 @@
                 }
 
                 .btn-update {
-                    background: var(--text-primary, #000000);
-                    color: var(--bg-primary, #ffffff);
+                    background: var(--color-accent);
+                    color: var(--color-text-on-accent);
                     border: none;
-                    padding: 16px 48px;
-                    border-radius: 20px;
-                    font-size: 16px;
+                    padding: 12px 36px;
+                    border-radius: var(--radius-control);
+                    font-size: 14px;
                     font-weight: 600;
                     cursor: pointer;
-                    transition: transform 0.2s, box-shadow 0.2s;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+                    box-shadow: var(--shadow-control);
 
                     &:hover {
+                        background: var(--color-accent-hover);
                         transform: translateY(-2px);
-                        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+                        box-shadow: var(--shadow-menu);
                     }
 
                     &:active {
@@ -243,9 +246,9 @@
             position: absolute;
             top: 16px;
             right: 16px;
-            background: rgba(0, 0, 0, 0.05);
+            background: var(--color-bg-inset);
             border: none;
-            color: var(--text-secondary, #999);
+            color: var(--color-text-secondary);
             cursor: pointer;
             width: 32px;
             height: 32px;
@@ -257,8 +260,8 @@
             z-index: 10;
 
             &:hover {
-                background: rgba(0, 0, 0, 0.1);
-                color: var(--text-primary, #333);
+                background: var(--color-bg-inset-strong);
+                color: var(--color-text-primary);
                 transform: rotate(90deg);
             }
         }
@@ -286,12 +289,20 @@
         opacity: 1;
     }
 }
+
+@media (prefers-reduced-motion: reduce) {
+    .update-dialog-overlay,
+    .update-dialog-overlay .update-dialog-glass {
+        animation: none;
+    }
+}
+
 .mandatory-tip {
-    color: #e53e3e;
+    color: var(--color-danger);
     font-size: 13px;
     text-align: center;
     margin: 0 0 8px;
     padding: 6px 12px;
-    background: rgba(229, 62, 62, 0.08);
-    border-radius: 6px;
+    background: var(--color-danger-bg);
+    border-radius: var(--radius-small);
 }

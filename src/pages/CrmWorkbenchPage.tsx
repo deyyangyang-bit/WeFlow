@@ -3,10 +3,13 @@
  * （客户工作台已拆分到 CustomerWorkspacePage /customers，本页专注合同闭环）
  */
 import { useEffect, useState } from 'react'
-import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2 } from 'lucide-react'
+import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2, Users, Banknote, AlertTriangle } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
+import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
+// 阶段分布/管道图色板单一真源（红线 3）：Apple 蓝渐变族
+import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
 import './CrmWorkbenchPage.scss'
 
 interface QuoRow { productId: number; name: string; model?: string; price: number; qty: string }
@@ -42,6 +45,10 @@ export default function CrmWorkbenchPage() {
   const [newQuoItems, setNewQuoItems] = useState<QuoRow[]>([])
   const [newQuoSearch, setNewQuoSearch] = useState('')
   const [customers, setCustomers] = useState<any[]>([])
+  // ── 合同列表骨架（SearchTable）：前端分页 + 状态筛选 + 名称搜索 ──────────────
+  const [tablePage, setTablePage] = useState(1) // 合同列表当前页（筛选变化时重置到 1）
+  const [statusFilter, setStatusFilter] = useState('') // 状态筛选（''=全部）
+  const [keyword, setKeyword] = useState('') // 合同名搜索
 
   useEffect(() => { void fetchWorkbench() }, [fetchWorkbench])
   useEffect(() => { void fetchCustomers() }, [])
@@ -54,7 +61,7 @@ export default function CrmWorkbenchPage() {
   useEffect(() => { void fetchStats() }, [])
   // AI 准确率（近 7 天）：填充/采纳/修正/报价信号转化
   const [accuracy, setAccuracy] = useState<any>(null)
-  const [accuracyOpen, setAccuracyOpen] = useState(false)
+  const [accuracyOpen, setAccuracyOpen] = useState(true)
   const fetchAccuracy = async () => {
     try { setAccuracy(await window.electronAPI.crm.statsAiAccuracy(7)) } catch { /* ignore */ }
   }
@@ -63,27 +70,42 @@ export default function CrmWorkbenchPage() {
     contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
   }
   const CONTRACT_STATUS_MAP: Record<string, string> = { pending_sign: '待签约', signed: '已签约', shipped: '已发货' }
+  // 图表色单一真源（红线 3）：与漏斗同族的 Apple 蓝渐变
+  const BAR_ACCENT = {
+    type: 'linear' as const, x: 0, y: 0, x2: 0, y2: 1,
+    colorStops: [{ offset: 0, color: '#5A9DED' }, { offset: 1, color: '#0071E3' }]
+  }
   const paidTrendOption = stats ? {
     tooltip: { trigger: 'axis' as const },
     grid: { left: 48, right: 16, top: 24, bottom: 24 },
     xAxis: { type: 'category' as const, data: stats.paidWeekly.map((w: any) => w.week), axisLabel: { fontSize: 11 } },
     yAxis: { type: 'value' as const, axisLabel: { fontSize: 11 } },
-    series: [{ type: 'bar', data: stats.paidWeekly.map((w: any) => w.amount), itemStyle: { color: '#16a34a', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 22 }]
+    series: [{ type: 'bar', data: stats.paidWeekly.map((w: any) => w.amount), itemStyle: { color: BAR_ACCENT, borderRadius: [3, 3, 0, 0] }, barMaxWidth: 22 }]
   } : null
+  // 阶段 key → 蓝族档位（新客浅蓝 → 成交藏青；未分类中性灰）
+  const STAGE_KEY_COLOR: Record<string, string> = {
+    new: FUNNEL_STAGE_COLORS[0], contacted: FUNNEL_STAGE_COLORS[1], quoted: FUNNEL_STAGE_COLORS[2],
+    negotiating: FUNNEL_STAGE_COLORS[3], won: FUNNEL_STAGE_COLORS[4], unknown: FUNNEL_NEUTRAL
+  }
   const stageDistOption = stats ? {
-    tooltip: { trigger: 'item' as const },
+    tooltip: { trigger: 'item' as const, formatter: '{b}: {c} 人（{d}%）' },
+    legend: {
+      orient: 'vertical' as const, right: 8, top: 'middle' as const,
+      icon: 'circle' as const, itemWidth: 9, itemHeight: 9, itemGap: 10,
+      textStyle: { fontSize: 12, color: '#6E6E73' }
+    },
+    title: {
+      text: String((stats.stageDist || []).reduce((n: number, s: any) => n + Number(s.count || 0), 0)),
+      subtext: '客户', left: '36%', top: '40%', textAlign: 'center',
+      textStyle: { fontSize: 24, fontWeight: 700, color: '#1D1D1F' },
+      subtextStyle: { fontSize: 11, color: '#86868B' }
+    },
     series: [{
-      type: 'pie', radius: ['38%', '68%'], center: ['50%', '52%'],
-      label: { fontSize: 11 },
-      data: stats.stageDist.map((s: any) => ({ name: STAGE_LABEL_MAP[s.stage] || s.stage, value: s.count }))
+      type: 'pie', radius: ['46%', '70%'], center: ['40%', '50%'],
+      label: { show: false },
+      labelLine: { show: false },
+      data: stats.stageDist.map((s: any) => ({ name: STAGE_LABEL_MAP[s.stage] || s.stage, value: s.count, itemStyle: { color: STAGE_KEY_COLOR[s.stage] || FUNNEL_NEUTRAL } }))
     }]
-  } : null
-  const pipelineOption = stats ? {
-    tooltip: { trigger: 'axis' as const, formatter: (ps: any) => { const p = ps[0]; const row = stats.pipeline[p.dataIndex]; return `${p.name}<br/>金额 ¥${Number(p.value).toLocaleString()}<br/>合同 ${row?.count ?? 0} 份` } },
-    grid: { left: 56, right: 16, top: 24, bottom: 24 },
-    xAxis: { type: 'category' as const, data: stats.pipeline.map((p: any) => CONTRACT_STATUS_MAP[p.status] || p.status), axisLabel: { fontSize: 11 } },
-    yAxis: { type: 'value' as const, axisLabel: { fontSize: 11 } },
-    series: [{ type: 'bar', data: stats.pipeline.map((p: any) => p.amount), itemStyle: { color: '#2563eb', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 34 }]
   } : null
 
 
@@ -121,6 +143,32 @@ export default function CrmWorkbenchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
+
+  // 合同列表筛选（SearchTable 前端过滤）：状态 + 合同名关键字，变化时回到第 1 页
+  const filteredContracts = workbench.filter((c: any) =>
+    (!statusFilter || c.status === statusFilter) &&
+    (!keyword.trim() || String(c.name || '').toLowerCase().includes(keyword.trim().toLowerCase())))
+  // 数据收缩（删除/签约后刷新）时页码归位——SearchTable 显示层有钳制，但 state 残留会在数据回升后突然跳回高页码
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(filteredContracts.length / 10))
+    if (tablePage > maxPage) setTablePage(maxPage)
+  }, [filteredContracts.length, tablePage])
+  const contractColumns: Array<SearchTableColumn<any>> = [
+    { key: 'name', title: '合同' },
+    { key: 'amount', title: '金额', className: 'num', render: (c) => Number(c.amount ?? 0).toLocaleString() },
+    { key: 'paid', title: '已确认回款', className: 'num', render: (c) => Number(c.paid ?? 0).toLocaleString() },
+    { key: 'ratio', title: '全款进度', render: (c) => <div className="crm-progress"><div style={{ width: `${Math.round((c.paidRatio ?? 0) * 100)}%` }} /></div> },
+    { key: 'status', title: '状态', render: (c) => <span className={`crm-pill crm-pill--${c.status === 'pending_sign' ? 'acc' : c.status === 'signed' ? 'ok' : 'neu'}`}>{CONTRACT_STATUS_MAP[c.status] || c.status}</span> },
+    { key: 'warning', title: '预警', render: (c) => c.warning ? <span className="crm-pill crm-pill--bad">{c.warning}</span> : <span className="crm-pill crm-pill--neu">—</span> },
+    { key: 'ops', title: '操作', render: (c) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        {c.status === 'pending_sign' && <button className="crm-btn crm-btn--ghost" onClick={() => void sign(c)}><Handshake size={13} /> 签约</button>}
+        {c.status === 'signed' && <button className="crm-btn crm-btn--ghost" onClick={() => void ship(c)}><Truck size={13} /> 发货</button>}
+        <button className="crm-btn crm-btn--ghost" onClick={() => void genDoc('contract', c.id)}><FileText size={13} /> 合同</button>
+        <button className="crm-btn crm-btn--ghost danger" onClick={() => void deleteContract(c)}><Trash2 size={13} /> 删除</button>
+      </span>
+    ) },
+  ]
 
   const deleteContract = async (c: any) => {
     const ok = window.confirm(`确定删除合同「${c.name}」？\n将一并删除该合同的报价单、发票、物流、回款归属等子数据。\n（删除前会自动备份数据库）`)
@@ -241,41 +289,48 @@ export default function CrmWorkbenchPage() {
     <div className="crm-workbench-page">
       <div className="crm-header">
         <h2><Briefcase size={18} /> 合同工作台</h2>
-        <button className="crm-btn" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
-        <button className="crm-btn" onClick={() => { setShowNew((v) => !v); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
+        <span className="crm-header__sub">合同闭环 · 报价 / 发货 / 回款 / 开票 · r7</span>
+        <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
+        <button className="crm-btn crm-btn--primary" onClick={() => { setShowNew((v) => !v); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
       {stats && (
         <>
           <div className="crm-stats-row">
-            <div className="crm-stat-card"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div>
-            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div>
-            <div className="crm-stat-card"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月到账（已认领）</span></div>
-            <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__ico neu"><Users size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__ico"><Briefcase size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div></div>
+            <div className="crm-stat-card"><span className="crm-stat-card__ico ok"><Banknote size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月到账（已认领）</span></div></div>
+            <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__ico alert"><AlertTriangle size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div></div>
           </div>
           <div className="crm-overview-charts">
-            <div className="crm-chart-box"><h4>近 8 周到款趋势</h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
-            <div className="crm-chart-box"><h4>客户阶段分布</h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
-            <div className="crm-chart-box"><h4>合同管道（金额）</h4>{pipelineOption && <ReactECharts option={pipelineOption} style={{ height: 190 }} notMerge />}</div>
-          </div>
-          <div className="crm-accuracy">
-            <button className="crm-accuracy__head" onClick={() => setAccuracyOpen((v) => !v)}>
-              <span>📊 AI 准确率（近 7 天）</span>
-              <span className="crm-accuracy__toggle">{accuracyOpen ? '收起 ▲' : '展开 ▼'}</span>
-            </button>
-            {accuracyOpen && accuracy && (
-              <div className="crm-accuracy__grid">
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.enrichAuto}</span><span className="crm-accuracy__label">AI 自动写入字段</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoAccept}</span><span className="crm-accuracy__label">待确认采纳</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoReject}</span><span className="crm-accuracy__label">待确认放弃</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.acceptRate == null ? '-' : `${accuracy.acceptRate}%`}</span><span className="crm-accuracy__label">采纳率</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.manualEdit}</span><span className="crm-accuracy__label">手动修正字段</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.writtenTotal > 0 ? `${accuracy.correctionRate}%` : '-'}</span><span className="crm-accuracy__label">修正率（越低越准）</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteTotal}</span><span className="crm-accuracy__label">报价信号</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteReplied24}/{accuracy.quoteReplied}</span><span className="crm-accuracy__label">24h 内回复/总回复</span></div>
-                <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quotePending}</span><span className="crm-accuracy__label">报价待跟进</span></div>
-              </div>
-            )}
+            <div className="crm-chart-box"><h4>近 8 周到款趋势 <span className="crm-chart-hint">元 · 按 pay_time</span></h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
+            <div className="crm-chart-box"><h4>客户阶段分布 <span className="crm-chart-hint">customer_profile.stage</span></h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
+            <div className="crm-chart-box crm-accuracy-card">
+              <h4>AI 准确率 <span className="crm-chart-hint">近 7 天</span></h4>
+              {accuracy && (
+                <>
+                  <div className="crm-accuracy-card__grid">
+                    <div><span className="crm-accuracy-card__num">{accuracy.acceptRate == null ? '-' : `${accuracy.acceptRate}%`}</span><span className="crm-accuracy-card__label">采纳率</span></div>
+                    <div><span className="crm-accuracy-card__num">{accuracy.enrichAuto}</span><span className="crm-accuracy-card__label">AI 自动写入</span></div>
+                    <div><span className="crm-accuracy-card__num">{accuracy.infoAccept}</span><span className="crm-accuracy-card__label">待确认采纳</span></div>
+                    <div><span className="crm-accuracy-card__num">{accuracy.manualEdit}</span><span className="crm-accuracy-card__label">手动修正</span></div>
+                  </div>
+                  <button className="crm-accuracy-card__toggle" onClick={() => setAccuracyOpen((v) => !v)}>
+                    {accuracyOpen ? '收起明细 ▲' : '展开明细 ▼'}
+                  </button>
+                  {accuracyOpen && (
+                    <div className="crm-accuracy__grid">
+                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoReject}</span><span className="crm-accuracy__label">待确认放弃</span></div>
+                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.writtenTotal > 0 ? `${accuracy.correctionRate}%` : '-'}</span><span className="crm-accuracy__label">修正率（越低越准）</span></div>
+                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteTotal}</span><span className="crm-accuracy__label">报价信号</span></div>
+                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteReplied24}/{accuracy.quoteReplied}</span><span className="crm-accuracy__label">24h 内回复/总回复</span></div>
+                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quotePending}</span><span className="crm-accuracy__label">报价待跟进</span></div>
+                    </div>
+                  )}
+                </>
+              )}
+              {!accuracy && <div className="crm-chart-empty">近 7 天暂无 AI 写入数据</div>}
+            </div>
           </div>
         </>
       )}
@@ -344,27 +399,35 @@ export default function CrmWorkbenchPage() {
           <button className="crm-btn primary" onClick={() => void createContract()}>创建</button>
         </div>
       )}
-      <table className="crm-table">
-        <thead><tr><th>合同</th><th>金额</th><th>已确认回款</th><th>全款进度</th><th>状态</th><th>预警</th><th>操作</th></tr></thead>
-        <tbody>
-          {workbench.map((c) => (
-            <tr key={c.id} className={selected?.id === c.id ? 'active' : ''} onClick={() => void select(c)}>
-              <td>{c.name}</td>
-              <td>{Number(c.amount ?? 0).toLocaleString()}</td>
-              <td>{Number(c.paid ?? 0).toLocaleString()}</td>
-              <td><div className="crm-progress"><div style={{ width: `${Math.round((c.paidRatio ?? 0) * 100)}%` }} /></div></td>
-              <td>{c.status === 'pending_sign' ? '待签约' : c.status === 'signed' ? '已签约' : '已发货'}</td>
-              <td className={c.warning ? 'warn' : ''}>{c.warning ?? ''}</td>
-              <td onClick={(e) => e.stopPropagation()}>
-                {c.status === 'pending_sign' && <button className="crm-btn" onClick={() => void sign(c)}><Handshake size={13} /> 签约</button>}
-                {c.status === 'signed' && <button className="crm-btn" onClick={() => void ship(c)}><Truck size={13} /> 发货</button>}
-                <button className="crm-btn" onClick={() => void genDoc('contract', c.id)}><FileText size={13} /> 合同</button>
-                <button className="crm-btn danger" onClick={() => void deleteContract(c)}><Trash2 size={13} /> 删除</button>
-              </td>
-            </tr>
+      {stats && (
+        <div className="crm-pipeline-strip">
+          {(stats.pipeline || []).map((p: any) => (
+            <span key={p.status} className="crm-pill crm-pill--neu">{CONTRACT_STATUS_MAP[p.status] || p.status} {p.count} 份 · ¥{Number(p.amount || 0).toLocaleString()}</span>
           ))}
-        </tbody>
-      </table>
+        </div>
+      )}
+      <SearchTable
+        columns={contractColumns}
+        data={filteredContracts}
+        rowKey={(c) => c.id}
+        page={tablePage}
+        onPageChange={setTablePage}
+        filterBar={
+          <>
+            <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setTablePage(1) }}>
+              <option value="">全部状态</option>
+              <option value="pending_sign">待签约</option>
+              <option value="signed">已签约</option>
+              <option value="shipped">已发货</option>
+            </select>
+            <input placeholder="搜索合同名" value={keyword}
+              onChange={(e) => { setKeyword(e.target.value); setTablePage(1) }} />
+          </>
+        }
+        onRowClick={(c) => void select(c)}
+        rowClassName={(c) => (selected?.id === c.id ? 'active' : '')}
+        emptyText="暂无合同（点「新建合同」创建）"
+      />
 
       {selected && (
         <div className="crm-detail">

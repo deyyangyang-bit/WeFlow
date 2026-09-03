@@ -1,8 +1,10 @@
+// AgreementPage —— 前进视觉 tokens 版（2026-09-02 UI 美化批次 D；纯样式，零逻辑/结构改动）
 .agreement-page {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--color-bg-page);
+  font-family: var(--font-app);
 }
 
 .agreement-titlebar {
@@ -10,15 +12,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border);
   -webkit-app-region: drag;
   flex-shrink: 0;
 
   span {
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-primary);
+    color: var(--color-text-primary);
   }
 }
 
@@ -29,11 +31,11 @@
 
   h2 {
     margin: 0 0 24px;
-    font-size: 22px;
-    font-weight: 600;
-    color: var(--text-primary);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--color-text-primary);
     padding-bottom: 12px;
-    border-bottom: 2px solid var(--primary);
+    border-bottom: 2px solid var(--color-accent);
 
     &:not(:first-child) {
       margin-top: 40px;
@@ -43,14 +45,14 @@
   h3 {
     margin: 24px 0 12px;
     font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
+    font-weight: 700;
+    color: var(--color-text-primary);
   }
 
   p {
     margin: 0 0 12px;
     font-size: 14px;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     line-height: 1.8;
     text-align: justify;
   }
@@ -58,9 +60,9 @@
   .agreement-footer-text {
     margin-top: 40px;
     padding-top: 20px;
-    border-top: 1px solid var(--border-color);
+    border-top: 1px solid var(--color-divider);
     font-size: 13px;
-    color: var(--text-tertiary);
+    color: var(--color-text-tertiary);
     text-align: center;
   }
 
@@ -73,11 +75,11 @@
   }
 
   &::-webkit-scrollbar-thumb {
-    background: var(--border-color);
+    background: var(--color-scrollbar-thumb);
     border-radius: 4px;
 
     &:hover {
-      background: var(--text-tertiary);
+      background: var(--color-scrollbar-thumb-hover);
     }
   }
 }

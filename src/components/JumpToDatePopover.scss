@@ -1,3 +1,4 @@
+// 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .jump-date-popover {
   position: absolute;
   top: calc(100% + 10px);
@@ -9,7 +10,7 @@
 // 内容层底色：中心保留半透明底保证日历可读，四周 26px 渐隐露出玻璃的边缘折射带
 .jump-date-popover-body {
   position: relative;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   padding: 12px;
 
   &::before {
@@ -18,10 +19,10 @@
     inset: 0;
     z-index: -1;
     border-radius: inherit;
-    background-color: color-mix(in srgb, var(--bg-secondary-solid, #ffffff) 68%, transparent);
+    background-color: color-mix(in srgb, var(--color-bg-surface) 68%, transparent);
     mask:
-      linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent),
-      linear-gradient(to bottom, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+      linear-gradient(to right, transparent, black 26px, black calc(100% - 26px), transparent),
+      linear-gradient(to bottom, transparent, black 26px, black calc(100% - 26px), transparent);
     mask-composite: intersect;
   }
 }
@@ -36,10 +37,10 @@
 .jump-date-popover .current-month {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   border: none;
   background: transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-small);
   padding: 4px 8px;
 }
 
@@ -49,17 +50,17 @@
 }
 
 .jump-date-popover .current-month.clickable:hover {
-  color: var(--primary);
-  background: var(--bg-hover);
+  color: var(--color-accent);
+  background: var(--color-bg-hover);
 }
 
 .jump-date-popover .nav-btn {
   width: 28px;
   height: 28px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background-color: color-mix(in srgb, var(--bg-secondary-solid, #ffffff) 80%, transparent);
-  color: var(--text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background-color: color-mix(in srgb, var(--color-bg-inset) 80%, transparent);
+  color: var(--color-text-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -68,9 +69,9 @@
 }
 
 .jump-date-popover .nav-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-  background: var(--bg-hover);
+  border-color: var(--color-accent-border);
+  color: var(--color-accent);
+  background: var(--color-bg-hover);
 }
 
 .jump-date-popover .status-line {
@@ -82,7 +83,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
   font-size: 11px;
 }
 
@@ -95,7 +96,7 @@
 .jump-date-popover .calendar-grid .weekday {
   text-align: center;
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--color-text-tertiary);
 }
 
 .jump-date-popover .calendar-grid .days {
@@ -116,9 +117,9 @@
 .jump-date-popover .month-cell,
 .jump-date-popover .year-cell {
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-size: 13px;
   transition: all 0.18s ease;
@@ -126,22 +127,22 @@
 
 .jump-date-popover .month-cell:hover,
 .jump-date-popover .year-cell:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .jump-date-popover .month-cell.active,
 .jump-date-popover .year-cell.active {
-  background: var(--primary);
+  background: var(--color-accent);
   color: #fff;
 }
 
 .jump-date-popover .day-cell {
   position: relative;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-primary);
+  color: var(--color-text-primary);
   cursor: pointer;
   display: flex;
   flex-direction: column;
@@ -167,16 +168,16 @@
 }
 
 .jump-date-popover .day-cell:not(.empty):not(.no-message):hover {
-  background: var(--bg-hover);
+  background: var(--color-bg-hover);
 }
 
 .jump-date-popover .day-cell.today {
-  border-color: var(--primary-light);
-  color: var(--primary);
+  border-color: var(--color-accent-border);
+  color: var(--color-accent);
 }
 
 .jump-date-popover .day-cell.selected {
-  background: var(--primary);
+  background: var(--color-accent);
   color: #fff;
 }
 
@@ -190,22 +191,22 @@
   margin-top: 1px;
   font-size: 13px;
   line-height: 1;
-  color: var(--primary, #07c160);
+  color: var(--color-accent);
   font-weight: 700;
 }
 
 .jump-date-popover .day-cell.selected .day-count {
-  color: color-mix(in srgb, #ffffff 78%, var(--primary, #07c160) 22%);
+  color: color-mix(in srgb, #fff 78%, var(--color-accent) 22%);
 }
 
 .jump-date-popover .day-count-loading {
   position: static;
   margin-top: 1px;
-  color: var(--primary, #07c160);
+  color: var(--color-accent);
 }
 
 .jump-date-popover .day-cell.selected .day-count-loading {
-  color: color-mix(in srgb, #ffffff 78%, var(--primary, #07c160) 22%);
+  color: color-mix(in srgb, #fff 78%, var(--color-accent) 22%);
 }
 
 .jump-date-popover .spin {
