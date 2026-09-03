@@ -43,6 +43,7 @@ import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, com
 import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
 import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
+import { registerEvalIpcHandlers } from './services/evalIpcHandlers'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -55,6 +56,8 @@ import { enrichCustomer } from './services/crmEnrichService'
 import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
+import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
+import { restoreLegacyGroupScanAssignments } from './services/crmAssignmentService'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
@@ -5478,6 +5481,8 @@ app.whenReady().then(async () => {
     // 启动今日行动引擎
     setActionEngineConfig(configService)
     registerCrmIpcHandlers(ipcMain, configService)
+    // D7 商机评测集标注（eval:* 四端点，见 evalIpcHandlers.ts）
+    registerEvalIpcHandlers(ipcMain)
     // 内部人员名单（同事）：手动名单 + 内部群成员，CRM 导入自动跳过
     await crmDbService.initialize(app.getPath('userData'), startupWxid)
     try {
@@ -5502,6 +5507,31 @@ app.whenReady().then(async () => {
       }
     } catch (e) {
       console.warn('[Sales] 灵感信箱回填导入失败:', e)
+    }
+    // 决策B存量处置（2026-09-03 拍板「存量重置」）：群扫线索首触期限清零 + 存量 SLA 卡关单
+    // 幂等（二次执行命中 0 行）；必须在 startActionEngineScheduler 之前，防新一轮 SLA 扫描再建卡
+    try {
+      const reset = resetLegacyGroupScanSla()
+      if (reset.leads > 0) console.log(`[Sales] 群扫存量 SLA 重置完成：${reset.leads} 条线索、${reset.cards} 张卡`)
+    } catch (e) {
+      console.warn('[Sales] 群扫存量 SLA 重置失败:', e)
+    }
+    // 宪法 §4.2 决策B 配套（2026-09-03 用户当面拍板执行）：群扫 tag 归属残留清理
+    // 幂等（二次执行命中 0 行）；tag='未分配' 直接清空，其余挪 note 留痕
+    try {
+      const tagCleanup = cleanupLegacyGroupScanTags()
+      if (tagCleanup.cleared > 0) console.log(`[Sales] 群扫存量 tag 归属清理完成：${tagCleanup.cleared} 条（${tagCleanup.noted} 条留痕）`)
+    } catch (e) {
+      console.warn('[Sales] 群扫存量 tag 归属清理失败:', e)
+    }
+    // 决策B 配套②（2026-09-03 用户拍板「恢复成正式分配」）：旧 tag 归属 → assignment
+    // 杨青/李林辉 直挂，秒变→许丽娟（外号），静候=丁帅已离职留资源池；复用 assignLeads 幂等
+    try {
+      const restored = restoreLegacyGroupScanAssignments()
+      const restoredTotal = Object.values(restored.restored).reduce((a, b) => a + b, 0)
+      if (restoredTotal > 0) console.log(`[Sales] 群扫旧归属恢复完成：${JSON.stringify(restored.restored)}，留资源池 ${restored.pooled} 条`)
+    } catch (e) {
+      console.warn('[Sales] 群扫旧归属恢复失败:', e)
     }
     startActionEngineScheduler()
     // 启动周复盘定时器（每周日 20:00）

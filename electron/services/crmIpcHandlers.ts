@@ -18,7 +18,8 @@ import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
-import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
+import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
+import { assignLeads, listAssignments } from './crmAssignmentService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -310,11 +311,18 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:lead:detail', async (_, id: number) => leadDetail(Number(id)))
   ipcMain.handle('crm:lead:overview', async () => leadOverview())
   ipcMain.handle('crm:lead:status', async (_, id: number, action: string, opts) => updateLeadStatus(Number(id), action as any, (opts || {}) as any))
+  ipcMain.handle('crm:lead:update', async (_, id: number, fields) => updateLeadProfile(Number(id), (fields || {}) as any))
   ipcMain.handle('crm:lead:toAccount', async (_, id: number) => toAccount(Number(id)))
   ipcMain.handle('crm:lead:scanSla', async () => scanLeadSla())
   ipcMain.handle('crm:lead:slaComplete', async (_, taskId: number) => completeLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:slaSkip', async (_, taskId: number) => skipLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:deadReasons', async () => DEFAULT_DEAD_REASONS)
+
+  // ── 线索分配（Phase 1 最小可用，API-CONTRACT §1.14 契约：assign + list，统一信封）──
+  // actor 过渡期无身份系统：未提供时服务层兜底「分配员」（仅署名，宪法 §1.12）
+  ipcMain.handle('crm:assignment:assign', async (_, req: { leadIds?: number[]; salesName?: string; mode?: string; actor?: string }) =>
+    assignLeads(Array.isArray(req?.leadIds) ? req.leadIds : [], String(req?.salesName || ''), String(req?.actor || ''), String(req?.mode || 'manual')))
+  ipcMain.handle('crm:assignment:list', async (_, opts) => listAssignments((opts || {}) as any))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

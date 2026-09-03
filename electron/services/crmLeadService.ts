@@ -8,6 +8,7 @@
 import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
 import { classifyLead, dedupeRows, maskContact, type RawLeadRow } from './crmLeadImportCore'
+import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
 // ─── 配置注入（registerCrmIpcHandlers 装配）─────────────────────────────────
 export interface LeadConfigRef { get: (key: string) => unknown }
@@ -134,6 +135,8 @@ export interface StatusActionOpts {
   /** 死因（DEAD 必填） */
   reason?: string
   note?: string
+  /** 已加微信时填客户微信号/昵称（1.4a 手动绑定的过渡期载体，写 lead.wechat） */
+  wechat?: string
 }
 
 const ACTION_ACTION: Record<string, string> = { contacted: 'CONTACTED', wx_added: 'WX_ADDED', dead: 'DEAD', reopen: 'REOPEN' }
@@ -151,8 +154,14 @@ export function updateLeadStatus(leadId: number, action: keyof typeof ACTION_ACT
       tx.run('UPDATE lead SET status = ?, first_contacted_at = ?, first_contact_channel = ?, updated_at = ? WHERE id = ?', ['CONTACTED', now, channel, now, id])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'CONTACTED', `首触渠道：${channel}`, now])
     } else if (action === 'wx_added') {
-      tx.run("UPDATE lead SET status = 'WX_ADDED', updated_at = ? WHERE id = ?", [now, id])
-      tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'WX_ADDED', String(opts.note || '已添加微信'), now])
+      const wechat = String(opts.wechat || '').trim()
+      if (wechat) {
+        tx.run("UPDATE lead SET status = 'WX_ADDED', wechat = ?, updated_at = ? WHERE id = ?", [wechat, now, id])
+        tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'WX_ADDED', `已添加微信：${wechat}`, now])
+      } else {
+        tx.run("UPDATE lead SET status = 'WX_ADDED', updated_at = ? WHERE id = ?", [now, id])
+        tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'WX_ADDED', String(opts.note || '已添加微信'), now])
+      }
     } else if (action === 'dead') {
       const reason = String(opts.reason || '').trim()
       tx.run('UPDATE lead SET status = ?, dead_reason = ?, updated_at = ? WHERE id = ?', ['DEAD', reason, now, id])
@@ -161,6 +170,26 @@ export function updateLeadStatus(leadId: number, action: keyof typeof ACTION_ACT
       tx.run("UPDATE lead SET status = 'NEW', dead_reason = '', updated_at = ? WHERE id = ?", [now, id])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'REOPEN', String(opts.note || '恢复跟进'), now])
     }
+  })
+  return { ok: true }
+}
+
+// ─── 资料编辑（姓名 / 微信号·昵称，不动状态机）─────────────────────────────
+/** 行内铅笔入口用：随时补填/修改姓名与微信号，状态不受影响；写 lead_activity 留痕 */
+export function updateLeadProfile(leadId: number, fields: { name?: string; wechat?: string }): { ok: boolean; error?: string } {
+  const id = Number(leadId)
+  const lead = crmDbService.getById('lead', id)
+  if (!lead) return { ok: false, error: '线索不存在' }
+  const name = String(fields.name ?? lead.name ?? '').trim()
+  const wechat = String(fields.wechat ?? lead.wechat ?? '').trim()
+  const changed: string[] = []
+  if (name !== String(lead.name || '')) changed.push(`姓名：${lead.name || '（空）'} → ${name || '（空）'}`)
+  if (wechat !== String(lead.wechat || '')) changed.push(`微信：${lead.wechat || '（空）'} → ${wechat || '（空）'}`)
+  if (!changed.length) return { ok: true }
+  const now = Date.now()
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE lead SET name = ?, wechat = ?, updated_at = ? WHERE id = ?', [name, wechat, now, id])
+    tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'EDIT', changed.join('；'), now])
   })
   return { ok: true }
 }
@@ -269,4 +298,96 @@ export function skipLeadFirstContact(taskId: number): boolean {
   if (!task || task.trigger_type !== 'sla_lead') return false
   salesDbService.todoUpdate(Number(taskId), { status: 'skipped' })
   return true
+}
+
+// ─── 存量重置：群扫线索首触期限清零（2026-09-03 用户拍板「存量重置」）───────
+/**
+ * 决策 B 配套存量处置。群资源扫描导入的约 4,680 条线索，first_contact_deadline 在扫描
+ * 导入日即被设置（导入即起计时），从未分配也无人该首触 → 全部超时 + sla_lead 卡刷屏
+ * （5,551 张 pending，行动卡执行率被稀释到 0.6% 的主因）。
+ * 处置：deadline 置 LEAD_SLA_UNASSIGNED_SENTINEL（NOT NULL 列不能置 NULL；哨兵 = 待分配、
+ * 不起计时，不再超时、不再产新卡；Phase 1 分配上线后 SLA 从 assignment 起算，宪法 §1.3
+ * 两段计时），存量 pending sla_lead 卡批量 skipped 关单，写 audit_event。
+ * 天然幂等：二次执行命中 0 行直接返回。顺序守跨库铁律：先 crmDb 后 salesDb。
+ */
+export function resetLegacyGroupScanSla(): { leads: number; cards: number } {
+  const now = Date.now()
+  const resetIds = crmDbService.runTx((tx) => {
+    const rows = tx.all("SELECT id FROM lead WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ?", [LEAD_SLA_UNASSIGNED_SENTINEL])
+    if (!rows.length) return [] as number[]
+    tx.run("UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ?", [LEAD_SLA_UNASSIGNED_SENTINEL, now, LEAD_SLA_UNASSIGNED_SENTINEL])
+    return rows.map((r) => Number(r.id))
+  })
+
+  // 卡关单不随 resetIds 空而短路：孤儿卡（source_id 指向已不存在的 lead）每次启动都要扫
+  const idSet = new Set(resetIds)
+  let cards = 0
+  for (const t of salesDbService.todoList({ status: 'pending', limit: 100000 })) {
+    if (t.trigger_type !== 'sla_lead' || !t.source_id || !t.id) continue
+    // 关单两类：① 被重置群扫线索的卡；② 孤儿卡（source_id 指向已不存在的 lead——历史重复
+    // 建卡前科，真实库实测 872 张，留着永远挂在今日行动里）
+    const orphan = !idSet.has(Number(t.source_id)) && !crmDbService.getById('lead', Number(t.source_id))
+    if (idSet.has(Number(t.source_id)) || orphan) { salesDbService.todoUpdate(t.id, { status: 'skipped' }); cards++ }
+  }
+  if (!resetIds.length) {
+    if (cards > 0) console.log(`[CRM] SLA 孤儿卡清扫：${cards} 张`)
+    return { leads: 0, cards }
+  }
+  // 审计留痕（宪法 §1.12：新审计写点一律 audit_event；失败不阻塞重置本体）
+  try {
+    crmDbService.create('audit_event', {
+      actor: 'system:migration', action: 'lead_sla_stock_reset', entity_type: 'lead', entity_id: 0,
+      detail: JSON.stringify({ leads: resetIds.length, cardsClosed: cards, reason: '决策B存量处置：群扫线索首触期限清零，Phase 1 起 SLA 从分配（assignment）起算' }),
+      created_at: now
+    })
+  } catch (e) { console.warn('[CRM] 存量重置审计写入失败（不阻塞）:', e) }
+  console.log(`[CRM] 群扫存量 SLA 重置：${resetIds.length} 条线索首触期限清零，${cards} 张 SLA 卡关单`)
+  return { leads: resetIds.length, cards }
+}
+
+// ─── 存量处置：群扫线索 tag 归属清理（宪法 §4.2 决策B，2026-09-03 用户当面拍板执行）───
+/**
+ * 群扫时代的 tag 列被当作「归属销售」用（秒变/李林辉/杨青/静候/未分配），群扫下线后
+ * 归属改由 assignment 承载（宪法 §1.3：分配状态不放 lead），旧 tag 残留与新归属筛选
+ * 同名打架。处置：tag='未分配' 直接清空不留痕；其余 tag 值挪进 note 留痕
+ * （`曾归属:{tag}（YYYY-MM-DD）`，note 已含同值则只清 tag），同事务 UPDATE，
+ * 写 audit_event。天然幂等：二次执行命中 0 行直接返回。
+ */
+export function cleanupLegacyGroupScanTags(): { cleared: number; noted: number } {
+  const now = Date.now()
+  const today = new Date(now).toISOString().slice(0, 10)
+  const result = crmDbService.runTx((tx) => {
+    const rows = tx.all("SELECT id, tag, note FROM lead WHERE source = '群资源扫描' AND tag IS NOT NULL AND tag <> ''", [])
+    if (!rows.length) return { cleared: 0, noted: 0 }
+    let cleared = 0, noted = 0
+    for (const r of rows) {
+      const id = Number(r.id)
+      const tag = String(r.tag)
+      const note = r.note == null ? '' : String(r.note)
+      if (tag === '未分配') {
+        tx.run("UPDATE lead SET tag = '', updated_at = ? WHERE id = ?", [now, id])
+        cleared++
+      } else {
+        const marker = `曾归属:${tag}（${today}）`
+        if (note.includes(`曾归属:${tag}`)) {
+          tx.run("UPDATE lead SET tag = '', updated_at = ? WHERE id = ?", [now, id])
+        } else {
+          const newNote = note ? `${note}；${marker}` : marker
+          tx.run("UPDATE lead SET tag = '', note = ?, updated_at = ? WHERE id = ?", [newNote, now, id])
+        }
+        cleared++; noted++
+      }
+    }
+    return { cleared, noted }
+  })
+  if (!result.cleared) return result
+  try {
+    crmDbService.create('audit_event', {
+      actor: 'system:migration', action: 'lead_tag_owner_cleanup', entity_type: 'lead', entity_id: 0,
+      detail: JSON.stringify({ cleared: result.cleared, noted: result.noted, reason: '宪法 §4.2 决策B：群扫 tag 归属残留清理，归属改由 assignment 承载' }),
+      created_at: now
+    })
+  } catch (e) { console.warn('[CRM] tag 清理审计写入失败（不阻塞）:', e) }
+  console.log(`[CRM] 群扫存量 tag 归属清理：${result.cleared} 条清空（${result.noted} 条 note 留痕）`)
+  return result
 }

@@ -1,4 +1,4 @@
-﻿// 配置服务 - 封装 Electron Store
+// 配置服务 - 封装 Electron Store
 import { config } from './ipc'
 import type { ExportDefaultDateRangeConfig } from '../utils/exportDateRange'
 import type { ExportAutomationTask } from '../types/exportAutomation'
@@ -95,6 +95,7 @@ export const CONFIG_KEYS = {
   CRM_ENRICH_BACKFILL_LIMIT: 'crmEnrichBackfillLimit',
   CRM_LEAD_SLA_HOURS: 'crmLeadSlaHours',
   CRM_LEAD_SOURCE_PRESET: 'crmLeadSourcePreset',
+  CRM_SALES_LIST: 'crmSalesList',
   CRM_LOGISTICS_OVERDUE_HOURS: 'crmLogisticsOverdueHours',
 
   // 数据收集
@@ -1988,6 +1989,15 @@ export async function getCrmLeadSourcePreset(): Promise<string[]> {
 }
 export async function setCrmLeadSourcePreset(sources: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.CRM_LEAD_SOURCE_PRESET, Array.isArray(sources) ? sources.join(',') : '')
+}
+
+// 线索分配销售名单（字符串数组；在线索页分配弹窗内维护：加名/删名，不动设置页）
+export async function getCrmSalesList(): Promise<string[]> {
+  const value = await config.get(CONFIG_KEYS.CRM_SALES_LIST)
+  return Array.isArray(value) ? value.map((s) => String(s).trim()).filter(Boolean) : []
+}
+export async function setCrmSalesList(names: string[]): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_SALES_LIST, Array.isArray(names) ? names : [])
 }
 
 // 获取 HTTP API 自动启动状态

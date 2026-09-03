@@ -892,7 +892,44 @@
 - **遗留（下波或全局层）**：① TSX 内联阶段色板仍是字面 hex（`AIActionCard.tsx` STAGE_COLORS / `SalesContextStrip.tsx` STAGE_INFO / `CustomerCard.tsx` / `TodayActionPage.tsx` STAGE_COLORS）——多色相语义色非品牌色，是否收 `shared/funnelPalette.ts` 待裁决；② fadeIn/slideUp keyframes 多文件重复定义（值相同无冲突，冗余）；③ `.crm-btn`/`.crm-header`/`.crm-notice` 在 CrmWorkbenchPage.scss 与 CrmProductPage.scss 双份全局定义（历史遗留，lazy 加载后载者覆盖，有串扰风险）；④ 视觉验收（light/dark 截图比对）未做
 - **2026-09-03 双漏斗格式统一（用户实测后拍板）**：行动漏斗「曝光 N/A」卡从 KPI 网格外孤儿位收进网格（第 6 卡同格）；两页统计卡统一为设计稿统计卡语言（白卡浮起 surface+shadow-card+radius-card、标签在上、26px/700 tabular、网格同规则 minmax(160px,1fr)）；行动漏斗 h2 补 700 字重、刷新按钮补 hover、空态色对齐、漏斗容器卡限宽 860 居中与销售漏斗同规格；销售漏斗统计卡 DOM 改标签在上（纯视觉）。funnel-test 40/40 + tsc 0
 - **下波候选**：ChatPage / SettingsPage / SnsPage 三巨石 + Export 模块 6 文件 + Sns/ 子组件
-- **2026-09-03 A048 立体圆柱漏斗（用户参考图拍板）**：两页漏斗图统一换成 `src/components/FunnelCylinder.tsx`（+`.scss`）——每段 = SVG 圆柱（viewBox 0 0 100 44，柱身 path + 顶面 ellipse 白色 0.3 高光）+ HTML 文字层（段名 12px + 主数字 24px/700 字面白豁免）；段间 ChevronDown + 转化率标注；宽度数组纯装饰不绑数值（沿用决策 14 精神）；色板仍取 `shared/funnelPalette` 单一真源（FUNNEL_STAGE_COLORS / FUNNEL_STAGE_GRADIENT_LIGHT）。行动漏斗 widths=[100,76,56,40,28]、gapText=`转化 x.x%`/N/A、点击段开 drill；销售漏斗删 ECharts 漏斗 option/events 改圆柱（widths=[100,85,70,55]、countText=`N 人`、colorIndex 走 SALES_STAGE_COLOR_INDEX、点击段 navigate 客户列表下钻保留），趋势图/当前状态卡仍用 ECharts 不动。验证：tsc root 0 / node 158=基线、vite build 0 error、funnel-test 40/40
+- **2026-09-03 A048 立体圆柱漏斗（用户参考图拍板）**：两页漏斗图统一换成 `src/components/FunnelCylinder.tsx`（+`.scss`）——每段 = SVG 圆柱（viewBox 0 0 100 44，柱身 path + 顶面 ellipse 白色 0.3 高光）+ HTML 文字层（段名 12px + 主数字 24px/700 字面白豁免）；段间 ChevronDown + 转化率标注；宽度数组纯装饰不绑数值（沿用决策 14 精神）；色板仍取 `shared/funnelPalette` 单一真源（FUNNEL_STAGE_COLORS / FUNNEL_STAGE_GRADIENT_LIGHT）。行动漏斗 widths=[100,76,56,40,28]、gapText=`转化 x.x%`/N/A、点击段开 drill；销售漏斗删 ECharts 漏斗 option/events 改圆柱（widths=[100,85,70,55]、countText=`N 人`、colorIndex 走 SALES_STAGE_COLOR_INDEX、点击段 navigate 客户列表下钻保留），趋势图/当前状态卡仍用 ECharts 不动。验证：tsc root 0 / node 158=基线、vite build 0 error、funnel-test 40/40。**用户目视验收通过，三巨石页美化用户拍板不做（现状可接受），UI 线收工**
+- **2026-09-03 三笔提交存档**：`c4e626c` docs（宪法/契约/评测指引/归档整理）、`86b3ece` Phase 0 工程（D3/D4/D7/群扫下线/分库）、`fde3dad` UI 美化全线。工作区仅余不入库物：eval pack jsonl（PIPL）与 reports/（诊断留档）
+
+## 2.45 Phase 0 收尾：D7 标注启动 + D8 评审包（2026-09-03）
+
+- **D7 现状盘点**：`opportunity-eval.ts export` 复跑确认——候选① intent_tag_log 全库仅 1 条带 message_key 锚点（阶段非商机档，0 入选，属数据现状非脚本 bug）；候选② quote_signal 46 条；候选③ 对照样本 30 条（对照池 203 会话）；合计 76 行已出包 `opportunity-eval-pack-20260902.jsonl`（不入 git，PIPL）
+- **AI 预标注**：原排期用 GLM 预填 ai_label，GLM 额度耗尽后改由 Kimi 子代理执行——逐行拉锚点消息前后文 → 填 `ai_label`/`ai_evidence_keys` → 输出 `*.ai.jsonl`（不覆盖原包、不动人工字段、live 库零写）。人工标注仍按评测集标注指引走「先自判再对照 AI」防锚定
+- **D8 评审包落稿**：`docs/规划/Phase0-D8-评审包.md`——7 条决策清单（术语口径 / Identity 归并 / Stage 矩阵 🔶 格 / owner_sales 三处口径 / 决策 B 存量处置 / AI 三档边界 / PIPL 证据规范）+ 附件 A 术语表 + 附件 B 对象契约一页表；每条带通俗解释与签字栏，30 分钟可过。**待主管签字**，签字后宪法 §2.5 🔶 格生效
+- **D7 缺口提示**：目标 ≥100 条，现包 76 条，且 intent_tag_log 证据锚点稀缺（打标链路 message_key 覆盖率低）——Phase 1 打标链路若不加锚点回填，评测集只能靠 quote_signal + 对照样本撑量
+- **D7 AI 预标注完成（Kimi 子代理，复用 evidenceKey+wcdbCore 链路，全程只读）**：76 行全部拉到上下文、零失败 → `opportunity-eval-pack-20260902.ai.jsonl`（ai_label 分布 has 33 / none 16 / uncertain 27；对照样本 6 条实为 has 正是对照组价值；quote_signal 误报确认 2 条典型：手机号/物流单号误识别为金额）。另出 `*.for-review.jsonl`（ai_* 清空，防锚定，主管标注用）。**误报跟进（9/3）**：拿 case46/35 原文实测现行 `parseQuoteSignal` 均正确拒识（手机号拦截 + 1 亿上限在旧行写入后才加，脏行是历史遗留，留库作评测证据）；两条原文已锁进 crm-golden（45→47/47）。对照样本 6 条漏报 = 规则只认销售侧报价消息（客户询价无销售报价不回不触发，设计使然），召回补强项 = Phase 2 AI 商机识别，评测集即其验收尺。三坑记录：① 原生库须用项目 Electron 二进制跑且 `env -u ELECTRON_RUN_AS_NODE`；② decryptKey 是 safeStorage 密文且须 `app.setName('weflow')`；③ wcdbCore 退出时原生 shutdown SIGSEGV 无害
+
+## 2.46 决策B存量处置：群扫线索首触 SLA 存量重置（2026-09-03 用户拍板「存量重置」）
+
+> 用户实测发现：线索池「超时未首触」4,000+ 条。根因 = 群扫导入日即起计 `first_contact_deadline`（`crmLeadService.ts` 导入路径），4,680 条存量从未分配也无人该首触 → 全超时；连带 salesDb 堆积 **5,551 张 pending sla_lead 卡**（其中 872 张孤儿卡，source_id 指向已不存在的 lead——历史重复建卡前科），今日行动被刷屏（行动卡执行率 0.6% 主因）。
+
+- **修复**：`crmLeadService.resetLegacyGroupScanSla()`（挂 main.ts 启动链路，startActionEngineScheduler 之前）——① 群扫 NEW 线索 deadline 置 `LEAD_SLA_UNASSIGNED_SENTINEL`（`shared/leadSla.ts`，2100-01-01；**NOT NULL 列不能置 NULL，哨兵=待分配不起计时**；Phase 1 分配上线后 SLA 从 assignment 起算，分配动作覆盖本列）；② pending sla_lead 卡批量 skipped 关单（重置线索的卡 + 孤儿卡）；③ 写 `audit_event`（action=`lead_sla_stock_reset`，宪法 §1.12 新审计写点首用）。天然幂等（二次命中 0 行）
+- **UI**：线索列表首触期限列对哨兵值渲染「待分配」（`CrmLeadPage.tsx`）；「检查超时」按钮/统计卡口径不变（哨兵自然不再命中 `deadline < now`）
+- **「销售只能看到自己的线索」属 Phase 1 未建功能**（依赖 assignment 分配引擎 + 1.2a 身份档案），当前线索页为资源池/分配员视角——已在 D8 评审包口径内
+- **验证**：`scripts/lead-sla-reset-test.ts` 真实库副本 13/13（清零/关单/幂等/审计/非群扫零影响/新导入不受影响）；回归 crm-lead 55/55、payments-claim 18/18；tsc root 0 / node 158=基线。⚠️ shared/*.js/.d.ts 为 composite 构建产物（gitignore），新增 shared/leadSla.ts 后需 `npx tsc -b tsconfig.node.json` 出产物，否则 root tsc 报 TS6305
+- **⚠️ 大坑（9/3 实锤）：electron/services/*.js 同目录编译产物会影子覆盖 .ts 源码**——vite 解析 `.js` 优先于 `.ts`，`tsc -b` 在源码旁就地 emit 的陈旧 .js 会让 dev/打包跑旧逻辑（本次孤儿卡逻辑在 tsx 测试过但 App 首跑静默缺失，872 张卡残留才暴露）。**改完 electron/ 或 shared/ 的 .ts 必须重跑 `npx tsc -b tsconfig.node.json` 再启动/打包**。善后：`resetLegacyGroupScanSla` 卡关单不再随 resetIds 空短路（孤儿卡每次启动都扫），二次启动日志「SLA 孤儿卡清扫：872 张」，live 终态：超时 NEW=0、pending sla_lead=0、pending 总卡 246（有效卡不再被淹没）
+
+## 2.47 决策B存量处置（续）：群扫 tag 归属残留清理（2026-09-03 用户当面拍板执行）
+
+> 承接 §2.46。群扫时代 `lead.tag` 列被当作「归属销售」用（秒变/李林辉/杨青/静候/未分配），群扫下线后归属改由 assignment 承载（宪法 §1.3：分配状态不放 lead）——但 4,680 条存量 tag 残留，线索页「标签 chips」与新「归属 chips」同名打架（杨青 tag 981 vs 归属 0），用户验收时混淆。
+
+- **修复**：`crmLeadService.cleanupLegacyGroupScanTags()`（挂 main.ts 启动链路，紧随 resetLegacyGroupScanSla）——遍历 `source='群资源扫描' AND tag非空`：tag='未分配' 直接清空不留痕；其余挪 note 留痕（`曾归属:{tag}（YYYY-MM-DD）`，note 已含同值则只清 tag 不重复追加）；同事务 UPDATE + `audit_event`（action=`lead_tag_owner_cleanup`）。天然幂等（二次命中 0 行）
+- **验证**：`scripts/lead-tag-cleanup-test.ts` 真实库副本 13/13（清空计数 / 留痕格式 / 「未分配」不留痕 / 幂等 / 已留痕不重复追加 / 非群扫零影响）；回归 crm-lead 55/55；tsc root 0 / node 158=基线
+- **生效方式**：下次 App 启动自动执行（与 §2.46 同款启动迁移模式），live 库届时 4,680 条 tag 清空、4,502 条 note 留痕（178 条「未分配」不留痕）
+- **✅ 已生效（9/3 重启实测）**：live 终态 tag 残留 0 / note 留痕 4,502 / 审计 1 条
+
+## 2.48 决策B存量处置（再续）：旧 tag 归属恢复为正式分配（2026-09-03 用户拍板「恢复成正式分配」）
+
+> 承接 §2.47。tag 清完后归属筛选全是「未分配」，用户需要看到「这几千条原来是谁的」。拍板：旧归属恢复为正式分配（assignment）。外号映射用户当面确认：**秒变=许丽娟**；**静候=丁帅，已离职**，不挂名留资源池。
+
+- **修复**：`crmAssignmentService.restoreLegacyGroupScanAssignments()`（挂 main.ts 启动链路，紧随 tag 清理）——扫 `source='群资源扫描' AND note LIKE '%曾归属:%'`，按映射分组后复用 `assignLeads`（自带 E201 幂等：已有有效分配跳过；assignment + ownership_history + audit_event 单事务）。映射：杨青→杨青、李林辉→李林辉、秒变→许丽娟；静候/未分配/未知旧值 → 留资源池
+- **⚠️ 关键坑：note 含多个历史「曾归属」标记**——群扫时代多次换归属，note 里形如 `群扫描归属:秒变（2026-08-27）…；曾归属:秒变（2026-02-27）；曾归属:李林辉（2026-09-03）`，字符串顺序即时间顺序。**必须取最后一个标记**（= tag 清理时的最终归属）；首版取第一个导致归属错挂，副本测试抽查段当场抓获
+- **验证**：`scripts/lead-assignment-restore-test.ts` 真实库副本 13/13（按最后标记分组对账 / 外号映射 / ownership_history+audit_event 逐条留痕 / 幂等 / 静候·未分配零分配）；回归 crm-lead 55/55、assignment 28/28；tsc root 0 / node 158=基线
+- **✅ 已生效（9/3 重启实测）**：live 终态有效分配 许丽娟 1,511 / 李林辉 1,356 / 杨青 981 = 3,848 条，资源池 832 条（静候 654 + 未分配 178）；审计 `lead_assign` 3,848 条。⚠️ 恢复分配的 `sla1_deadline` 留 NULL（首触 SLA 不起计时，同 §2.46 遗留，Phase 1 分配引擎再补）
 
 ---
 

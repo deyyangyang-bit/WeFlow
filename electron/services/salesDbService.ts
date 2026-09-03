@@ -913,6 +913,14 @@ class SalesDbService {
     return this.get<OpportunityEvalCase>('SELECT * FROM opportunity_eval_case WHERE id = ?', [id])!
   }
 
+  /** 按主键取单条（未软删；标注页按 id 写回用） */
+  evalCaseGetById(id: number): OpportunityEvalCase | undefined {
+    return this.get<OpportunityEvalCase>(
+      'SELECT * FROM opportunity_eval_case WHERE id = ? AND deleted = 0',
+      [id]
+    )
+  }
+
   /** 按幂等键取单条（未软删） */
   evalCaseGet(sessionId: string, anchorKey: string = ''): OpportunityEvalCase | undefined {
     return this.get<OpportunityEvalCase>(

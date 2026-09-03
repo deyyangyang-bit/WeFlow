@@ -94,3 +94,8 @@ weflow-web-offical
 /scripts/syncWedecrypt.py
 /scripts/syncWelive.py
 /WeLive
+
+# PIPL：评测集/标注包/分析报告含聊天原文与客户数据，永不入库（HANDOVER §2.45）
+opportunity-eval-*.jsonl
+opportunity-eval-*.xlsx
+reports/

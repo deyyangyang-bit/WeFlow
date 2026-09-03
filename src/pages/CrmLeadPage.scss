@@ -45,14 +45,26 @@
 /* 详情 modal */
 .lead-detail { width: 620px; }
 .lead-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; label { font-size: 11px; color: var(--color-text-tertiary); } .ld-strong { font-weight: 700; font-size: 15px; } .ld-note { grid-column: span 2; } div { font-size: 13px; } }
-.lead-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; label { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 4px; align-items: center; select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 6px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } } }
+.lead-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; label { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 4px; align-items: center; select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 6px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } } input { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 8px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } }
 .lead-timeline { display: flex; flex-direction: column; gap: 4px; .lt-item { display: flex; gap: 10px; font-size: 12px; .lt-time { color: var(--color-text-tertiary); width: 90px; flex-shrink: 0; font-variant-numeric: tabular-nums; } .lt-act { font-weight: 600; color: var(--color-accent); width: 90px; flex-shrink: 0; } .lt-note { color: var(--color-text-secondary); } } }
 
 /* 失效确认 */
-.lead-dead { width: 420px; label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 4px; select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); } } }
+.lead-dead { width: 420px; label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 4px; select, input { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); } } }
 .ld-tip { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 10px; }
 
 .empty { text-align: center; color: var(--color-text-tertiary); padding: 24px 0; }
+
+/* 线索分配（Phase 1）：勾选列 / 归属小字 / 分配弹窗名单 */
+.lc-check { width: 30px; text-align: center; input[type='checkbox'] { accent-color: var(--color-accent); cursor: pointer; } }
+.lc-owner { font-size: 11px; color: var(--color-text-tertiary); margin-top: 2px; }
+.lc-sales-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.lc-sales-item {
+  display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: var(--radius-small); color: var(--color-text-primary);
+  &.active { border-color: var(--color-accent-border); background: var(--color-accent-bg); color: var(--color-accent); font-weight: 600; }
+  .crm-btn { padding: 2px 6px; }
+}
+.lc-sales-add { display: flex; gap: 8px; margin-bottom: 10px; input { flex: 1; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } } }
 
 /* 分页 */
 .crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0; }

@@ -96,6 +96,9 @@ ok('quote.无单位大额+设备词', q6?.amount === 45000)
 const q7 = parseQuoteSignal('回头转你200元', 1)
 ok('quote.闲聊小额不算', q7 === null)
 ok('quote.客户消息不算', parseQuoteSignal('这台CPD20报价38500元', 0) === null)
+// D7 评测集实锤误报原文（历史脏行，现规则必须拒）：手机号 / 物流单号
+ok('quote.手机号误报（D7 case46 原文）', parseQuoteSignal('13859168824 沙县松驰叉车配件商行', 1) === null)
+ok('quote.物流单号误报（D7 case35 原文）', parseQuoteSignal('800215586395  艾驱电动  张浪   广州', 1) === null)
 
 console.log(`\nGOLDEN RESULT: pass=${pass} fail=${fail}`)
 if (fail > 0) process.exit(1)

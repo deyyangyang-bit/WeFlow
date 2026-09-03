@@ -1,4 +1,4 @@
-﻿import { join } from 'path'
+import { join } from 'path'
 import { existsSync, readdirSync, statSync } from 'fs'
 import crypto from 'crypto'
 import Store from 'electron-store'
@@ -154,6 +154,8 @@ interface ConfigSchema {
   crmLogisticsOverdueHours: number
   /** 线索来源预设列表（逗号分隔，默认抖音/视频号/小红书，UI 下拉 + 自定义） */
   crmLeadSourcePreset: string
+  /** 线索分配销售名单（字符串数组，在线索页分配弹窗内维护，不动设置页） */
+  crmSalesList: string[]
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */
@@ -310,6 +312,7 @@ export class ConfigService {
       crmLeadSlaHours: 24,
       crmLogisticsOverdueHours: 24,
       crmLeadSourcePreset: '抖音,视频号,小红书',
+      crmSalesList: ['杨青', '李林辉', '许丽娟'],
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,

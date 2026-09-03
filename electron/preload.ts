@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 
 type CloseConfirmPayload = {
   canMinimizeToTray: boolean
@@ -746,11 +746,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     leadDetail: (id: number) => ipcRenderer.invoke('crm:lead:detail', id),
     leadOverview: () => ipcRenderer.invoke('crm:lead:overview'),
     leadStatus: (id: number, action: string, opts?: unknown) => ipcRenderer.invoke('crm:lead:status', id, action, opts),
+    leadUpdate: (id: number, fields: { name?: string; wechat?: string }) => ipcRenderer.invoke('crm:lead:update', id, fields),
     leadToAccount: (id: number) => ipcRenderer.invoke('crm:lead:toAccount', id),
     leadScanSla: () => ipcRenderer.invoke('crm:lead:scanSla'),
     leadSlaComplete: (taskId: number) => ipcRenderer.invoke('crm:lead:slaComplete', taskId),
     leadSlaSkip: (taskId: number) => ipcRenderer.invoke('crm:lead:slaSkip', taskId),
-    leadDeadReasons: () => ipcRenderer.invoke('crm:lead:deadReasons')
+    leadDeadReasons: () => ipcRenderer.invoke('crm:lead:deadReasons'),
+    // 线索分配（Phase 1 最小可用：assign + list，统一信封 { ok, data } / { ok:false, code, message }）
+    assignmentAssign: (req: { leadIds: number[]; salesName: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:assign', req),
+    assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts)
   },
   sales: {
     // 知识库
@@ -844,6 +848,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('sales:kb:extractProgress', handler)
       return () => ipcRenderer.removeListener('sales:kb:extractProgress', handler)
     }
+  },
+
+  // D7 商机评测集标注（eval:*；写库端点主进程内已 enqueueSalesTask 串行化）
+  eval: {
+    candidatesGenerate: (opts?: { sample?: number }) =>
+      ipcRenderer.invoke('eval:candidates:generate', opts),
+    list: () => ipcRenderer.invoke('eval:list'),
+    label: (payload: { id: number; label: string; annotatedBy: string }) =>
+      ipcRenderer.invoke('eval:label', payload),
+    stats: () => ipcRenderer.invoke('eval:stats')
   },
 
   social: {

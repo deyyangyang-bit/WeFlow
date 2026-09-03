@@ -1,4 +1,4 @@
-﻿import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
+import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
 
 export interface SessionChatWindowOpenOptions {
   source?: 'chat' | 'export'
@@ -1779,12 +1779,16 @@ export interface ElectronAPI {
     leadList: (opts?: { status?: string; source?: string; overdueOnly?: boolean; q?: string; limit?: number; offset?: number }) => Promise<LeadRow[]>
     leadDetail: (id: number) => Promise<{ lead: LeadRow | null; activities: Array<{ id: number; lead_id: number; action: string; note?: string; created_at: number }> }>
     leadOverview: () => Promise<{ total: number; byStatus: Record<string, number>; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; sources: Array<{ source: string; count: number }> }>
-    leadStatus: (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string }) => Promise<{ ok: boolean; error?: string }>
+    leadStatus: (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string; wechat?: string }) => Promise<{ ok: boolean; error?: string }>
+    leadUpdate: (id: number, fields: { name?: string; wechat?: string }) => Promise<{ ok: boolean; error?: string }>
     leadToAccount: (id: number) => Promise<{ ok: boolean; error?: string; accountId?: number; existed?: boolean }>
     leadScanSla: () => Promise<number>
     leadSlaComplete: (taskId: number) => Promise<boolean>
     leadSlaSkip: (taskId: number) => Promise<boolean>
     leadDeadReasons: () => Promise<string[]>
+    // 线索分配（Phase 1，统一信封 { ok, data } / { ok:false, code, message }，API-CONTRACT §1.14）
+    assignmentAssign: (req: { leadIds: number[]; salesName: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: Array<{ leadId: number; code: string; reason: string }> }; code?: string; message?: string }>
+    assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: AssignmentRow[]; total: number } }>
   }
   sales: {
     // 知识库
@@ -1873,6 +1877,56 @@ export interface ElectronAPI {
     profileBatch: (limit?: number, monthsBack?: number) => Promise<{ success: boolean; processed?: number; error?: string }>
     profileProgress: () => Promise<{ total: number; done: number; running: boolean }>
   }
+
+  // D7 商机评测集标注（eval:*）
+  eval: {
+    candidatesGenerate: (opts?: { sample?: number }) => Promise<{ success: boolean; result?: EvalGenerateResult; error?: string }>
+    list: () => Promise<{ success: boolean; cases: EvalCaseRow[]; error?: string }>
+    label: (payload: { id: number; label: string; annotatedBy: string }) => Promise<{ success: boolean; case?: EvalCaseRow; error?: string }>
+    stats: () => Promise<{ success: boolean; stats?: EvalStats; error?: string }>
+  }
+}
+
+/** D7 商机评测集候选（opportunity_eval_case 行 + 展示名；字段语义见 salesDbService.OpportunityEvalCase） */
+export interface EvalCaseRow {
+  id?: number
+  session_id: string
+  anchor_key?: string
+  label?: string
+  evidence_message_keys?: string
+  evidence_text?: string
+  ai_label?: string
+  ai_evidence_keys?: string
+  annotated_by?: string
+  status?: string
+  source?: string
+  updated_by?: string
+  updated_at?: number
+  version?: number
+  deleted?: number
+  created_at?: number
+  display_name: string
+}
+
+/** 候选生成结果（eval:candidates:generate） */
+export interface EvalGenerateResult {
+  inserted: number
+  skippedExisting: number
+  aiBackfilled: number
+  aiMatched: number
+  chatroomFiltered: number
+  quoteSkipped: boolean
+  bySource: { intent: number; quote: number; sample: number }
+  total: number
+}
+
+/** 标注进度 + 人机一致率（eval:stats） */
+export interface EvalStats {
+  total: number
+  confirmed: number
+  compared: number
+  agree: number
+  agreeRate: number | null
 }
 
 export interface DashboardStats {
@@ -1957,6 +2011,22 @@ export interface LeadRow {
   first_contact_deadline?: number
   created_at: number
   updated_at: number
+}
+
+/** 分配记录 assignment 表行（宪法 §1.3：lead 归属唯一事实源；当前分配 = 该 lead 最新有效行） */
+export interface AssignmentRow {
+  id: number
+  lead_id: number
+  sales_name: string
+  mode: string
+  sla1_deadline?: number | null
+  sla2_scan_ref?: string
+  status: 'assigned' | 'claimed' | 'recycled' | 'transferred'
+  source: string
+  updated_by: string
+  updated_at?: number
+  version: number
+  deleted: number
 }
 
 declare global {

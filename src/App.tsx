@@ -40,6 +40,7 @@ const AccountManagementPage = lazy(() => import('./pages/AccountManagementPage')
 const BackupPage = lazy(() => import('./pages/BackupPage'))
 const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
+const EvalAnnotatePage = lazy(() => import('./pages/EvalAnnotatePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
 const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
 const SalesFunnelPage = lazy(() => import('./pages/SalesFunnelPage'))
@@ -727,6 +728,7 @@ function App() {
                 <Route path="/sns" element={<SnsPage />} />
                 <Route path="/insight-inbox" element={<InsightInboxPage />} />
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
+                <Route path="/eval-annotate" element={<EvalAnnotatePage />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 <Route path="/sales-funnel" element={<SalesFunnelPage />} />
                 <Route path="/action-funnel" element={<ActionFunnelPage />} />

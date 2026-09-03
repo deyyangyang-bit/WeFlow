@@ -17,6 +17,9 @@
  *   ① salesDb intent_tag_log 有 message_key 且阶段为商机相关（quoted/negotiating/won/比价/决策/成交）
  *   ② crmDb quote_signal 报价信号（crm 库缺失时跳过并告警）
  *   ③ 随机抽无信号会话作对照样本（no_opportunity 候选，--sample 控制数量）
+ * 数据质量（2026-09-03 修）：三路一律排除 @chatroom 群聊——评测只标私聊（对照池曾混入群聊，已修）。
+ * 应用内标注流（侧边栏「评测标注」页）上线后，本脚本仅作一次性导出/回写备用通道；
+ * 应用内候选生成逻辑见 electron/services/evalService.ts（另加按 session 去重 + 对照样本确定性抽样保幂等）。
  * PIPL：evidence_text 只存客户原话快照 ≤200 字（坑清单 #8），聊天原文不出本机。
  */
 
@@ -129,6 +132,7 @@ async function runExport(argv: string[]): Promise<void> {
   const intents = salesDbService.intentWithEvidence(500)
   let intentPicked = 0
   for (const it of intents) {
+    if (String(it.session_id).includes('@chatroom')) continue // 评测只标私聊，群聊一律排除（2026-09-03 数据质量修复）
     const stage = String(it.stage || '')
     if (!OPP_STAGES.has(stage)) continue
     const anchor = String(it.message_key || '')
@@ -165,6 +169,7 @@ async function runExport(argv: string[]): Promise<void> {
       const sessionId = String(q.session_id || '')
       const anchor = String(q.msg_key || '')
       if (!sessionId) continue
+      if (sessionId.includes('@chatroom')) continue // 评测只标私聊，群聊一律排除
       const key = `${sessionId}|${anchor}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -190,8 +195,8 @@ async function runExport(argv: string[]): Promise<void> {
     }
   }
 
-  // ③ 随机无信号会话对照样本（no_opportunity 候选）
-  const pool = profiles.filter((p) => p.session_id && !signalSessions.has(p.session_id))
+  // ③ 随机无信号会话对照样本（no_opportunity 候选；群聊排除——对照池也曾混入 @chatroom，本刀同修）
+  const pool = profiles.filter((p) => p.session_id && !String(p.session_id).includes('@chatroom') && !signalSessions.has(p.session_id))
   const sampled = shuffle(pool).slice(0, sampleN)
   for (const p of sampled) {
     rows.push({

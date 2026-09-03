@@ -1,13 +1,16 @@
 /**
  * CrmLeadPage.tsx —— 线索池（单机线索流转）
- * 导入（Excel/CSV/文本粘贴）→ 线索池列表（状态/来源/超时筛选）→ 首触 SLA → 转客户。
+ * 导入（Excel/CSV/文本粘贴）→ 线索池列表（状态/来源/标签/归属筛选，默认筛「未分配」）→ 首触 SLA → 转客户。
  * 群资源扫描已下线（2026-09-02 决策 B，宪法 §4.2）：录入只走分配员 Excel/粘贴导入。
+ * 线索分配（Phase 1 最小可用）：勾选 NEW 行 → 「分配给…」→ 弹窗选销售（名单存 config crmSalesList，弹窗内维护）。
+ * 归属唯一事实源 = assignment 表（宪法 §1.3），本页只读 assignment 展示归属，绝不写 lead 表归属字段。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, X, FileSpreadsheet, AlertTriangle } from 'lucide-react'
+import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, X, FileSpreadsheet, AlertTriangle, Pencil } from 'lucide-react'
 import * as XLSX from 'exceljs'
-import type { LeadRow } from '../types/electron'
-import { getCrmLeadSourcePreset } from '../services/config'
+import type { LeadRow, AssignmentRow } from '../types/electron'
+import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
+import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import './CrmLeadPage.scss'
 
 const PRESET_SOURCES = ['抖音', '视频号', '小红书']
@@ -98,13 +101,42 @@ export default function CrmLeadPage() {
   const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }> } | null>(null)
   const [deadLead, setDeadLead] = useState<LeadRow | null>(null)
   const [deadReason, setDeadReason] = useState('')
+  // 已加微信小弹窗：行内💬一键唤起，填客户微信号/昵称（可留空直接确认）
+  const [wxTarget, setWxTarget] = useState<LeadRow | null>(null)
+  const [wxInput, setWxInput] = useState('')
+  // 编辑资料小弹窗：行内✏️任何状态可用，补填/修改姓名与微信号（不动线索状态）
+  const [editTarget, setEditTarget] = useState<LeadRow | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editWechat, setEditWechat] = useState('')
   const [page, setPage] = useState(1)
   const fileRef = useRef<HTMLInputElement>(null)
+  // ── 线索分配（Phase 1）：勾选集合 / 归属筛选（默认「未分配」）/ 当前归属映射 / 分配弹窗 ──
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [ownerChip, setOwnerChip] = useState('未分配')
+  const [salesList, setSalesList] = useState<string[]>([])
+  const [ownerByLead, setOwnerByLead] = useState<Record<number, string>>({})
+  const [showAssign, setShowAssign] = useState(false)
+  const [assignName, setAssignName] = useState('')
+  const [newSales, setNewSales] = useState('')
+  const [assignBusy, setAssignBusy] = useState(false)
 
   const fetchAll = async () => {
-    const [ls, ov] = await Promise.all([window.electronAPI.crm.leadList({ limit: 10000 }), window.electronAPI.crm.leadOverview()])
+    const [ls, ov, sales, asg] = await Promise.all([
+      window.electronAPI.crm.leadList({ limit: 10000 }),
+      window.electronAPI.crm.leadOverview(),
+      getCrmSalesList(),
+      window.electronAPI.crm.assignmentList({ pageSize: 100000 })
+    ])
     setLeads(ls || [])
     setOverview(ov || null)
+    setSalesList(sales)
+    // 当前归属 = 该 lead 最新一条有效分配行（rows 按 id DESC 返回，首个命中即最新；宪法 §1.3）
+    const map: Record<number, string> = {}
+    for (const r of (asg?.data?.rows || []) as AssignmentRow[]) {
+      const lid = Number(r.lead_id)
+      if (!map[lid] && (r.status === 'assigned' || r.status === 'claimed') && r.sales_name) map[lid] = String(r.sales_name)
+    }
+    setOwnerByLead(map)
   }
   useEffect(() => { void fetchAll() }, [])
   // 来源预设与设置页联动
@@ -133,10 +165,25 @@ export default function CrmLeadPage() {
       if (statusChip !== '全部' && l.status !== statusChip) return false
       if (sourceChip !== '全部' && String(l.source) !== sourceChip) return false
       if (tagChip !== '全部' && String(l.tag || '').trim() !== tagChip) return false
+      // 归属筛选：未分配 = 无当前有效分配行；其余按当前归属销售名匹配
+      if (ownerChip === '未分配' && ownerByLead[l.id]) return false
+      if (ownerChip !== '全部' && ownerChip !== '未分配' && ownerByLead[l.id] !== ownerChip) return false
       if (!q) return true
       return [l.name, l.contact_normalized, l.tag, l.source].some((v) => String(v || '').toLowerCase().includes(q))
     })
-  }, [leads, search, statusChip, sourceChip, tagChip])
+  }, [leads, search, statusChip, sourceChip, tagChip, ownerChip, ownerByLead])
+  // 归属筛选 chips：未分配计数 + 各销售当前归属计数（名单 ∪ 实际归属，防删名后漏统计）
+  const ownerChips = useMemo(() => {
+    let unassigned = 0
+    const counts = new Map<string, number>()
+    for (const l of leads) {
+      const o = ownerByLead[l.id]
+      if (o) counts.set(o, (counts.get(o) || 0) + 1)
+      else unassigned++
+    }
+    const names = Array.from(new Set([...salesList, ...counts.keys()]))
+    return { unassigned, names: names.map((value) => ({ value, count: counts.get(value) || 0 })) }
+  }, [leads, ownerByLead, salesList])
   // 标签筛选 chips：按 tag 计数倒序（tag=需求标签，Excel 导入语义；归属语义已随决策 B 退役）
   const tagChips = useMemo(() => {
     const counts = new Map<string, number>()
@@ -181,7 +228,7 @@ export default function CrmLeadPage() {
     await fetchAll()
   }
 
-  const act = async (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string }) => {
+  const act = async (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string; wechat?: string }) => {
     const r = await window.electronAPI.crm.leadStatus(id, action, opts)
     if (!r.ok) { setNotice(r.error || '操作失败'); return }
     await fetchAll()
@@ -201,6 +248,60 @@ export default function CrmLeadPage() {
     await act(deadLead.id, 'dead', { reason: deadReason })
     setDeadLead(null); setDeadReason('')
   }
+  // 编辑资料保存：只改姓名/微信号，不动状态；保存后刷新列表与详情
+  const saveEdit = async () => {
+    if (!editTarget) return
+    const r = await window.electronAPI.crm.leadUpdate(editTarget.id, { name: editName.trim(), wechat: editWechat.trim() })
+    if (!r.ok) { setNotice(r.error || '保存失败'); return }
+    setEditTarget(null)
+    await fetchAll()
+    if (detail?.lead.id === editTarget.id) await openDetail(editTarget.id)
+  }
+
+  // ── 分配动作：勾选（仅 NEW 行可勾）→ 弹窗选销售 → 确认（写 assignment 三表，service 层事务）──
+  const toggleSelect = (id: number) => setSelected((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const toggleSelectPage = () => setSelected((prev) => {
+    const pageNew = pageItems.filter((l) => l.status === 'NEW').map((l) => l.id)
+    const allIn = pageNew.every((id) => prev.has(id))
+    const next = new Set(prev)
+    for (const id of pageNew) { if (allIn) next.delete(id); else next.add(id) }
+    return next
+  })
+  // 名单维护（存 config crmSalesList）：现场加名并直接选中；删名不影响已分配记录
+  const addSales = async () => {
+    const n = newSales.trim()
+    if (!n) return
+    const next = salesList.includes(n) ? salesList : [...salesList, n]
+    await setCrmSalesList(next)
+    setSalesList(next)
+    setAssignName(n)
+    setNewSales('')
+  }
+  const removeSales = async (n: string) => {
+    const next = salesList.filter((s) => s !== n)
+    await setCrmSalesList(next)
+    setSalesList(next)
+    if (assignName === n) setAssignName('')
+  }
+  const doAssign = async () => {
+    if (!assignName || !selected.size || assignBusy) return
+    setAssignBusy(true)
+    try {
+      const r = await window.electronAPI.crm.assignmentAssign({ leadIds: [...selected], salesName: assignName })
+      if (!r.ok) { setNotice(r.message || '分配失败'); return }
+      const okN = r.data?.assignments.length ?? 0
+      const skipN = r.data?.skipped.length ?? 0
+      setNotice(skipN ? `已分配 ${okN} 条给 ${assignName}；${skipN} 条已有归属被跳过` : `已分配 ${okN} 条给 ${assignName}`)
+      setSelected(new Set())
+      setShowAssign(false)
+      setAssignName('')
+      await fetchAll()
+    } finally { setAssignBusy(false) }
+  }
 
   const ov = overview
   return (
@@ -208,6 +309,9 @@ export default function CrmLeadPage() {
       <div className="crm-header">
         <h2><Inbox size={18} /> 线索池 <span className="count">共 {ov?.total ?? 0} 条</span></h2>
         <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
+        {selected.size > 0 && (
+          <button className="crm-btn primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
+        )}
         <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -226,6 +330,13 @@ export default function CrmLeadPage() {
         <div className="crm-chips">
           {statusChips.map((c) => (
             <button key={c.value} className={`chip ${statusChip === c.value ? 'active' : ''}`} onClick={() => { setStatusChip(c.value); setPage(1) }}>{c.label} ({c.count})</button>
+          ))}
+        </div>
+        <div className="crm-chips src">
+          <button className={`chip ${ownerChip === '全部' ? 'active' : ''}`} onClick={() => { setOwnerChip('全部'); setPage(1) }}>全部归属</button>
+          <button className={`chip ${ownerChip === '未分配' ? 'active' : ''}`} title="还没有分配给任何销售的线索" onClick={() => { setOwnerChip('未分配'); setPage(1) }}>未分配 ({ownerChips.unassigned})</button>
+          {ownerChips.names.map((c) => (
+            <button key={c.value} className={`chip ${ownerChip === c.value ? 'active' : ''}`} onClick={() => { setOwnerChip(c.value); setPage(1) }}>{c.value} ({c.count})</button>
           ))}
         </div>
         {ov && ov.sources.length > 0 && (
@@ -247,13 +358,16 @@ export default function CrmLeadPage() {
       </div>
 
       <table className="crm-table">
-        <thead><tr><th>状态</th><th>联系方式</th><th>姓名 / 标签</th><th>来源</th><th>首触期限</th><th>操作</th></tr></thead>
+        <thead><tr><th className="lc-check"><input type="checkbox" title="全选本页待首触线索" checked={pageItems.length > 0 && pageItems.filter((l) => l.status === 'NEW').length > 0 && pageItems.filter((l) => l.status === 'NEW').every((l) => selected.has(l.id))} onChange={toggleSelectPage} /></th><th>状态</th><th>联系方式</th><th>姓名 / 标签</th><th>来源</th><th>首触期限</th><th>操作</th></tr></thead>
         <tbody>
           {pageItems.map((l) => {
             const isOverdue = l.status === 'NEW' && Number(l.first_contact_deadline) > 0 && Number(l.first_contact_deadline) < Date.now()
             const meta = STATUS_META[l.status] || { label: l.status, cls: '' }
             return (
               <tr key={l.id} onClick={() => void openDetail(l.id)}>
+                <td className="lc-check" onClick={(e) => e.stopPropagation()}>
+                  {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
+                </td>
                 <td><span className={`lead-st ${meta.cls}`}>{meta.label}</span></td>
                 <td>
                   <div className="lc-contact">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</div>
@@ -262,30 +376,36 @@ export default function CrmLeadPage() {
                 <td>
                   <div className="pname">{l.name || '未命名'}</div>
                   {l.tag && <div className="psub">{l.tag}</div>}
+                  {ownerByLead[l.id] && <div className="lc-owner">归属：{ownerByLead[l.id]}</div>}
                 </td>
                 <td><span className="lc-source">{l.source}</span></td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {isOverdue
+                  {l.status === 'NEW' && Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
+                    ? <div className="lc-deadline">{ownerByLead[l.id] ? '待首触' : '待分配'}</div>
+                    : isOverdue
                     ? <span className="lc-overdue"><AlertTriangle size={12} /> 超时 {fmtOverdue(Number(l.first_contact_deadline))}</span>
+                    : Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
+                    ? <div className="lc-deadline">—</div>
                     : <div className="lc-deadline">{fmtTime(Number(l.first_contact_deadline))}{l.status === 'NEW' ? ' 首触' : ''}</div>}
                 </td>
                 <td className="ops" onClick={(e) => e.stopPropagation()}>
                   {l.status === 'NEW' && (
                     <>
                       <button className="crm-btn" title="已电话首触" onClick={() => void act(l.id, 'contacted', { channel: 'PHONE' })}><Phone size={13} /></button>
-                      <button className="crm-btn" title="已加微信" onClick={() => void act(l.id, 'wx_added')}><MessageCircle size={13} /></button>
+                      <button className="crm-btn" title="已加微信" onClick={() => { setWxTarget(l); setWxInput(String(l.wechat || '')) }}><MessageCircle size={13} /></button>
                       <button className="crm-btn" title="转客户" onClick={() => void toAccount(l.id)}><UserPlus size={13} /></button>
                     </>
                   )}
                   {l.status === 'DEAD' && (
                     <button className="crm-btn" title="重新跟进" onClick={() => void act(l.id, 'reopen')}><RefreshCw size={13} /></button>
                   )}
+                  <button className="crm-btn" title="编辑资料（姓名/微信）" onClick={() => { setEditTarget(l); setEditName(String(l.name || '')); setEditWechat(String(l.wechat || '')) }}><Pencil size={13} /></button>
                   {l.status === 'NEW' && <button className="crm-btn danger" title="标记失效" onClick={() => { setDeadLead(l); setDeadReason('') }}><X size={13} /></button>}
                 </td>
               </tr>
             )
           })}
-          {filtered.length === 0 && <tr><td colSpan={6} className="empty">暂无线索，点击右上角「导入线索」开始</td></tr>}
+          {filtered.length === 0 && <tr><td colSpan={7} className="empty">暂无线索，点击右上角「导入线索」开始</td></tr>}
         </tbody>
       </table>
 
@@ -344,8 +464,9 @@ export default function CrmLeadPage() {
               <div><label>来源</label><div>{detail.lead.source}</div></div>
               <div><label>标签</label><div>{detail.lead.tag || '-'}</div></div>
               <div><label>状态</label><div>{(STATUS_META[detail.lead.status] || { label: detail.lead.status }).label}{detail.lead.status === 'DEAD' && detail.lead.dead_reason ? `（${detail.lead.dead_reason}）` : ''}</div></div>
+              <div><label>归属</label><div>{ownerByLead[detail.lead.id] || '未分配'}</div></div>
               <div><label>导入时间</label><div>{fmtTime(detail.lead.created_at)}</div></div>
-              <div><label>首触期限</label><div>{fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${CHANNEL_META[detail.lead.first_contact_channel ?? ''] || detail.lead.first_contact_channel || '电话'}）` : ''}</div></div>
+              <div><label>首触期限</label><div>{Number(detail.lead.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL ? (ownerByLead[detail.lead.id] ? '待首触（分配后开始计时，待 SLA 起算规则上线）' : '待分配') : fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${CHANNEL_META[detail.lead.first_contact_channel ?? ''] || detail.lead.first_contact_channel || '电话'}）` : ''}</div></div>
               <div className="ld-note"><label>备注</label><div>{detail.lead.note || '-'}</div></div>
             </div>
             {detail.lead.status === 'NEW' && (
@@ -356,7 +477,8 @@ export default function CrmLeadPage() {
                   </select>
                 </label>
                 <button className="crm-btn" onClick={() => void act(detail.lead.id, 'contacted', { channel: (document.getElementById('contact-channel') as HTMLSelectElement)?.value || 'PHONE' })}><Phone size={14} /> 完成首触</button>
-                <button className="crm-btn" onClick={() => void act(detail.lead.id, 'wx_added')}><MessageCircle size={14} /> 已加微信</button>
+                <input id="lead-wechat" className="crm-input" placeholder="客户微信号 / 昵称（可选）" defaultValue={detail.lead.wechat || ''} style={{ maxWidth: 180 }} />
+                <button className="crm-btn" onClick={() => void act(detail.lead.id, 'wx_added', { wechat: (document.getElementById('lead-wechat') as HTMLInputElement)?.value || '' })}><MessageCircle size={14} /> 已加微信</button>
                 <button className="crm-btn primary" onClick={() => void toAccount(detail.lead.id)}><UserPlus size={14} /> 转客户</button>
               </div>
             )}
@@ -366,6 +488,64 @@ export default function CrmLeadPage() {
                 <div key={i} className="lt-item"><span className="lt-time">{fmtTime(a.created_at)}</span><span className="lt-act">{a.action}</span><span className="lt-note">{a.note || ''}</span></div>
               ))}
               {detail.activities.length === 0 && <div className="empty">暂无流水</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAssign && (
+        <div className="crm-modal" onClick={() => { if (!assignBusy) setShowAssign(false) }}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>分配线索（{selected.size} 条） <button className="crm-btn" onClick={() => setShowAssign(false)}><X size={14} /></button></h3>
+            <p className="ld-tip">选一位销售；名单里没有就现场输入新名字（会自动记住，下次直接选）。已有归属的线索会自动跳过。</p>
+            <div className="lc-sales-list">
+              {salesList.map((n) => (
+                <div key={n} className={`lc-sales-item ${assignName === n ? 'active' : ''}`} onClick={() => setAssignName(n)}>
+                  <span>{n}</span>
+                  <button className="crm-btn danger" title="从名单移除（不影响已分配的记录）" onClick={(e) => { e.stopPropagation(); void removeSales(n) }}><X size={12} /></button>
+                </div>
+              ))}
+              {salesList.length === 0 && <div className="empty">还没有销售名单，先在下方添加</div>}
+            </div>
+            <div className="lc-sales-add">
+              <input value={newSales} onChange={(e) => setNewSales(e.target.value)} placeholder="输入新销售姓名" onKeyDown={(e) => { if (e.key === 'Enter') void addSales() }} />
+              <button className="crm-btn" disabled={!newSales.trim()} onClick={() => void addSales()}>添加并选中</button>
+            </div>
+            <div className="form-actions">
+              <button className="crm-btn primary" disabled={!assignName || assignBusy} onClick={() => void doAssign()}><UserCheck size={14} /> {assignBusy ? '分配中…' : `确认分配${assignName ? `给 ${assignName}` : ''}`}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {wxTarget && (
+        <div className="crm-modal" onClick={() => setWxTarget(null)}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>已加微信 <button className="crm-btn" onClick={() => setWxTarget(null)}><X size={14} /></button></h3>
+            <p className="ld-tip">线索 {maskLead(wxTarget)} 标记为已加微信。顺手填上客户微信号/昵称，以后好认人（可留空）。</p>
+            <label>客户微信号 / 昵称
+              <input autoFocus value={wxInput} onChange={(e) => setWxInput(e.target.value)} placeholder="如：鸿富叉车-老王 / wxid_xxx" onKeyDown={(e) => { if (e.key === 'Enter') { void act(wxTarget.id, 'wx_added', { wechat: wxInput.trim() }); setWxTarget(null) } }} />
+            </label>
+            <div className="form-actions">
+              <button className="crm-btn primary" onClick={() => { void act(wxTarget.id, 'wx_added', { wechat: wxInput.trim() }); setWxTarget(null) }}><MessageCircle size={14} /> 确认（{wxInput.trim() ? '记录微信' : '不填，直接标记'}）</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTarget && (
+        <div className="crm-modal" onClick={() => setEditTarget(null)}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>编辑资料 <button className="crm-btn" onClick={() => setEditTarget(null)}><X size={14} /></button></h3>
+            <p className="ld-tip">线索 {maskLead(editTarget)}，只改姓名和微信，不影响线索状态。</p>
+            <label>姓名
+              <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="如：鸿富叉车-老王" />
+            </label>
+            <label>客户微信号 / 昵称
+              <input value={editWechat} onChange={(e) => setEditWechat(e.target.value)} placeholder="如：wxid_xxx / 昵称" onKeyDown={(e) => { if (e.key === 'Enter') void saveEdit() }} />
+            </label>
+            <div className="form-actions">
+              <button className="crm-btn primary" onClick={() => void saveEdit()}><Pencil size={14} /> 保存</button>
             </div>
           </div>
         </div>
