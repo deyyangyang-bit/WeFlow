@@ -972,6 +972,7 @@
 - **验证 `scripts/migration-live-test.ts`（46/46）**：Part A fresh 库构造 10 account + 8 lead（干净锚/无锚/多名/多归属/已挂接/NULL identity 后补/同 wxid 归并/非法身份）全断言；Part B **live 库 /tmp 副本全量**——先 dryRun 取预测再执行对账：customer **188**（手机号锚 13 / wxid 175）/ account 挂接 **188** / identity **4857**（挂 customer 188 + 资源池 NULL 4669）/ 03 幂等命中 **11**（=02 已登记锚 ∩ lead 身份键）/ 失败 **19**（无锚公司名 account 218-234·242·256，逐条列清单未动数据）/ 冲突 0；实绩与 dryRun 预测逐项相等；重跑零副作用
 - **dryRun 复核**：`dry-run-all.ts` 数字与执行器口径一致（02 wouldApply 188/failed 19；03 wouldApply 4680/命中锚 11/NULL 4669）；基线 tsc root 0 / node 158 零新增；回归 crm-lead 55/55 + assignment 28/28 + identity 25/25；`tsc -b tsconfig.node.json` 产物已重建（.js 全部 gitignore 不入库）
 - **live 执行前置条件（用户操作）**：① 先手动触发一次自动备份并确认成功（autoBackupService，§2.49）；② 重启应用，启动链路自动执行并打 `[Sales] 存量迁移②/③完成` 日志；③ 失败/冲突清单查 audit_event（action LIKE 'migration_%'）detail
+- **⚠️ 2026-09-04 后续注记（live 已真实执行）**：用户重启应用后 live 库已由启动链路真实跑完 02/03——副本探针实证：markers 置位 / customer 188 / 挂接 188 / identity 4857（NULL 4669）/ 19 无锚未动 / 审计 2 行，与本节预测逐项一致。`migration-live-test.ts` Part B 同步改为**「已迁移副本幂等重跑」口径**（B0 已迁移事实核验 + B1 标记命中零副作用 + B2 dryRun 已迁移口径 alreadyDone 全量 + B3 删标记数据级幂等兜底，真实数据零写入），现 **44/44**；「预迁移副本全量首迁」口径永久失效，勿再恢复
 
 ## 2.52 ⛔ 重大事故档案：sql.js 落盘截断窗口致 sales 库两次全灭 + 根因修复（2026-09-04）
 
