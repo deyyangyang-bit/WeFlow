@@ -973,6 +973,20 @@
 - **dryRun 复核**：`dry-run-all.ts` 数字与执行器口径一致（02 wouldApply 188/failed 19；03 wouldApply 4680/命中锚 11/NULL 4669）；基线 tsc root 0 / node 158 零新增；回归 crm-lead 55/55 + assignment 28/28 + identity 25/25；`tsc -b tsconfig.node.json` 产物已重建（.js 全部 gitignore 不入库）
 - **live 执行前置条件（用户操作）**：① 先手动触发一次自动备份并确认成功（autoBackupService，§2.49）；② 重启应用，启动链路自动执行并打 `[Sales] 存量迁移②/③完成` 日志；③ 失败/冲突清单查 audit_event（action LIKE 'migration_%'）detail
 
+## 2.52 ⛔ 重大事故档案：sql.js 落盘截断窗口致 sales 库两次全灭 + 根因修复（2026-09-04）
+
+> **事故时间线（实证）**：① 9/3 12:06–20:23 之间 live sales 库被清空（3.9MB → 106KB 空壳；9/3 20:38 的自动备份只来得及备到空壳——备份机制本身无错，备的是已损坏的源）；② 9/4 09:56 kill 进程再次把 sales 库截成 0 字节。crm 库暴露在同一风险下。live sales 库已由人工用 9/3 12:06 的 /tmp 副本恢复（4,005,888 字节）。
+>
+> **根因链**：sql.js 是内存库，旧 persist 用 `writeFileSync` 直写目标文件 = **先截断为 0 再整体写入**；此窗口期被 kill/崩溃 → 磁盘文件 0 字节 → 下次启动 `new SQL.Database(0字节buffer)` 静默初始化空库 → 后续 persist 把空库写回 → 数据全灭且无人察觉。**两个缺陷叠加：落盘非原子 + 启动无守卫。**
+
+- **修复① 原子落盘**：新共用模块 `electron/services/atomicPersist.ts`（零 electron 依赖，可 tsx 单测）。`atomicWriteFileSync(target, data)` = 写 `目标.tmp-<pid>` → fsync → `renameSync` 原子替换（POSIX rename 原子性；tmp 与目标同目录保证同文件系统）；任何时刻目标文件要么旧版完整要么新版完整，绝无 0 字节/半截中间态；失败清理 tmp 残留并抛错（调用方既有 try/catch 打日志不变）。**全部 .db 落盘点已收口（5 处）**：`salesDbService.persist`（500ms 防抖）/ `salesDbService.persistNow`（flushNow 入口）/ `crmDbService.persist` / `crmDbService.persistNow` / `crmDbService.exportSnapshot`（删除前快照）。autoBackupCore 的 copyFileSync（live→备份目录副本）不动（边界），其半截副本风险由守卫的 manifest size 校验兜底
+- **修复② 启动守卫** `loadBusinessDbWithGuard(SQL, dbPath, userData, label, log)`：替换两服务 doInitialize 的裸 `new SQL.Database(readFileSync(...))`。文件存在但 **0 字节或打开/解析失败 → ⛔ 禁止静默初始化空库**，处置链：坏文件改名 `<原名>.corrupt-<yyyyMMdd-HHmmss>` 留证（同名已存在追加毫秒后缀，**留证绝不覆盖**）→ 从最新 `backups/auto/we-flow-auto-*` 快照恢复同名文件（**manifest.json 校验**：不可解析/无条目/登记 size ≠ 实际 size 的备份跳过，回退更早快照）→ 恢复件必须能被 sql.js 实际打开才算数（**坑：sql.js 构造器对坏文件惰性不抛，`new Database` 成功但首条语句才报 `file is not a database`——守卫内 `openVerified` 实跑 `SELECT count(*) FROM sqlite_master` 探活**）→ 全部无可用备份才允许空库启动，且打 **ERROR 日志「从空库启动，原文件已损坏」**。日志桥：service 层注入 `dbGuardLog` = salesLog 落盘 + console
+- **审计**：crmDb 恢复成功（outcome='restored'）在 SCHEMA 就位后补写 `audit_event`（actor=`system:persist-guard`，action=`db_recover`，detail 含 corruptPath/restoredFrom）。**有意偏离**：salesDb 无 audit_event 表，恢复只打 WARN/ERROR 日志不落审计（审计表是 crmDb 的 Phase 0 产物）
+- **outcome 四态**：`existing`（健康加载）/ `fresh`（文件本不存在，新装正常空库）/ `restored`（恢复）/ `fresh-corrupt`（无备份空库启动）
+- **验证**：`scripts/persist-guard-test.ts`（/tmp 隔离 + WEFLOW_WORKER=1，**36/36**）——原子写内容/无 tmp 残留/重复写幂等；service 端到端 flushNow 哨兵行对账；0 字节启动恢复（core 日志断言 + service 端到端数据读回）；无备份空库启动 + ERROR 日志断言；corrupt 文件恢复 + 留证不覆盖；manifest size 不符/缺失跳过回退更早快照；crmDb 恢复 audit_event 补写。回归 crm-lead 55/55 + identity 25/25 + migration-live 46/46 + auto-backup 32/32；tsc root 0 / node 158 零新增；`tsc -b tsconfig.node.json` 产物已重建（§2.46 大坑铁律）
+- **顺带修复**：`auto-backup-test.ts` 审计断言查询补 `ORDER BY id DESC`——原查询无排序拿 audit1[0]，live 副本带入 9/3 历史 auto_backup 行后断言误伤（HEAD 上就 31/1，与本刀无关的环境性失败）
+- **善后待做**：live 库当前目录可能存在历史 0 字节/空壳遗留与 `.corrupt-` 留证，重启应用后守卫自动处置并打日志；确认日志后可人工清理留证文件
+
 ---
 
 ## 3. 已交付功能清单

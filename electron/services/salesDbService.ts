@@ -8,13 +8,22 @@
 
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { join, basename, dirname } from 'path'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync } from 'fs'
 import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
 import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
 import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType } from '../../shared/customerEvent'
 import { archivedDbName, businessDbPath } from './businessDbPath'
+import { salesLog } from './salesLogger'
+import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
+
+/** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
+function dbGuardLog(level: GuardLogLevel, msg: string): void {
+  salesLog(level, msg)
+  if (level === 'ERROR') console.error(msg)
+  else console.warn(msg)
+}
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -303,12 +312,8 @@ class SalesDbService {
       locateFile: () => wasmPath
     })
 
-    if (existsSync(this.dbPath)) {
-      const buffer = readFileSync(this.dbPath)
-      this.db = new SQL.Database(buffer)
-    } else {
-      this.db = new SQL.Database()
-    }
+    // §2.52 启动守卫：0 字节/解析失败禁止静默空库——留证 → 自动备份恢复 → 无备份才空库（ERROR 日志）
+    this.db = loadBusinessDbWithGuard(SQL, this.dbPath, userDataPath, '[SalesDb]', dbGuardLog).db
 
     // 执行建表
     this.db.run(SCHEMA_SQL)
@@ -355,7 +360,7 @@ class SalesDbService {
     this.saveTimer = setTimeout(() => {
       try {
         const data = this.db!.export()
-        writeFileSync(this.dbPath!, Buffer.from(data))
+        atomicWriteFileSync(this.dbPath!, Buffer.from(data))
       } catch (e) {
         console.error('[SalesDb] persist error:', e)
       }
@@ -373,7 +378,7 @@ class SalesDbService {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     try {
       const data = this.db.export()
-      writeFileSync(this.dbPath, Buffer.from(data))
+      atomicWriteFileSync(this.dbPath, Buffer.from(data))
     } catch (e) {
       console.error('[SalesDb] persistNow error:', e)
     }

@@ -4,12 +4,20 @@
  * 蓝本：Cordys(领域骨架/表单形态) 悟空-11(财务字段) MoChat(归属状态机) Twenty(增量元数据)。
  * 合规：数据本地；删除为级联且删除前自动备份（crm-backups/）；时间戳统一毫秒。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, rmSync } from 'fs'
 import { readdirSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { salesLog } from './salesLogger'
 import { archivedDbName, businessDbPath } from './businessDbPath'
+import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
+
+/** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
+function dbGuardLog(level: GuardLogLevel, msg: string): void {
+  salesLog(level, msg)
+  if (level === 'ERROR') console.error(msg)
+  else console.warn(msg)
+}
 
 // ─── 建表 SQL ────────────────────────────────────────────────────────────────
 const SCHEMA_SQL = `
@@ -403,7 +411,10 @@ class CrmDbService {
     ]
     const wasmPath = wasmCandidates.find((p) => existsSync(p)) ?? wasmCandidates[0]
     const SQL = await initSqlJs({ locateFile: () => wasmPath })
-    this.db = existsSync(this.dbPath) ? new SQL.Database(readFileSync(this.dbPath)) : new SQL.Database()
+    // §2.52 启动守卫：0 字节/解析失败禁止静默空库——留证 → 自动备份恢复 → 无备份才空库（ERROR 日志）。
+    // 恢复成功（outcome='restored'）的 audit_event 补写在本函数尾部（SCHEMA_SQL 保证表存在之后）。
+    const openRes = loadBusinessDbWithGuard(SQL, this.dbPath, userDataPath, '[CrmDb]', dbGuardLog)
+    this.db = openRes.db
     this.db.run(SCHEMA_SQL)
     // Migration: product 升级产品库字段（v8.1）
     const productCols: Array<[string, string]> = [
@@ -512,6 +523,16 @@ class CrmDbService {
       }
     } catch (e) { console.error('[CrmDb] lead 迁移失败:', e) }
     this.db.run(LEAD_INDEXES_SQL)
+    // §2.52 启动守卫补写审计：库从自动备份恢复时留一条 db_recover（此时 SCHEMA 已就位可写）
+    if (openRes.outcome === 'restored') {
+      try {
+        this.db.run(
+          'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+          ['system:persist-guard', 'db_recover', 'db', null,
+            JSON.stringify({ kind: 'crm', corruptPath: openRes.corruptPath ?? '', restoredFrom: openRes.restoredFrom ?? '' }), Date.now()]
+        )
+      } catch (e) { console.error('[CrmDb] db_recover 审计写入失败:', e) }
+    }
     this.persist()
   }
 
@@ -553,14 +574,14 @@ class CrmDbService {
     if (!this.db || !this.dbPath) return
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
-      try { writeFileSync(this.dbPath!, Buffer.from(this.db!.export())) } catch (e) { console.error('[CrmDb] persist error:', e) }
+      try { atomicWriteFileSync(this.dbPath!, Buffer.from(this.db!.export())) } catch (e) { console.error('[CrmDb] persist error:', e) }
     }, 500)
   }
 
   persistNow(): void {
     if (!this.db || !this.dbPath) return
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
-    try { writeFileSync(this.dbPath, Buffer.from(this.db.export())) } catch (e) { console.error('[CrmDb] persistNow error:', e) }
+    try { atomicWriteFileSync(this.dbPath, Buffer.from(this.db.export())) } catch (e) { console.error('[CrmDb] persistNow error:', e) }
   }
 
   /** 当前业务库文件绝对路径（未初始化为 null；归档 IPC / 备份用） */
@@ -1320,7 +1341,7 @@ class CrmDbService {
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
       const file = join(dir, `weflow-crm-before-${tag}-${stamp}.db`)
-      writeFileSync(file, Buffer.from(this.db.export()))
+      atomicWriteFileSync(file, Buffer.from(this.db.export()))
       this.pruneSnapshots(dir)
       return file
     } catch (e) { console.error('[CrmDb] backup error:', e) }

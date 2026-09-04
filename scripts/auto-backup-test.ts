@@ -89,7 +89,8 @@ async function main(): Promise<void> {
   check('manifest 网络层 ok', m1.layers.network.status === 'ok', m1.layers.network.error || '')
   const netBackupDir = join(netDir, r1.dirName)
   check('网络层目录含两 db + manifest', existsSync(join(netBackupDir, 'weflow-crm.db')) && existsSync(join(netBackupDir, 'weflow-sales.db')) && existsSync(join(netBackupDir, 'manifest.json')))
-  const audit1 = crmDbService.all("SELECT * FROM audit_event WHERE action = 'auto_backup'", [])
+  // 取最新一条（live 副本可能带入历史 auto_backup 审计行，无 ORDER BY 会拿到旧行）
+  const audit1 = crmDbService.all("SELECT * FROM audit_event WHERE action = 'auto_backup' ORDER BY id DESC", [])
   check('审计 auto_backup 已写', audit1.length >= 1)
   check('审计 detail 含两层状态', String(audit1[0]?.detail || '').includes('"local":"ok"') && String(audit1[0]?.detail || '').includes('"network":"ok"'), String(audit1[0]?.detail || ''))
   const st1 = getAutoBackupStatus()
