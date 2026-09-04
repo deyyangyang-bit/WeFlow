@@ -156,6 +156,16 @@ interface ConfigSchema {
   crmLeadSourcePreset: string
   /** 线索分配销售名单（字符串数组，在线索页分配弹窗内维护，不动设置页） */
   crmSalesList: string[]
+  /** 本地身份档案：姓名（PRD §1.2a；audit_event/ownership_history 的 actor 署名用，与应用锁完全独立） */
+  identityName: string
+  /** 本地身份档案：角色（销售/主管/分配员/空；⚠️ 仅署名用途，不作访问控制依据，宪法 §1.12） */
+  identityRole: string
+  /** 身份档案首次启动引导是否已跳过或完成（true=不再自动弹引导） */
+  identityOnboardingDismissed: boolean
+  /** 自动备份：网络共享备份目录（SMB 挂载路径，如 /Volumes/xxx/weflow-backup；空=跳过网络层，PRD 1.1） */
+  autoBackupNetworkPath: string
+  /** 自动备份：每日执行时刻 HH:mm（默认 14:37，工作时间） */
+  autoBackupTime: string
   /** 是否启用 Telegram 推送 */
   aiInsightTelegramEnabled: boolean
   /** Telegram Bot Token */
@@ -313,6 +323,11 @@ export class ConfigService {
       crmLogisticsOverdueHours: 24,
       crmLeadSourcePreset: '抖音,视频号,小红书',
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
+      identityName: '',
+      identityRole: '',
+      identityOnboardingDismissed: false,
+      autoBackupNetworkPath: '',
+      autoBackupTime: '14:37',
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,

@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useMemo } from 'react'
 import { useAppStore } from '../stores/appStore'
@@ -9,7 +9,7 @@ import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -244,6 +244,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [crmLeadSourcesInput, setCrmLeadSourcesInput] = useState('抖音,视频号,小红书')
   // 物流跟单
   const [crmLogisticsOverdueHours, setCrmLogisticsOverdueHours] = useState(24)
+  // 自动备份（PRD 1.1 双保险定时备份）
+  const [autoBackupNetworkPath, setAutoBackupNetworkPath] = useState('')
+  const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null)
+  const [autoBackupRunning, setAutoBackupRunning] = useState(false)
 
 
 
@@ -607,6 +611,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setCrmLeadSources(savedLeadSources)
       setCrmLeadSourcesInput(savedLeadSources.join(','))
 
+      // 自动备份（PRD 1.1）
+      setAutoBackupNetworkPath(await configService.getAutoBackupNetworkPath())
+      await refreshAutoBackupStatus()
+
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
       setAutoDownloadHighRes(savedAutoDownloadHighRes)
@@ -875,6 +883,33 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const showMessage = (text: string, success: boolean) => {
     setMessage({ text, success })
     setTimeout(() => setMessage(null), 3000)
+  }
+
+  // 自动备份：刷新状态（上次时间 / 两层状态 / 下次计划）
+  const refreshAutoBackupStatus = async () => {
+    try {
+      const res = await window.electronAPI.backup.autoStatus()
+      if (res.success && res.status) setAutoBackupStatus(res.status)
+    } catch { /* 状态读取失败静默，不阻塞设置页 */ }
+  }
+
+  // 自动备份：手动立即备份
+  const handleAutoBackupRunNow = async () => {
+    if (autoBackupRunning) return
+    setAutoBackupRunning(true)
+    try {
+      const res = await window.electronAPI.backup.autoRunNow()
+      if (res.success) {
+        showMessage('备份完成（本机层已写入，网络层状态见下方）', true)
+      } else {
+        showMessage(`备份失败：${res.error || '未知错误'}`, false)
+      }
+    } catch (e) {
+      showMessage(`备份失败：${String(e)}`, false)
+    } finally {
+      setAutoBackupRunning(false)
+      await refreshAutoBackupStatus()
+    }
   }
 
   const handleClose = () => {
@@ -2666,6 +2701,52 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <button className="btn btn-secondary" onClick={handleClearLog}>
             <Trash2 size={16} /> 清空日志
           </button>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="settings-section">
+        <h2>自动备份</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>网络备份路径</span>
+            <span className="setting-desc">每天自动备份两个业务数据库到本机 backups/auto/ 目录；填写网络共享挂载路径（如 /Volumes/xxx/weflow-backup）可再备一份到办公室另一台电脑，对方关机时自动跳过、不报错。留空表示只用本机备份</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="text"
+              className="field-input"
+              style={{ width: '300px' }}
+              placeholder="/Volumes/xxx/weflow-backup"
+              value={autoBackupNetworkPath}
+              onChange={(e) => setAutoBackupNetworkPath(e.target.value)}
+              onBlur={async (e) => {
+                const v = e.target.value.trim()
+                await configService.setAutoBackupNetworkPath(v)
+                setAutoBackupNetworkPath(v)
+                showMessage(v ? `网络备份路径已保存：${v}` : '网络备份路径已清空（仅本机备份）', true)
+                await refreshAutoBackupStatus()
+              }}
+            />
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>备份状态</span>
+            <span className="setting-desc">
+              {autoBackupStatus?.last
+                ? `上次：${new Date(autoBackupStatus.last.at).toLocaleString()}（本机 ${autoBackupStatus.last.local === 'ok' ? '✓' : autoBackupStatus.last.local} / 网络 ${autoBackupStatus.last.network === 'ok' ? '✓' : autoBackupStatus.last.network === 'skipped_unreachable' ? '不可达已跳过' : autoBackupStatus.last.network === 'skipped_not_configured' ? '未配置' : autoBackupStatus.last.network}）`
+                : '尚未备份'}
+              {autoBackupStatus?.nextPlannedAt ? `　下次计划：${new Date(autoBackupStatus.nextPlannedAt).toLocaleString()}（每日 ${autoBackupStatus.configuredTime}，各保留最近 20 份）` : ''}
+            </span>
+          </div>
+          <div className="setting-control">
+            <button className="btn btn-secondary" onClick={handleAutoBackupRunNow} disabled={autoBackupRunning}>
+              {autoBackupRunning ? <Loader2 size={16} className="spin" /> : <HardDrive size={16} />}
+              {autoBackupRunning ? '备份中...' : '立即备份'}
+            </button>
+          </div>
         </div>
       </div>
 

@@ -242,6 +242,22 @@ export interface BackupOptions {
   includeSalesData?: boolean
 }
 
+/** 自动备份状态（backup:auto:status 返回；PRD 1.1 双保险定时备份） */
+export interface AutoBackupStatus {
+  configuredTime: string
+  networkPath: string
+  last: {
+    at: string
+    trigger: string
+    dirName: string
+    local: string
+    network: string
+    files: Array<{ kind: string; name: string; size: number }>
+    durationMs: number
+  } | null
+  nextPlannedAt: string | null
+}
+
 export interface BackupImageDatMeta {
   version?: number
   aesSize?: number
@@ -556,6 +572,10 @@ export interface ElectronAPI {
       error?: string
     }>
     onProgress: (callback: (progress: BackupProgress) => void) => () => void
+    /** 自动备份（PRD 1.1）：手动立即备份 */
+    autoRunNow: () => Promise<{ success: boolean; result?: unknown; error?: string }>
+    /** 自动备份状态：上次时间 / 两层状态 / 下次计划 */
+    autoStatus: () => Promise<{ success: boolean; status?: AutoBackupStatus; error?: string }>
   }
   key: {
     autoGetDbKey: () => Promise<{ success: boolean; key?: string; error?: string; logs?: string[] }>

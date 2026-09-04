@@ -899,7 +899,7 @@
 
 - **D7 现状盘点**：`opportunity-eval.ts export` 复跑确认——候选① intent_tag_log 全库仅 1 条带 message_key 锚点（阶段非商机档，0 入选，属数据现状非脚本 bug）；候选② quote_signal 46 条；候选③ 对照样本 30 条（对照池 203 会话）；合计 76 行已出包 `opportunity-eval-pack-20260902.jsonl`（不入 git，PIPL）
 - **AI 预标注**：原排期用 GLM 预填 ai_label，GLM 额度耗尽后改由 Kimi 子代理执行——逐行拉锚点消息前后文 → 填 `ai_label`/`ai_evidence_keys` → 输出 `*.ai.jsonl`（不覆盖原包、不动人工字段、live 库零写）。人工标注仍按评测集标注指引走「先自判再对照 AI」防锚定
-- **D8 评审包落稿**：`docs/规划/Phase0-D8-评审包.md`——7 条决策清单（术语口径 / Identity 归并 / Stage 矩阵 🔶 格 / owner_sales 三处口径 / 决策 B 存量处置 / AI 三档边界 / PIPL 证据规范）+ 附件 A 术语表 + 附件 B 对象契约一页表；每条带通俗解释与签字栏，30 分钟可过。**待主管签字**，签字后宪法 §2.5 🔶 格生效
+- **D8 评审包落稿**：`docs/规划/Phase0-D8-评审包.md`——决策清单（术语口径 / Identity 归并 / Stage 矩阵 🔶 格 / owner_sales 三处口径 / 决策 B 存量处置 / AI 三档边界 / PIPL 证据规范）+ 附件 A 术语表 + 附件 B 对象契约一页表；每条带通俗解释与签字栏，30 分钟可过。**9/3 经 GLM 评审修订一轮**：措辞三修（裁决 4 与 A 档分界=转客户那一刻 / 裁决 6 审计为系统自动写入+Hermes 固定模板推送措辞 / 裁决 7 云推理脱敏上云、原文不出本机=未脱敏原文）+ 新增裁决 8（AI 读边界：默认本账号 scope，跨账号仅最小身份字段）+ 裁决 3 补流失判定带证据规则 + 宪法 §2.2 补 PIPL 删除通道；现行 8 条，主管口头同意、约定试运行一周后复核，签字后宪法 §2.5 🔶 格生效
 - **D7 缺口提示**：目标 ≥100 条，现包 76 条，且 intent_tag_log 证据锚点稀缺（打标链路 message_key 覆盖率低）——Phase 1 打标链路若不加锚点回填，评测集只能靠 quote_signal + 对照样本撑量
 - **D7 AI 预标注完成（Kimi 子代理，复用 evidenceKey+wcdbCore 链路，全程只读）**：76 行全部拉到上下文、零失败 → `opportunity-eval-pack-20260902.ai.jsonl`（ai_label 分布 has 33 / none 16 / uncertain 27；对照样本 6 条实为 has 正是对照组价值；quote_signal 误报确认 2 条典型：手机号/物流单号误识别为金额）。另出 `*.for-review.jsonl`（ai_* 清空，防锚定，主管标注用）。**误报跟进（9/3）**：拿 case46/35 原文实测现行 `parseQuoteSignal` 均正确拒识（手机号拦截 + 1 亿上限在旧行写入后才加，脏行是历史遗留，留库作评测证据）；两条原文已锁进 crm-golden（45→47/47）。对照样本 6 条漏报 = 规则只认销售侧报价消息（客户询价无销售报价不回不触发，设计使然），召回补强项 = Phase 2 AI 商机识别，评测集即其验收尺。三坑记录：① 原生库须用项目 Electron 二进制跑且 `env -u ELECTRON_RUN_AS_NODE`；② decryptKey 是 safeStorage 密文且须 `app.setName('weflow')`；③ wcdbCore 退出时原生 shutdown SIGSEGV 无害
 
@@ -930,6 +930,22 @@
 - **⚠️ 关键坑：note 含多个历史「曾归属」标记**——群扫时代多次换归属，note 里形如 `群扫描归属:秒变（2026-08-27）…；曾归属:秒变（2026-02-27）；曾归属:李林辉（2026-09-03）`，字符串顺序即时间顺序。**必须取最后一个标记**（= tag 清理时的最终归属）；首版取第一个导致归属错挂，副本测试抽查段当场抓获
 - **验证**：`scripts/lead-assignment-restore-test.ts` 真实库副本 13/13（按最后标记分组对账 / 外号映射 / ownership_history+audit_event 逐条留痕 / 幂等 / 静候·未分配零分配）；回归 crm-lead 55/55、assignment 28/28；tsc root 0 / node 158=基线
 - **✅ 已生效（9/3 重启实测）**：live 终态有效分配 许丽娟 1,511 / 李林辉 1,356 / 杨青 981 = 3,848 条，资源池 832 条（静候 654 + 未分配 178）；审计 `lead_assign` 3,848 条。⚠️ 恢复分配的 `sla1_deadline` 留 NULL（首触 SLA 不起计时，同 §2.46 遗留，Phase 1 分配引擎再补）
+
+## 2.49 Phase 1 W3 自动备份：双保险定时备份（2026-09-03，PRD 1.1 当周硬交付）
+
+> 与既有 `backupService.ts`（手动整包导出：WCDB 快照 + tar）无关——本节是新的轻量定时备份，只备两个业务 db（crm/sales），用户拍板「双保险」：本机兜底目录始终执行 + 网络共享目录（办公室另一台 macOS 的 SMB 挂载）可达时同步一份。
+
+- **分层**：`electron/services/autoBackupCore.ts` 纯核心（零 electron，可 tsx 单测；只依赖 businessDbPath）+ `autoBackupService.ts` 装配层（依赖注入 config/userData/appVersion，自身不 import electron）+ `autoBackupIpcHandlers.ts`（注册约定同 evalIpcHandlers）
+- **产出**：每层 `we-flow-auto-YYYYMMDD-HHmm/` 目录 = 两 db 副本 + `manifest.json`（app 版本 / ISO 时间 / 各 db 文件大小 / 两层各自状态 / 耗时 / trigger）。本机层根 = `userData/backups/auto/`；网络层根 = config `autoBackupNetworkPath`
+- **网络层不可达是正常情况**（对方电脑下班关机）：路径不存在/非目录 → manifest 记 `network: 'skipped_unreachable'` 跳过，整体 ok 只看本机层，不报错不惊扰；空配置记 `skipped_not_configured`
+- **保留策略**：每层滚动留最近 20 份（`AUTO_BACKUP_KEEP`），超出删最旧（目录名字典序=时间序）；网络层仅本次可达时清理
+- **调度**（`startAutoBackupScheduler`，挂 main.ts 启动链路 SLA 存量处置之后、startActionEngineScheduler 之前）：config `autoBackupTime`（默认 `14:37`，非法值回退）每日到点跑（5min tick：`now >= 今日计划时刻 && 上次成功 < 今日计划时刻`）；**启动补跑**：延迟 10s 检查，距上次成功 >20h 且当前在工作时段（8:00-19:00）→ 立即补跑一次（防周末/关机错过）；`running` 标志防重入；上次成功时间从本机层最新 manifest 推导（不落额外状态）
+- **sql.js 落盘铁律**：crm/sales 是内存库 500ms 防抖落盘——`executeAutoBackup` 备份前调 `crmDbService.persistNow()` + `salesDbService.flushNow()` 强制刷盘，否则可能备出防抖窗口前的旧文件（测试组②哨兵行专项验证：写入后 <500ms 立即备份，恢复件必须含该行）。⚠️ 实测发现 live 的 sales db 文件曾为 0 字节（内存库未落盘的实锤），本机制的强制刷盘正是对策
+- **审计**：每次备份（成功/失败都写）`audit_event`（actor=`system:auto-backup`，action=`auto_backup`，detail 含两层状态/文件大小/耗时/清理数/error）
+- **串行化**：`enqueueSalesTask` 只加最外层——调度 tick / 启动补跑 / IPC runNow 三入口共用 `runGuarded`，`executeAutoBackup` 内部不再 enqueue
+- **IPC 三处配齐**：`backup:auto:runNow` / `backup:auto:status`（上次时间 + 两层状态 + 下次计划）；preload `backup.autoRunNow/autoStatus`；electron.d.ts `AutoBackupStatus` 类型。config 两层新键：`autoBackupNetworkPath`（默认 ''）/ `autoBackupTime`（默认 '14:37'）
+- **设置页**：数据库 tab 底部「自动备份」区块——网络备份路径输入框（onBlur 保存）+ 上次备份状态（时间/两层状态/下次计划/保留 20 份说明）+ 「立即备份」按钮（行内 spinner + 结果 toast）
+- **验证**：`scripts/auto-backup-test.ts` 副本隔离 **32/32**（①产出完整含 manifest 字段/审计 ②恢复演练删库→恢复→行数对账含哨兵行 ③21 份→留 20 最旧被删（小尺寸假库独立 userData）④不可达 skipped_unreachable 不报错 + 空配置 skipped_not_configured ⑤同分钟重跑同目录覆盖幂等 + 审计逐次留痕）；回归 crm-lead 55/55；tsc root 0 / node 158=基线；vite build ✓；`tsc -b tsconfig.node.json` 产物已重建（§2.46 大坑铁律）
 
 ---
 

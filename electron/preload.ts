@@ -187,7 +187,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const listener = (_: unknown, progress: any) => callback(progress)
       ipcRenderer.on('backup:progress', listener)
       return () => ipcRenderer.removeListener('backup:progress', listener)
-    }
+    },
+    // 自动备份（PRD 1.1 双保险定时备份）：手动立即备份 / 状态查询
+    autoRunNow: () => ipcRenderer.invoke('backup:auto:runNow'),
+    autoStatus: () => ipcRenderer.invoke('backup:auto:status')
   },
 
   // 密钥获取

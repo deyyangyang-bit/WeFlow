@@ -97,6 +97,8 @@ export const CONFIG_KEYS = {
   CRM_LEAD_SOURCE_PRESET: 'crmLeadSourcePreset',
   CRM_SALES_LIST: 'crmSalesList',
   CRM_LOGISTICS_OVERDUE_HOURS: 'crmLogisticsOverdueHours',
+  AUTO_BACKUP_NETWORK_PATH: 'autoBackupNetworkPath',
+  AUTO_BACKUP_TIME: 'autoBackupTime',
 
   // 数据收集
 
@@ -1998,6 +2000,24 @@ export async function getCrmSalesList(): Promise<string[]> {
 }
 export async function setCrmSalesList(names: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.CRM_SALES_LIST, Array.isArray(names) ? names : [])
+}
+
+// 自动备份：网络共享备份目录（SMB 挂载路径；空=跳过网络层，PRD 1.1 双保险）
+export async function getAutoBackupNetworkPath(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.AUTO_BACKUP_NETWORK_PATH)
+  return typeof value === 'string' ? value : ''
+}
+export async function setAutoBackupNetworkPath(path: string): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_BACKUP_NETWORK_PATH, String(path || '').trim())
+}
+
+// 自动备份：每日执行时刻 HH:mm（默认 14:37）
+export async function getAutoBackupTime(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.AUTO_BACKUP_TIME)
+  return typeof value === 'string' && value.trim() ? value : '14:37'
+}
+export async function setAutoBackupTime(time: string): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTO_BACKUP_TIME, String(time || '').trim() || '14:37')
 }
 
 // 获取 HTTP API 自动启动状态

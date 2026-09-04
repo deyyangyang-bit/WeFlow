@@ -58,6 +58,8 @@ import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments } from './services/crmAssignmentService'
+import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
+import { startAutoBackupScheduler } from './services/autoBackupService'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
@@ -5533,6 +5535,10 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.warn('[Sales] 群扫旧归属恢复失败:', e)
     }
+    // 自动备份（PRD 1.1 双保险定时备份）：本机 userData/backups/auto/ + 网络共享层
+    // （autoBackupNetworkPath，空/不可达跳过不惊扰）；启动补跑（距上次成功 >20h 且工作时段）
+    registerAutoBackupIpcHandlers(ipcMain)
+    startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion() })
     startActionEngineScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
