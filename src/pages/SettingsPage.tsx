@@ -9,7 +9,7 @@ import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus, AutoBackupStatus } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -253,6 +253,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [identityRole, setIdentityRole] = useState('')
   const [identityActorLabel, setIdentityActorLabel] = useState('')
   const [identityRoleDropdownOpen, setIdentityRoleDropdownOpen] = useState(false)
+  // 内网同步（Phase 1 最小版）：SMB 共享目录 + 角色（中枢/终端）+ 最近同步状态
+  const [lanSyncDir, setLanSyncDir] = useState('')
+  const [lanSyncRole, setLanSyncRole] = useState('')
+  const [lanSyncStatus, setLanSyncStatus] = useState<LanSyncStatus | null>(null)
+  const [lanSyncRoleDropdownOpen, setLanSyncRoleDropdownOpen] = useState(false)
+  const [lanSyncRunning, setLanSyncRunning] = useState(false)
 
 
 
@@ -630,6 +636,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         console.error('读取身份档案失败:', e)
       }
 
+      // 内网同步（Phase 1 最小版）
+      setLanSyncDir(await configService.getLanSyncSharedDir())
+      setLanSyncRole(await configService.getLanSyncRole())
+      await refreshLanSyncStatus()
+
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
       setAutoDownloadHighRes(savedAutoDownloadHighRes)
@@ -946,6 +957,42 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       }
     } catch (e) {
       showMessage(`保存失败：${String(e)}`, false)
+    }
+  }
+
+  // 内网同步：状态刷新（只读）
+  const refreshLanSyncStatus = async () => {
+    try {
+      const res = await window.electronAPI.lanSync.status()
+      if (res.success && res.status) setLanSyncStatus(res.status)
+    } catch { /* 状态读取失败静默，不阻塞设置页 */ }
+  }
+
+  // 内网同步：角色选择（立即保存）
+  const handleLanSyncRoleChange = async (role: string) => {
+    setLanSyncRole(role)
+    setLanSyncRoleDropdownOpen(false)
+    await configService.setLanSyncRole(role)
+    showMessage(role === 'hub' ? '已设为中枢（主管机）：产出分配指令、消费终端回执' : role === 'terminal' ? '已设为终端（销售机）：消费分配指令、上行业务回执；本机不再跑 SLA 回收器' : '内网同步角色已清空（同步关闭）', true)
+    await refreshLanSyncStatus()
+  }
+
+  // 内网同步：手动立即一轮
+  const handleLanSyncRunNow = async () => {
+    if (lanSyncRunning) return
+    setLanSyncRunning(true)
+    try {
+      const res = await window.electronAPI.lanSync.runNow()
+      if (res.success) {
+        showMessage('同步完成（结果见下方状态）', true)
+      } else {
+        showMessage(`同步失败：${res.error || '未知错误'}`, false)
+      }
+    } catch (e) {
+      showMessage(`同步失败：${String(e)}`, false)
+    } finally {
+      setLanSyncRunning(false)
+      await refreshLanSyncStatus()
     }
   }
 
@@ -2847,6 +2894,90 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="divider" />
+
+      <div className="settings-section">
+        <h2>内网同步</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>共享目录</span>
+            <span className="setting-desc">Phase 1 最小版：SMB 共享文件夹当同步通道（中枢机向下发分配指令，销售机向上回执认领/加好友/首触/审计）。填共享文件夹的挂载路径（如 /Volumes/weflow-sync 或 Windows 映射盘符目录），留空 = 同步关闭；聊天原文永不出机，只同步结构化事件</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="text"
+              className="field-input"
+              style={{ width: '300px' }}
+              placeholder="/Volumes/weflow-sync"
+              value={lanSyncDir}
+              onChange={(e) => setLanSyncDir(e.target.value)}
+              onBlur={async (e) => {
+                const v = e.target.value.trim()
+                await configService.setLanSyncSharedDir(v)
+                setLanSyncDir(v)
+                showMessage(v ? `共享目录已保存：${v}` : '共享目录已清空（同步关闭）', true)
+                await refreshLanSyncStatus()
+              }}
+            />
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>本机角色</span>
+            <span className="setting-desc">中枢 = 主管机（产出分配/调派/回收指令，消费各终端回执）；终端 = 销售机（消费指令、上行回执，本机不再跑 SLA 回收器，回收由中枢下发）。目录与角色都填了同步才启用</span>
+          </div>
+          <div className="setting-control">
+            <div className="custom-select" style={{ minWidth: '150px' }}>
+              <div
+                className={`custom-select-trigger ${lanSyncRoleDropdownOpen ? 'open' : ''}`}
+                onClick={() => setLanSyncRoleDropdownOpen(!lanSyncRoleDropdownOpen)}
+              >
+                <span className="custom-select-value">{lanSyncRole === 'hub' ? '中枢（主管机）' : lanSyncRole === 'terminal' ? '终端（销售机）' : '未配置'}</span>
+                <ChevronDown size={14} className={`custom-select-arrow ${lanSyncRoleDropdownOpen ? 'rotate' : ''}`} />
+              </div>
+              <div className={`custom-select-dropdown ${lanSyncRoleDropdownOpen ? 'open' : ''}`}>
+                {[
+                  { value: '', label: '未配置' },
+                  { value: 'hub', label: '中枢（主管机）' },
+                  { value: 'terminal', label: '终端（销售机）' }
+                ].map(option => (
+                  <div
+                    key={option.value}
+                    className={`custom-select-option ${lanSyncRole === option.value ? 'selected' : ''}`}
+                    onClick={() => { void handleLanSyncRoleChange(option.value) }}
+                  >
+                    {option.label}
+                    {lanSyncRole === option.value && <Check size={14} />}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>同步状态</span>
+            <span className="setting-desc">
+              {!lanSyncStatus?.enabled
+                ? '同步未启用（共享目录或角色未配置）'
+                : <>
+                    {lanSyncStatus.role === 'hub'
+                      ? `最近：下行产出 ${lanSyncStatus.lastDownEmitAt ? new Date(lanSyncStatus.lastDownEmitAt).toLocaleString() : '—'} / 上行消费 ${lanSyncStatus.lastUpApplyAt ? new Date(lanSyncStatus.lastUpApplyAt).toLocaleString() : '—'}`
+                      : `最近：下行消费 ${lanSyncStatus.lastDownApplyAt ? new Date(lanSyncStatus.lastDownApplyAt).toLocaleString() : '—'} / 上行产出 ${lanSyncStatus.lastUpEmitAt ? new Date(lanSyncStatus.lastUpEmitAt).toLocaleString() : '—'}`
+                    }
+                    {`　积压：待发出 ${lanSyncStatus.backlogPending} / 待消费 ${lanSyncStatus.backlogIncoming}　终端标识：${lanSyncStatus.terminalId}`}
+                  </>}
+            </span>
+          </div>
+          <div className="setting-control">
+            <button className="btn btn-secondary" onClick={handleLanSyncRunNow} disabled={lanSyncRunning || !lanSyncStatus?.enabled}>
+              {lanSyncRunning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+              {lanSyncRunning ? '同步中...' : '立即同步'}
+            </button>
+          </div>
+        </div>
       </div>
 
     </div>

@@ -45,6 +45,8 @@ import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
 import { registerEvalIpcHandlers } from './services/evalIpcHandlers'
 import { registerIdentityIpcHandlers } from './services/identityIpcHandlers'
+import { registerLanSyncIpcHandlers } from './services/lanSyncIpcHandlers'
+import { startLanSyncScheduler, getLanSyncConfig } from './services/lanSyncService'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -5583,7 +5585,13 @@ app.whenReady().then(async () => {
     startActionEngineScheduler()
     // SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收
     // （A 档引擎动作，reason='SLA超时回收'，actor='system:sla'；间隔 crmSlaRecycleIntervalMin 分钟，默认 30）
-    startSlaRecycleScheduler()
+    // 角色差异（内网同步设计 §5）：回收是中枢权威动作——配置为终端（terminal）的机器不跑回收器，
+    // 其分配生命周期由中枢下行 recycle 事件驱动。
+    if (getLanSyncConfig().role !== 'terminal') {
+      startSlaRecycleScheduler()
+    } else {
+      console.log('[Sales] 内网同步角色=终端：SLA1 回收器不启动（回收由中枢下行事件驱动）')
+    }
     // 加好友自动检测（PRD 1.4a 自动路，保守版）：扫 assigned/claimed 未停表行，lead 的 wxid/手机号
     // 与本机 WCDB 联系人（应用读取层 chatService.getContacts，只读）精确等值匹配，命中即停表+推状态+审计；
     // WCDB 未连接/空联系人 → 本轮零副作用；间隔 crmFriendDetectIntervalMin 分钟，默认 30
@@ -5605,6 +5613,11 @@ app.whenReady().then(async () => {
     })
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
+    // 内网同步（Phase 1 最小版，设计 docs/规划/Phase1-内网同步最小版-设计.md）：
+    // 未配置共享目录/角色 → 同步关闭静默跳过；中枢=下行产出+上行消费，终端=下行消费+上行产出。
+    // 轮巡间隔 lanSyncPollIntervalMin 分钟（默认 1），首巡延迟 150s
+    registerLanSyncIpcHandlers(ipcMain)
+    startLanSyncScheduler()
     console.log('[Sales] 今日行动引擎 + 周复盘定时器已启动')
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)

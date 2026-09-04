@@ -1091,6 +1091,27 @@
 
 ---
 
+## 2.59 Phase 1 内网同步最小版实施：三刀全落 + 模拟双机验证（2026-09-04，设计 docs/规划/Phase1-内网同步最小版-设计.md）
+> 设计定稿的三刀一次落完：SMB 共享文件夹通道、一事件一 JSON、tmp+rename 原子写、复用 outbox_event 登记口径、幂等键存 scan_state（Q3）。未配置共享目录/角色 = 同步关闭，全入口静默跳过。**零新表**（scan_state 承载幂等键/游标/最近同步时间）。
+- **新服务 `lanSyncService.ts`**（零 electron，tsx 可测）：
+  - 配置三键 `lanSyncSharedDir` / `lanSyncRole`（''=关 / hub 中枢 / terminal 终端）/ `lanSyncPollIntervalMin`（1-60，默认 1 分钟）；路径支持 `~` 展开。
+  - **终端标识 = 身份档案姓名优先、未建档回退机器名**（目录名安全化：空白与 `\\/:*?"<>|` → `_`）。
+  - 事件文件 `{ eventSeq, idempotencyKey, type, payload, emittedAt, from? }`；写盘一律 `atomicWriteFileSync`（tmp→fsync→rename），消费方只列 `*.json`——`.tmp` 半截文件天然不入眼；毒文件改名 `.bad` 隔离不反复重试。
+  - **刀1 中枢下行产出 `emitDownEvents`**：扫 pending outbox 挑 assign/transfer/recycle，富化 payload（lead 基础资料 name/contact/wechat/source/note + 目标销售 + slaHours/sla1Deadline）写 `down/<seq>-<key>.json` 后标 `status='sent'`；目录不可写整轮跳过、行留 pending 等重放（R3 积压语义，宪法 §1.11 业务侧可重放）。
+  - **刀2 终端消费下行 `consumeDownEvents`**：按文件名升序逐条应用，单事务 = 业务写 + `syncApplied:<idempotencyKey>` 标记；成功删文件。跨机 id 不可信——**lead 按 (contact_type, contact_normalized) 身份解析**，本机无此 lead 时随 assign 事件建档（资料齐备）；assign 命中本地已有有效归属 → conflict 不覆盖（标已应用留人工，防反复重试）；transfer = 旧行 transferred + 新行 assigned 重起 sla1；recycle = 有效行 recycled + lead 期限回 2100 哨兵。
+  - **刀2 终端上行产出 `emitUpEvents`** 到 `up/<终端标识>/`：① pending outbox 中 claim/bind_wx/first_touch 富化 lead 身份后落文件（**键加终端前缀 `<tid>/<原键>` 保证多终端全局唯一**，Q3 的 `syncApplied:` 判定照原文成立）→ 标 sent；② **audit 上行（Q4）不走 outbox**——scan_state 游标 `syncUp:auditCursor` 逐条扫 audit_event（排除 `sync_%` 同步层行防回声），payload 裁剪为 actor/action/entity_type/entity_id/detail 五字段，detail 过 `maskAuditText`（**手机号中段打码 `138****5678` 复用前端 maskLead 格式** + wxid/身份证号 *** 复用 maskPrivateText），游标随落盘成功推进、失败即停保序。
+  - **刀3 中枢消费上行 `consumeUpEvents`**：扫 `up/*/` 各目录，**跳过自己的终端标识目录**（中枢不消费自己的 up）；claim → 当前分配 assigned→claimed；bind_wx → 停 SLA1 表 + lead→WX_ADDED + wechat 回填；first_touch → NEW→CONTACTED + lead_activity + 审计；audit → 五字段原样入 audit_event（entity_id 是终端本机 id，Phase 1 接受）。全部幂等标记 + 删文件。
+  - `lanSyncStatus()`（设置页区块数据源：角色/目录/终端标识/四个最近同步时间戳/待发出积压 backlogPending/待消费积压 backlogIncoming）+ `runLanSyncOnce()` 按角色分派 + `startLanSyncScheduler()`（main.ts 挂周复盘旁，首巡 150s，每轮按当前配置动态分派角色）。
+- **Q2 拦截（设计 §4）落在 `recycleAssignment` 单点**（人工+回收器共用漏斗）：lead 已挂 account → E205 跳过 + 审计 `lead_recycle` detail.reason='converted_skip' + **不下发 recycle 事件**；回收器每轮会再命中同一行 → scan_state 标记 `convertedSkip:<assignmentId>` 保证一行只留一条拦截审计，不每 30 分钟刷屏。
+- **first_touch 写点补齐**（§2.58 缺口关闭）：`updateLeadStatus(contacted)` 与 `completeLeadFirstContact` 双写点登记 outbox，同 key `first_touch:<leadId>` 幂等（先登记者生效）；payload 带 lead 身份供中枢解析。**Q1 行内编辑不上行**：updateLeadProfile 零 outbox 登记（测试断言）。
+- **角色差异启停**：终端角色**不启动 SLA1 回收器**（main.ts 按 getLanSyncConfig().role 门控，回收由中枢下行 recycle 事件驱动）；中枢 emitDown+consumeUp、终端 consumeDown+emitUp，同一套代码。
+- **IPC/前端**：`lanSyncIpcHandlers.ts` 两端点 `lansync:status`（只读）/ `lansync:run`（enqueueSalesTask 串行，手动一轮）；preload `lanSync.*` + d.ts `LanSyncStatus` 三处配齐；config API `get/setLanSyncSharedDir`、`get/setLanSyncRole`；**设置页数据库 tab「内网同步」区块**（身份档案后）：共享目录路径（blur 保存）+ 角色下拉（立即保存）+ 状态行（最近同步时间/积压数/终端标识）+「立即同步」按钮，沿用自动备份区块同款样式。
+- **测试**：`scripts/lan-sync-test.ts` **42/42**（开关静默/下行富化/R3 积压重放/Q4 裁剪脱敏/Q2 拦截防刷屏/Q1 对照/first_touch 双写点/毒文件/半截 tmp/重复投递/自己目录跳过/冲突不覆盖/状态字段）；`scripts/lan-sync-e2e-test.ts` **30/30** 模拟双机（/tmp 两 userData 目录用 `reopenForWxid` 换库 + 一个共享目录）：A 分配→down→B 消费（分配+资料齐全+sla1 一致）→B 认领→up→A 消费（claimed）→重复投递幂等零重复→销售甲/乙各自视角过滤成立→半截 tmp 不消费→transfer 下行闭环→中枢跳过自己 up。
+- **验证**：tsc root 0 错误 / node 158 条零新增 / vite build ✓（产物含 lansync 端点与设置页区块）；回归 crm-lead 55/55、assignment-full 71/71、friend-detect 33/33、sla2-customer-type 41/41、aftersales-transfer-outbox 53/53、lead-assignment-view 32/32、identity 25/25、assignment 28/28、persist-guard 36/36、auto-backup 32/32、crm-golden 47/47 全绿；assignment-correction-test 14/10 为 HEAD 既有环境性失败（live 库已被运行中应用执行过纠正，副本口径失效，同 §2.53 记录的 migration-live 情况，与本刀无关——git stash 实证 HEAD 同样 14/10）；产物已重建；live 未碰。
+- **有意偏离/边界**：① 下行不分终端子目录（R3 缓解项，Phase 1 接受：终端消费后删文件 + 幂等键兜底，共享权限配置属部署文档范畴）；② audit 上行 entity_id 为终端本机 id（Q4 五字段裁剪口径的直接后果，跨机对账靠 actor/时间/detail）；③ 终端「已转客户」不上行，Q2 拦截只看本机 account 挂接（设计自身边界）；④ conflict（中枢指令与本地有效归属打架）标已应用不反复重试，留人工对账；⑤ 同步调度间隔启动时读取（改 lanSyncPollIntervalMin 需重启生效；角色/目录每轮动态生效）。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

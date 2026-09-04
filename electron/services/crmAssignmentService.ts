@@ -158,6 +158,22 @@ export function recycleAssignment(assignmentId: number, reason: string, actor: s
   const row = rows[0]
   if (String(row.status) === 'recycled') return { ok: false, code: 'E202', message: '该分配已回收' }
   if (String(row.status) === 'transferred') return { ok: false, code: 'E201', message: '该分配已移交，当前分配在新行' }
+  // Q2 拦截（内网同步设计 §4）：lead 已转客户（已挂 account）→ 跳过回收、不下发 recycle 事件，
+  // 写审计（detail.reason='converted_skip'）。回收器每轮会再命中同一行 → 用 scan_state 标记
+  // `convertedSkip:<assignmentId>` 保证一行只留一条拦截审计，不每 30 分钟刷屏。
+  const leadRow = crmDbService.all('SELECT account_id FROM lead WHERE id = ?', [Number(row.lead_id)])[0]
+  if (leadRow && Number(leadRow.account_id || 0) > 0) {
+    const marker = `convertedSkip:${id}`
+    if (crmDbService.getScanState(marker) <= 0) {
+      const markedAt = Date.now()
+      crmDbService.runTx((tx) => {
+        tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+          [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: 'converted_skip', requestedReason: String(reason || '') }), markedAt])
+        tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [marker, markedAt])
+      })
+    }
+    return { ok: false, code: 'E205', message: '该线索已转客户，跳过回收（converted_skip）' }
+  }
   const why = String(reason || '').trim() || '回收'
   const now = Date.now()
   crmDbService.runTx((tx) => {

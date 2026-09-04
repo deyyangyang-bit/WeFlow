@@ -8,8 +8,10 @@
  *
  * 事件清单与内网同步设计对齐（docs/规划/Phase1-内网同步最小版-设计.md §3）：
  *   下行（中枢权威）：assign / transfer / recycle
- *   上行（终端回执）：claim / bind_wx
- *   ⚠️ 上行 third_touch（首触回执）暂无判定写点，属缺口（见 HANDOVER §2.58）。
+ *   上行（终端回执）：claim / bind_wx / first_touch（2026-09-04 补上首触写点）
+ *   ⚠️ 上行 audit（审计行）不走 outbox——按 Q4 字段裁剪+脱敏后由 lanSyncService 游标
+ *     （scan_state `syncUp:auditCursor`）逐条产出，不经过本表。
+ * 实际落盘发送由 lanSyncService 承担（共享目录已配置时 pending → 事件 JSON 文件 → sent）。
  *
  * payload 内携带 type 字段 = 事件类型（表结构无 event_type 列，宪法 §1.11 字段定格不加列）。
  */
@@ -21,8 +23,8 @@ export interface OutboxTx {
   all: (sql: string, params?: unknown[]) => CrmRow[]
 }
 
-/** 业务写点事件类型（与同步设计 §3 事件清单一一对应） */
-export type OutboxEventType = 'assign' | 'transfer' | 'recycle' | 'claim' | 'bind_wx'
+/** 业务写点事件类型（与同步设计 §3 事件清单一一对应；audit 走游标路径不经本表，故不在列） */
+export type OutboxEventType = 'assign' | 'transfer' | 'recycle' | 'claim' | 'bind_wx' | 'first_touch'
 
 /**
  * 在既有事务内登记一条 outbox 事件。

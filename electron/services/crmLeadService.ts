@@ -8,6 +8,8 @@
 import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
 import { classifyLead, dedupeRows, maskContact, type RawLeadRow } from './crmLeadImportCore'
+import { recordOutboxTx } from './crmOutboxService'
+import { getActorLabel } from './identityService'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
 // ─── 配置注入（registerCrmIpcHandlers 装配）─────────────────────────────────
@@ -153,6 +155,11 @@ export function updateLeadStatus(leadId: number, action: keyof typeof ACTION_ACT
       const channel = String(opts.channel || 'PHONE').toUpperCase()
       tx.run('UPDATE lead SET status = ?, first_contacted_at = ?, first_contact_channel = ?, updated_at = ? WHERE id = ?', ['CONTACTED', now, channel, now, id])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'CONTACTED', `首触渠道：${channel}`, now])
+      // outbox 登记（上行 first_touch 首触回执，同步设计 §3；key 按 lead 幂等——首触语义上只发生一次）
+      recordOutboxTx(tx, 'first_touch', `first_touch:${id}`, {
+        leadId: id, channel, at: now, actor: getActorLabel() || '销售',
+        contactType: String(lead.contact_type || ''), contactNormalized: String(lead.contact_normalized || '')
+      }, now)
     } else if (action === 'wx_added') {
       const wechat = String(opts.wechat || '').trim()
       if (wechat) {
@@ -281,11 +288,16 @@ export function completeLeadFirstContact(taskId: number): boolean {
   const leadId = Number(task.source_id)
   const now = Date.now()
   crmDbService.runTx((tx) => {
-    const rows = tx.all('SELECT status FROM lead WHERE id = ?', [leadId])
+    const rows = tx.all('SELECT id, status, contact_type, contact_normalized FROM lead WHERE id = ?', [leadId])
     if (!rows.length) return
     if (rows[0].status === 'NEW') {
       tx.run('UPDATE lead SET status = ?, first_contacted_at = ?, updated_at = ? WHERE id = ?', ['CONTACTED', now, now, leadId])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [leadId, 'CONTACTED', '今日行动完成首触', now])
+      // outbox 登记（上行 first_touch；与 updateLeadStatus 同 key，先登记者生效、后到者幂等吞掉）
+      recordOutboxTx(tx, 'first_touch', `first_touch:${leadId}`, {
+        leadId, channel: '', at: now, actor: getActorLabel() || '销售',
+        contactType: String(rows[0].contact_type || ''), contactNormalized: String(rows[0].contact_normalized || '')
+      }, now)
     }
   })
   salesDbService.todoUpdate(Number(taskId), { status: 'done' })

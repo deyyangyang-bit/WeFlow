@@ -99,6 +99,8 @@ export const CONFIG_KEYS = {
   CRM_LOGISTICS_OVERDUE_HOURS: 'crmLogisticsOverdueHours',
   AUTO_BACKUP_NETWORK_PATH: 'autoBackupNetworkPath',
   AUTO_BACKUP_TIME: 'autoBackupTime',
+  LAN_SYNC_SHARED_DIR: 'lanSyncSharedDir',
+  LAN_SYNC_ROLE: 'lanSyncRole',
 
   // 数据收集
 
@@ -2018,6 +2020,22 @@ export async function getAutoBackupTime(): Promise<string> {
 }
 export async function setAutoBackupTime(time: string): Promise<void> {
   await config.set(CONFIG_KEYS.AUTO_BACKUP_TIME, String(time || '').trim() || '14:37')
+}
+
+// 内网同步（Phase 1 最小版）：SMB 共享根目录（空=同步关闭）+ 本机角色（''=未配置 / hub 中枢 / terminal 终端）
+export async function getLanSyncSharedDir(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.LAN_SYNC_SHARED_DIR)
+  return typeof value === 'string' ? value : ''
+}
+export async function setLanSyncSharedDir(dir: string): Promise<void> {
+  await config.set(CONFIG_KEYS.LAN_SYNC_SHARED_DIR, String(dir || '').trim())
+}
+export async function getLanSyncRole(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.LAN_SYNC_ROLE)
+  return value === 'hub' || value === 'terminal' ? value : ''
+}
+export async function setLanSyncRole(role: string): Promise<void> {
+  await config.set(CONFIG_KEYS.LAN_SYNC_ROLE, role === 'hub' || role === 'terminal' ? role : '')
 }
 
 // 获取 HTTP API 自动启动状态

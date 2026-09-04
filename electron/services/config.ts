@@ -170,6 +170,12 @@ interface ConfigSchema {
   identityOnboardingDismissed: boolean
   /** 自动备份：网络共享备份目录（SMB 挂载路径，如 /Volumes/xxx/weflow-backup；空=跳过网络层，PRD 1.1） */
   autoBackupNetworkPath: string
+  /** 内网同步（Phase 1 最小版）：SMB 共享根目录挂载路径（如 /Volumes/weflow-sync；空=同步关闭静默跳过） */
+  lanSyncSharedDir: string
+  /** 内网同步角色：''=未配置（同步不启用）/ 'hub'=中枢（主管机） / 'terminal'=终端（销售机） */
+  lanSyncRole: string
+  /** 内网同步轮巡间隔（分钟，1-60，默认 1） */
+  lanSyncPollIntervalMin: number
   /** 自动备份：每日执行时刻 HH:mm（默认 14:37，工作时间） */
   autoBackupTime: string
   /** 是否启用 Telegram 推送 */
@@ -336,6 +342,9 @@ export class ConfigService {
       identityRole: '',
       identityOnboardingDismissed: false,
       autoBackupNetworkPath: '',
+      lanSyncSharedDir: '',
+      lanSyncRole: '',
+      lanSyncPollIntervalMin: 1,
       autoBackupTime: '14:37',
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',

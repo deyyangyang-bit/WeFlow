@@ -66,6 +66,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dismissOnboarding: () => ipcRenderer.invoke('identity:onboarding:dismiss')
   },
 
+  // 内网同步（Phase 1 最小版）：状态查询 + 手动立即一轮
+  lanSync: {
+    status: () => ipcRenderer.invoke('lansync:status'),
+    runNow: () => ipcRenderer.invoke('lansync:run')
+  },
+
 
   // 对话框
   dialog: {

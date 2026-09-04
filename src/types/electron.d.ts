@@ -258,6 +258,20 @@ export interface AutoBackupStatus {
   nextPlannedAt: string | null
 }
 
+/** 内网同步状态（lansync:status 返回；Phase 1 最小版，设计 §5 刀3） */
+export interface LanSyncStatus {
+  enabled: boolean
+  role: 'hub' | 'terminal' | ''
+  terminalId: string
+  sharedDir: string
+  lastDownEmitAt: number
+  lastDownApplyAt: number
+  lastUpEmitAt: number
+  lastUpApplyAt: number
+  backlogPending: number
+  backlogIncoming: number
+}
+
 export interface BackupImageDatMeta {
   version?: number
   aesSize?: number
@@ -372,6 +386,11 @@ export interface ElectronAPI {
     get: () => Promise<{ name: string; role: string; actorLabel: string; shouldPromptOnboarding: boolean }>
     set: (payload: { name: string; role?: string }) => Promise<{ ok: boolean; data?: { name: string; role: string; actorLabel: string }; code?: string; message?: string }>
     dismissOnboarding: () => Promise<{ ok: boolean }>
+  }
+  /** 内网同步（Phase 1 最小版，设计 §5 刀3）：lansync:status / lansync:run */
+  lanSync: {
+    status: () => Promise<{ success: boolean; status?: LanSyncStatus; error?: string }>
+    runNow: () => Promise<{ success: boolean; result?: unknown; error?: string }>
   }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
