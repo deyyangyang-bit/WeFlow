@@ -9,8 +9,11 @@
  *   E. 跳过引导幂等：dismissOnboarding 后 shouldPromptOnboarding=false 且重复 dismiss 不反复弹；
  *      建档后（setIdentity 自动置 dismissed）也不再弹
  *
- * 隔离：WEFLOW_USER_DATA_PATH / WEFLOW_CONFIG_CWD 指向 /tmp 临时目录（insight-dedup-test 手法），
+ * 隔离：WEFLOW_WORKER='1' + WEFLOW_USER_DATA_PATH / WEFLOW_CONFIG_CWD 指向 /tmp 临时目录，
  *       crmDb 用全新空库（fresh），绝不碰 live 库与真实配置。
+ *       ⚠️ WEFLOW_WORKER 必须设：config.ts 仅在 worker 模式才把 store cwd 指向 WEFLOW_CONFIG_CWD
+ *       （config.ts:358-364），否则 electron-store 落到 ~/Library/Preferences/WeFlow-nodejs/ 共享文件，
+ *       多轮测试残留互相污染（默认值断言会被上一轮写入击穿）。
  * 运行：npx tsx scripts/identity-test.ts
  */
 import { mkdtempSync } from 'fs'
@@ -19,6 +22,7 @@ import { join } from 'path'
 
 // 隔离 config 落盘路径（必须在 import 前设置）
 const isoDir = mkdtempSync(join(tmpdir(), 'identity-test-'))
+process.env.WEFLOW_WORKER = '1'
 process.env.WEFLOW_USER_DATA_PATH = isoDir
 process.env.WEFLOW_CONFIG_CWD = isoDir
 
