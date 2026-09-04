@@ -19,7 +19,7 @@ import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
-import { assignLeads, listAssignments } from './crmAssignmentService'
+import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment } from './crmAssignmentService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -318,10 +318,16 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:lead:slaSkip', async (_, taskId: number) => skipLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:deadReasons', async () => DEFAULT_DEAD_REASONS)
 
-  // ── 线索分配（Phase 1 最小可用，API-CONTRACT §1.14 契约：assign + list，统一信封）──
-  // actor 过渡期无身份系统：未提供时服务层兜底「分配员」（仅署名，宪法 §1.12）
+  // ── 线索分配（Phase 1 完整版，API-CONTRACT §1.14 契约五端点，统一信封）──
+  // actor 兜底链：显式 > 身份档案 getActorLabel() > 「分配员」（仅署名，宪法 §1.12）
   ipcMain.handle('crm:assignment:assign', async (_, req: { leadIds?: number[]; salesName?: string; mode?: string; actor?: string }) =>
     assignLeads(Array.isArray(req?.leadIds) ? req.leadIds : [], String(req?.salesName || ''), String(req?.actor || ''), String(req?.mode || 'manual')))
+  ipcMain.handle('crm:assignment:claim', async (_, req: { leadId?: number; actor?: string }) =>
+    claimLead(Number(req?.leadId), String(req?.actor || '')))
+  ipcMain.handle('crm:assignment:recycle', async (_, req: { assignmentId?: number; reason?: string; actor?: string }) =>
+    recycleAssignment(Number(req?.assignmentId), String(req?.reason || ''), String(req?.actor || '')))
+  ipcMain.handle('crm:assignment:transfer', async (_, req: { assignmentId?: number; toSales?: string; reason?: string; actor?: string }) =>
+    transferAssignment(Number(req?.assignmentId), String(req?.toSales || ''), String(req?.reason || ''), String(req?.actor || '')))
   ipcMain.handle('crm:assignment:list', async (_, opts) => listAssignments((opts || {}) as any))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）

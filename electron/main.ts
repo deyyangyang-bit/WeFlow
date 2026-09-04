@@ -58,7 +58,7 @@ import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
-import { restoreLegacyGroupScanAssignments } from './services/crmAssignmentService'
+import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -5540,6 +5540,14 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.warn('[Sales] 群扫旧归属恢复失败:', e)
     }
+    // 分配起计时上线配套（2026-09-04）：存量已分配但 sla1_deadline=NULL 的行补写 = 分配时间 + crmLeadSlaHours
+    // 幂等（只补 NULL 行）；必须在 startSlaRecycleScheduler 之前，防回收器一上来把存量全回收
+    try {
+      const filled = backfillAssignmentSla1()
+      if (filled > 0) console.log(`[Sales] 存量分配行 sla1_deadline 补写完成：${filled} 条`)
+    } catch (e) {
+      console.warn('[Sales] 存量分配行 sla1 补写失败:', e)
+    }
     // Phase 1 存量迁移（PRD §9 / 宪法 §2.4）：② account→customer 挂接 + ③ lead→customer_identity 归并
     // 幂等双保险（scan_state 一次性标记 + 数据级判重）；冲突不静默（进迁移报告+audit_event，不动数据）
     // ⛔ 前置条件：live 生效前先确认自动备份有一次成功记录（autoBackupService）
@@ -5560,6 +5568,9 @@ app.whenReady().then(async () => {
     registerAutoBackupIpcHandlers(ipcMain)
     startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion() })
     startActionEngineScheduler()
+    // SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收
+    // （A 档引擎动作，reason='SLA超时回收'，actor='system:sla'；间隔 crmSlaRecycleIntervalMin 分钟，默认 30）
+    startSlaRecycleScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
     console.log('[Sales] 今日行动引擎 + 周复盘定时器已启动')

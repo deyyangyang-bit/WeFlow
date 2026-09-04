@@ -156,6 +156,8 @@ interface ConfigSchema {
   crmLeadSourcePreset: string
   /** 线索分配销售名单（字符串数组，在线索页分配弹窗内维护，不动设置页） */
   crmSalesList: string[]
+  /** SLA1 回收器扫描间隔（分钟，5-1440，默认 30；扫 assignment status=assigned 且 sla1_deadline 过期 → 自动回收） */
+  crmSlaRecycleIntervalMin: number
   /** 本地身份档案：姓名（PRD §1.2a；audit_event/ownership_history 的 actor 署名用，与应用锁完全独立） */
   identityName: string
   /** 本地身份档案：角色（销售/主管/分配员/空；⚠️ 仅署名用途，不作访问控制依据，宪法 §1.12） */
@@ -323,6 +325,7 @@ export class ConfigService {
       crmLogisticsOverdueHours: 24,
       crmLeadSourcePreset: '抖音,视频号,小红书',
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
+      crmSlaRecycleIntervalMin: 30,
       identityName: '',
       identityRole: '',
       identityOnboardingDismissed: false,

@@ -762,8 +762,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     leadSlaComplete: (taskId: number) => ipcRenderer.invoke('crm:lead:slaComplete', taskId),
     leadSlaSkip: (taskId: number) => ipcRenderer.invoke('crm:lead:slaSkip', taskId),
     leadDeadReasons: () => ipcRenderer.invoke('crm:lead:deadReasons'),
-    // 线索分配（Phase 1 最小可用：assign + list，统一信封 { ok, data } / { ok:false, code, message }）
+    // 线索分配（Phase 1 完整版五端点，统一信封 { ok, data } / { ok:false, code, message }）
     assignmentAssign: (req: { leadIds: number[]; salesName: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:assign', req),
+    assignmentClaim: (req: { leadId: number; actor?: string }) => ipcRenderer.invoke('crm:assignment:claim', req),
+    assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:recycle', req),
+    assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:transfer', req),
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts)
   },
   sales: {

@@ -1811,8 +1811,11 @@ export interface ElectronAPI {
     leadSlaComplete: (taskId: number) => Promise<boolean>
     leadSlaSkip: (taskId: number) => Promise<boolean>
     leadDeadReasons: () => Promise<string[]>
-    // 线索分配（Phase 1，统一信封 { ok, data } / { ok:false, code, message }，API-CONTRACT §1.14）
+    // 线索分配（Phase 1 完整版五端点，统一信封 { ok, data } / { ok:false, code, message }，API-CONTRACT §1.14）
     assignmentAssign: (req: { leadIds: number[]; salesName: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: Array<{ leadId: number; code: string; reason: string }> }; code?: string; message?: string }>
+    assignmentClaim: (req: { leadId: number; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
+    assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
+    assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: AssignmentRow[]; total: number } }>
   }
   sales: {

@@ -987,6 +987,20 @@
 - **顺带修复**：`auto-backup-test.ts` 审计断言查询补 `ORDER BY id DESC`——原查询无排序拿 audit1[0]，live 副本带入 9/3 历史 auto_backup 行后断言误伤（HEAD 上就 31/1，与本刀无关的环境性失败）
 - **善后待做**：live 库当前目录可能存在历史 0 字节/空壳遗留与 `.corrupt-` 留证，重启应用后守卫自动处置并打日志；确认日志后可人工清理留证文件
 
+## 2.53 线索分配 Phase 1 完整版：claim/recycle/transfer + SLA 起计时 + SLA1 回收器（2026-09-04，后端+IPC，无前端 UI）
+
+> 接 §2.40/AGENTS 9-03「最小可用 assign+list」补齐契约五端点（API-CONTRACT §1.14 表 265-269 行）+ PRD 1.4 第一段 SLA「加了没有」机械计时闭环。**本刀只做后端+IPC，前端 UI（认领按钮/回收/移交入口）后续刀。**
+
+- **claim**（`claimLead(leadId, actor)`）：assigned→claimed。E301 无分配行；E201 非 assigned 态（重复 claim 被状态机拒，契约 S）/ 非本人（actor 或身份档案姓名 ≠ sales_name；actor 空时按 `getIdentity().name` 判本人）。**不写 ownership_history**（归属没变），只写 assignment 状态（version+1/updated_by 署名）+ audit_event（action=`lead_claim`）
+- **recycle**（`recycleAssignment(assignmentId, reason, actor)`）：有效行（assigned/claimed）→ recycled，lead 回资源池。E301 无行；E202 已回收；E201 已移交（当前分配在新行）。同事务四写：assignment 状态 + ownership_history（reason=回收类，new_owner=''）+ audit_event（`lead_recycle`）+ **lead.first_contact_deadline 重置回 2100 哨兵**（回资源池=待分配不起计时）；回池后可再 assign（重起计时）
+- **transfer**（`transferAssignment(assignmentId, toSales, reason, actor)`）：旧行→transferred + 新建 assigned 行（source='transfer'，重起 SLA1）。E301 无行；E201 非有效态/目标=当前归属；E203 目标销售不在 config `crmSalesList`。同事务：双行 + ownership_history（reason=移交类）+ audit_event（`lead_transfer`）+ lead 期限跟随新 sla1。**离职移交批量=循环调本端点**（契约原文），不复活旧 reassign
+- **assign 起计时**：`assignLeads` 写 `sla1_deadline = now + crmLeadSlaHours`（现有配置键，默认 24h）+ 同事务把 lead.first_contact_deadline 从哨兵覆盖为同一期限（scanLeadSla 现有机制不动继续工作）。⚠️ 这是「分配状态永不入 lead 表」的**唯一例外**——写的是首触 SLA 计时列不是分配状态；claim 后第二段 SLA（sla2）本刀不做（等 LLM 扫描，PRD 1.4）
+- **SLA1 回收器**：`runSla1Recycle(now?)` 扫 status='assigned' 且 sla1_deadline 过期 → 逐条调 recycleAssignment（**reason='SLA超时回收'，actor='system:sla'**，A 档引擎动作审计/流水照写；逐条独立事务单条失败不阻塞）；**claimed 不动**（已认领进第二段归 LLM 扫描）。`startSlaRecycleScheduler()` 挂 main.ts（自动备份/行动引擎调度器旁，启动延迟 60s 首扫 + setInterval，幂等防重入，unref）；间隔 config 新键 **`crmSlaRecycleIntervalMin`**（分钟，5-1440，默认 30）
+- **存量补写迁移块** `backfillAssignmentSla1()`：上线前存量已分配但 sla1_deadline=NULL 的行补写 = 分配时间（updated_at）+ crmLeadSlaHours——**必须在回收器启动前跑**（main.ts 紧随群扫旧归属恢复块），否则回收器一上来把存量全回收；补写后它们在各自分配次日才超时。幂等（只补 NULL 行）；有实绩落一条汇总审计（actor='system:migration'，action='assignment_sla1_backfill'）
+- **IPC 三处配齐**：`crm:assignment:claim/recycle/transfer`（crmIpcHandlers + preload `assignmentClaim/assignmentRecycle/assignmentTransfer` + electron.d.ts 三处同步，统一信封沿用）
+- **验证**：`scripts/assignment-full-test.ts`（WEFLOW_WORKER 落盘隔离 + fresh crmDb，**55/55**：A 起计时 / B claim 状态机+身份档案署名挂钩 / C recycle 哨兵重置+回池再分配 / D transfer 双行+E203+流水 / E 回收器过期回收·未过期不动·claimed 不动·幂等 / F 补写幂等+汇总审计）；旧 `assignment-test.ts` 28/28 不回归（起计时对旧断言零影响）；基线 tsc root 0 / node 158 零新增；回归 crm-lead 55/55 + identity 25/25 + persist-guard 36/36 + auto-backup 32/32；`tsc -b tsconfig.node.json` 产物已重建（.js gitignore 不入库）
+- **环境性失败记录**：migration-live-test 本刀跑出 38/8（HEAD 上同样 38/8，与本刀无关）——live 库已被重启后的应用执行过存量迁移 02/03（§2.51 的 live 生效已发生），副本内 scan_state 标记已置位 → 执行器 skippedByMarker，测试的「预迁移 live 副本」口径失效。该测试要恢复 46/46 需改为「已迁移 live 副本幂等重跑」口径（后续刀的事）
+
 ---
 
 ## 3. 已交付功能清单
