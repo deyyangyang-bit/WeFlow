@@ -1823,6 +1823,8 @@ export interface ElectronAPI {
     sla2Mark: (req: { leadId: number; verdict: string; confidence: number; scanRef: string; source?: string; note?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number; alreadyMarked: boolean }; code?: string; message?: string }>
     // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
     customerSetType: (req: { customerId: number; type: string; actor?: string }) => Promise<{ ok: boolean; data?: { customerId: number; type: string; unchanged: boolean }; code?: string; message?: string }>
+    // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + ownership_history/audit_event
+    ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => Promise<{ ok: boolean; data?: { fromSales: string; toSales: string; leadsTransferred: number; leadFailed: Array<{ assignmentId: number; code: string; message: string }>; accounts: number; opportunities: number; logistics: number }; code?: string; message?: string }>
   }
   sales: {
     // 知识库

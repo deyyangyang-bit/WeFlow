@@ -23,6 +23,7 @@ import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAss
 import { bindLeadWxid } from './crmFriendDetectService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
+import { departureHandoff } from './crmOwnershipService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -353,6 +354,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // 客户类型（dealer/end_user，'' 清除）：单事务 UPDATE customer + 审计；actor 兜底链同分配端点
   ipcMain.handle('crm:customer:setType', async (_, req: { customerId?: number; type?: string; actor?: string }) =>
     setCustomerType(Number(req?.customerId), String(req?.type ?? ''), String(req?.actor || '')))
+
+  // ── 离职移交（PRD §1.9）：lead 批量走 transferAssignment 循环（reason='离职'）+
+  //    owner 三列（account/opportunity/logistics）同事务直改 + ownership_history + audit_event ──
+  ipcMain.handle('crm:ownership:departure', async (_, req: { fromSales?: string; toSales?: string; actor?: string }) =>
+    departureHandoff(String(req?.fromSales || ''), String(req?.toSales || ''), String(req?.actor || '')))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

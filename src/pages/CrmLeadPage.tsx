@@ -10,7 +10,7 @@
  * ⚠️ 销售视角过滤只是展示层便利（宪法 §1.12：角色仅署名，不作访问控制；门禁靠部署形态+应用锁）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2 } from 'lucide-react'
+import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2 } from 'lucide-react'
 import * as XLSX from 'exceljs'
 import type { LeadRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
@@ -140,6 +140,11 @@ export default function CrmLeadPage() {
   // ── 回收二次确认（非销售角色）──
   const [recycleTarget, setRecycleTarget] = useState<LeadRow | null>(null)
   const [recycleBusy, setRecycleBusy] = useState(false)
+  // ── 离职移交弹窗（PRD §1.9，非销售角色）：离职人 → 接手人，批量走 transfer 循环 + owner 三列直改 ──
+  const [showDeparture, setShowDeparture] = useState(false)
+  const [departFrom, setDepartFrom] = useState('')
+  const [departTo, setDepartTo] = useState('')
+  const [departBusy, setDepartBusy] = useState(false)
   // ── 绑定微信弹窗（PRD 1.4a 手动路）：昵称/微信号关键词搜本机联系人 → 下拉选 → 确认 ──
   const [bindTarget, setBindTarget] = useState<LeadRow | null>(null)
   const [bindKw, setBindKw] = useState('')
@@ -443,6 +448,26 @@ export default function CrmLeadPage() {
     } finally { setRecycleBusy(false) }
   }
 
+  // ── 离职移交（PRD §1.9，非销售角色）：actor 不传走服务端身份档案兜底链 ──
+  const doDeparture = async () => {
+    if (!departFrom || !departTo || departBusy) return
+    setDepartBusy(true)
+    try {
+      const r = await window.electronAPI.crm.ownershipDeparture({ fromSales: departFrom, toSales: departTo })
+      if (!r.ok) { setNotice(r.message || '离职移交失败'); return }
+      const d = r.data!
+      const parts = [`线索 ${d.leadsTransferred} 条`, `客户 ${d.accounts} 个`, `商机 ${d.opportunities} 条`, `物流 ${d.logistics} 单`]
+      setNotice(`离职移交完成：${departFrom} → ${departTo}（${parts.join('，')}）${d.leadFailed.length ? `；${d.leadFailed.length} 条线索移交失败` : ''}`)
+      setShowDeparture(false); setDepartFrom(''); setDepartTo('')
+      await fetchAll()
+    } finally { setDepartBusy(false) }
+  }
+  // 离职人候选 = 销售名单 ∪ 当前在岗归属人（离职者可能已被移出名单）
+  const departFromOptions = useMemo(() => {
+    const owners = Object.values(ownerByLead).map((o) => o.salesName)
+    return Array.from(new Set([...salesList, ...owners])).filter(Boolean)
+  }, [salesList, ownerByLead])
+
   const ov = overview
   return (
     <div className="crm-lead-page">
@@ -451,6 +476,9 @@ export default function CrmLeadPage() {
         <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
         {selected.size > 0 && !salesView && (
           <button className="crm-btn primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
+        )}
+        {!salesView && (
+          <button className="crm-btn" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
         )}
         <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>
       </div>
@@ -802,6 +830,30 @@ export default function CrmLeadPage() {
             <div className="form-actions">
               <button className="crm-btn" disabled={recycleBusy} onClick={() => setRecycleTarget(null)}>再想想</button>
               <button className="crm-btn danger" disabled={recycleBusy} onClick={() => void doRecycle()}><Undo2 size={14} /> {recycleBusy ? '回收中…' : '确认回收'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeparture && (
+        <div className="crm-modal" onClick={() => { if (!departBusy) setShowDeparture(false) }}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>离职移交 <button className="crm-btn" onClick={() => setShowDeparture(false)}><X size={14} /></button></h3>
+            <p className="ld-tip">把离职销售名下的<strong>全部</strong>归属一次性移交给接手人：线索分配（逐条调派，SLA 重新计时）+ 客户/商机/物流的归属人。全程留归属流水与审计，不可撤销。</p>
+            <label>离职销售
+              <select value={departFrom} onChange={(e) => setDepartFrom(e.target.value)}>
+                <option value="">请选择</option>
+                {departFromOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <label>接手销售
+              <select value={departTo} onChange={(e) => setDepartTo(e.target.value)}>
+                <option value="">请选择</option>
+                {salesList.filter((n) => n !== departFrom).map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <div className="form-actions">
+              <button className="crm-btn danger" disabled={!departFrom || !departTo || departBusy} onClick={() => void doDeparture()}><UserX size={14} /> {departBusy ? '移交中…' : `确认移交${departFrom && departTo ? `（${departFrom} → ${departTo}）` : ''}`}</button>
             </div>
           </div>
         </div>

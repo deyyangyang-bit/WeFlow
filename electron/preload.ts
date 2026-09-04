@@ -773,7 +773,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论写 assignment.sla2_scan_ref + 审计
     sla2Mark: (req: { leadId: number; verdict: string; confidence: number; scanRef: string; source?: string; note?: string; actor?: string }) => ipcRenderer.invoke('crm:sla2:mark', req),
     // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
-    customerSetType: (req: { customerId: number; type: string; actor?: string }) => ipcRenderer.invoke('crm:customer:setType', req)
+    customerSetType: (req: { customerId: number; type: string; actor?: string }) => ipcRenderer.invoke('crm:customer:setType', req),
+    // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + 流水/审计
+    ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => ipcRenderer.invoke('crm:ownership:departure', req)
   },
   sales: {
     // 知识库

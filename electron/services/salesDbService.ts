@@ -999,6 +999,8 @@ class SalesDbService {
     }
     if (updates.title !== undefined) { fields.push('title = ?'); params.push(updates.title) }
     if (updates.due_at !== undefined) { fields.push('due_at = ?'); params.push(updates.due_at) }
+    // priority_score 本就在签名里但此前未落库（售后 R9 deadline 升级提分首次用到；其余字段维持既有行为不动）
+    if (updates.priority_score !== undefined) { fields.push('priority_score = ?'); params.push(updates.priority_score) }
 
     if (fields.length === 0) return undefined
 
@@ -1167,6 +1169,23 @@ class SalesDbService {
   /** 按 id 查跟进任务（SLA 闭环需要读 task 的 source_id/trigger_type） */
   getTask(id: number): FollowUpTask | undefined {
     return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])
+  }
+
+  /** 售后规则卡：按 (trigger_type, source_id) 查当前 pending 卡（R9/R11/R12 持续条件去重，配合 idx_ft_sla_once） */
+  pendingTaskBySource(triggerType: string, sourceId: number): FollowUpTask | undefined {
+    return this.get<FollowUpTask>(
+      "SELECT * FROM follow_up_task WHERE trigger_type = ? AND source_id = ? AND status = 'pending'",
+      [triggerType, sourceId]
+    )
+  }
+
+  /** 该规则+业务源是否生成过卡（任意状态；一次性提醒用——设备周期/回访里程碑发过即不再发） */
+  hasAnyTaskBySource(triggerType: string, sourceId: number): boolean {
+    const row = this.get<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM follow_up_task WHERE trigger_type = ? AND source_id = ?',
+      [triggerType, sourceId]
+    )
+    return (row?.c ?? 0) > 0
   }
 
   /** 线索 SLA 卡：按 source_id 查该 lead 当前 pending 的 sla_lead 卡 */

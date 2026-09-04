@@ -23,6 +23,7 @@ import { salesKnowledgeService } from './salesKnowledgeService'
 import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
+import { runAftersalesScan } from './crmAftersalesService'
 import { normalizeStage } from '../../shared/salesStage'
 import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
@@ -561,6 +562,12 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   lastFullScanAt = nowMs
   // SLA 接通：每日全量扫描顺带扫描超时线索 → 生成首触 SLA 卡（幂等；独立于 action_engine 重扫，created_by='sla' 不受清理）
   try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) }
+  // 售后规则（PRD §1.6/§1.7/§1.7a/§1.7b）：R9 经销商拿货 / R10 成交回访 / R11 阶段停滞 / 设备周期提醒 / R12 经销商回购
+  // （created_by='aftersales' 独立于 action_engine 重扫清理，规则内自带去重）
+  try {
+    const asr = runAftersalesScan(nowMs)
+    if (asr.r9 + asr.r10 + asr.r11 + asr.device + asr.r12 > 0) salesLog('INFO', `[ActionEngine] 售后规则出卡 ${JSON.stringify(asr)}`)
+  } catch (e) { salesLog('WARN', `[ActionEngine] 售后规则扫描失败: ${e}`) }
   salesLog('INFO', `[ActionEngine] 全量扫描完成，候选 ${customerBest.size} 客户，生成 ${generated} 条任务，R6 ${r6Generated} 条`)
   return { generated, r6Generated }
 }
@@ -809,6 +816,12 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
           'rule_r5_dormant_wake': '沉默唤醒',
           'rule_r6_consider_drop': '考虑放弃',
           'rule_r8_logistics_overdue': '物流跟进',
+          'rule_r9_dealer_restock': '经销商拿货',
+          'rule_r10_revisit_15': '成交回访', 'rule_r10_revisit_30': '成交回访',
+          'rule_r10_revisit_60': '成交回访', 'rule_r10_revisit_90': '成交回访',
+          'rule_r11_quoted_stall': '阶段停滞', 'rule_r11_negotiating_stall': '阶段停滞',
+          'rule_dev_wheel': '设备保养', 'rule_dev_hydraulic': '设备保养', 'rule_dev_battery': '设备保养',
+          'rule_r12_dealer_reorder': '经销商回购',
         }
         return labels[task.trigger_type || ''] || '待确认'
       })(),
@@ -1296,7 +1309,13 @@ function buildReason(triggerType: string, silentDays: number): string {
     'rule_r5_dormant_wake': `沉默${silentDays}天，曾有沟通`,
     'rule_r0_unknown_followup': `未分类客户${silentDays}天未互动，需确认意向`,
     'rule_r6_consider_drop': `多次跟进无响应（${silentDays}天）`,
-    'rule_r8_logistics_overdue': `发货超期未确认签收`
+    'rule_r8_logistics_overdue': `发货超期未确认签收`,
+    'rule_r9_dealer_restock': `经销商签收待回访`,
+    'rule_r10_revisit_15': '成交满 15 天回访', 'rule_r10_revisit_30': '成交满 30 天回访',
+    'rule_r10_revisit_60': '成交满 60 天回访（老客加频）', 'rule_r10_revisit_90': '成交满 90 天回访',
+    'rule_r11_quoted_stall': '比价阶段停滞超 14 天', 'rule_r11_negotiating_stall': '决策阶段停滞超 21 天',
+    'rule_dev_wheel': '轮子磨损检查周期到', 'rule_dev_hydraulic': '液压系统检查周期到', 'rule_dev_battery': '电池健康评估周期到',
+    'rule_r12_dealer_reorder': '经销商超 60 天未拿货'
   }
   return reasons[triggerType] || `${silentDays}天未互动`
 }

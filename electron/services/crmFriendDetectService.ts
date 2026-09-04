@@ -20,6 +20,7 @@
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getActorLabel } from './identityService'
+import { recordOutboxTx } from './crmOutboxService'
 import { ConfigService } from './config'
 import { normalizePhone, normalizeWxid } from './crmMigrationService'
 
@@ -140,6 +141,10 @@ export function bindLeadWxid(
         statusAdvanced: needStatusAdvance, displayName: String(opts.displayName || ''),
         matchField: String(opts.matchField || ''), ...(conflictNote ? { conflictNote } : {})
       }), now])
+    // outbox 登记（PRD §1.10 只记录不发送；上行 bind_wx 绑定回执，同步设计 §3）
+    recordOutboxTx(tx, 'bind_wx', `bind_wx:${id}:${value}`, {
+      leadId: id, wxid: value, identityId: finalIdentityId, customerId, source, slaStopped, actor: by
+    }, now)
   })
   return { ok: true, data: { identityId: finalIdentityId, customerId, alreadyBound: false, slaStopped } }
 }

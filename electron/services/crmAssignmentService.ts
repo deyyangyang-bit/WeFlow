@@ -13,6 +13,7 @@
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getIdentity, getActorLabel } from './identityService'
+import { recordOutboxTx } from './crmOutboxService'
 import { ConfigService } from './config'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
@@ -81,6 +82,8 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
         ['lead', leadId, '', name, '分配', by, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [by, 'lead_assign', 'lead', leadId, JSON.stringify({ salesName: name, mode: m, assignmentId, sla1Deadline: sla1 }), now])
+      // outbox 登记（PRD §1.10 只记录不发送；下行 assign 事件，同步设计 §3）
+      recordOutboxTx(tx, 'assign', `assign:${assignmentId}`, { leadId, salesName: name, mode: m, assignmentId, sla1Deadline: sla1, actor: by }, now)
       assignments.push({ leadId, assignmentId })
     }
     return { assignments, skipped }
@@ -133,6 +136,8 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
     tx.run("UPDATE assignment SET status = 'claimed', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [by, now, row.id])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_claim', 'lead', id, JSON.stringify({ assignmentId: Number(row.id), salesName: String(row.sales_name) }), now])
+    // outbox 登记（上行 claim 认领回执，同步设计 §3）
+    recordOutboxTx(tx, 'claim', `claim:${Number(row.id)}`, { leadId: id, assignmentId: Number(row.id), salesName: String(row.sales_name), actor: by }, now)
   })
   return { ok: true, data: { assignmentId: Number(row.id) } }
 }
@@ -162,6 +167,8 @@ export function recycleAssignment(assignmentId: number, reason: string, actor: s
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: why }), now])
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [LEAD_SLA_UNASSIGNED_SENTINEL, now, Number(row.lead_id)])
+    // outbox 登记（下行 recycle 事件，同步设计 §3）
+    recordOutboxTx(tx, 'recycle', `recycle:${id}`, { leadId: Number(row.lead_id), assignmentId: id, salesName: String(row.sales_name), reason: why, actor: by }, now)
   })
   return { ok: true, data: { assignmentId: id } }
 }
@@ -204,6 +211,8 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_transfer', 'lead', Number(row.lead_id), JSON.stringify({ fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid }), now])
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, Number(row.lead_id)])
+    // outbox 登记（下行 transfer 事件，同步设计 §3；key 用新行 id = 每次移交一条事件）
+    recordOutboxTx(tx, 'transfer', `transfer:${nid}`, { leadId: Number(row.lead_id), fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, actor: by }, now)
     return nid
   })
   return { ok: true, data: { assignmentId: newId } }

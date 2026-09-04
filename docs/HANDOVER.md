@@ -1073,6 +1073,24 @@
 
 ---
 
+## 2.58 售后规则 + 离职移交 + local_outbox（PRD §1.6/§1.7/§1.7a/§1.7b/§1.9/§1.10，2026-09-04）
+
+- **售后 `crmAftersalesService.ts`**（零 electron）：事实驱动规则扫描 → follow_up_task 行动卡（created_by='aftersales'，独立于 action_engine 重扫清理，沿 'sla' 先例）；去重 = idx_ft_sla_once + salesDbService 新方法 `pendingTaskBySource`/`hasAnyTaskBySource`；统一入口 `runAftersalesScan(now)` 挂 runFullScan（scanLeadSla 旁）；触发类型已进 getUnifiedSignals 标签/理由映射。
+  - §1.6 生命周期 = `dealAftersalesStage` 纯推导（成交→已交付→待回访→复购老客，不建列）；复购 = 同 customer（退 account）≥2 笔 won，叠加客户级维护 = R10 加 60 天档。
+  - R9：dealer 客户签收满 10 天出预警卡（due=签收+15 天）；pending 卡超 15 天 → todoUpdate 升级标题+提 urgent 分，不新建卡。
+  - R10：won 商机成交满 15/30/90 天出回访卡，一次性，**每单每次只出最近一个到期档**（不补旧档骚扰）；R5 互斥=既有 won/lost 守卫，未改动。
+  - R11：quoted>14 天 / negotiating>21 天（以 customer_profile.last_stage_change_at 为准，缺失不猜）→ 停滞卡，pending 去重压制。
+  - §1.7a 设备周期：delivery_date 起算，轮子 180/液压 365/电池 1095 天，一次性；delivery_date 缺省用最近物流签收推断；非特种设备无年检。
+  - §1.7b R12 简单版：dealer 最近拿货（won/发货取大）超 60 天 → 回购提醒卡；从未拿货不提醒。
+  - ⚠️ 缺口：delivery_date 无录入入口；质保到期/以旧换新/「升 A 级」无字段未实现；R12 学习版=Phase 4；阈值全常量。
+- **离职移交 `crmOwnershipService.ts`**（§1.9）：`departureHandoff` = lead 循环 transferAssignment（契约原文，reason='离职'，逐条独立事务）+ owner 三列（account/opportunity/logistics）同事务直改 + 逐行 ownership_history + audit_event + 汇总审计 `departure_handoff_summary`；E101/E203。IPC `crm:ownership:departure` + preload `ownershipDeparture` + d.ts 三处配齐；前端入口 = 线索池页 header「离职移交」（角色≠销售可见）。
+- **outbox `crmOutboxService.ts`**（§1.10 只记录不发送，宪法 §1.11）：`recordOutboxTx` 在业务既有事务内登记（event_seq=MAX+1；idempotency_key 重放 false 零写入；type 进 payload 不加列）；五写点 assign/transfer/recycle/claim/bind_wx，与内网同步设计 §3 对齐；⚠️ first_touch 上行缺口；owner 三列离职直改不登记（同步清单只覆盖 lead 分配域）。
+- **顺带修复**：todoUpdate 的 priority_score 参数此前不落库（body 漏字段），补上（R9 提分首次用到；无现存调用方传该参，零行为变化）。
+- **测试** `scripts/aftersales-transfer-outbox-test.ts` **53/53**；验证：tsc root 0 / node 158 零新增 / vite build ✓ / 回归 crm-lead 55 + assignment-full 71 + friend-detect 33 + sla2-customer-type 41 + lead-assignment-view 32 + identity 25 全绿；产物已重建；live 未碰。
+- **有意偏离**：① R10 只出最近到期档；② 液压周期 PRD 未定取 12 个月；③ 离职移交入口放线索池页（与名单/分配同页闭环）而非设置页。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
