@@ -213,12 +213,13 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
 /**
  * 扫描一轮：status='assigned' 且 sla1_deadline 已过期 → 逐条 recycle
  * （reason='SLA超时回收'，actor='system:sla'，审计/流水照写）。
- * claimed 不动（已认领进第二段「聊了没有」，由 LLM 扫描接管，本刀不做）；未过期不动。
+ * claimed 不动（已认领进第二段「聊了没有」，由 LLM 扫描接管，本刀不做）；未过期不动；
+ * **已停表（sla1_met_at 非 NULL，PRD 1.4a 加好友命中）不动**。
  * 返回回收条数；逐条独立事务，单条失败不阻塞其余。
  */
 export function runSla1Recycle(now = Date.now()): { recycled: number } {
   const rows = crmDbService.all(
-    "SELECT id FROM assignment WHERE deleted = 0 AND status = 'assigned' AND sla1_deadline IS NOT NULL AND sla1_deadline < ? ORDER BY id",
+    "SELECT id FROM assignment WHERE deleted = 0 AND status = 'assigned' AND sla1_deadline IS NOT NULL AND sla1_met_at IS NULL AND sla1_deadline < ? ORDER BY id",
     [now]
   )
   let recycled = 0

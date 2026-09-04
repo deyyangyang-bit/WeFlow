@@ -59,6 +59,7 @@ import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, startSlaRecycleScheduler } from './services/crmAssignmentService'
+import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -5582,6 +5583,14 @@ app.whenReady().then(async () => {
     // SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收
     // （A 档引擎动作，reason='SLA超时回收'，actor='system:sla'；间隔 crmSlaRecycleIntervalMin 分钟，默认 30）
     startSlaRecycleScheduler()
+    // 加好友自动检测（PRD 1.4a 自动路，保守版）：扫 assigned/claimed 未停表行，lead 的 wxid/手机号
+    // 与本机 WCDB 联系人（应用读取层 chatService.getContacts，只读）精确等值匹配，命中即停表+推状态+审计；
+    // WCDB 未连接/空联系人 → 本轮零副作用；间隔 crmFriendDetectIntervalMin 分钟，默认 30
+    startFriendDetectScheduler(async (): Promise<ContactLite[]> => {
+      const r = await chatService.getContacts({ lite: true })
+      if (!r.success || !Array.isArray(r.contacts)) return []
+      return r.contacts.map((c) => ({ username: String(c.username || ''), alias: c.alias, remark: c.remark, nickname: c.nickname }))
+    })
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
     console.log('[Sales] 今日行动引擎 + 周复盘定时器已启动')

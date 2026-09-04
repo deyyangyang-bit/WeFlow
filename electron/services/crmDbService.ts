@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS assignment (
   sales_name TEXT DEFAULT '',
   mode TEXT DEFAULT '',
   sla1_deadline INTEGER,
+  sla1_met_at INTEGER,
   sla2_scan_ref TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'claimed', 'recycled', 'transferred')),
   source TEXT DEFAULT '',
@@ -470,6 +471,9 @@ class CrmDbService {
     // Migration: Phase 0 D3（宪法 §4.1，2026-09-02）存量表补列（幂等 ALTER 吞错；6 新表由 SCHEMA_SQL 保证）
     // ① account.customer_id 可空挂接（宪法 §1.1/§4.3：Phase 1 迁移回填，account 本体 28 项能力照旧）
     try { this.db.run('ALTER TABLE account ADD COLUMN customer_id INTEGER') } catch { /* 列已存在 */ }
+    // ①' assignment.sla1_met_at（PRD 1.4a 加好友判定「停表」标记，2026-09-04）：
+    //     NULL=计时中；命中加好友（手动绑定/自动检测）写停表时刻；SLA1 回收器只扫 sla1_met_at IS NULL 的行
+    try { this.db.run('ALTER TABLE assignment ADD COLUMN sla1_met_at INTEGER') } catch { /* 列已存在 */ }
     // ② opportunity 补列（宪法 §1.5：发现来源 / 整车改装类型 / 多币种金额 / 主车型 / 订单与发货量 /
     //    预期发货窗口 / 报价版本与 customer 挂接；逻辑外键，不建 FK 约束——跨库与既有表铁律）
     const oppPhase0Cols: Array<[string, string]> = [

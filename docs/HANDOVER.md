@@ -1036,6 +1036,23 @@
 
 ---
 
+## 2.56 加好友判定双路（PRD 1.4a）：手动绑定微信 + 自动检测停 SLA1 表（2026-09-04）
+
+> PRD 1.4a 双路全落地：① 手动——线索行「绑微信」弹窗搜本机联系人绑定；② 自动——30 分钟轮巡精确匹配。
+> 任一命中即停 SLA1 表（第一段「加了没有」计时终止）+ lead→WX_ADDED + customer_identity 登记 + 审计。
+
+- **停表方案（已拍板落法）**：assignment 幂等 ALTER 加 **`sla1_met_at INTEGER`**（NULL=计时中，命中写停表时刻），SCHEMA_SQL 同步收录。理由：① assignment.status 语义 = 分配生命周期（assigned/claimed/recycled/transferred，宪法 §1.3），不承载「加了没有」结果——状态推进会造第二套语义；② 停表时刻本身有业务价值（加好友耗时统计/审计对账）；③ 幂等天然（`UPDATE ... WHERE sla1_met_at IS NULL`）。回收器 `runSla1Recycle` 扫描加 `AND sla1_met_at IS NULL`——**已加好友的分配永不超时回收**；transfer 新行 sla1_met_at 随新行天然为 NULL（新归属人重新计时，若好友事实仍在，自动检测下轮会再停表，自愈）
+- **新服务 `crmFriendDetectService.ts`**（零 electron 依赖，归一化函数从 crmMigrationService 导入 = 口径唯一真源）：
+  - `bindLeadWxid(leadId, wxid, {actor?, source?, displayName?, matchField?})` —— 双路共用核心，契约端点 `crm:identity:bind` 实现（API-CONTRACT §1.14）。单事务四件套：① customer_identity（identity_type='wxid'，值=**contact.username 内部 id 改名不失效**，source=manual/auto，confidence=1.0）；② 该 lead 有效分配行停表；③ lead NEW/CONTACTED→WX_ADDED（DEAD/ACCOUNT 不动）+ wechat 空则回填 + lead_activity；④ audit_event `identity_bind`。**E101** wxid 空 / **E301** lead 不存在 / **E204** wxid 已挂他 customer（冲突不自动改挂，留合并提案人工审批，宪法 §2.4）。customer_id 按 §2.4 Identity Resolution：lead.account_id 挂接 > account 锚点（session_id=wxid / 手机号锚等值）；多候选冲突挂 NULL + audit detail 记 conflictNote；既有 NULL identity 后补关联（不新建行）。**幂等短路**：四件套均已落 → alreadyBound=true 直接返回，零写入零新审计
+  - `runFriendDetectScan(contacts)` —— 自动路（保守版）：扫 assigned/claimed 且未停表的分配行，lead 的 wechat/手机号 × 联系人标识（username/alias）**精确等值**匹配，命中走 bindLeadWxid(source='auto', actor='system:friend-detect')。⚠️ 宁缺毋滥：remark/nickName 永不参与匹配（宪法 §2.4 昵称仅显示用）；群聊/公众号排除；**WCDB contact 表无可靠手机号字段，手机号命中仅当 username/alias 恰为同一 11 位号码**（仍是精确等值）；联系人注入式参数化（测试零 WCDB 依赖）
+  - `startFriendDetectScheduler(fetchContacts)` —— main.ts 挂 startSlaRecycleScheduler 旁，延迟 90s 首扫 + 间隔轮巡（新 config 键 **`crmFriendDetectIntervalMin`** 分钟，5-1440，默认 30，与回收器同款）；生产 fetcher = `chatService.getContacts({lite:true})`（应用读取层，WCDB 只读，未连接/空 → 本轮零副作用）
+- **前端（CrmLeadPage）**：行操作区「绑微信」按钮（`canBindWxid`：已归属 + 销售视角仅本人行/管理视角任意行；已停表行仍可见，再点走后端幂等短路提示）→ 弹窗：关键词搜本机联系人（`chat.getContacts({lite:true})` 只取 friend，备注/昵称/微信号模糊搜仅用于**选人**）→ 下拉展示 头像（getContactAvatar 惰性补齐）/备注/昵称/微信号 → 确认调 `crm:identity:bind`；**认领弹窗可选填的微信号接入同一链路**（claim 成功后 identityBind，E204 等失败回退 leadUpdate 仅落资料）；期限列已停表行显示「已加好友 ✓」；`buildOwnerMap` 携带 sla1MetAt
+- **测试** `scripts/friend-detect-test.ts`（WEFLOW_WORKER 隔离 + fresh 库，**33/33**：A 四件套+署名 / B 幂等零重复写 / C E101/E301/E204 冲突零写入 / D 锚点挂接+后补关联 / E 自动检测命中·不误伤·昵称不匹配·claimed 同扫·DEAD 不复活·重扫幂等 / F 回收器尊重停表）
+- **验证**：tsc root 0 错误 / node 158 条与基线逐条 diff 零新增 / vite build ✓ / 回归 crm-lead 55/55 + assignment 28/28 + assignment-full 71/71 + identity 25/25 + lead-assignment-view 32/32；`tsc -b tsconfig.node.json` 产物已重建
+- **有意偏离**：① 自动路不做模糊猜（PRD 允许匹配手机号/wxid，但 WCDB 无可靠手机号字段，保守收窄为 username/alias 精确等值）；② 认领弹窗填的微信号视作销售人工断言直接绑定（source=manual，置信 1.0），失败回退纯资料保存不阻塞认领；③ actor 兜底链手动路 = 显式 > 身份档案 > 「销售」，自动路恒 `system:friend-detect`
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

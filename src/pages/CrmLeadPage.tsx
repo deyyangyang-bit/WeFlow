@@ -3,16 +3,19 @@
  * 导入（Excel/CSV/文本粘贴）→ 线索池列表（状态/来源/标签/归属筛选，默认筛「未分配」）→ 首触 SLA → 转客户。
  * 群资源扫描已下线（2026-09-02 决策 B，宪法 §4.2）：录入只走分配员 Excel/粘贴导入。
  * 线索分配（Phase 1 完整交互）：勾选 NEW 行 → 「分配给…」→ 弹窗选销售（名单存 config crmSalesList，弹窗内维护）；
- * 行内「认领」（本人+assigned 态可见，弹窗可顺手填客户微信号/昵称）/「调派」「回收」（身份角色≠销售可见）。
+ * 行内「认领」（本人+assigned 态可见，弹窗可顺手填客户微信号/昵称——填了微信号会走 1.4a 绑定链路停 SLA1 表）/
+ * 「绑微信」（PRD 1.4a 手动路：搜本机联系人 → 选 → 确认 → customer_identity + 停表 + WX_ADDED + 审计）/
+ * 「调派」「回收」（身份角色≠销售可见）。
  * 归属唯一事实源 = assignment 表（宪法 §1.3），本页只读 assignment 展示归属，绝不写 lead 表归属字段。
  * ⚠️ 销售视角过滤只是展示层便利（宪法 §1.12：角色仅署名，不作访问控制；门禁靠部署形态+应用锁）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand } from 'lucide-react'
+import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2 } from 'lucide-react'
 import * as XLSX from 'exceljs'
 import type { LeadRow } from '../types/electron'
+import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
-import { buildOwnerMap, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, type LeadOwnerInfo, type IdentityLike } from '../utils/leadAssignmentView'
+import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, type LeadOwnerInfo, type IdentityLike } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import './CrmLeadPage.scss'
 
@@ -137,6 +140,13 @@ export default function CrmLeadPage() {
   // ── 回收二次确认（非销售角色）──
   const [recycleTarget, setRecycleTarget] = useState<LeadRow | null>(null)
   const [recycleBusy, setRecycleBusy] = useState(false)
+  // ── 绑定微信弹窗（PRD 1.4a 手动路）：昵称/微信号关键词搜本机联系人 → 下拉选 → 确认 ──
+  const [bindTarget, setBindTarget] = useState<LeadRow | null>(null)
+  const [bindKw, setBindKw] = useState('')
+  const [bindContacts, setBindContacts] = useState<ContactInfo[] | null>(null) // null=未加载/加载中
+  const [bindSel, setBindSel] = useState<ContactInfo | null>(null)
+  const [bindBusy, setBindBusy] = useState(false)
+  const [bindAvatars, setBindAvatars] = useState<Record<string, string>>({})
 
   const fetchAll = async () => {
     const [ls, ov, sales, asg, idt] = await Promise.all([
@@ -161,6 +171,38 @@ export default function CrmLeadPage() {
     })
   }, [])
   useEffect(() => { if (notice) { const t = setTimeout(() => setNotice(''), 5000); return () => clearTimeout(t) } }, [notice])
+
+  // 绑定弹窗打开时惰性拉一次本机联系人（lite 模式有内存缓存；只取好友，群/公众号不参与绑定）
+  useEffect(() => {
+    if (!bindTarget) { setBindContacts(null); setBindSel(null); setBindKw(''); return }
+    let cancelled = false
+    void window.electronAPI.chat.getContacts({ lite: true }).then((r) => {
+      if (cancelled) return
+      setBindContacts(r.success && Array.isArray(r.contacts) ? r.contacts.filter((c) => c.type === 'friend') : [])
+    })
+    return () => { cancelled = true }
+  }, [bindTarget])
+
+  // 关键词过滤（备注/昵称/微信号(username+alias) 模糊搜；匹配仅供选人，绑定写 username 内部 id，改名不失效）
+  const bindMatches = useMemo(() => {
+    if (!bindContacts) return []
+    const kw = bindKw.trim().toLowerCase()
+    const pool = kw
+      ? bindContacts.filter((c) => [c.remark, c.nickname, c.alias, c.username, c.displayName].some((v) => String(v || '').toLowerCase().includes(kw)))
+      : bindContacts
+    return pool.slice(0, 20)
+  }, [bindContacts, bindKw])
+
+  // 下拉可见条目的头像惰性补齐（getContactAvatar 逐条取，已取过的不重复取）
+  useEffect(() => {
+    for (const c of bindMatches) {
+      if (bindAvatars[c.username] !== undefined) continue
+      void window.electronAPI.chat.getContactAvatar(c.username).then((r) => {
+        if (r?.avatarUrl) setBindAvatars((m) => (m[c.username] !== undefined ? m : { ...m, [c.username]: r.avatarUrl! }))
+        else setBindAvatars((m) => (m[c.username] !== undefined ? m : { ...m, [c.username]: '' }))
+      })
+    }
+  }, [bindMatches, bindAvatars])
 
   const statusChips = useMemo(() => {
     const n = (s: string) => overview?.byStatus[s] ?? 0
@@ -326,7 +368,8 @@ export default function CrmLeadPage() {
     } finally { setAssignBusy(false) }
   }
 
-  // ── 认领：本人 + assigned 态。确认后调 claim；顺手填的微信号/昵称复用 leadUpdate 落 lead（不写 customer_identity，1.4a 的事）──
+  // ── 认领：本人 + assigned 态。确认后调 claim；顺手填的微信号接 1.4a 绑定链路（customer_identity + 停表 + 审计），
+  //    绑定失败（如冲突 E204）回退 leadUpdate 仅落资料；昵称仍走 leadUpdate ──
   const doClaim = async () => {
     if (!claimTarget || claimBusy) return
     setClaimBusy(true)
@@ -336,16 +379,40 @@ export default function CrmLeadPage() {
       if (!r.ok) { setNotice(r.message || '认领失败'); return }
       const wechat = claimWechat.trim()
       const nick = claimNick.trim()
-      if (wechat || nick) {
-        const u = await window.electronAPI.crm.leadUpdate(claimTarget.id, { ...(nick ? { name: nick } : {}), ...(wechat ? { wechat } : {}) })
-        if (!u.ok) setNotice(`已认领，但资料保存失败：${u.error || '未知错误'}`)
-        else setNotice('已认领，客户资料已一并记录')
-      } else {
-        setNotice('已认领')
+      let bindNote = ''
+      if (wechat) {
+        const b = await window.electronAPI.crm.identityBind({ leadId: claimTarget.id, wxid: wechat, displayName: nick })
+        if (b.ok) bindNote = b.data?.alreadyBound ? '，该微信此前已绑定过' : '，微信已绑定并停表'
+        else {
+          // 绑定失败（E204 冲突等）：微信号退化为仅落 lead 资料，不进 customer_identity
+          const u = await window.electronAPI.crm.leadUpdate(claimTarget.id, { wechat })
+          bindNote = u.ok ? `，绑定失败（${b.message || '未知错误'}），微信号已仅作资料保存` : `，绑定失败（${b.message || '未知错误'}）`
+        }
       }
+      if (nick) {
+        const u = await window.electronAPI.crm.leadUpdate(claimTarget.id, { name: nick })
+        if (!u.ok) bindNote += `，昵称保存失败：${u.error || '未知错误'}`
+      }
+      setNotice(`已认领${bindNote}`)
       setClaimTarget(null); setClaimWechat(''); setClaimNick('')
       await fetchAll() // 刷新列表 + 归属 chips 计数
     } finally { setClaimBusy(false) }
+  }
+
+  // ── 绑定微信（PRD 1.4a 手动路）：选中本机联系人 → identityBind（写 username 内部 id，昵称仅显示用）──
+  const doBind = async () => {
+    if (!bindTarget || !bindSel || bindBusy) return
+    setBindBusy(true)
+    try {
+      const displayName = String(bindSel.remark || bindSel.nickname || bindSel.alias || bindSel.username)
+      const r = await window.electronAPI.crm.identityBind({ leadId: bindTarget.id, wxid: bindSel.username, displayName })
+      if (!r.ok) { setNotice(r.message || '绑定失败'); return }
+      setNotice(r.data?.alreadyBound
+        ? `线索 ${maskLead(bindTarget)} 此前已绑定过该微信（幂等，未重复写入）`
+        : `已绑定微信 ${displayName}，SLA1 已停表`)
+      setBindTarget(null)
+      await fetchAll()
+    } finally { setBindBusy(false) }
   }
 
   // ── 调派（非销售角色）：旧行 transferred + 新行 assigned 重起 SLA1（service 层事务）──
@@ -451,7 +518,9 @@ export default function CrmLeadPage() {
                 </td>
                 <td><span className="lc-source">{l.source}</span></td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {l.status === 'NEW' && Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
+                  {ownerByLead[l.id]?.sla1MetAt
+                    ? <div className="lc-deadline">已加好友 ✓</div>
+                    : l.status === 'NEW' && Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
                     ? <div className="lc-deadline">{ownerByLead[l.id] ? '待首触' : '待分配'}</div>
                     : isOverdue
                     ? <span className="lc-overdue"><AlertTriangle size={12} /> 超时 {fmtOverdue(Number(l.first_contact_deadline))}</span>
@@ -473,6 +542,10 @@ export default function CrmLeadPage() {
                   {/* 认领：本人 + assigned 态可见（canClaimLead 纯判定，与后端「本人」口径一致） */}
                   {canClaimLead(identity, ownerByLead[l.id]) && (
                     <button className="crm-btn primary" title="确认认领这条线索" onClick={() => { setClaimTarget(l); setClaimWechat(String(l.wechat || '')); setClaimNick(String(l.name || '')) }}><Hand size={13} /> 认领</button>
+                  )}
+                  {/* 绑定微信（PRD 1.4a 手动路）：已归属行可见——销售视角仅本人，管理视角任意；已停表再点走幂等提示 */}
+                  {canBindWxid(identity, ownerByLead[l.id]) && (
+                    <button className="crm-btn" title={ownerByLead[l.id]?.sla1MetAt ? '已绑定过（再点为幂等查询）' : '绑定本机微信联系人，命中即停 SLA1 表'} onClick={() => setBindTarget(l)}><Link2 size={13} /> 绑微信</button>
                   )}
                   {/* 调派/回收：已归属 + 身份角色≠销售 可见（销售不能自己调派回收） */}
                   {canManageAssignment(identity, ownerByLead[l.id]) && (
@@ -651,7 +724,7 @@ export default function CrmLeadPage() {
         <div className="crm-modal" onClick={() => { if (!claimBusy) setClaimTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
             <h3>认领线索 <button className="crm-btn" onClick={() => setClaimTarget(null)}><X size={14} /></button></h3>
-            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空）。</p>
+            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空；填了微信号会同时「绑定微信」停 SLA1 表）。</p>
             <label>客户微信号（可选）
               <input autoFocus value={claimWechat} onChange={(e) => setClaimWechat(e.target.value)} placeholder="如：wxid_xxx" />
             </label>
@@ -660,6 +733,39 @@ export default function CrmLeadPage() {
             </label>
             <div className="form-actions">
               <button className="crm-btn primary" disabled={claimBusy} onClick={() => void doClaim()}><Hand size={14} /> {claimBusy ? '认领中…' : '确认认领'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bindTarget && (
+        <div className="crm-modal" onClick={() => { if (!bindBusy) setBindTarget(null) }}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>绑定微信 <button className="crm-btn" onClick={() => setBindTarget(null)}><X size={14} /></button></h3>
+            <p className="ld-tip">线索 {maskLead(bindTarget)}（归属：{ownerByLead[bindTarget.id]?.salesName}）。搜本机微信联系人（备注/昵称/微信号关键词），选中确认即绑定——内部绑的是微信内部 id（改名不失效），命中即停 SLA1 表并留审计。</p>
+            <label>搜索联系人
+              <input autoFocus value={bindKw} onChange={(e) => { setBindKw(e.target.value); setBindSel(null) }} placeholder="备注 / 昵称 / 微信号关键词" />
+            </label>
+            <div className="lc-sales-list">
+              {bindContacts === null && <div className="empty">正在读取本机联系人…</div>}
+              {bindContacts !== null && bindMatches.length === 0 && <div className="empty">{bindKw.trim() ? '没有匹配的联系人' : '本机暂无可绑定的好友联系人'}</div>}
+              {bindMatches.map((c) => {
+                const shown = String(c.remark || c.nickname || c.alias || c.username)
+                return (
+                  <div key={c.username} className={`lc-sales-item ${bindSel?.username === c.username ? 'active' : ''}`} onClick={() => setBindSel(c)} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {bindAvatars[c.username]
+                      ? <img src={bindAvatars[c.username]} alt="" style={{ width: 24, height: 24, borderRadius: 4, flex: 'none' }} />
+                      : <span style={{ width: 24, height: 24, borderRadius: 4, flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-hover, #eee)', fontSize: 12 }}>{shown.slice(0, 1)}</span>}
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shown}{c.remark && c.nickname && c.nickname !== c.remark ? <span className="psub">（昵称：{c.nickname}）</span> : null}</span>
+                      <span className="psub" style={{ display: 'block' }}>微信号：{c.alias || c.username}</span>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="form-actions">
+              <button className="crm-btn primary" disabled={!bindSel || bindBusy} onClick={() => void doBind()}><Link2 size={14} /> {bindBusy ? '绑定中…' : `确认绑定${bindSel ? `：${String(bindSel.remark || bindSel.nickname || bindSel.alias || bindSel.username)}` : ''}`}</button>
             </div>
           </div>
         </div>

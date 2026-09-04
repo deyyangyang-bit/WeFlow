@@ -767,7 +767,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     assignmentClaim: (req: { leadId: number; actor?: string }) => ipcRenderer.invoke('crm:assignment:claim', req),
     assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:recycle', req),
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:transfer', req),
-    assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts)
+    assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts),
+    // 加好友判定（PRD 1.4a 手动路）：绑定微信 → customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
+    identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req)
   },
   sales: {
     // 知识库

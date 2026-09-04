@@ -20,6 +20,7 @@ import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
 import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment } from './crmAssignmentService'
+import { bindLeadWxid } from './crmFriendDetectService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -329,6 +330,12 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:assignment:transfer', async (_, req: { assignmentId?: number; toSales?: string; reason?: string; actor?: string }) =>
     transferAssignment(Number(req?.assignmentId), String(req?.toSales || ''), String(req?.reason || ''), String(req?.actor || '')))
   ipcMain.handle('crm:assignment:list', async (_, opts) => listAssignments((opts || {}) as any))
+
+  // ── 加好友判定（PRD 1.4a 手动路，API-CONTRACT §1.14 契约端点）──────────────
+  // 绑定微信：写 customer_identity(source='manual', confidence=1.0) + 停 SLA1 表 + lead→WX_ADDED + 审计；
+  // actor 兜底链同分配端点（显式 > 身份档案 > 兜底）；幂等：重复绑定 alreadyBound 零重复写
+  ipcMain.handle('crm:identity:bind', async (_, req: { leadId?: number; wxid?: string; displayName?: string; actor?: string }) =>
+    bindLeadWxid(Number(req?.leadId), String(req?.wxid || ''), { actor: String(req?.actor || ''), displayName: String(req?.displayName || '') }))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

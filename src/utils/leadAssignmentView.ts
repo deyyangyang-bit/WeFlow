@@ -13,6 +13,8 @@ export interface LeadOwnerInfo {
   assignmentId: number
   salesName: string
   status: 'assigned' | 'claimed'
+  /** SLA1 停表时刻（PRD 1.4a：加好友命中后非空；0/null=计时中） */
+  sla1MetAt: number
 }
 
 export interface IdentityLike {
@@ -24,14 +26,14 @@ export interface IdentityLike {
  * 当前归属映射：leadId → 最新有效分配行。
  * assignmentList 返回按 id DESC，首个 assigned/claimed 命中即最新；为防乱序仍按 id 取大。
  */
-export function buildOwnerMap(rows: Array<Pick<AssignmentRow, 'id' | 'lead_id' | 'sales_name' | 'status'>>): Record<number, LeadOwnerInfo> {
+export function buildOwnerMap(rows: Array<Pick<AssignmentRow, 'id' | 'lead_id' | 'sales_name' | 'status' | 'sla1_met_at'>>): Record<number, LeadOwnerInfo> {
   const map: Record<number, LeadOwnerInfo> = {}
   for (const r of rows) {
     if (r.status !== 'assigned' && r.status !== 'claimed') continue
     const lid = Number(r.lead_id)
     const cur = map[lid]
     if (!cur || Number(r.id) > cur.assignmentId) {
-      map[lid] = { assignmentId: Number(r.id), salesName: String(r.sales_name || ''), status: r.status }
+      map[lid] = { assignmentId: Number(r.id), salesName: String(r.sales_name || ''), status: r.status, sla1MetAt: Number(r.sla1_met_at || 0) }
     }
   }
   return map
@@ -60,6 +62,17 @@ export function canClaimLead(identity: IdentityLike, owner?: LeadOwnerInfo): boo
 export function canManageAssignment(identity: IdentityLike, owner?: LeadOwnerInfo): boolean {
   if (!owner) return false
   return identity.role !== '销售'
+}
+
+/**
+ * 「绑定微信」按钮可见性（PRD 1.4a 手动路）：该 lead 已归属（assigned/claimed）+
+ * 销售视角仅本人归属行可见；管理视角（角色≠销售/未建档）任意已归属行可见。
+ * 已停表（sla1MetAt 非空）仍可见——再点走后端幂等短路，提示「已绑定」不重复写。
+ */
+export function canBindWxid(identity: IdentityLike, owner?: LeadOwnerInfo): boolean {
+  if (!owner) return false
+  if (!isSalesView(identity)) return true
+  return owner.salesName === identity.name.trim()
 }
 
 /**

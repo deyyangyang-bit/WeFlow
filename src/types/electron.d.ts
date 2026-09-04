@@ -1817,6 +1817,8 @@ export interface ElectronAPI {
     assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: AssignmentRow[]; total: number } }>
+    // 加好友判定（PRD 1.4a 手动路，契约 crm:identity:bind）：写 customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
+    identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => Promise<{ ok: boolean; data?: { identityId: number; customerId: number | null; alreadyBound: boolean; slaStopped: boolean }; code?: string; message?: string }>
   }
   sales: {
     // 知识库
@@ -2048,6 +2050,8 @@ export interface AssignmentRow {
   sales_name: string
   mode: string
   sla1_deadline?: number | null
+  /** PRD 1.4a 停表时刻：NULL=SLA1 计时中；非 NULL=已加好友（手动绑定/自动检测命中），回收器不再扫 */
+  sla1_met_at?: number | null
   sla2_scan_ref?: string
   status: 'assigned' | 'claimed' | 'recycled' | 'transferred'
   source: string
