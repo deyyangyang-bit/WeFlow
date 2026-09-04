@@ -1021,6 +1021,21 @@
 
 ---
 
+## 2.55 线索池页 Phase 1 完整交互：认领闭环 + 调派/回收 + 销售视角（2026-09-04，前端 UI，接 §2.53 后端）
+
+> §2.53 交付了 claim/recycle/transfer 后端+IPC 但无前端入口；本刀补齐线索池页（CrmLeadPage）全部交互，零后端改动、零新增 IPC。
+
+- **纯判定层 `src/utils/leadAssignmentView.ts`**（零依赖，可单测）：`buildOwnerMap`（leadId → 当前有效分配行 {assignmentId, salesName, status}，按 id 取大防乱序）/ `isSalesView`（角色=销售 且 已建档；**空身份=管理视角看全部**）/ `canClaimLead`（已建档 + 归属销售=本人姓名 + assigned 态，与后端「本人」判定同口径）/ `canManageAssignment`（已归属 + 角色≠销售；空角色=管理视角可见）/ `filterLeadsForView` / `visibleOwnerChips`。⚠️ 注释写明：销售视角过滤是**展示层便利，不是安全边界**（宪法 §1.12：角色仅署名，门禁靠部署形态+应用锁）
+- **认领闭环**：行操作区「认领」按钮（canClaimLead 可见）→ 弹窗确认 + 两个可选输入框「客户微信号」「客户昵称」→ 确认调 `crm:assignment:claim`（**actor 不传**，服务端按身份档案姓名判本人）→ 填了的微信号/昵称复用行内编辑资料的 `crm:lead:update` 写路径落 lead（只传非空字段，不覆盖已有值；**不写 customer_identity**——那是 1.4a 绑定的事）；成功后 fetchAll 刷新列表 + 归属 chips 计数
+- **调派/回收**（分配员/主管用，行操作区，canManageAssignment 可见）：「调派」弹窗选新销售（名单排除当前归属人）+ 可选原因（默认「人工调派」）→ `crm:assignment:transfer`（旧行 transferred + 新行 assigned 重起 SLA1）；「回收」二次确认弹窗 → `crm:assignment:recycle`（reason='人工回收'，lead 回资源池，first_contact_deadline 回 2100 哨兵）
+- **销售视角**（identityRole='销售' 且已建档）：列表只显示当前归属=本人姓名的线索；归属 chips 只留「我的」（未分配 chip 不渲染、列表不混入）；「分配给…」按钮同步隐藏（池子不可见，选中集恒空）；归属筛选逻辑让位（visibleLeads 已过滤）
+- **空身份兜底**：未建档（identityName 空）→ isSalesView=false 看全部，canClaimLead=false 认领按钮不出现；调派/回收可见（管理视角）
+- **身份读取**：fetchAll 增 `identity.get()`（§2.50 IPC），无新增 config 键/无 electron 改动
+- **测试**：`scripts/lead-assignment-view-test.ts`（纯函数直测，**32/32**：归属映射/销售视角判定/认领可见性/调派回收可见性/视角过滤/chips 集合）；`npx tsc --noEmit` 0 错误 / `npx vite build` ✓ / 回归 crm-lead 55/55 + assignment 28/28 + assignment-full 71/71 + identity 25/25；electron/ 未动，无需 `tsc -b tsconfig.node.json`
+- **有意偏离**：① 「分配给…」按钮对销售视角隐藏（需求只点名调派/回收，但池子对销售不可见时留着必 E201 空转，一并收掉）；② 认领弹窗两个输入框预填 lead 现有 wechat/name 值（与行内 ✏️ 编辑弹窗同习惯，改不改随用户）；③ 调派/回收/认领均不传 actor，统一走服务端身份档案兜底链（§2.50），前端不重复拼姓名
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
