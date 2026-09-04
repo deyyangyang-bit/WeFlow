@@ -1053,6 +1053,26 @@
 
 ---
 
+## 2.57 两段接力 SLA 第二段「聊了没有」+ 客户类型 dealer/end_user（PRD §1.4/§1.5，2026-09-04）
+
+> PRD 1.4 第二段原文：「弃用首触 SLA 计时器，改为 LLM 扫描对话判断跟进状态（是否已有效触达 / 是否需介入），低置信转人工」。落法与「加好友检测停 SLA1 表」（§2.56）同构：**扫描命中 → 写标记列 → 回收器尊重标记**，不在 assignment 里起第二套倒计时。
+
+- **标记列 `assignment.sla2_scan_ref`**（D3 建表已含，live 副本 PRAGMA 核验已存在，无需 ALTER）：JSON 串 `{verdict, confidence, scanRef, source, at}`，`''` = 第二段尚无扫描结论；verdict ∈ `contacted`（已有效触达）/ `need_intervention`（需介入）/ `uncertain`（低置信=转人工的持久化标记）
+- **新服务 `crmSla2Service.ts`**（零 electron 依赖，同 crmFriendDetectService 模式）：
+  - `markSla2ScanResult(leadId, input)` —— 规则/LLM/人工三路结论的**统一写入口径**（单事务 UPDATE assignment + audit_event `sla2_scan_result`，detail 记 prevVerdict/overridden）。E101 参数非法（verdict 枚举外/confidence 出 0-1/scanRef 空）；E301 无有效分配；**E201 第二段未开始**（sla1_met_at 仍 NULL = 第一段「加了没有」还没过）。幂等：同 (verdict, scanRef, source) 重放 alreadyMarked 零写入零新审计；不同结论允许覆盖（最新扫描胜出），每次覆盖留审计。actor 兜底：rule 路恒 `system:sla2-scan`，llm/manual 路 = 显式 > 身份档案 > 「操作员」
+  - `runSla2RuleScan(fetchMessages)` —— **规则骨架（占位版 LLM）**：扫 assigned/claimed 且已停表且未标记的行，取绑定会话（lead.wechat，停表时已回填）停表时刻后的消息，**只认「客户有回复」这一事实**（isSend≠1，confidence=1.0，scanRef=messageKey）；其余情形不下结论零写入（宁缺毋滥，留给 LLM/人工）
+  - `startSla2ScanScheduler(fetchMessages)` —— main.ts 挂加好友检测调度器旁，延迟 120s 首扫 + 间隔轮巡（新 config 键 **`crmSla2ScanIntervalMin`** 分钟，5-1440，默认 30，同款三段式）；生产 fetcher = `chatService.getMessages` 适配（startTime 传毫秒内部自转秒；createTime 秒→毫秒归一；WCDB 只读，未连接 → 该条跳过零副作用）
+  - **回收器尊重标记**：SLA1 回收器只扫 `sla1_met_at IS NULL` 的行，进入第二段的分配天然不在其扫描域，回收器零改动
+  - **⚠️ 缺口（后续刀）**：真实 LLM 对话跟进状态判定未实现——现有代码无可复用的「对话跟进状态」LLM 扫描服务。接入时：① 结论一律经 `markSla2ScanResult(source='llm')` 写入；② 出机内容必须先过本服务 `maskPrivateText`（宪法 §2.6：手机号/wxid/身份证号 → `***`，未脱敏原文不出本机）；③ 低置信写 `verdict='uncertain'`（转人工的呈现入口也是后续刀）
+- **客户类型（PRD §1.5，R9/R10 前置）**：`customer.type` 列 D3 已建（dealer/end_user/'' 未设置）。新服务 `crmCustomerService.ts`：`setCustomerType(customerId, type, actor?)` 单事务 UPDATE + audit_event `customer_type_set`（detail 含新旧值）；E101 枚举外 / E301 不存在；同值重放 unchanged 零写入。⚠️ type 是 B 档字段（宪法 §1.1：proposed→人工 confirm），本服务只承载人工写入，AI 提议走 enrich 待确认链路
+- **IPC 三处配齐**：`crm:sla2:mark` / `crm:customer:setType`（crmIpcHandlers + preload `sla2Mark`/`customerSetType` + electron.d.ts，统一信封）；`crm:customer:profile` 附挂 `customer` 行（account.customer_id → customer，供档案展示类型）
+- **前端（CustomerWorkspacePage 客户 360）**：「客户信息」区块顶部加「客户类型」行——下拉 未设置/经销商/终端客户，选即存（写审计）+ 档案刷新；account 未挂接 customer 时显示「未建档」不可编辑
+- **测试** `scripts/sla2-customer-type-test.ts`（WEFLOW_WORKER 隔离 + fresh 库，**41/41**：A 写入口径+署名 / B E101×4+E301+E201 守卫零写入 / C 幂等重放+覆盖留 prevVerdict+uncertain 可写 / D 规则扫描命中·只己方不写·早于停表不算·无会话跳过·claimed 同扫·重扫零重复·回收器尊重第二段域 / E 脱敏三类打码 / F 类型设置+审计+幂等+枚举守卫+清除 / G Schema 防线）
+- **验证**：tsc root 0 错误 / node 158 条与基线一致零新增 / vite build ✓ / 回归 crm-lead 55/55 + assignment-full 71/71 + friend-detect 33/33 + lead-assignment-view 32/32；`tsc -b tsconfig.node.json` 产物已重建；live 库未碰（副本只读核验列存在）
+- **有意偏离**：① SLA2 不起计时器也不做回收动作——PRD 第二段只要求「扫描判定跟进状态」，回收语义只属于第一段；② 规则骨架只标 `contacted`（客户回复=事实），`need_intervention`/`uncertain` 只能由 LLM/人工路写入，规则不猜；③ 客户类型编辑只进 360 档案（依赖 account.customer_id 挂接），未挂接的存量 account 暂不可编辑（迁移 ② 已 live 跑过，新 account 走建档链路）
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

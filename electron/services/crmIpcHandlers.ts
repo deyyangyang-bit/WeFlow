@@ -21,6 +21,8 @@ import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
 import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment } from './crmAssignmentService'
 import { bindLeadWxid } from './crmFriendDetectService'
+import { markSla2ScanResult } from './crmSla2Service'
+import { setCustomerType, getCustomerById } from './crmCustomerService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -165,6 +167,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
 
       const accRows = sessionId ? crmDbService.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [sessionId]) : []
       const account = accRows.length ? accRows[0] : null
+      // PRD §1.5 客户类型：account.customer_id 挂接的 customer 行（type=dealer/end_user）随档案下发
+      let customer: any = null
+      try { if (account && Number(account.customer_id || 0) > 0) customer = getCustomerById(Number(account.customer_id)) } catch { /* ignore */ }
       let contracts: any[] = []
       let credited = 0
       if (account) {
@@ -182,7 +187,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
       let activities: any[] = []
       try { if (account) activities = crmDbService.accountTimeline(Number(account.id)).reverse().slice(0, 40) } catch { /* ignore */ }
 
-      return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, currentView, activities } }
+      return { success: true, data: { profile, aiProfile, todos, intentHistory, insights, account, customer, contracts, credited, currentView, activities } }
     } catch (e) {
       return { success: false, error: String(e) }
     }
@@ -336,6 +341,18 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // actor 兜底链同分配端点（显式 > 身份档案 > 兜底）；幂等：重复绑定 alreadyBound 零重复写
   ipcMain.handle('crm:identity:bind', async (_, req: { leadId?: number; wxid?: string; displayName?: string; actor?: string }) =>
     bindLeadWxid(Number(req?.leadId), String(req?.wxid || ''), { actor: String(req?.actor || ''), displayName: String(req?.displayName || '') }))
+
+  // ── 两段接力 SLA 第二段「聊了没有」（PRD 1.4）+ 客户类型（PRD 1.5）──────────
+  // SLA2 扫描结果写入口径：规则骨架/未来 LLM 扫描/人工结论的统一写点（assignment.sla2_scan_ref + 审计）
+  ipcMain.handle('crm:sla2:mark', async (_, req: { leadId?: number; verdict?: string; confidence?: number; scanRef?: string; source?: string; note?: string; actor?: string }) =>
+    markSla2ScanResult(Number(req?.leadId), {
+      verdict: String(req?.verdict || '') as never, confidence: Number(req?.confidence),
+      scanRef: String(req?.scanRef || ''), source: req?.source as never,
+      note: req?.note, actor: String(req?.actor || '')
+    }))
+  // 客户类型（dealer/end_user，'' 清除）：单事务 UPDATE customer + 审计；actor 兜底链同分配端点
+  ipcMain.handle('crm:customer:setType', async (_, req: { customerId?: number; type?: string; actor?: string }) =>
+    setCustomerType(Number(req?.customerId), String(req?.type ?? ''), String(req?.actor || '')))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

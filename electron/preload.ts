@@ -769,7 +769,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:transfer', req),
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts),
     // 加好友判定（PRD 1.4a 手动路）：绑定微信 → customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
-    identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req)
+    identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req),
+    // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论写 assignment.sla2_scan_ref + 审计
+    sla2Mark: (req: { leadId: number; verdict: string; confidence: number; scanRef: string; source?: string; note?: string; actor?: string }) => ipcRenderer.invoke('crm:sla2:mark', req),
+    // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
+    customerSetType: (req: { customerId: number; type: string; actor?: string }) => ipcRenderer.invoke('crm:customer:setType', req)
   },
   sales: {
     // 知识库

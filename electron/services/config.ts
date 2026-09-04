@@ -160,6 +160,8 @@ interface ConfigSchema {
   crmSlaRecycleIntervalMin: number
   /** 加好友自动检测扫描间隔（分钟，5-1440，默认 30；PRD 1.4a 自动路：精确匹配 WCDB 联系人 → 停 SLA1 表） */
   crmFriendDetectIntervalMin: number
+  /** SLA2 规则扫描间隔（分钟，5-1440，默认 30；PRD 1.4 第二段「聊了没有」规则骨架：停表后客户有回复 → 写 sla2_scan_ref） */
+  crmSla2ScanIntervalMin: number
   /** 本地身份档案：姓名（PRD §1.2a；audit_event/ownership_history 的 actor 署名用，与应用锁完全独立） */
   identityName: string
   /** 本地身份档案：角色（销售/主管/分配员/空；⚠️ 仅署名用途，不作访问控制依据，宪法 §1.12） */
@@ -329,6 +331,7 @@ export class ConfigService {
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
       crmSlaRecycleIntervalMin: 30,
       crmFriendDetectIntervalMin: 30,
+      crmSla2ScanIntervalMin: 30,
       identityName: '',
       identityRole: '',
       identityOnboardingDismissed: false,

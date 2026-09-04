@@ -249,6 +249,16 @@ export default function CustomerWorkspacePage() {
     if (selectedCustomer) await openCustomer(selectedCustomer)
   }
 
+  // 客户类型（PRD §1.5 dealer/end_user，R9/R10 前置）：人工选择写 customer.type + 审计（crm:customer:setType）
+  const CUSTOMER_TYPE_LABEL: Record<string, string> = { dealer: '经销商', end_user: '终端客户' }
+  const saveCustomerType = async (type: string) => {
+    const cid = Number(customerProfile?.customer?.id || 0)
+    if (!cid) return
+    const r = await window.electronAPI.crm.customerSetType({ customerId: cid, type })
+    setNotice(r.ok ? `客户类型已更新：${CUSTOMER_TYPE_LABEL[type] || '未设置'}` : `保存失败：${r.message || r.code}`)
+    if (r.ok && selectedCustomer) await openCustomer(selectedCustomer)
+  }
+
   // 信息待确认裁决（页面顶部）：采纳=写入档案并锁定，放弃=丢弃该条 AI 填充
   const applyInfo = async (it: any, action: 'accept' | 'reject') => {
     const r = await window.electronAPI.crm.infoQueueApply(Number(it.account_id), String(it.field), action)
@@ -494,6 +504,22 @@ export default function CustomerWorkspacePage() {
             <div className="crm-profile">
               <div className="crm-profile__section">
                 <h4>客户信息 <span className="crm-profile__hint">点击字段可编辑，手改后 AI 不再覆盖</span></h4>
+                <div className="crm-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>客户类型</span>
+                  {customerProfile.customer ? (
+                    <select
+                      className="crm-filter-select"
+                      value={String(customerProfile.customer.type || '')}
+                      onChange={(e) => void saveCustomerType(e.target.value)}
+                    >
+                      <option value="">未设置</option>
+                      <option value="dealer">经销商</option>
+                      <option value="end_user">终端客户</option>
+                    </select>
+                  ) : (
+                    <span className="crm-muted">未建档（account 未挂接 customer，存量迁移后可用）</span>
+                  )}
+                </div>
                 <div className="crm-field-grid">
                   {accountFieldView(customerProfile.account).map((f) => (
                     <div key={f.field} className={`crm-field ${f.value ? '' : 'crm-field--empty'}`}>

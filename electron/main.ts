@@ -60,6 +60,7 @@ import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
+import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -5590,6 +5591,17 @@ app.whenReady().then(async () => {
       const r = await chatService.getContacts({ lite: true })
       if (!r.success || !Array.isArray(r.contacts)) return []
       return r.contacts.map((c) => ({ username: String(c.username || ''), alias: c.alias, remark: c.remark, nickname: c.nickname }))
+    })
+    // SLA2 规则骨架扫描（PRD 1.4 第二段「聊了没有」，规则占位版）：已停表（已加好友）且 sla2_scan_ref 为空的
+    // 分配行，绑定的会话在停表后若有客户回复 → 写 sla2_scan_ref（verdict='contacted'，事实判定 confidence=1.0）；
+    // 真实 LLM 跟进状态判定是后续刀（结论统一走 markSla2ScanResult，出机内容先过 maskPrivateText，宪法 §2.6）。
+    // 间隔 crmSla2ScanIntervalMin 分钟，默认 30；WCDB 未连接 → 该条跳过零副作用
+    startSla2ScanScheduler(async (sessionId, sinceMs): Promise<Sla2MessageLite[]> => {
+      // getMessages 的 startTime 自动兼容毫秒（内部 >1e10 转秒）；返回会被升序重排，规则扫描自行排序
+      const r = await chatService.getMessages(sessionId, 0, 200, sinceMs)
+      if (!r.success || !Array.isArray(r.messages)) return []
+      // WCDB createTime 是秒 → 毫秒；归一化最小字段
+      return r.messages.map((m) => ({ isSend: m.isSend, createTimeMs: Number(m.createTime || 0) * 1000, messageKey: String(m.messageKey || '') }))
     })
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
