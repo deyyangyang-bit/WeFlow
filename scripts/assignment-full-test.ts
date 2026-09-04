@@ -37,7 +37,7 @@ import { crmDbService } from '../electron/services/crmDbService'
 import { setIdentity } from '../electron/services/identityService'
 import {
   assignLeads, claimLead, recycleAssignment, transferAssignment, currentAssignment,
-  runSla1Recycle, backfillAssignmentSla1
+  runSla1Recycle, backfillAssignmentSla1, correctSla1Misrecycle
 } from '../electron/services/crmAssignmentService'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../shared/leadSla'
 
@@ -195,24 +195,72 @@ async function main(): Promise<void> {
 
   console.log('\n═══ F. 存量 sla1_deadline NULL 补写（幂等迁移块）═══')
   const f1 = seedLead('F-存量')
-  const now0 = Date.now()
-  // 模拟上线前的存量行：status=assigned 且 sla1_deadline NULL（绕开 assignLeads 直插）
+  // 模拟上线前的存量行：status=assigned 且 sla1_deadline NULL（绕开 assignLeads 直插）；
+  // updated_at 故意拨到 3 天前——验证补写以「执行时刻」为基点（§2.54 事故教训：用分配时刻会立即过期）
+  const stale = Date.now() - 3 * 86400_000
   const fid = crmDbService.runTx((tx) => tx.run(
     'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    [f1, S_A, 'manual', null, '', 'assigned', 'manual', '分配员', now0, 1, 0]
+    [f1, S_A, 'manual', null, '', 'assigned', 'manual', '分配员', stale, 1, 0]
   ))
   const f2 = seedLead('F-新行') // 已有 sla1 的行不动
   const f2id = assignLeads([f2], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
   const f2sla = Number(assignRow(f2id).sla1_deadline)
+  const beforeFill = Date.now()
   const filled1 = backfillAssignmentSla1()
   ok('F1 补写 1 条 NULL 行', filled1 === 1, `实 ${filled1}`)
-  ok('F2 补写值 = 分配时间(updated_at) + 24h', Number(assignRow(fid).sla1_deadline) === now0 + SLA_MS, `实 ${assignRow(fid).sla1_deadline}`)
+  const fSla = Number(assignRow(fid).sla1_deadline)
+  ok('F2 补写值 = 执行时刻 + 24h（在未来窗口内，非分配时刻）', fSla >= beforeFill + SLA_MS && fSla <= Date.now() + SLA_MS, `实 ${fSla}`)
+  ok('F2b 补写值 ≠ 分配时刻+24h（§2.54 回归防线）', fSla !== stale + SLA_MS)
   ok('F3 已有 sla1 的行不动', Number(assignRow(f2id).sla1_deadline) === f2sla)
   const bfAudit = crmDbService.all("SELECT * FROM audit_event WHERE action = 'assignment_sla1_backfill' ORDER BY id DESC LIMIT 1")
   ok('F4 汇总审计落行 actor=system:migration', bfAudit.length === 1 && bfAudit[0].actor === 'system:migration' && String(bfAudit[0].detail).includes('"count":1'))
   const filled2 = backfillAssignmentSla1()
   ok('F5 重跑幂等（0 条，审计不重复）', filled2 === 0
     && crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'assignment_sla1_backfill'")[0].c === 1)
+
+  console.log('\n═══ G. SLA1 误扫纠正（§2.54 事故恢复，fresh 库构造误扫现场）═══')
+  // 构造：3 条分配 → 拨 sla1 到过去 → runSla1Recycle 模拟误扫 → correctSla1Misrecycle 恢复
+  const g1 = seedLead('G-误扫1') // 应被纠正
+  const g2 = seedLead('G-误扫2') // 应被纠正
+  const g3 = seedLead('G-误扫3') // 误扫后又被人工再分配 → 纠正跳过（数据级判重）
+  const g4 = seedLead('G-正常') // 未被误扫，不动
+  const g1id = assignLeads([g1], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
+  const g2id = assignLeads([g2], S_B, '分配员').data?.assignments[0]?.assignmentId ?? 0
+  const g3id = assignLeads([g3], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
+  const g4id = assignLeads([g4], S_C, '分配员').data?.assignments[0]?.assignmentId ?? 0
+  crmDbService.run('UPDATE assignment SET sla1_deadline = ? WHERE id IN (?,?,?)', [Date.now() - 1000, g1id, g2id, g3id])
+  const gRec = runSla1Recycle()
+  ok('G0 构造误扫现场：3 条被回收', gRec.recycled === 3, `实 ${gRec.recycled}`)
+  // 误扫后 g3 被人工再分配给丙（模拟纠正前已有新有效分配的情形）
+  assignLeads([g3], S_C, '分配员')
+  const histCountBefore = Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history')[0].c)
+  const auditCountBefore = Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event')[0].c)
+  // 注：E 组误扫回收过 e1（actor=system:sla）且 E9 已人工再分配 → 也命中判重，total/alreadyAssigned 各 +1
+  const corr1 = correctSla1Misrecycle()
+  ok('G1 纠正：total=4 / corrected=2 / alreadyAssigned=2', corr1.total === 4 && corr1.corrected === 2 && corr1.alreadyAssigned === 2, JSON.stringify(corr1))
+  ok('G2 误扫旧行保持 recycled（历史不改写）', assignRow(g1id).status === 'recycled' && assignRow(g2id).status === 'recycled')
+  const c1 = currentAssignment(g1), c2 = currentAssignment(g2)
+  ok('G3 补偿新行成当前归属（甲/乙）', c1?.sales_name === S_A && c2?.sales_name === S_B && c1?.source === 'system:correction')
+  ok('G4 新 sla1 在未来 24h 窗口', Number(c1?.sla1_deadline) > Date.now() + SLA_MS - 60_000 && Number(c2?.sla1_deadline) > Date.now() + SLA_MS - 60_000)
+  ok('G5 lead 期限同步恢复（非哨兵）', leadDeadline(g1) === Number(c1?.sla1_deadline) && leadDeadline(g2) === Number(c2?.sla1_deadline))
+  ok('G6 g3 已有有效分配被跳过（不重复补偿）', Number(crmDbService.all("SELECT COUNT(*) AS c FROM assignment WHERE lead_id = ? AND source = 'system:correction'", [g3])[0].c) === 0)
+  ok('G7 未误扫的 g4 不动', assignRow(g4id).status === 'assigned' && Number(assignRow(g4id).sla1_deadline) < Date.now() + SLA_MS)
+  const g1hist = histRows(g1)
+  ok('G8 补偿流水：分配→SLA超时回收→分配（system:correction）', g1hist.length === 3
+    && g1hist[2].reason === '分配' && g1hist[2].actor === 'system:correction' && g1hist[2].new_owner === S_A)
+  const g1audit = crmDbService.all("SELECT * FROM audit_event WHERE action = 'lead_assign' AND entity_id = ? ORDER BY id DESC LIMIT 1", [g1])[0]
+  ok('G9 补偿审计 detail 含纠正说明 + 指向被误回收行', String(g1audit?.detail).includes('SLA1误扫回收纠正') && String(g1audit?.detail).includes(String(g1id)))
+  ok('G10 汇总审计 sla1_misrecycle_correction 落行', crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'sla1_misrecycle_correction' AND actor = 'system:correction'")[0].c === 1)
+  ok('G11 append-only：历史流水/审计只增不改', Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history')[0].c) === histCountBefore + 2
+    && Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event')[0].c) === auditCountBefore + 3) // 2 补偿 + 1 汇总
+  const corr2 = correctSla1Misrecycle()
+  ok('G12 重跑标记跳过（零副作用）', corr2.skippedByMarker === true
+    && Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history')[0].c) === histCountBefore + 2)
+  // 标记丢失兜底：数据级判重（g1/g2 已有有效分配 → 全跳过，零新增）
+  crmDbService.run('DELETE FROM scan_state WHERE key = ?', ['migration:sla1-misrecycle-correction'])
+  const corr3 = correctSla1Misrecycle()
+  ok('G13 标记丢失重入：数据级幂等零补偿', corr3.corrected === 0 && corr3.alreadyAssigned === 4, JSON.stringify(corr3))
+  ok('G14 标记已重建', crmDbService.getScanState('migration:sla1-misrecycle-correction') > 0)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)

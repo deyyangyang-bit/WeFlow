@@ -58,7 +58,7 @@ import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
-import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, startSlaRecycleScheduler } from './services/crmAssignmentService'
+import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -5540,13 +5540,24 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.warn('[Sales] 群扫旧归属恢复失败:', e)
     }
-    // 分配起计时上线配套（2026-09-04）：存量已分配但 sla1_deadline=NULL 的行补写 = 分配时间 + crmLeadSlaHours
-    // 幂等（只补 NULL 行）；必须在 startSlaRecycleScheduler 之前，防回收器一上来把存量全回收
+    // 分配起计时上线配套（2026-09-04）：存量已分配但 sla1_deadline=NULL 的行补写 = 执行时刻 + crmLeadSlaHours
+    // （⚠️ 绝不能用分配时刻当基点——在过去会立即过期，§2.54 事故）；幂等（只补 NULL 行）；
+    // 必须在 startSlaRecycleScheduler 之前，防回收器一上来把存量全回收
     try {
       const filled = backfillAssignmentSla1()
       if (filled > 0) console.log(`[Sales] 存量分配行 sla1_deadline 补写完成：${filled} 条`)
     } catch (e) {
       console.warn('[Sales] 存量分配行 sla1 补写失败:', e)
+    }
+    // §2.54 事故纠正（一次性迁移块）：SLA1 误扫回收（actor=system:sla 的 recycled 行）补偿性再分配给原销售
+    // 幂等双保险（scan_state 标记 + 数据级判重）；append-only 铁律：不改历史流水，只补补偿流水
+    try {
+      const corr = correctSla1Misrecycle()
+      if (!corr.skippedByMarker && corr.corrected > 0) {
+        console.log(`[Sales] SLA1 误扫纠正完成：补偿再分配 ${corr.corrected}/${corr.total} 条（已有有效分配跳过 ${corr.alreadyAssigned}）`)
+      }
+    } catch (e) {
+      console.warn('[Sales] SLA1 误扫纠正失败:', e)
     }
     // Phase 1 存量迁移（PRD §9 / 宪法 §2.4）：② account→customer 挂接 + ③ lead→customer_identity 归并
     // 幂等双保险（scan_state 一次性标记 + 数据级判重）；冲突不静默（进迁移报告+audit_event，不动数据）

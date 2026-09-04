@@ -262,25 +262,91 @@ export function startSlaRecycleScheduler(): void {
 // ─── 存量补写：历史分配行 sla1_deadline 回填（2026-09-04）───────────────────
 /**
  * assign 起计时上线前的存量行 sla1_deadline 全 NULL；不回补的话回收器一上线就把存量全回收。
- * 补写 sla1_deadline = 分配时间（updated_at）+ crmLeadSlaHours —— 补写后它们在各自分配次日才超时，合理。
+ * 补写 sla1_deadline = **补写执行时刻** + crmLeadSlaHours —— 给存量一个全新的首触窗口。
+ * ⚠️ 事故教训（HANDOVER §2.54）：初版用「分配时刻（updated_at）+24h」，分配时刻在过去 →
+ *    补写完立即全部过期 → 回收器首扫把 3,848 条存量一次性误回收。存量补写绝不能用过去的时间基点。
  * 幂等：只补 NULL 行，重跑命中 0 行。有实际补写时落一条汇总审计（actor='system:migration'）。
  */
 export function backfillAssignmentSla1(): number {
   const rows = crmDbService.all(
-    "SELECT id, updated_at FROM assignment WHERE deleted = 0 AND status = 'assigned' AND sla1_deadline IS NULL ORDER BY id"
+    "SELECT id FROM assignment WHERE deleted = 0 AND status = 'assigned' AND sla1_deadline IS NULL ORDER BY id"
   )
   if (!rows.length) return 0
   const now = Date.now()
-  const ms = sla1Ms()
+  const sla1 = now + sla1Ms()
   crmDbService.runTx((tx) => {
     for (const r of rows) {
-      const base = Number(r.updated_at) > 0 ? Number(r.updated_at) : now
-      tx.run('UPDATE assignment SET sla1_deadline = ? WHERE id = ? AND sla1_deadline IS NULL', [base + ms, Number(r.id)])
+      tx.run('UPDATE assignment SET sla1_deadline = ? WHERE id = ? AND sla1_deadline IS NULL', [sla1, Number(r.id)])
     }
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      ['system:migration', 'assignment_sla1_backfill', 'assignment', null, JSON.stringify({ count: rows.length, slaHours: sla1Hours() }), now])
+      ['system:migration', 'assignment_sla1_backfill', 'assignment', null, JSON.stringify({ count: rows.length, slaHours: sla1Hours(), base: 'now' }), now])
   })
   return rows.length
+}
+
+// ─── 纠正性恢复：SLA1 误扫回收的补偿性再分配（2026-09-04 事故，一次性迁移块）───
+/**
+ * 事故：backfill 初版口径「分配时刻+24h」导致存量 3,848 条补写完即全部过期，
+ * 回收器首扫（actor='system:sla'）把它们一次性置 recycled（HANDOVER §2.54）。
+ * 本函数 = 一次性纠正：为每条误扫 lead 补偿性再分配给原销售。
+ *
+ * 方案选择（B：插入新 assigned 行，不改写回收行）：
+ *   ① 回收行是误扫的事实记录，保留它让「分配→回收→纠正分配」链路在 ownership/audit 上完整可对账；
+ *   ② currentAssignment 取该 lead id 最大的有效行，新行自然成为当前归属，状态语义不破坏；
+ *   ③ 方案 A（recycled→assigned 回写）会抹掉回收事实，违背 append-only 精神且 version 语义混乱。
+ * ⛔ append-only 铁律：ownership_history / audit_event 历史行绝不删改，只用补偿流水纠正。
+ *
+ * 幂等双保险（沿 crmMigrationService 模式）：
+ *   ① scan_state 一次性标记 'migration:sla1-misrecycle-correction'（与数据同事务）；
+ *   ② 数据级判重：该 lead 已有当前有效分配（assigned/claimed）即跳过——已纠正的 lead 重跑全跳过。
+ */
+const MISRECYCLE_MARKER = 'migration:sla1-misrecycle-correction'
+export interface CorrectionResult { skippedByMarker: boolean; total: number; corrected: number; alreadyAssigned: number }
+
+export function correctSla1Misrecycle(): CorrectionResult {
+  const r: CorrectionResult = { skippedByMarker: false, total: 0, corrected: 0, alreadyAssigned: 0 }
+  if (crmDbService.getScanState(MISRECYCLE_MARKER) > 0) { r.skippedByMarker = true; return r }
+  // 误扫行精确条件（live 副本核实命中=3,848，分布 许丽娟1511/李林辉1356/杨青981）：
+  // recycled 且回收执行者 updated_by='system:sla'；事发时全部 recycled 行均出自误扫（无人工回收夹杂）
+  const rows = crmDbService.all(
+    "SELECT id, lead_id, sales_name, mode FROM assignment WHERE deleted = 0 AND status = 'recycled' AND updated_by = 'system:sla' ORDER BY id"
+  )
+  r.total = rows.length
+  if (!rows.length) {
+    crmDbService.runTx((tx) => {
+      tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [MISRECYCLE_MARKER, Date.now()])
+    })
+    return r
+  }
+  const now = Date.now()
+  const sla1 = now + sla1Ms()
+  const by = 'system:correction'
+  crmDbService.runTx((tx) => {
+    for (const row of rows) {
+      const leadId = Number(row.lead_id)
+      const sales = String(row.sales_name)
+      // 数据级判重：已有当前有效分配（含本函数上一轮补的新行）→ 跳过
+      const cur = tx.all(`SELECT id FROM assignment WHERE lead_id = ? AND deleted = 0 AND ${ACTIVE_STATUS_SQL} ORDER BY id DESC LIMIT 1`, [leadId])
+      if (cur.length) { r.alreadyAssigned++; continue }
+      const newId = tx.run(
+        'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        [leadId, sales, String(row.mode || 'manual'), sla1, '', 'assigned', 'system:correction', by, now, 1, 0]
+      )
+      // 补偿流水（append-only）：reason='分配'，actor='system:correction'；纠正说明写进 audit detail
+      tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
+        ['lead', leadId, '', sales, '分配', by, now])
+      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+        [by, 'lead_assign', 'lead', leadId, JSON.stringify({ salesName: sales, assignmentId: newId, sla1Deadline: sla1, correction: 'SLA1误扫回收纠正', recycledAssignmentId: Number(row.id) }), now])
+      // lead 首触期限同步恢复（不再是 2100 哨兵）
+      tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, leadId])
+      r.corrected++
+    }
+    // 汇总审计 + 一次性标记，与数据同事务
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [by, 'sla1_misrecycle_correction', 'migration', null, JSON.stringify({ total: r.total, corrected: r.corrected, alreadyAssigned: r.alreadyAssigned, slaHours: sla1Hours() }), now])
+    tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [MISRECYCLE_MARKER, now])
+  })
+  return r
 }
 
 // ─── 存量处置：群扫旧 tag 归属恢复为正式分配（2026-09-03 用户当面拍板「恢复成正式分配」）───

@@ -37,10 +37,12 @@ async function main(): Promise<void> {
   await crmDbService.initialize(dir)
   console.log(`副本试跑：crm ← ${crmSrc.replace(homedir(), '~')}`)
 
-  // 取 3 条 NEW 且无当前有效分配的线索作样本（分配前快照 status，供 E 步对照）
+  // 取 3 条 NEW 且从未有任何分配行的线索作样本（分配前快照 status，供 E 步对照）
+  // ⚠️ 必须是「从未分配」而非「当前无有效分配」：§2.54 误扫事故后 live 存量 lead 带有
+  //    assigned→recycled 历史行，样本若命中历史行，下方「落 3 行」类计数断言会被击穿
   const sample = crmDbService.all(
     `SELECT id, status FROM lead l WHERE l.status = 'NEW'
-     AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.deleted = 0 AND a.status IN ('assigned','claimed'))
+     AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = l.id)
      ORDER BY l.id LIMIT 3`)
   if (sample.length < 3) { console.error('副本内可分配 NEW 线索不足 3 条'); process.exit(1) }
   const ids = sample.map((r) => Number(r.id))

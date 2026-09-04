@@ -997,10 +997,27 @@
 - **transfer**（`transferAssignment(assignmentId, toSales, reason, actor)`）：旧行→transferred + 新建 assigned 行（source='transfer'，重起 SLA1）。E301 无行；E201 非有效态/目标=当前归属；E203 目标销售不在 config `crmSalesList`。同事务：双行 + ownership_history（reason=移交类）+ audit_event（`lead_transfer`）+ lead 期限跟随新 sla1。**离职移交批量=循环调本端点**（契约原文），不复活旧 reassign
 - **assign 起计时**：`assignLeads` 写 `sla1_deadline = now + crmLeadSlaHours`（现有配置键，默认 24h）+ 同事务把 lead.first_contact_deadline 从哨兵覆盖为同一期限（scanLeadSla 现有机制不动继续工作）。⚠️ 这是「分配状态永不入 lead 表」的**唯一例外**——写的是首触 SLA 计时列不是分配状态；claim 后第二段 SLA（sla2）本刀不做（等 LLM 扫描，PRD 1.4）
 - **SLA1 回收器**：`runSla1Recycle(now?)` 扫 status='assigned' 且 sla1_deadline 过期 → 逐条调 recycleAssignment（**reason='SLA超时回收'，actor='system:sla'**，A 档引擎动作审计/流水照写；逐条独立事务单条失败不阻塞）；**claimed 不动**（已认领进第二段归 LLM 扫描）。`startSlaRecycleScheduler()` 挂 main.ts（自动备份/行动引擎调度器旁，启动延迟 60s 首扫 + setInterval，幂等防重入，unref）；间隔 config 新键 **`crmSlaRecycleIntervalMin`**（分钟，5-1440，默认 30）
-- **存量补写迁移块** `backfillAssignmentSla1()`：上线前存量已分配但 sla1_deadline=NULL 的行补写 = 分配时间（updated_at）+ crmLeadSlaHours——**必须在回收器启动前跑**（main.ts 紧随群扫旧归属恢复块），否则回收器一上来把存量全回收；补写后它们在各自分配次日才超时。幂等（只补 NULL 行）；有实绩落一条汇总审计（actor='system:migration'，action='assignment_sla1_backfill'）
+- **存量补写迁移块** `backfillAssignmentSla1()`：~~补写 = 分配时间（updated_at）+ crmLeadSlaHours~~ **⚠️ 此口径错误已在 §2.54 事故中引爆并修正为「执行时刻+24h」**；幂等（只补 NULL 行）；有实绩落一条汇总审计（actor='system:migration'，action='assignment_sla1_backfill'）
 - **IPC 三处配齐**：`crm:assignment:claim/recycle/transfer`（crmIpcHandlers + preload `assignmentClaim/assignmentRecycle/assignmentTransfer` + electron.d.ts 三处同步，统一信封沿用）
 - **验证**：`scripts/assignment-full-test.ts`（WEFLOW_WORKER 落盘隔离 + fresh crmDb，**55/55**：A 起计时 / B claim 状态机+身份档案署名挂钩 / C recycle 哨兵重置+回池再分配 / D transfer 双行+E203+流水 / E 回收器过期回收·未过期不动·claimed 不动·幂等 / F 补写幂等+汇总审计）；旧 `assignment-test.ts` 28/28 不回归（起计时对旧断言零影响）；基线 tsc root 0 / node 158 零新增；回归 crm-lead 55/55 + identity 25/25 + persist-guard 36/36 + auto-backup 32/32；`tsc -b tsconfig.node.json` 产物已重建（.js gitignore 不入库）
 - **环境性失败记录**：migration-live-test 本刀跑出 38/8（HEAD 上同样 38/8，与本刀无关）——live 库已被重启后的应用执行过存量迁移 02/03（§2.51 的 live 生效已发生），副本内 scan_state 标记已置位 → 执行器 skippedByMarker，测试的「预迁移 live 副本」口径失效。该测试要恢复 46/46 需改为「已迁移 live 副本幂等重跑」口径（后续刀的事）
+
+## 2.54 ⛔ 事故档案：SLA1 回收器首扫误回收 3,848 条存量分配 + 纠正性恢复（2026-09-04）
+
+> **事故**：9/4 中午 live 首次启动，日志 `[CRM] SLA1 超时回收 3848 条（actor=system:sla）`——回收器首扫把全部 3,848 条存量分配（许丽娟 1511/李林辉 1356/杨青 981，9/3 由旧归属恢复而来）一次性置 recycled，lead.first_contact_deadline 全回 2100 哨兵。
+> **根因**：`backfillAssignmentSla1` 初版口径「分配时刻（updated_at）+24h」——分配时刻是 9/3，到 9/4 中午补写完**立即全部过期**，60s 后回收器首扫全灭。**教训：任何给存量补截止时间的逻辑，基点必须是「补写执行时刻」，绝不能用过去的时间基点。**
+
+- **命中核验（live /tmp 副本，动手前先查）**：`status='recycled' AND updated_by='system:sla'` 精确命中 3,848（分布与事故前一致；updated_at 全在 2026-09-04T03:28:22Z 一个 ~350ms 窗口 = 首扫单轮）；非误扫 recycled 夹杂 0 行；audit `lead_recycle` / ownership `SLA超时回收` 各 3,848 行对账吻合
+- **backfill 语义修正**：补写值 = **执行时刻 + crmLeadSlaHours**（给存量全新首触窗口），注释写明事故教训；`assignment-full-test` F2b 加回归防线（补写值 ≠ 分配时刻+24h）
+- **纠正性恢复 `correctSla1Misrecycle()`**（crmAssignmentService，一次性启动迁移块，挂 main.ts 紧随 backfill 之后、回收器启动之前）：
+  - **方案 B：插入新 assigned 行**（source/updated_by='system:correction'，sla1=执行时刻+24h），**不改写回收行**——理由：① 回收行是误扫事实记录，保留使「分配→回收→纠正分配」链路可对账；② currentAssignment 取 id 最大有效行，新行自然成当前归属；③ 方案 A（recycled→assigned 回写）抹掉回收事实、version 语义混乱
+  - ⛔ append-only 铁律：ownership_history/audit_event 历史行零删改；补偿流水 ownership reason='分配' actor='system:correction' + audit action='lead_assign' detail 含「SLA1误扫回收纠正」+ recycledAssignmentId 指回原行；另落一条汇总审计 action='sla1_misrecycle_correction'
+  - lead.first_contact_deadline 同步恢复为新 sla1（非哨兵）
+  - **幂等双保险**（沿 crmMigrationService）：scan_state 标记 `migration:sla1-misrecycle-correction`（同事务）+ 数据级判重（lead 已有有效分配即跳过）
+- **验证**：`scripts/assignment-correction-test.ts`（live /tmp 副本实跑，**24/24**：命中 3,848 核验 / 分布恢复 / sla1 全在未来 24h 窗口 / lead 期限同步 / 流水审计只增 +3,848·+3,849 / 误扫行保持 recycled / 重跑标记跳过 / 标记丢失数据级兜底零补偿）；`assignment-full-test.ts` 扩 G 组 15 项（fresh 库构造误扫现场端到端）→ **71/71**
+- **顺带修复**：`assignment-test.ts` 样本选择从「当前无有效分配」收紧为「从未有任何分配行」（live 存量 lead 事故后带历史行，旧口径命中历史行击穿计数断言；28/28 恢复）
+- **基线**：tsc root 0 / node 158 零新增 / assignment 28/28 + assignment-full 71/71 + crm-lead 55/55 + identity 25/25 + migration-live 44/44（a33c8b9 已改已迁移口径）+ persist-guard 36/36 + auto-backup 32/32；产物已重建
+- **live 生效方式**：下次应用启动时启动链路自动跑纠正块（日志 `[Sales] SLA1 误扫纠正完成：补偿再分配 3848/3848 条`）；本刀只在副本验证，未碰 live 库、未启动应用
 
 ---
 
