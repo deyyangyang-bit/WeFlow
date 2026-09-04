@@ -20,26 +20,12 @@
  */
 
 import { crmDbService } from '../../electron/services/crmDbService'
-import { isSessionIdLike } from '../../shared/wechatId'
+import { normalizePhone, normalizeWxid, accountAnchor } from '../../electron/services/crmMigrationService'
 import type { MigrationItemIssue, MigrationReport } from './types'
 
-/** 手机号归一化（宪法 §2.4：去非数字字符）；11 位才算可用手机号锚点 */
-export function normalizePhone(raw: unknown): string {
-  return String(raw ?? '').replace(/\D/g, '')
-}
-/** wxid 归一化（宪法 §2.4：仅去首尾空白——不转小写，wxid 大小写敏感） */
-export function normalizeWxid(raw: unknown): string {
-  return String(raw ?? '').trim()
-}
-
-/** 单个 account 的身份锚点（手机号优先，wxid 兜底；两者皆无 = null） */
-export function accountAnchor(acc: { phone?: unknown; session_id?: unknown }): { type: 'phone' | 'wxid'; value: string } | null {
-  const phone = normalizePhone(acc.phone)
-  if (phone.length === 11) return { type: 'phone', value: phone }
-  const sid = normalizeWxid(acc.session_id)
-  if (sid && isSessionIdLike(sid)) return { type: 'wxid', value: sid }
-  return null
-}
+// 归一化口径唯一真源 = crmMigrationService（执行器同款函数，预演/执行零漂移）；
+// 此处 re-export 仅为兼容既有 import 路径（03 模块曾从本文件导入）。
+export { normalizePhone, normalizeWxid, accountAnchor }
 
 export function dryRun(dbLabel: string): MigrationReport {
   const ranAt = Date.now()

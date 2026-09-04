@@ -959,6 +959,20 @@
 - **IPC 三处配齐**：`identity:get`（profile + actorLabel + shouldPromptOnboarding）/ `identity:set`（姓名必填 E101）/ `identity:onboarding:dismiss`——新 `identityIpcHandlers.ts`（注册在 main.ts config:set 旁，**不** enqueueSalesTask：只写配置不碰 salesDb）；preload `identity.{get,set,dismissOnboarding}`；electron.d.ts 同步
 - **验证**：`scripts/identity-test.ts`（WEFLOW_USER_DATA_PATH/WEFLOW_CONFIG_CWD 落盘隔离 + fresh crmDb，**25/25**：config 读写 / 署名三格式 / 角色归一含脏数据 / 分配兜底链四级 + ownership_history 同步署名 / 跳过幂等 + 建档自动 dismiss）；回归 crm-lead 55/55 + assignment 28/28；tsc root 0 / node 158=基线零新增；vite build ✓；`tsc -b tsconfig.node.json` 产物已重建
 
+## 2.51 Phase 1 存量迁移执行器：02 account→customer + 03 lead→customer_identity（2026-09-04，副本验证完，live 待重启生效）
+
+> D4 骨架（§2.43「只写不跑」）的执行器落地。⛔ **本刀未在 live 库执行**——sql.js 内存库铁律，live 生效 = 应用下次启动时 main.ts 启动链路自动跑（前置条件见末行）。模块①（决策B 群扫清理）Phase 0 已以别的形式 live 执行完，不在此；模块④ 历史成交真实库 0 合同 0 报价，只做核验不建执行器。
+
+- **新服务 `crmMigrationService.ts`**（零 electron 依赖，`crmDbService` 唯一依赖）：`migrate02AccountToCustomer()` / `migrate03LeadToIdentity()` / 入口 `runStockDataMigration()`（②先于③，锚点就位后归并）。归一化三函数 `normalizePhone`/`normalizeWxid`/`accountAnchor` 提升为本服务导出 = **预演/执行口径唯一真源**（dry-run 骨架 02/03 改为从这里导入，防漂移）
+- **幂等双保险**：① scan_state 一次性标记 `migration:02-account-to-customer` / `migration:03-lead-to-identity`（与数据**同事务**写入）；② 数据级判重（account.customer_id 已挂 / (identity_type, identity_value) 已存在即 alreadyDone 跳过）——标记丢失重跑也零业务数据副作用（测试 A5 删标记重入实证）
+- **同事务 + 审计**：每模块 `runTx` 单事务（建 customer + 登记 identity + 挂接 account + audit_event + 标记），审计 actor='system:migration'（沿 crmAssignmentService 先例）、action=`migration_02/03_*`、detail=报告摘要 JSON（总数/实绩/新建/幂等/失败/冲突 + 逐条清单，上限 200 条截断标记）
+- **冲突不静默**：无锚 account / 多名归并组 / 多归属组 / 跨客户身份冲突 → 进报告清单**不动数据**，合并处置留人工审批（宪法 §2.4）。02 既有 NULL identity 命中锚点 → 后补挂接（§2.4 合法态消解路径）
+- **有意不做（偏离记录）**：① owner_sales 全空的 account **不回写「归销售本人」**——归属变更是 C 档人工动作（宪法 §1.7）且 live 188 个 anchored account owner 全空属历史现状，只在 dryRun notes 计数，补登走分配/认领流程或人工；② salesDb 侧 customer_profile.customer_id 对齐不在这刀（独立后续步骤，先 crmDb 后 salesDb 铁律）
+- **main.ts 挂载**：紧随群扫旧归属恢复块之后、自动备份启动之前，独立 try/catch 不惊扰启动
+- **验证 `scripts/migration-live-test.ts`（46/46）**：Part A fresh 库构造 10 account + 8 lead（干净锚/无锚/多名/多归属/已挂接/NULL identity 后补/同 wxid 归并/非法身份）全断言；Part B **live 库 /tmp 副本全量**——先 dryRun 取预测再执行对账：customer **188**（手机号锚 13 / wxid 175）/ account 挂接 **188** / identity **4857**（挂 customer 188 + 资源池 NULL 4669）/ 03 幂等命中 **11**（=02 已登记锚 ∩ lead 身份键）/ 失败 **19**（无锚公司名 account 218-234·242·256，逐条列清单未动数据）/ 冲突 0；实绩与 dryRun 预测逐项相等；重跑零副作用
+- **dryRun 复核**：`dry-run-all.ts` 数字与执行器口径一致（02 wouldApply 188/failed 19；03 wouldApply 4680/命中锚 11/NULL 4669）；基线 tsc root 0 / node 158 零新增；回归 crm-lead 55/55 + assignment 28/28 + identity 25/25；`tsc -b tsconfig.node.json` 产物已重建（.js 全部 gitignore 不入库）
+- **live 执行前置条件（用户操作）**：① 先手动触发一次自动备份并确认成功（autoBackupService，§2.49）；② 重启应用，启动链路自动执行并打 `[Sales] 存量迁移②/③完成` 日志；③ 失败/冲突清单查 audit_event（action LIKE 'migration_%'）detail
+
 ---
 
 ## 3. 已交付功能清单

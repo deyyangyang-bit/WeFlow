@@ -20,7 +20,7 @@
  */
 
 import { crmDbService } from '../../electron/services/crmDbService'
-import { normalizePhone, normalizeWxid, accountAnchor } from './02-account-to-customer'
+import { normalizePhone, normalizeWxid, accountAnchor } from '../../electron/services/crmMigrationService'
 import type { MigrationItemIssue, MigrationReport } from './types'
 
 export function dryRun(dbLabel: string): MigrationReport {

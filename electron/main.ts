@@ -59,6 +59,7 @@ import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments } from './services/crmAssignmentService'
+import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
 import { groupSummaryService } from './services/groupSummaryService'
@@ -5538,6 +5539,21 @@ app.whenReady().then(async () => {
       if (restoredTotal > 0) console.log(`[Sales] 群扫旧归属恢复完成：${JSON.stringify(restored.restored)}，留资源池 ${restored.pooled} 条`)
     } catch (e) {
       console.warn('[Sales] 群扫旧归属恢复失败:', e)
+    }
+    // Phase 1 存量迁移（PRD §9 / 宪法 §2.4）：② account→customer 挂接 + ③ lead→customer_identity 归并
+    // 幂等双保险（scan_state 一次性标记 + 数据级判重）；冲突不静默（进迁移报告+audit_event，不动数据）
+    // ⛔ 前置条件：live 生效前先确认自动备份有一次成功记录（autoBackupService）
+    try {
+      const mig = runStockDataMigration()
+      const m02 = mig.m02, m03 = mig.m03
+      if (!m02.skippedByMarker && (m02.applied > 0 || m02.failed > 0 || m02.conflicts > 0)) {
+        console.log(`[Sales] 存量迁移②完成：挂接 ${m02.applied} account → 新建 customer ${m02.customersCreated}，失败 ${m02.failed}，冲突 ${m02.conflicts}`)
+      }
+      if (!m03.skippedByMarker && (m03.applied > 0 || m03.failed > 0 || m03.conflicts > 0)) {
+        console.log(`[Sales] 存量迁移③完成：登记 identity ${m03.applied}，失败 ${m03.failed}，冲突 ${m03.conflicts}`)
+      }
+    } catch (e) {
+      console.warn('[Sales] 存量迁移失败:', e)
     }
     // 自动备份（PRD 1.1 双保险定时备份）：本机 userData/backups/auto/ + 网络共享层
     // （autoBackupNetworkPath，空/不可达跳过不惊扰）；启动补跑（距上次成功 >20h 且工作时段）
