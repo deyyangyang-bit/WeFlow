@@ -59,6 +59,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     isLockMode: () => ipcRenderer.invoke('auth:isLockMode')
   },
 
+  // 本地身份档案（PRD §1.2a；角色仅署名用途，与应用锁完全独立）
+  identity: {
+    get: () => ipcRenderer.invoke('identity:get'),
+    set: (payload: { name: string; role?: string }) => ipcRenderer.invoke('identity:set', payload),
+    dismissOnboarding: () => ipcRenderer.invoke('identity:onboarding:dismiss')
+  },
+
 
   // 对话框
   dialog: {

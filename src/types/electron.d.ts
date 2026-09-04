@@ -368,6 +368,11 @@ export interface ElectronAPI {
     clearHelloSecret: () => Promise<{ success: boolean }>
     isLockMode: () => Promise<boolean>
   }
+  identity: {
+    get: () => Promise<{ name: string; role: string; actorLabel: string; shouldPromptOnboarding: boolean }>
+    set: (payload: { name: string; role?: string }) => Promise<{ ok: boolean; data?: { name: string; role: string; actorLabel: string }; code?: string; message?: string }>
+    dismissOnboarding: () => Promise<{ ok: boolean }>
+  }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
     openDirectory: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>

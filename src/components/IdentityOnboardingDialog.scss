@@ -1,0 +1,131 @@
+// 本地身份档案首次引导弹窗（PRD §1.2a）；设计 tokens 同 ConfirmDialog.scss（src/styles/main.scss light/dark 双套）
+.identity-dialog-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-overlay);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.2s ease-out;
+
+  .identity-dialog-glass {
+    width: min(440px, calc(100% - 48px));
+    animation: slideUp 0.2s ease-out;
+  }
+
+  .identity-dialog {
+    width: 100%;
+    background: color-mix(in srgb, var(--color-bg-elevated) 80%, transparent);
+    border-radius: var(--radius-card);
+    position: relative;
+    overflow: hidden;
+
+    .dialog-title {
+      padding: 40px 40px 8px;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--color-text-primary);
+    }
+
+    .dialog-desc {
+      padding: 0 40px 20px;
+      font-size: 13px;
+      color: var(--color-text-secondary);
+      line-height: 1.6;
+      margin: 0;
+    }
+
+    .dialog-form {
+      padding: 0 40px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+
+      .form-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+
+        label {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--color-text-primary);
+        }
+
+        input,
+        select {
+          padding: 9px 12px;
+          border-radius: var(--radius-control);
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-inset);
+          color: var(--color-text-primary);
+          font-size: 14px;
+          outline: none;
+          transition: border-color 0.2s;
+
+          &:focus {
+            border-color: var(--color-accent);
+          }
+        }
+      }
+    }
+
+    .dialog-actions {
+      padding: 0 40px 40px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+
+      button {
+        padding: 10px 22px;
+        border-radius: var(--radius-control);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: none;
+
+        &.btn-cancel {
+          background: var(--color-bg-inset);
+          color: var(--color-text-secondary);
+
+          &:hover {
+            background: var(--color-bg-inset-strong);
+            color: var(--color-text-primary);
+          }
+        }
+
+        &.btn-confirm {
+          background: var(--color-accent);
+          color: var(--color-text-on-accent);
+
+          &:hover:not(:disabled) {
+            background: var(--color-accent-hover);
+          }
+
+          &:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+          }
+
+          &:active:not(:disabled) {
+            transform: scale(0.98);
+          }
+        }
+      }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .identity-dialog-overlay,
+  .identity-dialog-overlay .identity-dialog-glass {
+    animation: none;
+  }
+}

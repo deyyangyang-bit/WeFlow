@@ -44,6 +44,7 @@ import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJu
 import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
 import { registerEvalIpcHandlers } from './services/evalIpcHandlers'
+import { registerIdentityIpcHandlers } from './services/identityIpcHandlers'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -2082,6 +2083,9 @@ function registerIpcHandlers() {
     void groupSummaryService.handleConfigChanged(key)
     return result
   })
+
+  // 本地身份档案（PRD §1.2a；identity:* 三端点，只读写本地配置，见 identityIpcHandlers.ts）
+  registerIdentityIpcHandlers(ipcMain)
 
   // AI 见解
   ipcMain.handle('insight:testConnection', async () => {

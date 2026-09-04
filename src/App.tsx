@@ -14,6 +14,7 @@ import './App.scss'
 import UpdateDialog from './components/UpdateDialog'
 import UpdateProgressCapsule from './components/UpdateProgressCapsule'
 import LockScreen from './components/LockScreen'
+import IdentityOnboardingDialog from './components/IdentityOnboardingDialog'
 import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import WindowCloseDialog from './components/WindowCloseDialog'
 import { resolveAutomationScopeKey } from './pages/Export/hooks/useAutomation'
@@ -121,6 +122,11 @@ function App() {
     localStorage.getItem('app_lock_avatar') || undefined
   )
   const [lockUseHello, setLockUseHello] = useState(false)
+  // 应用锁检查是否已完成（身份引导必须等锁检查结束，且仅在未锁定态出现）
+  const [lockChecked, setLockChecked] = useState(false)
+  // 本地身份档案首次引导（PRD §1.2a）：未建档且未跳过时弹一次，不挡应用锁、不卡启动流程
+  const [showIdentityOnboarding, setShowIdentityOnboarding] = useState(false)
+  const identityCheckedRef = useRef(false)
 
   // 协议同意状态
   const [showAgreement, setShowAgreement] = useState(false)
@@ -474,9 +480,21 @@ function App() {
           console.error('获取锁屏头像失败', e)
         }
       }
+      setLockChecked(true)
     }
     checkLock()
   }, [isAgreementWindow, isOnboardingWindow, isVideoPlayerWindow])
+
+  // 本地身份档案首次引导（PRD §1.2a）：锁检查完成且未锁定后才判断；
+  // 每次启动最多弹一次（identityCheckedRef），「稍后再填」由主进程落 identityOnboardingDismissed 保证不再反复弹
+  useEffect(() => {
+    if (isAgreementWindow || isOnboardingWindow || isVideoPlayerWindow) return
+    if (!lockChecked || isLocked || identityCheckedRef.current) return
+    identityCheckedRef.current = true
+    window.electronAPI.identity.get()
+      .then((p) => { if (p?.shouldPromptOnboarding) setShowIdentityOnboarding(true) })
+      .catch((e) => console.error('读取身份档案失败:', e))
+  }, [isAgreementWindow, isOnboardingWindow, isVideoPlayerWindow, lockChecked, isLocked])
 
 
 
@@ -602,6 +620,13 @@ function App() {
           onUnlock={() => setLocked(false)}
           avatar={lockAvatar}
           useHello={lockUseHello}
+        />
+      )}
+      {/* 本地身份档案首次引导（应用锁之后出现，不挡应用锁） */}
+      {!isLocked && (
+        <IdentityOnboardingDialog
+          open={showIdentityOnboarding}
+          onClose={() => setShowIdentityOnboarding(false)}
         />
       )}
       <TitleBar

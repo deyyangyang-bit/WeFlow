@@ -248,6 +248,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [autoBackupNetworkPath, setAutoBackupNetworkPath] = useState('')
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null)
   const [autoBackupRunning, setAutoBackupRunning] = useState(false)
+  // 本地身份档案（PRD 1.2a；角色仅署名用途，与应用锁完全独立）
+  const [identityName, setIdentityName] = useState('')
+  const [identityRole, setIdentityRole] = useState('')
+  const [identityActorLabel, setIdentityActorLabel] = useState('')
+  const [identityRoleDropdownOpen, setIdentityRoleDropdownOpen] = useState(false)
 
 
 
@@ -615,6 +620,16 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAutoBackupNetworkPath(await configService.getAutoBackupNetworkPath())
       await refreshAutoBackupStatus()
 
+      // 本地身份档案（PRD 1.2a）
+      try {
+        const idProfile = await window.electronAPI.identity.get()
+        setIdentityName(idProfile.name)
+        setIdentityRole(idProfile.role)
+        setIdentityActorLabel(idProfile.actorLabel)
+      } catch (e) {
+        console.error('读取身份档案失败:', e)
+      }
+
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
       setAutoDownloadHighRes(savedAutoDownloadHighRes)
@@ -909,6 +924,28 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     } finally {
       setAutoBackupRunning(false)
       await refreshAutoBackupStatus()
+    }
+  }
+
+  // 本地身份档案：保存（姓名必填；角色仅署名用途，宪法 §1.12）
+  const handleIdentitySave = async () => {
+    const n = identityName.trim()
+    if (!n) {
+      showMessage('请填写姓名', false)
+      return
+    }
+    try {
+      const res = await window.electronAPI.identity.set({ name: n, role: identityRole })
+      if (res.ok && res.data) {
+        setIdentityName(res.data.name)
+        setIdentityRole(res.data.role)
+        setIdentityActorLabel(res.data.actorLabel)
+        showMessage(`身份档案已保存，署名：${res.data.actorLabel}`, true)
+      } else {
+        showMessage(`保存失败：${res.message || '未知错误'}`, false)
+      }
+    } catch (e) {
+      showMessage(`保存失败：${String(e)}`, false)
     }
   }
 
@@ -2748,6 +2785,68 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="settings-section">
+        <h2>身份档案</h2>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>姓名与角色</span>
+            <span className="setting-desc">本地身份档案（与「安全」页的应用锁完全独立）：用于线索分配与操作审计的署名，格式「姓名（角色）」，如「杨青（销售）」。角色仅作署名，不作任何权限依据；首次启动未填时会弹一次引导，也可在此随时修改</span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="text"
+              className="field-input"
+              style={{ width: '140px' }}
+              placeholder="姓名"
+              value={identityName}
+              onChange={(e) => setIdentityName(e.target.value)}
+            />
+            <div className="custom-select" style={{ minWidth: '130px' }}>
+              <div
+                className={`custom-select-trigger ${identityRoleDropdownOpen ? 'open' : ''}`}
+                onClick={() => setIdentityRoleDropdownOpen(!identityRoleDropdownOpen)}
+              >
+                <span className="custom-select-value">{identityRole || '暂不选择'}</span>
+                <ChevronDown size={14} className={`custom-select-arrow ${identityRoleDropdownOpen ? 'rotate' : ''}`} />
+              </div>
+              <div className={`custom-select-dropdown ${identityRoleDropdownOpen ? 'open' : ''}`}>
+                {[
+                  { value: '', label: '暂不选择' },
+                  { value: '销售', label: '销售' },
+                  { value: '主管', label: '主管' },
+                  { value: '分配员', label: '分配员' }
+                ].map(option => (
+                  <div
+                    key={option.value}
+                    className={`custom-select-option ${identityRole === option.value ? 'selected' : ''}`}
+                    onClick={() => {
+                      setIdentityRole(option.value)
+                      setIdentityRoleDropdownOpen(false)
+                    }}
+                  >
+                    {option.label}
+                    {identityRole === option.value && <Check size={14} />}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={handleIdentitySave} disabled={!identityName.trim()}>
+              保存
+            </button>
+          </div>
+        </div>
+        {identityActorLabel && (
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>当前署名</span>
+              <span className="setting-desc">分配、审批等操作留痕时将以此署名：{identityActorLabel}</span>
+            </div>
+          </div>
+        )}
       </div>
 
     </div>

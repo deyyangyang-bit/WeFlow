@@ -7,6 +7,7 @@
  * 响应信封：{ ok: true, data } / { ok: false, code, message }；错误码 E1xx 参数 / E2xx 状态冲突 / E3xx 不存在。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
+import { getActorLabel } from './identityService'
 
 /** 当前有效分配状态（宪法 §1.3：最新有效行 = 当前归属；recycled/transferred 即失效） */
 const ACTIVE_STATUS_SQL = "status IN ('assigned','claimed')"
@@ -32,8 +33,8 @@ export function currentAssignment(leadId: number): CrmRow | null {
  */
 export function assignLeads(leadIds: number[], salesName: string, actor: string, mode = 'manual'): AssignResult {
   const name = String(salesName || '').trim()
-  // 过渡期无身份系统：actor 仅署名用途（宪法 §1.12），调用方未给时兜底「分配员」
-  const by = String(actor || '').trim() || '分配员'
+  // actor 仅署名用途（宪法 §1.12）：显式传入 > 本地身份档案「姓名（角色）」（PRD §1.2a）> 未建档兜底「分配员」
+  const by = String(actor || '').trim() || getActorLabel() || '分配员'
   const ids = Array.from(new Set((Array.isArray(leadIds) ? leadIds : []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)))
   if (!ids.length || !name) return { ok: false, code: 'E101', message: 'leadIds 与 salesName 必填' }
 

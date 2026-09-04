@@ -947,6 +947,18 @@
 - **设置页**：数据库 tab 底部「自动备份」区块——网络备份路径输入框（onBlur 保存）+ 上次备份状态（时间/两层状态/下次计划/保留 20 份说明）+ 「立即备份」按钮（行内 spinner + 结果 toast）
 - **验证**：`scripts/auto-backup-test.ts` 副本隔离 **32/32**（①产出完整含 manifest 字段/审计 ②恢复演练删库→恢复→行数对账含哨兵行 ③21 份→留 20 最旧被删（小尺寸假库独立 userData）④不可达 skipped_unreachable 不报错 + 空配置 skipped_not_configured ⑤同分钟重跑同目录覆盖幂等 + 审计逐次留痕）；回归 crm-lead 55/55；tsc root 0 / node 158=基线；vite build ✓；`tsc -b tsconfig.node.json` 产物已重建（§2.46 大坑铁律）
 
+## 2.50 本地身份档案（2026-09-04，PRD §1.2a，分配前置）
+
+> 姓名 + 角色（销售/主管/分配员）存本地配置，**与现有应用锁完全独立**。用途：`audit_event` / `ownership_history` 的 actor 署名、分配服务认领身份、审批确认显示操作人。⚠️ **角色仅作署名，绝不作访问控制/数据过滤依据**（宪法 §1.12 明文）——全链路无任何权限判断。
+
+- **config 三键**（electron schema + 默认值，已随 127940a 入库）：`identityName`('') / `identityRole`(''，合法值仅 销售/主管/分配员） / `identityOnboardingDismissed`(false)
+- **薄服务 `identityService.ts`**（零 electron 之外依赖，只读 config）：`getIdentity()`（姓名空=未建档返回 null）/ `getActorLabel()`（「姓名（角色）」，角色未选只写姓名，未建档返回 null 由调用方兜底）/ `setIdentity`（角色非法归一空；建档成功自动置 dismissed）/ `shouldPromptOnboarding` / `dismissOnboarding`（幂等）。**未来所有 audit/ownership 写点统一从 `getActorLabel()` 取署名**
+- **actor 兜底链改造**（`crmAssignmentService.assignLeads`）：显式 actor > 身份档案「姓名（角色）」> 未建档兜底「分配员」；`system:migration` 等显式值不受影响（`||` 短路，测试态不实例化 config）
+- **首次启动引导**：`IdentityOnboardingDialog.tsx`（ConfirmDialog 同款 LiquidGlass 弹窗样式）——App.tsx 在**应用锁检查完成且未锁定后**才判断（新增 `lockChecked` 状态），不挡应用锁、不卡启动；每次启动最多弹一次（ref 守卫），「稍后再填」落 `identityOnboardingDismissed` 不再反复弹
+- **设置页区块**：数据库 tab 底部「自动备份」之后新增「身份档案」——姓名输入 + 角色 custom-select（暂不选择/销售/主管/分配员）+ 保存按钮 + 当前署名预览行
+- **IPC 三处配齐**：`identity:get`（profile + actorLabel + shouldPromptOnboarding）/ `identity:set`（姓名必填 E101）/ `identity:onboarding:dismiss`——新 `identityIpcHandlers.ts`（注册在 main.ts config:set 旁，**不** enqueueSalesTask：只写配置不碰 salesDb）；preload `identity.{get,set,dismissOnboarding}`；electron.d.ts 同步
+- **验证**：`scripts/identity-test.ts`（WEFLOW_USER_DATA_PATH/WEFLOW_CONFIG_CWD 落盘隔离 + fresh crmDb，**25/25**：config 读写 / 署名三格式 / 角色归一含脏数据 / 分配兜底链四级 + ownership_history 同步署名 / 跳过幂等 + 建档自动 dismiss）；回归 crm-lead 55/55 + assignment 28/28；tsc root 0 / node 158=基线零新增；vite build ✓；`tsc -b tsconfig.node.json` 产物已重建
+
 ---
 
 ## 3. 已交付功能清单
