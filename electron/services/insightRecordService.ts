@@ -5,7 +5,10 @@ import { createHash, randomUUID } from 'crypto'
 import { ConfigService } from './config'
 import { atomicWriteFileSync } from './atomicPersist'
 
-export type InsightRecordTriggerReason = 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
+export type InsightRecordTriggerReason =
+  | 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
+  // 阶段三例外告警（设计-AI见解重定位 §4.1）：triggerReason='alert:<type>'，经 alertService 四道闸写入
+  | `alert:${string}`
 /**
  * sourceType 三语义（设计-AI见解重定位 §3.2/§3.3）：
  *  insight          = 信箱可见（存量历史记录 + 阶段三告警 triggerReason='alert:*'）；
@@ -78,6 +81,8 @@ export interface InsightRecord {
   messageInsight?: MessageInsightTarget
   log: InsightRecordLog
   salesStage?: string
+  /** 阶段三告警：证据锚点（客户原话消息的 canonical key，宪法 §1.10 引用不复制） */
+  messageKey?: string
 }
 
 export interface InsightRecordSummary {
@@ -91,6 +96,7 @@ export interface InsightRecordSummary {
   insight: string
   read: boolean
   messageInsight?: MessageInsightTarget
+  messageKey?: string
 }
 
 export interface InsightRecordContactFacet {
@@ -196,7 +202,8 @@ class InsightRecordService {
       triggerReason: record.triggerReason,
       insight: record.insight,
       read: record.read,
-      messageInsight: record.messageInsight
+      messageInsight: record.messageInsight,
+      messageKey: record.messageKey
     }
   }
 
@@ -220,6 +227,19 @@ class InsightRecordService {
     )
   }
 
+  /**
+   * 告警幂等（设计-AI见解重定位 §4.1 第 2 条）：同 sessionId 同 triggerReason='alert:<type>'
+   * 在 windowMs（通常 72h）内已有记录 → true。与 hasRecentRecord 不同：按 triggerReason 精确匹配，
+   * 不限 sourceType（告警只应与告警去重，自动见解 archive 不应挡住告警）。
+   */
+  hasRecentAlert(sessionId: string, triggerReason: string, windowMs: number): boolean {
+    if (!sessionId || !triggerReason) return false
+    const cutoff = Date.now() - windowMs
+    return this.getScopedRecords().some(
+      (r) => r.sessionId === sessionId && r.triggerReason === triggerReason && r.createdAt >= cutoff
+    )
+  }
+
   /** 返回所有记录（含 salesStage），供 CRM 回填导入使用 */
   getAllRecordsForBackfill(): Array<{ sessionId: string; displayName: string; salesStage?: string; createdAt: number }> {
     this.ensureLoaded()
@@ -239,6 +259,7 @@ class InsightRecordService {
     messageInsight?: MessageInsightTarget
     log: InsightRecordLog
     salesStage?: string
+    messageKey?: string
   }): InsightRecord {
     this.ensureLoaded()
     const scope = this.getCurrentAccountScope()
@@ -256,7 +277,8 @@ class InsightRecordService {
       read: false,
       messageInsight: input.messageInsight,
       log: input.log,
-      salesStage: input.salesStage
+      salesStage: input.salesStage,
+      messageKey: input.messageKey
     }
 
     this.records.push(record)

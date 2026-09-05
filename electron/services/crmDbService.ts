@@ -1084,7 +1084,7 @@ class CrmDbService {
     )
   }
   /** 幂等记录风险：同客户同类型 active → 追加详情 + 取更高严重度；否则新建 */
-  upsertRisk(accountId: number, risk: { riskType: 'competitor' | 'price' | 'service'; severity: 'high' | 'medium' | 'low'; detail: string; opportunityId?: number }): { id: number; created: boolean } {
+  upsertRisk(accountId: number, risk: { riskType: 'competitor' | 'price' | 'service'; severity: 'high' | 'medium' | 'low'; detail: string; opportunityId?: number; sourceMsg?: string }): { id: number; created: boolean } {
     const now = Date.now()
     const existing = this.all("SELECT * FROM crm_risk WHERE account_id = ? AND risk_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1", [accountId, risk.riskType])[0]
     if (existing) {
@@ -1094,13 +1094,15 @@ class CrmDbService {
       const patch: CrmRow = { detail: `${String(existing.detail || '')}\n${risk.detail}`.slice(0, 300) }
       if (newRank > curRank) patch.severity = risk.severity
       if (!existing.opportunity_id && risk.opportunityId) patch.opportunity_id = risk.opportunityId
+      // 阶段三告警锚点（设计-AI见解重定位 §4.2 告警 A）：source_msg 列一直空置，本次激活——只补空不覆盖
+      if (!String(existing.source_msg || '') && risk.sourceMsg) patch.source_msg = risk.sourceMsg
       this.update('crm_risk', Number(existing.id), patch)
       return { id: Number(existing.id), created: false }
     }
     const id = this.create('crm_risk', {
       account_id: accountId, opportunity_id: risk.opportunityId || null,
       risk_type: risk.riskType, severity: risk.severity,
-      detail: risk.detail, status: 'active', created_at: now, resolved_at: 0
+      detail: risk.detail, source_msg: risk.sourceMsg || '', status: 'active', created_at: now, resolved_at: 0
     })
     return { id: Number(id), created: true }
   }

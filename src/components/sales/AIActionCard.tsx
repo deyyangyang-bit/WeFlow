@@ -52,10 +52,12 @@ function RingGauge({ score }: { score: number }) {
 }
 
 function SourceTag({ source }: { source: SignalSource }) {
-  const isTask = source.type === 'task'
+  // 阶段三例外告警：专属红色徽章（复用 source-tag 结构）；task 石墨蓝；其余（历史）走 insight 黄
+  const cls = source.type === 'task' ? 'source-tag--task' : source.type === 'alert' ? 'source-tag--alert' : 'source-tag--insight'
+  const code = source.type === 'task' ? (source as any).ruleCode : source.type === 'alert' ? '!' : 'AI'
   return (
-    <span className={`source-tag ${isTask ? 'source-tag--task' : 'source-tag--insight'}`}>
-      <span className="source-tag__code">{isTask ? (source as any).ruleCode : 'AI'}</span>
+    <span className={`source-tag ${cls}`}>
+      <span className="source-tag__code">{code}</span>
       <span className="source-tag__label">{source.label}</span>
       <span className="source-tag__reason">· {source.reason}</span>
     </span>

@@ -1206,6 +1206,23 @@
 
 ---
 
+## 2.67 例外告警契约框架 + 告警 A「竞品提及」（2026-09-05，设计-AI见解重定位 阶段三 A，已提交）
+
+> **总设计**：`docs/设计-AI见解重定位.md` §4.1/§4.2（阶段三第一刀，上承 §2.66「信箱=告警视图」——告警是信箱唯一的预期写入方）。**契约**：四道闸缺一不可——①证据强制（getEvidenceByKey 必须 found，验不出原话直接丢弃，宪法 §1.10）②72h 幂等（同客户同类型）③推送门（评测 ≥85% 才开，默认全关）④门开才落 insightRecord 进信箱+卡流。
+
+- **新服务 `electron/services/alertService.ts`**（零 electron 依赖，依赖全注入，仿 main.ts:77 `createEvidenceResolver` 模式）：`createAlertService(deps)` 纯核心 + `initAlertService`/`getAlertService` 主进程单例（未注入时 getAlertService()=null，调用方 no-op，不炸扫描链）。模块级常量 `ALERT_PUSH_APPROVED: Record<string, boolean>` 全类型默认 false（competitor 首个在册）；`ALERT_DEDUP_MS=72h`。门关时**零副作用**（连证据校验/去重查询都不做，crm_risk 档案标注已由 parseRiskSignal 链承担，无需额外写）。落库 `sourceType='insight'` + `triggerReason='alert:<type>'`，messageKey 存进记录新增可选字段（最小改动，未动 log 结构）；告警文案含客户原话 ≤200 字快照（`buildAlertMessage`）。
+- **insightRecordService 三处最小改动**：`InsightRecordTriggerReason` 加模板字面量 `` `alert:${string}` ``；`InsightRecord`/`Summary`/`addRecord` 加可选 `messageKey` 字段；新方法 `hasRecentAlert(sessionId, triggerReason, windowMs)`——**按 triggerReason 精确匹配、不限 sourceType**（与 hasRecentRecord 的 24h 去重语义正交：告警只与告警去重，archive 不挡告警）。
+- **告警 A 竞品提及（识别层零改动）**：`crmDbService.upsertRisk` 加 `sourceMsg?: string` 参数——`crm_risk.source_msg` 空置列本次激活（create 落列；update **只补空不覆盖**）；`crmParseService` 私聊扫描 upsertRisk 命中点传 `sourceMsg: key`（复用上游 canonical messageKey，不现场拼），competitor 类型 `void getAlertService()?.createAlert({type:'competitor', sessionId, displayName, messageKey: key, evidenceText: textForSignal.slice(0,200)})` fire-and-forget，不阻断扫描链。price/service 类型只落 crm_risk 不出告警（设计 §4.2 处置）。
+- **main.ts 接线**：`initAlertService({getEvidenceByKey ← evidenceResolver, hasRecentAlert/addRecord ← insightRecordService, log ← salesLog})` 挂在 createEvidenceResolver 之后（证据回查复用 P0-2B 同一 resolver 实例）。
+- **卡流合流（salesActionEngine 4b 分支）**：`getUnifiedSignals` 新增 alert 合流——`listRecords` 里 `triggerReason` 以 `alert:` 开头且 **24h 内**的记录进卡流（信箱同源；`ALERT_WINDOW_MS=24h` / `ALERT_BOOST=110` 即 urgent 档，稀缺故加分高于 rule 卡）；SignalSource 加 `{type:'alert', alertType, label, reason, recordId, messageKey}` 变体。与 §3.2 删掉的 insight 分支不冲突：删的是 activity/silence 散装见解（archive 语义），此处是告警白名单。
+- **前端**：todayActionStore SignalSource 加 alert 变体；AIActionCard SourceTag 三态（task 石墨蓝 / **alert 红徽章**（code='!'，scss `&--alert` 复用徽章结构）/ 历史 insight 黄）；alert-only 卡 title 取 sources[0].reason（告警文案，含原话快照），mapSignal 无需改。
+- **当前行为**：推送门全关 → 竞品提及照旧只落 crm_risk（含 source_msg 锚点），信箱/卡流零新增；离线评测（alert_eval_case 评测基建，下一步）准确率 ≥85% 后把 `ALERT_PUSH_APPROVED.competitor` 改 true 即全链路生效，无需再改代码。
+- **测试**：alert-gate-test **33/33**（新：a1-a2 证据丢弃零落库 / b1-b5 门=false 零记录、门=true 出记录带 triggerReason / c1-c5 72h 幂等+bad_input+未开通类型 / d1-d8 hasRecentAlert 真 Service 落盘验证+messageKey 落库 / e1-e12 接线静态检查）；回归 insight-noise 32 + insight-dedup 11 + crm-opportunity 45 + morning-digest 22 + todo-followup 14 + insight-unnamed 6 + insight-stage-ban 16 + action-rules 36 全绿。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b tsconfig.node.json` 产物已重建（dist-electron/main.js 含告警代码）。
+- **遗留**：alert_eval_case 评测基建（宪法 §3 登记先行）→ 评测达标开 competitor 门 → 告警 B（客户明示流失）；告警 D 独立设计。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

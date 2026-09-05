@@ -27,6 +27,7 @@ import { normalizeStage } from '../../shared/salesStage'
 import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
 import { getCustomerCurrentView, type CustomerCurrentView } from './customerCurrentView'
+import { insightRecordService } from './insightRecordService'
 export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -69,6 +70,8 @@ export interface TodayActionResult {
 
 export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
+  // 阶段三例外告警（设计-AI见解重定位 §4.1 第 3 条）：稀缺，加分高于 rule 卡
+  | { type: 'alert'; alertType: string; label: string; reason: string; recordId: string; messageKey: string }
 
 export interface UnifiedSignal {
   sessionId: string
@@ -109,6 +112,14 @@ export interface UnifiedResult {
 const DAILY_LIMIT = 15
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000 // 24h
 const DAY_SEC = 86400
+
+// 阶段三例外告警卡流参数（设计-AI见解重定位 §4.1 第 3 条）：卡流只读近 24h 的 alert:* 记录；
+// 加分高于 rule 卡（稀缺性——四道闸后量级远低于规则卡，≥100 即 urgent 档）
+const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
+const ALERT_BOOST = 110
+const ALERT_LABELS: Record<string, string> = {
+  competitor: '重要提醒'
+}
 
 /** 最后联系时间（秒）：last_contact_at 优先，缺失回退 created_at，皆无为 0。
  *  唯一口径源：六条规则 match、全量扫描、懒扫描、R3 增量共用，
@@ -827,6 +838,49 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         analysis: task.analysis ?? ''
       })
     }
+  }
+
+  // 4b. 告警合流（设计-AI见解重定位 §4.1 第 3 条）：近 24h 内 triggerReason 以 alert: 开头的
+  // insightRecord 进卡流（信箱同源；加分高于 rule 卡，因四道闸后稀缺）。
+  // §3.2 移除的是 activity/silence 散装 insight（archive 语义），与此分支不冲突。
+  try {
+    const alertCutoff = nowMs - ALERT_WINDOW_MS
+    const alertRecords = insightRecordService
+      .listRecords({ limit: 200 })
+      .records
+      .filter((r) => String(r.triggerReason || '').startsWith('alert:') && r.createdAt >= alertCutoff)
+    for (const rec of alertRecords) {
+      const alertType = String(rec.triggerReason).slice('alert:'.length)
+      const source: SignalSource = {
+        type: 'alert',
+        alertType,
+        label: ALERT_LABELS[alertType] || '重要提醒',
+        reason: String(rec.insight || '').slice(0, 120),
+        recordId: rec.id,
+        messageKey: String(rec.messageKey || '')
+      }
+      const existing = signalMap.get(rec.sessionId)
+      if (existing) {
+        existing.sources.push(source)
+        existing.priorityScore = Math.min(140, Math.max(existing.priorityScore, ALERT_BOOST))
+      } else {
+        const profile = salesDbService.customerGetBySession(rec.sessionId)
+        const stage = normalizeStage(profile?.stage)
+        const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor(profile.created_at / 1000) : 0)
+        signalMap.set(rec.sessionId, {
+          sessionId: rec.sessionId,
+          displayName: rec.displayName || profile?.display_name || '未知',
+          stage,
+          silentDays: lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0,
+          sources: [source],
+          priorityScore: Math.min(140, ALERT_BOOST),
+          urgencyTier: 'urgent',
+          status: 'pending'
+        })
+      }
+    }
+  } catch (e) {
+    salesLog('WARN', `[UnifiedSignals] alert 合流失败: ${e}`)
   }
 
   // 5. 计算 urgencyTier

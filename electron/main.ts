@@ -72,6 +72,7 @@ import { normalizeWeiboCookieInput, weiboService } from './services/social/weibo
 import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
+import { initAlertService } from './services/alertService'
 
 // P0-2B：证据链统一读入口。注入真实 chatService（其已具备 getMessageById /
 // getMessageByServerId / getMessagesAround 三个公开原语），仅由 sales:evidence:getByKey 调用。
@@ -79,6 +80,15 @@ const evidenceResolver = createEvidenceResolver({
   getMessageById: (sessionId, localId) => chatService.getMessageById(sessionId, localId),
   getMessageByServerId: (sessionId, svrid) => chatService.getMessageByServerId(sessionId, svrid),
   getMessagesAround: (sessionId, target, count) => chatService.getMessagesAround(sessionId, target, count)
+})
+
+// 阶段三例外告警（设计-AI见解重定位 §4.1）：注入真实依赖（证据回查复用 evidenceResolver；
+// 幂等/落库走 insightRecordService），crmParseService 竞品命中点经 getAlertService() 取用
+initAlertService({
+  getEvidenceByKey: (sessionId, messageKey, evidenceText) => evidenceResolver.getEvidenceByKey(sessionId, messageKey, evidenceText),
+  hasRecentAlert: (sessionId, triggerReason, windowMs) => insightRecordService.hasRecentAlert(sessionId, triggerReason, windowMs),
+  addRecord: (input) => insightRecordService.addRecord(input as unknown as Parameters<typeof insightRecordService.addRecord>[0]),
+  log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
 })
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为

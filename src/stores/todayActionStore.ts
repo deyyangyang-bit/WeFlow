@@ -6,6 +6,8 @@ import { create } from 'zustand'
 
 export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
+  // 阶段三例外告警（设计-AI见解重定位 §4.1 第 3 条）：label「重要提醒」，messageKey=原话锚点
+  | { type: 'alert'; alertType: string; label: string; reason: string; recordId: string; messageKey: string }
 // 设计-AI见解重定位 §3.2：insight 来源已随合流分支移除（自动见解落 archive 作档案标注）；
 // ActionStats.insightOnly/merged 字段保留恒 0，防前端引用断裂
 

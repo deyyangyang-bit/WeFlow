@@ -21,6 +21,7 @@ import { salesDbService } from './salesDbService'
 import type { CustomerEventRecord } from '../../shared/customerEvent'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
+import { getAlertService } from './alertService'
 
 let configRef: ConfigService | null = null
 let timer: NodeJS.Timeout | null = null
@@ -241,9 +242,19 @@ async function scanAll(): Promise<number> {
                 const activeOpp = crmDbService.activeOpportunitiesByAccount(riskAccountId)[0]
                 const rr = crmDbService.upsertRisk(riskAccountId, {
                   riskType: riskSig.riskType, severity: riskSig.severity,
-                  detail: riskSig.detail, opportunityId: activeOpp ? Number(activeOpp.id) : undefined
+                  detail: riskSig.detail, opportunityId: activeOpp ? Number(activeOpp.id) : undefined,
+                  // 阶段三告警锚点：source_msg 列激活（设计-AI见解重定位 §4.2），key 复用上游 canonical messageKey
+                  sourceMsg: key
                 })
                 if (rr.created) salesLog('INFO', `[CrmParse] 风险信号「${name}」(${riskSig.riskType})`)
+                // 告警 A「竞品提及」：经 alertService 四道闸（证据强制/72h 幂等/推送门/落库）。
+                // 推送门默认 false（评测 ≥85% 才开），门关时零副作用；fire-and-forget 不阻断扫描链
+                if (riskSig.riskType === 'competitor') {
+                  void getAlertService()?.createAlert({
+                    type: 'competitor', sessionId: uid, displayName: name,
+                    messageKey: key, evidenceText: textForSignal.slice(0, 200)
+                  }).catch((e) => salesLog('WARN', `[CrmParse] 告警创建失败 ${name}: ${e}`))
+                }
               } catch (e) { salesLog('WARN', `[CrmParse] 风险识别失败 ${name}: ${e}`) }
             }
           }
