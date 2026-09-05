@@ -48,6 +48,7 @@ import { registerIdentityIpcHandlers } from './services/identityIpcHandlers'
 import { registerLanSyncIpcHandlers } from './services/lanSyncIpcHandlers'
 import { startLanSyncScheduler, getLanSyncConfig } from './services/lanSyncService'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
+import { morningDigestService } from './services/morningDigestService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
@@ -5039,6 +5040,15 @@ function registerIpcHandlers() {
     return salesReportService.generateWeeklyReview()
   })
 
+  // ─── 晨间摘要 IPC（设计-AI见解重定位 §3.1）─────────────────────────────────
+  ipcMain.handle('sales:morningDigest:get', async () => {
+    return { ok: true, data: morningDigestService.getLatestDigest() }
+  })
+  ipcMain.handle('sales:morningDigest:regenerate', async () => {
+    const data = await enqueueSalesTask(() => morningDigestService.regenerateToday())
+    return { ok: true, data }
+  })
+
   // ─── 知识库批量导入 IPC ─────────────────────────────────────────────────────
   ipcMain.handle('sales:kb:importCsv', async (_, csvContent: string) => {
     return salesKnowledgeService.importFromCsv(csvContent)
@@ -5489,6 +5499,7 @@ app.whenReady().then(async () => {
     await salesDbService.initialize(app.getPath('userData'), startupWxid)
     console.log('[Sales] 数据库初始化成功')
     salesReportService.setConfig(configService)
+    morningDigestService.setConfig(configService)
     // 启动今日行动引擎
     setActionEngineConfig(configService)
     registerCrmIpcHandlers(ipcMain, configService)
@@ -5590,6 +5601,9 @@ app.whenReady().then(async () => {
     registerAutoBackupIpcHandlers(ipcMain)
     startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion() })
     startActionEngineScheduler()
+    // 晨间摘要（设计-AI见解重定位 §3.1）：每日 08:05-08:35 窗口生成一条「今天先跟谁」，
+    // 错开 08:00 全量扫描；「今日已生成」以 report_snapshot 落库行为准，重启不重复
+    morningDigestService.startScheduler()
     // SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收
     // （A 档引擎动作，reason='SLA超时回收'，actor='system:sla'；间隔 crmSlaRecycleIntervalMin 分钟，默认 30）
     // 角色差异（内网同步设计 §5）：回收是中枢权威动作——配置为终端（terminal）的机器不跑回收器，

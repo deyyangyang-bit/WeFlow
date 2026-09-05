@@ -1861,6 +1861,10 @@ export interface ElectronAPI {
     reportDelete: (id: number) => Promise<{ success: boolean; error?: string }>
     reviewGenerate: () => Promise<{ success: boolean; report?: any; error?: string }>
 
+    // 晨间摘要（设计-AI见解重定位 §3.1）
+    morningDigestGet: () => Promise<{ ok: boolean; data: { date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean; createdAt: number } | null }>
+    morningDigestRegenerate: () => Promise<{ ok: boolean; data: { date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean; createdAt: number } }>
+
     // 客户画像
     customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
     customerCurrentView: (sessionId: string) => Promise<{ success: boolean; data?: any; error?: string }>

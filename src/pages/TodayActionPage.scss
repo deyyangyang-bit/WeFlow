@@ -210,6 +210,49 @@
     color: var(--color-accent);
     opacity: 0.7;
   }
+
+  // 晨间摘要变体：纵向条目列表，条目可点（深链客户档案），banner 本体不再整条可点
+  &--digest {
+    align-items: flex-start;
+    cursor: default;
+
+    &:hover { filter: none; }
+  }
+
+  &__digest-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  &__digest-item {
+    background: none;
+    border: none;
+    padding: 2px 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-accent);
+    text-align: left;
+    cursor: pointer;
+
+    &:hover { text-decoration: underline; }
+  }
+
+  // 手动重生成入口（用户测试不必等早上 8 点）：小图标按钮，转圈表示进行中
+  &__digest-refresh {
+    display: flex;
+    align-items: center;
+    background: none;
+    border: none;
+    padding: 2px;
+    color: var(--color-accent);
+    opacity: 0.7;
+    cursor: pointer;
+
+    &:hover:not(:disabled) { opacity: 1; }
+    &:disabled { cursor: default; }
+  }
 }
 
 // 筛选 chips：分段控件惯例（灰底 + 选中浮起 + accent 文字）

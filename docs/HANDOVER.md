@@ -1175,6 +1175,21 @@
 
 ---
 
+## 2.65 晨间摘要：每日一条「今天先跟谁」（2026-09-05，设计-AI见解重定位 阶段二 a，已提交）
+
+> **总设计**：`docs/设计-AI见解重定位.md` §3.1（阶段二「触发重路由」第一刀，上承 §2.64 阶段一噪音治理）。**定位**：从「消息触发的散装卡流」转向「决策时刻的一条摘要」——每天 08:05-08:35 生成一条「今天先跟谁」；AI 失败也永远有摘要，AI 只负责更好读。成本 1 次 API 调用/天。
+
+- **新服务 `electron/services/morningDigestService.ts`**（纯函数可单测 + 服务薄壳）：`getUnifiedSignals` top 10 → 单次 LLM（`buildDigestPrompt` 卡片清单：客户/阶段/规则理由/沉默天数/优先级分，**不含聊天原文**）→ `parseAiDigest` 只认输入清单内的 sessionId（防幻觉，全不匹配 → 降级）；AI 未配置/失败 → `buildFallbackDigest` priorityScore top 3 规则拼接。
+- **落库复用 `report_snapshot`**（period_type='morning_digest'，现存唯一「周期级 AI 文本」容器，不建新表、不动宪法）：`stats` = JSON `{items, aiUsed}`，`ai_summary` = 人话正文。**同日幂等**：`generateTodayDigest` 当天已有直接返回；`regenerateToday` 删当天旧行重建（`reportDeleteByTypeAndDate`）。
+- **调度**：`startMorningDigestScheduler` 30 分钟轮询 08:05-08:35 窗口（错开 08:00 runFullScan，摘要基于当天最新卡流；main.ts 挂 startActionEngineScheduler 旁）；「今日已生成」以 report_snapshot 落库行为准，重启不重复；定时触发走 `enqueueSalesTask`。
+- **salesDbService 两方法**：`reportLatestByType(periodType)` / `reportDeleteByTypeAndDate(periodType, date)`（按 period_start 本地日删）。⚠️ salesDb 的 `this.all<T>`/`this.get<T>` **是泛型的**（与 crmDb 的非泛型坑不同，见 §2.63 注意项），可放心用。
+- **接线**：main.ts IPC `sales:morningDigest:get` / `sales:morningDigest:regenerate`（regenerate 走 enqueueSalesTask）+ setConfig/startScheduler 启动链；preload `morningDigestGet`/`morningDigestRegenerate`；electron.d.ts 类型同步。
+- **前端（TodayActionPage）**：有当天摘要时 banner（`.signal-notice--digest`，Sunrise 图标 + 纵向条目列表）**取代**高意向提示条（两者互斥不同时出现）；条目点击深链 `/customers?sid=`；「收起」+ **⟳ 刷新小按钮**（`morningDigestRegenerate` → 回拉刷新，转圈防重复点）——用户测试入口，不必等早上 8 点；切微信号（useWxidRefresh）重查摘要并复位收起态。
+- **验证**：morning-digest-test 22/22（新，窗口/降级/幻觉过滤/幂等/regenerate）/ insight-noise-test 32/32 / funnel-test 40/40 / report-review-test 33/33；tsc root 0 / node 158 基线零新增；vite build ✓；`tsc -b tsconfig.node.json` 产物已重建。
+- **遗留**：阶段二其余（§3.2 散装见解降级进档案不进卡流 + archive 语义、§3.3 灵感信箱改「重要提醒」告警箱）与阶段三例外告警白名单见设计稿。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

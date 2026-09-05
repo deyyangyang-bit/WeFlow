@@ -860,6 +860,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 周复盘
     reviewGenerate: () => ipcRenderer.invoke('sales:review:generate'),
 
+    // 晨间摘要（设计-AI见解重定位 §3.1）
+    morningDigestGet: () => ipcRenderer.invoke('sales:morningDigest:get'),
+    morningDigestRegenerate: () => ipcRenderer.invoke('sales:morningDigest:regenerate'),
+
     // 知识库批量导入
     kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent),
     // 话术提炼

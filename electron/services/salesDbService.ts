@@ -587,6 +587,24 @@ class SalesDbService {
     return true
   }
 
+  /** 某 period_type 最新一行（晨间摘要 period_type='morning_digest' 读取用） */
+  reportLatestByType(periodType: string): ReportSnapshot | undefined {
+    return this.get<ReportSnapshot>(
+      'SELECT * FROM report_snapshot WHERE period_type = ? ORDER BY created_at DESC LIMIT 1',
+      [periodType]
+    )
+  }
+
+  /** 删某 period_type 在指定日期（YYYY-MM-DD，按 period_start 所在本地日）的所有行——晨间摘要手动重生成覆盖用 */
+  reportDeleteByTypeAndDate(periodType: string, date: string): number {
+    const rows = this.all<ReportSnapshot>(
+      "SELECT * FROM report_snapshot WHERE period_type = ? AND date(period_start / 1000, 'unixepoch', 'localtime') = ?",
+      [periodType, date]
+    )
+    for (const row of rows) this.run('DELETE FROM report_snapshot WHERE id = ?', [row.id])
+    return rows.length
+  }
+
   // ─── 客户画像 ─────────────────────────────────────────────────────────────
 
   customerGetBySession(sessionId: string): CustomerProfile | undefined {

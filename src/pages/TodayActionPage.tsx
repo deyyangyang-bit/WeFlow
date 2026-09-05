@@ -10,7 +10,7 @@ import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, BarChart3, Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
-  Clock, Flame, ListTodo, Plus, RefreshCw, TrendingUp, Users, X,
+  Clock, Flame, ListTodo, Plus, RefreshCw, Sunrise, TrendingUp, Users, X,
 } from 'lucide-react'
 import AIActionCard from '../components/sales/AIActionCard'
 import TodoSidebar from '../components/sales/TodoSidebar'
@@ -63,6 +63,28 @@ export default function TodayActionPage() {
   const [customerOpen, setCustomerOpen] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<{ session_id: string; name?: string } | null>(null)
 
+  // 晨间摘要（设计-AI见解重定位 §3.1）：每日一条「今天先跟谁」，取代高意向提示条
+  const [digest, setDigest] = useState<{ date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean } | null>(null)
+  const [digestDismissed, setDigestDismissed] = useState(false)
+  const [digestRegenerating, setDigestRegenerating] = useState(false)
+  const fetchDigest = useCallback(async () => {
+    try {
+      const res = await (window as any).electronAPI.sales.morningDigestGet()
+      setDigest(res?.ok && res.data && Array.isArray(res.data.items) && res.data.items.length > 0 ? res.data : null)
+    } catch { setDigest(null) }
+  }, [])
+  // 手动重生成（用户测试入口，不必等早上 8 点）：覆盖当天旧行后回拉
+  const regenerateDigest = useCallback(async () => {
+    setDigestRegenerating(true)
+    try {
+      await (window as any).electronAPI.sales.morningDigestRegenerate()
+    } catch (e) {
+      console.warn('[TodayAction] 晨间摘要重新生成失败:', e)
+    }
+    await fetchDigest()
+    setDigestRegenerating(false)
+  }, [fetchDigest])
+
   // 打开弹窗时拉取客户列表（可选关联），重置表单
   const openTodoModal = useCallback(async () => {
     setShowTodoModal(true)
@@ -104,8 +126,9 @@ export default function TodayActionPage() {
   const PAGE_SIZE = 10
 
   useEffect(() => { fetchToday() }, [fetchToday])
+  useEffect(() => { void fetchDigest() }, [fetchDigest])
   // 切微信号 = 换库（§2.40）：账号切换后重查
-  useWxidRefresh(() => { void fetchToday() })
+  useWxidRefresh(() => { void fetchToday(); void fetchDigest(); setDigestDismissed(false) })
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -191,13 +214,39 @@ export default function TodayActionPage() {
         </div>
       )}
 
-      {/* 高意向提示条 */}
-      {!noticeDismissed && highIntentWithInsight > 0 && (
-        <div className="signal-notice" onClick={dismissNotice}>
-          <Bell size={14} />
-          {highIntentWithInsight} 位客户有高意向动向，已置顶排序
-          <span className="signal-notice__dismiss">点击收起</span>
+      {/* 晨间摘要（有当天摘要时取代高意向提示条，两条不同时出现） */}
+      {!digestDismissed && digest && digest.items.length > 0 ? (
+        <div className="signal-notice signal-notice--digest">
+          <Sunrise size={14} />
+          <div className="signal-notice__digest-body">
+            {digest.items.map((it) => (
+              <button
+                key={it.sessionId}
+                className="signal-notice__digest-item"
+                onClick={() => navigate(`/customers?sid=${encodeURIComponent(it.sessionId)}`)}
+              >
+                <strong>{it.displayName}</strong>——{it.reason}
+              </button>
+            ))}
+          </div>
+          <span className="signal-notice__dismiss" onClick={() => setDigestDismissed(true)}>收起</span>
+          <button
+            className="signal-notice__digest-refresh"
+            title="重新生成今日摘要"
+            disabled={digestRegenerating}
+            onClick={regenerateDigest}
+          >
+            <RefreshCw size={12} className={digestRegenerating ? 'spinning' : undefined} />
+          </button>
         </div>
+      ) : (
+        !noticeDismissed && highIntentWithInsight > 0 && (
+          <div className="signal-notice" onClick={dismissNotice}>
+            <Bell size={14} />
+            {highIntentWithInsight} 位客户有高意向动向，已置顶排序
+            <span className="signal-notice__dismiss">点击收起</span>
+          </div>
+        )
       )}
 
       {/* 主两栏 */}
