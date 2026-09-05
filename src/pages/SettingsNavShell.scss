@@ -1,0 +1,319 @@
+// SettingsNavShell —— 设置页导航壳样式（设计稿 docs/UI设计稿-设置页简化.html 屏 1 / 屏 2）
+// 视觉红线（docs/DESIGN-SPEC-MINI.md）：新 UI 唯一消费入口 = 前进视觉 tokens
+// `--color-* / --radius-* / --shadow-*`，零硬编码 hex、不新增第三套 token、不引用旧 --bg-*/--text-* 族；
+// light/dark 与 8 套主题经 [data-mode]/[data-theme] 自动继承。
+// 既有 SettingsPage.scss 一行不动（modal 框 / switch / toast / inline 弹层类直接复用）。
+
+.snav-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  // 顶部额外留白避开右上角悬浮的关闭按钮（.settings-header 为 absolute 定位）
+  padding: 52px 24px 24px;
+  background: var(--color-bg-page);
+}
+
+// ── 常用页卡片（屏 1）──
+
+.snav-card {
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  padding: 14px 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.snav-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 6px;
+
+  svg {
+    color: var(--color-text-secondary);
+  }
+}
+
+.snav-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--color-divider);
+
+  &:last-child {
+    border-bottom: none;
+    padding-bottom: 4px;
+  }
+}
+
+.snav-row-label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.snav-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.snav-row-desc {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.snav-row-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-accent);
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.8;
+  }
+}
+
+.snav-pill {
+  flex: none;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+
+  &.snav-pill-muted {
+    background: var(--color-bg-inset);
+    color: var(--color-text-secondary);
+  }
+}
+
+// 主题三段控件（屏 1 外观卡）——分段控件惯例：inset 灰底 + 选中项 surface 浮起 + accent 文字
+.snav-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-inset);
+  flex: none;
+
+  button {
+    border: none;
+    background: transparent;
+    padding: 6px 14px;
+    border-radius: var(--radius-small);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+
+    &.on {
+      background: var(--color-bg-surface);
+      color: var(--color-accent);
+      box-shadow: var(--shadow-control);
+    }
+  }
+}
+
+// 底部「高级设置」入口
+.snav-advanced-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--color-bg-surface);
+  border: none;
+  border-radius: var(--radius-card);
+  padding: 15px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+
+  svg {
+    color: var(--color-text-tertiary);
+  }
+
+  &:hover {
+    color: var(--color-accent);
+
+    svg {
+      color: var(--color-accent);
+    }
+  }
+}
+
+// ── 高级设置二级页（屏 2）──
+
+.snav-adv-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.snav-back-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-accent);
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.8;
+  }
+}
+
+.snav-adv-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.snav-adv-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.snav-adv-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  padding: 6px 4px;
+}
+
+.snav-adv-list {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.snav-adv-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-divider);
+  text-align: left;
+  cursor: pointer;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background: var(--color-bg-hover);
+  }
+}
+
+.snav-adv-ic {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-small);
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.snav-adv-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.snav-adv-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.snav-adv-desc {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.snav-adv-go {
+  color: var(--color-text-tertiary);
+  flex: none;
+}
+
+// ── 切换身份弹层（复用 SettingsPage 的 settings-inline-modal 弹层框）──
+
+.snav-dialog-hint {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+// 自带输入样式（.field-input 仅 WelcomePage.scss 按需定义，不依赖其它 chunk 的加载顺序）
+.snav-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-inset);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  outline: none;
+
+  &::placeholder {
+    color: var(--color-text-tertiary);
+  }
+
+  &:focus {
+    border-color: var(--color-accent-border);
+    box-shadow: 0 0 0 3px var(--color-focus);
+  }
+}
+
+.snav-role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.snav-role-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  cursor: pointer;
+
+  &.selected {
+    border-color: var(--color-accent-border);
+    color: var(--color-accent);
+    background: var(--color-accent-bg);
+  }
+}

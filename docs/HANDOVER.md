@@ -1356,6 +1356,23 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / assignment-full **91/91** + audit-query **28/28** + 全套回归（crm-lead 59、correction 17、restore 14、eval-annotate 23、alert-gate 33、alert-eval 42、crm-opportunity 45、alert-payment 103、alert-annotate 46、crm-golden 47、customer-workspace-simple 37、sla2-llm-scan 26）全绿 / vite build ✓ / electron 产物 `tsc -b` 全量重建（4 文件含新代码）。
 - **遗留**：批量导入横幅「查重报告可下载」（§2.72 遗留另一半，未在本刀范围）；屏 6 左入池方式徽章渲染（§2.72 前端 C 任务延续）。
 
+## 2.77 设置页「傻瓜式」导航层（2026-09-06，单 commit）
+
+> **依据**：设计稿 `docs/UI设计稿-设置页简化.html`（屏 1 常用页 / 屏 2 高级设置二级页 / 附录对照表）。**最高铁律：11 主 tab + AI 5 子 tab 的内容组件一行不改、逻辑不动、配置键不换——本刀只加导航层，改法是在 SettingsPage 外面加壳，不是重写它**（SettingsPage.tsx 零改动）。
+
+- **结构（三件全新增，App.tsx 两处换壳是唯一既有文件改动）**：
+  - `src/utils/settingsNav.ts`：导航状态机纯函数（`navInitial` / `navOpenAdvanced` / `navOpenTab` / `navBack`，零 import 可单测）。三视图 `common | advanced | tab(from)`；返回链 = tab → 进来那层 → common。
+  - `src/pages/SettingsNavShell.tsx`：外壳。**常用页（默认视图，屏 1）**四卡 + 底部「高级设置」入口；**高级设置二级页（屏 2）**三组行；**tab 视图裸挂 `<SettingsPage onClose/>`**——SettingsPage 自带全屏 modal 框与关闭按钮，外壳 chrome 让位避免双层壳。
+  - `src/pages/SettingsNavShell.scss`：新样式全走 `--color-* / --radius-* / --shadow-*` 前进 token 族（DESIGN-SPEC-MINI 红线：新代码禁旧 `--bg-*/--text-*` 族），零硬编码 hex；`SettingsPage.scss` 一行未动，`.switch`/`.message-toast`/`.settings-inline-modal`/`.settings-modal-overlay` 等直接复用。
+  - `App.tsx`：`lazy(() => import('./pages/SettingsNavShell'))` 替换原 SettingsPage 懒加载声明 + 挂载点包 `<Suspense fallback={null}>`；深链消费方从 SettingsPage 原样换成壳。
+- **常用页四卡全部复用现有键与写入函数（不造第二份）**：外观=外观 tab 同一 `useThemeStore.setThemeMode`（echotrace-theme 持久化）；通知=`configService.get/setNotificationEnabled` + `get/setNotificationFilterMode`（「只收白名单」开关映射现有三值枚举：开=whitelist、关=all，blacklist 模式走高级「通知细节」）；安全=只读状态（`auth.verifyEnabled` + `auth.isLockMode`，文案与安全 tab 同款）+「去设置」跳 security tab（开启/改密/关闭的密码流程不复制）；我是谁=`identity.get/set` + 最简弹层（姓名 + 角色四选一，选项与 SettingsPage「身份档案」内联枚举 ''/销售/主管/分配员 一致）。常用页每次进入重读配置，从 tab 返回不残留旧值；写入走同一键，SettingsPage 挂载时自会读到最新值。
+- **高级设置二级页 11 行三组**：AI（AI 设置→aiCommon / API 服务→api / 模型管理→models）、数据（数据库连接→database / **审计流水→security**（AuditTrailSection 现挂安全 tab，原样保留；不按角色显隐——页面过滤档纪律：角色只过滤数据不做功能门禁）/ 缓存→cache / 自动下载→autoDownload（沿用 filteredTabs 的 win32+x64 平台门控））、系统（防撤回→antiRevoke / 通知细节→notification / 分析→analytics / 关于→about）。点行 = `navigate('/settings', { state: { backgroundLocation, initialTab, navFrom } })` **复用 SettingsPage 现有 initialTab 深链机制（零改动）** 进原 tab，返回到高级页再返回到常用。
+- **深链/默认**：打开设置默认进常用页（新用户友好）；外部直达入口保留——侧边栏「设置应用锁」`initialTab:'security'` 直达安全 tab（from=common，返回回常用页）。浏览器返回键在设置多视图间的历史栈行为为 dev-only quirk（Electron 无可见返回键）。
+- **有意偏离（两条，均有据）**：① 设计稿安全卡「自动锁定」——现有代码无此配置键、无此行为，按铁律不造新键不造新逻辑，不放该行（待后续独立刀先入宪法 §3 再建）；② 高级行数：任务书写「12 行」，设计稿屏 2 实为 11 行（AI 3 + 数据 4 + 系统 4），按屏 2 实施。
+- **测试** `scripts/settings-nav-test.ts`（**59/59**，`npx tsx`）：静态断言 A1-A9（App 换壳 / 四卡渲染与现有键复用清单 / 零直写 config 键 / 高级 11 行三分组且行 id ⊆ SettingsTab / 17 个 render 映射 + 11 主 tab + 5 AI 子 tab 防误删 / 返回链与深链保留 / 新样式零 hex 且只消费 --color-* 族 / 审计流水指向 security + 无角色门禁 / 角色枚举一致）+ 状态机纯函数 B1-B8（默认常用页 / 深链直达 / 逐级返回 / 幂等）。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（SettingsNavShell chunk 正常产出，SettingsPage 代码并入壳 chunk）。
+- **遗留**：light/dark 双模式真机目验（本机无法启动 Electron GUI，样式全部走 token 双模式自动继承）；「自动锁定」待独立刀（先入 DATA-CONSTITUTION §3 登记再建）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

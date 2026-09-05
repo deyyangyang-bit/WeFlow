@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow · 设置页简化 · UI 设计稿</title>
+<style>
+  :root{
+    --bg-page:#F5F5F7; --bg-surface:#FFFFFF; --bg-surface-muted:#FAFAFC; --bg-inset:#F0F0F3;
+    --text-primary:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --border:#E5E5EA; --divider:#EEEEF2;
+    --accent:#0071E3; --accent-bg:#E8F1FC; --accent-border:#B8D4F5;
+    --success:#34C759; --success-bg:#E9F9EE;
+    --warning:#FF9500; --warning-bg:#FFF4E5;
+    --radius-card:16px; --radius-control:10px; --radius-small:8px;
+    --shadow-card:0 4px 16px rgba(0,0,0,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;background:var(--bg-page);color:var(--text-primary);font-size:13px;line-height:1.5}
+  .page{max-width:1080px;margin:0 auto;padding:24px}
+
+  /* 设计稿框架 */
+  .doc-header{padding:32px 0 8px}
+  .doc-header h1{font-size:22px;font-weight:700}
+  .doc-header p{color:var(--text-secondary);margin-top:6px}
+  .screen{margin:36px 0}
+  .screen-title{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .screen-title .idx{font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:2px 8px}
+  .screen-title h2{font-size:16px;font-weight:700}
+  .screen-note{color:var(--text-secondary);font-size:12px;margin-bottom:14px;max-width:900px}
+  .frame{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card);overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface-muted)}
+  .frame-bar .dot{width:10px;height:10px;border-radius:50%}
+  .frame-bar .path{font-size:11px;color:var(--text-tertiary);margin-left:8px}
+  .frame-body{padding:20px 24px;background:var(--bg-page)}
+
+  /* 产品元件 */
+  .card{background:var(--bg-surface);border-radius:var(--radius-card);padding:16px 18px}
+  .card + .card{margin-top:14px}
+  .card-title{font-size:13px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .hint{font-size:11px;color:var(--text-tertiary);font-weight:400}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px}
+  .pill.blue{background:var(--accent-bg);color:var(--accent)}
+  .pill.gray{background:var(--bg-inset);color:var(--text-secondary)}
+  .seg{display:inline-flex;background:var(--bg-inset);border-radius:var(--radius-control);padding:3px;gap:2px}
+  .seg span{font-size:12px;font-weight:600;padding:6px 16px;border-radius:8px;color:var(--text-secondary)}
+  .seg span.on{background:var(--bg-surface);color:var(--accent);box-shadow:0 1px 4px rgba(0,0,0,.1)}
+  .toggle{width:40px;height:24px;border-radius:12px;background:var(--accent);position:relative;flex:none}
+  .toggle i{position:absolute;right:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff}
+  .toggle.off{background:var(--bg-inset)}
+  .toggle.off i{left:2px;right:auto}
+  .setting-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--divider)}
+  .setting-row:last-child{border-bottom:none}
+  .setting-row .label{flex:1}
+  .setting-row .label .t{font-size:13px;font-weight:600}
+  .setting-row .label .d{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+
+  .adv-row{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface)}
+  .adv-row:last-child{border-bottom:none;border-radius:0 0 var(--radius-card) var(--radius-card)}
+  .adv-row .ic{width:32px;height:32px;border-radius:8px;background:var(--bg-inset);display:flex;align-items:center;justify-content:center;flex:none}
+  .adv-row .label{flex:1}
+  .adv-row .t{font-size:13px;font-weight:600}
+  .adv-row .d{font-size:11px;color:var(--text-tertiary)}
+  .adv-row .go{color:var(--text-tertiary);font-size:14px}
+  .adv-group{font-size:11px;font-weight:700;color:var(--text-tertiary);padding:14px 4px 6px}
+
+  .chg{width:100%;border-collapse:collapse;margin-top:10px}
+  .chg th{font-size:11px;font-weight:600;color:var(--text-tertiary);text-align:left;padding:8px 10px;border-bottom:1px solid var(--divider)}
+  .chg td{font-size:12px;padding:10px;border-bottom:1px solid var(--divider);vertical-align:top}
+  .chg tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px;margin-right:6px}
+  .tag.keep{background:var(--success-bg);color:var(--success)}
+  .tag.move{background:var(--warning-bg);color:var(--warning)}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>设置页简化 · UI 设计稿</h1>
+    <p>现状：11 个主 tab + AI 设置 5 个子 tab 一字排开，销售不该看到的全在眼前。方案：默认只给「常用」一页（外观 / 通知 / 安全 / 身份），其余 12 项收进「高级设置」二级页。<strong>原 tab 内容一行不改</strong>——这刀只收编导航，功能全部原样保留。</p>
+  </div>
+
+  <!-- ============ 屏 1 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 1</span><h2>默认页 · 常用（打开设置就看到这四张卡）</h2></div>
+    <div class="screen-note">日常 95% 的设置需求就这四件事：换主题、管通知、上锁、确认「我是谁」。每张卡内只保留最常用的控件，其余细节收进卡内「更多」或直接留原 tab。底部一个入口进高级设置。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">设置</span></div>
+      <div class="frame-body" style="max-width:640px;margin:0 auto">
+
+        <div class="card">
+          <div class="card-title">🎨 外观</div>
+          <div class="setting-row"><div class="label"><div class="t">主题</div></div><span class="seg"><span>浅色</span><span class="on">深色</span><span>跟随系统</span></span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">🔔 通知</div>
+          <div class="setting-row"><div class="label"><div class="t">接收通知</div><div class="d">客户消息、重要提醒</div></div><span class="toggle"><i></i></span></div>
+          <div class="setting-row"><div class="label"><div class="t">只收白名单</div><div class="d">开启后只提醒白名单会话（名单在高级设置里维护）</div></div><span class="toggle off"><i></i></span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">🔒 安全</div>
+          <div class="setting-row"><div class="label"><div class="t">应用锁</div><div class="d">打开应用要输密码</div></div><span class="toggle off"><i></i></span></div>
+          <div class="setting-row"><div class="label"><div class="t">自动锁定</div><div class="d">离开 10 分钟后自动锁</div></div><span class="toggle off"><i></i></span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">👤 我是谁（身份档案）</div>
+          <div class="setting-row"><div class="label"><div class="t">当前身份</div><div class="d">你做的操作会署这个名字；销售只能看到自己名下的客户</div></div><span class="pill blue">杨青 · 销售</span></div>
+          <div class="setting-row"><div class="label"><div class="t">切换身份</div></div><span style="font-size:12px;color:var(--accent);font-weight:600">选择 ›</span></div>
+        </div>
+
+        <div class="card" style="text-align:center;padding:18px">
+          <span style="font-size:13px;color:var(--text-secondary)">⚙️ 高级设置（数据库、AI 参数、缓存等，一般不用动）›</span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 屏 2 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 2</span><h2>高级设置 · 二级页（分组列表，点进去就是原来的页面）</h2></div>
+    <div class="screen-note">12 项按「AI / 数据 / 系统」分三组。点任意一行进入原来的设置页（内容零改动），左上角返回。管理员（你自己）日常也走这里。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">设置 → 高级设置</span></div>
+      <div class="frame-body" style="max-width:640px;margin:0 auto">
+
+        <div style="margin-bottom:14px"><span style="font-size:13px;color:var(--accent);font-weight:600">‹ 返回常用</span></div>
+
+        <div class="adv-group">AI</div>
+        <div style="border-radius:var(--radius-card);overflow:hidden;border:1px solid var(--border)">
+          <div class="adv-row"><span class="ic">✨</span><div class="label"><div class="t">AI 设置</div><div class="d">模型配置 · 见解 / 足迹 / 群聊总结 / 消息解析（原 5 个子页）</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">🔌</span><div class="label"><div class="t">API 服务</div><div class="d">LLM 接口地址与密钥</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">🎙️</span><div class="label"><div class="t">模型管理</div><div class="d">本地语音模型</div></div><span class="go">›</span></div>
+        </div>
+
+        <div class="adv-group">数据</div>
+        <div style="border-radius:var(--radius-card);overflow:hidden;border:1px solid var(--border)">
+          <div class="adv-row"><span class="ic">🗄️</span><div class="label"><div class="t">数据库连接</div><div class="d">微信数据库状态 · 业务数据归档</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">📋</span><div class="label"><div class="t">审计流水</div><div class="d">分配 / 回收 / 绑定 / 权重调整记录（主管用）</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">💾</span><div class="label"><div class="t">缓存</div><div class="d">图片 / 文件缓存清理</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">📥</span><div class="label"><div class="t">自动下载</div><div class="d">聊天文件自动保存</div></div><span class="go">›</span></div>
+        </div>
+
+        <div class="adv-group">系统</div>
+        <div style="border-radius:var(--radius-card);overflow:hidden;border:1px solid var(--border)">
+          <div class="adv-row"><span class="ic">↩️</span><div class="label"><div class="t">防撤回</div><div class="d">对方撤回的消息仍可见</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">🔔</span><div class="label"><div class="t">通知细节</div><div class="d">通知位置 / 黑白名单维护 / 免打扰</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">📊</span><div class="label"><div class="t">分析</div><div class="d">使用统计</div></div><span class="go">›</span></div>
+          <div class="adv-row"><span class="ic">ℹ️</span><div class="label"><div class="t">关于</div><div class="d">版本信息</div></div><span class="go">›</span></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 附录 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附录</span><h2>改动对照清单（16 项设置的去向）</h2></div>
+    <div class="frame"><div class="frame-body">
+      <table class="chg">
+        <tr><th style="width:200px">现有 tab</th><th style="width:110px">处置</th><th>去向 / 说明</th></tr>
+        <tr><td>外观</td><td><span class="tag keep">常用</span></td><td>主题三段控件进「常用」页；外观其余细节（字号等）留高级</td></tr>
+        <tr><td>通知</td><td><span class="tag keep">常用</span></td><td>总开关 + 白名单开关进「常用」；位置/名单维护等细节留高级「通知细节」</td></tr>
+        <tr><td>安全</td><td><span class="tag keep">常用</span></td><td>应用锁 + 自动锁定进「常用」；审计流水挪高级「数据」组（主管用）</td></tr>
+        <tr><td>身份档案（现位置各页分散）</td><td><span class="tag keep">常用</span></td><td>「我是谁」卡 = 当前身份 + 切换入口（点切换打开现有身份选择）</td></tr>
+        <tr><td>AI 设置 5 子页</td><td><span class="tag move">高级</span></td><td>收进高级「AI」组一行，点进去原样</td></tr>
+        <tr><td>API 服务 / 模型管理</td><td><span class="tag move">高级</span></td><td>「AI」组</td></tr>
+        <tr><td>数据库连接 / 缓存 / 自动下载</td><td><span class="tag move">高级</span></td><td>「数据」组</td></tr>
+        <tr><td>防撤回 / 分析 / 关于</td><td><span class="tag move">高级</span></td><td>「系统」组</td></tr>
+      </table>
+      <div class="hint" style="margin-top:12px">铁律：所有原 tab 的内容组件一行不改，只动导航层。任何「顺手重写某个 tab」的行为打回。</div>
+    </div></div>
+  </div>
+
+</div>
+</body>
+</html>

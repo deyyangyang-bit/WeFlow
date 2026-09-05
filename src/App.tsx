@@ -27,7 +27,8 @@ const ChatPage = lazy(() => import('./pages/ChatPage'))
 const AnalyticsWelcomePage = lazy(() => import('./pages/AnalyticsWelcomePage'))
 const ChatAnalyticsHubPage = lazy(() => import('./pages/ChatAnalyticsHubPage'))
 const AgreementPage = lazy(() => import('./pages/AgreementPage'))
-const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+// 设置页导航壳（常用/高级二级导航 + 原样挂 SettingsPage；设计稿 docs/UI设计稿-设置页简化.html）
+const SettingsNavShell = lazy(() => import('./pages/SettingsNavShell'))
 const MyFootprintPage = lazy(() => import('./pages/MyFootprintPage'))
 const VideoWindow = lazy(() => import('./pages/VideoWindow'))
 const ImageWindow = lazy(() => import('./pages/ImageWindow'))
@@ -778,7 +779,9 @@ function App() {
       </div>
 
       {isSettingsRoute && (
-        <SettingsPage onClose={handleCloseSettings} />
+        <Suspense fallback={null}>
+          <SettingsNavShell onClose={handleCloseSettings} />
+        </Suspense>
       )}
     </div>
   )
