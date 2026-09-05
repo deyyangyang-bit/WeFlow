@@ -37,8 +37,8 @@ export function maskPrivateText(text: string): string {
   let s = String(text ?? '')
   // 身份证号（18 位含校验位 X / 15 位），先长后短防与手机号规则交叠
   s = s.replace(/\b\d{17}[\dXx]\b/g, '***').replace(/\b\d{15}\b/g, '***')
-  // 手机号：1 开头 11 位
-  s = s.replace(/\b1\d{10}\b/g, '***')
+  // 手机号：1 开头 11 位（不带词边界——发送者名等「下划线紧贴号码」形态也曾漏打码，隐私优先过度打码）
+  s = s.replace(/1[3-9]\d{9}/g, '***')
   // wxid 内部号
   s = s.replace(/\bwxid_[A-Za-z0-9_]+\b/g, '***')
   return s

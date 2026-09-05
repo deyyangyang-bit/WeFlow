@@ -64,6 +64,8 @@ import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
+import { startSla2LlmScanScheduler, setSla2LlmScanDeps } from './services/crmSla2LlmScanService'
+import { getAiModelConfig, callChatCompletion, isAiConfigured } from './services/ai/aiApiClient'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -5642,6 +5644,30 @@ app.whenReady().then(async () => {
       // WCDB createTime 是秒 → 毫秒；归一化最小字段
       return r.messages.map((m) => ({ isSend: m.isSend, createTimeMs: Number(m.createTime || 0) * 1000, messageKey: String(m.messageKey || '') }))
     })
+    // SLA2 LLM 对话扫描（屏 5 右供数补全，HANDOVER §2.57 缺口接入）：结论仍走 markSla2ScanResult 单点；
+    // 出机文本已过 maskPrivateText（铁律 2）；LLM 未配置整链静默跳过。依赖注入与 chatService 解耦（可测）
+    setSla2LlmScanDeps({
+      getRecentMessages: async (sessionId, limit) => {
+        // getMessages 默认倒序（新→旧），取最近 N 条；createTime 秒 → 毫秒归一
+        const r = await chatService.getMessages(sessionId, 0, limit)
+        if (!r.success || !Array.isArray(r.messages)) return []
+        return r.messages.map((m) => ({
+          messageKey: String(m.messageKey || ''),
+          isSend: m.isSend,
+          senderName: '对方',
+          createTimeMs: Number(m.createTime || 0) > 1e12 ? Number(m.createTime) : Number(m.createTime || 0) * 1000,
+          text: String((m as any).parsedContent || m.content || m.rawContent || '')
+        }))
+      },
+      llm: async (system, user) => {
+        // ConfigService.getInstance()（与 crmSla2Service 同款）：调度器闭包晚于模块初始化，避免空引用
+        const mc = getAiModelConfig(ConfigService.getInstance())
+        return callChatCompletion(mc, [{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0.2 })
+      },
+      isConfigured: () => isAiConfigured(ConfigService.getInstance()),
+      log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
+    })
+    startSla2LlmScanScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
     // 内网同步（Phase 1 最小版，设计 docs/规划/Phase1-内网同步最小版-设计.md）：
