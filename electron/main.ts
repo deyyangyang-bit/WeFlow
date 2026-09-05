@@ -60,7 +60,7 @@ import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
-import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, startSlaRecycleScheduler } from './services/crmAssignmentService'
+import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
 import { runStockDataMigration } from './services/crmMigrationService'
@@ -5562,6 +5562,13 @@ app.whenReady().then(async () => {
       }
     } catch (e) {
       console.warn('[Sales] SLA1 误扫纠正失败:', e)
+    }
+    // 存量修复（2026-09-04）：resetLegacyGroupScanSla 旧版曾把已分配群扫 lead 期限打回哨兵
+    // （已修为排除有效分配）；此处把 live 残留的不一致行对齐回当前分配行 sla1。幂等（只改不一致行）。
+    try {
+      syncLeadDeadlineFromAssignment()
+    } catch (e) {
+      console.warn('[Sales] lead 首触期限对齐失败:', e)
     }
     // Phase 1 存量迁移（PRD §9 / 宪法 §2.4）：② account→customer 挂接 + ③ lead→customer_identity 归并
     // 幂等双保险（scan_state 一次性标记 + 数据级判重）；冲突不静默（进迁移报告+audit_event，不动数据）

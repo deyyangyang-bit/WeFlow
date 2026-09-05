@@ -324,10 +324,14 @@ export function skipLeadFirstContact(taskId: number): boolean {
  */
 export function resetLegacyGroupScanSla(): { leads: number; cards: number } {
   const now = Date.now()
+  // ⛔ 2026-09-04 修复：必须排除已有有效分配（assigned/claimed）的 lead——
+  // 分配后 first_contact_deadline = assignment.sla1_deadline 是在计时状态（assignLeads 同步），
+  // 本函数每次启动都跑，不排除会把 3,800+ 条已分配线索的期限打回哨兵（live 已发生）。
+  const NO_ACTIVE_ASSIGNMENT = "AND NOT EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = lead.id AND a.deleted = 0 AND a.status IN ('assigned','claimed'))"
   const resetIds = crmDbService.runTx((tx) => {
-    const rows = tx.all("SELECT id FROM lead WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ?", [LEAD_SLA_UNASSIGNED_SENTINEL])
+    const rows = tx.all(`SELECT id FROM lead WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ? ${NO_ACTIVE_ASSIGNMENT}`, [LEAD_SLA_UNASSIGNED_SENTINEL])
     if (!rows.length) return [] as number[]
-    tx.run("UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ?", [LEAD_SLA_UNASSIGNED_SENTINEL, now, LEAD_SLA_UNASSIGNED_SENTINEL])
+    tx.run(`UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ? ${NO_ACTIVE_ASSIGNMENT}`, [LEAD_SLA_UNASSIGNED_SENTINEL, now, LEAD_SLA_UNASSIGNED_SENTINEL])
     return rows.map((r) => Number(r.id))
   })
 

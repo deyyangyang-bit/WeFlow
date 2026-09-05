@@ -375,6 +375,45 @@ export function correctSla1Misrecycle(): CorrectionResult {
   return r
 }
 
+// ─── 存量修复：lead 首触期限对齐当前有效分配（2026-09-04）───────────────────
+/**
+ * 不变量：lead.status='NEW' 且有有效分配（assigned/claimed）时，
+ * lead.first_contact_deadline 必须 = 当前分配行 sla1_deadline（assignLeads/transfer/纠正块都守这条）。
+ * 存量破坏来源：resetLegacyGroupScanSla 旧版每次启动把已分配群扫 lead 期限打回哨兵
+ * （已修，排除有效分配）；本函数把 live 已被打回哨兵的 3,800+ 条修回对齐。
+ * 幂等：只改不一致行；不改 lead 状态机、不动哨兵中的未分配 lead（资源池不起计时）。
+ */
+export function syncLeadDeadlineFromAssignment(): number {
+  const now = Date.now()
+  const MISMATCH_SQL = `FROM lead WHERE lead.status = 'NEW' AND EXISTS (
+    SELECT 1 FROM assignment a
+    WHERE a.lead_id = lead.id AND a.deleted = 0 AND ${ACTIVE_STATUS_SQL} AND a.sla1_deadline IS NOT NULL
+      AND a.sla1_deadline <> lead.first_contact_deadline
+  )`
+  // ⚠️ runTx 的 tx.run 返回 last_insert_rowid 而非修改行数（UPDATE 下是旧值），
+  // 只能前后数差算命中数
+  const before = Number(crmDbService.all(`SELECT COUNT(*) AS c ${MISMATCH_SQL}`)[0]?.c ?? 0)
+  if (!before) return 0
+  crmDbService.runTx((tx) => {
+    tx.run(
+      `UPDATE lead SET first_contact_deadline = (
+         SELECT a.sla1_deadline FROM assignment a
+         WHERE a.lead_id = lead.id AND a.deleted = 0 AND ${ACTIVE_STATUS_SQL} AND a.sla1_deadline IS NOT NULL
+         ORDER BY a.id DESC LIMIT 1
+       ), updated_at = ?
+       WHERE lead.status = 'NEW' AND EXISTS (
+         SELECT 1 FROM assignment a
+         WHERE a.lead_id = lead.id AND a.deleted = 0 AND ${ACTIVE_STATUS_SQL} AND a.sla1_deadline IS NOT NULL
+           AND a.sla1_deadline <> lead.first_contact_deadline
+       )`,
+      [now])
+  })
+  const after = Number(crmDbService.all(`SELECT COUNT(*) AS c ${MISMATCH_SQL}`)[0]?.c ?? 0)
+  const aligned = before - after
+  if (aligned > 0) console.log(`[CRM] lead 首触期限对齐当前分配：${aligned} 条`)
+  return aligned
+}
+
 // ─── 存量处置：群扫旧 tag 归属恢复为正式分配（2026-09-03 用户当面拍板「恢复成正式分配」）───
 /**
  * 群扫时代 lead.tag 当归属用，§2.47 清理时把旧值挪进 note（曾归属:{tag}（日期））。

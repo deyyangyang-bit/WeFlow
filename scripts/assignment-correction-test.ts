@@ -3,13 +3,17 @@
  *
  * 事故：backfill 初版口径「分配时刻+24h」→ 存量 3,848 条补写完即全部过期 →
  *       回收器首扫一次性误回收（actor='system:sla'）。
- * 本脚本：live 库 /tmp 副本上实跑 correctSla1Misrecycle()，断言——
- *   A. 命中数核验：recycled & updated_by='system:sla' = 3,848（许丽娟1511/李林辉1356/杨青981）
- *   B. 纠正后：assigned=3,848、三销售归属分布恢复、sla1_deadline 全部在未来 24h 窗口、
- *      lead.first_contact_deadline 同步恢复（非哨兵）
- *   C. append-only：ownership_history/audit_event 只增不改（各 +3,848 补偿流水 + 汇总审计），
- *      误扫回收行保持 recycled 不改写
- *   D. 幂等：重跑标记跳过零副作用；标记丢失重入数据级判重零补偿
+ *
+ * ⚠️ 口径变更（2026-09-04，两次）：① live 库已被真实执行过纠正，「纠正前现场」口径永久失效；
+ *    ② live 实际恢复路径核查：3,848 条 assigned 行为 source='manual'/updated_by='system:migration'
+ *    （先于纠正块启动的迁移恢复），correctSla1Misrecycle 首跑即 alreadyAssigned=3848 跳过、
+ *    只落 1 条汇总审计——system:correction 补偿流水在 live 不存在（属正常，非缺失）。
+ *    补偿路径本身由 assignment-full-test G 组（fresh 库构造误扫现场端到端）覆盖。
+ * 本脚本现为「已纠正副本」验证：
+ *   A. 终态核验：assigned=3,848、三销售归属分布、sla1 期限有效、误扫回收行原样保留
+ *   B. 重跑幂等：skippedByMarker=true、全库计数零漂移
+ *   C. 留痕对账：误扫审计/流水 3,848 原样保留 + 汇总审计落行
+ *   D. 标记丢失重入：数据级判重零补偿、标记重建、无重复新行（仅 +1 条汇总审计）
  *
  * ⛔ 铁律：live 源库复制到 /tmp 副本 → 应用链路 initialize → 绝不触碰 live 库。
  * 用法：npx tsx scripts/assignment-correction-test.ts
@@ -39,6 +43,7 @@ function count(sql: string, params: unknown[] = []): number {
 const MISS_SQL = "FROM assignment WHERE deleted = 0 AND status = 'recycled' AND updated_by = 'system:sla'"
 const MARKER = 'migration:sla1-misrecycle-correction'
 const EXPECT_DIST: Record<string, number> = { '许丽娟': 1511, '李林辉': 1356, '杨青': 981 }
+const ASSIGNED_SQL = "SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned'"
 
 async function main(): Promise<void> {
   const userData = join(homedir(), 'Library', 'Application Support', 'weflow')
@@ -49,57 +54,48 @@ async function main(): Promise<void> {
   await crmDbService.initialize(dir)
   console.log(`副本试跑：crm ← ${crmSrc.replace(homedir(), '~')}`)
 
-  console.log('\n═══ A. 误扫命中数核验（纠正前现场）═══')
-  const total = count(`SELECT COUNT(*) AS c ${MISS_SQL}`)
-  check('A1 误扫行 = 3,848', total === 3848, `实 ${total}`)
-  const dist = crmDbService.all(`SELECT sales_name, COUNT(*) AS c ${MISS_SQL} GROUP BY sales_name`)
+  console.log('\n═══ A. 已纠正终态核验 ═══')
+  check('A1 assigned = 3,848', count(ASSIGNED_SQL) === 3848, `实 ${count(ASSIGNED_SQL)}`)
+  const dist = crmDbService.all("SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned' GROUP BY sales_name")
   check('A2 归属分布 许丽娟1511/李林辉1356/杨青981',
     dist.length === 3 && dist.every((r) => EXPECT_DIST[String(r.sales_name)] === Number(r.c)),
     JSON.stringify(dist))
-  check('A3 纠正前 assigned=0（全灭现场确认）', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned'") === 0)
-  check('A4 无非误扫 recycled 夹杂', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='recycled' AND updated_by<>'system:sla'") === 0)
-  check('A5 误扫 lead 全部回哨兵', count(`SELECT COUNT(*) AS c FROM lead l WHERE l.first_contact_deadline <> ${LEAD_SLA_UNASSIGNED_SENTINEL} AND EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.status='recycled' AND a.updated_by='system:sla')`) === 0)
+  check('A3 assigned 行均为迁移恢复（source=manual / updated_by=system:migration）', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned' AND (source<>'manual' OR updated_by<>'system:migration')") === 0)
+  const now = Date.now()
+  check('A4 sla1 期限全部有效（非空且未过期）', count('SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status=\'assigned\' AND (sla1_deadline IS NULL OR sla1_deadline < ?)', [now - 1000]) === 0)
+  check('A5 误扫回收行原样保留 = 3,848（历史不改写）', count(`SELECT COUNT(*) AS c ${MISS_SQL}`) === 3848, `实 ${count(`SELECT COUNT(*) AS c ${MISS_SQL}`)}`)
+  check('A6 被恢复 lead 无哨兵残留',
+    count(`SELECT COUNT(*) AS c FROM lead l WHERE l.first_contact_deadline = ${LEAD_SLA_UNASSIGNED_SENTINEL} AND EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.status='assigned')`) === 0)
+  check('A7 lead 期限 = 当前分配行 sla1', count("SELECT COUNT(*) AS c FROM lead l JOIN assignment a ON a.lead_id = l.id AND a.status='assigned' WHERE l.first_contact_deadline <> a.sla1_deadline") === 0)
+  check('A8 纠正标记已置位', crmDbService.getScanState(MARKER) > 0)
 
-  console.log('\n═══ B. 实跑纠正块 ═══')
+  console.log('\n═══ B. 重跑幂等（标记在）═══')
+  const assignedBefore = count(ASSIGNED_SQL)
   const histBefore = count('SELECT COUNT(*) AS c FROM ownership_history')
   const auditBefore = count('SELECT COUNT(*) AS c FROM audit_event')
-  const before = Date.now()
   const r1 = correctSla1Misrecycle()
-  console.log(`  纠正结果：${JSON.stringify(r1)}`)
-  check('B1 total=3848 / corrected=3848 / alreadyAssigned=0', r1.total === 3848 && r1.corrected === 3848 && r1.alreadyAssigned === 0, JSON.stringify(r1))
-  check('B2 assigned 恢复 = 3,848', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned'") === 3848)
-  const dist2 = crmDbService.all("SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned' GROUP BY sales_name")
-  check('B3 三销售归属分布恢复', dist2.length === 3 && dist2.every((r) => EXPECT_DIST[String(r.sales_name)] === Number(r.c)), JSON.stringify(dist2))
-  const now = Date.now()
-  check('B4 新 sla1 全部在未来 24h 窗口', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned' AND (sla1_deadline IS NULL OR sla1_deadline < ? OR sla1_deadline > ?)", [now - 1000, now + 86400_000 + 60_000]) === 0
-    && count('SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status=\'assigned\' AND sla1_deadline >= ?', [before + 86400_000]) === 3848)
-  check('B5 补偿行 source=system:correction / updated_by=system:correction', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned' AND (source<>'system:correction' OR updated_by<>'system:correction')") === 0)
-  check('B6 lead 期限同步恢复（无哨兵残留于被纠正 lead）',
-    count(`SELECT COUNT(*) AS c FROM lead l WHERE l.first_contact_deadline = ${LEAD_SLA_UNASSIGNED_SENTINEL} AND EXISTS (SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.status='assigned' AND a.source='system:correction')`) === 0)
-  check('B7 lead 期限 = 当前分配行 sla1', count("SELECT COUNT(*) AS c FROM lead l JOIN assignment a ON a.lead_id = l.id AND a.status='assigned' AND a.source='system:correction' WHERE l.first_contact_deadline <> a.sla1_deadline") === 0)
+  console.log(`  重跑结果：${JSON.stringify(r1)}`)
+  check('B1 重跑标记跳过（skippedByMarker）', r1.skippedByMarker === true)
+  check('B2 重跑零副作用（assigned/流水/审计计数不变）',
+    count(ASSIGNED_SQL) === assignedBefore
+    && count('SELECT COUNT(*) AS c FROM ownership_history') === histBefore
+    && count('SELECT COUNT(*) AS c FROM audit_event') === auditBefore)
 
-  console.log('\n═══ C. append-only 对账 ═══')
-  check('C1 误扫回收行保持 recycled（历史不改写）', count(`SELECT COUNT(*) AS c ${MISS_SQL}`) === 3848)
-  check('C2 ownership_history +3,848（补偿流水，只增）', count('SELECT COUNT(*) AS c FROM ownership_history') === histBefore + 3848, `实 ${count('SELECT COUNT(*) AS c FROM ownership_history')} 前 ${histBefore}`)
-  check('C3 补偿流水 reason=分配 actor=system:correction', count("SELECT COUNT(*) AS c FROM ownership_history WHERE reason='分配' AND actor='system:correction'") === 3848)
-  check('C4 audit_event +3,849（3,848 补偿 + 1 汇总）', count('SELECT COUNT(*) AS c FROM audit_event') === auditBefore + 3849, `实 ${count('SELECT COUNT(*) AS c FROM audit_event')} 前 ${auditBefore}`)
-  check('C5 补偿审计 detail 含纠正说明', count("SELECT COUNT(*) AS c FROM audit_event WHERE action='lead_assign' AND actor='system:correction' AND detail LIKE '%SLA1误扫回收纠正%'") === 3848)
-  check('C6 汇总审计 sla1_misrecycle_correction 落行', count("SELECT COUNT(*) AS c FROM audit_event WHERE action='sla1_misrecycle_correction' AND actor='system:correction'") === 1)
-  check('C7 误扫审计/流水原样保留', count("SELECT COUNT(*) AS c FROM audit_event WHERE action='lead_recycle' AND actor='system:sla'") === 3848
-    && count("SELECT COUNT(*) AS c FROM ownership_history WHERE reason='SLA超时回收' AND actor='system:sla'") === 3848)
+  console.log('\n═══ C. 留痕对账（append-only）═══')
+  check('C1 误扫审计 lead_recycle/system:sla = 3,848 原样保留', count("SELECT COUNT(*) AS c FROM audit_event WHERE action='lead_recycle' AND actor='system:sla'") === 3848)
+  check('C2 误扫流水 SLA超时回收/system:sla = 3,848 原样保留', count("SELECT COUNT(*) AS c FROM ownership_history WHERE reason='SLA超时回收' AND actor='system:sla'") === 3848)
+  check('C3 汇总审计 sla1_misrecycle_correction ≥1 且首跑即 alreadyAssigned 跳过',
+    count("SELECT COUNT(*) AS c FROM audit_event WHERE action='sla1_misrecycle_correction' AND actor='system:correction' AND detail LIKE '%\"corrected\":0%' AND detail LIKE '%\"alreadyAssigned\":3848%'") >= 1)
 
-  console.log('\n═══ D. 幂等 ═══')
-  const r2 = correctSla1Misrecycle()
-  check('D1 重跑标记跳过（skippedByMarker）', r2.skippedByMarker === true)
-  check('D2 重跑零副作用（assigned/流水/审计计数不变）',
-    count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned'") === 3848
-    && count('SELECT COUNT(*) AS c FROM ownership_history') === histBefore + 3848
-    && count('SELECT COUNT(*) AS c FROM audit_event') === auditBefore + 3849)
+  console.log('\n═══ D. 标记丢失重入 ═══')
   crmDbService.run('DELETE FROM scan_state WHERE key = ?', [MARKER])
-  const r3 = correctSla1Misrecycle()
-  check('D3 标记丢失重入：数据级判重零补偿', r3.corrected === 0 && r3.alreadyAssigned === 3848, JSON.stringify(r3))
-  check('D4 标记已重建', crmDbService.getScanState(MARKER) > 0)
-  check('D5 重入后 assigned 仍 3,848（无重复新行）', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted=0 AND status='assigned'") === 3848)
+  const r2 = correctSla1Misrecycle()
+  check('D1 数据级判重零补偿', r2.corrected === 0 && r2.alreadyAssigned === 3848, JSON.stringify(r2))
+  check('D2 标记已重建', crmDbService.getScanState(MARKER) > 0)
+  check('D3 重入后 assigned 仍 3,848（无重复新行）', count(ASSIGNED_SQL) === 3848)
+  check('D4 重入后流水零漂移 / 审计仅 +1 汇总行',
+    count('SELECT COUNT(*) AS c FROM ownership_history') === histBefore
+    && count('SELECT COUNT(*) AS c FROM audit_event') === auditBefore + 1)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)

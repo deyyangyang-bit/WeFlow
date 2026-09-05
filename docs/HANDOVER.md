@@ -1110,6 +1110,18 @@
 - **验证**：tsc root 0 错误 / node 158 条零新增 / vite build ✓（产物含 lansync 端点与设置页区块）；回归 crm-lead 55/55、assignment-full 71/71、friend-detect 33/33、sla2-customer-type 41/41、aftersales-transfer-outbox 53/53、lead-assignment-view 32/32、identity 25/25、assignment 28/28、persist-guard 36/36、auto-backup 32/32、crm-golden 47/47 全绿；assignment-correction-test 14/10 为 HEAD 既有环境性失败（live 库已被运行中应用执行过纠正，副本口径失效，同 §2.53 记录的 migration-live 情况，与本刀无关——git stash 实证 HEAD 同样 14/10）；产物已重建；live 未碰。
 - **有意偏离/边界**：① 下行不分终端子目录（R3 缓解项，Phase 1 接受：终端消费后删文件 + 幂等键兜底，共享权限配置属部署文档范畴）；② audit 上行 entity_id 为终端本机 id（Q4 五字段裁剪口径的直接后果，跨机对账靠 actor/时间/detail）；③ 终端「已转客户」不上行，Q2 拦截只看本机 account 挂接（设计自身边界）；④ conflict（中枢指令与本地有效归属打架）标已应用不反复重试，留人工对账；⑤ 同步调度间隔启动时读取（改 lanSyncPollIntervalMin 需重启生效；角色/目录每轮动态生效）。
 
+## 2.60 启动链 bug 修复：resetLegacyGroupScanSla 误清已分配线索期限 + 存量对齐（2026-09-05）
+
+> **bug**：`resetLegacyGroupScanSla`（决策B存量处置，**每次启动都跑**、靠「二次命中 0 行」幂等）的 WHERE 不排除已分配 lead——9/4 旧归属恢复为正式分配后，下一次启动把 3,837 条 assigned 群扫 lead 的 `first_contact_deadline` 打回 2100 哨兵（assignment.sla1_deadline 仍有效，回收器不受影响，但 lead 期限列失真、超时统计口径被污染）。assignment-correction-test 口径修正时现场查出。
+
+- **修复①**：`resetLegacyGroupScanSla` 加 `NOT EXISTS 有效分配（assigned/claimed）` 排除（SELECT/UPDATE 双处），注释写明事故。
+- **修复②**：新增 `syncLeadDeadlineFromAssignment()`（crmAssignmentService，启动链挂 correctSla1Misrecycle 之后）：`lead.status='NEW'` 且有有效分配时 `first_contact_deadline` 对齐当前分配行 `sla1_deadline`，幂等（只改不一致行）。live 已生效：启动日志「对齐 3,837 条」。
+- **坑（写测试须知）**：`crmDbService.runTx` 的 `tx.run` 返回 `last_insert_rowid()` 而非修改行数——UPDATE 语句拿它当命中数必错，用前后 COUNT 差值。
+- **测试口径修正**（live 已演进，旧口径永久失效）：
+  - `assignment-correction-test` → 「已纠正副本」终态核验 + 幂等重跑（17/17）。⚠️ live 实际恢复路径核查：3,848 条 assigned 行是 9/4 14:11 由 restoreLegacyGroupScanAssignments 重跑恢复（source=manual/updated_by=system:migration），correctSla1Misrecycle 首跑即 alreadyAssigned 跳过、只落汇总审计——system:correction 补偿流水在 live 不存在属正常（补偿路径由 assignment-full G 组 fresh 场景覆盖）。
+  - `lead-sla-reset-test` → 增量对账口径（live 已有 9/3 重置留痕）+ 新增 D 组防线：已分配 lead 不被重置误清 / 对齐修复命中 / 幂等（18/18）。
+- **验证**：tsc root 0 / node 158 基线零新增 / 全量回归 14 脚本全绿（crm-lead 55/55、assignment 28/28、assignment-full 71/71、friend-detect 33/33、sla2-customer-type 41/41、aftersales-transfer-outbox 53/53、lead-assignment-view 32/32、identity 25/25、lan-sync 42/42、lan-sync-e2e 30/30、persist-guard 36/36、auto-backup 32/32、crm-golden 47/47、lead-sla-reset 18/18）+ assignment-correction 17/17；产物已重建。
+
 ---
 
 ## 3. 已交付功能清单
