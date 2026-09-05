@@ -1782,7 +1782,10 @@ class CrmDbService {
 
   // ─── 工作台 ───────────────────────────────────────────────────────────────
   workbench(): CrmRow[] {
-    const contracts = this.all('SELECT * FROM contract ORDER BY id DESC LIMIT 200')
+    // 合同无 owner_sales 列（宪法设计）：owner 经 account_id JOIN account 带出（页面过滤档用，只加 SELECT 列不改口径）
+    const contracts = this.all(
+      'SELECT c.*, a.owner_sales AS owner_sales FROM contract c LEFT JOIN account a ON a.id = c.account_id ORDER BY c.id DESC LIMIT 200'
+    )
     return contracts.map((c) => {
       const paid = this.creditedTotal(Number(c.id))
       const amount = Number(c.amount ?? 0)

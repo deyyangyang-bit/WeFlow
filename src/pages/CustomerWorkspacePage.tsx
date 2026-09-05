@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Clock } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
+import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import { stageToFunnel } from '../../shared/salesStage'
@@ -42,6 +43,8 @@ export default function CustomerWorkspacePage() {
 
   // ─── 数据 ─────────────────────────────────────────────────────────────────
   const [customers, setCustomers] = useState<any[]>([])
+  // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
+  const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [signals, setSignals] = useState<any[]>([])
   const [tab, setTab] = useState<ViewTab>('follow')
   const [search, setSearch] = useState('')
@@ -56,7 +59,10 @@ export default function CustomerWorkspacePage() {
   // 拉取客户列表 + 行动信号（一次刷新两路数据）
   const fetchAll = async () => {
     const rows = (await window.electronAPI.crm.customers()) || []
-    setCustomers(rows)
+    const idt = await window.electronAPI.identity.get().catch(() => ({ name: '', role: '' }))
+    const idLike = { name: String(idt?.name || ''), role: String(idt?.role || '') }
+    setIdentity(idLike)
+    setCustomers(filterByOwner(rows, idLike))
     try {
       const r = await (window as any).electronAPI.sales.actionGetUnified()
       // 过滤虚拟前缀（todo:<id> 手动待办 / logi:<id> 物流超期 / lead:<id> SLA 线索），只留真实会话客户信号
@@ -351,8 +357,10 @@ export default function CustomerWorkspacePage() {
   const list = viewList[tab]
   const countBadge = (t: ViewTab) => (t === 'follow' ? followList.length : t === 'insight' ? insightList.length : customers.length)
 
+  const ownerFiltered = isSalesView(identity)
   return (
     <div className="cws-page">
+      {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="crm-header">
         <h2><Users size={18} /> 客户工作台</h2>
         <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchAll(); void fetchQueues() }}><RefreshCw size={14} /> 刷新</button>

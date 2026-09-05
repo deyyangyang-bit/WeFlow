@@ -3,6 +3,7 @@
  * 数据源 window.electronAPI.crm.opportunity*（crmDbService 商机模块）
  */
 import { useEffect, useMemo, useState } from 'react'
+import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { RefreshCw, X, CheckCircle2, XCircle, Activity, Banknote, Clock, Star, Target } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
@@ -77,6 +78,8 @@ const EVENT_LABEL: Record<string, string> = {
 
 export default function OpportunityPage() {
   const [opps, setOpps] = useState<OppRow[]>([])
+  // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
+  const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [stats, setStats] = useState<OppStats | null>(null)
   const [stageFilter, setStageFilter] = useState('')
   const [selected, setSelected] = useState<OppRow | null>(null)
@@ -89,11 +92,14 @@ export default function OpportunityPage() {
   const fetch = async () => {
     setLoading(true)
     try {
-      const [list, st] = await Promise.all([
+      const [list, st, idt] = await Promise.all([
         window.electronAPI.crm.opportunityList({ status: 'active' }),
-        window.electronAPI.crm.opportunityStats()
+        window.electronAPI.crm.opportunityStats(),
+        window.electronAPI.identity.get().catch(() => ({ name: '', role: '' }))
       ])
-      setOpps(list || [])
+      const idLike = { name: String(idt?.name || ''), role: String(idt?.role || '') }
+      setIdentity(idLike)
+      setOpps(filterByOwner(list || [], idLike))
       setStats(st || null)
       // 逐个客户拉意向评分 0-100（跨库装配，失败忽略单个）
       const scoreMap: Record<number, OppScore> = {}
@@ -171,8 +177,10 @@ export default function OpportunityPage() {
     await fetch()
   }
 
+  const ownerFiltered = isSalesView(identity)
   return (
     <div className="opp-page">
+      {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="opp-header">
         <h2><Target size={18} /> 商机</h2>
         {notice && <span className="opp-notice">{notice}</span>}

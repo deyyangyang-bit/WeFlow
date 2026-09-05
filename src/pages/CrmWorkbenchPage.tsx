@@ -8,6 +8,7 @@ import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2, User
 import { useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
+import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
 // 阶段分布/管道图色板单一真源（红线 3）：Apple 蓝渐变族
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
@@ -17,6 +18,10 @@ interface QuoRow { productId: number; name: string; model?: string; price: numbe
 
 export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
+  // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人（经 account JOIN 带出）或未归属；展示层便利，非安全边界（宪法 §1.12）
+  const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
+  useEffect(() => { void window.electronAPI.identity.get().then((idt) => setIdentity({ name: String(idt?.name || ''), role: String(idt?.role || '') })).catch(() => undefined) }, [])
+  const myWorkbench = filterByOwner(workbench, identity)
   const [selected, setSelected] = useState<any>(null)
   const [quotations, setQuotations] = useState<any[]>([])
   const [invoices, setInvoices] = useState<any[]>([])
@@ -148,7 +153,7 @@ export default function CrmWorkbenchPage() {
 
 
   // 合同列表筛选（SearchTable 前端过滤）：状态 + 合同名关键字，变化时回到第 1 页
-  const filteredContracts = workbench.filter((c: any) =>
+  const filteredContracts = myWorkbench.filter((c: any) =>
     (!statusFilter || c.status === statusFilter) &&
     (!keyword.trim() || String(c.name || '').toLowerCase().includes(keyword.trim().toLowerCase())))
   // 数据收缩（删除/签约后刷新）时页码归位——SearchTable 显示层有钳制，但 state 残留会在数据回升后突然跳回高页码
@@ -288,8 +293,10 @@ export default function CrmWorkbenchPage() {
     await fetchWorkbench()
   }
 
+  const ownerFiltered = isSalesView(identity)
   return (
     <div className="crm-workbench-page">
+      {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="crm-header">
         <h2><Briefcase size={18} /> 合同工作台</h2>
         <span className="crm-header__sub">合同闭环 · 报价 / 发货 / 回款 / 开票 · r7</span>

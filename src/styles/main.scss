@@ -495,3 +495,10 @@ body {
   &:hover { color: var(--color-text-primary); }
   &.active { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); }
 }
+
+// ---- 页面过滤档提示（2026-09-05：销售视角顶部一行小字；颜色全走 --color-* 族，双模式继承）----
+.owner-filter-hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  padding: 2px 0 6px;
+}
