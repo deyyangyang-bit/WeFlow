@@ -232,3 +232,49 @@ export function sla1Countdown(a: { status: string; sla1Deadline: number; sla1Met
   }
   return { tier: 'over', text: '已超时', label: `24h 复查中 · ${Math.min(remindCount, 3)}/3`, remainMs, remindCount, pill: 'danger', pillText: remindCount > 0 ? `第 ${remindCount} 次超时提醒` : '已超时·待提醒' }
 }
+
+/**
+ * 屏 5 右卡「跟进状态」（第二段 SLA「聊了没有」，LLM/规则/人工三路结论的展示投影）：
+ * 读 assignment.sla2_scan_ref JSON 串（{ verdict, confidence, scanRef, source, at, note? }，
+ * 写入口径 crmSla2Service.markSla2ScanResult；'' = 尚无结论）。
+ * 纯函数，脏数据/空串/未知 verdict 一律回 null（宁缺毋滥不瞎判，与后端 parseSla2ScanRef 同哲学）。
+ * pill 语义（设计稿）：contacted=绿「已有效触达」/ need_intervention=琥珀「需介入」/ uncertain=灰「低置信 · 转人工」。
+ */
+export interface Sla2StatusView {
+  verdict: 'contacted' | 'need_intervention' | 'uncertain'
+  /** pill 五语义 */
+  pill: 'success' | 'warning' | 'neutral'
+  label: string
+  /** 结论摘要（note 优先，缺省按 verdict 给默认文案） */
+  note: string
+  /** 结论落定时刻（ms） */
+  at: number
+  /** 证据锚点（客户原话 messageKey，宪法 §1.10 可回查） */
+  evidenceKey: string
+}
+
+export function sla2StatusView(raw: unknown): Sla2StatusView | null {
+  if (raw === null || raw === undefined || raw === '') return null
+  let j: any = raw
+  if (typeof raw === 'string') {
+    try { j = JSON.parse(raw) } catch { return null }
+  }
+  if (!j || typeof j !== 'object') return null
+  const verdict = String(j.verdict || '')
+  if (!['contacted', 'need_intervention', 'uncertain'].includes(verdict)) return null
+  const meta: Record<string, { pill: Sla2StatusView['pill']; label: string; fallback: string }> = {
+    contacted: { pill: 'success', label: '已有效触达', fallback: '客户已回复' },
+    need_intervention: { pill: 'warning', label: '需介入', fallback: '需要人工尽快跟进' },
+    uncertain: { pill: 'neutral', label: '低置信 · 转人工', fallback: 'AI 不判断，请人工看一眼再定状态' }
+  }
+  const m = meta[verdict]
+  const note = String(j.note || '').trim() || m.fallback
+  return {
+    verdict: verdict as Sla2StatusView['verdict'],
+    pill: m.pill,
+    label: m.label,
+    note,
+    at: Number(j.at || 0),
+    evidenceKey: String(j.scanRef || '')
+  }
+}

@@ -13,7 +13,7 @@
 import {
   buildOwnerMap, isSalesView, canClaimLead, canManageAssignment,
   filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview,
-  suggestReassignOwner, sla1Countdown, type LeadOwnerInfo
+  suggestReassignOwner, sla1Countdown, sla2StatusView, type LeadOwnerInfo
 } from '../src/utils/leadAssignmentView'
 
 let pass = 0, fail = 0
@@ -132,6 +132,21 @@ function main(): void {
   const c4 = sla1Countdown({ status: 'claimed', sla1Deadline: now - D, sla1MetAt: now - 2 * D }, now)
   check('G15 已加好友：done 档 + 绿 pill + 进入第二段', c4.tier === 'done' && c4.pill === 'success' && c4.pillText === '已加好友 ✓')
   check('G16 倒计时格式 = 时:分:秒', c2.text.includes(':') && /^\d{1,2}:\d{2}:\d{2}$/.test(c2.text), c2.text)
+
+  console.log('\n═══ H. sla2StatusView 跟进状态投影（设计稿屏 5 右）═══')
+  const nowMs = 1_800_000_000_000
+  const c = sla2StatusView(JSON.stringify({ verdict: 'contacted', confidence: 1.0, scanRef: 'local:msg_0.db:9:1700000000:0:w:1', source: 'rule', at: nowMs, note: '规则命中：停表后客户有回复（事实判定）' }))
+  check('H1 contacted → 绿「已有效触达」+ note 透传', c?.verdict === 'contacted' && c.pill === 'success' && c.label === '已有效触达' && c.note.includes('客户有回复'))
+  check('H2 evidenceKey = scanRef（证据可回查锚点）', c?.evidenceKey === 'local:msg_0.db:9:1700000000:0:w:1')
+  check('H3 at 时间透传', c?.at === nowMs)
+  const n = sla2StatusView(JSON.stringify({ verdict: 'need_intervention', confidence: 0.8, scanRef: 'k2', source: 'llm', at: nowMs }))
+  check('H4 need_intervention → 琥珀「需介入」', n?.pill === 'warning' && n.label === '需介入')
+  const u = sla2StatusView(JSON.stringify({ verdict: 'uncertain', confidence: 0.3, scanRef: '', source: 'llm', at: nowMs }))
+  check('H5 uncertain → 灰「低置信 · 转人工」+ 默认文案', u?.pill === 'neutral' && u.label === '低置信 · 转人工' && u.note.includes('人工'))
+  check('H6 note 缺省回退 verdict 默认文案（contacted）', sla2StatusView(JSON.stringify({ verdict: 'contacted', scanRef: '', source: '', at: 0 }))?.note === '客户已回复')
+  check('H7 空串/空/undefined → null（尚无结论）', sla2StatusView('') === null && sla2StatusView(null) === null && sla2StatusView(undefined) === null)
+  check('H8 脏数据：非 JSON/未知 verdict/非对象 → null（宁缺毋滥）',
+    sla2StatusView('not-json') === null && sla2StatusView(JSON.stringify({ verdict: 'weird', at: 1 })) === null && sla2StatusView(42) === null)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

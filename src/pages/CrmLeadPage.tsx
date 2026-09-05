@@ -16,7 +16,7 @@ import * as XLSX from 'exceljs'
 import type { LeadRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
-import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, sla1Countdown, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode } from '../utils/leadAssignmentView'
+import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, sla1Countdown, sla2StatusView, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
@@ -116,7 +116,7 @@ export default function CrmLeadPage() {
   const [customSource, setCustomSource] = useState('')
   const [rows, setRows] = useState<RawRow[]>([])
   const [fileName, setFileName] = useState('')
-  const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }>; ownHist: OwnHistRow[] } | null>(null)
+  const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }>; ownHist: OwnHistRow[]; sla2: Sla2StatusView | null } | null>(null)
   const [deadLead, setDeadLead] = useState<LeadRow | null>(null)
   const [deadReason, setDeadReason] = useState('')
   // 已加微信小弹窗：行内💬一键唤起，填客户微信号/昵称（可留空直接确认）
@@ -384,7 +384,8 @@ export default function CrmLeadPage() {
           sla1RemindCount: Number(latest?.sla1_remind_count || 0)
         }, Date.now())
         const recycled = String(latest?.status || '') === 'recycled'
-        return { lead: l, cd, recycled, assignedAt: Number(latest?.updated_at || latest?.created_at || 0) }
+        const sla2 = sla2StatusView(latest?.sla2_scan_ref)
+        return { lead: l, cd, recycled, sla2, assignedAt: Number(latest?.updated_at || latest?.created_at || 0) }
       })
   }, [leads, myLeadIdSet, latestAsg, ownerByLead, identity])
   const myWait = myCards.filter((c) => !c.recycled && c.cd.tier !== 'done' && c.lead.status === 'NEW')
@@ -456,13 +457,15 @@ export default function CrmLeadPage() {
   }
   const openDetail = async (id: number) => {
     const d = await window.electronAPI.crm.leadDetail(id)
+    // 屏 5 右：第二段 SLA 跟进状态（assignment.sla2_scan_ref 投影，随详情弹窗展示）
+    const sla2 = sla2StatusView(latestAsg[id]?.sla2_scan_ref)
     // 归属留痕（设计稿屏 6 右，宪法 §1.8 ownership_history 只读）：随详情弹窗拉取，拉不到不阻塞详情
     let ownHist: OwnHistRow[] = []
     try {
       const h = await window.electronAPI.crm.ownershipHistory({ entityType: 'lead', entityId: id, pageSize: 50 })
       if (h?.ok) ownHist = (h.data?.rows || []) as OwnHistRow[]
     } catch { /* 留痕查询失败仅不显示时间线 */ }
-    if (d.lead) setDetail({ lead: d.lead, activities: (d.activities || []) as any, ownHist })
+    if (d.lead) setDetail({ lead: d.lead, activities: (d.activities || []) as any, ownHist, sla2 })
   }
   const toAccount = async (id: number) => {
     const r = await window.electronAPI.crm.leadToAccount(id)
@@ -669,7 +672,7 @@ export default function CrmLeadPage() {
             </div>
             <span className="lp-hint">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
           </div>
-          {myCardsShown.map(({ lead: l, cd, recycled }) => (
+          {myCardsShown.map(({ lead: l, cd, recycled, sla2 }) => (
             <div key={l.id} className="lp-card" onClick={() => void openDetail(l.id)}>
               <div className="lp-card__main">
                 <div className="lp-card__t1 num">{maskLead(l)} <span className={`pill pill--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
@@ -687,6 +690,19 @@ export default function CrmLeadPage() {
               )}
               {!recycled && cd.tier === 'done' && (
                 <button className="crm-btn ghost" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
+              )}
+              {cd.tier === 'done' && (
+                <div className="lp-sla2" onClick={(e) => e.stopPropagation()}>
+                  {sla2 ? (
+                    <span className={`pill pill--${sla2.pill}`}>{sla2.label}</span>
+                  ) : (
+                    <span className="pill pill--neutral">待扫描</span>
+                  )}
+                  <div className="lp-sla2__text">
+                    {maskLead(l)} · {sla2 ? sla2.note : '暂无第二段结论，等规则/LLM 扫描或人工标记'}
+                    <div className="lp-sla2__hint">{sla2 ? `结论时间 ${fmtTime(sla2.at)}${sla2.evidenceKey ? ' · 证据可回查' : ''}` : '第二段不计时，按对话判断跟进状态'}</div>
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -953,6 +969,18 @@ export default function CrmLeadPage() {
                 <button className="crm-btn" onClick={() => void act(detail.lead.id, 'wx_added', { wechat: (document.getElementById('lead-wechat') as HTMLInputElement)?.value || '' })}><MessageCircle size={14} /> 已加微信</button>
                 <button className="crm-btn primary" onClick={() => void toAccount(detail.lead.id)}><UserPlus size={14} /> 转客户</button>
               </div>
+            )}
+            {detail.sla2 && (
+              <>
+                <h4>跟进状态 <span className="ld-ownhist-hint">第二段 SLA · 按对话判断，非计时器</span></h4>
+                <div className="lp-sla2 lp-sla2--static">
+                  <span className={`pill pill--${detail.sla2.pill}`}>{detail.sla2.label}</span>
+                  <div className="lp-sla2__text">
+                    {detail.sla2.note}
+                    <div className="lp-sla2__hint">结论时间 {fmtTime(detail.sla2.at)}{detail.sla2.evidenceKey ? ' · 依据可回查（证据锚点已留）' : ''}</div>
+                  </div>
+                </div>
+              </>
             )}
             {detail.ownHist.length > 0 && (
               <>
