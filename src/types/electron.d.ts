@@ -1844,6 +1844,10 @@ export interface ElectronAPI {
     customerSetType: (req: { customerId: number; type: string; actor?: string }) => Promise<{ ok: boolean; data?: { customerId: number; type: string; unchanged: boolean }; code?: string; message?: string }>
     // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + ownership_history/audit_event
     ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => Promise<{ ok: boolean; data?: { fromSales: string; toSales: string; leadsTransferred: number; leadFailed: Array<{ assignmentId: number; code: string; message: string }>; accounts: number; opportunities: number; logistics: number }; code?: string; message?: string }>
+    // 审计流水（宪法 §1.12，R 只读）：keyword 扩展一把搜 actor/detail/entity_type/entity_id
+    auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; actor: string; action: string; entity_type: string; entity_id: number | null; detail: string; created_at: number }>; total: number } }>
+    // 归属留痕时间线（宪法 §1.8，R 只读，append-only）
+    ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; entity_type: string; entity_id: number; old_owner: string; new_owner: string; reason: string; actor: string; created_at: number }>; total: number } }>
   }
   sales: {
     // 知识库

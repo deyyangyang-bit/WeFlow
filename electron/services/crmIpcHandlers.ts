@@ -19,7 +19,7 @@ import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
-import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment } from './crmAssignmentService'
+import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
 import { bindLeadWxid } from './crmFriendDetectService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
@@ -359,6 +359,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   //    owner 三列（account/opportunity/logistics）同事务直改 + ownership_history + audit_event ──
   ipcMain.handle('crm:ownership:departure', async (_, req: { fromSales?: string; toSales?: string; actor?: string }) =>
     departureHandoff(String(req?.fromSales || ''), String(req?.toSales || ''), String(req?.actor || '')))
+
+  // ── 审计流水 + 归属留痕（API-CONTRACT §1.14 契约端点，R 只读，统一信封 {ok,data}）──
+  // audit_event / ownership_history 均 append-only（宪法 §1.12/§1.8），无软删列、永不删改
+  ipcMain.handle('crm:audit:query', async (_, opts) => queryAuditEvents((opts || {}) as any))
+  ipcMain.handle('crm:ownership:history', async (_, opts) => listOwnershipHistory((opts || {}) as any))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

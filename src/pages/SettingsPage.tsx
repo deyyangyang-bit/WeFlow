@@ -18,6 +18,7 @@ import {
   Sparkles, Loader2, CheckCircle2, XCircle
 } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
+import AuditTrailSection from '../components/settings/AuditTrailSection'
 import { displayNameOrFallback } from '../utils/displayName'
 import './SettingsPage.scss'
 
@@ -5782,6 +5783,11 @@ JSON 输出格式：
           </div>
         </div>
       </div>
+
+      <div className="divider" />
+
+      {/* 审计流水（设计稿屏 7，宪法 §1.12 audit_event 只读；管理员/主管可查） */}
+      <AuditTrailSection />
 
       <div className="divider" />
 

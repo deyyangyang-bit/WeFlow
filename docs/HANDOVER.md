@@ -1237,6 +1237,22 @@
 
 ---
 
+## 2.69 审计流水（屏 7）+ 归属留痕时间线（屏 6 右）（2026-09-05，UI设计稿-Phase1-资源分配，已提交）
+
+> **依据**：`docs/UI设计稿-Phase1-资源分配.html` 屏 7/屏 6 右 + 附录视觉红线；契约已定实现照抄——`API-CONTRACT.md §1.14` 的 `crm:audit:query` / `crm:ownership:history`（R 只读，统一信封 `{ok,data}`），数据口径 = 宪法 §1.12 audit_event / §1.8 ownership_history（append-only，无软删列，永不删改）。
+
+- **后端（crmAssignmentService 尾部两查询，与分配链同文件——三表同事务写点就在这里）**：`queryAuditEvents(opts)`——契约参数 entityType/entityId/actor/action/beginAt/endAt/page/pageSize + **keyword 扩展参数**（一把搜 actor/detail/entity_type/entity_id，契约未含但为设计稿「搜索 操作人/对象」所需，超集兼容）；action 类别过滤映射：assign→lead_assign/lead_transfer/lead_claim/departure_handoff，bind→identity_bind，recycle→lead_recycle，**weight 为预留类（action LIKE '%weight%'，批次权重写点上线自动归入）**。`listOwnershipHistory({entityType, entityId, page, pageSize})`——非法参数返回 `{ok:false, 空集}` 不炸。
+- **三处同步**：crmIpcHandlers 注册 `crm:audit:query` / `crm:ownership:history`；preload `auditQuery`/`ownershipHistory`；electron.d.ts 类型同步（rows 逐字段定型）。
+- **前端屏 7「审计流水」**：新组件 `src/components/settings/AuditTrailSection.tsx/.scss`，挂 **SettingsPage 安全 tab**（线索流转区块之后、应用锁之前——审计与安全同域，侵入最小；独立路由备选未采用）。UI 按设计稿：搜索框（keyword，回车/按钮触发）+ action 五段分段控件（灰底浮起 accent）+ 表格（时间/操作人/动作/对象/细节，数字列 tabular-nums）+ 分页器；区块默认折叠点标题展开（设置页不加长首屏）。**脱敏展示层兜底**：actor/detail 里手机号 `152****5273`、wxid `wxid_8f****de`；detail 是 JSON 时给 `k:v · k:v` 摘要；动作列 pill 五语义（分配绿/绑定绿/回收红/移交琥珀/其余灰）。
+- **前端屏 6 右「归属留痕」**：线索详情弹窗（CrmLeadPage）新增只读时间线——openDetail 时并行拉 `ownershipHistory({entityType:'lead', entityId, pageSize:50})`（拉取失败仅不显示，不阻塞详情）；每条按方向推导动词（空→有=分配/有→空=回收/有→有=改派，空侧显示「资源池」），渲染 `谁→谁 · 时间 · 操作人 · 理由`；样式复用 `.lead-timeline/.lt-item` + `.ld-ownhist-hint`（--color-* 族）。
+- **视觉红线合规**：新 scss 零硬编码 hex（测试 d6 静态断言），颜色全走 `--color-*`/`--radius-*`/`--shadow-*`，light/dark 自动继承；pill 五语义类内聚在组件 scss。
+- **测试**：audit-query-test **26/26**（新：a1-a12 信封/四类别过滤/keyword 搜人·搜细节·搜对象/分页/实体/时间窗；b1-b6 留痕排序·实体隔离·非法参数·分页；c1 查询零写；d1-d7 三处同步+前端挂载+脱敏+零硬编码 hex 静态检查）；回归 assignment-full 71 + assignment 28 + crm-lead 55 + crm-sla-action 11 + identity 25 + lead-assignment-view 32 + lead-sla-reset 18 + sla2 41 + friend-detect 33 + alert-gate 33 + alert-eval 42 全绿。
+- **⚠️ 两个存量红测（与本刀无关，git stash 基线复跑同败）**：`assignment-correction-test`（12/5）与 `lead-assignment-restore-test`（6/7）断言的是**live 生产库副本**里历史迁移的精确审计行数（期望 3848），生产数据已自然增长到 11542 → 硬编码期望过期。修复方向=改断言为「≥ 基线行数且幂等不翻倍」或落定快照库，属数据耦合测试的独立修缮，本刀不动。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b tsconfig.node.json` 产物已重建（main.js 含 crm:audit:query）。
+- **遗留**：屏 6 左「待改派」表格 + 改派建议（负载最低·非原归属）是下一刀；activity_log/auto_confirm_log 封存视图（设计稿口径）未做；权重调整写点（批次功能）上线后自动进审计「权重调整」段。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

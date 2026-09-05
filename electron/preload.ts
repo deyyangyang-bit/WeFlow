@@ -781,7 +781,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
     customerSetType: (req: { customerId: number; type: string; actor?: string }) => ipcRenderer.invoke('crm:customer:setType', req),
     // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + 流水/审计
-    ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => ipcRenderer.invoke('crm:ownership:departure', req)
+    ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => ipcRenderer.invoke('crm:ownership:departure', req),
+    // 审计流水（宪法 §1.12 / API-CONTRACT §1.14，R 只读）：keyword 扩展一把搜 actor/detail/entity
+    auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:audit:query', opts),
+    // 归属留痕时间线（宪法 §1.8，R 只读，append-only）
+    ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:ownership:history', opts)
   },
   sales: {
     // 知识库

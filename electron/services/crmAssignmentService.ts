@@ -455,3 +455,70 @@ export function restoreLegacyGroupScanAssignments(): { restored: Record<string, 
   if (total > 0) console.log(`[CRM] 群扫旧归属恢复为正式分配：${JSON.stringify(restored)}，留资源池 ${pooled} 条`)
   return { restored, pooled }
 }
+
+// ─── 审计流水查询（crm:audit:query，API-CONTRACT §1.14 契约端点）──────────────
+export interface AuditQueryOpts { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }
+
+/**
+ * action 类别过滤（设计稿屏 7 分段控件 全部/分配/绑定/回收/权重调整）→ action 值清单。
+ * 前缀匹配：lead_assign/lead_transfer/lead_claim = 分配；identity_bind = 绑定；lead_recycle = 回收；
+ * 权重调整为预留类（%weight% LIKE，分配批次权重调整写点上线后自动归入）。
+ */
+const AUDIT_ACTION_CATEGORY: Record<string, string[]> = {
+  assign: ['lead_assign', 'lead_transfer', 'lead_claim', 'departure_handoff'],
+  bind: ['identity_bind'],
+  recycle: ['lead_recycle'],
+  weight: []
+}
+
+/** 审计流水查询（R，只读，append-only 表无软删列）：契约参数 + keyword 扩展（actor/detail/entity 一把搜） */
+export function queryAuditEvents(opts: AuditQueryOpts = {}): { ok: boolean; data: { rows: CrmRow[]; total: number } } {
+  const where: string[] = ['1=1']
+  const params: unknown[] = []
+  const entityType = String(opts.entityType || '').trim()
+  if (entityType) { where.push('entity_type = ?'); params.push(entityType) }
+  if (opts.entityId !== undefined && Number(opts.entityId) > 0) { where.push('entity_id = ?'); params.push(Number(opts.entityId)) }
+  const actor = String(opts.actor || '').trim()
+  if (actor) { where.push('actor LIKE ?'); params.push(`%${actor}%`) }
+  // 显式 action 优先；否则按类别映射
+  const action = String(opts.action || '').trim()
+  if (action) {
+    if (AUDIT_ACTION_CATEGORY[action]) {
+      const list = AUDIT_ACTION_CATEGORY[action]
+      if (list.length) { where.push(`action IN (${list.map(() => '?').join(',')})`); params.push(...list) }
+      else { where.push('action LIKE ?'); params.push('%weight%') }
+    } else { where.push('action = ?'); params.push(action) }
+  }
+  const keyword = String(opts.keyword || '').trim()
+  if (keyword) {
+    where.push('(actor LIKE ? OR detail LIKE ? OR entity_type LIKE ? OR CAST(entity_id AS TEXT) = ?)')
+    const like = `%${keyword}%`
+    params.push(like, like, like, keyword)
+  }
+  if (Number(opts.beginAt) > 0) { where.push('created_at >= ?'); params.push(Number(opts.beginAt)) }
+  if (Number(opts.endAt) > 0) { where.push('created_at <= ?'); params.push(Number(opts.endAt)) }
+  const page = Math.max(1, Number(opts.page) || 1)
+  const pageSize = Math.min(100000, Math.max(1, Number(opts.pageSize) || 50))
+  const w = ' WHERE ' + where.join(' AND ')
+  const total = Number(crmDbService.all(`SELECT COUNT(*) AS c FROM audit_event${w}`, params)[0]?.c || 0)
+  const rows = crmDbService.all(`SELECT * FROM audit_event${w} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize])
+  return { ok: true, data: { rows, total } }
+}
+
+// ─── 归属留痕时间线（crm:ownership:history，API-CONTRACT §1.14 契约端点）──────
+export interface OwnershipHistoryOpts { entityType?: string; entityId?: number; page?: number; pageSize?: number }
+
+/** 归属留痕查询（R，只读，append-only）：按实体取时间线，新→旧 */
+export function listOwnershipHistory(opts: OwnershipHistoryOpts = {}): { ok: boolean; data: { rows: CrmRow[]; total: number } } {
+  const entityType = String(opts.entityType || '').trim()
+  const entityId = Number(opts.entityId) || 0
+  if (!entityType || entityId <= 0) return { ok: false, data: { rows: [], total: 0 } }
+  const page = Math.max(1, Number(opts.page) || 1)
+  const pageSize = Math.min(100000, Math.max(1, Number(opts.pageSize) || 100))
+  const total = Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history WHERE entity_type = ? AND entity_id = ?', [entityType, entityId])[0]?.c || 0)
+  const rows = crmDbService.all(
+    'SELECT * FROM ownership_history WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
+    [entityType, entityId, pageSize, (page - 1) * pageSize]
+  )
+  return { ok: true, data: { rows, total } }
+}

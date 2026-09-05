@@ -1,0 +1,164 @@
+// 审计流水（设置 · 安全 tab，设计稿屏 7）——颜色只消费 --color-* 族，双模式自动适配
+.audit-trail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &__head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    cursor: pointer;
+
+    h2 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--color-text-primary);
+      margin: 0;
+    }
+  }
+
+  &__hint {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  &__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  &__search {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--color-bg-inset);
+    border-radius: var(--radius-control);
+    padding: 6px 10px;
+    color: var(--color-text-tertiary);
+    min-width: 240px;
+
+    input {
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--color-text-primary);
+      font-size: 13px;
+      flex: 1;
+
+      &::placeholder { color: var(--color-text-tertiary); }
+    }
+  }
+
+  &__btn {
+    border: none;
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    border-radius: var(--radius-small);
+    padding: 4px 10px;
+    cursor: pointer;
+    box-shadow: var(--shadow-control);
+
+    &:disabled { opacity: 0.5; cursor: default; }
+  }
+
+  // 分段控件：灰底 + 选中浮起 + accent 文字（设计稿控件惯例）
+  &__segs {
+    display: inline-flex;
+    background: var(--color-bg-inset);
+    border-radius: var(--radius-control);
+    padding: 2px;
+    gap: 2px;
+  }
+
+  &__seg {
+    border: none;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: var(--radius-small);
+    cursor: pointer;
+
+    &.on {
+      background: var(--color-bg-surface);
+      color: var(--color-accent);
+      box-shadow: var(--shadow-control);
+      font-weight: 600;
+    }
+  }
+
+  &__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-tertiary);
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--color-divider);
+    }
+
+    td {
+      padding: 7px 8px;
+      color: var(--color-text-primary);
+      border-bottom: 1px solid var(--color-divider);
+      vertical-align: top;
+    }
+
+    td.num, th.num {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      color: var(--color-text-secondary);
+    }
+  }
+
+  &__detail {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    word-break: break-all;
+  }
+
+  &__empty {
+    text-align: center;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    padding: 18px 0 !important;
+  }
+
+  &__pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  &__pageinfo {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// pill 五语义（蓝=信息 / 绿=正常 / 琥珀=待办 / 红=异常 / 灰=中性）
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+
+  &--info { background: var(--color-accent-bg); color: var(--color-accent); }
+  &--success { background: var(--color-success-bg); color: var(--color-success); }
+  &--warning { background: var(--color-warning-bg); color: var(--color-warning); }
+  &--danger { background: var(--color-danger-bg); color: var(--color-danger); }
+  &--neutral { background: var(--color-bg-inset); color: var(--color-text-secondary); }
+}

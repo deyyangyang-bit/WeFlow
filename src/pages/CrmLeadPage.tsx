@@ -52,6 +52,16 @@ function maskLead(lead: { contact_type: string; contact_normalized: string }): s
   return v.length >= 4 ? `${v.slice(0, 2)}***${v.slice(-1)}` : v
 }
 
+/** 归属留痕行（ownership_history，宪法 §1.8 append-only） */
+interface OwnHistRow {
+  id: number
+  old_owner: string
+  new_owner: string
+  reason: string
+  actor: string
+  created_at: number
+}
+
 /** Excel/CSV 矩阵 → 行对象：识别表头（phone/wechat/姓名/标签/备注），其余列并入 text */
 function matrixToRows(matrix: unknown[][]): RawRow[] {
   const headers = (matrix[0] || []).map((c) => String(c ?? '').trim().toLowerCase())
@@ -105,7 +115,7 @@ export default function CrmLeadPage() {
   const [customSource, setCustomSource] = useState('')
   const [rows, setRows] = useState<RawRow[]>([])
   const [fileName, setFileName] = useState('')
-  const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }> } | null>(null)
+  const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }>; ownHist: OwnHistRow[] } | null>(null)
   const [deadLead, setDeadLead] = useState<LeadRow | null>(null)
   const [deadReason, setDeadReason] = useState('')
   // 已加微信小弹窗：行内💬一键唤起，填客户微信号/昵称（可留空直接确认）
@@ -309,7 +319,13 @@ export default function CrmLeadPage() {
   }
   const openDetail = async (id: number) => {
     const d = await window.electronAPI.crm.leadDetail(id)
-    if (d.lead) setDetail({ lead: d.lead, activities: (d.activities || []) as any })
+    // 归属留痕（设计稿屏 6 右，宪法 §1.8 ownership_history 只读）：随详情弹窗拉取，拉不到不阻塞详情
+    let ownHist: OwnHistRow[] = []
+    try {
+      const h = await window.electronAPI.crm.ownershipHistory({ entityType: 'lead', entityId: id, pageSize: 50 })
+      if (h?.ok) ownHist = (h.data?.rows || []) as OwnHistRow[]
+    } catch { /* 留痕查询失败仅不显示时间线 */ }
+    if (d.lead) setDetail({ lead: d.lead, activities: (d.activities || []) as any, ownHist })
   }
   const toAccount = async (id: number) => {
     const r = await window.electronAPI.crm.leadToAccount(id)
@@ -667,6 +683,26 @@ export default function CrmLeadPage() {
                 <button className="crm-btn" onClick={() => void act(detail.lead.id, 'wx_added', { wechat: (document.getElementById('lead-wechat') as HTMLInputElement)?.value || '' })}><MessageCircle size={14} /> 已加微信</button>
                 <button className="crm-btn primary" onClick={() => void toAccount(detail.lead.id)}><UserPlus size={14} /> 转客户</button>
               </div>
+            )}
+            {detail.ownHist.length > 0 && (
+              <>
+                <h4>归属留痕 <span className="ld-ownhist-hint">ownership_history，只增不删</span></h4>
+                <div className="lead-timeline">
+                  {detail.ownHist.map((h) => {
+                    // 动词由归属变化方向推导：空→有 = 分配（资源池）；有→空 = 回收（回资源池）；有→有 = 改派
+                    const verb = !h.old_owner && h.new_owner ? '分配' : h.old_owner && !h.new_owner ? '回收' : '改派'
+                    const from = h.old_owner || '资源池'
+                    const to = h.new_owner || '资源池'
+                    return (
+                      <div key={h.id} className="lt-item">
+                        <span className="lt-time">{fmtTime(h.created_at)}</span>
+                        <span className="lt-act">{verb}</span>
+                        <span className="lt-note">{from} → {to} · 操作人：{h.actor || '系统'}{h.reason ? ` · 理由：${h.reason}` : ''}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
             )}
             <h4>跟进流水</h4>
             <div className="lead-timeline">

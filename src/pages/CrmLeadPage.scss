@@ -69,3 +69,11 @@
 /* 分页 */
 .crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0; }
 .crm-pager-info { font-size: 13px; color: var(--color-text-secondary); }
+
+// 归属留痕（设计稿屏 6 右）：只读时间线，样式复用 lead-timeline；hint 元信息
+.ld-ownhist-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+  margin-left: 6px;
+}
