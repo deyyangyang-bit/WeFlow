@@ -85,3 +85,157 @@
   .crm-detail-head { position: sticky; top: -16px; z-index: 5; background: var(--color-bg-surface); padding: 4px 0 8px; }
 }
 .cws-drawer__close { padding: 4px 8px; }
+
+// ─── 客户工作台简化改版（设计稿屏 1-4）：颜色全走 --color-* 族，零硬编码 hex ──
+.cws-toolbar-row { margin-bottom: 14px; }
+
+// 屏 1 行动队列
+.cws-queue-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 10px;
+
+  strong { color: var(--color-text-primary); font-size: 14px; }
+}
+
+.cws-queue { display: flex; flex-direction: column; gap: 12px; }
+
+.cws-action-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  padding: 14px 18px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+
+  &:hover { outline: 1px solid var(--color-border); }
+
+  .cws-action-card__body { flex: 1; min-width: 0; }
+
+  .cws-action-card__head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .cws-action-card__name { font-size: 14px; font-weight: 700; color: var(--color-text-primary); }
+  .cws-action-card__reason { font-size: 13px; color: var(--color-text-primary); margin: 2px 0; }
+  .cws-action-card__suggest { font-size: 12px; color: var(--color-text-secondary); }
+
+  .cws-action-card__ops { display: flex; flex-direction: column; gap: 8px; flex: none; padding-top: 2px; }
+}
+
+// 屏 2 空态
+.cws-done {
+  text-align: center;
+  padding: 56px 24px;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+
+  .cws-done__emoji { font-size: 32px; }
+  .cws-done__title { font-size: 15px; font-weight: 700; color: var(--color-text-primary); margin-top: 8px; }
+  .cws-done__sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 6px; }
+}
+
+// 屏 3 搜索态结果列表
+.cws-search-card {
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-card);
+  padding: 0 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.cws-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px 12px 0;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+
+  &:last-child { border-bottom: none; }
+  &:hover { background: var(--color-bg-hover); }
+
+  .cws-search-row__main { flex: 1; min-width: 0; strong { font-size: 13px; color: var(--color-text-primary); } }
+  .cws-search-row__sub { font-size: 11px; color: var(--color-text-tertiary); }
+  .cws-search-row__silent { font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+}
+
+// pill 五语义（行动卡/搜索行）
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+
+  &--blue { background: var(--color-accent-bg); color: var(--color-accent); }
+  &--amber { background: var(--color-warning-bg); color: var(--color-warning); }
+  &--success, &--green { background: var(--color-success-bg); color: var(--color-success); }
+  &--danger, &--red { background: var(--color-danger-bg); color: var(--color-danger); }
+  &--info { background: var(--color-accent-bg); color: var(--color-accent); }
+  &--warning { background: var(--color-warning-bg); color: var(--color-warning); }
+  &--neutral { background: var(--color-bg-inset); color: var(--color-text-secondary); }
+}
+
+// 屏 4 档案抽屉：verdict 置顶 + 折叠行 + AI 工具下拉
+.cws-verdict {
+  background: var(--color-accent-bg);
+  border-radius: var(--radius-control);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+
+  .cws-verdict__title { font-size: 12px; font-weight: 700; color: var(--color-accent); margin-bottom: 4px; }
+  .cws-verdict__text { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+  .cws-verdict__next { font-size: 12px; color: var(--color-text-secondary); margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+}
+
+.cws-sec { margin-top: 16px; }
+
+.cws-fold {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--color-bg-surface-muted);
+  border: none;
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+
+  & + .cws-fold, .cws-sec + .cws-sec .cws-fold { margin-top: 8px; }
+}
+
+.cws-aitools { position: relative;
+  .cws-aitools__menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 10;
+    background: var(--color-bg-elevated);
+    border-radius: var(--radius-control);
+    box-shadow: var(--shadow-pop);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    min-width: 140px;
+  }
+  .cws-aitools__item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-primary);
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: var(--radius-small);
+    cursor: pointer;
+    text-align: left;
+
+    &:hover { background: var(--color-bg-hover); }
+    &:disabled { opacity: 0.5; cursor: default; }
+  }
+}

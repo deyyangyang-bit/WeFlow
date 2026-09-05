@@ -4,10 +4,12 @@
  * 产品原则：用户不维护 CRM，AI 维护 CRM——用户只做「看清单、打勾」。
  * 页面回答：谁值得看（行动信号）→ 为什么现在看（信号原因）→ 我要做什么（下一步）→ 做完系统怎么办（完成闭环）。
  *
- * 三个视图：
- *  - 值得跟进：有 task 信号的客户（R0-R8 跟进规则触发），按 priorityScore 降序
- *  - AI 新发现：仅 24h 未读洞察的信号客户，按 priorityScore 降序
- *  - 全部客户：account 全量卡片流，有信号的置顶，无信号的按最近联系降序（次级视图）
+ * 行动队列改版（设计稿-客户工作台简化 屏 1-4，2026-09-05）：
+ *  - 默认页 = 行动队列一列卡：值得跟进（task 信号）+ 信息待确认（infoPending）+ AI 新发现（无 task 源信号）三源合并
+ *    （buildActionQueue 纯函数构建，src/utils/customerActionQueue.ts）；处理完即消失。
+ *  - 全部客户降级为搜索：有关键词（或阶段深链）才渲染结果列表；无关键词不铺全量卡（屏 3）。
+ *  - 队列空 = 居中空态「都处理完了」（屏 2）。
+ *  - 档案抽屉按「先看什么」重排：AI 当前判断 verdict 置顶 → 待办 → 客户信息 → 时间线/画像/业务折叠（屏 4）。
  *
  * 数据源（全部复用现有 IPC，无新增）：
  *  - 客户主数据：crm.customers()（account + profile_stage/profile_display_name 投影）
@@ -19,6 +21,7 @@ import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Clock } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
+import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import { stageToFunnel } from '../../shared/salesStage'
@@ -35,8 +38,6 @@ const FIELD_LABELS_WB: Record<string, string> = {
 const ENRICH_FIELD_ORDER = ['company', 'position', 'phone', 'industry', 'province', 'city', 'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive']
 const FORMAL_SET = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
 
-type ViewTab = 'follow' | 'insight' | 'all'
-
 export default function CustomerWorkspacePage() {
   const { notice, setNotice, queues, fetchQueues } = useCrmStore()
   const navigate = useNavigate()
@@ -46,9 +47,10 @@ export default function CustomerWorkspacePage() {
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [signals, setSignals] = useState<any[]>([])
-  const [tab, setTab] = useState<ViewTab>('follow')
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState('')
+  // 处理成功即从队列移除：乐观移除键集（重新拉取后源数据已消失，键集可安全保留）
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set())
 
   // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
   const openChat = (c: any) => {
@@ -96,8 +98,8 @@ export default function CustomerWorkspacePage() {
           if (hit) void openCustomer(hit)
           else setNotice('该客户尚未导入 CRM（AI 判定有意向后会自动导入）')
         } else if (stage) {
-          setTab('all')
-          // 防御旧值：漏斗下钻传中文档位，旧版曾传原始阶段串，统一过 stageToFunnel 归桶（幂等）
+          // 防御旧值：漏斗下钻传中文档位，旧版曾传原始阶段串，统一过 stageToFunnel 归桶（幂等）。
+          // 改版后阶段筛选只跟搜索态走：stageFilter 非空即进入搜索态（深链协议不变）
           setStageFilter(stageToFunnel(stage))
         }
       })
@@ -128,22 +130,21 @@ export default function CustomerWorkspacePage() {
   // 卡片信号徽章：task 信号优先（R0-R8 跟进规则），否则 insight
   const signalOf = (c: any) => signalBySession.get(String(c.session_id || '')) || null
 
-  // ─── 三个视图列表 ─────────────────────────────────────────────────────────
+  // ─── 行动队列（屏 1）与搜索态（屏 3）──────────────────────────────────────
   const withTask = (s: any) => (s?.sources || []).some((src: any) => src.type === 'task')
   const sortByScore = (a: any, b: any) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0)
 
-  const followList = useMemo(() => {
-    return customers
-      .filter((c) => { const s = signalOf(c); return s && withTask(s) })
-      .sort((a: any, b: any) => sortByScore(signalOf(b), signalOf(a)))
-  }, [customers, signalBySession]) // eslint-disable-line react-hooks/exhaustive-deps
-  const insightList = useMemo(() => {
-    return customers
-      .filter((c) => { const s = signalOf(c); return s && !withTask(s) })
-      .sort((a: any, b: any) => sortByScore(signalOf(b), signalOf(a)))
-  }, [customers, signalBySession]) // eslint-disable-line react-hooks/exhaustive-deps
-  const allList = useMemo(() => {
-    const q = search.trim().toLowerCase()
+  // 行动队列：三源合并（follow + infoPending + insight），乐观移除已处理键
+  const actionQueue = useMemo(
+    () => buildActionQueue(customers, signals, queues.infoPending || []).filter((it) => !dismissed.has(it.key)),
+    [customers, signals, queues.infoPending, dismissed]
+  )
+  // 搜索态：关键词或阶段深链任一存在才渲染结果列表（无关键词不铺全量卡，屏 3）
+  const searchKw = search.trim()
+  const searchActive = !!searchKw || !!stageFilter
+  const searchResults = useMemo(() => {
+    if (!searchActive) return []
+    const q = searchKw.toLowerCase()
     const rows = customers.filter((c) => {
       if (stageFilter && rowStage(c) !== stageFilter) return false
       if (!q) return true
@@ -157,7 +158,7 @@ export default function CustomerWorkspacePage() {
       if (sb) return 1
       return (Number(b.last_contact_at || b.created_at || 0)) - (Number(a.last_contact_at || a.created_at || 0))
     })
-  }, [customers, search, stageFilter, signalBySession]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [customers, searchKw, stageFilter, searchActive, signalBySession]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 下拉只显示中文档位（与漏斗同桶），不再中英混排
   const stageOptions = Array.from(new Set(customers.map(rowStage))).sort((a, b) => a.localeCompare(b, 'zh'))
@@ -177,6 +178,11 @@ export default function CustomerWorkspacePage() {
 
   // ─── 客户 360 档案 ─────────────────────────────────────────────────────────
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
+  // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
+  const [showAiTools, setShowAiTools] = useState(false)
+  const [foldTimeline, setFoldTimeline] = useState(false)
+  const [foldProfile, setFoldProfile] = useState(false)
+  const [foldBiz, setFoldBiz] = useState(false)
   const [customerProfile, setCustomerProfile] = useState<any>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [editingField, setEditingField] = useState('')
@@ -196,6 +202,10 @@ export default function CustomerWorkspacePage() {
     setDeepLoading(false)
     setEvidenceKey(null)
     setEvidenceMsg(null)
+    setShowAiTools(false)
+    setFoldTimeline(false)
+    setFoldProfile(false)
+    setFoldBiz(false)
     if (!c.session_id) return
     setProfileLoading(true)
     try {
@@ -353,11 +363,19 @@ export default function CustomerWorkspacePage() {
   }
 
   // ─── 渲染 ─────────────────────────────────────────────────────────────────
-  const viewList: Record<ViewTab, any[]> = { follow: followList, insight: insightList, all: allList }
-  const list = viewList[tab]
-  const countBadge = (t: ViewTab) => (t === 'follow' ? followList.length : t === 'insight' ? insightList.length : customers.length)
-
   const ownerFiltered = isSalesView(identity)
+  // 行动卡处理器（沿用现有闭环 handler；乐观移除 + 重新拉取）
+  const dismissCard = (key: string) => setDismissed((prev) => new Set(prev).add(key))
+  const handleComplete = async (it: ActionCardItem) => {
+    dismissCard(it.key)
+    if (it.customer) await completeSignal(it.customer)
+    else await fetchAll()
+  }
+  const handleInfo = async (it: ActionCardItem, action: 'accept' | 'reject') => {
+    dismissCard(it.key)
+    if (it.infoItem) await applyInfo(it.infoItem, action)
+  }
+  const avatarChar = (n: string) => Array.from(n.trim())[0] || '客'
   return (
     <div className="cws-page">
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
@@ -404,98 +422,85 @@ export default function CustomerWorkspacePage() {
       )}
 
 
-      <div className="cws-tabs">
-        {(['follow', 'insight', 'all'] as ViewTab[]).map((t) => (
-          <button key={t} className={`cws-tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-            {t === 'follow' ? '⚡ 值得跟进' : t === 'insight' ? '✨ AI 新发现' : '👥 全部客户'} ({countBadge(t)})
-          </button>
-        ))}
-        {tab === 'all' && (
-          <div className="crm-filter-bar cws-toolbar">
-            <input className="cws-search" placeholder="搜索客户名/公司…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="cws-toolbar-row">
+        <div className="crm-filter-bar cws-toolbar">
+          <input className="cws-search" placeholder="搜客户名 / 公司，找全部客户…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          {searchActive && (
             <select className="crm-filter-select" value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}>
               <option value="">全部阶段</option>
-              {stageOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              {stageOptions.map((st) => <option key={st} value={st}>{st}</option>)}
             </select>
-          </div>
-        )}
-      </div>
-
-      {queues.infoPending.length > 0 && (
-        <div className="crm-info-pending">
-          <button className="crm-info-pending__head" onClick={() => setShowInfoPending((v) => !v)}>
-            <span>⚡ 信息待确认 {queues.infoPending.length} 条 · AI 中置信发现，采纳后写入档案</span>
-            <span className="crm-info-pending__toggle">{showInfoPending ? '收起 ▲' : '展开 ▼'}</span>
-          </button>
-          {showInfoPending && (
-            <div className="crm-info-pending__list">
-              {queues.infoPending.map((it: any) => (
-                <div key={`${it.account_id}-${it.field}`} className="crm-info-pending__item">
-                  <div className="crm-info-pending__main">
-                    <div className="crm-info-pending__title">
-                      <strong>{it.account_name}</strong> · {FIELD_LABELS_WB[it.field] || it.field} → {it.value}
-                      <span className="crm-pill crm-pill--warn">待确认</span>
-                      <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>置信 {Math.round((it.confidence || 0) * 100)}%</span>
-                    </div>
-                    {it.evidence && <div className="crm-info-pending__evi">证据 ·「{String(it.evidence).slice(0, 40)}」</div>}
-                  </div>
-                  <div className="crm-info-pending__ops">
-                    <button className="crm-btn primary" onClick={() => void applyInfo(it, 'accept')}>采纳</button>
-                    <button className="crm-btn" onClick={() => void applyInfo(it, 'reject')}>放弃</button>
-                    <button className="crm-btn" onClick={() => void openInfoCustomer(Number(it.account_id))}>查看档案</button>
-                  </div>
-                </div>
-              ))}
-            </div>
           )}
         </div>
-      )}
-
-
-      <div className="cws-grid">
-        {list.map((c: any) => {
-          const sig = signalOf(c)
-          const sigSource = sig ? (withTask(sig) ? (sig.sources || []).find((src: any) => src.type === 'task') : sig.sources?.[0]) : null
-          const nextMove = sig?.analysis || sigSource?.reason || ''
-          const silent = silentDaysOf(c)
-          const active = selectedCustomer?.id === c.id
-          return (
-            <div key={c.id} className={`cws-card ${active ? 'active' : ''}`} onClick={() => void openCustomer(c)}>
-              <div className="cws-card__head">
-                <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={32} />
-                <span className="cws-card__name" title="查看客户 360 档案">{displayNameOf(c)}{c.session_id ? <span className="crm-badge">AI</span> : ''}</span>
-                <span className="crm-badge cws-card__stage">{rowStage(c)}</span>
-              </div>
-              <div className="cws-card__company">{c.company || <span className="crm-muted">未填公司</span>}</div>
-              {silent != null && (
-                <div className="cws-card__silence"><Clock size={12} /> {silent} 天未互动</div>
-              )}
-              {sigSource && (
-                <div className="cws-card__signal">
-                  <span className="cws-card__signal-tag">{sigSource.label || '信号'}</span>
-                  <span className="cws-card__signal-text">{sigSource.reason || nextMove || sigSource.insightText || ''}</span>
-                </div>
-              )}
-              <div className="cws-card__actions" onClick={(e) => e.stopPropagation()}>
-                {sig && (
-                  <button className="crm-btn primary cws-card__complete" disabled={completing === String(c.id)} onClick={() => void completeSignal(c)}>
-                    <CheckCircle2 size={13} /> {completing === String(c.id) ? '完成中…' : '完成'}
-                  </button>
-                )}
-                <button className="crm-btn" onClick={() => void openChat(c)} disabled={!c.session_id}><MessageCircle size={13} /> 打开聊天</button>
-                <button className="crm-btn" onClick={() => { void openCustomer(c); void genDeepAnalysis(c) }}><Sparkles size={13} /> AI 深度分析</button>
-              </div>
-            </div>
-          )
-        })}
-        {list.length === 0 && (
-          <div className="crm-empty">
-            {customers.length === 0
-              ? '暂无客户 —— 在「设置 → AI 画像」生成客户画像后，有意向的客户会自动导入这里'
-              : tab === 'follow' ? '暂无需要跟进的客户，去看看全部客户' : tab === 'insight' ? '暂无新的 AI 洞察' : '该阶段/搜索无客户'}
-          </div>
-        )}
       </div>
+
+      {searchActive ? (
+        /* ── 屏 3：搜索态（关键词/阶段深链任一存在才渲染结果列表）── */
+        <div className="cws-search-card">
+          {searchResults.map((c: any) => {
+            const silent = silentDaysOf(c)
+            return (
+              <div key={c.id} className="cws-search-row" onClick={() => void openCustomer(c)}>
+                <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={32} />
+                <div className="cws-search-row__main">
+                  <strong>{displayNameOf(c)}</strong>
+                  <div className="cws-search-row__sub">{c.company || '未填公司'}</div>
+                </div>
+                <span className={`pill pill--${rowStage(c) === '流失' ? 'neutral' : rowStage(c) === '成交' ? 'success' : 'info'}`}>{rowStage(c)}</span>
+                <span className="cws-search-row__silent">{silent == null ? '—' : silent === 0 ? '今天有互动' : `${silent} 天未互动`}</span>
+              </div>
+            )
+          })}
+          {searchResults.length === 0 && <div className="crm-empty">无匹配客户</div>}
+        </div>
+      ) : actionQueue.length === 0 ? (
+        /* ── 屏 2：队列清零空态 ── */
+        <div className="cws-done">
+          <div className="cws-done__emoji">🎉</div>
+          <div className="cws-done__title">都处理完了</div>
+          <div className="cws-done__sub">要找一个具体客户？用上面的搜索框。想看看今天还能干什么？去「今日行动」。</div>
+        </div>
+      ) : (
+        /* ── 屏 1：行动队列 ── */
+        <>
+          <div className="cws-queue-hint">今天有 <strong>{actionQueue.length}</strong> 个客户需要你处理 · 处理完即消失</div>
+          <div className="cws-queue">
+            {actionQueue.map((it: ActionCardItem) => (
+              <div key={it.key} className="cws-action-card" onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
+                <Avatar src={(it.customer as any)?.avatarUrl} name={it.displayName} size={36} />
+                <div className="cws-action-card__body">
+                  <div className="cws-action-card__head">
+                    <span className="cws-action-card__name">{it.displayName}</span>
+                    <span className={`pill pill--${it.pill}`}>{it.pillText}</span>
+                  </div>
+                  <div className="cws-action-card__reason">{it.reason}</div>
+                  <div className="cws-action-card__suggest">{it.suggest}</div>
+                </div>
+                <div className="cws-action-card__ops" onClick={(e) => e.stopPropagation()}>
+                  {it.kind === 'follow' && (
+                    <>
+                      <button className="crm-btn primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 去聊天</button>
+                      <button className="crm-btn" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                    </>
+                  )}
+                  {it.kind === 'info' && (
+                    <>
+                      <button className="crm-btn primary" onClick={() => void handleInfo(it, 'accept')}>✓ 采纳</button>
+                      <button className="crm-btn" onClick={() => void handleInfo(it, 'reject')}>放弃</button>
+                    </>
+                  )}
+                  {it.kind === 'insight' && (
+                    <>
+                      <button className="crm-btn primary" onClick={() => it.sessionId ? void openChat(it.customer) : void openCustomer(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 看原话</button>
+                      <button className="crm-btn" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {selectedCustomer && (
         <div className="cws-drawer" onClick={() => setSelectedCustomer(null)}>
@@ -504,11 +509,18 @@ export default function CustomerWorkspacePage() {
           <div className="crm-detail-head">
             <h3>{displayNameOf(selectedCustomer)} · 客户档案</h3>
             <div className="crm-detail-actions">
-              <button className="crm-btn" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
-              <button className="crm-btn" onClick={() => void runEnrichOne(selectedCustomer)} disabled={!selectedCustomer.session_id}><Sparkles size={13} /> AI 补全</button>
-              <button className="crm-btn" onClick={() => void genDeepAnalysis(selectedCustomer)}><Sparkles size={13} /> {deepLoading ? '分析中…' : '深度分析'}</button>
-              <button className="crm-btn" onClick={() => void genAiQuotation(selectedCustomer)}><Sparkles size={13} /> AI 报价</button>
-              <button className="crm-btn primary" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
+              <button className="crm-btn primary" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
+              <button className="crm-btn" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
+              <div className="cws-aitools">
+                <button className="crm-btn crm-btn--ghost" onClick={() => setShowAiTools((v) => !v)}>AI 工具 ▾</button>
+                {showAiTools && (
+                  <div className="cws-aitools__menu">
+                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
+                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
+                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
+                  </div>
+                )}
+              </div>
               <button className="crm-btn crm-btn--ghost cws-drawer__close" title="关闭档案（点击遮罩也可关闭）" onClick={() => setSelectedCustomer(null)}><X size={15} /></button>
             </div>
           </div>
@@ -516,7 +528,43 @@ export default function CustomerWorkspacePage() {
           {!selectedCustomer.session_id && <div className="crm-insight">（未关联微信会话，无 AI 档案）</div>}
           {!profileLoading && selectedCustomer.session_id && customerProfile && (
             <div className="crm-profile">
-              <div className="crm-profile__section">
+              {customerProfile.currentView && (() => {
+                // 屏 4 ①：AI 当前判断 verdict 置顶——一句话判断 + 下一步建议 + 依据回查
+                const j: any = customerProfile.currentView.judgments || {}
+                const main = j.summary || j.risk || null
+                const next = j.nextAction || null
+                if (!main && !next) return null
+                return (
+                  <div className="cws-verdict">
+                    <div className="cws-verdict__title">AI 当前判断</div>
+                    <div className="cws-verdict__text">
+                      {main ? String(main.value || '') : '暂无一句话判断'}
+                      {main?.freshness === 'stale' && <span className="cws-j-badge cws-j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
+                      {main?.source === 'manual' && <span className="cws-j-badge cws-j-badge--manual">人工</span>}
+                    </div>
+                    {next && (
+                      <div className="cws-verdict__next">
+                        下一步：{String(next.value || '')}
+                        {next.evidenceStatus === 'ok' && next.messageKey && (
+                          <button className="cws-j-evidence" onClick={() => void toggleEvidence(next)}>
+                            {evidenceKey === next.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '依据'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {evidenceKey && evidenceMsg && <div className="cws-j-evidence-text">{evidenceMsg}</div>}
+                  </div>
+                )
+              })()}
+              {customerProfile.todos?.length > 0 && (
+                <div className="crm-profile__section cws-sec">
+                  <h4>跟进待办（{customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').length}）</h4>
+                  {customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').map((t: any) => (
+                    <div key={t.id} className="crm-row">{t.promise_summary || t.title} [{t.status}]</div>
+                  ))}
+                </div>
+              )}
+              <div className="crm-profile__section cws-sec">
                 <h4>客户信息 <span className="crm-profile__hint">点击字段可编辑，手改后 AI 不再覆盖</span></h4>
                 <div className="crm-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span>客户类型</span>
@@ -563,9 +611,12 @@ export default function CustomerWorkspacePage() {
                   ))}
                 </div>
               </div>
-              {(customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
-                <div className="crm-profile__section">
-                  <h4>动态时间线</h4>
+              <div className="cws-sec">
+                <button className="cws-fold" onClick={() => setFoldTimeline((v) => !v)}>
+                  <span>📈 动态时间线（{customerProfile.activities?.length ?? 0} 条）</span>
+                  <span>{foldTimeline ? '收起 ▲' : '展开 ▼'}</span>
+                </button>
+                {foldTimeline && (customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
                   <div className="crm-timeline">
                     {[
                       // Customer 360：CRM 业务动作（后端已聚合 6 实体）+ 线索流转 + 商机事件 + AI 见解，一条流混排
@@ -579,66 +630,27 @@ export default function CustomerWorkspacePage() {
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
               {customerProfile.aiProfile && (
-                <div className="crm-profile__section">
-                  <h4>AI 画像</h4>
-                  <div className="crm-insight">{customerProfile.aiProfile}</div>
+                <div className="cws-sec">
+                  <button className="cws-fold" onClick={() => setFoldProfile((v) => !v)}>
+                    <span>✨ AI 画像</span>
+                    <span>{foldProfile ? '收起 ▲' : '展开 ▼'}</span>
+                  </button>
+                  {foldProfile && <div className="crm-insight">{customerProfile.aiProfile}</div>}
                 </div>
               )}
-              {customerProfile.currentView && (
-                <div className="crm-profile__section">
-                  <h4>AI 当前判断</h4>
-                  <div className="crm-insight">
-                    {(() => {
-                      const j: any = customerProfile.currentView.judgments || {}
-                      const cards = [
-                        { label: '总结', v: j.summary },
-                        { label: '机会', v: j.opportunity },
-                        { label: '风险', v: j.risk },
-                        { label: '下一步', v: j.nextAction }
-                      ]
-                      const present = cards.filter((c) => c.v)
-                      if (!present.length) {
-                        return <div className="ai-row"><span className="cws-j-empty">暂无 AI 判断（系统扫描/预热时生成，打开档案不现场生成）</span></div>
-                      }
-                      return present.map((c) => (
-                        <div key={c.label} className="ai-row">
-                          <span className="ai-row__label">{c.label}</span>
-                          <span className="ai-row__value">
-                            {String(c.v.value || '')}
-                            {c.v.freshness === 'stale' && <span className="cws-j-badge cws-j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
-                            {c.v.source === 'manual' && <span className="cws-j-badge cws-j-badge--manual">人工</span>}
-                            {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
-                              <button className="cws-j-evidence" onClick={() => void toggleEvidence(c.v)}>
-                                {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '有据可查'}
-                              </button>
-                            )}
-                          </span>
-                          {evidenceKey === c.v.messageKey && evidenceMsg && (
-                            <div className="cws-j-evidence-text">{evidenceMsg}</div>
-                          )}
-                        </div>
-                      ))
-                    })()}
+              <div className="cws-sec">
+                <button className="cws-fold" onClick={() => setFoldBiz((v) => !v)}>
+                  <span>💼 业务（合同 {customerProfile.contracts?.length ?? 0} 份 · 回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()}）</span>
+                  <span>{foldBiz ? '收起 ▲' : '展开 ▼'}</span>
+                </button>
+                {foldBiz && (
+                  <div className="crm-row">
+                    <button className="crm-btn danger" onClick={() => void deleteCustomer(selectedCustomer)}><Trash2 size={13} /> 删除客户</button>
                   </div>
-                </div>
-              )}
-              {customerProfile.todos?.length > 0 && (
-                <div className="crm-profile__section">
-                  <h4>跟进待办（{customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').length}）</h4>
-                  {customerProfile.todos.filter((t: any) => t.status === 'pending' || t.status === 'overdue').map((t: any) => (
-                    <div key={t.id} className="crm-row">{t.promise_summary || t.title} [{t.status}]</div>
-                  ))}
-                </div>
-              )}
-              <div className="crm-profile__section">
-                <h4>业务</h4>
-                <div className="crm-row">合同 {customerProfile.contracts?.length ?? 0} 份 · 已确认回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()}</div>
-                <div className="crm-row">
-                  <button className="crm-btn danger" onClick={() => void deleteCustomer(selectedCustomer)}><Trash2 size={13} /> 删除客户</button>
-                </div>
+                )}
               </div>
             </div>
           )}
