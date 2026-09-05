@@ -502,6 +502,29 @@ class CrmDbService {
     try { this.db.run('ALTER TABLE contract ADD COLUMN quote_version_id INTEGER') } catch { /* 列已存在 */ }
     // 决策 B（宪法 §4.2，2026-09-02）：群资源扫描整功能下线，清理遗留游标（幂等；服务已删，键不再产生）
     try { this.db.run("DELETE FROM scan_state WHERE key LIKE 'leadScan:%'") } catch { /* ignore */ }
+    // 存量清理（2026-09-05）：旧版解析规则曾把手机号/单号误判为金额写进 opportunity/quote_signal
+    // （PHONE_NUM_RE + AMOUNT_MAX 护栏 9/2 才随 86b3ece 上线，此前存量需清；Windows 覆盖安装保留旧库故仍会看到）。
+    // 口径：amount ≥ 1 亿（叉车整机/改装单价远不及此，必为误识别）→ 归零=待人工确认，幂等（二次启动命中 0 行）。
+    try {
+      const AMOUNT_ABSURD = 100000000
+      const oppDirty = this.all('SELECT id, amount FROM opportunity WHERE amount >= ?', [AMOUNT_ABSURD])
+      for (const row of oppDirty) {
+        this.db.run('UPDATE opportunity SET amount = 0, updated_at = ? WHERE id = ?', [Date.now(), Number(row.id)])
+        this.opportunityEventAdd(Number(row.id), 'amount_reset', '', `旧版误识别金额 ¥${row.amount} 已清零，待人工确认`)
+      }
+      const qsDirty = this.all('SELECT id, amount FROM quote_signal WHERE amount >= ?', [AMOUNT_ABSURD])
+      for (const row of qsDirty) {
+        this.db.run('UPDATE quote_signal SET amount = 0 WHERE id = ?', [Number(row.id)])
+      }
+      if (oppDirty.length || qsDirty.length) {
+        this.db.run(
+          'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+          ['system:migration', 'absurd_amount_sweep', 'opportunity', null,
+            JSON.stringify({ opportunity: oppDirty.length, quote_signal: qsDirty.length, threshold: AMOUNT_ABSURD }), Date.now()]
+        )
+        console.log(`[CRM] 存量脏金额清理：opportunity ${oppDirty.length} 行 / quote_signal ${qsDirty.length} 行（≥1亿 判为误识别）`)
+      }
+    } catch { /* 表结构差异忽略 */ }
     // Migration: lead 旧结构表（空壳 name/company/phone 或中间态 contact_phone/contact_wechat）→ 线索流转结构
     // 旧表缺 contact_type 或 contact_normalized 任一 → 迁移旧数据（如有）后重建为新 SCHEMA。
     // 注意：lead 索引独立于 SCHEMA_SQL（LEAD_INDEXES_SQL），避免旧表上建索引先崩。

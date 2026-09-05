@@ -1146,6 +1146,18 @@
 
 ---
 
+## 2.63 存量脏金额启动清理（2026-09-05，商机页 ¥304亿 修复）
+
+> **问题**：Windows 机器商机页显示「商机金额 ¥304.05 亿」，王靖一条 ¥15,202,635,273——即手机号 15202635273 被当金额。**根因是存量**：护栏（`PHONE_NUM_RE` + `AMOUNT_MAX=1e8`，crmParseRules.ts:35/37）9/2 才随 86b3ece 上线，此前旧版本已把脏数据写进 Windows 本地库；覆盖安装只换程序不动数据，故新包仍看到旧脏数据。Mac 本机库是干净的（opportunity 仅 5 行 amount 全 0）。
+
+- **改法**：`crmDbService.ts` doInitialize 内、决策 B 游标清理后，新增幂等启动清理——`opportunity`/`quote_signal` 中 `amount ≥ 1e8` 的行归零（=待人工确认），每行 `opportunityEventAdd('amount_reset')` 留痕，有命中写一行 `audit_event`（actor=`system:migration`，action=`absurd_amount_sweep`）。
+- **口径**：1 亿阈值——叉车整机/改装单价远不及此，必为误识别；归零而非删除，销售可在商机页人工补填真实金额。
+- **注意**：`this.all()` 非泛型（返回 `CrmRow[]`），993/1184 两行 `this.all<{...}>` 是既有基线错误（TS2558，含在 158 基线内），新代码不要照抄该写法。
+- **⚠️ 不在 009de01 包里**，随 §2.61/§2.62 一起待重打；销售机器**无需手动清库**，新包首次启动自动清。
+- **验证**：tsc node 158 基线零新增 / crm-opportunity-test 45/45 / crm-golden-test 47/47 / 一次性实证脚本（/tmp/sweep-verify.ts）：脏行归零、正常行不误伤、amount_reset+audit 留痕、二次启动幂等 0 命中。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
