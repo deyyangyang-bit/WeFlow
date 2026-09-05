@@ -69,3 +69,19 @@
 .cws-j-evidence:hover { background: var(--color-accent-bg); }
 .cws-j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: 6px; font-size: 13px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
 .cws-j-empty { color: var(--color-text-tertiary); }
+
+/* 客户 360 档案：右侧抽屉（2026-09-05，替代页面底部内联长面板——页面过长影响操作） */
+.cws-drawer {
+  position: fixed; inset: 0; z-index: 900;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex; justify-content: flex-end;
+}
+.cws-drawer__panel {
+  width: min(760px, 94vw); height: 100%;
+  background: var(--color-bg-surface);
+  overflow-y: auto; padding: 16px 20px 32px;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  .crm-detail { margin-top: 0; }
+  .crm-detail-head { position: sticky; top: -16px; z-index: 5; background: var(--color-bg-surface); padding: 4px 0 8px; }
+}
+.cws-drawer__close { padding: 4px 8px; }

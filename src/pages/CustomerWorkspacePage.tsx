@@ -487,7 +487,9 @@ export default function CustomerWorkspacePage() {
       </div>
 
       {selectedCustomer && (
-        <div className="crm-detail">
+        <div className="cws-drawer" onClick={() => setSelectedCustomer(null)}>
+          <div className="cws-drawer__panel" onClick={(e) => e.stopPropagation()}>
+          <div className="crm-detail">
           <div className="crm-detail-head">
             <h3>{displayNameOf(selectedCustomer)} · 客户档案</h3>
             <div className="crm-detail-actions">
@@ -496,6 +498,7 @@ export default function CustomerWorkspacePage() {
               <button className="crm-btn" onClick={() => void genDeepAnalysis(selectedCustomer)}><Sparkles size={13} /> {deepLoading ? '分析中…' : '深度分析'}</button>
               <button className="crm-btn" onClick={() => void genAiQuotation(selectedCustomer)}><Sparkles size={13} /> AI 报价</button>
               <button className="crm-btn primary" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
+              <button className="crm-btn crm-btn--ghost cws-drawer__close" title="关闭档案（点击遮罩也可关闭）" onClick={() => setSelectedCustomer(null)}><X size={15} /></button>
             </div>
           </div>
           {profileLoading && <div className="crm-insight">加载档案…</div>}
@@ -636,6 +639,8 @@ export default function CustomerWorkspacePage() {
               </div>
             </div>
           )}
+          </div>
+          </div>
         </div>
       )}
     </div>
