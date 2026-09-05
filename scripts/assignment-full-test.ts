@@ -34,11 +34,14 @@ function ok(name: string, cond: boolean, detail = ''): void {
 
 import { ConfigService } from '../electron/services/config'
 import { crmDbService } from '../electron/services/crmDbService'
+import { salesDbService } from '../electron/services/salesDbService'
 import { setIdentity } from '../electron/services/identityService'
 import {
   assignLeads, claimLead, recycleAssignment, transferAssignment, currentAssignment,
-  runSla1Recycle, backfillAssignmentSla1, correctSla1Misrecycle
+  runSla1Recycle, backfillAssignmentSla1, correctSla1Misrecycle, assignBatchLeads, buildDistribution
 } from '../electron/services/crmAssignmentService'
+import { importLeads } from '../electron/services/crmLeadService'
+import { distributePreview } from '../src/utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../shared/leadSla'
 
 const S_A = '测试销售甲'
@@ -74,6 +77,8 @@ async function main(): Promise<void> {
   cfg.set('crmLeadSlaHours', 24)
   const dbDir = mkdtempSync(join(tmpdir(), 'assignment-full-test-db-'))
   await crmDbService.initialize(dbDir)
+  // importLeads → scanLeadSla → selfHealSlaTasks 会读 salesDb（SLA 行动卡），测试内一并初始化隔离库
+  await salesDbService.initialize(dbDir)
 
   console.log('═══ A. assign 起计时（sla1_deadline + lead 哨兵覆盖）═══')
   const la = seedLead('A-线索')
@@ -308,6 +313,76 @@ async function main(): Promise<void> {
   const corr3 = correctSla1Misrecycle()
   ok('G13 标记丢失重入：数据级幂等零补偿', corr3.corrected === 0 && corr3.alreadyAssigned === 4, JSON.stringify(corr3))
   ok('G14 标记已重建', crmDbService.getScanState('migration:sla1-misrecycle-correction') > 0)
+
+
+  console.log('\n═══ H. 批量分配 assignBatch（设计稿屏 3）+ 导入审计 ═══')
+  const hSales = [S_A, S_B, S_C]
+  const hLeadIds: number[] = []
+  for (let i = 0; i < 12; i++) hLeadIds.push(seedLead(`H-批量${i}`))
+  const hb1 = assignBatchLeads({ count: 10, mode: 'weight', weights: { [S_A]: 50, [S_B]: 30, [S_C]: 20 }, actor: '主管张某' })
+  ok('H1 批量分配 ok 且分配 10 条', hb1.ok === true && hb1.data?.assigned === 10, JSON.stringify(hb1))
+  ok('H2 权重 50/30/20 → 甲5/乙3/丙2',
+    hb1.data?.perSales[S_A] === 5 && hb1.data?.perSales[S_B] === 3 && hb1.data?.perSales[S_C] === 2, JSON.stringify(hb1.data?.perSales))
+  ok('H3 批次号 = #A+审计行号', /^#A\d+$/.test(hb1.data?.batchNo || '') === true, hb1.data?.batchNo)
+  const batchAuditId = Number((hb1.data?.batchNo || '#A0').slice(2))
+  const batchAudit = crmDbService.all('SELECT * FROM audit_event WHERE id = ?', [batchAuditId])[0]
+  ok('H4 批次审计 action=lead_assign_batch（含模式/份额/操作人）',
+    !!batchAudit && String(batchAudit.action) === 'lead_assign_batch' && JSON.parse(String(batchAudit.detail)).mode === 'weight' && String(batchAudit.actor) === '主管张某')
+  // mode 落 assignment.mode：本批新分配行（updated_by=actor）mode 全为 weight
+  //（池含前序分段遗留的 NEW 无归属线索，分配目标不能假设是本节 seed 的 12 条）
+  const hWeightRows = crmDbService.all("SELECT COUNT(*) AS c FROM assignment WHERE updated_by = '主管张某' AND mode = 'weight' AND deleted = 0")[0]
+  ok('H5 mode 落 assignment.mode=weight（本批 10 行）', Number(hWeightRows.c) === 10, `实 ${hWeightRows.c}`)
+  // 池大小动态计算（NEW 且无当前有效分配行；回收行也回池，属正确产品语义）
+  const poolCount = (): number => Number(crmDbService.all(
+    `SELECT COUNT(*) AS c FROM lead l WHERE l.status = 'NEW' AND NOT EXISTS (
+       SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.deleted = 0 AND a.status IN ('assigned','claimed'))`
+  )[0].c)
+  const p1 = poolCount()
+  const hb2 = assignBatchLeads({ count: 5, mode: 'round_robin', actor: '主管张某' })
+  ok('H6 取 5 条池实有 p1 条 → 实分 min(5,p1)（clamp）', hb2.ok === true && hb2.data?.assigned === Math.min(5, p1), `p1=${p1} ${JSON.stringify(hb2.data)}`)
+  // 轮询均分：各人差额 ≤1 且总量吻合
+  const per2 = hb2.data?.perSales || {}
+  const nums = hSales.map((s) => per2[s] || 0)
+  ok('H7 轮询均分（max-min ≤1 且总量吻合）', Math.max(...nums) - Math.min(...nums) <= 1 && nums.reduce((a, b) => a + b, 0) === hb2.data?.assigned, JSON.stringify(per2))
+  // 负载均衡：执行结果 = 共享份额规划器口径（规划器吃全库真实在手）。
+  // hb2 可能已把池取空（clamp 语义），先补种保证池 ≥2
+  while (poolCount() < 2) { hLeadIds.push(seedLead('H-补种')) }
+  const realLoads: Record<string, number> = {}
+  for (const s of hSales) realLoads[s] = 0
+  for (const r of crmDbService.all(`SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed') GROUP BY sales_name`)) {
+    if (realLoads[String(r.sales_name)] !== undefined) realLoads[String(r.sales_name)] = Number(r.c)
+  }
+  const hb3 = assignBatchLeads({ count: 2, mode: 'load', actor: '主管张某' })
+  const expect3 = buildDistribution('load', 2, hSales, {}, realLoads)
+  ok('H8 负载均衡执行 = 共享规划器口径', hb3.ok === true && hb3.data?.assigned === 2
+    && hSales.every((s) => (hb3.data?.perSales[s] || 0) === (expect3[s] || 0)), JSON.stringify({ per: hb3.data?.perSales, expect: expect3 }))
+  // 空池断言：先把剩余池全部分掉（数量=池大小）→ 再分 → E301
+  const p2 = poolCount()
+  if (p2 > 0) assignBatchLeads({ count: p2, mode: 'weight', actor: '主管张某' })
+  const hb4 = assignBatchLeads({ count: 5, mode: 'weight', actor: 'x' })
+  ok('H9 待分配池为空 → E301', hb4.ok === false && hb4.code === 'E301', JSON.stringify(hb4))
+  const scenarios: Array<['weight' | 'round_robin' | 'load', number, Record<string, number>]> = [
+    ['weight', 12, { [S_A]: 40, [S_B]: 35, [S_C]: 25 }],
+    ['weight', 10, {}],
+    ['round_robin', 7, {}],
+    ['load', 9, {}]
+  ]
+  let consistent = true
+  for (const [m, n, w] of scenarios) {
+    const be = buildDistribution(m, n, hSales, w, { [S_A]: 3, [S_B]: 1, [S_C]: 0 })
+    const fe = distributePreview(m, n, hSales, w, { [S_A]: 3, [S_B]: 1, [S_C]: 0 })
+    if (JSON.stringify(be) !== JSON.stringify(fe)) consistent = false
+  }
+  ok('H10 前端 distributePreview 与后端 buildDistribution 逐模式一致（防口径漂移）', consistent)
+
+  const auditBefore = Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event WHERE action = ?', ['lead_import'])[0].c)
+  importLeads('批量导入测试', 'batch-test.xlsx', [
+    { phone: '13700001111', note: 'H 导入审计' },
+    { phone: '13700002222' }
+  ])
+  const impAudit = crmDbService.all('SELECT * FROM audit_event WHERE action = ? ORDER BY id DESC LIMIT 1', ['lead_import'])[0]
+  ok('H11 importLeads 落 lead_import 审计行', Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event WHERE action = ?', ['lead_import'])[0].c) === auditBefore + 1)
+  ok('H12 审计 detail 含批次统计', !!impAudit && JSON.parse(String(impAudit.detail)).valid === 2 && JSON.parse(String(impAudit.detail)).batchId > 0)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)

@@ -104,3 +104,131 @@ export function visibleOwnerChips(
     ...counts.names.map((n) => ({ value: n.value, label: n.value, count: n.count }))
   ]
 }
+
+// ─── 三视角改版（设计稿屏 2/3/4/6，2026-09-05）：以下均为纯判定/纯计算函数 ──
+
+/** 线索页视角形态：销售 = 我的资源卡（屏 4）；其余（分配员/主管/空身份）= 管理三页签（屏 2/3/6左） */
+export type LeadPageView = 'sales' | 'manager'
+export function leadPageView(identity: IdentityLike): LeadPageView {
+  return isSalesView(identity) ? 'sales' : 'manager'
+}
+
+/** 管理视角三个分段页签（屏 2 资源池 / 屏 3 分配控制台 / 屏 6 左 回收改派） */
+export type ManagerTab = 'pool' | 'console' | 'reassign'
+
+/** 分配模式（设计稿屏 3 三模式，weight 为默认） */
+export type AssignMode = 'weight' | 'round_robin' | 'load'
+
+/**
+ * 份额分配预览（屏 3 右卡，纯前端预览；与后端 assignBatchLeads.buildDistribution 同口径——
+ * 由 scripts/assignment-full-test.ts H 节断言两实现逐模式一致，防口径漂移）：
+ *   weight：最大余数法（缺省等权）；round_robin：轮询均分；load：逐条给「在手+本批已得」最少者。
+ */
+export function distributePreview(mode: AssignMode, count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>): Record<string, number> {
+  const plan: Record<string, number> = {}
+  for (const s of sales) plan[s] = 0
+  if (count <= 0 || !sales.length) return plan
+  if (mode === 'weight') {
+    const w = sales.map((s) => Math.max(0, Number(weights[s] ?? 0)))
+    const totalW = w.reduce((a, b) => a + b, 0)
+    const eff = totalW > 0 ? w : sales.map(() => 1)
+    const effTotal = eff.reduce((a, b) => a + b, 0)
+    const remainders = sales.map((s, i) => {
+      const exact = (count * eff[i]) / effTotal
+      return { s, base: Math.floor(exact), frac: exact - Math.floor(exact) }
+    })
+    let used = remainders.reduce((a, r) => a + r.base, 0)
+    remainders.sort((a, b) => b.frac - a.frac)
+    let ri = 0
+    while (used < count && remainders.length) { remainders[ri % remainders.length].base++; used++; ri++ }
+    for (const r of remainders) plan[r.s] = r.base
+  } else if (mode === 'round_robin') {
+    for (let i = 0; i < count; i++) plan[sales[i % sales.length]]++
+  } else {
+    const cur: Record<string, number> = {}
+    for (const s of sales) cur[s] = Number(loads[s] || 0)
+    for (let i = 0; i < count; i++) {
+      const s = sales.reduce((min, x) => (cur[x] < cur[min] ? x : min), sales[0])
+      plan[s]++
+      cur[s]++
+    }
+  }
+  return plan
+}
+
+/**
+ * 回收改派建议人（屏 6 左）：在手最少且非原归属；全同名时回 ''（前端提示手动选择）。
+ * recycledRow 原归属 = 原分配行 sales_name。
+ */
+export function suggestReassignOwner(fromSales: string, sales: string[], loads: Record<string, number>): string {
+  const cands = sales.filter((s) => s && s !== fromSales)
+  if (!cands.length) return ''
+  return cands.reduce((min, x) => (Number(loads[x] || 0) < Number(loads[min] || 0) ? x : min), cands[0])
+}
+
+export type Sla1Tier = 'wait_claim' | 'ok' | 'warn' | 'over' | 'done'
+
+export interface Sla1Countdown {
+  tier: Sla1Tier
+  /** 倒计时文案（num 列展示）：待认领=剩余认领时间；claimed=加好友剩余；超时='已超时'；已加好友='—' */
+  text: string
+  /** 说明行（l 列）：如「认领后 24h 内加好友」「加好友倒计时 · 临近超时」「24h 复查中 · 2/3」 */
+  label: string
+  /** 剩余毫秒（负=已超时；已停表为 0） */
+  remainMs: number
+  /** 已超时提醒次数（0=未提醒过；用于「第 N 次提醒」pill 与 N/3 进度） */
+  remindCount: number
+  /** 状态 pill 语义（pill 五语义） */
+  pill: 'info' | 'success' | 'warning' | 'danger' | 'neutral'
+  pillText: string
+}
+
+const SLA1_WARN_MS = 4 * 3600_000
+
+function fmtRemain(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const p = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${p(m)}:${p(sec)}` : `${p(m)}:${p(sec)}`
+}
+
+/**
+ * 屏 4 资源卡倒计时档位（第一段 SLA，纯函数；now 注入便于测试）：
+ *   assigned（未认领）→ wait_claim：认领引导（剩余认领时间，蓝 pill「待认领」）；
+ *   claimed 未停表：剩余 >4h → ok；≤4h → warn（琥珀「临近超时」）；已过 → over（红「第 N 次超时提醒」）；
+ *   已停表（sla1MetAt 非空）→ done（绿「已加好友 ✓」，进入第二段）。
+ */
+export function sla1Countdown(a: { status: string; sla1Deadline: number; sla1MetAt: number; sla1RemindCount?: number }, now: number): Sla1Countdown {
+  const remindCount = Math.max(0, Math.floor(Number(a.sla1RemindCount || 0)))
+  const deadline = Number(a.sla1Deadline || 0)
+  if (Number(a.sla1MetAt || 0) > 0) {
+    return { tier: 'done', text: '—', label: '进入第二段「聊了没有」', remainMs: 0, remindCount, pill: 'success', pillText: '已加好友 ✓' }
+  }
+  const remainMs = deadline - now
+  if (String(a.status) === 'claimed') {
+    if (remainMs > 0) {
+      const warn = remainMs <= SLA1_WARN_MS
+      return {
+        tier: warn ? 'warn' : 'ok',
+        text: fmtRemain(remainMs),
+        label: warn ? '加好友倒计时 · 临近超时' : '加好友倒计时',
+        remainMs, remindCount,
+        pill: warn ? 'warning' : 'info',
+        pillText: '已认领·未加好友'
+      }
+    }
+    return {
+      tier: 'over', text: '已超时',
+      label: `24h 复查中 · ${Math.min(remindCount, 3)}/3`,
+      remainMs, remindCount,
+      pill: 'danger', pillText: remindCount > 0 ? `第 ${remindCount} 次超时提醒` : '已超时·待提醒'
+    }
+  }
+  // assigned（待认领）
+  if (remainMs > 0) {
+    return { tier: 'wait_claim', text: fmtRemain(remainMs), label: '认领后 24h 内加好友', remainMs, remindCount, pill: 'info', pillText: '待认领' }
+  }
+  return { tier: 'over', text: '已超时', label: `24h 复查中 · ${Math.min(remindCount, 3)}/3`, remainMs, remindCount, pill: 'danger', pillText: remindCount > 0 ? `第 ${remindCount} 次超时提醒` : '已超时·待提醒' }
+}

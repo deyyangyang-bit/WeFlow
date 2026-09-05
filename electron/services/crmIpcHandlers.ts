@@ -19,7 +19,7 @@ import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
-import { assignLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
+import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
 import { bindLeadWxid } from './crmFriendDetectService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
@@ -336,6 +336,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:assignment:transfer', async (_, req: { assignmentId?: number; toSales?: string; reason?: string; actor?: string }) =>
     transferAssignment(Number(req?.assignmentId), String(req?.toSales || ''), String(req?.reason || ''), String(req?.actor || '')))
   ipcMain.handle('crm:assignment:list', async (_, opts) => listAssignments((opts || {}) as any))
+  // 批量分配（设计稿屏 3 分配控制台）：按模式从待分配池取 N 条分给名单，逐条走 assignLeads 同事务语义
+  ipcMain.handle('crm:assignment:assignBatch', async (_, req: { count?: number; mode?: string; weights?: Record<string, number>; actor?: string }) =>
+    assignBatchLeads({ count: Number(req?.count) || 0, mode: (String(req?.mode || 'weight') as 'weight' | 'round_robin' | 'load'), weights: req?.weights || {}, actor: String(req?.actor || '') }))
 
   // ── 加好友判定（PRD 1.4a 手动路，API-CONTRACT §1.14 契约端点）──────────────
   // 绑定微信：写 customer_identity(source='manual', confidence=1.0) + 停 SLA1 表 + lead→WX_ADDED + 审计；

@@ -1836,6 +1836,8 @@ export interface ElectronAPI {
     assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: AssignmentRow[]; total: number } }>
+    // 批量分配（设计稿屏 3 分配控制台）：批次号 = '#A'+批次审计行号
+    assignmentAssignBatch: (req: { count: number; mode: 'weight' | 'round_robin' | 'load'; weights?: Record<string, number>; actor?: string }) => Promise<{ ok: boolean; data?: { batchNo: string; assigned: number; skipped: Array<{ leadId: number; code: string; reason: string }>; perSales: Record<string, number>; mode: string }; code?: string; message?: string }>
     // 加好友判定（PRD 1.4a 手动路，契约 crm:identity:bind）：写 customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => Promise<{ ok: boolean; data?: { identityId: number; customerId: number | null; alreadyBound: boolean; slaStopped: boolean }; code?: string; message?: string }>
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论统一写入口径（assignment.sla2_scan_ref + 审计）

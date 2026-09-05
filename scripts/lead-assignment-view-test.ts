@@ -12,7 +12,8 @@
  */
 import {
   buildOwnerMap, isSalesView, canClaimLead, canManageAssignment,
-  filterLeadsForView, visibleOwnerChips, type LeadOwnerInfo
+  filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview,
+  suggestReassignOwner, sla1Countdown, type LeadOwnerInfo
 } from '../src/utils/leadAssignmentView'
 
 let pass = 0, fail = 0
@@ -94,6 +95,43 @@ function main(): void {
   check('管理视角 = 全部/未分配/各销售', mgrChips.length === 4 && mgrChips[0].value === '全部' && mgrChips[1].value === '未分配')
   check('未分配计数正确', mgrChips[1].count === 7)
   check('销售不在名单时「我的」计数=0', visibleOwnerChips({ name: '赵六', role: '销售' }, counts)[0].count === 0)
+
+  console.log('\n═══ G. 三视角改版纯函数（设计稿屏 2/3/4/6）═══')
+  check('G1 销售身份 → sales 视角', leadPageView(SALES) === 'sales')
+  check('G2 主管/分配员/空身份 → manager 视角', leadPageView(MANAGER) === 'manager' && leadPageView(EMPTY) === 'manager' && leadPageView({ name: '王分配', role: '分配员' }) === 'manager')
+
+  // distributePreview 三模式（12 条 / 3 人）
+  const sales3 = ['李林辉', '杨青', '许丽娟']
+  const wPlan = distributePreview('weight', 12, sales3, { 李林辉: 40, 杨青: 35, 许丽娟: 25 }, {})
+  check('G3 权重模式 40/35/25 → 5/4/3（最大余数法）', wPlan['李林辉'] === 5 && wPlan['杨青'] === 4 && wPlan['许丽娟'] === 3, JSON.stringify(wPlan))
+  const wSum = sales3.reduce((a, s) => a + (wPlan[s] || 0), 0)
+  check('G4 权重模式总量守恒 = 12', wSum === 12)
+  const wEq = distributePreview('weight', 10, sales3, {}, {})
+  check('G5 缺省等权 → 4/3/3', wEq['李林辉'] === 4 && wEq['杨青'] === 3 && wEq['许丽娟'] === 3, JSON.stringify(wEq))
+  const rr = distributePreview('round_robin', 8, sales3, {}, {})
+  check('G6 轮询 8 条 → 3/3/2', rr['李林辉'] === 3 && rr['杨青'] === 3 && rr['许丽娟'] === 2, JSON.stringify(rr))
+  const ld = distributePreview('load', 5, sales3, {}, { 李林辉: 21, 杨青: 18, 许丽娟: 13 })
+  check('G7 负载均衡逐条给最少者（许 13→18→…）', ld['许丽娟'] === 5, JSON.stringify(ld))
+
+  // suggestReassignOwner：在手最少且非原归属
+  check('G8 建议改派 = 在手最少且非原归属', suggestReassignOwner('李林辉', sales3, { 李林辉: 21, 杨青: 18, 许丽娟: 13 }) === '许丽娟')
+  check('G9 原归属被排除（防循环占位）', suggestReassignOwner('许丽娟', sales3, { 李林辉: 21, 杨青: 18, 许丽娟: 1 }) === '杨青')
+  check('G10 名单只有原归属一人 → 空（提示手动选择）', suggestReassignOwner('李林辉', ['李林辉'], { 李林辉: 3 }) === '')
+
+  // sla1Countdown 档位（屏 4 第 1-4 张卡）
+  const now = 1_800_000_000_000
+  const D = 24 * 3600_000
+  const c1 = sla1Countdown({ status: 'assigned', sla1Deadline: now + 22 * 3600_000, sla1MetAt: 0, sla1RemindCount: 0 }, now)
+  check('G11 待认领：wait_claim 档 + 认领引导文案 + 蓝 pill', c1.tier === 'wait_claim' && c1.label === '认领后 24h 内加好友' && c1.pill === 'info')
+  const c2 = sla1Countdown({ status: 'claimed', sla1Deadline: now + 3 * 3600_000, sla1MetAt: 0, sla1RemindCount: 0 }, now)
+  check('G12 已认领剩 3h：warn 档（<4h 临近超时）+ 琥珀 pill', c2.tier === 'warn' && c2.label === '加好友倒计时 · 临近超时' && c2.pill === 'warning')
+  const c2b = sla1Countdown({ status: 'claimed', sla1Deadline: now + 20 * 3600_000, sla1MetAt: 0 }, now)
+  check('G13 已认领剩 20h：ok 档', c2b.tier === 'ok')
+  const c3 = sla1Countdown({ status: 'claimed', sla1Deadline: now - 3600_000, sla1MetAt: 0, sla1RemindCount: 2 }, now)
+  check('G14 已超时：over 档 + 「第 2 次超时提醒」pill + 2/3 进度', c3.tier === 'over' && c3.pillText === '第 2 次超时提醒' && c3.label === '24h 复查中 · 2/3' && c3.pill === 'danger')
+  const c4 = sla1Countdown({ status: 'claimed', sla1Deadline: now - D, sla1MetAt: now - 2 * D }, now)
+  check('G15 已加好友：done 档 + 绿 pill + 进入第二段', c4.tier === 'done' && c4.pill === 'success' && c4.pillText === '已加好友 ✓')
+  check('G16 倒计时格式 = 时:分:秒', c2.text.includes(':') && /^\d{1,2}:\d{2}:\d{2}$/.test(c2.text), c2.text)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

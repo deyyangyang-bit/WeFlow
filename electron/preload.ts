@@ -774,6 +774,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:recycle', req),
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => ipcRenderer.invoke('crm:assignment:transfer', req),
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts),
+    // 批量分配（设计稿屏 3）：按模式从待分配池取 N 条分给名单（weight/round_robin/load），批次审计可追溯
+    assignmentAssignBatch: (req: { count: number; mode: 'weight' | 'round_robin' | 'load'; weights?: Record<string, number>; actor?: string }) => ipcRenderer.invoke('crm:assignment:assignBatch', req),
     // 加好友判定（PRD 1.4a 手动路）：绑定微信 → customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req),
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论写 assignment.sla2_scan_ref + 审计

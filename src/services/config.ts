@@ -96,6 +96,7 @@ export const CONFIG_KEYS = {
   CRM_LEAD_SLA_HOURS: 'crmLeadSlaHours',
   CRM_LEAD_SOURCE_PRESET: 'crmLeadSourcePreset',
   CRM_SALES_LIST: 'crmSalesList',
+  CRM_ASSIGN_WEIGHTS: 'crmAssignWeights',
   CRM_LOGISTICS_OVERDUE_HOURS: 'crmLogisticsOverdueHours',
   AUTO_BACKUP_NETWORK_PATH: 'autoBackupNetworkPath',
   AUTO_BACKUP_TIME: 'autoBackupTime',
@@ -2002,6 +2003,21 @@ export async function getCrmSalesList(): Promise<string[]> {
 }
 export async function setCrmSalesList(names: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.CRM_SALES_LIST, Array.isArray(names) ? names : [])
+}
+
+// 分配权重（设计稿屏 3 比例权重滑杆；记录型 object：销售名 → 0-100 整数，缺省等权）
+export async function getCrmAssignWeights(): Promise<Record<string, number>> {
+  const value = await config.get(CONFIG_KEYS.CRM_ASSIGN_WEIGHTS)
+  if (!value || typeof value !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const n = Number(v)
+    if (k.trim() && Number.isFinite(n) && n >= 0) out[k.trim()] = Math.min(100, Math.round(n))
+  }
+  return out
+}
+export async function setCrmAssignWeights(weights: Record<string, number>): Promise<void> {
+  await config.set(CONFIG_KEYS.CRM_ASSIGN_WEIGHTS, weights)
 }
 
 // 自动备份：网络共享备份目录（SMB 挂载路径；空=跳过网络层，PRD 1.1 双保险）

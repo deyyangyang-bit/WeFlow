@@ -156,6 +156,8 @@ interface ConfigSchema {
   crmLeadSourcePreset: string
   /** 线索分配销售名单（字符串数组，在线索页分配弹窗内维护，不动设置页） */
   crmSalesList: string[]
+  /** 分配权重（设计稿屏 3 比例权重滑杆；销售名 → 0-100 整数，缺省等权；调整属 C 类操作走审计） */
+  crmAssignWeights: Record<string, number>
   /** SLA1 回收器扫描间隔（分钟，5-1440，默认 30；扫 assignment status=assigned 且 sla1_deadline 过期 → 自动回收） */
   crmSlaRecycleIntervalMin: number
   /** 加好友自动检测扫描间隔（分钟，5-1440，默认 30；PRD 1.4a 自动路：精确匹配 WCDB 联系人 → 停 SLA1 表） */
@@ -335,6 +337,7 @@ export class ConfigService {
       crmLogisticsOverdueHours: 24,
       crmLeadSourcePreset: '抖音,视频号,小红书',
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
+      crmAssignWeights: {},
       crmSlaRecycleIntervalMin: 30,
       crmFriendDetectIntervalMin: 30,
       crmSla2ScanIntervalMin: 30,

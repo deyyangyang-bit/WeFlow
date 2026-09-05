@@ -16,8 +16,9 @@ import * as XLSX from 'exceljs'
 import type { LeadRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
-import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, type LeadOwnerInfo, type IdentityLike } from '../utils/leadAssignmentView'
+import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, sla1Countdown, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
 
 const PRESET_SOURCES = ['抖音', '视频号', '小红书']
@@ -163,6 +164,45 @@ export default function CrmLeadPage() {
   const [bindSel, setBindSel] = useState<ContactInfo | null>(null)
   const [bindBusy, setBindBusy] = useState(false)
   const [bindAvatars, setBindAvatars] = useState<Record<string, string>>({})
+  // ── 三视角改版（设计稿屏 2/3/4/6）：管理三页签 + 池分段 + 控制台状态 + 留痕数据 ──
+  const view = leadPageView(identity)
+  const [managerTab, setManagerTab] = useState<ManagerTab>('pool')
+  const [poolSeg, setPoolSeg] = useState<'pool' | 'assigned' | 'active' | 'recycled'>('pool')
+  const [salesSeg, setSalesSeg] = useState<'wait' | 'active' | 'recycled'>('wait')
+  // assignment 原始行（最新行判 recycled / 在手条数 / 销售卡 sla1 字段）
+  const [asgRows, setAsgRows] = useState<Array<Record<string, unknown>>>([])
+  // 屏 2 蓝横幅 = 最新一条资源导入审计；屏 3 最近分配记录 = lead_assign_batch 审计；屏 6 左回收原因 = lead_recycle 审计
+  const [importAudit, setImportAudit] = useState<Record<string, unknown> | null>(null)
+  const [batchRows, setBatchRows] = useState<Array<Record<string, unknown>>>([])
+  const [recycleReasons, setRecycleReasons] = useState<Record<number, string>>({})
+  // 屏 3 分配控制台
+  const [assignMode, setAssignMode] = useState<AssignMode>('weight')
+  const [assignWeights, setAssignW] = useState<Record<string, number>>({})
+  const [batchCount, setBatchCount] = useState(50)
+  const [batchBusy, setBatchBusy] = useState(false)
+  // 屏 6 左确认改派
+  const [reassignBusy, setReassignBusy] = useState<number | null>(null)
+
+  const fetchAudit = async () => {
+    try {
+      const [imp, batches, recycles] = await Promise.all([
+        window.electronAPI.crm.auditQuery({ action: 'lead_import', pageSize: 1 }).catch(() => null),
+        window.electronAPI.crm.auditQuery({ action: 'lead_assign_batch', pageSize: 20 }).catch(() => null),
+        window.electronAPI.crm.auditQuery({ action: 'recycle', pageSize: 200 }).catch(() => null)
+      ])
+      setBatchRows((batches?.data?.rows || []) as Array<Record<string, unknown>>)
+      const reasons: Record<number, string> = {}
+      for (const r of (recycles?.data?.rows || []) as Array<Record<string, unknown>>) {
+        try {
+          const d = JSON.parse(String(r.detail || '{}'))
+          const lid = Number(r.entity_id)
+          if (lid && !reasons[lid] && d.reason && d.reason !== 'converted_skip') reasons[lid] = String(d.reason)
+        } catch { /* 非 JSON detail 跳过 */ }
+      }
+      setRecycleReasons(reasons)
+      setImportAudit(((imp?.data?.rows || []) as Array<Record<string, unknown>>)[0] || null)
+    } catch { /* 审计查询失败不阻塞列表 */ }
+  }
 
   const fetchAll = async () => {
     const [ls, ov, sales, asg, idt] = await Promise.all([
@@ -178,6 +218,9 @@ export default function CrmLeadPage() {
     setIdentity({ name: idt?.name || '', role: idt?.role || '' })
     // 当前归属 = 该 lead 最新一条有效分配行（宪法 §1.3）；含 assignmentId 供调派/回收用
     setOwnerByLead(buildOwnerMap(asg?.data?.rows || []))
+    setAsgRows((asg?.data?.rows || []) as unknown as Array<Record<string, unknown>>)
+    void getCrmAssignWeights().then(setAssignW).catch(() => undefined)
+    void fetchAudit()
   }
   useEffect(() => { void fetchAll() }, [])
   // 切微信号 = 换库（§2.40）：账号切换后重查
@@ -238,21 +281,7 @@ export default function CrmLeadPage() {
   // 可见线索：销售视角只留「当前归属=本人」的（展示层便利过滤，非安全边界，宪法 §1.12）；管理视角全量
   const visibleLeads = useMemo(() => filterLeadsForView(leads, ownerByLead, identity), [leads, ownerByLead, identity])
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return visibleLeads.filter((l) => {
-      if (statusChip !== '全部' && l.status !== statusChip) return false
-      if (sourceChip !== '全部' && String(l.source) !== sourceChip) return false
-      if (tagChip !== '全部' && String(l.tag || '').trim() !== tagChip) return false
-      // 归属筛选：未分配 = 无当前有效分配行；其余按当前归属销售名匹配（销售视角已过滤，无需再筛）
-      if (!salesView) {
-        if (ownerChip === '未分配' && ownerByLead[l.id]) return false
-        if (ownerChip !== '全部' && ownerChip !== '未分配' && ownerByLead[l.id]?.salesName !== ownerChip) return false
-      }
-      if (!q) return true
-      return [l.name, l.contact_normalized, l.tag, l.source].some((v) => String(v || '').toLowerCase().includes(q))
-    })
-  }, [visibleLeads, salesView, search, statusChip, sourceChip, tagChip, ownerChip, ownerByLead])
+
   // 归属筛选 chips：未分配计数 + 各销售当前归属计数（名单 ∪ 实际归属，防删名后漏统计）
   const ownerChips = useMemo(() => {
     let unassigned = 0
@@ -277,10 +306,118 @@ export default function CrmLeadPage() {
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, count }))
   }, [leads])
+  // ── 三视角改版派生（设计稿屏 2/3/4/6）─────────────────────────────────────
+  // 每 lead 最新一条分配行（含 recycled/transferred）——判「已回收」与销售卡 sla1 字段
+  const latestAsg = useMemo(() => {
+    const m: Record<number, Record<string, unknown>> = {}
+    for (const r of asgRows) {
+      const lid = Number(r.lead_id)
+      if (!m[lid] || Number(r.id) > Number(m[lid].id)) m[lid] = r
+    }
+    return m
+  }, [asgRows])
+  // 屏 2 四统计卡口径
+  const poolCounts = useMemo(() => {
+    let pool = 0, assignedN = 0, activeN = 0, recycledN = 0
+    for (const l of leads) {
+      const own = ownerByLead[l.id]
+      const latest = latestAsg[l.id]
+      if (latest && String(latest.status) === 'recycled') { recycledN++; continue }
+      if (own?.status === 'assigned' && l.status === 'NEW') { assignedN++; continue }
+      if (own?.status === 'claimed' || ['CONTACTED', 'WX_ADDED'].includes(l.status)) { activeN++; continue }
+      if (l.status === 'NEW') pool++
+    }
+    return { pool, assignedN, activeN, recycledN }
+  }, [leads, ownerByLead, latestAsg])
+  // 屏 2 分段过滤（待分配/已分配/跟进中/已回收）
+  const poolLeads = useMemo(() => {
+    if (poolSeg === 'pool') return visibleLeads.filter((l) => l.status === 'NEW' && !ownerByLead[l.id] && String(latestAsg[l.id]?.status || '') !== 'recycled')
+    if (poolSeg === 'assigned') return visibleLeads.filter((l) => ownerByLead[l.id]?.status === 'assigned' && l.status === 'NEW')
+    if (poolSeg === 'active') return visibleLeads.filter((l) => ownerByLead[l.id]?.status === 'claimed' || ['CONTACTED', 'WX_ADDED'].includes(l.status))
+    return visibleLeads.filter((l) => String(latestAsg[l.id]?.status || '') === 'recycled')
+  }, [visibleLeads, poolSeg, ownerByLead, latestAsg])
+  // 在手条数（屏 3 滑杆行 / 屏 6 建议人选）：当前有效归属按销售计数
+  const loads = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const s of salesList) m[s] = 0
+    for (const o of Object.values(ownerByLead)) m[o.salesName] = (m[o.salesName] || 0) + 1
+    return m
+  }, [salesList, ownerByLead])
+  // 屏 2 资源池列表：分段（待分配/已分配/跟进中/已回收）∩ 搜索/来源/标签
+  const poolFiltered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return poolLeads.filter((l) => {
+      if (sourceChip !== '全部' && String(l.source) !== sourceChip) return false
+      if (tagChip !== '全部' && String(l.tag || '').trim() !== tagChip) return false
+      if (!q) return true
+      return [l.name, l.contact_normalized, l.tag, l.source, l.note].some((v) => String(v || '').toLowerCase().includes(q))
+    })
+  }, [poolLeads, search, sourceChip, tagChip])
   // 前端分页：筛选后切片，page 越界自动收敛到最后一页
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(poolFiltered.length / PAGE_SIZE))
   const curPage = Math.min(page, totalPages)
-  const pageItems = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
+  const pageItems = poolFiltered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
+
+  // 屏 3 预览（纯前端，与后端 buildDistribution 同口径）
+  const poolAvailable = poolCounts.pool
+  const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable])
+  // 屏 6 左 待改派列表：最新分配行 recycled 的线索
+  const reassignLeads = useMemo(() => leads.filter((l) => String(latestAsg[l.id]?.status || '') === 'recycled'), [leads, latestAsg])
+  // 屏 4 销售资源卡：我的最新分配行 + lead 资料
+  const myLeadIdSet = useMemo(() => {
+    const name = identity.name.trim()
+    const s = new Set<number>()
+    for (const [lid, o] of Object.entries(ownerByLead)) if (o.salesName === name) s.add(Number(lid))
+    return s
+  }, [ownerByLead, identity])
+  const myCards = useMemo(() => {
+    const name = identity.name.trim()
+    return leads
+      .filter((l) => myLeadIdSet.has(l.id))
+      .map((l) => {
+        const latest = latestAsg[l.id]
+        const own = ownerByLead[l.id]
+        const cd = sla1Countdown({
+          status: String(own?.status || latest?.status || ''),
+          sla1Deadline: Number(latest?.sla1_deadline || 0),
+          sla1MetAt: Number(latest?.sla1_met_at || 0),
+          sla1RemindCount: Number(latest?.sla1_remind_count || 0)
+        }, Date.now())
+        const recycled = String(latest?.status || '') === 'recycled'
+        return { lead: l, cd, recycled, assignedAt: Number(latest?.updated_at || latest?.created_at || 0) }
+      })
+  }, [leads, myLeadIdSet, latestAsg, ownerByLead, identity])
+  const myWait = myCards.filter((c) => !c.recycled && c.cd.tier !== 'done' && c.lead.status === 'NEW')
+  const myActive = myCards.filter((c) => !c.recycled && (c.cd.tier === 'done' || c.lead.status !== 'NEW'))
+  const myRecycled = myCards.filter((c) => c.recycled)
+  // 屏 3 执行分配
+  const doAssignBatch = async () => {
+    if (batchBusy || batchCount <= 0) return
+    setBatchBusy(true)
+    try {
+      const r = await window.electronAPI.crm.assignmentAssignBatch({ count: batchCount, mode: assignMode, weights: assignWeights })
+      if (!r.ok || !r.data) { setNotice(r.message || '批量分配失败'); return }
+      const per = Object.entries(r.data.perSales).filter(([, n]) => n > 0).map(([s, n]) => `${s} ${n}`).join(' / ')
+      setNotice(`批次 ${r.data.batchNo} 已分配 ${r.data.assigned} 条（${per}）${r.data.skipped.length ? `；跳过 ${r.data.skipped.length} 条` : ''}`)
+      await fetchAll()
+    } finally { setBatchBusy(false) }
+  }
+  const changeWeight = async (name: string, v: number) => {
+    const next = { ...assignWeights, [name]: v }
+    setAssignW(next)
+    await setCrmAssignWeights(next)
+  }
+  // 屏 6 左 确认改派：recycled 行走回池再分配（assignLeads 同事务语义；transfer 仅限 active 行，E201）
+  const doReassign = async (leadId: number, toSales: string) => {
+    if (reassignBusy !== null || !toSales) return
+    setReassignBusy(leadId)
+    try {
+      const r = await window.electronAPI.crm.assignmentAssign({ leadIds: [leadId], salesName: toSales })
+      if (!r.ok) { setNotice(r.message || '改派失败'); return }
+      setNotice(`已改派给 ${toSales}`)
+      await fetchAll()
+    } finally { setReassignBusy(null) }
+  }
 
   const doRefresh = async () => { await window.electronAPI.crm.leadScanSla(); await fetchAll(); setNotice('已检查，超时未首触的线索已加入今日行动提醒') }
 
@@ -488,135 +625,268 @@ export default function CrmLeadPage() {
   }, [salesList, ownerByLead])
 
   const ov = overview
+  // 屏 2 蓝横幅：最新导入批次统计（audit_event action=lead_import）
+  const impDetail = (() => { try { return JSON.parse(String(importAudit?.detail || '{}')) } catch { return {} as Record<string, unknown> } })()
+  const segDefs: Array<{ id: typeof poolSeg; label: string; count: number }> = [
+    { id: 'pool', label: '待分配', count: poolCounts.pool },
+    { id: 'assigned', label: '已分配·待认领', count: poolCounts.assignedN },
+    { id: 'active', label: '跟进中', count: poolCounts.activeN },
+    { id: 'recycled', label: '已回收', count: poolCounts.recycledN }
+  ]
+  const salesSegDefs: Array<{ id: typeof salesSeg; label: string; count: number }> = [
+    { id: 'wait', label: '待认领', count: myWait.length },
+    { id: 'active', label: '跟进中', count: myActive.length },
+    { id: 'recycled', label: '已回收', count: myRecycled.length }
+  ]
+  const MODE_LABEL: Record<AssignMode, string> = { weight: '比例权重', round_robin: '轮询', load: '负载均衡' }
+  const myCardsShown = salesSeg === 'wait' ? myWait : salesSeg === 'active' ? myActive : myRecycled
+
   return (
     <div className="crm-lead-page">
       <div className="crm-header">
-        <h2><Inbox size={18} /> 线索池 <span className="count">共 {ov?.total ?? 0} 条</span></h2>
-        <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
-        {selected.size > 0 && !salesView && (
+        <h2><Inbox size={18} /> 线索资源 <span className="count">共 {ov?.total ?? 0} 条</span></h2>
+        {!salesView && managerTab === 'pool' && (
+          <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
+        )}
+        {!salesView && selected.size > 0 && managerTab === 'pool' && (
           <button className="crm-btn primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
         )}
         {!salesView && (
           <button className="crm-btn" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
         )}
-        <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>
+        {!salesView && <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
 
-      {ov && (
-        <div className="lead-cards">
-          <div className={`lead-card ${ov.overdue > 0 ? 'warn' : ''}`}><div className="lc-num">{ov.overdue}</div><div className="lc-label">超时未首触</div></div>
-          <div className="lead-card"><div className="lc-num">{ov.pendingSla}</div><div className="lc-label">今日待处理</div></div>
-          <div className="lead-card"><div className="lc-num">{ov.todayImported}</div><div className="lc-label">今日导入</div></div>
-          <div className="lead-card"><div className="lc-num">{ov.todayContacted}</div><div className="lc-label">今日首触</div></div>
-        </div>
-      )}
-
-      <div className="crm-filterbar">
-        <input className="crm-search" placeholder="搜索姓名 / 联系方式 / 标签 / 来源" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
-        <div className="crm-chips">
-          {statusChips.map((c) => (
-            <button key={c.value} className={`chip ${statusChip === c.value ? 'active' : ''}`} onClick={() => { setStatusChip(c.value); setPage(1) }}>{c.label} ({c.count})</button>
-          ))}
-        </div>
-        <div className="crm-chips src">
-          {ownerChipsVisible.map((c) => (
-            <button key={c.value} className={`chip ${(salesView ? '我的' : ownerChip) === c.value ? 'active' : ''}`} title={c.value === '未分配' ? '还没有分配给任何销售的线索' : undefined} onClick={() => { if (!salesView) { setOwnerChip(c.value); setPage(1) } }}>{c.label}{c.count !== undefined ? ` (${c.count})` : ''}</button>
-          ))}
-        </div>
-        {ov && ov.sources.length > 0 && (
-          <div className="crm-chips src">
-            <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
-            {ov.sources.map((s) => (
-              <button key={s.source} className={`chip ${sourceChip === s.source ? 'active' : ''}`} onClick={() => { setSourceChip(s.source); setPage(1) }}>{s.source} ({s.count})</button>
-            ))}
+      {view === 'sales' ? (
+        /* ── 屏 4：销售 · 我的资源卡 ── */
+        <div className="lp-sales">
+          <div className="lp-seg-wrap">
+            <div className="lp-segs">
+              {salesSegDefs.map((d) => (
+                <button key={d.id} className={`lp-seg ${salesSeg === d.id ? 'on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label} {d.count}</button>
+              ))}
+            </div>
+            <span className="lp-hint">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
           </div>
-        )}
-        {tagChips.length > 0 && (
-          <div className="crm-chips src">
-            <button className={`chip ${tagChip === '全部' ? 'active' : ''}`} onClick={() => { setTagChip('全部'); setPage(1) }}>全部标签</button>
-            {tagChips.map((c) => (
-              <button key={c.value} className={`chip ${tagChip === c.value ? 'active' : ''}`} title="按标签（需求标签）筛选" onClick={() => { setTagChip(c.value); setPage(1) }}>{c.value} ({c.count})</button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <table className="crm-table">
-        <thead><tr><th className="lc-check"><input type="checkbox" title="全选本页待首触线索" checked={pageItems.length > 0 && pageItems.filter((l) => l.status === 'NEW').length > 0 && pageItems.filter((l) => l.status === 'NEW').every((l) => selected.has(l.id))} onChange={toggleSelectPage} /></th><th>状态</th><th>联系方式</th><th>姓名 / 标签</th><th>来源</th><th>首触期限</th><th>操作</th></tr></thead>
-        <tbody>
-          {pageItems.map((l) => {
-            const isOverdue = l.status === 'NEW' && Number(l.first_contact_deadline) > 0 && Number(l.first_contact_deadline) < Date.now()
-            const meta = STATUS_META[l.status] || { label: l.status, cls: '' }
-            return (
-              <tr key={l.id} onClick={() => void openDetail(l.id)}>
-                <td className="lc-check" onClick={(e) => e.stopPropagation()}>
-                  {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
-                </td>
-                <td><span className={`lead-st ${meta.cls}`}>{meta.label}</span></td>
-                <td>
-                  <div className="lc-contact">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</div>
-                  <div className="psub">{l.contact_type === 'wechat' ? '微信号' : l.contact_type === 'both' ? '手机+微信' : '手机号'}</div>
-                </td>
-                <td>
-                  <div className="pname">{l.name || '未命名'}</div>
-                  {l.tag && <div className="psub">{l.tag}</div>}
-                  {ownerByLead[l.id] && <div className="lc-owner">归属：{ownerByLead[l.id].salesName}</div>}
-                </td>
-                <td><span className="lc-source">{l.source}</span></td>
-                <td onClick={(e) => e.stopPropagation()}>
-                  {ownerByLead[l.id]?.sla1MetAt
-                    ? <div className="lc-deadline">已加好友 ✓</div>
-                    : l.status === 'NEW' && Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
-                    ? <div className="lc-deadline">{ownerByLead[l.id] ? '待首触' : '待分配'}</div>
-                    : isOverdue
-                    ? <span className="lc-overdue"><AlertTriangle size={12} /> 超时 {fmtOverdue(Number(l.first_contact_deadline))}</span>
-                    : Number(l.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL
-                    ? <div className="lc-deadline">—</div>
-                    : <div className="lc-deadline">{fmtTime(Number(l.first_contact_deadline))}{l.status === 'NEW' ? ' 首触' : ''}</div>}
-                </td>
-                <td className="ops" onClick={(e) => e.stopPropagation()}>
-                  {l.status === 'NEW' && (
-                    <>
-                      <button className="crm-btn" title="已电话首触" onClick={() => void act(l.id, 'contacted', { channel: 'PHONE' })}><Phone size={13} /></button>
-                      <button className="crm-btn" title="已加微信" onClick={() => { setWxTarget(l); setWxInput(String(l.wechat || '')) }}><MessageCircle size={13} /></button>
-                      <button className="crm-btn" title="转客户" onClick={() => void toAccount(l.id)}><UserPlus size={13} /></button>
-                    </>
-                  )}
-                  {l.status === 'DEAD' && (
-                    <button className="crm-btn" title="重新跟进" onClick={() => void act(l.id, 'reopen')}><RefreshCw size={13} /></button>
-                  )}
-                  {/* 认领：本人 + assigned 态可见（canClaimLead 纯判定，与后端「本人」口径一致） */}
-                  {canClaimLead(identity, ownerByLead[l.id]) && (
-                    <button className="crm-btn primary" title="确认认领这条线索" onClick={() => { setClaimTarget(l); setClaimWechat(String(l.wechat || '')); setClaimNick(String(l.name || '')) }}><Hand size={13} /> 认领</button>
-                  )}
-                  {/* 绑定微信（PRD 1.4a 手动路）：已归属行可见——销售视角仅本人，管理视角任意；已停表再点走幂等提示 */}
-                  {canBindWxid(identity, ownerByLead[l.id]) && (
-                    <button className="crm-btn" title={ownerByLead[l.id]?.sla1MetAt ? '已绑定过（再点为幂等查询）' : '绑定本机微信联系人，命中即停 SLA1 表'} onClick={() => setBindTarget(l)}><Link2 size={13} /> 绑微信</button>
-                  )}
-                  {/* 调派/回收：已归属 + 身份角色≠销售 可见（销售不能自己调派回收） */}
-                  {canManageAssignment(identity, ownerByLead[l.id]) && (
-                    <>
-                      <button className="crm-btn" title="调派给其他销售" onClick={() => { setTransferTarget(l); setTransferTo(''); setTransferReason('') }}><ArrowLeftRight size={13} /> 调派</button>
-                      <button className="crm-btn danger" title="回收回资源池（需二次确认）" onClick={() => setRecycleTarget(l)}><Undo2 size={13} /> 回收</button>
-                    </>
-                  )}
-                  <button className="crm-btn" title="编辑资料（姓名/微信）" onClick={() => { setEditTarget(l); setEditName(String(l.name || '')); setEditWechat(String(l.wechat || '')) }}><Pencil size={13} /></button>
-                  {l.status === 'NEW' && <button className="crm-btn danger" title="标记失效" onClick={() => { setDeadLead(l); setDeadReason('') }}><X size={13} /></button>}
-                </td>
-              </tr>
-            )
-          })}
-          {filtered.length === 0 && <tr><td colSpan={7} className="empty">暂无线索，点击右上角「导入线索」开始</td></tr>}
-        </tbody>
-      </table>
-
-      {filtered.length > PAGE_SIZE && (
-        <div className="crm-pager">
-          <button className="crm-btn" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>上一页</button>
-          <span className="crm-pager-info">第 {curPage} / {totalPages} 页 · 共 {filtered.length} 条</span>
-          <button className="crm-btn" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页</button>
+          {myCardsShown.map(({ lead: l, cd, recycled }) => (
+            <div key={l.id} className="lp-card" onClick={() => void openDetail(l.id)}>
+              <div className="lp-card__main">
+                <div className="lp-card__t1 num">{maskLead(l)} <span className={`pill pill--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
+                <div className="lp-card__t2">{String(l.source || '')}{l.tag ? ` · ${l.tag}` : ''}{l.note ? ` · ${l.note}` : ''} · 分配于 {fmtTime(Number(latestAsg[l.id]?.created_at || 0))}</div>
+              </div>
+              <div className={`lp-card__countdown ${cd.tier === 'wait_claim' ? 'ok' : cd.tier}`}>
+                <div className="t num">{cd.text}</div>
+                <div className="l">{recycled ? '已回资源池，等待改派' : cd.label}</div>
+              </div>
+              {!recycled && cd.tier === 'wait_claim' && (
+                <button className="crm-btn primary" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
+              )}
+              {!recycled && (cd.tier === 'ok' || cd.tier === 'warn' || cd.tier === 'over') && (
+                <button className="crm-btn" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
+              )}
+              {!recycled && cd.tier === 'done' && (
+                <button className="crm-btn ghost" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
+              )}
+            </div>
+          ))}
+          {myCardsShown.length === 0 && <div className="empty lp-empty">暂无资源卡</div>}
         </div>
+      ) : (
+        <>
+          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左） */}
+          <div className="lp-tabs">
+            <button className={`lp-tab ${managerTab === 'pool' ? 'on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
+            <button className={`lp-tab ${managerTab === 'console' ? 'on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
+            <button className={`lp-tab ${managerTab === 'reassign' ? 'on' : ''}`} onClick={() => setManagerTab('reassign')}>回收改派{poolCounts.recycledN > 0 ? ` (${poolCounts.recycledN})` : ''}</button>
+          </div>
+
+          {managerTab === 'pool' && (
+            <>
+              <div className="lp-stats">
+                {segDefs.map((d) => (
+                  <button key={d.id} className={`lp-stat ${poolSeg === d.id ? 'on' : ''}`} onClick={() => { setPoolSeg(d.id); setPage(1) }}>
+                    <div className="k">{d.label}</div>
+                    <div className="v num">{d.count}{d.id === 'recycled' && d.count > 0 ? <small> 可改派</small> : ''}</div>
+                  </button>
+                ))}
+              </div>
+              {importAudit && (
+                <div className="lp-banner">
+                  ✓ 最近导入批次 #A{String(impDetail.batchId ?? '?')}：{String(impDetail.fileName || '导入')} {String(impDetail.total ?? 0)} 条 → 有效 {String(impDetail.valid ?? 0)} 条 · 查重拦截 {String(impDetail.duplicate ?? 0)} 条 · 无效 {String(impDetail.invalid ?? 0)} 条
+                </div>
+              )}
+              <div className="crm-filterbar">
+                <input className="crm-search" placeholder="搜索 手机号 / 微信号 / 备注…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
+                {ov && ov.sources.length > 0 && (
+                  <div className="crm-chips src">
+                    <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
+                    {ov.sources.map((sr) => (
+                      <button key={sr.source} className={`chip ${sourceChip === sr.source ? 'active' : ''}`} onClick={() => { setSourceChip(sr.source); setPage(1) }}>{sr.source} ({sr.count})</button>
+                    ))}
+                  </div>
+                )}
+                {tagChips.length > 0 && (
+                  <div className="crm-chips src">
+                    <button className={`chip ${tagChip === '全部' ? 'active' : ''}`} onClick={() => { setTagChip('全部'); setPage(1) }}>全部标签</button>
+                    {tagChips.map((c) => (
+                      <button key={c.value} className={`chip ${tagChip === c.value ? 'active' : ''}`} title="按标签（需求标签）筛选" onClick={() => { setTagChip(c.value); setPage(1) }}>{c.value} ({c.count})</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <table className="crm-table">
+                <thead><tr><th className="lc-check"><input type="checkbox" title="全选本页待分配线索" checked={pageItems.length > 0 && pageItems.filter((l) => l.status === 'NEW').length > 0 && pageItems.filter((l) => l.status === 'NEW').every((l) => selected.has(l.id))} onChange={toggleSelectPage} /></th><th>联系方式</th><th>来源</th><th>需求标签</th><th>备注</th><th className="num">入池时间</th><th>入池方式</th><th>操作</th></tr></thead>
+                <tbody>
+                  {pageItems.map((l) => {
+                    const latest = latestAsg[l.id]
+                    const recycled = String(latest?.status || '') === 'recycled'
+                    const inPoolWay = importAudit && Math.abs(Number(l.created_at || 0) - Number(importAudit.created_at || 0)) < 10 * 60_000
+                      ? `批次 #A${String(impDetail.batchId ?? '?')}` : '存量导入'
+                    return (
+                      <tr key={l.id} onClick={() => void openDetail(l.id)}>
+                        <td className="lc-check" onClick={(e) => e.stopPropagation()}>
+                          {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
+                        </td>
+                        <td>
+                          <div className="lc-contact num">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</div>
+                          <div className="psub">{l.contact_type === 'wechat' ? '微信号' : l.contact_type === 'both' ? '手机+微信' : '手机号'}{l.name ? ` · ${l.name}` : ''}</div>
+                        </td>
+                        <td>{String(l.source || '-')}</td>
+                        <td>{String(l.tag || '').trim() ? <span className="pill pill--neutral">{String(l.tag)}</span> : '-'}</td>
+                        <td className="lp-note">{String(l.note || '-')}</td>
+                        <td className="num">{fmtTime(l.created_at)}{recycled ? '（回池）' : ''}</td>
+                        <td>{inPoolWay}</td>
+                        <td className="lc-ops" onClick={(e) => e.stopPropagation()}>
+                          <button className="crm-btn" title="编辑资料（姓名/微信）" onClick={() => { setEditTarget(l); setEditName(String(l.name || '')); setEditWechat(String(l.wechat || '')) }}><Pencil size={13} /></button>
+                          {l.status === 'NEW' && <button className="crm-btn danger" title="标记失效" onClick={() => { setDeadLead(l); setDeadReason('') }}><X size={13} /></button>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {poolFiltered.length === 0 && <tr><td colSpan={8} className="empty">该分段暂无线索{poolSeg === 'pool' ? '，点击右上角「导入线索」开始' : ''}</td></tr>}
+                </tbody>
+              </table>
+
+              {poolFiltered.length > PAGE_SIZE && (
+                <div className="crm-pager">
+                  <button className="crm-btn" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>上一页</button>
+                  <span className="crm-pager-info">第 {curPage} / {totalPages} 页 · 共 {poolFiltered.length} 条</span>
+                  <button className="crm-btn" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页</button>
+                </div>
+              )}
+            </>
+          )}
+
+          {managerTab === 'console' && (
+            <>
+              <div className="lp-grid2">
+                <div className="lp-cardbox">
+                  <div className="lp-cardbox__title">分配模式 <span className="lp-hint">默认：比例权重</span></div>
+                  <div className="lp-segs lp-segs--modes">
+                    {(['weight', 'round_robin', 'load'] as AssignMode[]).map((m) => (
+                      <button key={m} className={`lp-seg ${assignMode === m ? 'on' : ''}`} onClick={() => setAssignMode(m)}>{MODE_LABEL[m]}</button>
+                    ))}
+                  </div>
+                  {salesList.map((s) => (
+                    <div key={s} className="lp-slider-row">
+                      <span className="name">{s}</span>
+                      <input type="range" min={0} max={100} step={5} value={Number(assignWeights[s] ?? 0)} disabled={assignMode !== 'weight'}
+                        onChange={(e) => void changeWeight(s, Number(e.target.value))} />
+                      <span className="pct num">{Number(assignWeights[s] ?? 0)}%</span>
+                      <span className="load num">在手 {loads[s] ?? 0} 条</span>
+                    </div>
+                  ))}
+                  {salesList.length === 0 && <div className="empty">销售名单为空（在分配弹窗内维护 crmSalesList）</div>}
+                  <div className="lp-hint" style={{ marginTop: 10 }}>权重缺省按等权分配；调整会保存到配置（crmAssignWeights），执行分配时随批次审计留痕。</div>
+                </div>
+                <div className="lp-cardbox">
+                  <div className="lp-cardbox__title">本次分配预览</div>
+                  <table className="crm-table lp-preview">
+                    <thead><tr><th>销售</th><th className="num">分得</th><th>按</th></tr></thead>
+                    <tbody>
+                      {salesList.map((s) => (
+                        <tr key={s}>
+                          <td>{s}</td>
+                          <td className="num"><b>{batchPreview[s] ?? 0}</b> 条</td>
+                          <td className="psub">{assignMode === 'weight' ? `权重 ${Number(assignWeights[s] ?? 0)}%` : assignMode === 'round_robin' ? '轮询均分' : `在手 ${loads[s] ?? 0} 条（负载优先）`}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="lp-batch-row">
+                    <span className="lp-hint">从「待分配」取</span>
+                    <input type="number" min={1} max={Math.max(1, poolAvailable)} value={batchCount} onChange={(e) => setBatchCount(Math.max(1, Math.floor(Number(e.target.value) || 1)))} className="crm-input lp-count" />
+                    <span className="lp-hint">条（池内待分配 {poolAvailable} 条）</span>
+                    <span style={{ flex: 1 }} />
+                    <button className="crm-btn" onClick={() => { setBatchCount(50); setAssignMode('weight') }}>取消</button>
+                    <button className="crm-btn primary" disabled={batchBusy || poolAvailable === 0 || salesList.length === 0} onClick={() => void doAssignBatch()}><UserCheck size={13} /> {batchBusy ? '执行中…' : '执行分配'}</button>
+                  </div>
+                </div>
+              </div>
+              <div className="lp-cardbox" style={{ marginTop: 14 }}>
+                <div className="lp-cardbox__title">最近分配记录 <span className="lp-hint">每次执行一行，可追溯到操作人（audit_event）</span></div>
+                <table className="crm-table">
+                  <thead><tr><th className="num">时间</th><th>批次</th><th>模式</th><th className="num">数量</th><th>分给</th><th>操作人</th></tr></thead>
+                  <tbody>
+                    {batchRows.slice(0, 8).map((r) => {
+                      let d: Record<string, unknown> = {}
+                      try { d = JSON.parse(String(r.detail || '{}')) } catch { /* 跳过 */ }
+                      const per = Object.entries((d.perSales || {}) as Record<string, number>).filter(([, n]) => n > 0).map(([s, n]) => `${s} ${n}`).join(' / ')
+                      return (
+                        <tr key={String(r.id)}>
+                          <td className="num">{fmtTime(Number(r.created_at))}</td>
+                          <td className="num">#A{String(r.id)}</td>
+                          <td>{MODE_LABEL[(String(d.mode || 'weight')) as AssignMode] || String(d.mode)}</td>
+                          <td className="num">{String(d.assigned ?? 0)}</td>
+                          <td>{per || '-'}</td>
+                          <td>{String(r.actor || '')}</td>
+                        </tr>
+                      )
+                    })}
+                    {batchRows.length === 0 && <tr><td colSpan={6} className="empty">暂无批量分配记录</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {managerTab === 'reassign' && (
+            <div className="lp-cardbox">
+              <div className="lp-cardbox__title">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="lp-hint">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
+              <table className="crm-table">
+                <thead><tr><th>线索</th><th>原归属</th><th>回收原因</th><th>建议改派给</th><th></th></tr></thead>
+                <tbody>
+                  {reassignLeads.map((l) => {
+                    const from = String(latestAsg[l.id]?.sales_name || '')
+                    const sug = suggestReassignOwner(from, salesList, loads)
+                    return (
+                      <tr key={l.id}>
+                        <td>
+                          <div className="lc-contact num">{maskLead(l)}</div>
+                          <div className="psub">{String(l.source || '')}{l.note ? ` · ${l.note}` : ''}</div>
+                        </td>
+                        <td>{from || '-'}</td>
+                        <td><span className="pill pill--danger">{recycleReasons[l.id] || '人工回收'}</span></td>
+                        <td>
+                          {sug ? <span className="pill pill--neutral">{sug}（建议）</span> : <span className="psub">名单无其他人，请先补充销售名单</span>}
+                          <div className="psub">{sug ? `在手 ${loads[sug] ?? 0} 条 · 非原归属` : ''}</div>
+                        </td>
+                        <td>
+                          <button className="crm-btn primary" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
+                            {reassignBusy === l.id ? '改派中…' : '确认改派'}
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {reassignLeads.length === 0 && <tr><td colSpan={5} className="empty">暂无待改派线索</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {showImport && (

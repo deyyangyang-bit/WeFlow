@@ -9,7 +9,7 @@ import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
 import { classifyLead, dedupeRows, maskContact, type RawLeadRow } from './crmLeadImportCore'
 import { recordOutboxTx } from './crmOutboxService'
-import { getActorLabel } from './identityService'
+import { getActorLabel, getIdentity } from './identityService'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
 // ─── 配置注入（registerCrmIpcHandlers 装配）─────────────────────────────────
@@ -60,10 +60,15 @@ export function importLeads(source: string, fileName: string, rows: RawLeadRow[]
         duplicate++ // UNIQUE 冲突 = 跨批重复
       }
     }
-    return tx.run(
+    const batchId = tx.run(
       'INSERT INTO import_batch (source, file_name, total, valid, duplicate, invalid, created_at) VALUES (?,?,?,?,?,?,?)',
       [src, String(fileName || '粘贴文本'), rows.length, valid, duplicate, dedupe.invalidCount, now]
     )
+    // 资源导入审计（设计稿屏 2 蓝色横幅数据源；宪法 §1.12 统一流水；append-only）
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [getIdentity()?.name || '分配员', 'lead_import', 'lead', null,
+       JSON.stringify({ batchId: Number(batchId), source: src, fileName: String(fileName || '粘贴文本'), total: rows.length, valid, duplicate, invalid: dedupe.invalidCount }), now])
+    return batchId
   })
 
   scanLeadSla()

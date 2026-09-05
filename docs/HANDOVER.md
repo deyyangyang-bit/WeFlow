@@ -1273,6 +1273,24 @@
 
 ---
 
+## 2.72 线索页三视角改版（设计稿屏 2/3/4/6 左，2026-09-05，已提交）
+
+> **依据**：`docs/UI设计稿-Phase1-资源分配.html` 屏 2/3/4/6 + 附录实现规格；**评审决策：不新建 /allocation 路由，改版现有 /leads（CrmLeadPage）**，避免双页面打架。视角判定沿用 `leadAssignmentView.isSalesView`：销售=屏 4 资源卡；分配员/主管/空身份=管理三页签（资源池/分配控制台/回收改派），空身份=管理视角（现状惯例）。
+
+- **纯函数扩展（leadAssignmentView.ts，屏 4/6 判定与屏 3 预览全部可 tsx 单测）**：`leadPageView`（sales/manager）；`distributePreview(mode, count, sales, weights, loads)`（三模式份额：weight 最大余数法缺省等权 / round_robin 轮询 / load 逐条给在手+本批最少者）；`suggestReassignOwner`（在手最少且非原归属，防循环占位；全同名回空提示手动）；`sla1Countdown`（屏 4 倒计时五档：wait_claim 蓝/ok/warn<4h 琥珀/over 红+「第 N 次提醒」读 sla1_remind_count/done 绿进入第二段）。
+- **新 IPC `crm:assignment:assignBatch`（屏 3 核心，三处同步配齐）**：`assignBatchLeads({count, mode, weights, actor})`——待分配池 SQL 一次取（NEW 且无当前有效分配行，回收行天然回池）；份额规划 `buildDistribution`（service 导出，与前端 distributePreview **同口径双实现**，assignment-full-test H10 断言逐模式一致防漂移）；逐条走现有 assignLeads（单条事务失败落 skipped 不阻塞）；批次审计一行 action='lead_assign_batch'（detail 含 mode/assigned/perSales/weights），**批次号='#A'+审计行号，不建新列**（设计稿屏 3 口径）；空池 E301。mode 落 assignment.mode。权重存 config `crmAssignWeights`（CONFIG_KEYS+ConfigSchema+默认值三处），执行时随批次审计留痕（C 类操作可追溯）。
+- **导入审计补写**：`importLeads` 事务内落 `audit_event(action='lead_import')`（detail 含 batchId/total/valid/duplicate/invalid）——屏 2 蓝横幅数据源（任务书口径：导入写点缺 audit 行则补上）。
+- **屏 2 资源池**：四统计卡（待分配/已分配·待认领/跟进中/已回收，26px/700 tabular-nums，点击=分段筛选）+ 蓝横幅（最近导入批次统计，audit 驱动）+ 分段列表（待分配/已分配/跟进中/已回收，回收行标记「回池」）+ 搜索/来源/标签筛选 + 表格列按设计稿（联系方式脱敏+wxid 小字/来源/需求标签 pill/备注/入池时间/入池方式/操作）。⚠️ **入池方式为展示层近似**（lead↔import_batch 无外键列）：created_at 与最近导入审计时刻 <10 分钟显示「批次 #Axxx」否则「存量导入」，正式批次联动需后续加列。
+- **屏 4 销售资源卡**：待认领/跟进中/已回收分段 + 卡片（脱敏联系方式+状态 pill 五语义 / 来源·标签·备注·分配时间 / 倒计时区 ok·warn·over·done 四色档 / 操作按钮：认领（复用 claimTarget 弹窗）、绑定微信（复用 bindTarget 弹窗）、已加好友=查看对话）。倒计时读 sla1_deadline+sla1_remind_count（上一刀数据就绪）。
+- **屏 6 左 待改派表**：最新分配行 recycled 的线索列表（线索/原归属/回收原因=lead_recycle 审计 reason/建议改派人=在手最少且非原归属+在手数/确认改派按钮）。⚠️ **确认改派走 assignLeads（回池再分配）而非 transfer**——transferAssignment 仅限 assigned/claimed 行（E201），recycled 行语义上已在资源池，回池再分配即现有同事务写路径；原归属在建议人选择中被排除。
+- **前端数据流**：fetchAll 增拉 assignmentList 原始行（latestAsg 映射判 recycled/在手计数/销售卡 SLA 字段）+ auditQuery 三路（lead_import/lead_assign_batch/lead_recycle→原因映射）；权重 getCrmAssignWeights/setCrmAssignWeights（src/services/config 新增）。
+- **测试**：assignment-full-test **79→91**（H 节 assignBatch：权重 50/30/20→5/3/2、批次号/审计行/mode 落列、clamp 取池、轮询均分、负载均衡执行=规划器口径、空池 E301、**前后端份额函数逐模式一致**、lead_import 审计行）；lead-assignment-view-test **32→48**（G 节三视角/三模式预览/建议人选/倒计时五档）。回归 assignment 28 + crm-lead 55 + crm-sla-action 11 + identity 25 + lead-sla-reset 18 + sla2 41 + friend-detect 33 + audit-query 26 + alert-gate 33 全绿。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b tsconfig.node.json` 产物已重建（main.js 含 assignBatch）。
+- **遗留**：屏 6 左「3 次超时未加」pill 与提醒抄送语义的中文映射已由 sla1_remind 链路供数；入池方式精确化（lead.import_batch_id 加列）与批量导入横幅「查重报告可下载」属后续刀；权重调整的独立审计写点（当前随批次审计留痕）。
+
+---
+
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

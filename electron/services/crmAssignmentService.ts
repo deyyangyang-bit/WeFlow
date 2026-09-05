@@ -564,3 +564,139 @@ export function listOwnershipHistory(opts: OwnershipHistoryOpts = {}): { ok: boo
   )
   return { ok: true, data: { rows, total } }
 }
+
+// ─── 批量分配（crm:assignment:assignBatch，设计稿屏 3 分配控制台）─────────────
+export interface AssignBatchInput {
+  /** 本次从待分配池取的条数 */
+  count: number
+  /** 分配模式（落 assignment.mode）：weight=比例权重（默认）/ round_robin=轮询 / load=负载均衡 */
+  mode: 'weight' | 'round_robin' | 'load'
+  /** weight 模式的权重表（销售名 → 0-100；缺省等权） */
+  weights?: Record<string, number>
+  actor?: string
+}
+export interface AssignBatchData {
+  /** 批次号 = '#A' + 批次审计行号（不建新列，可追溯到操作人，设计稿屏 3 口径） */
+  batchNo: string
+  assigned: number
+  skipped: Array<{ leadId: number; code: string; reason: string }>
+  perSales: Record<string, number>
+  mode: string
+}
+export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?: string; message?: string }
+
+/**
+ * 按模式把 N 条待分配线索分给销售名单：
+ *   待分配池 = lead.status='NEW' 且无当前有效分配行（SQL 取，避免逐条 currentAssignment N+1）；
+ *   分配方式 = 按模式算出各人份额 → 逐组走现有 assignLeads（同事务写 assignment + ownership_history +
+ *   audit_event + outbox + lead.first_contact_deadline 起计时，mode 落 assignment.mode）；
+ *   收尾写一行批次审计 action='lead_assign_batch'（detail 含模式/数量/份额/跳过），批次号 = '#A'+审计行号。
+ *   权重调整属 C 类操作（宪法 §1.3），调整在前端写 config crmAssignWeights（应用内审计另行记录，本函数只读权重）。
+ */
+export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
+  const sales = (ConfigService.getInstance().get('crmSalesList') || []).map((s) => String(s).trim()).filter(Boolean)
+  if (!sales.length) return { ok: false, code: 'E101', message: '销售名单为空（先在线索页维护 crmSalesList）' }
+  const mode = (['weight', 'round_robin', 'load'] as const).includes(input?.mode as never) ? input.mode : 'weight'
+  const weights = input?.weights && typeof input.weights === 'object' ? input.weights : {}
+  const count = Math.max(1, Math.floor(Number(input?.count) || 0))
+
+  // 待分配池（NEW 且无当前有效分配行），按导入先后（id ASC）取前 N
+  const pool = crmDbService.all(
+    `SELECT l.id FROM lead l WHERE l.status = 'NEW' AND NOT EXISTS (
+       SELECT 1 FROM assignment a WHERE a.lead_id = l.id AND a.deleted = 0 AND ${ACTIVE_STATUS_SQL})
+     ORDER BY l.id LIMIT ?`,
+    [count]
+  ).map((r) => Number(r.id))
+  if (!pool.length) return { ok: false, code: 'E301', message: '待分配池为空' }
+
+  // 各人在手条数（当前有效归属）
+  const loads: Record<string, number> = {}
+  for (const s of sales) loads[s] = 0
+  const loadRows = crmDbService.all(
+    `SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted = 0 AND ${ACTIVE_STATUS_SQL} GROUP BY sales_name`
+  )
+  for (const r of loadRows) if (loads[String(r.sales_name)] !== undefined) loads[String(r.sales_name)] = Number(r.c)
+
+  // 份额计算（纯函数 distributePreview 同口径，见 leadAssignmentView.ts / 共享逻辑在 buildDistribution）
+  const plan = buildDistribution(mode, pool.length, sales, weights, loads)
+
+  // 逐组分配：每组一个销售，组内逐条走 assignLeads（单条事务失败不阻塞其余，E201/E301 落 skipped）
+  const perSales: Record<string, number> = {}
+  const skipped: Array<{ leadId: number; code: string; reason: string }> = []
+  let assigned = 0
+  let cursor = 0
+  for (const s of sales) {
+    const take = plan[s] || 0
+    if (take <= 0) { perSales[s] = 0; continue }
+    const chunk = pool.slice(cursor, cursor + take)
+    cursor += take
+    let got = 0
+    for (const leadId of chunk) {
+      const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
+      if (res.ok) got++
+      else skipped.push({ leadId, code: res.code || 'E999', reason: res.message || '分配失败' })
+    }
+    perSales[s] = got
+    assigned += got
+  }
+  // 计划外剩余（上游池被并发取走）：归到负载最轻者——保证「取 N 条」语义，除非池已空
+  while (cursor < pool.length) {
+    const s = [...sales].sort((a, b) => (loads[a] + (perSales[a] || 0)) - (loads[b] + (perSales[b] || 0)))[0]
+    const leadId = pool[cursor++]
+    const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
+    if (res.ok) { perSales[s] = (perSales[s] || 0) + 1; assigned++ }
+    else skipped.push({ leadId, code: res.code || 'E999', reason: res.message || '分配失败' })
+  }
+
+  // 批次审计一行（设计稿屏 3「最近分配记录」，批次号 = '#A'+行号，可追溯到操作人）
+  let batchNo = ''
+  if (assigned > 0) {
+    const actor = String(input?.actor || '').trim() || getActorLabel() || '分配员'
+    const now = Date.now()
+    const auditId = crmDbService.runTx((tx) => tx.run(
+      'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [actor, 'lead_assign_batch', 'lead', null,
+       JSON.stringify({ mode, count: pool.length, assigned, perSales, skipped: skipped.length }), now]
+    ))
+    batchNo = `#A${Number(auditId)}`
+  }
+  return { ok: true, data: { batchNo, assigned, skipped, perSales, mode } }
+}
+
+/**
+ * 份额分配（assignBatchLeads 与前端预览共用口径，屏 3 预览表 = 后端执行的逐条一致）：
+ *   weight：按权重占比最大余数法分配（缺省等权；总量 = count）；
+ *   round_robin：轮询均分（余数给名单前几位）；
+ *   load：负载均衡——逐条给「在手 + 本批已得」最少者。
+ */
+export function buildDistribution(mode: 'weight' | 'round_robin' | 'load', count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>): Record<string, number> {
+  const plan: Record<string, number> = {}
+  for (const s of sales) plan[s] = 0
+  if (count <= 0 || !sales.length) return plan
+  if (mode === 'weight') {
+    const w = sales.map((s) => Math.max(0, Number(weights[s] ?? 0)))
+    const totalW = w.reduce((a, b) => a + b, 0)
+    // 全 0 视为等权
+    const eff = totalW > 0 ? w : sales.map(() => 1)
+    const effTotal = eff.reduce((a, b) => a + b, 0)
+    // 最大余数法：floor 后按小数部分从大到小补齐
+    const remainders = sales.map((s, i) => ({ s, base: Math.floor((count * eff[i]) / effTotal), frac: (count * eff[i]) / effTotal - Math.floor((count * eff[i]) / effTotal) }))
+    let used = remainders.reduce((a, r) => a + r.base, 0)
+    remainders.sort((a, b) => b.frac - a.frac)
+    let ri = 0
+    while (used < count && remainders.length) { remainders[ri % remainders.length].base++; used++; ri++ }
+    for (const r of remainders) plan[r.s] = r.base
+  } else if (mode === 'round_robin') {
+    for (let i = 0; i < count; i++) plan[sales[i % sales.length]]++
+  } else {
+    // load：模拟逐条投放给「在手 + 本批已得」最少者
+    const cur: Record<string, number> = {}
+    for (const s of sales) cur[s] = Number(loads[s] || 0)
+    for (let i = 0; i < count; i++) {
+      const s = sales.reduce((min, x) => (cur[x] < cur[min] ? x : min), sales[0])
+      plan[s]++
+      cur[s]++
+    }
+  }
+  return plan
+}
