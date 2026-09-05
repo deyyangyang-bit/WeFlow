@@ -1190,6 +1190,22 @@
 
 ---
 
+## 2.66 散装见解降级 + 信箱改「重要提醒」（2026-09-05，设计-AI见解重定位 阶段二 b，已提交）
+
+> **总设计**：`docs/设计-AI见解重定位.md` §3.2/§3.3（阶段二「触发重路由」后两刀，上承 §2.64 阶段一噪音治理、§2.65 晨间摘要）。**语义**：「记录 = 分析事实 SSOT，信箱 = 告警视图」——自动见解继续生成（customer_judgment 与 enrich 的上游），但只作档案标注，不再进信箱/卡流。
+
+- **sourceType 三分**：`InsightRecordSourceType` 加 `'archive'`——insightService 唯一自动写入点（generateInsightForSession 的 addRecord，activity/silence/test/manual 全走它）改落 `sourceType: 'archive'`；message_analysis（手动单条解析）不变；`'insight'` 预留给阶段三告警（triggerReason='alert:*'）。
+- **⚠️ 去重配套修（评审定论的地雷，两行必须一起改）**：`hasRecentRecord` 过滤从 `=== 'insight'` 改 `!== 'message_analysis'`——archive 必须计入 24h 去重，否则每条客户消息都重触发一次 LLM 调用；注释同步「记录=分析事实 SSOT，信箱=告警视图」。
+- **卡流移除 insight**：salesActionEngine 删 insight 合流分支（4b）+ INSIGHT_BOOST + SignalSource 'insight' 变体 + completeUnifiedSignal 的 insight read 标记；`stats.insightOnly`/`merged` **保留字段恒 0**（防前端引用断裂）。
+- **⚠️ 隐藏消费点盘点（设计稿 §3.2 要求的实现前盘点，两处差点被默认过滤误伤）**：`crmEnrichService` 素材【AI 见解记录】与 `crm:customer:profile`（客户 360 时间线 insights 混排）都靠 listRecords 读记录——「进档案」全靠这两处。为此 `InsightRecordFilters` 加 **`includeArchive` 内部开关**（默认关=信箱隐藏），两处显式 `true`，行为与降级前完全一致；显式 `sourceType='archive'` 亦可查归档（数据清理/调试用）。
+- **信箱改「重要提醒」**：listRecords 默认（all/未指定）过滤 archive，todayCount/unreadCount/contacts 联系人面板同口径；页标题改「重要提醒」（加载/报错文案同步）。存量 'insight' 记录仍显示（历史），新写入只有 message_analysis，直至阶段三告警上线。
+- **前端清理**：todayActionStore SignalSource/SignalFilter 去 'insight'（ActionStats 字段保留）；TodayActionPage 删「有动向」chip + chipCounts.insight + filter 谓词 + **高意向提示条整个删除**（已被晨间摘要 banner 取代，Bell/noticeDismissed 引用一并清）；AIActionCard teal 洞察块 + hasInsight 按钮分支删除（卡流渲染分支同步清）；**TodoSidebar 盘点结论：不消费 insight 记录，未动**（设计稿 §3.2 的「已知消费」记载有误）。
+- **测试**：insight-dedup-test 6→**11**（e1-e5：archive 计入去重 / 信箱 total·unread·today·contacts 不含 archive / 显式 archive 视图可查）；todo-followup-test 11→**14**（e1-e3：archive+存量 insight 不出卡 / 卡流零 insight 来源 / stats 恒 0）；回归 insight-noise 32 + morning-digest 22 + funnel 40 + report-review 33 + crm-enrich 61 + customer360 13 + today-action-consumer 14 + customer-event 20 + insight-stage-ban 16 + insight-unnamed 6 全绿。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b` 产物已重建。
+- **遗留**：阶段三（告警 A 竞品锚点先行 + alert_eval_case 评测基建，**先入宪法 §3 再建表**）见设计稿 §4；存量垃圾 insightRecord 手动清 `weflow-insight-records.json`（§3.3，数据清理不写代码）。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

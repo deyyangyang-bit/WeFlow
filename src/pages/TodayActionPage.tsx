@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
-  Activity, BarChart3, Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
+  Activity, BarChart3, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
   Clock, Flame, ListTodo, Plus, RefreshCw, Sunrise, TrendingUp, Users, X,
 } from 'lucide-react'
 import AIActionCard from '../components/sales/AIActionCard'
@@ -20,7 +20,6 @@ import './TodayActionPage.scss'
 const CHIPS: { key: SignalFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'task', label: '该联系' },
-  { key: 'insight', label: '有动向' },
   { key: 'urgent', label: '紧急' },
 ]
 
@@ -46,7 +45,7 @@ function KpiStat({ icon, value, label }: { icon: React.ReactNode; value: number;
 }
 
 export default function TodayActionPage() {
-  const { items, stats, loading, error, filter, noticeDismissed, fetchToday, setFilter, dismissNotice, createTodo } = useTodayActionStore()
+  const { items, stats, loading, error, filter, fetchToday, setFilter, createTodo } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [page, setPage] = useState(1)
@@ -140,7 +139,6 @@ export default function TodayActionPage() {
   const filtered = useMemo(() => {
     if (filter === 'all') return items
     if (filter === 'task') return items.filter(i => i.sources.every(s => s.type === 'task'))
-    if (filter === 'insight') return items.filter(i => i.sources.some(s => s.type === 'insight'))
     if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
     return items
   }, [items, filter])
@@ -160,14 +158,8 @@ export default function TodayActionPage() {
   const chipCounts = useMemo(() => ({
     all: items.length,
     task: items.filter(i => i.sources.every(s => s.type === 'task')).length,
-    insight: items.filter(i => i.sources.some(s => s.type === 'insight')).length,
     urgent: items.filter(i => i.urgencyTier === 'urgent').length,
   }), [items])
-
-  // 高意向提示条
-  const highIntentWithInsight = items.filter(i =>
-    i.urgencyTier === 'urgent' && i.sources.some(s => s.type === 'insight')
-  ).length
 
   // 概览:阶段分布
   const stageCounts = useMemo(() => {
@@ -214,8 +206,8 @@ export default function TodayActionPage() {
         </div>
       )}
 
-      {/* 晨间摘要（有当天摘要时取代高意向提示条，两条不同时出现） */}
-      {!digestDismissed && digest && digest.items.length > 0 ? (
+      {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除） */}
+      {!digestDismissed && digest && digest.items.length > 0 && (
         <div className="signal-notice signal-notice--digest">
           <Sunrise size={14} />
           <div className="signal-notice__digest-body">
@@ -239,14 +231,6 @@ export default function TodayActionPage() {
             <RefreshCw size={12} className={digestRegenerating ? 'spinning' : undefined} />
           </button>
         </div>
-      ) : (
-        !noticeDismissed && highIntentWithInsight > 0 && (
-          <div className="signal-notice" onClick={dismissNotice}>
-            <Bell size={14} />
-            {highIntentWithInsight} 位客户有高意向动向，已置顶排序
-            <span className="signal-notice__dismiss">点击收起</span>
-          </div>
-        )
       )}
 
       {/* 主两栏 */}

@@ -3,8 +3,7 @@
  *
  * - 左侧 4px 紧急度色条
  * - 头部：客户名 + 阶段 chip + 沉默天数（无头像）
- * - teal AI 洞察块：有 insightText 时常显
- * - 来源标签行：task(石墨蓝) / insight(琥珀)
+ * - 来源标签行：task（石墨蓝；insight 来源已随设计-AI见解重定位 §3.2 移除）
  * - 右列：环形 gauge（纯 SVG，priorityScore/140 归一化，语义=引擎内部优先级分，不改名）
  * - 底部：完成 / 跳过 / AI分析（行为不变）+ AI 五字段折叠面板
  */
@@ -72,12 +71,10 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
   // P0-3.4 证据回查：判断只带 messageKey 锚点，点击才走 P0-2B 拉原话（与 360/上下文条同语义）
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
   const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
-  // 话术 = AI 分析生成的可粘贴话术（无 insightText 时也常显示 suggestion）
+  // 话术 = AI 分析生成的可粘贴话术（无 analysis 时也常显示 suggestion）
   const script = item.suggestion || ''
 
   const stage = STAGE_LABELS[item.stage] || STAGE_LABELS.unknown
-  const hasInsight = item.sources.some(s => s.type === 'insight' && (s as any).insightText)
-  const insightText = item.sources.find(s => s.type === 'insight' && (s as any).insightText)
   // P0-3.4：面板可展开 = 有当前判断投影或有话术（不再以 analysis JSON 快照/insight 文本判定）
   const judgments = item.judgments
   const hasJudgments = !!(judgments && (judgments.summary || judgments.opportunity || judgments.risk || judgments.nextAction))
@@ -182,14 +179,6 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
             <span className="signal-card__silence"><Clock size={12} /> {item.silentDays}天未互动</span>
           </div>
 
-          {/* teal AI 洞察块（有 insight 常显） */}
-          {hasInsight && (
-            <div className="signal-card__insight">
-              <Sparkles size={14} className="signal-card__insight-icon" />
-              <span>{(insightText as any)?.insightText}</span>
-            </div>
-          )}
-
           {/* 来源标签行 */}
           <div className="signal-card__sources">
             {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
@@ -213,12 +202,12 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
             </button>
             {!isVirtualTodo && (
               <button
-                className={`signal-btn signal-btn--ai ${hasInsight ? 'signal-btn--ai-ready' : ''}`}
+                className="signal-btn signal-btn--ai"
                 onClick={hasAnalysis ? () => setExpanded(!expanded) : handleSuggest}
                 disabled={loadingSuggestion}
               >
-                {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : hasInsight ? <RotateCw size={13} /> : <Sparkles size={13} />}
-                {loadingSuggestion ? '分析中...' : hasAnalysis ? (expanded ? '收起' : (hasInsight ? '查看AI分析' : 'AI深度分析')) : 'AI深度分析'}
+                {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : <Sparkles size={13} />}
+                {loadingSuggestion ? '分析中...' : expanded ? '收起' : 'AI深度分析'}
                 {hasAnalysis && !loadingSuggestion && (expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
               </button>
             )}

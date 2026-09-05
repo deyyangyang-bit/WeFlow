@@ -69,7 +69,7 @@ async function gatherMaterials(sessionId: string, displayName: string): Promise<
     if (texts.length) parts.push('【聊天记录】\n' + texts.join('\n'))
   } catch { /* 聊天不可用不阻断 */ }
   try {
-    const r = insightRecordService.listRecords({ sessionId, limit: 10 })
+    const r = insightRecordService.listRecords({ sessionId, limit: 10, includeArchive: true })
     const insights = (r.records || [])
       .map((rec: any) => String(rec.insight || '').slice(0, 120))
       .filter(Boolean)

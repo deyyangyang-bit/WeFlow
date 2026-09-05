@@ -20,7 +20,6 @@ import { classifyStage, toMessageSnippets, persistClassification, extractEvidenc
 import { chatService } from './chatService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
-import { insightRecordService } from './insightRecordService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
 import { runAftersalesScan } from './crmAftersalesService'
@@ -70,7 +69,6 @@ export interface TodayActionResult {
 
 export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
-  | { type: 'insight'; label: string; reason: string; rawInsightId: string; insightText?: string }
 
 export interface UnifiedSignal {
   sessionId: string
@@ -103,14 +101,6 @@ export interface UnifiedResult {
   signals: UnifiedSignal[]
   stats: UnifiedStats
   generatedAt: number
-}
-
-const INSIGHT_BOOST: Record<string, number> = {
-  activity: 40,
-  silence: 10,
-  message_analysis: 25,
-  manual: 25,
-  test: 0,
 }
 
 
@@ -699,7 +689,8 @@ export async function lazyScan(): Promise<number> {
  * 如果今天还没生成过任务，先触发全量扫描 + 懒扫描补充。
  */
 /**
- * 统一信号流：合并 follow_up_task + insight records 为 UnifiedSignal[]
+ * 统一信号流：follow_up_task 卡片流（设计-AI见解重定位 §3.2 起 insight 不再进卡流，
+ * 自动见解落 archive 作档案标注）
  */
 export async function getUnifiedSignals(): Promise<UnifiedResult> {
   if (!salesDbService.isInitialized()) {
@@ -722,16 +713,6 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
   // 2. 查 pending tasks
   const pendingTasks = salesDbService.todoList({ status: 'pending' })
   const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
-
-  // 3. 查最近 24h 未读 insight records
-  const insightWindow = nowMs - 24 * 60 * 60 * 1000
-  let insightRecords: any[] = []
-  try {
-    const result = insightRecordService.listRecords({ startTime: insightWindow })
-    insightRecords = (result.records || []).filter((r: any) => !r.read)
-  } catch (e) {
-    salesLog('WARN', `[UnifiedSignals] insight query failed: ${e}`)
-  }
 
   // 4. 按 sessionId 分组合并
   const signalMap = new Map<string, UnifiedSignal>()
@@ -848,55 +829,6 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     }
   }
 
-  // 4b. 从 insights 合并（每客户只取最新1条，按 createdAt 降序已排好）
-  const insightBySession = new Map<string, any>()
-  for (const rec of insightRecords) {
-    const sid = rec.sessionId || ''
-    if (!sid) continue
-    // 只保留最新一条
-    if (!insightBySession.has(sid)) {
-      insightBySession.set(sid, rec)
-    }
-  }
-
-  for (const [sid, rec] of insightBySession) {
-    const profile = salesDbService.customerGetBySession(sid)
-    const stage = normalizeStage(profile?.stage)
-    if (['won', 'lost'].includes(stage)) continue
-    const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor((profile.created_at || rec.createdAt || 0) / 1000) : 0)
-    const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
-
-    const boost = INSIGHT_BOOST[rec.triggerReason] ?? 25
-    const ageHours = Math.max(0, (nowMs - (rec.createdAt || 0)) / 3600000)
-    const recencyBonus = Math.max(0, Math.round(20 * (1 - ageHours / 24)))
-    const insightScore = boost + recencyBonus
-
-    const source: SignalSource = {
-      type: 'insight',
-      label: rec.triggerReason === 'activity' ? '活跃信号' : rec.triggerReason === 'silence' ? '沉默预警' : 'AI 洞察',
-      reason: (rec.insight || '').slice(0, 80),
-      rawInsightId: rec.id || '',
-      insightText: rec.insight || ''
-    }
-
-    const existing = signalMap.get(sid)
-    if (existing) {
-      existing.sources.push(source)
-      existing.priorityScore = Math.min(140, existing.priorityScore + insightScore)  // 合并加分，cap 140
-    } else {
-      signalMap.set(sid, {
-        sessionId: sid,
-        displayName: rec.displayName || profile?.display_name || '未知',
-        stage,
-        silentDays,
-        sources: [source],
-        priorityScore: Math.min(140, insightScore),
-        urgencyTier: 'normal',
-        status: 'pending'
-      })
-    }
-  }
-
   // 5. 计算 urgencyTier
   for (const sig of signalMap.values()) {
     if (sig.priorityScore >= 100) sig.urgencyTier = 'urgent'
@@ -927,8 +859,9 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
   const stats: UnifiedStats = {
     totalSignals: signals.length,
     taskOnly: signals.filter(s => s.sources.every(src => src.type === 'task')).length,
-    insightOnly: signals.filter(s => s.sources.some(src => src.type === 'insight') && !s.sources.some(src => src.type === 'task')).length,
-    merged: signals.filter(s => s.sources.some(src => src.type === 'task') && s.sources.some(src => src.type === 'insight')).length,
+    // 设计-AI见解重定位 §3.2：insight 不再进卡流，两字段恒 0（保留字段防前端引用断裂）
+    insightOnly: 0,
+    merged: 0,
     urgentCount: signals.filter(s => s.urgencyTier === 'urgent').length,
     highPriorityCount: signals.filter(s => s.urgencyTier === 'urgent' || s.urgencyTier === 'high').length,
     riskCustomerCount: activeStageCustomers.filter(c => {
@@ -939,12 +872,13 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     todayPending: signals.length
   }
 
-  salesLog('INFO', `[UnifiedSignals] ${signals.length} signals (${stats.taskOnly} task-only, ${stats.insightOnly} insight-only, ${stats.urgentCount} urgent)`)
+  salesLog('INFO', `[UnifiedSignals] ${signals.length} signals (${stats.taskOnly} task-only, ${stats.urgentCount} urgent)`)
   return { signals, stats, generatedAt: nowMs }
 }
 
 /**
- * 完成/跳过统一信号：标记 task done/skipped + 标记 insight read
+ * 完成/跳过统一信号：标记 task done/skipped
+ * （设计-AI见解重定位 §3.2 起 insight 不再进卡流，insight read 标记随合流分支一并移除）
  */
 export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped'): void {
   // 手动待办：虚拟 sessionId todo:<taskId>（无客户），完成/跳过即关闭该任务
@@ -971,17 +905,6 @@ export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipp
   const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
   for (const t of tasks) {
     if (t.id) completeAction(t.id, action)
-  }
-  // 标记该 sessionId 的未读 insights 为已读
-  try {
-    const result = insightRecordService.listRecords({ sessionId, limit: 50 })
-    for (const rec of result.records || []) {
-      if (!rec.read && rec.id) {
-        insightRecordService.markRecordRead(rec.id)
-      }
-    }
-  } catch (e) {
-    salesLog('WARN', `[UnifiedSignals] markRead failed for ${sessionId}: ${e}`)
   }
 }
 

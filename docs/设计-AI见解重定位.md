@@ -1,6 +1,6 @@
 # 设计：AI 见解重定位——从「消息触发」到「决策时刻触发」
 
-> 状态：已评审定稿（2026-09-05，Kimi 初稿 + GLM 逐项核实与修订，合并版）；**阶段一已实现**（2026-09-05，HANDOVER §2.64），阶段二/三待实施
+> 状态：已评审定稿（2026-09-05，Kimi 初稿 + GLM 逐项核实与修订，合并版）；**阶段一已实现**（2026-09-05，HANDOVER §2.64），**阶段二已实现**（§3.1 晨间摘要=HANDOVER §2.65；§3.2/§3.3 触发重路由+信箱改告警箱=HANDOVER §2.66），阶段三待实施
 > 前置依据：PRD v3.4 实测基线（行动卡执行率 0.6%，AGENTS.md「真实运行观察期」收档结论）；数据宪法 §1.10（evidence 规范）、§2.1（SSOT 先行登记）；HANDOVER §2.26（AI 销售副驾驶定位）。
 > 事实核查：本稿引用的代码位置/既有机制共 15 处已逐一对照源码核实（PRD 0.6%、DATA-CONSTITUTION §1.10/§3、evidenceResolver.getEvidenceByKey、parseRiskSignal competitor、R2 规则、report_snapshot 结构、signal-notice 槽位等全部属实）。
 

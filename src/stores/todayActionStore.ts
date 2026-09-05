@@ -6,7 +6,8 @@ import { create } from 'zustand'
 
 export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
-  | { type: 'insight'; label: string; reason: string; rawInsightId: string; insightText?: string }
+// 设计-AI见解重定位 §3.2：insight 来源已随合流分支移除（自动见解落 archive 作档案标注）；
+// ActionStats.insightOnly/merged 字段保留恒 0，防前端引用断裂
 
 export interface ActionItem {
   sessionId: string
@@ -65,7 +66,7 @@ export interface ActionStats {
   r6Count: number
 }
 
-export type SignalFilter = 'all' | 'task' | 'insight' | 'urgent'
+export type SignalFilter = 'all' | 'task' | 'urgent'
 
 /** 待办清单条目（TodoSidebar 数据源，与主卡流同 store 同步） */
 export interface TodoTask {

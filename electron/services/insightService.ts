@@ -2001,6 +2001,9 @@ ${afterText}
         sessionId,
         displayName: resolvedDisplayName,
         avatarUrl: resolvedAvatarUrl,
+        // 自动见解（activity/silence/test/manual 等）落 archive：进档案标注，不进信箱/卡流
+        // （设计-AI见解重定位 §3.2）；'insight' 预留给阶段三告警（triggerReason='alert:*'）
+        sourceType: 'archive',
         triggerReason,
         insight,
         log: recordLog,

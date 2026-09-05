@@ -6,7 +6,14 @@ import { ConfigService } from './config'
 import { atomicWriteFileSync } from './atomicPersist'
 
 export type InsightRecordTriggerReason = 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
-export type InsightRecordSourceType = 'insight' | 'message_analysis'
+/**
+ * sourceType 三语义（设计-AI见解重定位 §3.2/§3.3）：
+ *  insight          = 信箱可见（存量历史记录 + 阶段三告警 triggerReason='alert:*'）；
+ *  message_analysis = 手动单条消息解析（信箱可见，不阻塞自动见解去重）；
+ *  archive          = 自动见解归档（档案标注：不进信箱/卡流，但计入 hasRecentRecord 去重）。
+ * 语义：「记录 = 分析事实 SSOT，信箱 = 告警视图」。
+ */
+export type InsightRecordSourceType = 'insight' | 'message_analysis' | 'archive'
 
 export interface MessageInsightAnalysis {
   explicitText: string
@@ -99,6 +106,8 @@ export interface InsightRecordFilters {
   startTime?: number
   endTime?: number
   sourceType?: InsightRecordSourceType | 'all'
+  /** 内部消费点用：enrich 素材/客户 360 档案需要读 archive 归档记录（信箱列表默认隐藏） */
+  includeArchive?: boolean
   limit?: number
   offset?: number
 }
@@ -198,15 +207,16 @@ class InsightRecordService {
   }
 
   /**
-   * 该会话在 windowMs 内是否已有 AI 见解记录（用于防重复分析，时间窗通常 24h）。
-   * 只统计 sourceType='insight'（AI 自动/手动生成的见解），排除 message_analysis
-   * （用户对单条消息的解析，不视为「已分析过该客户」，不应阻塞后续自动见解）。
+   * 该会话在 windowMs 内是否已有 AI 分析记录（用于防重复分析，时间窗通常 24h）。
+   * ⚠️ 除 message_analysis（手动单条解析，不视为「已分析过该客户」）外全部计入，
+   * 含 archive——自动见解降级档案标注后记录照写，去重闸门必须读全量，
+   * 否则每条客户消息都会重新触发一次 LLM 调用（设计-AI见解重定位 §3.2 评审定论）。
    */
   hasRecentRecord(sessionId: string, windowMs: number): boolean {
     if (!sessionId) return false
     const cutoff = Date.now() - windowMs
     return this.getScopedRecords().some(
-      (r) => (r.sourceType || 'insight') === 'insight' && r.sessionId === sessionId && r.createdAt >= cutoff
+      (r) => (r.sourceType || 'insight') !== 'message_analysis' && r.sessionId === sessionId && r.createdAt >= cutoff
     )
   }
 
@@ -263,8 +273,15 @@ class InsightRecordService {
     try {
       const allScoped = this.getScopedRecords()
       const todayStart = this.getStartOfToday()
+      // 信箱 = 告警视图（设计-AI见解重定位 §3.3）：默认（all/未指定）不含 archive 档案标注；
+      // 显式 sourceType='archive' 或 includeArchive=true（enrich 素材/档案时间线）可读归档
+      const sourceType = String(filters.sourceType || 'all').trim()
+      const showArchive = sourceType === 'archive' || filters.includeArchive === true
+      const visibleScoped = showArchive
+        ? allScoped
+        : allScoped.filter((record) => (record.sourceType || 'insight') !== 'archive')
       const contactsMap = new Map<string, InsightRecordContactFacet>()
-      for (const record of allScoped) {
+      for (const record of visibleScoped) {
         const existing = contactsMap.get(record.sessionId)
         if (existing) {
           existing.count += 1
@@ -280,13 +297,12 @@ class InsightRecordService {
 
       const keyword = String(filters.keyword || '').trim().toLowerCase()
       const sessionId = String(filters.sessionId || '').trim()
-      const sourceType = String(filters.sourceType || 'all').trim()
       const startTime = Number(filters.startTime || 0)
       const endTime = Number(filters.endTime || 0)
       const offset = Math.max(0, Math.floor(Number(filters.offset || 0)))
       const limit = Math.min(200, Math.max(1, Math.floor(Number(filters.limit || 100))))
 
-      const filtered = allScoped
+      const filtered = visibleScoped
         .filter((record) => {
           if (sessionId && record.sessionId !== sessionId) return false
           const recordSourceType = record.sourceType || 'insight'
@@ -315,8 +331,8 @@ class InsightRecordService {
         success: true,
         records: filtered.slice(offset, offset + limit).map((record) => this.toSummary(record)),
         total: filtered.length,
-        todayCount: allScoped.filter((record) => record.createdAt >= todayStart).length,
-        unreadCount: allScoped.filter((record) => !record.read).length,
+        todayCount: visibleScoped.filter((record) => record.createdAt >= todayStart).length,
+        unreadCount: visibleScoped.filter((record) => !record.read).length,
         contacts: Array.from(contactsMap.values()).sort((a, b) => b.count - a.count)
       }
     } catch (error) {

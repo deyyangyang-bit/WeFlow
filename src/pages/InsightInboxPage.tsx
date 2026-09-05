@@ -174,7 +174,7 @@ export default function InsightInboxPage() {
     try {
       const result: InsightRecordListResult = await window.electronAPI.insight.listRecords(filters)
       if (!result.success) {
-        setError(result.error || '加载灵感信箱失败')
+        setError(result.error || '加载重要提醒失败')
         return
       }
       setRecords(result.records)
@@ -190,7 +190,7 @@ export default function InsightInboxPage() {
         unreadCount: result.unreadCount
       })
     } catch (err) {
-      setError((err as Error).message || '加载灵感信箱失败')
+      setError((err as Error).message || '加载重要提醒失败')
     } finally {
       setLoading(false)
     }
@@ -283,7 +283,7 @@ export default function InsightInboxPage() {
           <div className="insight-inbox-title-block">
             <div className="insight-inbox-title-line">
               <img src={INSIGHT_AVATAR_URL} alt="" className="insight-inbox-logo" />
-              <h2>灵感信箱</h2>
+              <h2>重要提醒</h2>
             </div>
             <div className="insight-inbox-stats">
               <span>共 {stats.total} 条</span>
@@ -315,7 +315,7 @@ export default function InsightInboxPage() {
           {!error && loading && records.length === 0 && (
             <div className="insight-empty-state">
               <RefreshCw size={18} className="spinning" />
-              <span>正在加载灵感信箱...</span>
+              <span>正在加载重要提醒...</span>
             </div>
           )}
 
