@@ -72,7 +72,7 @@
 
 /* 客户 360 档案：右侧抽屉（2026-09-05，替代页面底部内联长面板——页面过长影响操作） */
 .cws-drawer {
-  position: fixed; inset: 0; z-index: 900;
+  position: fixed; top: 48px; right: 0; bottom: 0; left: 0; z-index: 900; /* top 48px 避开 TitleBar（z-index 2101），防右上角与窗口最小化/关闭键重叠 */
   background: rgba(0, 0, 0, 0.35);
   display: flex; justify-content: flex-end;
 }
