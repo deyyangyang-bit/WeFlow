@@ -1,6 +1,6 @@
 # 设计：AI 见解重定位——从「消息触发」到「决策时刻触发」
 
-> 状态：已评审定稿（2026-09-05，Kimi 初稿 + GLM 逐项核实与修订，合并版）；**阶段一已实现**（2026-09-05，HANDOVER §2.64），**阶段二已实现**（§3.1 晨间摘要=HANDOVER §2.65；§3.2/§3.3 触发重路由+信箱改告警箱=HANDOVER §2.66），**阶段三部分实现**（§4.1 告警契约框架 + §4.2 告警 A 竞品提及=HANDOVER §2.67；§4.3 评测基建 alert_eval_case + §4.2 告警 B 识别规则 parseLossSignal=HANDOVER §2.68，B 未接链待评测 ≥85%；评测标注页扩展/开闸接线/告警 D 待实施）
+> 状态：已评审定稿（2026-09-05，Kimi 初稿 + GLM 逐项核实与修订，合并版）；**阶段一已实现**（2026-09-05，HANDOVER §2.64），**阶段二已实现**（§3.1 晨间摘要=HANDOVER §2.65；§3.2/§3.3 触发重路由+信箱改告警箱=HANDOVER §2.66），**阶段三部分实现**（§4.1 告警契约框架 + §4.2 告警 A 竞品提及=HANDOVER §2.67；§4.3 评测基建 alert_eval_case + §4.2 告警 B 识别规则 parseLossSignal=HANDOVER §2.68，B 未接链待评测 ≥85%；评测标注页扩展/开闸接线待实施；**§4.2 告警 D 承诺打款日过期 payment_overdue=HANDOVER §2.73 已实现**（payment_promise 登记表 + 到期扫描，推送门默认 false 待评测 ≥85%））
 > 前置依据：PRD v3.4 实测基线（行动卡执行率 0.6%，AGENTS.md「真实运行观察期」收档结论）；数据宪法 §1.10（evidence 规范）、§2.1（SSOT 先行登记）；HANDOVER §2.26（AI 销售副驾驶定位）。
 > 事实核查：本稿引用的代码位置/既有机制共 15 处已逐一对照源码核实（PRD 0.6%、DATA-CONSTITUTION §1.10/§3、evidenceResolver.getEvidenceByKey、parseRiskSignal competitor、R2 规则、report_snapshot 结构、signal-notice 槽位等全部属实）。
 
@@ -113,7 +113,7 @@ activity/silence 触发的见解**继续生成**（customer_judgment 与 enrich 
 | A | **竞品提及** | 复用 `parseRiskSignal` competitor 分支（识别层零改动），在 crmParseService upsertRisk 命中点补 messageKey 锚点 + 出告警 | **第一个做** |
 | B | **客户明示流失**（「不买了/找别家了/已经买了」） | 新增规则（parseRiskSignal 同型风格），先离线评测再上线 | 第二个做 |
 | C | ~~决策中 48h 未回~~ | 与 R2（negotiating 沉默≥2 天）+ urge 扫描双出卡 | **不做** |
-| D | **承诺打款日过期** | 全新机制：聊天里识别未来日期承诺 + 到期扫描比对 payment_record | 最后做，独立设计 |
+| D | **承诺打款日过期**（「下周打款/月底付款」到期无到款） | payment_promise 承诺登记表（crmDb，宪法 §3）+ 窄口径候选正则 → LLM 解析承诺日期（置信 ≥0.6）→ 每日到期扫描比对 payment_record（只读） | **已实现**（HANDOVER §2.73，推送门默认 false 待评测） |
 
 ### 4.3 评测集扩展（告警准确率）
 

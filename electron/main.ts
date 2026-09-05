@@ -65,6 +65,7 @@ import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1M
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
 import { startSla2LlmScanScheduler, setSla2LlmScanDeps } from './services/crmSla2LlmScanService'
+import { startPaymentPromiseScanScheduler } from './services/crmPaymentPromiseService'
 import { getAiModelConfig, callChatCompletion, isAiConfigured } from './services/ai/aiApiClient'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
@@ -5668,6 +5669,10 @@ app.whenReady().then(async () => {
       log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
     })
     startSla2LlmScanScheduler()
+    // 付款承诺到期扫描（告警 D「承诺打款日过期」，宪法 §3 payment_promise）：每日一次，
+    // 跟随周复盘定时器时段（20:00-20:30 窗口 + scan_state 每日标记防重启重扫）；到期无款
+    // 经 alertService.createAlert({type:'payment_overdue'}) 四道闸（推送门默认 false 零副作用）
+    startPaymentPromiseScanScheduler()
     // 启动周复盘定时器（每周日 20:00）
     startWeeklyReviewScheduler(configService)
     // 内网同步（Phase 1 最小版，设计 docs/规划/Phase1-内网同步最小版-设计.md）：

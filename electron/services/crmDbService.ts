@@ -268,6 +268,27 @@ CREATE TABLE IF NOT EXISTS audit_event (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_event(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at);
+-- ── payment_promise（宪法 §3，2026-09-05 本刀登记后建表；告警 D「承诺打款日过期」配套）──
+-- 客户明确承诺付款时间登记：到期无款 → alertService.createAlert({type:'payment_overdue'}) 四道闸。
+-- 通用五列齐全；status 有穷枚举 CHECK 硬门禁（§1 新表约定）；幂等键 UNIQUE(account_id, evidence_key)。
+CREATE TABLE IF NOT EXISTS payment_promise (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  session_id TEXT DEFAULT '',
+  lead_id INTEGER,
+  promise_text TEXT DEFAULT '',
+  due_date INTEGER NOT NULL,
+  evidence_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'kept', 'overdue', 'cancelled')),
+  source TEXT DEFAULT 'llm',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_promise_evidence ON payment_promise(account_id, evidence_key);
+CREATE INDEX IF NOT EXISTS idx_payment_promise_scan ON payment_promise(status, due_date);
 `
 
 // lead 索引独立于 SCHEMA_SQL：旧空壳 lead 表无 contact_type 列，若在 SCHEMA_SQL 中建索引
@@ -286,7 +307,8 @@ const ENTITIES = [
   'account', 'contact', 'opportunity', 'contract', 'quotation', 'invoice',
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
   'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk',
-  'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event'
+  'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event',
+  'payment_promise'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 

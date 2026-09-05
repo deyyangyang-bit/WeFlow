@@ -22,6 +22,7 @@ import type { CustomerEventRecord } from '../../shared/customerEvent'
 import { isAiConfigured, getAiModelConfig, simpleCompletion, callChatCompletion } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 import { getAlertService } from './alertService'
+import { isPaymentPromiseCandidate, processPaymentCandidate } from './crmPaymentPromiseService'
 
 let configRef: ConfigService | null = null
 let timer: NodeJS.Timeout | null = null
@@ -256,6 +257,29 @@ async function scanAll(): Promise<number> {
                   }).catch((e) => salesLog('WARN', `[CrmParse] 告警创建失败 ${name}: ${e}`))
                 }
               } catch (e) { salesLog('WARN', `[CrmParse] 风险识别失败 ${name}: ${e}`) }
+            }
+          }
+
+          // 付款承诺登记（告警 D「承诺打款日过期」前置，宪法 §3 payment_promise）：客户消息窄口径
+          // 命中（付款动词+时间词同句）才调 LLM 解析承诺日期（temperature 0.2）；置信 <0.6 / 日期
+          // 解不出 / 证据验不出原话整条不登记（宁缺毋滥）；AI 未配置整链跳过。本处零推送——
+          // 告警在每日到期扫描经 alertService 四道闸出（ALERT_PUSH_APPROVED.payment_overdue 默认 false）
+          if (isSend === 0 && accountId && isPaymentPromiseCandidate(textForSignal, 0)) {
+            try {
+              await processPaymentCandidate({
+                llm: (system, user) => simpleCompletion(configRef!, system, user, { responseFormatJson: true, maxTokens: 300, temperature: 0.2 }),
+                isConfigured: () => Boolean(configRef && isAiConfigured(configRef)),
+                log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
+              }, {
+                accountId: Number(accountId),
+                sessionId: uid,
+                displayName: name,
+                messageKey: key,
+                text: textForSignal,
+                messageMs: ms
+              })
+            } catch (e) {
+              salesLog('WARN', `[CrmParse] 付款承诺解析失败 ${name}: ${e}`)
             }
           }
 

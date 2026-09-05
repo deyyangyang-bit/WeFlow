@@ -12,13 +12,16 @@
  *
  * 用法：
  *   npx tsx scripts/alert-eval.ts export --dump <聊天导出JSONL> [--db <sales库路径>] [--out <jsonl路径>]
- *                              [--alert-type loss] [--sample <对照负样本数，默认30>]
+ *                              [--alert-type loss|payment_overdue] [--sample <对照负样本数，默认30>]
  *   npx tsx scripts/alert-eval.ts import <file> [--db <sales库路径>] [--annotated-by <姓名>]
  *
- * 候选两路（alert_type 默认 loss）：
- *   ① loss_signal：dump 中客户消息（is_send=0）命中 parseLossSignal → 正样本候选（ai_label='correct' 预标注）
- *   ② no_loss_sample：未命中消息中确定性抽样（按 message_key 排序等距取 N）→ 负样本候选（ai_label='wrong' 预标注）
- *      ——准确率 = 人工 correct 数 / 已确认数，没有负样本则准确率虚高（全标 correct 也能 100%）。
+ * 候选两路（alert_type 默认 loss；payment_overdue = 告警 D 付款承诺，宪法 §3 payment_promise 配套）：
+ *   ① 规则命中：dump 中客户消息（is_send=0）——loss 走 parseLossSignal；payment_overdue 走
+ *      isPaymentPromiseCandidate 窄口径候选（付款动词+时间词同句）→ 正样本候选（ai_label='correct' 预标注）
+ *      ⚠️ payment_overdue 的正样本是「候选」而非「已登记承诺」：识别全链含 LLM 解析+置信门+到期扫描，
+ *      离线评测只评测候选正则的查准/查全，LLM 环节不参与导出（无 API 依赖，同 loss 口径）。
+ *   ② no_loss_sample / no_promise_sample：未命中消息中确定性抽样（按 message_key 排序等距取 N）→ 负样本
+ *      候选（ai_label='wrong' 预标注）——准确率 = 人工 correct 数 / 已确认数，没有负样本则准确率虚高。
  * 主管在导出 JSONL 上填 label（correct/wrong/uncertain）→ import 幂等回写（status=confirmed）。
  * PIPL：evidence_text 只存客户原话快照 ≤200 字（坑清单 #8），聊天原文不出本机。
  */
@@ -30,6 +33,7 @@ import { basename, dirname, join, resolve } from 'path'
 import { salesDbService } from '../electron/services/salesDbService'
 import { findExistingBusinessDb } from '../electron/services/businessDbPath'
 import { parseLossSignal } from '../electron/services/crmParseRules'
+import { isPaymentPromiseCandidate } from '../electron/services/crmPaymentPromiseService'
 
 const DEFAULT_USER_DATA = join(homedir(), 'Library', 'Application Support', 'weflow')
 const LABELS = new Set(['correct', 'wrong', 'uncertain'])
@@ -46,7 +50,7 @@ interface DumpRow {
 
 interface PackRow {
   case_no: number
-  candidate_source: 'loss_signal' | 'no_loss_sample'
+  candidate_source: 'loss_signal' | 'no_loss_sample' | 'payment_promise_candidate' | 'no_promise_sample'
   alert_type: string
   session_id: string
   display_name: string
@@ -93,10 +97,13 @@ async function runExport(argv: string[]): Promise<void> {
     process.exit(1)
   }
   const alertType = argValue(argv, '--alert-type') || 'loss'
-  if (alertType !== 'loss') {
-    console.error(`暂只支持 --alert-type loss（竞品走 §4.2 告警 A 已接线，无需评测导出）`)
+  if (alertType !== 'loss' && alertType !== 'payment_overdue') {
+    console.error(`暂只支持 --alert-type loss | payment_overdue（竞品走 §4.2 告警 A 已接线，无需评测导出）`)
     process.exit(1)
   }
+  const isPayment = alertType === 'payment_overdue'
+  const posSource = isPayment ? 'payment_promise_candidate' : 'loss_signal'
+  const negSource = isPayment ? 'no_promise_sample' : 'no_loss_sample'
   const sampleN = Math.max(0, Number(argValue(argv, '--sample') || 30) || 0)
   const outPath = argValue(argv, '--out') ||
     resolve(process.cwd(), `alert-eval-pack-${shortDate(Date.now()).replace(/-/g, '')}.jsonl`)
@@ -140,17 +147,18 @@ async function runExport(argv: string[]): Promise<void> {
     if (!anchor) continue // 无锚点 = 证据链不可回查，不进候选（宪法 §1.10）
     const displayName = String(row.display_name || '') || nameOf.get(sessionId) || sessionId
     const at = shortDate(Number(row.create_time || 0) > 1e12 ? Number(row.create_time) : Number(row.create_time || 0) * 1000)
-    const hit = parseLossSignal(content, 0)
+    // 候选命中：loss = parseLossSignal；payment_overdue = 付款承诺窄口径候选（打款/付款/转账/汇款+时间词同句）
+    const hit = isPayment ? isPaymentPromiseCandidate(content, 0) : !!parseLossSignal(content, 0)
     if (hit) {
       positives.push({
         case_no: ++caseNo,
-        candidate_source: 'loss_signal',
+        candidate_source: posSource,
         alert_type: alertType,
         session_id: sessionId,
         display_name: displayName,
         anchor_key: anchor,
         evidence_text: clip200(content),
-        context_summary: `命中流失规则（第 ${idx + 1} 行）；时间 ${at}`,
+        context_summary: `命中${isPayment ? '付款承诺候选' : '流失'}规则（第 ${idx + 1} 行）；时间 ${at}`,
         label: '',
         evidence_message_keys: [anchor],
         annotated_by: '',
@@ -160,13 +168,13 @@ async function runExport(argv: string[]): Promise<void> {
     } else if (sampleN > 0) {
       negatives.push({
         case_no: 0, // 确定性抽样后再编号
-        candidate_source: 'no_loss_sample',
+        candidate_source: negSource,
         alert_type: alertType,
         session_id: sessionId,
         display_name: displayName,
         anchor_key: anchor,
         evidence_text: clip200(content),
-        context_summary: `未命中流失规则的客户消息对照（第 ${idx + 1} 行）；时间 ${at}`,
+        context_summary: `未命中${isPayment ? '付款承诺候选' : '流失'}规则的客户消息对照（第 ${idx + 1} 行）；时间 ${at}`,
         label: '',
         evidence_message_keys: [anchor],
         annotated_by: '',
@@ -196,10 +204,10 @@ async function runExport(argv: string[]): Promise<void> {
     }
   }
 
-  console.log(`\n═══ 导出完成 ═══`)
+  console.log(`\n═══ 导出完成（alert_type=${alertType}） ═══`)
   console.log(`  dump 总行 ${lines.length} / 解析失败 ${parseErrors} / 私聊客户消息 ${customerMsgs}（扫描 ${scanned}）`)
-  console.log(`  候选① loss_signal 命中（ai_label=correct）：${positives.length} 条`)
-  console.log(`  候选② no_loss_sample 对照（ai_label=wrong）：${sampled.length} 条（负样本池 ${negatives.length}，--sample ${sampleN}）`)
+  console.log(`  候选① ${posSource} 命中（ai_label=correct）：${positives.length} 条`)
+  console.log(`  候选② ${negSource} 对照（ai_label=wrong）：${sampled.length} 条（负样本池 ${negatives.length}，--sample ${sampleN}）`)
   console.log(`  合计：${rows.length} 条 → ${outPath}`)
   console.log(`  live 源库零写核验：${srcHashBefore ? '通过（sha256 不变）' : '跳过（未提供 --db）'}`)
   process.exit(0)
@@ -263,9 +271,18 @@ async function runImport(argv: string[]): Promise<void> {
   }
   salesDbService.flushNow()
 
-  // 准确率速览（按 alert_type 分组：correct / 已确认总数——§4.1 第 4 条 ≥85% 才开推送门）
+  // 准确率速览（按 alert_type 分组：correct / 已确认总数——§4.1 第 4 条 ≥85% 才开推送门；
+  // 类型集取自导入行的 alert_type（每类型独立评测，宪法 §3 alert_eval_case），无标记行回退 loss）
+  const importedTypes = new Set<string>()
+  for (const line of lines) {
+    try {
+      const t = String((JSON.parse(line) as Partial<PackRow>).alert_type || '').trim()
+      if (t) importedTypes.add(t)
+    } catch { /* 失败行已在上方进 failures */ }
+  }
+  if (!importedTypes.size) importedTypes.add('loss')
   const byType = new Map<string, { confirmed: number; correct: number }>()
-  for (const t of new Set(['loss'])) {
+  for (const t of importedTypes) {
     const confirmed = salesDbService.alertEvalCaseList({ alert_type: t, status: 'confirmed', limit: 2000 })
     const correct = confirmed.filter((c) => c.label === 'correct').length
     byType.set(t, { confirmed: confirmed.length, correct })

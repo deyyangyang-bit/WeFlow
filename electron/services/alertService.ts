@@ -13,7 +13,10 @@
 
 /** 评测准入推送门：所有类型默认 false；离线评测准确率 ≥85% 才获得「主动弹」资格 */
 export const ALERT_PUSH_APPROVED: Record<string, boolean> = {
-  competitor: false
+  competitor: false,
+  // 告警 D「承诺打款日过期」（宪法 §3 payment_promise）：到期扫描先置 overdue 状态，
+  // 评测 ≥85% 前门关——createAlert 走到推送门即 gate_closed，零副作用
+  payment_overdue: false
 }
 
 /** 幂等窗口：同客户同告警类型 72h 内不重复（设计 §4.1 第 2 条） */

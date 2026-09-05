@@ -1290,6 +1290,27 @@
 
 ---
 
+## 2.73 告警 D「承诺打款日过期」payment_overdue + payment_promise 承诺登记表（2026-09-05，设计-AI见解重定位 §4.2 D，已提交）
+
+> **依据**：设计-AI见解重定位 §4.2 告警 D（目录 v1 最后一个：全新机制 = 聊天里识别未来日期承诺 + 到期扫描比对 payment_record）；**SSOT 顺序**：先在 DATA-CONSTITUTION §3 登记 `payment_promise`（字段/写者/删除规则/幂等键）再建表。任务口径：客户明确承诺付款时间（「下周打款」「月底付款」），日子过了 payment_record 没有对应到款 → 走链提醒；沿用告警 A 全部既有机制（§2.67 四道闸），不发明新轮子。
+
+- **新表 `payment_promise`（crmDb，SCHEMA_SQL 幂等 CREATE + ENTITIES 白名单注册）**：`account_id`（NOT NULL）/ `session_id`（承诺原话所在会话——createAlert 四道闸证据回查契约必填，故为登记必填项）/ `lead_id` 可空 / `promise_text`（客户原话快照 ≤200 字，§1.10）/ `due_date`（承诺日，存当日 0 点毫秒）/ `evidence_key`（承诺原话 canonical messageKey）/ `status` CHECK('pending','kept','overdue','cancelled') / `source`（默认 'llm'）/ 通用五列。幂等键 **UNIQUE(account_id, evidence_key)**（同一条客户原话只登记一次，消息重扫幂等）；扫描索引 (status, due_date)。写点单点 = `crmPaymentPromiseService`（登记 + 状态流转同事务写 audit_event；crmParseService 与其他模块零直写，测试 i5 静态守卫）。
+- **新服务 `electron/services/crmPaymentPromiseService.ts`**（仿 crmSla2LlmScanService 依赖注入模式，纯函数可单测）：
+  - **候选窄口径** `isPaymentPromiseCandidate(text, isSend)`：isSend=0 限定、[表情] 清洗、<4 字跳过、按句切分后**同一句**内同时命中付款动词（打款/付款/转账/汇款/打钱/付钱/结款/付定金尾款全款）+ 时间词（明天/下周X/周X/月底/N天后/发工资后/过完年/X月X日…）才算候选——候选只负责省 LLM 调用，是否真承诺由 LLM 判；
+  - **LLM 解析**（temperature 0.2，responseFormatJson）：输出 `{is_promise, confidence, time_kind, weekday, date}`，time_kind ∈ tomorrow/days_later/weekday/next_week/month_end/specific_date/none；`parsePaymentPromiseResponse` 非法 kind / 坏 JSON → null；
+  - **日期推算全本地确定性**（`resolveDueDate`，不信任 LLM 算术）：明天=次日 0 点；周X=1-7 天内最近 upcoming；下周X=下个自然周（下周一+X-1）；月底=当月最后一天；具体日期严格 YYYY-MM-DD 回验（2026-02-30 拒）；**落过去（≤ 消息当日）/超 400 天视野/解不出 → 0 = 不登记（宁缺毋滥）**；
+  - **登记** `registerPaymentPromise`：证据锚点强制——evidenceKey / promiseText / sessionId 缺任一整条丢弃（no_evidence/bad_input）；`processPaymentCandidate` 全链任一环不达标零写入（AI 未配置零调用 / 解析失败 / is_promise=false / **置信 <0.6** / 日期解不出）；
+  - **到期扫描** `runPaymentPromiseScan`：`status='pending' AND due_date < 今日 0 点`（承诺日整天过去才算「已过」，月底当天全天仍属承诺期）→ 查该账户**登记之后**（pay_time/created_at ≥ promise.created_at）有无到款（只读三路归因：allocation.account_id 挂链 / 付款方名直配 account.name / 付款方命中 alias_map——**payment_record/allocation 零写入**，测试 i8 静态守卫）：有 → `kept`；无 → `overdue` + `alertService.createAlert({type:'payment_overdue', messageKey: evidence_key, evidenceText: promise_text, message: 含承诺日+原话快照})` 四道闸；流转带 `AND status='pending'` 守卫（重跑幂等）+ audit_event(action='payment_promise_mark')；
+  - **调度器** `startPaymentPromiseScanScheduler`：**每日一次，跟随周复盘定时器时段**（20:00-20:30 窗口 + 30min tick + scan_state `paymentPromiseScan:<YYYYMMDD>` 每日标记防重启重扫）。
+- **告警 A 机制沿用（零新轮子）**：`ALERT_PUSH_APPROVED.payment_overdue: false`（评测 ≥85% 前门关——gate_closed 零副作用，连证据校验/去重查询都不做）；72h 幂等走 `hasRecentAlert('alert:payment_overdue')`；门开落 insightRecord（sourceType='insight'）进信箱 + 卡流（salesActionEngine `alert:` 前缀合流分支现成可用，type 变体零改动）。
+- **识别挂钩 `crmParseService`**：私聊扫描循环（群消息链不动）竞品告警命中点之后，`isSend === 0 && accountId && isPaymentPromiseCandidate(textForSignal, 0)` 才 `await processPaymentCandidate(...)`（accountId=0 无名 session 天然不登记；messageKey 复用上游 canonical key 不现场拼；LLM 出口 = simpleCompletion temperature 0.2，AI 未配置整链静默跳过）。
+- **评测配套 `alert-eval.ts`**：`--alert-type payment_overdue` 走既有 export/import 通道——候选① = isPaymentPromiseCandidate 命中（candidate_source='payment_promise_candidate'，ai_label='correct' 预标注）② = no_promise_sample 确定性等距负样本；⚠️ 评测对象是**候选正则**的查准/查全（LLM 环节不参与导出，无 API 依赖，同 loss 口径）；import 准确率速览按导入行 alert_type 分组（payment_overdue 独立达标，不与 loss 混算）。
+- **明确不做（任务书口径）**：不做推送文案 UI、不改屏 5 右、不动 payment_record 任何写路径。
+- **脱敏前置（宪法 §2.6）**：出机文本唯一出口 = `buildPaymentPromiseUserPrompt`（内部强制 maskPrivateText 后截 200 字 + 消息日期行），测试 i7 静态守卫「llm(PAYMENT_PROMISE_SYSTEM, buildPaymentPromiseUserPrompt(...)) 为唯一调用点」+ f 节运行时断言手机号/wxid 打码。
+- **测试**：alert-payment-test **103/103**（新：a1-a8 宪法登记先于建表静态断言；b1-b6 建表/CHECK/UNIQUE/登记幂等；c1-c4 候选正则命中 10 例+我方消息+不误判 9 例；d0-d9 识别链七环零写入门+成功登记+幂等；e1-e8 due_date 解析性（明天/下周X/周X/月底/具体日期/N天后/非法与超视野）；f1-f3 脱敏；g1-g5' 证据锚点强制；h1-h9' 到期扫描全链（门关零副作用/门开落记录/kept 三归因/登记前到款不算/未到期不动/重扫幂等/72h 幂等/证据验不出丢弃/audit 留痕）；i1-i12 接线静态+调度窗口）；回归 alert-gate 33 + alert-eval 42 + crm-opportunity 45 + payments-claim 18 + crm-golden 47 + message-key 17 + customer-event 16 + insight-noise 32 + sla2-llm-scan 26 + sla2-customer-type 41 + morning-digest 22 + action-rules 36 全绿。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（dist-electron/main.js 含 payment_promise）/ `tsc -b tsconfig.node.json` 产物已重建 / alert-eval.ts CLI 冒烟（payment_overdue export 正负样本+零写核验 ✓）。
+- **遗留**：payment_overdue 离线评测跑量（dump 导出→人工标注→准确率 ≥85%）→ 开 `ALERT_PUSH_APPROVED.payment_overdue=true` 即全链生效（代码零改动）；承诺到期前客户主动取消/改期的入口（cancelled 状态已预留，writer 待人工通道）；评测标注页（/eval-annotate）支持 alert 样本展示（§2.68 遗留延续）。
+
 
 ## 3. 已交付功能清单
 
