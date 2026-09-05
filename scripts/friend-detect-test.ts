@@ -205,7 +205,10 @@ async function main(): Promise<void> {
   crmDbService.runTx((tx) => { tx.run('UPDATE assignment SET sla1_deadline = ? WHERE lead_id IN (?,?)', [past, lf1, lf2]) }) // 强制过期
   const rec = runSla1Recycle()
   ok('F1 已停表过期行不回收', activeAssignment(lf1).status === 'assigned', `status=${String(activeAssignment(lf1).status)}`)
-  ok('F2 未停表过期行照收（回资源池）', rec.recycled === 1 && Object.keys(activeAssignment(lf2)).length === 0, JSON.stringify(rec))
+  // 三次提醒制（设计稿屏 4/屏 6）：未停表过期行首扫只提醒不回收；停表行连提醒都不进
+  ok('F2 未停表过期行只提醒不回收（三次提醒制）',
+    rec.recycled === 0 && rec.reminded === 1 && activeAssignment(lf2).status === 'assigned'
+      && Number(activeAssignment(lf2).sla1_remind_count || 0) === 1, JSON.stringify(rec))
 
   console.log(`\n═══ 结果：${pass} 通过 / ${fail} 失败 ═══`)
   process.exit(fail ? 1 : 0)

@@ -1253,6 +1253,26 @@
 
 ---
 
+## 2.71 SLA1 三次提醒制（设计稿屏 4/屏 6，2026-09-05，已提交）
+
+> **依据**：`docs/UI设计稿-Phase1-资源分配.html` 屏 4 note「超时提醒，每 24h 复查，第 3 次抄送主管，3 次后自动回收改派（卡上会看到自己处于第几次提醒）」+ 屏 6 留痕时间线「提醒抄送」项；**SSOT 顺序**：先在 DATA-CONSTITUTION §1.3 修订登记 `sla1_remind_count` 列与三次提醒语义，再动代码。上承 §2.54 误扫事故（时间纪律延伸）。
+
+- **宪法 §1.3 修订**：补列 `sla1_remind_count INTEGER DEFAULT 0`（0=未提醒过）入字段清单；登记三次提醒制语义（首/次超时只提醒、满 3 回收、claimed 纳入扫描、20h 间隔护栏、append-only 不受影响）。crmDbService 幂等 ALTER 落列（紧随 sla1_met_at 之后）。
+- **回收器改造 `runSla1Recycle`**：扫描范围 `status='assigned'` → **`IN ('assigned','claimed')`**（已认领未加好友同在 24h 计时内，认领不重置 sla1_deadline、沿用分配时起点——设计稿屏 4 第 2/3 张卡语义）；未停表（`sla1_met_at IS NULL`）过期行分流：
+  - `count < 2` → **只提醒不回收**：`sla1_remind_count +1` + `audit_event(action='sla1_remind'，detail 含 remindNo/total/deadline)`，assignment 状态/归属/lead 零变更（ownership_history 不写）；
+  - **20h 间隔护栏**：已提醒行（count≥1）距上次动作（updated_at）≥ `SLA1_REMIND_MIN_GAP_MS=20h` 才允许下一次提醒——回收器默认 30 分钟轮巡不会一轮把 3 次刷满（§2.54 教训延伸：回收器不凭「行存在即处置」，须尊重计数与间隔状态）；首提（count=0）不受限；
+  - `count ≥ 2`（第 3 次超时）→ 才 `recycleAssignment(reason='SLA三次超时回收')`（三表同事务照写）+ 独立事务写 `outbox_event type='sla1_escalate_supervisor'`（idempotency_key=`sla1Escalate:<assignmentId>` 幂等，抄送主管占位，宪法 §1.11 只记录不发送）。
+  - 返回值 `{recycled, reminded}`；调度器日志分列「三次超时回收 / 超时提醒」两条。
+- **bindLeadWxid 停表零改动**（任务书确认项）：停表后回收器按 `sla1_met_at IS NULL` 扫描条件自然跳过，`sla1_remind_count` 语义即固化。
+- **assignmentList（任务书第 4 项）**：`SELECT *` 已天然带出新列，`AssignmentRow` 补 `sla1_remind_count?: number` 类型字段（electron.d.ts），前端 C 任务可直接显示「第 N 次提醒」徽章。
+- **OutboxEventType 扩展**：加 `'sla1_escalate_supervisor'`（payload 内 type 字段，表结构零 DDL，宪法 §1.11）。
+- **测试**：assignment-full-test **55→79**（E 节按三次提醒制改写 17 断言：首超时只提醒/20h 内不重复提醒/满 20h 第二提/满 3 次回收+outbox 抄送行/claimed 纳入扫描且计时沿用/停表跳过/重跑幂等/回池新行计数归零；G 节误扫现场构造改直插——三次提醒制后回收器首扫不再即回收，构造补齐 §2.54 形态的流水/审计行）；sla2-customer-type-test D11、friend-detect-test F2 断言同步三次提醒口径（41/41、33/33）；回归 assignment 28 + crm-lead 55 + crm-sla-action 11 + identity 25 + lead-assignment-view 32 + lead-sla-reset 18 + audit-query 26 全绿（assignment-correction-test / lead-assignment-restore-test 仍为 §2.69 记录的存量数据耦合红测，与本刀无关）。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b tsconfig.node.json` 产物已重建（main.js 含 sla1_remind_count）。
+- **⚠️ 行为变化提醒（上线感知）**：① 存量已过期的 assigned 行不再被立即回收，而是进入三次提醒节奏（首扫提醒第 1 次 → ~24h 后第 2 次 → ~24h 后回收）；② 前端后续刀在分配卡上渲染「第 N 次超时提醒」徽章（数据已就绪）；③ 内网同步设计 §3 事件清单需补 sla1_escalate_supervisor 一行（中枢消费时对齐）。
+- **遗留**：屏 4 卡片「第 N 次提醒」徽章渲染 + 屏 6 左待改派表（前端 C 任务）；reminder 提醒的触达通道（站内卡流已有，微信推送待 Phase 3a）。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

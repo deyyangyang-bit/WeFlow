@@ -24,7 +24,10 @@ export interface OutboxTx {
 }
 
 /** 业务写点事件类型（与同步设计 §3 事件清单一一对应；audit 走游标路径不经本表，故不在列） */
-export type OutboxEventType = 'assign' | 'transfer' | 'recycle' | 'claim' | 'bind_wx' | 'first_touch'
+export type OutboxEventType =
+  | 'assign' | 'transfer' | 'recycle' | 'claim' | 'bind_wx' | 'first_touch'
+  // 三次提醒制第 3 次超时抄送主管占位（2026-09-05，宪法 §1.11 只记录不发送；同步设计 §3 事件清单后续刀对齐）
+  | 'sla1_escalate_supervisor'
 
 /**
  * 在既有事务内登记一条 outbox 事件。

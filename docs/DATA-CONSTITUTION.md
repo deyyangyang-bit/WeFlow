@@ -44,10 +44,11 @@
 
 ### 1.3 assignment（新建）
 - **定义**：资源分配——lead 到销售的一次分配及其生命周期；**lead 归属的唯一事实源**。
-- **字段**：主键 id；`lead_id`（逻辑外键 → lead）；`sales_name`（过渡期用姓名，来自 1.2a 本地身份档案字段；Phase 3a 平滑升级 `employee_id`）；`mode`（比例权重 / 轮询 / 负载）；两段 SLA 计时字段（第一段「加了没有」机械计时；第二段「聊了没有」挂 LLM 扫描结果引用，不内嵌计时器——PRD 1.4）；`status` ∈ {assigned, claimed, recycled, transferred} + 通用五列。
+- **字段**：主键 id；`lead_id`（逻辑外键 → lead）；`sales_name`（过渡期用姓名，来自 1.2a 本机身份档案字段；Phase 3a 平滑升级 `employee_id`）；`mode`（比例权重 / 轮询 / 负载）；两段 SLA 计时字段（第一段「加了没有」机械计时；第二段「聊了没有」挂 LLM 扫描结果引用，不内嵌计时器——PRD 1.4）；`status` ∈ {assigned, claimed, recycled, transferred} + 通用五列。
 - **写入者**：分配服务（三模式引擎）、分配员手工改派、SLA 回收器。
 - **AI 档位**：分配引擎执行 = **A**（规则驱动，非 LLM）；回收改派 = **A**；引擎参数（比例权重）调整 = **C**。
 - **映射**：lead ↔ assignment **1:N**；当前分配 = 该 lead 最新有效行。**lead 状态机不动，分配状态永不入 lead 表**；lead 四死列永久禁用（术语表）。
+- **修订（2026-09-05，三次提醒制，UI设计稿屏 4/屏 6）**：补列 `sla1_remind_count INTEGER DEFAULT 0`（0=未提醒过）——第一段 SLA 从「超时一次即回收」升级为三次提醒制：超时未停表（`sla1_met_at IS NULL`）第 1/2 次只提醒（计数 +1 + audit_event action='sla1_remind'，状态与归属零变更），满第 3 次才自动回收（reason='SLA三次超时回收'）+ outbox_event type='sla1_escalate_supervisor' 抄送主管占位（§1.11 只记录不发送）。**扫描范围含 claimed**（已认领未加好友同样在 24h 计时内；认领不重置 sla1_deadline，沿用分配时起点）；已停表行回收器自然跳过。提醒间隔护栏：已提醒行距上次动作（updated_at）≥20h 才允许下一次提醒，防短轮巡一轮刷满 3 次（§2.54 事故教训的时间纪律延伸：回收器绝不凭「行存在即过期」直接处置，须尊重计数与间隔状态）。append-only 不受影响：提醒只 UPDATE 本行计数列 + 追加 audit，ownership_history 零写入。
 
 ### 1.4 lead（现有表转正）
 - **定义**：线索池条目；状态机 NEW→CONTACTED→WX_ADDED→ACCOUNT + DEAD/REOPEN（`crmLeadService.ts:157`，健康不动）。

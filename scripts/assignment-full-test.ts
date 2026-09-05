@@ -8,8 +8,8 @@
  *   C. recycle：三表同事务 + lead 哨兵重置 + 重复回收 E202 + 无行 E301 + 回池后可再 assign
  *   D. transfer：旧行 transferred + 新行 assigned（重起 SLA1）+ E203 目标销售不存在 + E201 同人/旧行
  *      + ownership 流水 reason=移交 + 移交后可被新销售 claim
- *   E. SLA1 回收器：过期 assigned 回收（actor=system:sla / reason=SLA超时回收）/ 未过期不动 /
- *      claimed 不动 / 重跑幂等 / 回收后回池可再分配
+ *   E. SLA1 三次提醒回收器（设计稿屏 4/屏 6）：首超时只提醒不回收 / 间隔不足 20h 不重复提醒 /
+ *      满第 3 次才回收（SLA三次超时回收）+ outbox 抄送主管 / claimed 纳入扫描 / 停表跳过 / 重跑幂等
  *   F. 存量补写：sla1_deadline NULL 行补 = 分配时间(updated_at) + 24h / 幂等 / 汇总审计 / 非 NULL 不动
  *
  * 隔离：WEFLOW_WORKER='1' + WEFLOW_USER_DATA_PATH / WEFLOW_CONFIG_CWD 指向 /tmp（config.ts:358-364
@@ -168,30 +168,68 @@ async function main(): Promise<void> {
   const rc7 = claimLead(le, S_C)
   ok('D15 移交后新销售可 claim（最新行语义）', rc7.ok === true, JSON.stringify(rc7))
 
-  console.log('\n═══ E. SLA1 回收器 ═══')
-  const e1 = seedLead('E-过期') // 会被回收到
+  console.log('\n═══ E. SLA1 三次提醒回收器（设计稿屏 4/屏 6，宪法 §1.3 修订）═══')
+  const e1 = seedLead('E-过期') // 走满三次提醒→回收全流程
   const e2 = seedLead('E-未过期') // 不动
-  const e3 = seedLead('E-已认领') // claimed 不动
+  const e3 = seedLead('E-已认领') // claimed 纳入扫描（提醒不回收）
+  const e4 = seedLead('E-已停表') // sla1_met_at 非空 → 跳过
   const e1id = assignLeads([e1], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
   const e2id = assignLeads([e2], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
   const e3id = assignLeads([e3], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
+  const e4id = assignLeads([e4], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
   claimLead(e3, S_A)
-  // 手工把 e1/e3 的 sla1 拨到过去（模拟超时）
-  crmDbService.run('UPDATE assignment SET sla1_deadline = ? WHERE id IN (?,?)', [Date.now() - 1000, e1id, e3id])
+  // 手工把 e1/e3/e4 的 sla1 拨到过去（模拟超时）；e4 额外停表
+  crmDbService.run('UPDATE assignment SET sla1_deadline = ? WHERE id IN (?,?,?)', [Date.now() - 1000, e1id, e3id, e4id])
+  crmDbService.run('UPDATE assignment SET sla1_met_at = ? WHERE id = ?', [Date.now() - 500, e4id])
+
+  // 第 1 轮：只提醒不回收
   const rec1 = runSla1Recycle()
-  ok('E1 本轮回收 1 条（仅过期 assigned）', rec1.recycled === 1, `实 ${rec1.recycled}`)
-  ok('E2 过期行 → recycled', assignRow(e1id).status === 'recycled')
-  ok('E3 未过期行不动', assignRow(e2id).status === 'assigned')
-  ok('E4 claimed 行不动（第二段归 LLM 扫描，本刀不做）', assignRow(e3id).status === 'claimed')
-  const eHist = histRows(e1)
-  ok('E5 回收流水 reason=SLA超时回收 actor=system:sla', eHist[eHist.length - 1]?.reason === 'SLA超时回收' && eHist[eHist.length - 1]?.actor === 'system:sla')
-  const eAudits = auditRows(e1, 'lead_recycle')
-  ok('E6 回收审计 actor=system:sla（A 档引擎动作照写）', eAudits.length === 1 && eAudits[0].actor === 'system:sla')
-  ok('E7 回收后 lead 回哨兵', leadDeadline(e1) === LEAD_SLA_UNASSIGNED_SENTINEL)
+  ok('E1 本轮 0 回收 2 提醒（e1 assigned + e3 claimed，e4 停表跳过）',
+    rec1.recycled === 0 && rec1.reminded === 2, `实 recycle=${rec1.recycled} remind=${rec1.reminded}`)
+  ok('E2 过期行状态不动（只提醒不回收）', assignRow(e1id).status === 'assigned' && assignRow(e3id).status === 'claimed')
+  ok('E3 未过期行不动', assignRow(e2id).status === 'assigned' && Number(assignRow(e2id).sla1_remind_count || 0) === 0)
+  ok('E4 提醒计数 =1（首提不受 20h 间隔限制）',
+    Number(assignRow(e1id).sla1_remind_count || 0) === 1 && Number(assignRow(e3id).sla1_remind_count || 0) === 1)
+  ok('E5 claimed 行纳入扫描且沿用分配计时（sla1_deadline 未被认领重置）',
+    Number(assignRow(e3id).sla1_remind_count || 0) === 1 && Number(assignRow(e3id).sla1_deadline) < Date.now())
+  const eRemindAudits = auditRows(e1, 'sla1_remind')
+  ok('E6 提醒审计 action=sla1_remind detail 含第几次',
+    eRemindAudits.length === 1 && JSON.parse(String(eRemindAudits[0].detail)).remindNo === 1 && eRemindAudits[0].actor === 'system:sla')
+  ok('E7 提醒零归属变更（ownership_history 不写、lead 哨兵不动）',
+    histRows(e1).length === 1 && leadDeadline(e1) !== LEAD_SLA_UNASSIGNED_SENTINEL)
+
+  // 第 2 轮：间隔不足 → 不重复提醒（§2.54 教训：防 30 分钟轮巡一轮刷满）
   const rec2 = runSla1Recycle()
-  ok('E8 重跑幂等（0 条）', rec2.recycled === 0, `实 ${rec2.recycled}`)
+  ok('E8 间隔不足 20h → 不重复提醒', rec2.reminded === 0 && rec2.recycled === 0 && Number(assignRow(e1id).sla1_remind_count || 0) === 1)
+
+  // 第 3 轮：回拨 updated_at 模拟 21h 后复查 → 第 2 次提醒
+  crmDbService.run('UPDATE assignment SET updated_at = ? WHERE id = ?', [Date.now() - 21 * 3600_000, e1id])
+  const rec3 = runSla1Recycle()
+  ok('E9 满 20h → 第 2 次提醒（仍不回收）',
+    rec3.reminded === 1 && rec3.recycled === 0 && Number(assignRow(e1id).sla1_remind_count || 0) === 2 && assignRow(e1id).status === 'assigned')
+
+  // 第 4 轮：再回拨 → 第 3 次超时 → 才回收 + 抄送主管
+  crmDbService.run('UPDATE assignment SET updated_at = ? WHERE id = ?', [Date.now() - 21 * 3600_000, e1id])
+  const rec4 = runSla1Recycle()
+  ok('E10 满第 3 次超时 → 回收', rec4.recycled === 1 && assignRow(e1id).status === 'recycled')
+  const eHist = histRows(e1)
+  ok('E11 回收流水 reason=SLA三次超时回收 actor=system:sla',
+    eHist[eHist.length - 1]?.reason === 'SLA三次超时回收' && eHist[eHist.length - 1]?.actor === 'system:sla')
+  const eAudits = auditRows(e1, 'lead_recycle')
+  ok('E12 回收审计 actor=system:sla reason=SLA三次超时回收',
+    eAudits.length === 1 && eAudits[0].actor === 'system:sla' && JSON.parse(String(eAudits[0].detail)).reason === 'SLA三次超时回收')
+  ok('E13 回收后 lead 回哨兵', leadDeadline(e1) === LEAD_SLA_UNASSIGNED_SENTINEL)
+  ok('E14 全程恰 2 条提醒审计（第 3 次直接回收不重复提醒）', auditRows(e1, 'sla1_remind').length === 2)
+  const outboxRow = crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key = ?", [`sla1Escalate:${e1id}`])[0]
+  ok('E15 outbox 抄送主管占位 type=sla1_escalate_supervisor（§1.11 只记录不发送）',
+    !!outboxRow && JSON.parse(String(outboxRow.payload)).type === 'sla1_escalate_supervisor' && String(outboxRow.status) === 'pending')
+
+  // 第 5 轮：重跑幂等（回收行 status=recycled 出扫描范围；e3 已提醒 1 次但间隔不足）
+  const rec5 = runSla1Recycle()
+  ok('E16 重跑幂等（0 回收 0 提醒）', rec5.recycled === 0 && rec5.reminded === 0, `实 recycle=${rec5.recycled} remind=${rec5.reminded}`)
   const reRe = assignLeads([e1], S_B, '分配员')
-  ok('E9 回收回池后可再分配', reRe.ok === true && reRe.data?.assignments.length === 1)
+  ok('E17 回收回池后可再分配（新行 remind_count 从 0 起）',
+    reRe.ok === true && reRe.data?.assignments.length === 1 && Number(assignRow(Number(reRe.data?.assignments[0]?.assignmentId)).sla1_remind_count || 0) === 0)
 
   console.log('\n═══ F. 存量 sla1_deadline NULL 补写（幂等迁移块）═══')
   const f1 = seedLead('F-存量')
@@ -229,8 +267,17 @@ async function main(): Promise<void> {
   const g3id = assignLeads([g3], S_A, '分配员').data?.assignments[0]?.assignmentId ?? 0
   const g4id = assignLeads([g4], S_C, '分配员').data?.assignments[0]?.assignmentId ?? 0
   crmDbService.run('UPDATE assignment SET sla1_deadline = ? WHERE id IN (?,?,?)', [Date.now() - 1000, g1id, g2id, g3id])
-  const gRec = runSla1Recycle()
-  ok('G0 构造误扫现场：3 条被回收', gRec.recycled === 3, `实 ${gRec.recycled}`)
+  // ⚠️ 三次提醒制后 runSla1Recycle 首扫只提醒不回收——误扫现场改为直插 §2.54 事故后的存量形态
+  //（status='recycled' + updated_by='system:sla'），不再经回收器构造
+  crmDbService.run("UPDATE assignment SET status = 'recycled', updated_by = 'system:sla' WHERE id IN (?,?,?)", [g1id, g2id, g3id])
+  // 误扫现场的流水/审计照 §2.54 真实形态补齐（append-only 对账行）
+  for (const [lid, aid, owner] of [[g1, g1id, S_A], [g2, g2id, S_B], [g3, g3id, S_A]] as Array<[number, number, string]>) {
+    const t = Date.now()
+    crmDbService.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)', ['lead', lid, owner, '', 'SLA超时回收', 'system:sla', t])
+    crmDbService.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)', ['system:sla', 'lead_recycle', 'lead', lid, JSON.stringify({ assignmentId: aid, salesName: owner, reason: 'SLA超时回收' }), t])
+  }
+  const gRecycled = Number(crmDbService.all("SELECT COUNT(*) AS c FROM assignment WHERE id IN (?,?,?) AND status = 'recycled' AND updated_by = 'system:sla'", [g1id, g2id, g3id])[0].c)
+  ok('G0 构造误扫现场：3 条被回收', gRecycled === 3, `实 ${gRecycled}`)
   // 误扫后 g3 被人工再分配给丙（模拟纠正前已有新有效分配的情形）
   assignLeads([g3], S_C, '分配员')
   const histCountBefore = Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history')[0].c)

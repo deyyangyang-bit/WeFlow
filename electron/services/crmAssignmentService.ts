@@ -8,7 +8,8 @@
  * 写入纪律（API-CONTRACT §1.14）：分配/归属动作单事务写 assignment + ownership_history + audit_event
  *   （claim 归属没变不写 ownership_history，只写 assignment + audit_event）。
  * 响应信封：{ ok: true, data } / { ok: false, code, message }；错误码 E1xx 参数 / E2xx 状态冲突 / E3xx 不存在。
- * SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收，
+ * SLA1 三次提醒回收器（PRD 1.4 + 设计稿屏 4/屏 6，2026-09-05）：assigned/claimed 且 sla1_deadline 过期
+ *   且未停表 → 第 1/2 次只提醒（sla1_remind_count+1+审计），满第 3 次才自动回收 + outbox 抄送主管；
  *   A 档引擎动作（规则驱动非 LLM，宪法 §1.3），审计照写（actor='system:sla'）。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
@@ -234,26 +235,66 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
   return { ok: true, data: { assignmentId: newId } }
 }
 
-// ─── SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时，A 档引擎动作）──────────
+// ─── SLA1 三次提醒回收器（PRD 1.4 第一段「加了没有」+ 设计稿屏 4/屏 6 三次提醒制，A 档引擎动作）──
+/** 已提醒行距上次动作的最小间隔：20h（复查节奏 24h，回收器默认 30 分钟轮巡 → 20h 护栏防一轮刷满 3 次） */
+const SLA1_REMIND_MIN_GAP_MS = 20 * 3600_000
 /**
- * 扫描一轮：status='assigned' 且 sla1_deadline 已过期 → 逐条 recycle
- * （reason='SLA超时回收'，actor='system:sla'，审计/流水照写）。
- * claimed 不动（已认领进第二段「聊了没有」，由 LLM 扫描接管，本刀不做）；未过期不动；
- * **已停表（sla1_met_at 非 NULL，PRD 1.4a 加好友命中）不动**。
- * 返回回收条数；逐条独立事务，单条失败不阻塞其余。
+ * 扫描一轮（三次提醒制，宪法 §1.3 修订 2026-09-05）：
+ * 范围 = status IN ('assigned','claimed') 且 sla1_deadline 已过期且未停表（sla1_met_at IS NULL）——
+ * claimed 行的 SLA 语义 = 认领后 24h 内加好友，认领不重置计时（沿用分配时的 sla1_deadline）。
+ *   sla1_remind_count < 2 → 提醒第 N 次：计数 +1 + audit_event(action='sla1_remind'，detail 含第几次)
+ *     + assignment 状态/归属零变更（ownership_history 不写、lead 不动）；已提醒过（count≥1）的行
+ *     距上次动作（updated_at）≥20h 才允许下一次提醒——§2.54 教训延伸：回收器不凭「行存在即处置」，
+ *     须尊重计数与间隔状态，防 30 分钟轮巡把 3 次一次刷完。
+ *   count ≥ 2（第 3 次超时）→ 才 recycleAssignment(reason='SLA三次超时回收'，actor='system:sla'，
+ *     三表同事务照写）+ outbox_event type='sla1_escalate_supervisor' 抄送主管占位（§1.11 只记录不发送）。
+ * 已停表行（绑定微信/自动检测命中）不在扫描范围，自然跳过；逐条独立事务，单条失败不阻塞其余。
  */
-export function runSla1Recycle(now = Date.now()): { recycled: number } {
+export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: number } {
   const rows = crmDbService.all(
-    "SELECT id FROM assignment WHERE deleted = 0 AND status = 'assigned' AND sla1_deadline IS NOT NULL AND sla1_met_at IS NULL AND sla1_deadline < ? ORDER BY id",
+    "SELECT * FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed') AND sla1_deadline IS NOT NULL AND sla1_met_at IS NULL AND sla1_deadline < ? ORDER BY id",
     [now]
   )
   let recycled = 0
+  let reminded = 0
   for (const r of rows) {
-    const res = recycleAssignment(Number(r.id), 'SLA超时回收', 'system:sla')
-    if (res.ok) recycled++
-    else console.warn(`[CRM] SLA1 回收失败 assignment=${Number(r.id)}：${res.code} ${res.message}`)
+    const id = Number(r.id)
+    const count = Number(r.sla1_remind_count || 0)
+    if (count < 2) {
+      // 间隔护栏：首提（count=0）不受限；已提醒行距上次 ≥20h 才再提醒
+      if (count > 0 && now - Number(r.updated_at || 0) < SLA1_REMIND_MIN_GAP_MS) continue
+      const remindNo = count + 1
+      try {
+        crmDbService.runTx((tx) => {
+          // 条件带 status IN (assigned,claimed) AND sla1_met_at IS NULL：与扫描口径一致，防并发窗口误写
+          tx.run("UPDATE assignment SET sla1_remind_count = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed') AND sla1_met_at IS NULL", [remindNo, now, id])
+          tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+            ['system:sla', 'sla1_remind', 'lead', Number(r.lead_id),
+             JSON.stringify({ assignmentId: id, salesName: String(r.sales_name), remindNo, total: 3, deadline: Number(r.sla1_deadline) }), now])
+        })
+        reminded++
+      } catch (e) {
+        console.warn(`[CRM] SLA1 提醒失败 assignment=${id}：${e}`)
+      }
+    } else {
+      // 满第 3 次：才回收（三表同事务）+ 抄送主管占位
+      const res = recycleAssignment(id, 'SLA三次超时回收', 'system:sla')
+      if (res.ok) {
+        recycled++
+        try {
+          crmDbService.runTx((tx) => {
+            recordOutboxTx(tx, 'sla1_escalate_supervisor', `sla1Escalate:${id}`,
+              { leadId: Number(r.lead_id), assignmentId: id, salesName: String(r.sales_name), remindCount: 3 }, now)
+          })
+        } catch (e) {
+          console.warn(`[CRM] SLA1 抄送主管登记失败 assignment=${id}：${e}`)
+        }
+      } else {
+        console.warn(`[CRM] SLA1 回收失败 assignment=${id}：${res.code} ${res.message}`)
+      }
+    }
   }
-  return { recycled }
+  return { recycled, reminded }
 }
 
 /** 回收器扫描间隔（分钟）：配置 crmSlaRecycleIntervalMin，5-1440，默认 30 */
@@ -273,8 +314,9 @@ export function startSlaRecycleScheduler(): void {
   if (slaRecycleTimer) return
   const tick = (): void => {
     try {
-      const { recycled } = runSla1Recycle()
-      if (recycled > 0) console.log(`[CRM] SLA1 超时回收 ${recycled} 条（actor=system:sla）`)
+      const { recycled, reminded } = runSla1Recycle()
+      if (recycled > 0) console.log(`[CRM] SLA1 三次超时回收 ${recycled} 条（actor=system:sla，已抄送主管）`)
+      if (reminded > 0) console.log(`[CRM] SLA1 超时提醒 ${reminded} 条（三次提醒制）`)
     } catch (e) {
       console.warn('[CRM] SLA1 回收扫描失败:', e)
     }

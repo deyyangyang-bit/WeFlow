@@ -2085,6 +2085,8 @@ export interface AssignmentRow {
   sla1_deadline?: number | null
   /** PRD 1.4a 停表时刻：NULL=SLA1 计时中；非 NULL=已加好友（手动绑定/自动检测命中），回收器不再扫 */
   sla1_met_at?: number | null
+  /** 三次提醒制（设计稿屏 4）：0=未提醒过；第 1/2 次超时只提醒，满第 3 次才回收（宪法 §1.3 修订） */
+  sla1_remind_count?: number
   sla2_scan_ref?: string
   status: 'assigned' | 'claimed' | 'recycled' | 'transferred'
   source: string

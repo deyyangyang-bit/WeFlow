@@ -179,7 +179,9 @@ async function main(): Promise<void> {
   crmDbService.runTx((tx) => { tx.run('UPDATE assignment SET sla1_deadline = ? WHERE lead_id IN (?,?)', [past, ld1, lb]) })
   runSla1Recycle()
   ok('D10 已停表+已标记的过期行不被 SLA1 回收', activeAssignment(ld1).status === 'assigned', `status=${String(activeAssignment(ld1).status)}`)
-  ok('D11 未停表过期行照收（回收器口径未变）', Object.keys(activeAssignment(lb)).length === 0)
+  // 三次提醒制（设计稿屏 4/屏 6）：未停表过期行首扫只提醒不回收（计数 +1）
+  ok('D11 未停表过期行只提醒不回收（三次提醒制，remind_count=1）',
+    activeAssignment(lb).status === 'assigned' && Number(activeAssignment(lb).sla1_remind_count || 0) === 1)
 
   console.log('\n═══ E. 云推理脱敏（宪法 §2.6）═══')
   const masked = maskPrivateText('客户手机 13812345678，微信 wxid_abc123，身份证 11010119900307777X，型号 EPT20')

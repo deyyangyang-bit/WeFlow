@@ -474,6 +474,9 @@ class CrmDbService {
     // ①' assignment.sla1_met_at（PRD 1.4a 加好友判定「停表」标记，2026-09-04）：
     //     NULL=计时中；命中加好友（手动绑定/自动检测）写停表时刻；SLA1 回收器只扫 sla1_met_at IS NULL 的行
     try { this.db.run('ALTER TABLE assignment ADD COLUMN sla1_met_at INTEGER') } catch { /* 列已存在 */ }
+    // ①'' assignment.sla1_remind_count（三次提醒制，宪法 §1.3 修订 2026-09-05，UI设计稿屏 4/屏 6）：
+    //     0=未提醒过；超时未停表第 1/2 次只提醒（+1+审计，状态零变更），满第 3 次才回收
+    try { this.db.run('ALTER TABLE assignment ADD COLUMN sla1_remind_count INTEGER DEFAULT 0') } catch { /* 列已存在 */ }
     // ② opportunity 补列（宪法 §1.5：发现来源 / 整车改装类型 / 多币种金额 / 主车型 / 订单与发货量 /
     //    预期发货窗口 / 报价版本与 customer 挂接；逻辑外键，不建 FK 约束——跨库与既有表铁律）
     const oppPhase0Cols: Array<[string, string]> = [
