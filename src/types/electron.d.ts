@@ -1943,13 +1943,56 @@ export interface ElectronAPI {
     profileProgress: () => Promise<{ total: number; done: number; running: boolean }>
   }
 
-  // D7 商机评测集标注（eval:*）
+  // D7 评测集标注（eval:*）
   eval: {
     candidatesGenerate: (opts?: { sample?: number }) => Promise<{ success: boolean; result?: EvalGenerateResult; error?: string }>
     list: () => Promise<{ success: boolean; cases: EvalCaseRow[]; error?: string }>
     label: (payload: { id: number; label: string; annotatedBy: string }) => Promise<{ success: boolean; case?: EvalCaseRow; error?: string }>
     stats: () => Promise<{ success: boolean; stats?: EvalStats; error?: string }>
+    // 告警样本（alert_eval_case，宪法 §3）
+    alertList: () => Promise<{ success: boolean; cases: AlertEvalCaseRow[]; error?: string }>
+    alertLabel: (payload: { id: number; label: string; annotatedBy: string }) => Promise<{ success: boolean; case?: AlertEvalCaseRow; error?: string }>
+    alertStats: () => Promise<{ success: boolean; stats?: AlertEvalStats; error?: string }>
   }
+}
+
+/** D7 告警评测样本（alert_eval_case 行 + 展示名；字段语义见 salesDbService.AlertEvalCase，宪法 §3） */
+export interface AlertEvalCaseRow {
+  id?: number
+  session_id: string
+  anchor_key?: string
+  alert_type?: string
+  label?: string
+  evidence_message_keys?: string
+  evidence_text?: string
+  ai_label?: string
+  ai_evidence_keys?: string
+  annotated_by?: string
+  status?: string
+  source?: string
+  updated_by?: string
+  updated_at?: number
+  version?: number
+  deleted?: number
+  created_at?: number
+  display_name: string
+}
+
+/** 告警评测单类型统计（eval:alert:stats；分母 = 人工已标且非 uncertain 且有 ai_label） */
+export interface AlertTypeEvalStat {
+  alertType: string
+  annotated: number
+  total: number
+  compared: number
+  agree: number
+  agreeRate: number | null
+}
+
+/** 告警评测进度（按 alert_type 分组，≥85% 开门判定直接读数） */
+export interface AlertEvalStats {
+  types: AlertTypeEvalStat[]
+  total: number
+  annotated: number
 }
 
 /** D7 商机评测集候选（opportunity_eval_case 行 + 展示名；字段语义见 salesDbService.OpportunityEvalCase） */

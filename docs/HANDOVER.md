@@ -1311,6 +1311,24 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（dist-electron/main.js 含 payment_promise）/ `tsc -b tsconfig.node.json` 产物已重建 / alert-eval.ts CLI 冒烟（payment_overdue export 正负样本+零写核验 ✓）。
 - **遗留**：payment_overdue 离线评测跑量（dump 导出→人工标注→准确率 ≥85%）→ 开 `ALERT_PUSH_APPROVED.payment_overdue=true` 即全链生效（代码零改动）；承诺到期前客户主动取消/改期的入口（cancelled 状态已预留，writer 待人工通道）；评测标注页（/eval-annotate）支持 alert 样本展示（§2.68 遗留延续）。
 
+---
+
+## 2.74 评测标注页告警样本页签（/eval-annotate 支持 alert_eval_case，2026-09-06，已提交）
+
+> **依据**：§2.68 遗留「评测标注页支持 alert 样本」+ §2.73 遗留「payment_overdue 离线评测跑量的人工标注入口」。标注页从单一商机样本升级为**两页签**（商机样本 / 告警样本并存，cws-tabs 全局分段控件同款）。SSOT 纪律：读写全走 salesDbService.alertEvalCase* 既有五入口，零新表零新写路径（只读为主）。
+
+- **页签切换（EvalAnnotatePage）**：header 下方 `cws-tabs` 两页签（带各自「已标 X / 共 Y」计数）；商机页签行为零改动（生成按钮/进度统计/EvalCard 卡流原样）；标注人输入框两页签共用（localStorage 记住）。
+- **告警样本页签**：
+  - **列表行**（AlertRow，轻量行式 vs 商机卡）：类型 pill（**competitor=竞品提及 / loss=客户流失 / payment_overdue=承诺打款过期** 中文映射，三类型语义 tint 全 token：danger/warning/success 系）+ 会话显示名（customer_profile 兜底 session_id）+ session_id + `evidence_text` 原话快照 + **「证据可回查」标识**（有 anchor_key 即显示，hover 出完整锚点；回查交互不做）+ 人工三档按钮（**告警成立 correct / 不成立 wrong / 不确定 uncertain**，DB CHECK 同口径）。
+  - **防锚定沿用商机口径**：待标注行 AI 预标注只显「AI 已预判（标注后可见）」占位不显值；标注后展开 AI 判断 + 与人工一致/不一致徽章。
+  - **队列过滤**：待标注（pending/prelabeled）/ 已标注（confirmed）二分；标注写回成功后行就地更新并退出待标注队列（已标注页签可查）；已标注沉底排序与商机页一致。
+  - **统计行（≥85% 开门判定直接读数）**：按 alert_type 分组（类型集取自库内数据）——`已标注数/总数` + `人机一致率 X%（agree/compared）` + **达标/未达标徽章**（≥85% 绿）。**口径：分母只算人工已标（confirmed）且非「不确定」且有 AI 预标注的样本**（人工标 uncertain = 人机都拿不准，计入分母会虚增；无 ai_label 不可比对）。
+- **后端（evalService 扩展告警评测域）**：`alertEvalListCases()`（附展示名 + 待标注在前已标注沉底）/ `alertEvalLabelCase(id, label, annotatedBy)`（import 式幂等 upsert：三档守卫/标注人必填/记录存在校验，**ai_* 与人工字段互不覆盖**——upsert 只动显式传入字段）/ `computeAlertAnnotateStats(rows)`（**纯函数**，tsx 可单测）+ `alertEvalStats()`（读库走纯函数）。IPC 三端点：`eval:alert:list`（只读）/ `eval:alert:label`（写库，enqueueSalesTask 串行铁律）/ `eval:alert:stats`（只读）；preload `alertList/alertLabel/alertStats` + src/types/electron.d.ts `AlertEvalCaseRow/AlertEvalStats` 同步。
+- **测试**：alert-annotate-test **46/46**（新：A1-A14 静态接线（页签/映射/三档按钮/证据标识/防锚定/开门读数/队列过滤/三端点+enqueue 铁律/preload+d.ts/既有五入口零直写/样式零硬编码 hex）；B1-B7 列表读路（展示名/沉底/待标注队列消失语义）；C1-C5'' 写回幂等（同 id 零新增/改标胜出/非法 label/空标注人/不存在记录全拒绝）；D1-D2 ai_* 互不覆盖；E1-E10'' 统计口径（分组/分母排除 uncertain 与无 ai_label/一致率数学/17:20=85% 恰好达标+16/19=84% 未达标边界/agreeRate null 不冒充 0%/服务端与纯函数同口径））；回归 alert-gate 33 + alert-eval 42 + crm-opportunity 45 + alert-payment 103 + insight-noise 32 + message-key 17 + customer-event 16 + sla2-llm-scan 26 + payments-claim 18 + crm-golden 47 全绿。
+- **⚠️ 存量红测（与本刀无关）**：eval-annotate-test 20/2（A1/A6）——git stash 基线复跑同败：live 候选池已饱和（inserted=0）且无新增报价信号（quote=0），A1/A6 硬编码「必须新增」断言与 live 数据状态耦合（同 §2.69 assignment-correction/lead-assignment-restore 性质），待数据耦合测试独立修缮时一并处理。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（dist-electron/main.js+preload.js 含 eval:alert 桥接）/ `tsc -b tsconfig.node.json` 产物已重建（evalIpcHandlers.js 含 eval:alert:list）。
+- **遗留**：告警行「证据可回查」点击回查交互（复用 sales:evidence:getByKey，P0-2B 通道现成）；告警候选应用内刷新按钮（当前由 alert-eval.ts import 通道产出，页签文案已注明）；eval-annotate-test 数据耦合断言修缮（见上）。
+
 
 ## 3. 已交付功能清单
 

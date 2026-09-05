@@ -887,14 +887,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
-  // D7 商机评测集标注（eval:*；写库端点主进程内已 enqueueSalesTask 串行化）
+  // D7 评测集标注（eval:*；写库端点主进程内已 enqueueSalesTask 串行化）
   eval: {
     candidatesGenerate: (opts?: { sample?: number }) =>
       ipcRenderer.invoke('eval:candidates:generate', opts),
     list: () => ipcRenderer.invoke('eval:list'),
     label: (payload: { id: number; label: string; annotatedBy: string }) =>
       ipcRenderer.invoke('eval:label', payload),
-    stats: () => ipcRenderer.invoke('eval:stats')
+    stats: () => ipcRenderer.invoke('eval:stats'),
+    // 告警样本（alert_eval_case，宪法 §3；候选由 alert-eval.ts import 通道产出）
+    alertList: () => ipcRenderer.invoke('eval:alert:list'),
+    alertLabel: (payload: { id: number; label: string; annotatedBy: string }) =>
+      ipcRenderer.invoke('eval:alert:label', payload),
+    alertStats: () => ipcRenderer.invoke('eval:alert:stats')
   },
 
   social: {

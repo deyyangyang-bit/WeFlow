@@ -1,5 +1,6 @@
 /**
- * evalService.ts —— D7 商机评测集：应用内候选生成 / 标注写回 / 进度与人机一致率统计
+ * evalService.ts —— D7 评测集：应用内候选生成 / 标注写回 / 进度与人机一致率统计
+ * （opportunity_eval_case 商机样本 + alert_eval_case 告警样本，宪法 §3 两特许扩展行）
  *
  * 纯服务层，零 electron 依赖（同 crmAssignmentService 模式，方便 tsx 测试直接引用）。
  * 候选三路逻辑复用 scripts/opportunity-eval.ts 的 D7 定标口径，三处修正（本刀数据质量修复）：
@@ -18,7 +19,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { salesDbService } from './salesDbService'
 import { crmDbService } from './crmDbService'
-import type { OpportunityEvalCase } from './salesDbService'
+import type { OpportunityEvalCase, AlertEvalCase } from './salesDbService'
 
 /** 商机相关阶段（中英混存双轨，shared/salesStage.ts 定标「比价=quoted」） */
 const OPP_STAGES = new Set(['quoted', 'negotiating', 'won', '比价', '决策', '成交'])
@@ -283,4 +284,118 @@ export function evalStats(): EvalStats {
     agree,
     agreeRate: compared.length ? Math.round((agree / compared.length) * 100) : null
   }
+}
+
+// ─── 告警评测集（alert_eval_case，宪法 §3；标注页「告警样本」页签 + eval:alert:* 三端点）────
+// 读写全走 salesDbService.alertEvalCase* 既有五入口（只读为主，不新增表不新增写路径）；
+// 写回沿用 import 式幂等 upsert（ai_* 与人工字段分存互不覆盖——undefined 字段零触碰）。
+
+/** 告警人工三档（DB CHECK 同口径；语义 = 告警是否成立，非商机有无） */
+export const ALERT_LABELS = new Set(['correct', 'wrong', 'uncertain'])
+/** 告警类型 → 中文（标注页 pill 与统计行共用；未在册类型回退原文） */
+export const ALERT_TYPE_TEXT: Record<string, string> = {
+  competitor: '竞品提及',
+  loss: '客户流失',
+  payment_overdue: '承诺打款过期'
+}
+
+export interface AlertEvalCaseRow extends AlertEvalCase {
+  /** 展示名（customer_profile.display_name 优先，兜底 session_id） */
+  display_name: string
+}
+
+/** 单类型统计（≥85% 开门判定的直接读数） */
+export interface AlertTypeEvalStat {
+  alertType: string
+  /** 人工已标注数（status=confirmed） */
+  annotated: number
+  /** 候选总数（未软删） */
+  total: number
+  /** 可比对数：人工已标且非「不确定」且有 AI 预标注（不确定 = 人机都拿不准，计入一致率会虚增分母） */
+  compared: number
+  /** AI 预判与人工一致数 */
+  agree: number
+  /** 一致率 0-100；无可比对样本时为 null */
+  agreeRate: number | null
+}
+
+export interface AlertEvalStats {
+  /** 按告警类型分组（类型集取自库内数据） */
+  types: AlertTypeEvalStat[]
+  total: number
+  annotated: number
+}
+
+/**
+ * 统计口径（纯函数，tsx 可单测）：分母 = 人工已标（status=confirmed）且 label ≠ 'uncertain' 且 ai_label
+ * 有效三档；分子 = 其中 label === ai_label。未标注行只进 total，不进分母。
+ */
+export function computeAlertAnnotateStats(rows: AlertEvalCase[]): AlertEvalStats {
+  const byType = new Map<string, AlertEvalCase[]>()
+  for (const r of rows) {
+    const t = String(r.alert_type || '').trim() || ''
+    if (!byType.has(t)) byType.set(t, [])
+    byType.get(t)!.push(r)
+  }
+  const types: AlertTypeEvalStat[] = [...byType.keys()].sort().map((t) => {
+    const list = byType.get(t)!
+    const annotatedRows = list.filter((r) => r.status === 'confirmed')
+    const compared = annotatedRows.filter((r) => String(r.label || '') !== 'uncertain' && r.ai_label && ALERT_LABELS.has(String(r.ai_label)))
+    const agree = compared.filter((r) => r.label === r.ai_label).length
+    return {
+      alertType: t,
+      annotated: annotatedRows.length,
+      total: list.length,
+      compared: compared.length,
+      agree,
+      agreeRate: compared.length ? Math.round((agree / compared.length) * 100) : null
+    }
+  })
+  return {
+    types,
+    total: rows.length,
+    annotated: rows.filter((r) => r.status === 'confirmed').length
+  }
+}
+
+/** 告警评测集列表（附展示名；待标注在前已标注沉底，各自按更新时间倒序） */
+export function alertEvalListCases(): AlertEvalCaseRow[] {
+  const nameOf = new Map<string, string>()
+  for (const p of salesDbService.customerAll()) {
+    if (p.session_id && p.display_name) nameOf.set(String(p.session_id), String(p.display_name))
+  }
+  const rows = salesDbService.alertEvalCaseList({ limit: 1000 }).map((r) => ({
+    ...r,
+    display_name: nameOf.get(String(r.session_id)) || String(r.session_id)
+  }))
+  const rank = (r: AlertEvalCaseRow): number => (r.status === 'confirmed' ? 1 : 0)
+  return rows.sort((a, b) => rank(a) - rank(b) || Number(b.updated_at || 0) - Number(a.updated_at || 0))
+}
+
+/**
+ * 告警样本人工标注写回（点击即写库，import 式幂等）：label 三档 + annotated_by + status=confirmed。
+ * ai_label / ai_evidence_keys / evidence_* 等字段不传即不动（ai_* 与人工互不覆盖，防锚定语义保留）。
+ * label 非法 / 标注人空缺 / 记录不存在 → 抛错（IPC 层包 success:false）。
+ */
+export function alertEvalLabelCase(id: number, label: string, annotatedBy: string): AlertEvalCase {
+  const lab = String(label || '').trim()
+  if (!ALERT_LABELS.has(lab)) throw new Error(`非法标注结果「${lab}」（仅 告警成立 correct / 不成立 wrong / 不确定 uncertain）`)
+  const by = String(annotatedBy || '').trim()
+  if (!by) throw new Error('请先填写标注人')
+  const row = salesDbService.alertEvalCaseGetById(id)
+  if (!row) throw new Error(`告警评测样本 #${id} 不存在`)
+  return salesDbService.alertEvalCaseUpsert({
+    session_id: String(row.session_id),
+    anchor_key: String(row.anchor_key || ''),
+    alert_type: String(row.alert_type || ''),
+    label: lab,
+    annotated_by: by,
+    status: 'confirmed',
+    updated_by: by
+  })
+}
+
+/** 告警评测进度 + 人机一致率（只读；按 alert_type 分组，≥85% 开门判定直接读数） */
+export function alertEvalStats(): AlertEvalStats {
+  return computeAlertAnnotateStats(salesDbService.alertEvalCaseList({ limit: 10000 }))
 }
