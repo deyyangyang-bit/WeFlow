@@ -159,6 +159,12 @@
   .cws-search-row__silent { font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
 }
 
+/* 搜索态结果表（SearchTable 骨架，§2.75）：首列 客户头像+名+公司 双行单元格；__silent 复用上方既有样式 */
+.cws-search-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cws-search-cell__main { display: flex; flex-direction: column; min-width: 0;
+  strong { font-size: 13px; color: var(--color-text-primary); } }
+.cws-search-cell__sub { font-size: 11px; color: var(--color-text-tertiary); }
+
 // pill 五语义（行动卡/搜索行）
 .pill {
   display: inline-block;

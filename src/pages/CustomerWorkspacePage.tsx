@@ -18,13 +18,14 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Clock } from 'lucide-react'
+import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import { stageToFunnel } from '../../shared/salesStage'
+import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
 import './CrmWorkbenchPage.scss'
 import './CustomerWorkspacePage.scss'
 // Customer 360 统一时间线：事件来源标签（crm=业务动作 / lead=线索流转 / opportunity=商机 / insight=AI 见解）
@@ -175,6 +176,30 @@ export default function CustomerWorkspacePage() {
     setCompleting('')
     await fetchAll()
   }
+
+  // 搜索态结果表（SearchTable 骨架，与合同工作台同款）：每页 10 条 + Pager；筛选变化回第 1 页
+  const [searchPage, setSearchPage] = useState(1)
+  useEffect(() => { setSearchPage(1) }, [searchKw, stageFilter])
+  const searchColumns: Array<SearchTableColumn<any>> = [
+    {
+      key: 'name', title: '客户', render: (c) => (
+        <span className="cws-search-cell">
+          <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={28} />
+          <span className="cws-search-cell__main">
+            <strong>{displayNameOf(c)}</strong>
+            <span className="cws-search-cell__sub">{c.company || '未填公司'}</span>
+          </span>
+        </span>
+      )
+    },
+    { key: 'stage', title: '阶段', render: (c) => <span className={`pill pill--${rowStage(c) === '流失' ? 'neutral' : rowStage(c) === '成交' ? 'success' : 'info'}`}>{rowStage(c)}</span> },
+    {
+      key: 'silent', title: '最近互动', className: 'num', render: (c) => {
+        const silent = silentDaysOf(c)
+        return <span className="cws-search-row__silent">{silent == null ? '—' : silent === 0 ? '今天有互动' : `${silent} 天未互动`}</span>
+      }
+    },
+  ]
 
   // ─── 客户 360 档案 ─────────────────────────────────────────────────────────
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
@@ -371,6 +396,27 @@ export default function CustomerWorkspacePage() {
     if (it.customer) await completeSignal(it.customer)
     else await fetchAll()
   }
+
+  // follow 卡次级入口「完成待办」（§2.75）：卡上直接完成该客户的 pending 待办——
+  // 复用现有 todo 完成 handler（sales.todoUpdate(id,{status:'done'})，与今日行动页 completeTodo 同一 IPC，零新增）；
+  // 卡片 task 源解析不出待办 id（不可完成）时入口不出现
+  const pendingTodoIdOf = (it: ActionCardItem): number => {
+    if (it.kind !== 'follow') return 0
+    const taskSrc = (it.signal?.sources || []).find((s: any) => s.type === 'task')
+    return Number(taskSrc?.rawTaskId || 0)
+  }
+  const [completingTodo, setCompletingTodo] = useState(0)
+  const completeTodoOfCard = async (it: ActionCardItem, todoId: number) => {
+    if (todoId <= 0) return
+    setCompletingTodo(todoId)
+    try {
+      await (window as any).electronAPI.sales.todoUpdate(todoId, { status: 'done' })
+      setNotice('已直接完成该待办')
+    } catch (e) { setNotice(`完成待办失败：${e}`) }
+    setCompletingTodo(0)
+    dismissCard(it.key) // 待办已闭环，卡片从队列消失（重拉后源信号自然消失）
+    await fetchAll()
+  }
   const handleInfo = async (it: ActionCardItem, action: 'accept' | 'reject') => {
     dismissCard(it.key)
     if (it.infoItem) await applyInfo(it.infoItem, action)
@@ -435,23 +481,18 @@ export default function CustomerWorkspacePage() {
       </div>
 
       {searchActive ? (
-        /* ── 屏 3：搜索态（关键词/阶段深链任一存在才渲染结果列表）── */
+        /* ── 屏 3：搜索态（关键词/阶段深链任一存在才渲染结果列表）——SearchTable 骨架（§2.75：每页 10 条 + Pager，空态文案保留） ── */
         <div className="cws-search-card">
-          {searchResults.map((c: any) => {
-            const silent = silentDaysOf(c)
-            return (
-              <div key={c.id} className="cws-search-row" onClick={() => void openCustomer(c)}>
-                <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={32} />
-                <div className="cws-search-row__main">
-                  <strong>{displayNameOf(c)}</strong>
-                  <div className="cws-search-row__sub">{c.company || '未填公司'}</div>
-                </div>
-                <span className={`pill pill--${rowStage(c) === '流失' ? 'neutral' : rowStage(c) === '成交' ? 'success' : 'info'}`}>{rowStage(c)}</span>
-                <span className="cws-search-row__silent">{silent == null ? '—' : silent === 0 ? '今天有互动' : `${silent} 天未互动`}</span>
-              </div>
-            )
-          })}
-          {searchResults.length === 0 && <div className="crm-empty">无匹配客户</div>}
+          <SearchTable
+            columns={searchColumns}
+            data={searchResults}
+            rowKey={(c) => Number(c.id)}
+            page={searchPage}
+            onPageChange={setSearchPage}
+            pageSize={10}
+            onRowClick={(c) => void openCustomer(c)}
+            emptyText="无匹配客户"
+          />
         </div>
       ) : actionQueue.length === 0 ? (
         /* ── 屏 2：队列清零空态 ── */
@@ -480,6 +521,11 @@ export default function CustomerWorkspacePage() {
                   {it.kind === 'follow' && (
                     <>
                       <button className="crm-btn primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 去聊天</button>
+                      {pendingTodoIdOf(it) > 0 && (
+                        <button className="crm-btn" disabled={completingTodo === pendingTodoIdOf(it)} onClick={() => void completeTodoOfCard(it, pendingTodoIdOf(it))} title="该客户有待办未完成，点此直接闭环">
+                          {completingTodo === pendingTodoIdOf(it) ? <RotateCw size={13} className="spinning" /> : <ClipboardCheck size={13} />} {completingTodo === pendingTodoIdOf(it) ? '完成中…' : '完成待办'}
+                        </button>
+                      )}
                       <button className="crm-btn" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
                     </>
                   )}

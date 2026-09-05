@@ -188,9 +188,13 @@ export default function CrmWorkbenchPage() {
 
   const select = async (c: any) => {
     setSelected(c)
-    setQuotations(await window.electronAPI.crm.list('quotation', { contract_id: c.id }))
-    setInvoices(await window.electronAPI.crm.list('invoice', { contract_id: c.id }))
-    setLogistics(await window.electronAPI.crm.list('logistics', { contract_id: c.id }))
+    // 子列表同归属口径收敛（§2.74 遗留补齐）：主行已挡（myWorkbench），子表用同一 filterByOwner 补齐——
+    // 销售视角只显示归属本人/空归属的子项。logistics 有 owner_sales 列（他人认领的物流可经收货人
+    // 自动链接到我的合同，是真实泄漏点）；quotation/invoice 无 owner 列（归属继承主合同，主行已挡），
+    // filterByOwner 下自然全过——三列表口径统一，未来加 owner 列即自动生效。
+    setQuotations(filterByOwner(await window.electronAPI.crm.list('quotation', { contract_id: c.id }), identity))
+    setInvoices(filterByOwner(await window.electronAPI.crm.list('invoice', { contract_id: c.id }), identity))
+    setLogistics(filterByOwner(await window.electronAPI.crm.list('logistics', { contract_id: c.id }), identity))
     const allocs = await window.electronAPI.crm.list('allocation', { contract_id: c.id })
     setAllocations(allocs)
     // 甲方开票信息回填到编辑表单

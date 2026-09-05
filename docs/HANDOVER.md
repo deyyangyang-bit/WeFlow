@@ -1329,6 +1329,19 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（dist-electron/main.js+preload.js 含 eval:alert 桥接）/ `tsc -b tsconfig.node.json` 产物已重建（evalIpcHandlers.js 含 eval:alert:list）。
 - **遗留**：告警行「证据可回查」点击回查交互（复用 sales:evidence:getByKey，P0-2B 通道现成）；告警候选应用内刷新按钮（当前由 alert-eval.ts import 通道产出，页签文案已注明）；eval-annotate-test 数据耦合断言修缮（见上）。
 
+---
+
+## 2.75 前端体验遗留四项合并刀（2026-09-06，单 commit 逐项可独立回滚，已提交）
+
+> **依据**：任务书四项遗留（客户页搜索分页 §2.75 / 行动卡直接完成待办 / 合同详情子列表归属收敛 §2.74 遗留 / 复盘页限宽 §2.41 遗留）。红线：零硬编码 hex、--color-* 族、双模式自动继承；测试不新建脚本（断言补进既有四套）。
+
+- **① 客户页搜索结果分页（CustomerWorkspacePage）**：搜索态结果从手铺行列表改接 `SearchTable` 骨架（合同工作台试点复用）——受控分页 `searchPage` state + 筛选（关键词/阶段）变化回第 1 页 + `pageSize=10` + Pager（≤1 页自动隐藏）；空态文案保留（`emptyText="无匹配客户"`）；行可点开档案（onRowClick→openCustomer）；列 = 客户（头像+名+公司双行单元格 `.cws-search-cell`）/ 阶段 pill / 最近互动。`.cws-search-row` 旧样式保留（`__silent` 类复用）。
+- **② follow 卡「完成待办」次级入口**：行动队列 follow 卡（已有「去聊天/已处理」）对**有 pending 待办的客户**加第三按钮——`pendingTodoIdOf(it)` 从卡片 task 源解析 `rawTaskId`（getUnifiedSignals 自带，P0-4.2.1 correlation），`>0` 才渲染（**不可完成时入口不出现**）；点击复用现有 todo 完成 handler `sales.todoUpdate(id,{status:'done'})`（与今日行动页 completeTodo 同一 IPC，**零新 IPC**）→ dismissCard 卡片退出队列 + fetchAll。已有「已处理」（actionCompleteUnified 信号闭环）不被动。
+- **③ 合同详情子列表归属收敛（CrmWorkbenchPage select()）**：报价单/发票/物流三子列表接同一 `filterByOwner(rows, identity)`（ByOwner 直接复用，主行已挡、子表补齐）。真实泄漏点 = logistics（owner_sales 列 = 认领销售，他人认领的物流可经收货人自动链接到我的合同）；quotation/invoice 无 owner 列（归属继承主合同）→ filterByOwner 下自然全过，三列表口径统一、未来加列即自动生效。回款归属（allocation.sales_name）不在本刀范围（任务书点名三表）。
+- **④ 复盘页限宽居中（SalesReportPage.scss .sr-page）**：加 `max-width: 1280px + margin: 0 auto + width: 100%`——⚠️ 任务书写 1200px 但定语「与七页其余六页一致」为准，六页组单一真源在 main.scss（1280px），取 1280 避免第七种宽度。全高滚动布局保留（height:100% + 内层 .sr-page-body overflow-y:auto 滚动条随列宽收窄）。**肉眼验证已做**：vite dev 真实编译管线（main.scss+SalesReportPage.scss）harness @1600px 视口——几何实测 `.sr-page` width=1280 / left=160（恰好居中）+ 截图确认；dev 实例业务库零写入核验（audit_event 当日 0 行 / follow_up_task 最大时间戳早于窗口 / payment_promise 0 行幂等 DDL；与昨日自动备份的行数差全部对应用户昨日晚间正常使用，见 §2.69 记录的 11542）。
+- **测试（断言补进既有四套，零新脚本）**：customer-workspace-simple **27→37**（c1-c10：SearchTable 接线/每页 10+受控分页/回第 1 页/空态保留/行点开 + 完成待办入口 rawTaskId 门控/不可完成不渲染/todoUpdate 复用/退队列/已处理保留）；owner-filter **25→28**（d1-d3：三子表 filterByOwner 接线 + logistics 行级过滤运行时（他人挡/空串与 null 可见）+ 无 owner 列全过）；crm-workbench **50→53**（11a-11c：三子表接线静态/select() 读路/allocation 不扩围）；report-review **33→37**（D1-D4：限宽三件套/全高滚动保留/零硬编码 hex/与六页组同宽）。回归 alert-gate 33 + alert-eval 42 + crm-opportunity 45 + alert-annotate 46 + alert-payment 103 全绿。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（CustomerWorkspacePage chunk 含 SearchTable+完成待办、SalesReportPage css 含 max-width:1280px）/ electron 产物 `tsc -b` 全量重建（本刀零 electron 源改动）。
+- **遗留**：证据回查点击交互（§2.74 遗留延续）；告警候选应用内刷新；eval-annotate-test 数据耦合断言修缮。
 
 ## 3. 已交付功能清单
 

@@ -186,6 +186,19 @@ async function main(): Promise<void> {
   // 清掉 debounce persist 定时器后再删目录，避免残留写入噪音
   crmDbService.persistNow()
   rmSync(dir, { recursive: true, force: true })
+  // ── 11 合同详情子列表归属收敛（§2.74 遗留补齐，2026-09-06）：三子表 filterByOwner ──
+  {
+    const src2 = readFileSync(join(__dirname, '..', 'src/pages/CrmWorkbenchPage.tsx'), 'utf8')
+    ok('11a 详情抽屉子列表三路接 filterByOwner（quotation/invoice/logistics）',
+      /setQuotations\(filterByOwner\(await window\.electronAPI\.crm\.list\('quotation'/.test(src2) &&
+      /setInvoices\(filterByOwner\(await window\.electronAPI\.crm\.list\('invoice'/.test(src2) &&
+      /setLogistics\(filterByOwner\(await window\.electronAPI\.crm\.list\('logistics'/.test(src2))
+    ok('11b 子列表过滤在 select() 读路（主行已挡、子表同口径收敛）',
+      /const select = async \(c: any\) => \{[\s\S]{0,400}filterByOwner/.test(src2))
+    ok('11c 回款归属列表不在此刀范围（任务书点名 quotation/invoice/logistics）',
+      /setAllocations\(allocs\)/.test(src2) && !/setAllocations\(filterByOwner/.test(src2))
+  }
+
   console.log(`\nWORKBENCH RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
 }

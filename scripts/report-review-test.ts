@@ -12,9 +12,12 @@
  *  C. salesDbService.intentBefore 集成：上周基线查询
  * 运行：npx tsx scripts/report-review-test.ts
  */
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import { computeWeeklyReviewStats, filterCustomerSessions } from '../electron/services/salesReportService'
 import type { CustomerProfile } from '../electron/services/salesDbService'
 
@@ -161,6 +164,19 @@ function main(): void {
     ok('C3 intentHistory 按时间倒序', history.length === 2 && history[0].stage === 'quoted' && history[1].stage === 'contacted')
     await import('fs').then((fs) => fs.rmSync(dir, { recursive: true, force: true }))
 
+    // ── D 复盘页限宽居中（§2.41 遗留补齐，2026-09-06）：与其余六页同组同宽 ──
+    {
+      const srSrc = readFileSync(join(ROOT, 'src/pages/SalesReportPage.scss'), 'utf-8')
+      const srBlock = srSrc.slice(srSrc.indexOf('.sr-page {'), srSrc.indexOf('.sr-page-header'))
+      ok('D1 .sr-page 限宽居中三件套（max-width 1280 与六页组一致 + margin auto + width 100%）',
+        srBlock.includes('max-width: 1280px') && srBlock.includes('margin: 0 auto') && srBlock.includes('width: 100%'))
+      ok('D2 全高滚动布局保留（height 100% + 内层 .sr-page-body 滚动）',
+        srBlock.includes('height: 100%') && srSrc.includes('.sr-page-body') && srSrc.includes('overflow-y: auto'))
+      ok('D3 新增块零硬编码 hex（--color-* 族红线）', !/#[0-9a-fA-F]{3,8}\b/.test(srBlock))
+      // 六页组同宽单一真源核对（main.scss 六页组 1280px）
+      const mainSrc = readFileSync(join(ROOT, 'src/styles/main.scss'), 'utf-8')
+      ok('D4 与六页组同宽（main.scss max-width: 1280px）', mainSrc.includes('max-width: 1280px'))
+    }
     console.log(`结果：${pass} 通过 / ${fail} 失败`)
     process.exit(fail > 0 ? 1 : 0)
   })()

@@ -81,6 +81,27 @@ async function main(): Promise<void> {
   const fnBody = viewSrc.slice(viewSrc.indexOf('export function filterByOwner'))
   ok('c6 filterByOwner 零写路径（纯过滤）', !/[.](set|update|create)\(/.test(fnBody))
 
+  // ─── d. 合同详情子列表归属收敛（§2.74 遗留补齐，2026-09-06）──────────────────
+  {
+    const wbSrc = readFileSync(join(ROOT, 'src/pages/CrmWorkbenchPage.tsx'), 'utf-8')
+    ok('d1 子列表三路接 filterByOwner（quotation/invoice/logistics）',
+      wbSrc.includes('filterByOwner(await window.electronAPI.crm.list(\'quotation\'') &&
+      wbSrc.includes('filterByOwner(await window.electronAPI.crm.list(\'invoice\'') &&
+      wbSrc.includes('filterByOwner(await window.electronAPI.crm.list(\'logistics\''))
+    // 运行时：logistics 行级 owner_sales 过滤（他人认领挂我合同的物流，销售视角不再显示）；
+    // quotation/invoice 无 owner 列 → filterByOwner 自然全过（归属继承主合同，主行已挡）
+    const subRows = [
+      { id: 1, tracking_no: 'A', owner_sales: '张三' },
+      { id: 2, tracking_no: 'B', owner_sales: '' },
+      { id: 3, tracking_no: 'C', owner_sales: null },
+      { id: 4, tracking_no: 'D', owner_sales: '李四' },
+    ]
+    const mine = filterByOwner(subRows, { name: '李四', role: '销售' })
+    ok('d2 logistics 行级过滤：只留本人/空归属（张三行被挡，空串/null/本人可见）', mine.length === 3 && mine.every((r) => ['B', 'C', 'D'].includes(String(r.tracking_no))))
+    const noOwnerCol = filterByOwner([{ id: 9 }, { id: 10 }], { name: '李四', role: '销售' })
+    ok('d3 无 owner 列子项（quotation/invoice 形态）全过', noOwnerCol.length === 2)
+  }
+
   console.log(`\nowner-filter-test: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)
 }

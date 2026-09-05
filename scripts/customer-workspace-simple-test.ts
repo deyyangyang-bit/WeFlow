@@ -115,5 +115,27 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
     pageSrc.includes('setCustomers(filterByOwner(rows, idLike))'))
 }
 
+  // ─── c. 搜索结果分页 + follow 卡「完成待办」次级入口（§2.75 前端遗留四项 ①②）────
+  {
+    const src2 = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf-8')
+    ok('c1 搜索态结果表接 SearchTable 骨架（合同工作台试点复用）',
+      src2.includes("import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'") && src2.includes('<SearchTable'))
+    ok('c2 每页 10 条 + 受控分页（page/onPageChange/searchPage）',
+      src2.includes('pageSize={10}') && src2.includes('page={searchPage}') && src2.includes('onPageChange={setSearchPage}'))
+    ok('c3 搜索/阶段筛选变化回第 1 页', /useEffect\(\(\) => \{ setSearchPage\(1\) \}, \[searchKw, stageFilter\]\)/.test(src2))
+    ok('c4 空态文案保留（无匹配客户）', src2.includes('emptyText="无匹配客户"'))
+    ok('c5 结果行可点开档案（onRowClick→openCustomer）', src2.includes('onRowClick={(c) => void openCustomer(c)}'))
+
+    ok('c6 follow 卡次级入口「完成待办」（task 源解析 pendingTodoIdOf）',
+      src2.includes('pendingTodoIdOf') && src2.includes("s.type === 'task'") && src2.includes('rawTaskId'))
+    ok('c7 不可完成时入口不出现（todoId<=0 不渲染按钮）',
+      src2.includes('{pendingTodoIdOf(it) > 0 && ('))
+    ok('c8 复用现有 todo 完成 handler（sales.todoUpdate status done，零新 IPC）',
+      /todoUpdate\(todoId, \{ status: 'done' \}\)/.test(src2))
+    ok('c9 完成待办后卡片退出队列（dismissCard + fetchAll）',
+      /completeTodoOfCard[\s\S]{0,400}dismissCard\(it\.key\)/.test(src2))
+    ok('c10 原有「已处理」保留（completeSignal 闭环不被动）', src2.includes('void handleComplete(it)') && src2.includes('actionCompleteUnified'))
+  }
+
 console.log(`\ncustomer-workspace-simple-test: ${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
