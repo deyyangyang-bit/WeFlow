@@ -6,6 +6,7 @@
  */
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT, SALES_STAGE_COLOR_INDEX } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
@@ -55,6 +56,8 @@ export default function SalesFunnelPage() {
   }, [])
 
   useEffect(() => { void fetch(days) }, [days, fetch])
+  // 切微信号 = 换库（§2.40）：账号切换后按当前时间窗重查
+  useWxidRefresh(() => { void fetch(days) })
 
   // 转化率：后端相邻相除（了解→比价→决策→成交）
   const rateOf = useCallback((from: string, to: string) =>

@@ -3,6 +3,7 @@
  * （客户工作台已拆分到 CustomerWorkspacePage /customers，本页专注合同闭环）
  */
 import { useEffect, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2, Users, Banknote, AlertTriangle } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
@@ -66,6 +67,8 @@ export default function CrmWorkbenchPage() {
     try { setAccuracy(await window.electronAPI.crm.statsAiAccuracy(7)) } catch { /* ignore */ }
   }
   useEffect(() => { void fetchAccuracy() }, [])
+  // 切微信号 = 换库（§2.40）：账号切换后四路数据全部重查
+  useWxidRefresh(() => { void fetchWorkbench(); void fetchCustomers(); void fetchStats(); void fetchAccuracy() })
   const STAGE_LABEL_MAP: Record<string, string> = {
     contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
   }

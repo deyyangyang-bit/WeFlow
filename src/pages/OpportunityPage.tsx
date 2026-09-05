@@ -3,6 +3,7 @@
  * 数据源 window.electronAPI.crm.opportunity*（crmDbService 商机模块）
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { RefreshCw, X, CheckCircle2, XCircle, Activity, Banknote, Clock, Star, Target } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
 import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT } from '../../shared/funnelPalette'
@@ -107,6 +108,8 @@ export default function OpportunityPage() {
     setLoading(false)
   }
   useEffect(() => { void fetch() }, [])
+  // 切微信号 = 换库（§2.40）：账号切换后重查
+  useWxidRefresh(() => { void fetch() })
 
   // 漏斗（2026-08-29 对齐设计稿：HTML/CSS 阶段条替代 ECharts，同源 stageDist，点击阶段仍筛选列表）
   const funnelStages = useMemo(() => {

@@ -15,6 +15,7 @@
  *  - 360 档案：crm.customerProfile(sessionId)
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Clock } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -70,6 +71,8 @@ export default function CustomerWorkspacePage() {
   useEffect(() => { void fetchAll() }, [])
   // 信息待确认队列（AI 填充待裁决）
   useEffect(() => { void fetchQueues() }, [fetchQueues])
+  // 切微信号 = 换库（§2.40）：账号切换后重查，防残留上一账号数据
+  useWxidRefresh(() => { void fetchAll(); void fetchQueues() })
 
   // ─── 深链协议：/customers?id=<accountId>（灵感信箱）| ?sid=<sessionId>（行动卡）| ?stage=中文（漏斗下钻）───
   const [searchParams] = useSearchParams()

@@ -6,6 +6,7 @@
  *       → 可折叠「数据概览」(来源/紧急度/阶段)
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, BarChart3, Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
@@ -103,6 +104,8 @@ export default function TodayActionPage() {
   const PAGE_SIZE = 10
 
   useEffect(() => { fetchToday() }, [fetchToday])
+  // 切微信号 = 换库（§2.40）：账号切换后重查
+  useWxidRefresh(() => { void fetchToday() })
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)

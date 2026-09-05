@@ -10,6 +10,7 @@
  * ⚠️ 销售视角过滤只是展示层便利（宪法 §1.12：角色仅署名，不作访问控制；门禁靠部署形态+应用锁）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2 } from 'lucide-react'
 import * as XLSX from 'exceljs'
 import type { LeadRow } from '../types/electron'
@@ -169,6 +170,8 @@ export default function CrmLeadPage() {
     setOwnerByLead(buildOwnerMap(asg?.data?.rows || []))
   }
   useEffect(() => { void fetchAll() }, [])
+  // 切微信号 = 换库（§2.40）：账号切换后重查
+  useWxidRefresh(() => { void fetchAll() })
   // 来源预设与设置页联动
   useEffect(() => {
     void getCrmLeadSourcePreset().then((sources) => {
