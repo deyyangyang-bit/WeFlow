@@ -52,7 +52,7 @@
 
 ### 1.4 lead（现有表转正）
 - **定义**：线索池条目；状态机 NEW→CONTACTED→WX_ADDED→ACCOUNT + DEAD/REOPEN（`crmLeadService.ts:157`，健康不动）。
-- **字段**：现有列全保留；四死列标注禁用（不删列，防旧库迁移路径再生变数）。
+- **字段**：现有列全保留；四死列标注禁用（不删列，防旧库迁移路径再生变数）。2026-09-06 补列 `import_batch_id`（导入批次回溯，语义/写者/删除规则见 §3 登记行；存量 NULL）。
 - **写入者**：分配员录入通道（Excel/粘贴导入，走现有 `importLeads` 写路径）；⚠️ 群资源扫描通道**已下线**（§4.2 决策 B）。
 - **AI 档位**：录入查重 = **A**；转客户（toAccount）= 人工触发。
 - **映射**：现有表（crmDb）转正，零 DDL。
@@ -187,6 +187,8 @@
 - **opportunity_eval_case**（特许扩展，非业务事实表）：PRD 2.10 商机评测集，D7 落库 salesDb（与 intent_tag_log 同库，证据引用同库闭环），salesDb 无 ENTITIES 白名单（该机制仅 crmDbService 有）故无需注册，带通用五列。除本行特许外，任何新表须先过 §2.3 Feature Gate 七问入宪。
 - **alert_eval_case**（特许扩展，非业务事实表）：设计-AI见解重定位 §4.3 告警评测集（2026-09-05 本刀入宪落库），落 salesDb（同 opportunity_eval_case 库位与理由，无需注册白名单），带通用五列。结构仿 opportunity_eval_case 但不复用其表：label 三档语义不同（correct/wrong/uncertain = 告警是否成立，非商机有无）、UNIQUE 键多一维 alert_type（每类型独立评测，evalStats 全表聚合不被单一告警类型污染）。字段：session_id / anchor_key（证据锚点 messageKey）/ alert_type / label CHECK('','correct','wrong','uncertain') / evidence_message_keys / evidence_text（≤200 字快照，PIPL）/ ai_label 人机分存 / status CHECK('pending','prelabeled','confirmed') / annotated_by / source。幂等键 UNIQUE(session_id, anchor_key, alert_type)。
 - **payment_promise**（2026-09-05 本刀入宪，告警 D「承诺打款日过期」/ alert type=`payment_overdue` 配套，设计-AI见解重定位 §4.2 D）：客户明确承诺付款时间的登记表，落 **crmDb**（须注册 ENTITIES 白名单——历史坑：漏注册曾静默失败）。字段：`account_id`（客户档案，NOT NULL）/ `session_id`（承诺原话所在会话——createAlert 四道闸证据回查契约必填，故与 evidence_key 同为必登记项）/ `lead_id` 可空 / `promise_text`（客户原话快照 ≤200 字，§1.10：只存快照不复制全文）/ `due_date`（解析出的承诺日，存当日 0 点毫秒）/ `evidence_key`（承诺依据的客户原话 messageKey，§1.10 锚点强制：验不出原话整条丢弃）/ `status` CHECK('pending','kept','overdue','cancelled') / `source`（识别来源，默认 'llm'）/ 通用五列。幂等：**UNIQUE(account_id, evidence_key)**——同一条客户原话只登记一次。**写入者**：① 识别链（crmParseService 私聊扫描 → 窄口径候选正则命中才调 LLM，置信 <0.6 或日期解不出不登记，宁缺毋滥；我方消息 isSend=1 不识别；actor=`system:payment-promise`）② 到期扫描器（status 流转 pending→kept（登记后该账户有到款）/ pending→overdue（到期无到款），actor=`system:payment-scan`，流转写 audit_event 留痕）③ 人工 cancelled（预留，须留 audit_event）。**删除规则**：软删（通用五列 deleted 标记），不物理删；PIPL 删除权通道沿用 §2.2。告警出口：到期无款经 `alertService.createAlert({type:'payment_overdue'})` 四道闸，`ALERT_PUSH_APPROVED.payment_overdue` 默认 false——评测 ≥85% 前只置 overdue 状态不推送。
+- **lead.import_batch_id**（2026-09-06 本刀入宪，§2.72 遗留「入池方式精确化」）：lead 表加列，**列语义 = 导入批次回溯**——该线索由哪一次分配员导入产生（逻辑外键 → import_batch.id，不建 FK 约束，跨表铁律）。**写入者**：`importLeads` 单点（同事务先建 import_batch 行拿 id，逐行回填；组内 UPDATE 计数）。**存量 = NULL**（该列上线前的历史导入线索不回填，展示层 NULL 回退「时间近似判定」，不炸存量）；**删除规则**：随 lead 行生命周期（级联删线索时同删，无独立删除路径）；禁止改语义（非分配归属、非审计——审计走 audit_event.lead_import）。
+- **assignment_weight_change 审计动作**（2026-09-06 本刀入宪，§2.72 遗留「权重调整独立审计」）：`crmAssignWeights` 配置被修改时写一条 audit_event（action=`assignment_weight_change`，entity_type=`config`，detail=前后权重 JSON diff + actor=当前身份档案姓名）。**写点单点 = main.ts `config:set` IPC 拦截**（前端 config set 原无审计；不新增端点、前端零改动），写库失败不阻塞配置保存（审计尽力而为，配置写入是主语义）。屏 7 审计流水「权重调整」段从 `LIKE '%weight%'` 预留改为精确匹配本 action。
 
 ---
 

@@ -504,13 +504,13 @@ export interface AuditQueryOpts { entityType?: string; entityId?: number; actor?
 /**
  * action 类别过滤（设计稿屏 7 分段控件 全部/分配/绑定/回收/权重调整）→ action 值清单。
  * 前缀匹配：lead_assign/lead_transfer/lead_claim = 分配；identity_bind = 绑定；lead_recycle = 回收；
- * 权重调整为预留类（%weight% LIKE，分配批次权重调整写点上线后自动归入）。
+ * 权重调整 = 精确匹配 assignment_weight_change（§2.75 遗留补齐：写点 = main.ts config:set 拦截，宪法 §3 登记）
  */
 const AUDIT_ACTION_CATEGORY: Record<string, string[]> = {
   assign: ['lead_assign', 'lead_transfer', 'lead_claim', 'departure_handoff'],
   bind: ['identity_bind'],
   recycle: ['lead_recycle'],
-  weight: []
+  weight: ['assignment_weight_change']
 }
 
 /** 审计流水查询（R，只读，append-only 表无软删列）：契约参数 + keyword 扩展（actor/detail/entity 一把搜） */
@@ -527,8 +527,8 @@ export function queryAuditEvents(opts: AuditQueryOpts = {}): { ok: boolean; data
   if (action) {
     if (AUDIT_ACTION_CATEGORY[action]) {
       const list = AUDIT_ACTION_CATEGORY[action]
-      if (list.length) { where.push(`action IN (${list.map(() => '?').join(',')})`); params.push(...list) }
-      else { where.push('action LIKE ?'); params.push('%weight%') }
+      where.push(`action IN (${list.map(() => '?').join(',')})`)
+      params.push(...list)
     } else { where.push('action = ?'); params.push(action) }
   }
   const keyword = String(opts.keyword || '').trim()

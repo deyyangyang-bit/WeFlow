@@ -3,6 +3,9 @@
  *
  * 验证 evalService（electron/services/evalService.ts）：
  *   A. 候选生成：过滤群聊（@chatroom）+ 按 session 去重（一客户一行，取最新锚点）+ 三路计数
+ *      （⚠️ 2026-09-06 口径修复，§2.74 遗留：live 候选池饱和后 inserted=0 属幂等正常——
+ *        A1 注入全新非群聊会话使生成非空转，断言「计数与副本真实新增一致」而非「必须新增」；
+ *        A6 只断报价信号路在 crm 副本上工作（quoteSkipped=false），不要求必有新增报价候选）
  *   B. 幂等：重复生成 inserted=0，候选池总量不变
  *   C. AI 预标注回填：(session,anchor) 精确匹配 / session 兜底 / 匹配不上留空 / 已存在行缺 ai_* 时补齐
  *   D. 标注写回：label + annotated_by + status=confirmed；非法 label / 空标注人拒绝；进度统计正确
@@ -68,17 +71,22 @@ async function main(): Promise<void> {
   // 副本内注入一条群聊画像（真实库 ①② 路恰好无群聊信号，注入后验证 ③ 对照池也拦群聊——
   // 2026-09-02 导出包曾混入 48186608819@chatroom 对照样本，本刀修复的正是这个洞）
   salesDbService.customerUpsert({ session_id: 'evaltest_group@chatroom', display_name: '评测测试群' })
+  // 注入一条全新非群聊会话（无信号）→ 对照池必收 → 生成在饱和池上也非空转，幂等断言不空洞
+  salesDbService.customerUpsert({ session_id: 'evaltest_fresh_session', display_name: '评测新会话' })
   const r1 = generateEvalCandidates({ sample: 10, aiPackPath: AI_PACK })
   console.log(`  生成结果：${JSON.stringify(r1)}`)
   const afterRows = salesDbService.evalCaseList({ limit: 10000 })
   const newRows = afterRows.filter((r) => !beforeIds.has(Number(r.id)))
-  check('A1 有新增候选且数量一致', r1.inserted > 0 && newRows.length === r1.inserted, `inserted=${r1.inserted} newRows=${newRows.length}`)
+  check('A1 新增计数与副本真实新增一致（注入新会话保证 ≥1，不绑死精确数）',
+    r1.inserted >= 1 && newRows.length === r1.inserted, `inserted=${r1.inserted} newRows=${newRows.length}`)
+  const freshRow = newRows.find((r) => String(r.session_id) === 'evaltest_fresh_session')
+  check('A1\' 注入的全新会话被对照池收编（source=no_opportunity_sample）', !!freshRow && String(freshRow.source) === 'no_opportunity_sample')
   check('A2 新增候选零群聊（无 @chatroom）', newRows.every((r) => !String(r.session_id).includes('@chatroom')))
   const dupSessions = newRows.map((r) => String(r.session_id)).filter((s, i, arr) => arr.indexOf(s) !== i)
   check('A3 新增候选同 session 无重复（一客户一行）', dupSessions.length === 0, `重复：${[...new Set(dupSessions)].join(',')}`)
   check('A4 三路计数合计 = 新增数', r1.bySource.intent + r1.bySource.quote + r1.bySource.sample === r1.inserted)
   check('A5 注入的群聊画像被对照池拦截（chatroomFiltered ≥ 1）', r1.chatroomFiltered >= 1, `chatroomFiltered=${r1.chatroomFiltered}`)
-  check('A6 候选②报价信号未跳过（crm 副本就绪）', !r1.quoteSkipped && r1.bySource.quote > 0, `quote=${r1.bySource.quote}`)
+  check('A6 候选②报价信号路在 crm 副本上工作（quoteSkipped=false；池已饱和不新增属幂等正常）', !r1.quoteSkipped, `quote=${r1.bySource.quote}`)
   check('A7 对照样本来源正确', newRows.filter((r) => r.source === 'no_opportunity_sample').length === r1.bySource.sample)
 
   console.log('\n═══ B. 幂等：重复生成不重复 ═══')

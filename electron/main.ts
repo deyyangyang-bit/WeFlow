@@ -62,6 +62,7 @@ import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
+import { getIdentity } from './services/identityService'
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
 import { startSla2LlmScanScheduler, setSla2LlmScanDeps } from './services/crmSla2LlmScanService'
@@ -2081,6 +2082,12 @@ function registerIpcHandlers() {
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     let result: unknown
     const previousMyWxid = key === 'myWxid' ? String(configService?.get('myWxid') ?? '') : ''
+    // 权重调整独立审计（§2.75 遗留，宪法 §3 assignment_weight_change）：写点单点在 config:set 拦截
+    // （前端 config set 原无审计；零新端点零前端改动）。取改前值 → 写库后落 diff 审计（尽力而为，
+    // 审计失败不阻塞配置保存；crmDb 未就绪（引导期）静默跳过）
+    const prevWeights = key === 'crmAssignWeights'
+      ? (configService?.get('crmAssignWeights') as Record<string, number> | undefined) ?? {}
+      : null
     if (key === 'launchAtStartup') {
       result = applyLaunchAtStartupPreference(value === true)
     } else {
@@ -2088,6 +2095,22 @@ function registerIpcHandlers() {
     }
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
+    }
+    if (key === 'crmAssignWeights' && prevWeights !== null) {
+      try {
+        const next = (value && typeof value === 'object' && !Array.isArray(value)) ? value as Record<string, number> : {}
+        const keys = Array.from(new Set([...Object.keys(prevWeights || {}), ...Object.keys(next)])).sort()
+        const diff = keys.map((k) => ({ key: k, from: Number(prevWeights?.[k] ?? 0), to: Number(next[k] ?? 0) })).filter((d) => d.from !== d.to)
+        if (diff.length > 0 && crmDbService.currentDbPath()) {
+          crmDbService.runTx((tx) => tx.run(
+            'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+            [getIdentity()?.name || '操作员', 'assignment_weight_change', 'config', null,
+              JSON.stringify({ configKey: 'crmAssignWeights', diff, weights: next }), Date.now()]
+          ))
+        }
+      } catch (e) {
+        console.warn('[Sales] 权重调整审计写入失败（配置已保存）:', e)
+      }
     }
     // §2.40 微信号分库：myWxid 实际变化 → 迁移 + 重开两业务库（失败不阻塞配置写入）
     if (key === 'myWxid' && configService && String(value ?? '') !== previousMyWxid) {

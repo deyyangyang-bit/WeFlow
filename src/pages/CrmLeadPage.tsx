@@ -758,8 +758,12 @@ export default function CrmLeadPage() {
                   {pageItems.map((l) => {
                     const latest = latestAsg[l.id]
                     const recycled = String(latest?.status || '') === 'recycled'
-                    const inPoolWay = importAudit && Math.abs(Number(l.created_at || 0) - Number(importAudit.created_at || 0)) < 10 * 60_000
-                      ? `批次 #A${String(impDetail.batchId ?? '?')}` : '存量导入'
+                    // 入池方式（§2.75 遗留精确化）：读真列 import_batch_id（importLeads 回填，宪法 §3）；
+                    // NULL（该列上线前的存量导入）回退旧「时间近似判定」——贴最近导入审计 <10 分钟才算批次，不炸存量
+                    const inPoolWay = Number(l.import_batch_id || 0) > 0
+                      ? `批次 #A${Number(l.import_batch_id)}`
+                      : (importAudit && Math.abs(Number(l.created_at || 0) - Number(importAudit.created_at || 0)) < 10 * 60_000
+                          ? `批次 #A${String(impDetail.batchId ?? '?')}` : '存量导入')
                     return (
                       <tr key={l.id} onClick={() => void openDetail(l.id)}>
                         <td className="lc-check" onClick={(e) => e.stopPropagation()}>

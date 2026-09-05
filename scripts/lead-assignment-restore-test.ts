@@ -2,9 +2,13 @@
  * lead-assignment-restore-test.ts —— 「群扫旧 tag 归属恢复为正式分配」副本验证
  *
  * 验证 restoreLegacyGroupScanAssignments（crmAssignmentService）：
- *   A. 真实库副本执行 → 杨青/李林辉 直挂、秒变→许丽娟，计数与 note 留痕分组一致
- *   B. 幂等：二次执行全部 0（assignLeads E201 幂等兜底）
+ *   A. 基线核验：assigned/流水/审计 ≥ 基线快照（首次恢复已在 live 真实执行过，抽查 note 终态归属仍成立）
+ *   B. 幂等：副本上重跑零新增/不超 note 留痕上限（assignLeads E201 幂等兜底）+ 审计行数不翻倍
  *   C. 静候（丁帅已离职）/未分配 → 留资源池，零 assignment；流水/审计逐条可查
+ *
+ * ⛔ 基线快照常量（2026-09-05 live 首跑值：杨青 981 / 李林辉 1356 / 秒变→许丽娟 1511，合计 3,848；
+ *    不再绑死精确数——漂移原因：① 首次恢复已在 live 真实执行，副本重跑属幂等重入（restored 恒 0）；
+ *    ② 回收器/分配员后续操作使流水与审计只增不减（append-only），精确断言必然红，§2.69 遗留修复）。
  *
  * ⛔ 同 dry-run-all 铁律：源库复制到 /tmp 副本 → 应用链路 initialize → 绝不触碰 live 库。
  * 用法：npx tsx scripts/lead-assignment-restore-test.ts
@@ -56,27 +60,37 @@ async function main(): Promise<void> {
   const expectPooled = (groups['静候'] || 0) + (groups['未分配'] || 0)
   const activeBefore = count("SELECT COUNT(*) AS c FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed')")
 
-  console.log('\n═══ A. 首次执行 ═══')
-  const r1 = restoreLegacyGroupScanAssignments()
-  console.log(`  返回：restored=${JSON.stringify(r1.restored)} pooled=${r1.pooled}`)
-  check('杨青恢复计数正确', (r1.restored['杨青'] || 0) === expectYangqing, `实 ${r1.restored['杨青']} 期望 ${expectYangqing}`)
-  check('李林辉恢复计数正确', (r1.restored['李林辉'] || 0) === expectLilinhui, `实 ${r1.restored['李林辉']} 期望 ${expectLilinhui}`)
-  check('秒变→许丽娟计数正确', (r1.restored['许丽娟'] || 0) === expectMiaobian, `实 ${r1.restored['许丽娟']} 期望 ${expectMiaobian}`)
-  check('留资源池计数 = 静候+未分配', r1.pooled === expectPooled, `实 ${r1.pooled} 期望 ${expectPooled}`)
-  const restoredTotal = expectYangqing + expectLilinhui + expectMiaobian
-  check('有效分配总数新增一致', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed')") === activeBefore + restoredTotal)
-  check('许丽娟名下无「秒变」字面残留', count("SELECT COUNT(*) AS c FROM assignment WHERE sales_name = '秒变'") === 0)
+  // 基线快照常量（2026-09-05 live 首跑值，漂移原因见头注释）：断言口径 = ≥ 基线 且 重跑幂等不翻倍
+  const BASELINE_ASSIGNED = 3848
+  const BASELINE_RESTORED: Record<string, number> = { '杨青': 981, '李林辉': 1356, '许丽娟': 1511 }
+
+  console.log('\n═══ A. 基线核验（首次恢复已在 live 真实执行）═══')
+  check('有效分配 ≥ 基线 3,848', activeBefore >= BASELINE_ASSIGNED, `实 ${activeBefore}`)
   const ownRows = count("SELECT COUNT(*) AS c FROM ownership_history WHERE entity_type = 'lead' AND reason = '分配' AND actor = 'system:migration'")
-  check('ownership_history 逐条留痕', ownRows === restoredTotal, `实 ${ownRows} 期望 ${restoredTotal}`)
+  check('ownership_history 留痕 ≥ 基线 3,848（append-only）', ownRows >= BASELINE_ASSIGNED, `实 ${ownRows}`)
   const auditRows = count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'system:migration'")
-  check('audit_event 逐条留痕', auditRows === restoredTotal, `实 ${auditRows} 期望 ${restoredTotal}`)
+  check('audit_event 留痕 ≥ 基线 3,848（append-only）', auditRows >= BASELINE_ASSIGNED, `实 ${auditRows}`)
+  check('许丽娟名下无「秒变」字面残留（恢复语义生效）', count("SELECT COUNT(*) AS c FROM assignment WHERE sales_name = '秒变'") === 0)
   const sampleId = (lastMarkLeadIds['杨青'] || [])[0]
   check('抽查：最终归属杨青的线索 currentAssignment 命中', !!sampleId && String(currentAssignment(sampleId)?.sales_name || '') === '杨青')
 
-  console.log('\n═══ B. 幂等复验 ═══')
+  console.log('\n═══ B. 副本幂等复验（重跑不翻倍）═══')
+  const activeBeforeRun = count("SELECT COUNT(*) AS c FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed')")
+  const auditBeforeRun = count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'system:migration'")
+  const r1 = restoreLegacyGroupScanAssignments()
+  const auditAfterR1 = count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'system:migration'")
+  console.log(`  返回：restored=${JSON.stringify(r1.restored)} pooled=${r1.pooled}`)
+  // 恢复动作只补空缺，绝不超 note 留痕分组上限（重复导入防翻倍）
+  for (const [name, cap] of Object.entries({ '杨青': expectYangqing, '李林辉': expectLilinhui, '许丽娟': expectMiaobian })) {
+    check(`${name} 重跑恢复数 ≤ note 留痕上限（${cap}）`, (r1.restored[name] || 0) <= cap, `实 ${r1.restored[name] || 0}`)
+  }
+  const restoredTotal = Object.values(r1.restored).reduce((a, b) => a + Number(b || 0), 0)
+  check('有效分配总数新增一致（本轮实际恢复数）', count("SELECT COUNT(*) AS c FROM assignment WHERE deleted = 0 AND status IN ('assigned','claimed')") === activeBeforeRun + restoredTotal)
   const r2 = restoreLegacyGroupScanAssignments()
-  check('二次执行零新增', Object.values(r2.restored).every((n) => n === 0) || Object.keys(r2.restored).length === 0, JSON.stringify(r2.restored))
-  check('审计行数不翻倍', count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'system:migration'") === restoredTotal)
+  check('二次执行零新增（E201 幂等兜底）', Object.values(r2.restored).every((n) => n === 0) || Object.keys(r2.restored).length === 0, JSON.stringify(r2.restored))
+  check('审计行数不翻倍（r2 相对 r1 零新增）', count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'system:migration'") === auditAfterR1)
+  void auditBeforeRun
+  check('留资源池计数 = 静候+未分配（note 分组口径不变）', r1.pooled === expectPooled, `实 ${r1.pooled} 期望 ${expectPooled}`)
 
   console.log('\n═══ C. 静候/未分配留资源池 ═══')
   const jhIds = (lastMarkLeadIds['静候'] || []).slice(0, 5)

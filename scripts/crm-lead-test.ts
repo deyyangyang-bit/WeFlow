@@ -5,9 +5,12 @@
  *       首触闭环（卡完成+lead 状态+流水一致）、转客户（查重/新建）、deadline 锁定。
  * 运行：npx tsx scripts/crm-lead-test.ts
  */
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import { crmDbService } from '../electron/services/crmDbService'
 import { salesDbService } from '../electron/services/salesDbService'
 import {
@@ -99,6 +102,20 @@ async function main(): Promise<void> {
   ok('5f 同批二次导入全重复', imp2.valid === 0 && imp2.duplicate === 3)
   ok('5g lead 数量不变', crmDbService.all('SELECT COUNT(*) AS c FROM lead')[0].c === 3)
   ok('5h import_batch 两条', crmDbService.all('SELECT COUNT(*) AS c FROM import_batch')[0].c === 2)
+
+  // ── 5' import_batch_id 回填（§2.75 遗留入池方式精确化，宪法 §3 登记 2026-09-06）──
+  ok("5i 首批 3 行 lead.import_batch_id 全部回填 = imp1.batchId",
+    leads.every((x) => Number(x.import_batch_id) === Number(imp1.batchId)))
+  const impAudit = crmDbService.all("SELECT detail FROM audit_event WHERE action = 'lead_import' AND detail LIKE ?", [`%"batchId":${Number(imp1.batchId)}%`])[0]
+  ok("5j 首批 lead_import 审计指向同批次（valid=3/duplicate=0）",
+    !!impAudit && String(impAudit.detail).includes('"valid":3') && String(impAudit.detail).includes('"duplicate":0'))
+  crmDbService.run('UPDATE lead SET import_batch_id = NULL WHERE id = ?', [Number(li1!.id)])
+  const nullBack = crmDbService.all('SELECT import_batch_id AS b FROM lead WHERE id = ?', [Number(li1!.id)])[0]?.b
+  ok('5k 存量 NULL 语义（列上线前导入不回填，展示层回退近似判定）', nullBack === null || nullBack === undefined)
+  crmDbService.run('UPDATE lead SET import_batch_id = ? WHERE id = ?', [Number(imp1.batchId), Number(li1!.id)])
+  const pageSrc = readFileSync(join(ROOT, 'src/pages/CrmLeadPage.tsx'), 'utf-8')
+  ok('5l 线索页入池方式读真列 + NULL 回退近似判定（不炸存量）',
+    pageSrc.includes('Number(l.import_batch_id || 0) > 0') && pageSrc.includes("'存量导入'"))
 
   // ── 6 deadline 锁定：改配置不影响历史 ──────────────────────────────────────
   const beforeDeadline = Number(crmDbService.getById('lead', Number(li1.id))!.first_contact_deadline)

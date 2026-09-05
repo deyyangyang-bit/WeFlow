@@ -36,6 +36,8 @@ async function main(): Promise<void> {
   audit('system:sla', 'lead_recycle', 'lead', 1, JSON.stringify({ reason: '3次超时未加' }), now - 3000)
   audit('主管', 'lead_transfer', 'lead', 1, JSON.stringify({ fromSales: '李林辉', toSales: '许丽娟' }), now - 4000)
   audit('主管', 'lead_assign', 'lead', 3, '手机号 15213855273 命中', now - 5000)
+  audit('李林辉（销售）', 'assignment_weight_change', 'config', null,
+    JSON.stringify({ configKey: 'crmAssignWeights', diff: [{ key: '王五', from: 1, to: 3 }] }), now - 6000)
   const hist = (entityType: string, entityId: number, oldOwner: string, newOwner: string, reason: string, actor: string, at: number) =>
     crmDbService.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
       [entityType, entityId, oldOwner, newOwner, reason, actor, at])
@@ -46,7 +48,7 @@ async function main(): Promise<void> {
 
   // ─── a. audit:query ────────────────────────────────────────────────────────
   const all = queryAuditEvents()
-  ok('a1 统一信封 {ok,data:{rows,total}}', all.ok === true && Array.isArray(all.data.rows) && all.data.total === 5)
+  ok('a1 统一信封 {ok,data:{rows,total}}', all.ok === true && Array.isArray(all.data.rows) && all.data.total === 6)
 
   const catAssign = queryAuditEvents({ action: 'assign' })
   ok('a2 类别=分配（lead_assign/lead_transfer/departure_handoff）',
@@ -56,7 +58,8 @@ async function main(): Promise<void> {
   const catRecycle = queryAuditEvents({ action: 'recycle' })
   ok('a4 类别=回收（lead_recycle）', catRecycle.data.total === 1)
   const catWeight = queryAuditEvents({ action: 'weight' })
-  ok('a5 类别=权重调整（预留类，当前 0 条不炸）', catWeight.ok === true && catWeight.data.total === 0)
+  ok('a5 类别=权重调整（精确匹配 assignment_weight_change，§2.75 遗留补齐）',
+    catWeight.ok === true && catWeight.data.total === 1 && String(catWeight.data.rows[0]?.action) === 'assignment_weight_change')
 
   const kwActor = queryAuditEvents({ keyword: '杨青' })
   ok('a6 keyword 搜操作人', kwActor.data.total === 2)
@@ -66,7 +69,7 @@ async function main(): Promise<void> {
   ok('a8 keyword 搜对象（detail 里手机号可检索）', kwEntity.data.total === 1)
 
   const paged = queryAuditEvents({ page: 2, pageSize: 2 })
-  ok('a9 分页：page2/pageSize2 → 2 行，total 5', paged.data.rows.length === 2 && paged.data.total === 5)
+  ok('a9 分页：page2/pageSize2 → 2 行，total 6', paged.data.rows.length === 2 && paged.data.total === 6)
   ok('a10 排序新→旧（created_at DESC）', Number(paged.data.rows[0].created_at) <= Number(queryAuditEvents({ page: 1, pageSize: 1 }).data.rows[0].created_at))
 
   const byEntity = queryAuditEvents({ entityType: 'lead', entityId: 1 })
@@ -97,6 +100,12 @@ async function main(): Promise<void> {
   ok('d1 IPC 注册 crm:audit:query / crm:ownership:history', ipcSrc.includes("crm:audit:query") && ipcSrc.includes("crm:ownership:history"))
   const preloadSrc = readFileSync(join(ROOT, 'electron/preload.ts'), 'utf-8')
   ok('d2 preload 桥接 auditQuery / ownershipHistory', preloadSrc.includes('auditQuery') && preloadSrc.includes('ownershipHistory'))
+  const mainSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf-8')
+  ok('d5 权重审计写点 = config:set 拦截（crmAssignWeights，零新端点）',
+    mainSrc.includes("key === 'crmAssignWeights'") && mainSrc.includes("'assignment_weight_change'"))
+  const asgSrc = readFileSync(join(ROOT, 'electron/services/crmAssignmentService.ts'), 'utf-8')
+  ok('d6 屏 7 权重段精确匹配（不再 %weight% LIKE 预留）',
+    asgSrc.includes("weight: ['assignment_weight_change']") && !asgSrc.includes("'%weight%'"))
   const dtsSrc = readFileSync(join(ROOT, 'src/types/electron.d.ts'), 'utf-8')
   ok('d3 electron.d.ts 类型同步', dtsSrc.includes('auditQuery') && dtsSrc.includes('ownershipHistory'))
   const settingsSrc = readFileSync(join(ROOT, 'src/pages/SettingsPage.tsx'), 'utf-8')

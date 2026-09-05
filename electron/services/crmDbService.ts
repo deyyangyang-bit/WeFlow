@@ -575,6 +575,10 @@ class CrmDbService {
       }
     } catch (e) { console.error('[CrmDb] lead 迁移失败:', e) }
     this.db.run(LEAD_INDEXES_SQL)
+    // Migration: lead.import_batch_id（§2.75 遗留入池方式精确化，宪法 §3 登记 2026-09-06）：
+    //     导入批次回溯（→ import_batch.id 逻辑外键）；写者 = importLeads 单点；存量 = NULL。
+    //     独立 ALTER 幂等吞错——lead 旧结构 DROP 重建块上方已跑过，此处保证重建后列必在（双路径模式）。
+    try { this.db.run('ALTER TABLE lead ADD COLUMN import_batch_id INTEGER') } catch { /* 列已存在 */ }
     // §2.52 启动守卫补写审计：库从自动备份恢复时留一条 db_recover（此时 SCHEMA 已就位可写）
     if (openRes.outcome === 'restored') {
       try {

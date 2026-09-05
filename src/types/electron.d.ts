@@ -2117,6 +2117,8 @@ export interface LeadRow {
   account_id?: number
   first_contacted_at?: number
   first_contact_deadline?: number
+  /** 导入批次回溯（宪法 §3 登记 2026-09-06，→ import_batch.id 逻辑外键）；NULL = 该列上线前的存量导入 */
+  import_batch_id?: number | null
   created_at: number
   updated_at: number
 }

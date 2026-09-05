@@ -1342,6 +1342,19 @@
 - **测试（断言补进既有四套，零新脚本）**：customer-workspace-simple **27→37**（c1-c10：SearchTable 接线/每页 10+受控分页/回第 1 页/空态保留/行点开 + 完成待办入口 rawTaskId 门控/不可完成不渲染/todoUpdate 复用/退队列/已处理保留）；owner-filter **25→28**（d1-d3：三子表 filterByOwner 接线 + logistics 行级过滤运行时（他人挡/空串与 null 可见）+ 无 owner 列全过）；crm-workbench **50→53**（11a-11c：三子表接线静态/select() 读路/allocation 不扩围）；report-review **33→37**（D1-D4：限宽三件套/全高滚动保留/零硬编码 hex/与六页组同宽）。回归 alert-gate 33 + alert-eval 42 + crm-opportunity 45 + alert-annotate 46 + alert-payment 103 全绿。
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（CustomerWorkspacePage chunk 含 SearchTable+完成待办、SalesReportPage css 含 max-width:1280px）/ electron 产物 `tsc -b` 全量重建（本刀零 electron 源改动）。
 - **遗留**：证据回查点击交互（§2.74 遗留延续）；告警候选应用内刷新；eval-annotate-test 数据耦合断言修缮。
+---
+
+## 2.76 数据/测试侧遗留三项 + eval-annotate 口径修复（2026-09-06，单 commit，已提交）
+
+> **依据**：任务书三项（§2.69 存量红测修复 / §2.71 入池方式精确化 / §2.72 权重独立审计）+ 追加（§2.74 遗留 eval-annotate-test A1/A6 同类 live 数据耦合）。SSOT 纪律：新列先入 DATA-CONSTITUTION §3 登记（lead.import_batch_id + assignment_weight_change 审计动作两行，§1.4 同步补列注记）再动代码；测试 /tmp 副本隔离零碰 live。
+
+- **① 存量红测修复（改口径不绑死精确数）**：assignment-correction-test **12/5→17/17**、lead-assignment-restore-test **6/7→14/14**。新口径 = 「≥ 基线快照值 且 重跑幂等不翻倍」，基线值（2026-09-05 live 首验 3,848）进脚本头注释常量并写明漂移原因（回收器每日继续回收 append-only 只增不减 / §2.71 三次提醒制后过期行在提醒期内保持 assigned 属合法态——A4 随之改「期限列非空」/ 恢复首跑已在 live 真实执行，副本重跑属幂等重入）。语义修正两处：correction D1 的 alreadyAssigned 对齐误回收行总数（非当前 assigned）；restore 的留痕断言 ≥ 基线 + r1/r2 前后零新增。
+- **② lead.import_batch_id（入池方式精确化）**：宪法 §3 登记（列语义=导入批次回溯，逻辑外键 → import_batch.id；**写者=importLeads 单点**；**存量=NULL** 不回填；随 lead 生命周期删除）→ crmDbService 幂等 ALTER（双路径：独立于 lead DROP 重建块之后，保证重建后列必在）→ **importLeads 回填**（同事务先建 import_batch 行拿 id，逐行回填，批次计数插入完成后一次 UPDATE——外部只见最终值）。线索页「入池方式」改读真列：`import_batch_id > 0 → 批次 #A<id>`；**NULL 回退旧时间近似判定**（贴最近导入审计 <10 分钟），不炸存量。electron.d.ts LeadRow 补字段。
+- **③ 权重调整独立审计（assignment_weight_change）**：写点选**侵入最小的 main.ts `config:set` IPC 拦截**（key==='crmAssignWeights' 时取改前值，写库后落 diff 审计——零新端点、前端零改动；crmDb 未就绪或 diff 为空静默跳过，审计失败不阻塞配置保存），detail = 前后权重逐 key diff + actor=身份档案姓名。屏 7 审计流水「权重调整」段从 `LIKE '%weight%'` 预留改精确匹配 `weight: ['assignment_weight_change']`（死分支移除）。
+- **④ eval-annotate-test A1/A6 口径修复（20/2→23/23）**：A1 注入全新非群聊会话使生成在饱和池上非空转 → 断言「inserted ≥1 且与副本真实新增行数一致」（不再断「必须新增」）；A6 只断报价信号路在 crm 副本上工作（quoteSkipped=false），池饱和不新增属幂等正常。
+- **测试（断言补进既有套，零新脚本）**：audit-query **26→28**（a5 改精确匹配 + 种子加权重审计行；a1/a9 total 5→6；d5-d6 main.ts 拦截静态 + LIKE 预留分支已移除）；crm-lead **55→59**（5i-5l：首批行回填 batchId / lead_import 审计同批 / NULL 存量语义置空读回 / 页面读真列+回退静态）。
+- **验证**：tsc root 0 / node 158 基线零新增 / assignment-full **91/91** + audit-query **28/28** + 全套回归（crm-lead 59、correction 17、restore 14、eval-annotate 23、alert-gate 33、alert-eval 42、crm-opportunity 45、alert-payment 103、alert-annotate 46、crm-golden 47、customer-workspace-simple 37、sla2-llm-scan 26）全绿 / vite build ✓ / electron 产物 `tsc -b` 全量重建（4 文件含新代码）。
+- **遗留**：批量导入横幅「查重报告可下载」（§2.72 遗留另一半，未在本刀范围）；屏 6 左入池方式徽章渲染（§2.72 前端 C 任务延续）。
 
 ## 3. 已交付功能清单
 

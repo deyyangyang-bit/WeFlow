@@ -46,13 +46,19 @@ export function importLeads(source: string, fileName: string, rows: RawLeadRow[]
   let duplicate = dedupe.duplicateCount
 
   const batchId = crmDbService.runTx((tx) => {
+    // 先建批次行拿 id——lead.import_batch_id 逐行回填用（宪法 §3 登记列，写者=importLeads 单点）；
+    // 批次计数在插入完成后一次性 UPDATE（同事务，外部只见最终值）
+    const batchId = tx.run(
+      'INSERT INTO import_batch (source, file_name, total, valid, duplicate, invalid, created_at) VALUES (?,?,?,?,?,?,?)',
+      [src, String(fileName || '粘贴文本'), rows.length, 0, duplicate, dedupe.invalidCount, now]
+    )
     for (const p of dedupe.valid) {
       try {
         const id = tx.run(
           `INSERT INTO lead (contact_type, contact_normalized, contact_raw, wechat, source, name, tag, note,
-           status, first_contact_deadline, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [p.contactType, p.contactNormalized, p.contactRaw, p.wechat, src, p.name, p.tag, p.note, 'NEW', deadline, now, now]
+           status, first_contact_deadline, created_at, updated_at, import_batch_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [p.contactType, p.contactNormalized, p.contactRaw, p.wechat, src, p.name, p.tag, p.note, 'NEW', deadline, now, now, batchId]
         )
         tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'IMPORTED', `来源：${src}`, now])
         valid++
@@ -60,10 +66,7 @@ export function importLeads(source: string, fileName: string, rows: RawLeadRow[]
         duplicate++ // UNIQUE 冲突 = 跨批重复
       }
     }
-    const batchId = tx.run(
-      'INSERT INTO import_batch (source, file_name, total, valid, duplicate, invalid, created_at) VALUES (?,?,?,?,?,?,?)',
-      [src, String(fileName || '粘贴文本'), rows.length, valid, duplicate, dedupe.invalidCount, now]
-    )
+    tx.run('UPDATE import_batch SET valid = ?, duplicate = ? WHERE id = ?', [valid, duplicate, batchId])
     // 资源导入审计（设计稿屏 2 蓝色横幅数据源；宪法 §1.12 统一流水；append-only）
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [getIdentity()?.name || '分配员', 'lead_import', 'lead', null,
