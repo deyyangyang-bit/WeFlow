@@ -32,6 +32,7 @@ import { crmDbService } from './crmDbService'
 import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
 import { onNewMessage as actionStageClassifier } from './salesActionEngine'
+import { massSendDetector, scanMessagesForTrigger, classifyInsightMessage } from './insightNoiseFilter'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -49,6 +50,8 @@ const DB_CHANGE_DEBOUNCE_MS = 2000
 
 /** 首次沉默扫描延迟（毫秒），避免启动期间抢占资源 */
 const SILENCE_SCAN_INITIAL_DELAY_MS = 3 * 60 * 1000
+/** 触发扫描窗口：拉最新 N 条判断「新消息里是否有客户发言」（设计-AI见解重定位 §2.2） */
+const TRIGGER_SCAN_WINDOW = 10
 // 自动触发见解的重复分析去重窗口（内存冷却重启即丢，故用记录级去重兜底）
 // 24h：同一客户 24 小时内不重复 AI 分析（2026-08-20 需求）
 const INSIGHT_RECORD_DEDUP_MS = 24 * 3600 * 1000
@@ -1184,16 +1187,30 @@ ${afterText}
     return '[其他消息]'
   }
 
-  private buildInsightContextSection(messages: Message[], peerDisplayName: string): string {
-    if (!messages.length) return ''
+  private buildInsightContextSection(messages: Message[], peerDisplayName: string): { text: string; hasNoise: boolean } {
+    if (!messages.length) return { text: '', hasNoise: false }
 
+    let hasNoise = false
     const lines = messages.map((message) => {
-      const senderName = message.isSend === 1 ? '我' : peerDisplayName
-      const content = this.formatInsightMessageContent(message)
+      let senderName = message.isSend === 1 ? '我' : peerDisplayName
+      let content = this.formatInsightMessageContent(message)
+      const cls = classifyInsightMessage(message)
+      if (cls === 'system') {
+        // 系统消息（你已添加了…/拍一拍等）归因「系统」，不冒充对方发言（设计-AI见解重定位 §2.3）
+        senderName = '系统'
+        content = `[系统消息] ${content}`
+        hasNoise = true
+      } else if (cls === 'own' && massSendDetector.isMassSendTemplate(content)) {
+        content = `【疑似群发·批量触达】${content}`
+        hasNoise = true
+      }
       return `${this.formatInsightMessageTimestamp(message.createTime)} '${senderName}'\n${content}`
     })
 
-    return `近期聊天记录（最近 ${lines.length} 条）：\n\n${lines.join('\n\n')}`
+    return {
+      text: `近期聊天记录（最近 ${lines.length} 条）：\n\n${lines.join('\n\n')}`,
+      hasNoise
+    }
   }
 
   /**
@@ -1638,17 +1655,19 @@ ${afterText}
             if (cooldownMs - (now - lastAnalysis) > 0) continue
           }
 
-          // 拉取最新 1 条消息，用时间戳判断是否有新消息，避免全量 getSessions()
+          // 拉最新 10 条做触发扫描：只看最新 1 条会把自己群发/系统消息误判为客户活跃
+          // （群发风暴根除，设计-AI见解重定位 §2.2）
           try {
-            const msgsResult = await chatService.getLatestMessages(sessionId, 1)
+            const msgsResult = await chatService.getLatestMessages(sessionId, TRIGGER_SCAN_WINDOW)
             if (!msgsResult.success || !msgsResult.messages || msgsResult.messages.length === 0) continue
 
-            const latestMsg = msgsResult.messages[0]
-            const latestTs = Number(latestMsg.createTime) || 0
             const lastSeen = this.lastSeenTimestamp.get(sessionId) ?? 0
-
-            if (latestTs <= lastSeen) continue // 没有新消息
-            this.lastSeenTimestamp.set(sessionId, latestTs)
+            const scan = scanMessagesForTrigger(msgsResult.messages, lastSeen)
+            for (const hit of scan.ownTexts) {
+              massSendDetector.recordOwnText(sessionId, hit.content, hit.createTime)
+            }
+            this.lastSeenTimestamp.set(sessionId, scan.latestTs)
+            if (!scan.shouldTrigger) continue // 只有群发/系统消息更新，非客户行为，不触发
           } catch {
             continue
           }
@@ -1693,12 +1712,30 @@ ${afterText}
         const currentTimestamp = session.lastTimestamp || 0
         const lastSeen = this.lastSeenTimestamp.get(sessionId) ?? 0
         if (currentTimestamp <= lastSeen) continue
-        this.lastSeenTimestamp.set(sessionId, currentTimestamp)
 
         if (cooldownMs > 0) {
           const lastAnalysis = this.lastActivityAnalysis.get(sessionId) ?? 0
           if (cooldownMs - (now - lastAnalysis) > 0) continue
         }
+
+        // 拉最新 10 条确认新消息里确有客户发言（原先只看 session 时间戳，群发/系统消息
+        // 也会推进时间戳导致误触发，设计-AI见解重定位 §2.2）。冷却期内不消费时间戳：
+        // 冷却结束后仍能补扫到冷却期间到达的客户消息（避免客户回复被群发盖掉后丢失）。
+        let customerTriggered = true
+        try {
+          const msgsResult = await chatService.getLatestMessages(sessionId, TRIGGER_SCAN_WINDOW)
+          if (msgsResult.success && msgsResult.messages && msgsResult.messages.length > 0) {
+            const scan = scanMessagesForTrigger(msgsResult.messages, lastSeen)
+            for (const hit of scan.ownTexts) {
+              massSendDetector.recordOwnText(sessionId, hit.content, hit.createTime)
+            }
+            this.lastSeenTimestamp.set(sessionId, Math.max(scan.latestTs, currentTimestamp))
+            customerTriggered = scan.shouldTrigger
+          }
+        } catch {
+          customerTriggered = true // 拉取失败保守放行，维持原行为
+        }
+        if (!customerTriggered) continue // 只有群发/系统消息更新，非客户行为，不触发
 
         const displayName = typeof session.displayName === 'string' && session.displayName.length > 0
           ? (session.displayName.trim() || session.displayName)
@@ -1706,7 +1743,8 @@ ${afterText}
         insightLog('INFO', `${displayName} 有新消息，准备生成见解...`)
         this.lastActivityAnalysis.set(sessionId, now)
 
-        // 接线 AI 阶段分类器（新消息到达 → 分类 → 更新 customer_profile.stage）
+        // 接线 AI 阶段分类器（客户新消息到达 → 分类 → 更新 customer_profile.stage）
+        // 闸门之后才执行：群发/系统消息不进分类器，不浪费 API 也不误写 stage
         void actionStageClassifier(sessionId, displayName)
 
         await this.generateInsightForSession({
@@ -1770,7 +1808,7 @@ ${afterText}
     // 根因：冷却标记在内存、应用重启即清零，导致同一客户被反复分析几十次。
     // 手动触发保留覆盖权利（用户主动点，允许重析）。
     if (triggerReason !== 'manual' && insightRecordService.hasRecentRecord(sessionId, INSIGHT_RECORD_DEDUP_MS)) {
-      insightLog('INFO', `跳过 ${displayName}：12h 内已生成过见解（触发 ${triggerReason}）`)
+      insightLog('INFO', `跳过 ${displayName}：24h 内已生成过见解（触发 ${triggerReason}）`)
       return { success: true, message: '最近已生成过见解，跳过', skipped: true }
     }
 
@@ -1796,6 +1834,7 @@ ${afterText}
     // ── 构建 prompt ────────────────────────────────────────────────────────────
 
     let contextSection = ''
+    let contextHasNoise = false
     // P0-2C.2：summary 判断的证据（客户最近一条实质消息原话，P0-1 护栏；无可靠 key → unavailable 不伪造）
     let summaryEvidence: { messageKey?: string; evidenceText?: string } = {}
     if (allowContext) {
@@ -1803,7 +1842,13 @@ ${afterText}
         const msgsResult = await chatService.getLatestMessages(sessionId, contextCount)
         if (msgsResult.success && msgsResult.messages && msgsResult.messages.length > 0) {
           const messages: Message[] = msgsResult.messages
-          contextSection = this.buildInsightContextSection(messages, resolvedDisplayName)
+          // 上下文里的 own 文本顺带喂群发检测器（被动采集点，零额外查询）
+          for (const hit of scanMessagesForTrigger(messages, 0).ownTexts) {
+            massSendDetector.recordOwnText(sessionId, hit.content, hit.createTime)
+          }
+          const context = this.buildInsightContextSection(messages, resolvedDisplayName)
+          contextSection = context.text
+          contextHasNoise = context.hasNoise
           summaryEvidence = extractEvidence(toMessageSnippets(messages))
           insightLog('INFO', `已加载 ${messages.length} 条上下文消息`)
         }
@@ -1839,7 +1884,12 @@ ${afterText}
         salesInstruction = `【销售场景】客户「${resolvedDisplayName}」当前阶段：${salesStage}。请关注购买意向、价格敏感、竞品对比等信号，发现信号在末尾标注【信号：xxx】，并给出跟进建议。输出≤80字纯文本。`
       }
     }
+    // 噪音护栏：仅当上下文含系统/群发标注时追加（无噪音时 prompt 保持原样，利于缓存命中）
+    const noiseGuardrail = contextHasNoise
+      ? '[系统消息]为微信或自动化工具产生，不代表对方发言；【疑似群发】为你方批量触达模板。禁止将两者解读为对方的行为、意向或回复。'
+      : ''
     const userPromptBase = [
+      noiseGuardrail,
       triggerReason === 'silence' && silentDays && !salesStage
         ? `已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
         : '',

@@ -1158,6 +1158,23 @@
 
 ---
 
+## 2.64 AI 见解噪音治理：触发闸门 + 归因修正 + 群发识别（2026-09-05，已提交）
+
+> **总设计**：`docs/设计-AI见解重定位.md`（三阶段：噪音治理 → 触发重路由 → 例外告警；本节为阶段一落地）。**问题**：外部自动化工具（群发「去看看」、删好友检测脚本重添加产生「你已添加了…」系统消息）写入微信库后被当成客户行为——群发风暴触发 N 次 AI 扫描（单日 46 条垃圾见解）；系统消息 isSend=0 在上下文里冒充对方发言，AI 产出「对方多次加好友」类 180° 错误结论。
+
+- **新模块 `electron/services/insightNoiseFilter.ts`**（零 electron/chatService 依赖，可 tsx 单测）：`classifyInsightMessage` 三分类（system=localType 10000/266287972401 拍一拍；own=isSend 1；其余 customer）+ `scanMessagesForTrigger` 纯函数（存在「新且是客户发的」消息才触发；lastSeen 传 0 时 own 全采集，供上下文加载点复用）+ `MassSendDetector` 群发模板被动检测（同内容 ≥3 会话/72h 窗口 → 标记维持至末次命中+48h；7 天条目顺带清扫；误判代价=多一句护栏，可控）。
+- **触发闸门（insightService 两条路径）**：白名单路径拉最新 1 条→改 10 条（`TRIGGER_SCAN_WINDOW`）走 `scanMessagesForTrigger`；黑名单路径原只看 session 缓存时间戳→新增同款拉取扫描。仅群发/系统消息更新 → 只推进 `lastSeenTimestamp` 不触发。**行为变化**：冷却期检查移到拉消息之前（原黑名单路径先更新 lastSeen 再查冷却，冷却期间到达的客户回复会被时间戳消费吞掉；现在冷却结束后补扫窗口内客户消息）。
+- **分类器闸门**：`actionStageClassifier`（黑名单路径新消息即跑）移到客户闸门之后——群发/系统消息不再浪费分类器 API、不误写 customer_profile.stage。
+- **上下文标注**：`buildInsightContextSection` 签名改 `{ text, hasNoise }`——system 消息说话人改「系统」+ 前缀 `[系统消息]`（不再冒充对方）；own 命中群发模板 → 前缀 `【疑似群发·批量触达】`。
+- **prompt 护栏**：仅当 `hasNoise` 时 user prompt 追加「[系统消息]…不代表对方发言；【疑似群发】…禁止解读为对方行为/意向/回复」（system prompt 不动，保 API 缓存命中；无噪音时 prompt 原样）。
+- **原子写**：`insightRecordService.persist()` 的 `writeFileSync` 直写换 `atomicWriteFileSync`（截断窗口崩溃可致 JSON 损坏，与 sql.js 落盘铁律同型）。
+- **顺带修**：dedup 跳过日志「12h」文案与 24h 常量不一致 → 24h。
+- **不做**（设计 §5/§2.2）：`scanUrgeFollowUps` 不加闸门（催办要求沉默 ≥2 天，群发后沉默时长必小于阈值，天然免疫）；`batchProfileCore`（画像回填，stage=unknown 限定）不动；silence 扫描不动。
+- **验证**：tsc root 0 / node gate 158 基线零新增 / insight-noise-test 32/32（新）/ insight-dedup-test 6/6 / insight-unnamed-session-test 6/6 / insight-stage-ban-test 16/16。
+- **遗留**：阶段二（晨间摘要+触发重路由+archive 语义去重配套修+前端 store 三处/chips 清理）与阶段三（告警白名单+alert_eval_case 评测基建）见设计稿；存量 46 条垃圾 insightRecord 手动清 `weflow-insight-records.json`。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

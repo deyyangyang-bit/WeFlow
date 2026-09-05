@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { ConfigService } from './config'
+import { atomicWriteFileSync } from './atomicPersist'
 
 export type InsightRecordTriggerReason = 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
 export type InsightRecordSourceType = 'insight' | 'message_analysis'
@@ -148,7 +149,9 @@ class InsightRecordService {
   private persist(): void {
     try {
       const filePath = this.resolveFilePath()
-      fs.writeFileSync(filePath, JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf-8')
+      // 原子写（tmp+fsync+rename）：writeFileSync 直写有截断窗口，崩溃期可致 JSON 损坏
+      // （与 sql.js 落盘铁律同型风险，设计-AI见解重定位 §2.5）
+      atomicWriteFileSync(filePath, Buffer.from(JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf-8'))
     } catch {
       // Keep insight generation non-blocking even if local persistence fails.
     }
