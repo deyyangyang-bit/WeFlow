@@ -126,6 +126,34 @@ export interface OpportunityEvalCase {
   created_at?: number
 }
 
+/** 告警评测集（设计-AI见解重定位 §4.3，宪法 §3 特许扩展行）：结构仿 opportunity_eval_case，
+ *  不复用——label 三档语义不同（告警是否成立）且 UNIQUE 多一维 alert_type（各告警类型独立评测）。 */
+export interface AlertEvalCase {
+  id?: number
+  session_id: string
+  /** 证据锚点消息 messageKey（P0-2B 体系，宪法 §1.10 纯 key 引用） */
+  anchor_key?: string
+  /** 告警类型：loss（客户明示流失）/ competitor / …（与 ALERT_PUSH_APPROVED 键同空间） */
+  alert_type?: string
+  /** 人工确认结果：'' / correct（告警成立）/ wrong（不成立）/ uncertain */
+  label?: string
+  evidence_message_keys?: string
+  /** 客户原话快照 ≤200 字（PIPL），非 AI 结论 */
+  evidence_text?: string
+  /** AI/规则预标注（与人工确认分存，防锚定偏差） */
+  ai_label?: string
+  ai_evidence_keys?: string
+  annotated_by?: string
+  /** pending / prelabeled / confirmed */
+  status?: string
+  source?: string
+  updated_by?: string
+  updated_at?: number
+  version?: number
+  deleted?: number
+  created_at?: number
+}
+
 // ─── Migration SQL ───────────────────────────────────────────────────────────
 
 const SCHEMA_SQL = `
@@ -268,6 +296,31 @@ CREATE INDEX IF NOT EXISTS idx_event_type ON customer_event(event_type, created_
 -- D7 评测集幂等键：(session_id, anchor_key) 唯一，供标注回写幂等 upsert
 CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_case_anchor ON opportunity_eval_case(session_id, anchor_key);
 CREATE INDEX IF NOT EXISTS idx_eval_case_status ON opportunity_eval_case(status, updated_at);
+
+-- 告警评测集（宪法 §3 特许扩展行 alert_eval_case，设计-AI见解重定位 §4.3）：结构仿 opportunity_eval_case，
+-- label 三档语义不同（correct/wrong/uncertain = 告警是否成立），UNIQUE 多一维 alert_type（各类型独立评测）。
+CREATE TABLE IF NOT EXISTS alert_eval_case (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',
+  anchor_key TEXT DEFAULT '',
+  alert_type TEXT DEFAULT '',
+  label TEXT NOT NULL DEFAULT '' CHECK (label IN ('', 'correct', 'wrong', 'uncertain')),
+  evidence_message_keys TEXT DEFAULT '[]',
+  evidence_text TEXT DEFAULT '',
+  ai_label TEXT NOT NULL DEFAULT '' CHECK (ai_label IN ('', 'correct', 'wrong', 'uncertain')),
+  ai_evidence_keys TEXT DEFAULT '[]',
+  annotated_by TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'prelabeled', 'confirmed')),
+  source TEXT DEFAULT 'manual',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+-- 幂等键：(session_id, anchor_key, alert_type) 唯一，供标注回写幂等 upsert
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_eval_case_anchor ON alert_eval_case(session_id, anchor_key, alert_type);
+CREATE INDEX IF NOT EXISTS idx_alert_eval_case_status ON alert_eval_case(alert_type, status, updated_at);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -348,6 +401,9 @@ class SalesDbService {
     // 此处兜底确保唯一索引存在（库若建于索引入 schema 之前，CREATE IF NOT EXISTS 不重建表）
     try { this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_case_anchor ON opportunity_eval_case(session_id, anchor_key)') } catch { /* 已存在 */ }
     try { this.db.run('CREATE INDEX IF NOT EXISTS idx_eval_case_status ON opportunity_eval_case(status, updated_at)') } catch { /* 已存在 */ }
+    // Migration: alert_eval_case 表体由 SCHEMA_SQL CREATE IF NOT EXISTS 幂等覆盖（同 D7 兜底理由）
+    try { this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_eval_case_anchor ON alert_eval_case(session_id, anchor_key, alert_type)') } catch { /* 已存在 */ }
+    try { this.db.run('CREATE INDEX IF NOT EXISTS idx_alert_eval_case_status ON alert_eval_case(alert_type, status, updated_at)') } catch { /* 已存在 */ }
     this.persist()
   }
 
@@ -968,6 +1024,103 @@ class SalesDbService {
       ? 'SELECT COUNT(*) AS c FROM opportunity_eval_case WHERE deleted = 0 AND status = ?'
       : 'SELECT COUNT(*) AS c FROM opportunity_eval_case WHERE deleted = 0'
     return Number(this.all<{ c: number }>(sql, status ? [status] : [])[0]?.c ?? 0)
+  }
+
+  // ─── 告警评测集（设计-AI见解重定位 §4.3，宪法 §3 特许扩展行）──────────────────
+
+  /**
+   * 告警评测集幂等 upsert：按 UNIQUE 键 (session_id, anchor_key, alert_type) 命中更新、未命中插入。
+   * 纪律同 evalCaseUpsert：ai_* 与人工确认字段分存互不覆盖（undefined = 不动）；非法值由 DB CHECK 拦截。
+   */
+  alertEvalCaseUpsert(input: {
+    session_id: string
+    anchor_key?: string
+    alert_type?: string
+    label?: string
+    evidence_message_keys?: string
+    evidence_text?: string
+    ai_label?: string
+    ai_evidence_keys?: string
+    annotated_by?: string
+    status?: string
+    source?: string
+    updated_by?: string
+  }): AlertEvalCase {
+    const anchorKey = input.anchor_key ?? ''
+    const alertType = input.alert_type ?? ''
+    const existing = this.get<AlertEvalCase>(
+      'SELECT * FROM alert_eval_case WHERE session_id = ? AND anchor_key = ? AND alert_type = ? AND deleted = 0',
+      [input.session_id, anchorKey, alertType]
+    )
+    const now = Date.now()
+    if (existing) {
+      const cols: Array<[string, unknown]> = [
+        ['label', input.label],
+        ['evidence_message_keys', input.evidence_message_keys],
+        ['evidence_text', input.evidence_text],
+        ['ai_label', input.ai_label],
+        ['ai_evidence_keys', input.ai_evidence_keys],
+        ['annotated_by', input.annotated_by],
+        ['status', input.status],
+        ['source', input.source],
+        ['updated_by', input.updated_by],
+      ]
+      const sets: string[] = ['updated_at = ?', 'version = version + 1']
+      const params: unknown[] = [now]
+      for (const [col, val] of cols) {
+        if (val === undefined) continue
+        sets.push(`${col} = ?`)
+        params.push(val)
+      }
+      params.push(existing.id)
+      this.run(`UPDATE alert_eval_case SET ${sets.join(', ')} WHERE id = ?`, params)
+      return this.get<AlertEvalCase>('SELECT * FROM alert_eval_case WHERE id = ?', [existing.id])!
+    }
+    const status = input.status ?? (input.label ? 'confirmed' : input.ai_label ? 'prelabeled' : 'pending')
+    this.run(
+      `INSERT INTO alert_eval_case
+         (session_id, anchor_key, alert_type, label, evidence_message_keys, evidence_text,
+          ai_label, ai_evidence_keys, annotated_by, status, source, updated_by, updated_at, version, deleted, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)`,
+      [input.session_id, anchorKey, alertType, input.label ?? '', input.evidence_message_keys ?? '[]',
+       input.evidence_text ?? '', input.ai_label ?? '', input.ai_evidence_keys ?? '[]',
+       input.annotated_by ?? '', status, input.source ?? 'manual', input.updated_by ?? '', now, now]
+    )
+    const id = this.lastInsertRowId()
+    return this.get<AlertEvalCase>('SELECT * FROM alert_eval_case WHERE id = ?', [id])!
+  }
+
+  /** 按主键取单条（未软删） */
+  alertEvalCaseGetById(id: number): AlertEvalCase | undefined {
+    return this.get<AlertEvalCase>('SELECT * FROM alert_eval_case WHERE id = ? AND deleted = 0', [id])
+  }
+
+  /** 按幂等键取单条（未软删） */
+  alertEvalCaseGet(sessionId: string, anchorKey: string = '', alertType: string = ''): AlertEvalCase | undefined {
+    return this.get<AlertEvalCase>(
+      'SELECT * FROM alert_eval_case WHERE session_id = ? AND anchor_key = ? AND alert_type = ? AND deleted = 0',
+      [sessionId, anchorKey, alertType]
+    )
+  }
+
+  /** 告警评测集列表（alert_type/status 过滤可选；默认排除软删，倒序） */
+  alertEvalCaseList(filters?: { alert_type?: string; status?: string; limit?: number }): AlertEvalCase[] {
+    let sql = 'SELECT * FROM alert_eval_case WHERE deleted = 0'
+    const params: unknown[] = []
+    if (filters?.alert_type) { sql += ' AND alert_type = ?'; params.push(filters.alert_type) }
+    if (filters?.status) { sql += ' AND status = ?'; params.push(filters.status) }
+    sql += ' ORDER BY created_at DESC, id DESC'
+    if (filters?.limit) { sql += ' LIMIT ?'; params.push(filters.limit) }
+    return this.all<AlertEvalCase>(sql, params)
+  }
+
+  /** 告警评测集计数（alert_type/status 过滤可选；排除软删；准确率统计按 alert_type 分组用） */
+  alertEvalCaseCount(alertType?: string, status?: string): number {
+    const conds = ['deleted = 0']
+    const params: unknown[] = []
+    if (alertType) { conds.push('alert_type = ?'); params.push(alertType) }
+    if (status) { conds.push('status = ?'); params.push(status) }
+    return Number(this.all<{ c: number }>(`SELECT COUNT(*) AS c FROM alert_eval_case WHERE ${conds.join(' AND ')}`, params)[0]?.c ?? 0)
   }
 
   // ─── 跟进待办 ─────────────────────────────────────────────────────────────

@@ -184,6 +184,7 @@
 - **action**：Phase 2 入宪。当前事实载体 = `follow_up_task` + `customer_event`（P0-3 E3 已 CLOSED），入宪时再裁决是否独立成表。
 - **ticket**：Phase 4 入宪。当前无对应物，不预设字段。
 - **opportunity_eval_case**（特许扩展，非业务事实表）：PRD 2.10 商机评测集，D7 落库 salesDb（与 intent_tag_log 同库，证据引用同库闭环），salesDb 无 ENTITIES 白名单（该机制仅 crmDbService 有）故无需注册，带通用五列。除本行特许外，任何新表须先过 §2.3 Feature Gate 七问入宪。
+- **alert_eval_case**（特许扩展，非业务事实表）：设计-AI见解重定位 §4.3 告警评测集（2026-09-05 本刀入宪落库），落 salesDb（同 opportunity_eval_case 库位与理由，无需注册白名单），带通用五列。结构仿 opportunity_eval_case 但不复用其表：label 三档语义不同（correct/wrong/uncertain = 告警是否成立，非商机有无）、UNIQUE 键多一维 alert_type（每类型独立评测，evalStats 全表聚合不被单一告警类型污染）。字段：session_id / anchor_key（证据锚点 messageKey）/ alert_type / label CHECK('','correct','wrong','uncertain') / evidence_message_keys / evidence_text（≤200 字快照，PIPL）/ ai_label 人机分存 / status CHECK('pending','prelabeled','confirmed') / annotated_by / source。幂等键 UNIQUE(session_id, anchor_key, alert_type)。
 
 ---
 

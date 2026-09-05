@@ -252,6 +252,22 @@ export function parseRiskSignal(content: string, isSend: number): RiskSignalInfo
   return null
 }
 
+// ─── 流失信号（设计-AI见解重定位 §4.2 告警 B）：客户明示流失 → 候选（暂不接告警链，
+// 先在 alert_eval_case 评测集跑到 ≥85% 准确率才允许接 alertService，§4.1 第 4 条）──
+export interface LossSignalInfo { type: 'loss'; detail: string }
+// 明示流失：明确拒绝 / 已在他处成交。窄口径起步（宁缺勿滥，评测定标后再放宽）：
+// 「不买了/不用了/不需要了/不要了」= 明示拒绝；「找别家/别家买/在别家」+ 成交动词 = 已投竞品；
+// 「已经订了/已经买了」= 已成交。
+const LOSS_REJECT_RE = /不(?:买了|用了|需要了|要了)|用不上了?|不要了/
+const LOSS_ELSEWHERE_RE = /找别家|别家买|别(?:的|家).{0,4}(?:买了|订了|定了|成交)|在别(?:的|家).{0,4}(?:买了|订了|定了)|(?:已经|都)订了|(?:已经|都)买了|买(?:了|过)别(?:家|的)(?:了)?/
+export function parseLossSignal(content: string, isSend: number): LossSignalInfo | null {
+  if (isSend !== 0) return null // 只看客户消息（parseRiskSignal 同型风格）
+  const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ').trim()
+  if (!text || text.length < 4) return null
+  if (LOSS_REJECT_RE.test(text) || LOSS_ELSEWHERE_RE.test(text)) return { type: 'loss', detail: text.slice(0, 100) }
+  return null
+}
+
 export function parseBuySignal(content: string, isSend: number): BuySignalInfo | null {
   if (isSend !== 0) return null // 只看客户消息
   const text = String(content || '').replace(/\[[^\]]{1,8}\]/g, ' ').trim()

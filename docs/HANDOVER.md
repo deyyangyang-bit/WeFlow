@@ -1223,6 +1223,20 @@
 
 ---
 
+## 2.68 告警评测基建 alert_eval_case + 告警 B 识别规则 parseLossSignal（2026-09-05，设计-AI见解重定位 阶段三评测刀，已提交）
+
+> **总设计**：`docs/设计-AI见解重定位.md` §4.3/§4.2 告警 B（上承 §2.67 契约框架+告警 A）。**SSOT 顺序**：先在 DATA-CONSTITUTION §3 登记 `alert_eval_case` 特许扩展行，再建表。
+
+- **新表 `alert_eval_case`（salesDb，SCHEMA_SQL 幂等 CREATE + 索引兜底双路径，仿 opportunity_eval_case）**：`session_id / anchor_key / alert_type / label CHECK('','correct','wrong','uncertain') / evidence_message_keys / evidence_text（≤200 字快照，PIPL）/ ai_label（同 CHECK）/ ai_evidence_keys / status CHECK('pending','prelabeled','confirmed') / annotated_by / source / 通用五列`；**UNIQUE(session_id, anchor_key, alert_type)**（比商机评测多一维 alert_type——各告警类型独立评测，evalStats 聚合不被单一类型污染，这是不复用 opportunity_eval_case 的核心理由，宪法已记）。`salesDbService` 四方法：`alertEvalCaseUpsert`（幂等命中更新、ai_* 与人工字段分存互不覆盖、非法值 DB CHECK 拦截、status 缺省按内容推导）/ `alertEvalCaseGetById` / `alertEvalCaseGet`（三维幂等键）/ `alertEvalCaseList`（alert_type+status 过滤）/ `alertEvalCaseCount`（分组口径）——加上 Upsert 共五入口（任务书「四方法」按 Get/List/Count/Upsert 计）。
+- **告警 B 识别规则 `crmParseRules.parseLossSignal`**（纯函数，parseRiskSignal 同型风格：isSend=0 限定、[表情] 清洗、<4 字跳过、detail=原话 ≤100 字）：窄口径双正则——`LOSS_REJECT_RE`（不买了/不用了/不需要了/不要了/用不上）+ `LOSS_ELSEWHERE_RE`（找别家/别家买/别家买了/在别家订了/已经订了/已经买了/买了别家的）。**⛔ 未接告警链**：parseLossSignal 不出现在 crmParseService（测试 d1 静态守卫）——§4.1 第 4 条，B 必须先在 alert_eval_case 评测到 ≥85% 才允许接 alertService，届时接线点仿 competitor 命中点三行。
+- **评测脚本 `scripts/alert-eval.ts`**（仿 opportunity-eval.ts export/import 双命令）：⚠️ **WCDB 聊天库只能经应用内 native worker 打开，离线脚本读不了**——「历史聊天副本」落地为聊天导出 JSONL（`--dump`，行 {session_id, display_name, message_key, is_send, content, create_time}，message_key 须为 P0-2B canonical key）。export：dump 只读 + sales 库（可选 --db）复制 /tmp 副本初始化仅取显示名 + **sha256 零写核验**；候选两路——①loss_signal 命中（ai_label='correct' 预标注）②no_loss_sample 确定性等距抽样负样本（ai_label='wrong'，按 anchor_key 排序幂等，默认 30 条——没有负样本准确率会虚高）；群聊 @chatroom 一律排除（D7 口径）。import：label 非法/evidence_text>200/缺 annotated_by 进失败清单，合法行走 `alertEvalCaseUpsert`（status=confirmed，幂等 upsert），回写后按 alert_type 输出准确率与「推送门 ≥85% 达标」判定。**评测标注页（/eval-annotate）扩展支持告警样本是后续刀**，本刀只做脚本通道。
+- **测试**：alert-eval-test **42/42**（新：a1-a6 建表/CHECK 拦截/三维 UNIQUE/幂等 upsert 人机分存；b1-b5 四方法；c1-c7 parseLossSignal 命中 8 例+我方消息/<4 字/正常询价 7 例不误判/detail 上限/表情清洗；d1-d3 B 未接线守卫+competitor 保持接线；e1-e8 export 零写核验+负样本+群聊排除静态检查）；回归 alert-gate 33 + insight-noise 32 + insight-dedup 11 + crm-opportunity 45 + morning-digest 22 + todo-followup 14 + action-rules 36 + message-key 17 全绿。
+- **脚本冒烟实测**：export 对真实 sales 库副本跑通（群聊/我方消息正确排除、零写核验通过）；import 到 /tmp 副本新增 1 条 → 二次导入幂等更新 1 条；准确率输出 ✓。⚠️ 冒烟只动 /tmp 副本，live 库零写。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / `tsc -b tsconfig.node.json` 产物已重建（salesDbService.js 含 alert_eval_case）。
+- **遗留**：人工标注跑量（dump 从应用聊天导出来源化→写导出通道或手动）→ loss 准确率 ≥85% → `ALERT_PUSH_APPROVED.loss=true` + crmParseService 接线三行；评测标注页支持 alert 样本（/eval-announce 扩展）；告警 D 独立设计。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
