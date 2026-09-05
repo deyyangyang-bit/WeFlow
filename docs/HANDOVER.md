@@ -1134,6 +1134,18 @@
 
 ---
 
+## 2.62 CRM 六页接入 wxid-changed 自动重查（2026-09-05，账号隔离体验修复）
+
+> **问题**：用户反馈「客户/商机/漏斗/合同数据隔离没做好，切微信号后数据一样」。核查结论：§2.40 微信号整库分库（weflow-crm/sales-<wxid>.db）后端**早已生效**（`config:set myWxid` → `switchBusinessDbsForWxid` → `reopenForWxid`），但 CRM 页面**不监听 wxid-changed 事件**，切账号后屏幕残留上一账号数据（需手动换页才刷新），看起来就像没隔离。
+
+- **改法**：新增 `src/utils/useWxidRefresh.ts`（ref 转发，保证触发时调最新 reload 闭包）；客户工作台 / 商机 / 漏斗 / 合同工作台 / 今日行动 / 线索池六页统一接入。
+- **注意**：切到从未用过的微信号会建**空库**（正常，即隔离生效的表现）；另三个微信号目录（xwechat_files 下）≠ 都在 WeFlow 配过密钥，`wxidConfigs` 只配了 wen24 一个号。
+- **遗留（用户已拍板「先测后补」）**：① 销售维度的隔离（销售只看自己的客户/商机/合同）未做——现仅线索池一页有展示层过滤；② LAN 同步下行是全量广播，未按销售投递；③ contract 表无 owner_sales 列（宪法设计：经 account 推导）。
+- **⚠️ 不在已打好的 Windows 包（009de01）里**，与 §2.61 一起待重打。
+- **验证**：tsc root 0 / account-db-isolation 27/27。
+
+---
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
