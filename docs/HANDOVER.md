@@ -1427,6 +1427,21 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ + tsc -b 产物重建 / 回归：hermes-ask 29、customer-workspace-simple 37、customer360-consumer 13、settings-nav 59、crm-enrich 61 全绿；action-funnel-closed-gate 15+2（B13/B16 真实库漂移，存量）。
 - **遗留**：提案与现有条目冲突的「同标题」判定为精确匹配（模糊/语义冲突检测随 Phase 3b 向量底座）；「批量通过」信息待确认区固定 accept 口径（批量拒绝无 PRD 诉求，不做）；存量 219 条与新增提案同队列逐批发布。
 
+## 2.82 Hermes 刀 5 问数据（2026-09-06，单 commit）
+
+> **依据**：`docs/设计-Hermes-MVP.md` 刀 5（业务库联动，2026-09-06 用户确认为刚需）。宪法 §3 proposal_event 登记行增补⑦ data_ask 实体（event_type 沿用 knowledge——三类 CHECK 不动，问一问属问答族）。与刀 3 共用「问一问」输入框：`sales:kb:ask` 入口先意图分类再分发，零新入口。
+
+- **意图分类（纯函数 `classifyAskIntent`）**：规则关键词起步——四模板专属词（今天/商机/快凉/到哪步/到款…）命中 → data+模板；泛化数据词（我的/哪几个/到哪了/本月/这个月）→ data 但无模板 = unsupported；其余 → knowledge（拿不准按知识类，答错知识比查错数据代价小）。**有意不含「多少/谁」**：与产品问题（「这车续航多少」「李林辉是谁」）碰撞率过高，避免劫持刀 3 旗舰场景（a5/a8 反例断言钉死）。客户名提取 `extractCustomerName` 纯函数（剥关键词/客套词/标点）。
+- **Tool 白名单注册表（设计稿 §3 形式化）**：`HERMES_DATA_TEMPLATES` 常量恰四模板，一处定义两处消费（执行器 switch + hermes-ask-data-test f1/f2 断言）；清单外不可达（default 分支兜底）。四模板 = 参数化只读 SQL/既有读口 + 文案模板：① today_actions → `todoList(pending)`（getTodayActions 同数据源表，**不触发扫描**）+ `morningDigestService.getLatestDigest()`；② my_opportunities → `opportunityList(active)` 按最近信号沉默天数排序；③ customer_stage → `accountSearchByName`（新只读读口）+ `opportunityList(accountId)` 最近信号行 + `contractsByAccount`（新读口）最新合同；④ month_received → `monthPaidByOwner()`（新读口，**statsOverview.monthPaid 同口径**：confirmed + account_id 非空 + pay_time 落月，按 owner 分组）——测试与 `statsOverview.monthPaid` 交叉验证同值。
+- **owner 过滤（§2.74 唯一语义源）**：`filterByOwner/isSalesView/IdentityLike` 迁 `shared/ownerFilter.ts`（前端 leadAssignmentView re-export 保持 import 兼容），主进程问数据模板与前端页面**一处定义两处消费**；四执行器逐一过 filterByOwner（销售=本人+空归属公共，管理=全量；月到款按 owner 分组后过滤再求和）。越权断言：王五问「李林辉到哪步」→「不在你的客户范围内」（不泄露存在性）。
+- **铁律（hermes-ask-data-test f 组静态断言）**：回答数字只能来自查询结果行——文案模板纯插值，LLM 只转述（`ASK_DATA_SYSTEM_PROMPT`：每一个数字必须原样来自查询结果，绝不新增/修改/推算；temperature 0.2）；prompt 只传问题 + 查询结果 JSON（`buildAskDataUserPrompt`），不传原始聊天（f5 函数体级断言）；未配置/转述失败回退文案模板（数字同源链路不断，via=template/llm 标注）。
+- **覆盖不了 → 诚实**：「这个问题我还不会查，知识库里也没有」+ 生成知识提案入口（复用刀 4 kbPropose，evidence_key=askKey）；unsupported/缺客户名不记 generated（漏斗诚实）。
+- **埋点**：出答案 → knowledge/generated（entity=`data_ask`=`<askKey>`，宪法登记行⑦）；展开 → knowledge/viewed（`trackDataAskViewed` 同 askKey 只记一次，与 knowledge_ask 独立去重）。
+- **前端**：KnowledgeAskPanel 增加 data 分支渲染（「本机数据 · 模板名 · 转述」徽标 + 人话答案，与知识答案同款折叠卡；unsupported 与知识 no-hit 同款提案入口）；kbAskViewed 加 kind 参数区分实体。
+- **测试** `scripts/hermes-ask-data-test.ts`（**42/42**，`npx tsx`，/tmp 双库造数）：a 分类正反例 10（含反例 a5/a8）；b 四模板造数断言 11（数字与库内真实值一致 + statsOverview 交叉验证 + 空分支）；c owner 过滤 4（销售查不到他人/公共可见/管理全量）；d 覆盖不了+LLM 转述 5（prompt 只传结果行/回退文案）；e 埋点 4；f 静态铁律 8。
+- **验证**：tsc root 0 / node 158 基线零新增（错误签名 diff 对照，本批 3 个新增类型错误当场修复）/ vite build ✓ + tsc -b 产物重建 / 回归：hermes-ask 29、knowledge-governance 47、owner-filter 28、lead-assignment-view 56、customer-workspace-simple 37、crm-enrich 61、funnel 48、crm-opportunity 56 全绿。
+- **遗留**：意图分类 LLM 兜底（设计稿允许，规则起步即最终口径，后续按误分率评估）；商机阶段中文枚举沿页面口径（了解/比价/决策/成交，schema 默认 'initial' 归「无阶段」展示）；今日行动模板不触发懒扫描（与今日行动页数字可能存在分钟级差异——同源表但页面会触发扫描）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

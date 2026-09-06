@@ -35,6 +35,7 @@ import { applyManualStageCorrection } from './services/legalStageWriters'
 import { createEvidenceResolver } from './services/evidenceResolver'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { hermesAskService } from './services/hermesAskService'
+import { classifyAskIntent, askData, markDataAskViewed } from './services/hermesAskDataService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
@@ -4707,15 +4708,26 @@ function registerIpcHandlers() {
     }
   })
 
-  // 刀 3 带引用知识问答（设计-Hermes-MVP 刀 3）：检索只读 published + LLM 组答案（temperature 0.2）；
+  // 刀 3+5 问一问统一入口（设计-Hermes-MVP 刀 3/5 共用输入框）：先意图分类（规则关键词）——
+  // 数据类走 hermesAskDataService 固定查询模板（回答数字只来自查询结果行）；知识类走刀 3 published 检索链路。
   // AI + 写库链路走 enqueueSalesTask 最外层串行（铁律：enqueue 只加最外层，服务内部绝不 enqueue）
   ipcMain.handle('sales:kb:ask', async (_, payload: { question?: string }) => {
-    return enqueueSalesTask(() => hermesAskService.askKnowledge({ question: String(payload?.question || '') }, { config: configService ?? undefined }))
+    return enqueueSalesTask(async () => {
+      const question = String(payload?.question || '')
+      if (classifyAskIntent(question).kind === 'data') {
+        return askData({ question })
+      }
+      return { kind: 'knowledge' as const, ...(await hermesAskService.askKnowledge({ question }, { config: configService ?? undefined })) }
+    })
   })
 
-  // 刀 3 问答 viewed 埋点（用户展开答案卡；同 askKey 只记一次）——写库端点最外层串行
-  ipcMain.handle('sales:kb:askViewed', async (_, payload: { question?: string; askKey?: string }) => {
-    return enqueueSalesTask(() => Promise.resolve(hermesAskService.markAskViewed({ question: payload?.question, askKey: payload?.askKey })))
+  // 刀 3/5 问答 viewed 埋点（用户展开答案卡；同 askKey 只记一次；kind 区分 knowledge_ask/data_ask 实体）——最外层串行
+  ipcMain.handle('sales:kb:askViewed', async (_, payload: { question?: string; askKey?: string; kind?: 'knowledge' | 'data' }) => {
+    return enqueueSalesTask(() => Promise.resolve(
+      payload?.kind === 'data'
+        ? markDataAskViewed({ question: payload.question, askKey: payload.askKey })
+        : hermesAskService.markAskViewed({ question: payload?.question, askKey: payload?.askKey })
+    ))
   })
 
   // 报表

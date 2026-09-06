@@ -1790,6 +1790,40 @@ class CrmDbService {
     }
   }
 
+  // ─── 刀 5 问数据读口（hermesAskDataService 模板专用，全部参数化只读 SQL）───────
+  // 三个读口与页面同源：account 名匹配 / 商机与合同经既有列直读 / 月到款 = statsOverview monthPaid
+  // 同口径（confirmed + account_id 非空 + pay_time 归类）按 owner 分组，owner 过滤由调用方 filterByOwner 统一执行。
+
+  /** 按客户名模糊匹配（刀 5「某客户到哪步」模板参数化查询；LIKE 只读） */
+  accountSearchByName(name: string, limit: number = 5): CrmRow[] {
+    const q = String(name || '').trim()
+    if (!q) return []
+    return this.all('SELECT * FROM account WHERE name LIKE ? ORDER BY updated_at DESC LIMIT ?', [`%${q}%`, limit])
+  }
+
+  /** 某客户名下合同（创建倒序；刀 5「某客户到哪步」最新合同读口） */
+  contractsByAccount(accountId: number): CrmRow[] {
+    if (!accountId) return []
+    return this.all('SELECT * FROM contract WHERE account_id = ? ORDER BY created_at DESC, id DESC', [accountId])
+  }
+
+  /**
+   * 本月已确认到款按归属销售分组（刀 5「本月到款」读口；与 statsOverview.monthPaid 同口径：
+   * allocation confirmed + account_id 非空 + JOIN payment_record 按 pay_time 落月）。
+   * 空 owner_sales 归 ''（公共未归属——filterByOwner 语义下销售可见自己 + 空归属）。
+   */
+  monthPaidByOwner(): Array<{ owner_sales: string; amount: number; count: number }> {
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+    return this.all(
+      "SELECT COALESCE(a.owner_sales, '') AS owner_sales, COALESCE(SUM(al.credited_amount),0) AS amount, COUNT(*) AS count " +
+      'FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id ' +
+      'LEFT JOIN account a ON a.id = al.account_id ' +
+      "WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ? " +
+      "GROUP BY COALESCE(a.owner_sales, '')",
+      [monthStart]
+    ).map((r) => ({ owner_sales: String(r.owner_sales || ''), amount: Number(r.amount || 0), count: Number(r.count || 0) }))
+  }
+
   /** AI 准确率统计（近 N 天）：自动填充/人工采纳修正/报价信号转化 */
   aiAccuracyStats(days = 7): CrmRow {
     const since = Date.now() - days * 86400000

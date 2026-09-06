@@ -16,7 +16,8 @@ import { BookOpen, Search, X, ChevronDown, ChevronUp, AlertCircle, Quote, Plus, 
 import './KnowledgeAskPanel.scss'
 
 interface AskCitation { id: number; title: string; version: number }
-interface AskResult {
+interface KnowledgeAskResult {
+  kind: 'knowledge'
   status: 'empty' | 'not_configured' | 'no_hit' | 'answer' | 'error'
   question: string
   askKey: string
@@ -25,6 +26,19 @@ interface AskResult {
   citations?: AskCitation[]
   error?: string
 }
+/** 刀 5 数据类答案（hermesAskDataService.askData）：text 数字全部来自查询结果行 */
+interface DataAskResult {
+  kind: 'data'
+  status: 'answer' | 'unsupported'
+  question: string
+  askKey: string
+  templateId: string | null
+  templateLabel?: string
+  text: string
+  rows: Record<string, unknown>
+  via: 'llm' | 'template'
+}
+type AskResult = KnowledgeAskResult | DataAskResult
 
 export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate()
@@ -51,17 +65,19 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
       setResult(r)
       setAskedQuestion(q)
     } catch (e) {
-      setResult({ status: 'error', question: q, askKey: '', entries: [], error: String(e) })
+      setResult({ kind: 'knowledge', status: 'error', question: q, askKey: '', entries: [], error: String(e) })
       setAskedQuestion(q)
     } finally {
       setLoading(false)
     }
   }
 
-  // viewed（展开）埋点：答案卡默认折叠，展开时记一次（服务端同 askKey 去重）
+  // viewed（展开）埋点：答案卡默认折叠，展开时记一次（服务端同 askKey 去重；kind 区分 data_ask/knowledge_ask）
   const handleExpand = async () => {
     if (!expanded && result?.status === 'answer') {
-      try { await (window as any).electronAPI.sales.kbAskViewed({ question: askedQuestion, askKey: result.askKey }) } catch { /* 埋点尽力而为 */ }
+      try {
+        await (window as any).electronAPI.sales.kbAskViewed({ question: askedQuestion, askKey: result.askKey, kind: result.kind })
+      } catch { /* 埋点尽力而为 */ }
     }
     setExpanded(v => !v)
   }
@@ -112,15 +128,15 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
             </button>
           </div>
 
-          {loading && <div className="kask-hint">正在检索已发布知识并生成答案…</div>}
+          {loading && <div className="kask-hint">正在查证（先看能不能查业务数据，再看知识库）…</div>}
 
-          {result?.status === 'not_configured' && (
+          {result?.kind === 'knowledge' && result?.status === 'not_configured' && (
             <div className="kask-hint kask-hint-warn">
               <AlertCircle size={14} />先配置模型：设置 → AI 设置 配置后即可问答
             </div>
           )}
 
-          {result?.status === 'no_hit' && (
+          {result?.kind === 'knowledge' && result?.status === 'no_hit' && (
             <div className="kask-nohit">
               <BookOpen size={28} />
               <p>知识库里没有答案</p>
@@ -134,11 +150,11 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
             </div>
           )}
 
-          {result?.status === 'error' && (
+          {result?.kind === 'knowledge' && result?.status === 'error' && (
             <div className="kask-hint kask-hint-warn"><AlertCircle size={14} />问答失败：{result.error}</div>
           )}
 
-          {result?.status === 'answer' && (
+          {result?.kind === 'knowledge' && result?.status === 'answer' && (
             <div className="kask-answer-card">
               <div className="kask-answer-head" onClick={handleExpand}>
                 <span className="kask-answer-q">{askedQuestion}</span>
@@ -161,6 +177,39 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
                     </div>
                   )}
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* 刀 5 数据类答案：数字全部来自查询结果行（文案模板插值 / LLM 只转述） */}
+          {result?.kind === 'data' && result.status === 'answer' && (
+            <div className="kask-answer-card">
+              <div className="kask-answer-head" onClick={handleExpand}>
+                <span className="kask-answer-q">{askedQuestion}</span>
+                <span className="kask-answer-toggle">
+                  {expanded ? <><span>收起</span><ChevronUp size={14} /></> : <><span>查看答案</span><ChevronDown size={14} /></>}
+                </span>
+              </div>
+              {expanded && (
+                <div className="kask-answer-body">
+                  <div className="kask-disclaimer kask-disclaimer-data">本机数据{result.templateLabel ? ` · ${result.templateLabel}` : ''}{result.via === 'llm' ? ' · 转述' : ''}</div>
+                  <p className="kask-answer-text">{result.text}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 刀 5 数据类不覆盖：诚实「还不会查」+ 提案入口（与知识 no-hit 同款） */}
+          {result?.kind === 'data' && result.status === 'unsupported' && (
+            <div className="kask-nohit">
+              <BookOpen size={28} />
+              <p>{result.text}</p>
+              {proposed ? (
+                <div className="kask-hint"><CheckCircle2 size={14} />知识提案已生成，进知识库「待审核」区，主管发布后问答即可命中</div>
+              ) : (
+                <button className="kask-proposal-btn" onClick={handlePropose} disabled={proposing} title="生成知识提案进审核队列（staging，主管发布后生效）">
+                  <Plus size={14} />{proposing ? '生成中…' : '生成知识提案'}
+                </button>
               )}
             </div>
           )}
