@@ -61,3 +61,22 @@ export function trackActionCardsViewed(taskIds: Array<number | string>, actor?: 
     salesLog('WARN', `[ProposalEvent] action/viewed 批量写入失败: ${(e as Error).message}`)
   }
 }
+
+/**
+ * 刀 3 问答 viewed 埋点（设计-Hermes-MVP 刀 3.5「viewed（展开）」）：用户展开答案卡时记一次。
+ * 同一问题哈希（askKey）只记一次，防反复展开刷屏；宪法 §3 proposal_event 登记行 knowledge_ask 口径。
+ */
+export function trackKnowledgeAskViewed(askKey: string, actor?: string): void {
+  try {
+    const key = String(askKey || '').trim()
+    if (!key || !salesDbService.isInitialized()) return
+    if (salesDbService.proposalEventEntityIds('knowledge', 'viewed', 'knowledge_ask').has(key)) return
+    salesDbService.proposalEventAdd({
+      event_type: 'knowledge', stage: 'viewed',
+      entity_type: 'knowledge_ask', entity_id: key,
+      actor: actor ?? currentActor()
+    })
+  } catch (e) {
+    salesLog('WARN', `[ProposalEvent] knowledge_ask/viewed ${askKey} 写入失败: ${(e as Error).message}`)
+  }
+}

@@ -741,6 +741,25 @@ class SalesDbService {
     return this.all<KnowledgeEntry>(sql, params)
   }
 
+  /**
+   * 刀 3 问答检索（设计-Hermes-MVP 刀 3.2，关键词 LIKE 匹配起步；向量检索是 Phase 3b）。
+   * 铁律：LLM 只读 published 条目——SQL 级 `status = 'published'` 过滤（hermes-ask-test 静态断言锚点），
+   * staging/rejected 条目无论命中与否都不出本方法。
+   */
+  kbSearchPublished(keywords: string[], limit: number = 30): KnowledgeEntry[] {
+    const kws = [...new Set(keywords.map((k) => String(k || '').trim()).filter(Boolean))].slice(0, 12)
+    if (kws.length === 0) return []
+    const likeGroups: string[] = []
+    const params: unknown[] = []
+    for (const kw of kws) {
+      likeGroups.push('(title LIKE ? OR content LIKE ? OR tags LIKE ?)')
+      const p = `%${kw}%`
+      params.push(p, p, p)
+    }
+    const sql = `SELECT * FROM knowledge_base WHERE status = 'published' AND (${likeGroups.join(' OR ')}) ORDER BY updated_at DESC LIMIT ?`
+    return this.all<KnowledgeEntry>(sql, [...params, limit])
+  }
+
   // ─── 提案埋点（刀 2，宪法 §3 proposal_event 登记行：append-only，永不删改）───
 
   /**

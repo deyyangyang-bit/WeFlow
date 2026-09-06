@@ -1401,6 +1401,20 @@
 - **验证**：tsc root 0 / node 158 基线零新增（我改文件 0 错误）/ vite build ✓（main.js+preload.js 重建）/ tsc -b 产物重建（含 shared/proposalEvent.js）/ 回归全绿：crm-enrich 61、todo-followup 14、today-action-consumer 14、customer-event-action 20、action-funnel 25、customer-event 16、morning-digest 22、report-review 37、alert-eval 42、canonical-state 37、sales-context-strip 10、action-rules 36、crm-sla-action 11、crm-workbench 57；action-funnel-closed-gate 15+2（B13/B16 真实库行数漂移）、customer-event-closed-gate 15+1（B11 真库基线）、customer-event-producer 14+1（A7 同因）、product-import（缺微信临时目录 xlsx 夹具）——**4 处均 stash 对照干净树同复现，存量环境依赖非本次引入**。
 - **遗留**：刀 3 带引用知识问答（published-only 检索 + 引用格式 + 问答埋点 generated/viewed）、刀 4 知识提案 + 批量审核 + 只看 diff、authority=official 的批量置旗（本批仅发布时单条勾选）；存量 219 条需主管在待审核区逐批发布后才可被刀 3 问答引用。
 
+## 2.80 Hermes 刀 3 带引用知识问答（2026-09-06，单 commit）
+
+> **依据**：`docs/设计-Hermes-MVP.md` 刀 3（PRD 2.1 第一件）。宪法 §3 proposal_event 登记行同步增补 `knowledge_ask` 实体口径（entity_id=问题摘要哈希）后动代码。复用刀 1 治理列与刀 2 埋点表，零新表。
+
+- **检索（铁律：LLM 只读 published）**：`salesDbService.kbSearchPublished(keywords, limit)`——SQL 级 `status = 'published'` 过滤（hermes-ask-test a1 静态断言锚点），staging/rejected 无论命中与否都不出检索口（a2 动态断言）。关键词 = 问题 2/3-gram（停用字过滤，retrieveForPrompt 同口径）+ 短问题整句，OR-LIKE 组命中后内存打分（3-gram 权重 2/2-gram 权重 1，标题整句包含 +50）取 top3。向量检索仍是 Phase 3b。
+- **组答案 `electron/services/hermesAskService.ts`（新）**：`askKnowledge()` 链路 = 未配置判定（isAiConfigured，未配置 → status=not_configured 整链静默提示「先配置模型」，不检索不调用不埋点）→ 检索 → 无命中 → status=no_hit → 命中条目正文**强制先过 maskPrivateText**（宪法 §2.6 脱敏前置，crmSla2Service 同款函数）→ `callChatCompletion`（temperature 0.2，单一固定 system prompt「只依据知识库参考回答，没有就明说，绝不编造参数价格数字」，差异全放 user prompt）→ 答案 + 结构化 citations（`{id,title,version}`）。**引用由前端按 citations 渲染，不从 LLM 文本解析**——模型编造不了引用。答案为空/调用失败 → status=error 且不记 generated。
+- **埋点（刀 3.5 复用刀 2 表）**：出答案 → knowledge/generated（entity_type=knowledge_ask，entity_id=`ask<djb2 哈希>`，actor=system:hermes-ask）；展开答案卡 → knowledge/viewed（`trackKnowledgeAskViewed` 同 askKey 只记一次，防反复展开刷屏）。无命中/未配置/空返回不记 generated（漏斗诚实）。
+- **面板 `src/components/sales/KnowledgeAskPanel.tsx`（新，两入口共用，自含样式）**：输入框 + 提问；答案卡**默认折叠**（viewed 语义 = 展开），展开后固定「知识答案，仅供参考」警示徽标 + 答案正文 + 引用行 `引用自：《title》（vN）` 可点击 → `navigate('/knowledge-base', { state: { focusEntryId } })`；无命中 → 「知识库里没有答案」+ 生成知识提案按钮（**刀 4 前置灰**，tooltip「知识提案功能下一版上线」）。**零发送类 IPC**（AI 碰不到发送键，hermes-ask-test g4 静态断言）。知识页新增深链高亮：state.focusEntryId → scrollIntoView + 4.5s 高亮边框。
+- **入口**：① 聊天页会话侧栏 search-row 加 BookOpen 图标按钮（ChatPage，state askPanelOpen）；② 客户档案「AI 工具」下拉加「问知识库」项（CustomerWorkspacePage）。
+- **桥接**：IPC `sales:kb:ask` / `sales:kb:askViewed`（均 enqueueSalesTask 最外层串行，服务内部零 enqueue）；preload + electron.d.ts 加 kbAsk/kbAskViewed。
+- **测试** `scripts/hermes-ask-test.ts`（**29/29**，`npx tsx`）：a published 过滤静态+动态 2；b 无命中分支 2；c 引用格式+组答案+generated 7；d 脱敏前置 3（prompt 不含原始手机号/wxid/身份证，含 ***）；e 未配置静默 3（默认判定 + isAiConfigured 真实判定 + 零埋点）；f viewed 去重 2；g 纯函数 + 铁律静态 10（无发送 IPC / 仅供参考 / 无命中文案 / 两入口 / enqueue 最外层 / 去重单点）。
+- **验证**：tsc root 0 / node 158 基线零新增（diff 对照干净树，本批唯一新增错误 ConfigService|null 传参已修）/ vite build ✓ + tsc -b 产物重建 / 回归：knowledge-governance 38、customer-workspace-simple 37、customer360-consumer 13、owner-filter 28、sales-context-strip 10、action-funnel 25、morning-digest 22、report-review 37、alert-eval 42、todo-followup 14、crm-enrich 61 全绿；p0-3-closed-gate 5+1（G3 follow_up_task 直读静态项，stash 对照干净树同复现，存量）。
+- **遗留**：刀 4 知识提案（问答无命中「生成知识提案」按钮已预留，届时置灰改实建 staging 提案行）+ 确认队列批量通过 + 只看 diff；问答多轮追问 / 提问历史不在本刀范围。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

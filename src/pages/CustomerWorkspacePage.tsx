@@ -18,7 +18,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock } from 'lucide-react'
+import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, BookOpen } from 'lucide-react'
+import KnowledgeAskPanel from '../components/sales/KnowledgeAskPanel'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
@@ -205,6 +206,8 @@ export default function CustomerWorkspacePage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
   // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
   const [showAiTools, setShowAiTools] = useState(false)
+  // 刀 3 问知识库面板（档案「AI 工具」下拉入口）
+  const [askPanelOpen, setAskPanelOpen] = useState(false)
   const [foldTimeline, setFoldTimeline] = useState(false)
   const [foldProfile, setFoldProfile] = useState(false)
   const [foldBiz, setFoldBiz] = useState(false)
@@ -564,6 +567,7 @@ export default function CustomerWorkspacePage() {
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
+                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); setAskPanelOpen(true) }}><BookOpen size={12} /> 问知识库</button>
                   </div>
                 )}
               </div>
@@ -712,6 +716,8 @@ export default function CustomerWorkspacePage() {
           </div>
         </div>
       )}
+      {/* 刀 3 问知识库面板（AI 工具下拉入口；只产答案不发送，AI 碰不到发送键） */}
+      <KnowledgeAskPanel open={askPanelOpen} onClose={() => setAskPanelOpen(false)} />
     </div>
   )
 }

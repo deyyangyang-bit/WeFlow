@@ -806,6 +806,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:kb:review', id, action, payload),
     // 刀 2 采纳率只读聚合（复盘页）
     proposalStats: () => ipcRenderer.invoke('sales:proposal:stats'),
+    // 刀 3 带引用知识问答（问知识库）：检索只读 published + LLM 组答案（temperature 0.2）
+    kbAsk: (payload: { question: string }) => ipcRenderer.invoke('sales:kb:ask', payload),
+    // 刀 3 问答 viewed 埋点（用户展开答案卡；同 askKey 只记一次）
+    kbAskViewed: (payload: { question?: string; askKey?: string }) => ipcRenderer.invoke('sales:kb:askViewed', payload),
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start: number; period_end: number }) =>

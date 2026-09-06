@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
 import ExtractScriptDialog from '../components/sales/ExtractScriptDialog'
@@ -196,7 +197,7 @@ function AuthorityBadge({ authority }: { authority?: string }) {
   return <span className="kb-badge kb-badge-community"><Shield size={11} />社区</span>
 }
 
-function KnowledgeCard({ entry }: { entry: KnowledgeEntry }) {
+function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highlighted?: boolean }) {
   const { openForm, deleteEntry } = useKnowledgeStore()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const tags = parseTags(entry.tags)
@@ -215,7 +216,7 @@ function KnowledgeCard({ entry }: { entry: KnowledgeEntry }) {
   }
 
   return (
-    <div className={`kb-card ${isRejected ? 'kb-card-rejected' : ''}`}>
+    <div className={`kb-card ${isRejected ? 'kb-card-rejected' : ''} ${highlighted ? 'kb-card-highlight' : ''}`} data-kb-entry={entry.id}>
       <div className="kb-card-header">
         <span className="kb-card-icon"><IconComp size={16} /></span>
         <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
@@ -382,6 +383,20 @@ export default function KnowledgeBasePage() {
     return [...published, ...rejected]
   }, [entries])
 
+  // 刀 3 引用跳转深链：/knowledge-base state.focusEntryId → 滚动定位 + 短暂高亮
+  const location = useLocation()
+  const [highlightId, setHighlightId] = useState<number | null>(null)
+  useEffect(() => {
+    const focusId = Number((location.state as { focusEntryId?: number } | null)?.focusEntryId || 0)
+    if (!focusId) return
+    setHighlightId(focusId)
+    const scrollTimer = window.setTimeout(() => {
+      document.querySelector(`[data-kb-entry="${focusId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 300)
+    const clearTimer = window.setTimeout(() => setHighlightId(null), 4500)
+    return () => { window.clearTimeout(scrollTimer); window.clearTimeout(clearTimer) }
+  }, [location.state])
+
   // 初始加载
   useEffect(() => {
     fetchList()
@@ -542,7 +557,7 @@ export default function KnowledgeBasePage() {
         ) : (
           <div className="kb-card-grid">
             {gridEntries.map(entry => (
-              <KnowledgeCard key={entry.id} entry={entry} />
+              <KnowledgeCard key={entry.id} entry={entry} highlighted={highlightId === entry.id} />
             ))}
           </div>
         )}

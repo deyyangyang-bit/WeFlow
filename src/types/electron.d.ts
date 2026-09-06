@@ -1862,6 +1862,9 @@ export interface ElectronAPI {
     // 刀 1 知识审核（待审核区 发布/拒绝；拒绝必填拒因）+ 刀 2 采纳率只读聚合
     kbReview: (id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; entry?: any; error?: string }>
     proposalStats: () => Promise<{ success: boolean; stats?: { generated: number; processed: number; accepted: number; rejected: number; modified: number; rate: number | null }; error?: string }>
+    // 刀 3 带引用知识问答（问知识库）+ viewed 埋点
+    kbAsk: (payload: { question: string }) => Promise<{ status: 'empty' | 'not_configured' | 'no_hit' | 'answer' | 'error'; question: string; askKey: string; entries: Array<{ id: number; title: string; version: number }>; answer?: string; citations?: Array<{ id: number; title: string; version: number }>; error?: string }>
+    kbAskViewed: (payload: { question?: string; askKey?: string }) => Promise<{ ok: boolean }>
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start?: number; period_end?: number }) => Promise<{ success: boolean; report?: any; error?: string }>

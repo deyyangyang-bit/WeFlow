@@ -34,6 +34,7 @@ import { stripStageFromUpsert, type CustomerUpsertInput } from './services/custo
 import { applyManualStageCorrection } from './services/legalStageWriters'
 import { createEvidenceResolver } from './services/evidenceResolver'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
+import { hermesAskService } from './services/hermesAskService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
@@ -4691,6 +4692,17 @@ function registerIpcHandlers() {
     } catch (e) {
       return { success: false, error: String(e) }
     }
+  })
+
+  // 刀 3 带引用知识问答（设计-Hermes-MVP 刀 3）：检索只读 published + LLM 组答案（temperature 0.2）；
+  // AI + 写库链路走 enqueueSalesTask 最外层串行（铁律：enqueue 只加最外层，服务内部绝不 enqueue）
+  ipcMain.handle('sales:kb:ask', async (_, payload: { question?: string }) => {
+    return enqueueSalesTask(() => hermesAskService.askKnowledge({ question: String(payload?.question || '') }, { config: configService ?? undefined }))
+  })
+
+  // 刀 3 问答 viewed 埋点（用户展开答案卡；同 askKey 只记一次）——写库端点最外层串行
+  ipcMain.handle('sales:kb:askViewed', async (_, payload: { question?: string; askKey?: string }) => {
+    return enqueueSalesTask(() => Promise.resolve(hermesAskService.markAskViewed({ question: payload?.question, askKey: payload?.askKey })))
   })
 
   // 报表

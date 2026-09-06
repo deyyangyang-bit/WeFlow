@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2 } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2, BookOpen } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -47,6 +47,7 @@ import './ChatPage.scss'
 import CustomerCard from '../components/sales/CustomerCard'
 import ReplySuggestion from '../components/sales/ReplySuggestion'
 import SalesContextStrip from '../components/sales/SalesContextStrip'
+import KnowledgeAskPanel from '../components/sales/KnowledgeAskPanel'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -1680,6 +1681,8 @@ function ChatPage(props: ChatPageProps) {
   const [isResizing, setIsResizing] = useState(false)
   const [isMarkingAllSessionsRead, setIsMarkingAllSessionsRead] = useState(false)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
+  // 刀 3 问知识库面板（会话侧栏入口）
+  const [askPanelOpen, setAskPanelOpen] = useState(false)
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false)
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
@@ -7895,6 +7898,15 @@ function ChatPage(props: ChatPageProps) {
               >
                 {isMarkingAllSessionsRead ? <Loader2 size={16} className="spin" /> : <CheckSquare size={16} />}
               </button>
+              {/* 刀 3 问知识库入口（会话侧栏；面板只产答案，无发送通道） */}
+              <button
+                className="icon-btn refresh-btn kb-ask-btn"
+                onClick={() => setAskPanelOpen(true)}
+                title="问知识库"
+                aria-label="问知识库"
+              >
+                <BookOpen size={16} />
+              </button>
             </div>
           </div>
           {/* 折叠群 header */}
@@ -9491,6 +9503,9 @@ function ChatPage(props: ChatPageProps) {
           </button>
         </div>
       )}
+
+      {/* 刀 3 问知识库面板（会话侧栏入口；只产答案不发送，AI 碰不到发送键） */}
+      <KnowledgeAskPanel open={askPanelOpen} onClose={() => setAskPanelOpen(false)} />
     </div>
   )
 }
