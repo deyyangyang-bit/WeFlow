@@ -9,13 +9,24 @@ import { resolve } from 'path'
 //   （Linux 侧同款处理见 electron/services/keyServiceLinux.ts）
 delete process.env.ELECTRON_RUN_AS_NODE
 
+// vite dev 护栏（2026-09-06 三次实证）：vite-plugin-electron 在 Electron 子进程已退出后，
+// 仍会对重建完成的 entry 调 onstart→reload()，child_process.send 对已关闭通道除同步抛错外，
+// 还会**异步**在 child 上 emit 'error'（无监听器 → 进程级 uncaughtException，try/catch 拦不住）。
+// 这里只精确吞掉 ERR_IPC_CHANNEL_CLOSED 这一类（子进程不在 = 没有可刷新对象），
+// 其余异常保持原样终止，不掩盖真实错误。
+process.on('uncaughtException', (err) => {
+  if ((err as NodeJS.ErrnoException)?.code === 'ERR_IPC_CHANNEL_CLOSED') {
+    console.warn('[vite] Electron 子进程已退出，跳过 reload（ERR_IPC_CHANNEL_CLOSED）——下次 npm run dev 自然重启应用')
+    return
+  }
+  console.error(err)
+  process.exit(1)
+})
+
 const handleElectronOnStart = (options: { reload: () => void }) => {
-  // Electron 子进程已退出（用户关窗/应用退出）后，electron 侧任一 entry 重建完成再 reload
-  // 会因 IPC 通道关闭同步抛 ERR_IPC_CHANNEL_CLOSED，把整个 vite dev 打死（2026-09-06 两次实证）。
-  // 子进程不在了就没有可刷新的对象，吞掉即可——下次 npm run dev 自然重启应用。
   try {
     options.reload()
-  } catch { /* Electron child already exited; nothing to reload */ }
+  } catch { /* 同步抛错路径；异步 'error' 事件由上方 uncaughtException 护栏兜住 */ }
 }
 
 const exportWorkerElectronShimPlugin = () => {
