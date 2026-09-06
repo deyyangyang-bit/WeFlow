@@ -15,6 +15,14 @@ export interface KnowledgeEntry {
   content: string
   tags: string        // JSON 数组字符串
   scene?: string
+  // 刀 1 治理列（宪法 §3 登记行）
+  status?: 'staging' | 'published' | 'rejected'
+  authority?: 'official' | 'community'
+  version?: number
+  ttl_date?: string | null
+  reviewed_by?: string | null
+  reviewed_at?: number | null
+  reject_reason?: string | null
   created_at: number
   updated_at: number
 }
@@ -35,6 +43,8 @@ interface KnowledgeState {
   createEntry: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) => Promise<boolean>
   updateEntry: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) => Promise<boolean>
   deleteEntry: (id: number) => Promise<boolean>
+  /** 刀 1 知识审核：发布 / 拒绝（拒绝必填拒因；official=标记官方） */
+  reviewEntry: (id: number, action: 'publish' | 'reject', opts?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; error?: string }>
   setSearchKeyword: (keyword: string) => void
   setFilterCategory: (category: string) => void
   setFilterProductLine: (productLine: string) => void
@@ -142,6 +152,28 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       return false
     } catch {
       return false
+    }
+  },
+
+  reviewEntry: async (id, action, opts) => {
+    try {
+      const result = await window.electronAPI.sales.kbReview(id, action, opts)
+      if (result.success) {
+        // 审核改变状态分区（待审核区/沉底档），全量重拉
+        const { searchKeyword, filterCategory, filterProductLine } = get()
+        if (searchKeyword) {
+          await get().search(searchKeyword)
+        } else {
+          await get().fetchList({
+            category: filterCategory || undefined,
+            product_line: filterProductLine || undefined
+          })
+        }
+        return { success: true }
+      }
+      return { success: false, error: result.error }
+    } catch (e) {
+      return { success: false, error: String(e) }
     }
   },
 

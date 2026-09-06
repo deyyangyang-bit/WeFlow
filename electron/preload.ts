@@ -801,6 +801,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     kbDelete: (id: number) => ipcRenderer.invoke('sales:kb:delete', id),
     kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) =>
       ipcRenderer.invoke('sales:kb:search', payload),
+    // 刀 1 知识审核（待审核区 发布/拒绝；拒绝必填拒因）
+    kbReview: (id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) =>
+      ipcRenderer.invoke('sales:kb:review', id, action, payload),
+    // 刀 2 采纳率只读聚合（复盘页）
+    proposalStats: () => ipcRenderer.invoke('sales:proposal:stats'),
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start: number; period_end: number }) =>

@@ -28,6 +28,7 @@ import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
 import { getCustomerCurrentView, type CustomerCurrentView } from './customerCurrentView'
 import { insightRecordService } from './insightRecordService'
+import { trackProposalEvent, trackActionCardsViewed, currentActor } from './proposalEventTracking'
 export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -1004,6 +1005,9 @@ export async function getTodayActions(): Promise<TodayActionResult> {
       return true
     })
 
+  // 刀 2 埋点：卡流渲染点——本次实际渲染的主队列卡记 action/viewed（每卡只记一次，防轮询刷屏）
+  trackActionCardsViewed(actionItems.map(i => i.id))
+
   // R6 清理候选：独立列表，不限名额
   const archiveCandidates: ActionItem[] = r6Pending
     .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
@@ -1210,6 +1214,10 @@ export function completeAction(taskId: number, action: 'done' | 'skipped'): void
     salesDbService.todoUpdate(taskId, { status: 'done', completed_at: now })
     if (before?.id && before.status !== 'done' && before.status !== 'skipped' && before.session_id) {
       recordUserActionEvent(before.session_id, 'follow_up_done', null, before.id)
+    }
+    // 刀 2 埋点写点③（设计-Hermes-MVP）：行动卡人工完成 → action/accepted（仅真实状态迁移记一次，吞错不阻断闭环）
+    if (before?.id && before.status !== 'done' && before.status !== 'skipped') {
+      trackProposalEvent({ event_type: 'action', stage: 'accepted', entity_type: 'follow_up_task', entity_id: String(before.id), actor: currentActor() })
     }
   } else {
     salesDbService.todoUpdate(taskId, { status: 'skipped' })

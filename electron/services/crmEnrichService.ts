@@ -20,6 +20,7 @@ import { ENRICH_PROMPT, parseEnrichResult } from './crmEnrichCore'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { salesLog } from './salesLogger'
+import { trackProposalEvent } from './proposalEventTracking'
 import type { ConfigService } from './config'
 
 // ─── 可注入配置（同 crmAutoConfirmService.setAutoConfirmConfig 模式）────────
@@ -180,6 +181,10 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
     discarded: [...discardedLow, ...merged.discarded]
   })
   salesLog('INFO', `[CrmEnrich] ${displayName || acc.name}：自动写入 ${updatedFields.join(',') || '无'}；pending ${newPendingFields.join(',') || '无'}`)
+  // 刀 2 埋点：提案生成点——新增进 pending 的字段逐条记 proposal/generated（append-only，trackProposalEvent 吞错）
+  for (const field of newPendingFields) {
+    trackProposalEvent({ event_type: 'proposal', stage: 'generated', entity_type: 'account_info', entity_id: `${accountId}:${field}`, actor: 'system:enrich' })
+  }
   return {
     ok: true, accountId,
     updated: updatedFields,

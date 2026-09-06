@@ -10,6 +10,7 @@ import { wcdbService } from './wcdbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 import { salesLog } from './salesLogger'
+import { currentActor } from './proposalEventTracking'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ class SalesKnowledgeService {
   /**
    * 列出知识条目（支持按分类/产品线/场景过滤）
    */
-  list(filters?: { category?: string; product_line?: string; scene?: string }): KbListResult {
+  list(filters?: { category?: string; product_line?: string; scene?: string; status?: string }): KbListResult {
     try {
       const entries = salesDbService.kbList(filters)
       return { success: true, entries, total: entries.length }
@@ -146,6 +147,31 @@ class SalesKnowledgeService {
       const deleted = salesDbService.kbDelete(id)
       if (!deleted) return { success: false, error: '条目不存在' }
       return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 刀 1 知识审核（待审核区「发布 / 拒绝」唯一入口）。
+   * 状态机/拒因必填校验在 salesDbService.kbReview（服务层 + CHECK 双守卫）；
+   * actor = 当前身份档案姓名（宪法 §1.12 署名口径），reviewed_by/reviewed_at 与
+   * knowledge/accepted|rejected 埋点（刀 2 写点②）由 kbReview 同步落库。
+   */
+  review(
+    id: number,
+    action: 'publish' | 'reject',
+    payload?: { reason?: string; official?: boolean }
+  ): { success: boolean; entry?: KnowledgeEntry; error?: string } {
+    try {
+      if (action !== 'publish' && action !== 'reject') return { success: false, error: '非法审核动作' }
+      const r = salesDbService.kbReview(id, action, {
+        reason: payload?.reason,
+        reviewer: currentActor(),
+        authority: payload?.official ? 'official' : 'community'
+      })
+      if (!r.ok) return { success: false, error: r.error }
+      return { success: true, entry: r.entry }
     } catch (e) {
       return { success: false, error: String(e) }
     }

@@ -185,6 +185,16 @@ export default function SalesReportPage() {
     loadExcludedSessions()
   }, [fetchReports, loadExcludedSessions])
 
+  // ── 刀 2 采纳率行（只读聚合，PRD DoD 只看这两个数；分母 0 → 「—」不伪造）──────
+  const [adoption, setAdoption] = useState<{ processed: number; rate: number | null } | null>(null)
+  useEffect(() => {
+    let alive = true
+    window.electronAPI.sales.proposalStats()
+      .then((r) => { if (alive && r?.success && r.stats) setAdoption({ processed: r.stats.processed, rate: r.stats.rate }) })
+      .catch(() => { /* 聚合失败静默，不阻塞复盘页 */ })
+    return () => { alive = false }
+  }, [])
+
   const handleGenerate = useCallback(() => {
     generateReport()
   }, [generateReport])
@@ -286,6 +296,13 @@ export default function SalesReportPage() {
       )}
 
       <div className="sr-page-body">
+        {/* 刀 2 采纳率行（设计-Hermes-MVP 刀 2.3：只聚合，不做花哨漏斗图） */}
+        {adoption && (
+          <div className="sr-adoption-line">
+            <Sparkles size={14} />
+            <span>近 7 天：提案 <strong>{adoption.processed}</strong> 条 · 采纳率 <strong>{adoption.rate == null ? '—' : `${adoption.rate}%`}</strong></span>
+          </div>
+        )}
         {/* 当前报告 */}
         {currentReport && (
           <div className="sr-current-report">

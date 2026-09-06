@@ -11,6 +11,7 @@ import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { salesLog } from './salesLogger'
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
+import { trackProposalEvent, currentActor } from './proposalEventTracking'
 
 /** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
 function dbGuardLog(level: GuardLogLevel, msg: string): void {
@@ -927,11 +928,15 @@ class CrmDbService {
       this.update('account', accountId, patch)
       this.logActivity('account', accountId, 'info_accepted', `人工采纳 AI 填充「${field}」= ${p.value}`)
       this.logAutoConfirm('account', accountId, 'info_accept', p.confidence, `采纳 ${field}=${p.value}`, 'applyInfoField')
+      // 刀 2 埋点写点①（设计-Hermes-MVP）：信息待确认人工采纳 → proposal/accepted
+      trackProposalEvent({ event_type: 'proposal', stage: 'accepted', entity_type: 'account_info', entity_id: `${accountId}:${field}`, actor: currentActor() })
       return { ok: true }
     }
     this.update('account', accountId, { enrich_meta: JSON.stringify({ fields: meta.fields || {}, pending }), updated_at: Date.now() })
     this.logActivity('account', accountId, 'info_rejected', `人工放弃 AI 填充「${field}」`)
     this.logAutoConfirm('account', accountId, 'info_reject', p.confidence, `放弃 ${field}=${p.value}`, 'applyInfoField')
+    // 刀 2 埋点写点①：信息待确认人工放弃 → proposal/rejected
+    trackProposalEvent({ event_type: 'proposal', stage: 'rejected', entity_type: 'account_info', entity_id: `${accountId}:${field}`, actor: currentActor() })
     return { ok: true }
   }
 

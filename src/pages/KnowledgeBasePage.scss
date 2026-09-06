@@ -437,3 +437,198 @@
     &:hover { background: var(--color-success-border); }
   }
 }
+
+// ─── 刀 1 知识治理：待审核区 / authority 徽标 / rejected 沉底 ──────────────────
+
+.kb-btn-danger {
+  background: var(--color-danger);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+}
+
+.kb-review-section {
+  flex-shrink: 0;
+  margin-bottom: 20px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-card, 12px);
+  background: var(--color-warning-bg);
+  padding: 14px 16px;
+}
+
+.kb-review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--color-warning);
+
+  h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .kb-review-count {
+    font-size: 12px;
+    background: var(--color-warning);
+    color: #fff;
+    padding: 1px 7px;
+    border-radius: 999px;
+  }
+
+  .kb-review-hint {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--color-text-tertiary);
+  }
+}
+
+.kb-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kb-review-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+
+  .kb-review-item-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .kb-review-item-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+
+    .kb-review-item-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+
+    .kb-review-item-time {
+      font-size: 11px;
+      color: var(--color-text-tertiary);
+      margin-left: auto;
+    }
+  }
+
+  .kb-review-item-content {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .kb-review-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .kb-review-official {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    user-select: none;
+
+    input {
+      accent-color: var(--color-accent);
+    }
+  }
+
+  .kb-review-reject-box {
+    margin-top: 8px;
+
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      border: 1px solid var(--color-danger-border);
+      border-radius: var(--radius-control);
+      background: var(--color-bg-primary);
+      color: var(--color-text-primary);
+      resize: vertical;
+
+      &:focus {
+        outline: none;
+        border-color: var(--color-danger);
+      }
+    }
+
+    .kb-review-reject-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 6px;
+    }
+  }
+}
+
+.kb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+
+.kb-badge-official {
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent-border);
+}
+
+.kb-badge-community {
+  background: var(--color-bg-inset);
+  color: var(--color-text-tertiary);
+  border: 1px solid var(--color-border);
+}
+
+.kb-badge-rejected {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger-border);
+}
+
+.kb-card-rejected {
+  opacity: 0.62;
+}
+
+.kb-card-reject-reason {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

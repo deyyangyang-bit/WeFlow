@@ -1387,6 +1387,20 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / 回归 crm-lead 59 + crm-golden 47 + lead-assignment-view 56 + settings-nav 59 全绿；electron/ 零改动。
 - **遗留**：四页 light/dark 真机目验（dev server 已起，样式全 token 继承）；商机「AI 建议下一步」文案投影为展示层启发式，未来接 LLM 须走既有 insightService 通道（本刀明确不做）。
 
+## 2.79 Hermes 刀 1 知识治理底座 + 刀 2 采用率埋点（2026-09-06，单 commit，同批落地）
+
+> **依据**：`docs/设计-Hermes-MVP.md` 刀 1（2.3+2.7）+ 刀 2（2.6）。**PRD 铁律：埋点与 Hermes 同天上，不许后补——两刀同一 commit**。顺序铁律：先在 DATA-CONSTITUTION §3 登记（knowledge_base 治理列 + proposal_event 两行）再动 schema；红线：enqueueSalesTask 只加最外层入口写库端点（`sales:kb:review` 一处，被调函数内部零 enqueue）。
+
+- **刀 1 知识治理（salesDbService）**：`knowledge_base` 幂等 ALTER 加 7 列——status（staging/published/rejected，NOT NULL DEFAULT staging）/authority（official/community，默认 community）/version（INT 默认 1）/ttl_date（可空）/reviewed_by/reviewed_at/reject_reason（SCHEMA_SQL 同步建新库全列 + idx_kb_status）。**存量迁移双通道**：ALTER ADD COLUMN DEFAULT 背填（主通道，219 条上线即 staging/community）+ `migrateKnowledgeGovernance()` 显式幂等清扫（只补 NULL/空串，已审定行零踩踏，可重入）。**kbReview 状态机唯一治理写点**：staging→published｜staging→rejected 跨态一律拒绝；拒绝必填拒因（写 reject_reason 沉底留档不删）；发布/拒绝写 reviewed_by/reviewed_at，发布可置 authority=official；审核人缺失拒绝（宪法 §1.12 署名口径）。kbCreate 显式落 staging/community（人工/CSV/话术提炼一律先审后发布，AI 永不发布铁律）。
+- **刀 2 proposal_event（salesDb，宪法 §3 append-only）**：`event_type` CHECK(proposal/knowledge/action) + `stage` CHECK(generated/viewed/accepted/modified/rejected/expired，expired 占位本批无写点) + entity_type/entity_id（account_info=`<accountId>:<field>`、knowledge=id、follow_up_task=id）+ actor + created_at；**无 UPDATE/DELETE 方法**（§2.2 例外同款）。守卫 `shared/proposalEvent.ts`（TS 层 + DB CHECK 双拦截，仿 customerEvent 先例）。**写点帮助层 `proposalEventTracking.ts`**：吞错不阻断业务主语义 + viewed 每实体只记一次（proposalEventEntityIds 去重，防卡流轮询刷屏）+ actor=身份档案 actorLabel（未建档「未署名」不伪造）。
+- **三写点 + generated/viewed 挂钩**：① applyInfo accept/reject → proposal/accepted|rejected（`crmDbService.applyInfoField` 双分支，仅裁决成功后记，跨库写 salesDb 逻辑外键）；② 知识审核发布/拒绝 → knowledge/accepted|rejected（kbReview 内同步落）；③ completeSignal(done) → action/accepted（`completeAction` 仅真实状态迁移记一次，重复完成幂等不重记）；generated：enrich 新 pending 字段（`crmEnrichService.enrichCustomer` 提案生成点）+ todoCreate 任务创建点（action/generated，单点收口全部建卡路径）；viewed：`getTodayActions` 卡流渲染点（主队列实际渲染卡，每卡只记一次）。
+- **只读聚合**：`proposalAdoptionStats(days)`——提案类 = proposal+knowledge（行动卡完成不是提案不入分母）；分母 = accepted+rejected+modified；分子 = accepted+modified；分母 0 → rate=null（UI 显示「—」不伪造）；days=0 全历史（同 funnelStats 口径）。IPC `sales:proposal:stats`（只读不排队）。复盘页（SalesReportPage）页首一行「近 7 天：提案 N 条 · 采纳率 X%」（N=已处理总数，与设计稿「处理 N 条」口径一致）。
+- **KnowledgeBasePage（刀 1 UI）**：「待审核」区（staging 列表 + 逐条发布/拒绝，拒绝内联必填拒因 textarea，可勾选「官方」置 authority；区头提示「发布后才会被知识问答引用 · 价格类条目请与产品库对账，冲突以产品库为准」——本期不做自动对账）；主列表分区渲染 published 在前（authority 徽标：官方 accent/社区灰）+ rejected 沉底（0.62 透明度 + 拒因行）；status 缺失行视为 staging 防漏审。store 加 reviewEntry（审核后全量重拉换分区）。**不删任何东西**（rejected 留档 + 物理删除仅保留既有 kbDelete 人工通道）。
+- **桥接**：preload.ts + electron.d.ts 加 kbReview/proposalStats；`sales:kb:review` 走 enqueueSalesTask 最外层串行（写库端点红线）；salesKnowledgeService 加 review()（service 层校验 + currentActor 署名，知识审核写点②入口）。**既有 AI 上下文（buildKnowledgeContext/retrieveForPrompt）本批不动**——设计稿 published-only 检索是刀 3 问答的检索门，本批只收治理底座，避免话术联动行为回归。
+- **测试** `scripts/knowledge-governance-test.ts`（**38/38**，`npx tsx`）：a 状态机流转 9（默认 staging/community/version1、拒绝缺拒因拦截、双向合法迁移+署名落库、rejected 跨态拒绝、重复发布拒绝、审核人缺失拒绝）；b 存量迁移幂等 4（2 条空串存量→staging/community、已审定行零踩踏、重跑 staged=0）；c 拒因必填 service 层 + 知识审核写点 5；d 三写点落埋点 12（accept/reject/complete 幂等/viewed 只记一次/重复裁决不重记/TS 守卫三拦/三写点 source 级静态断言）；e 采纳率口径 7（分母 0→null、基线精确值、窗口外不入、action 不入分母、四舍五入、days=0 全窗口、append-only 静态断言）。
+- **验证**：tsc root 0 / node 158 基线零新增（我改文件 0 错误）/ vite build ✓（main.js+preload.js 重建）/ tsc -b 产物重建（含 shared/proposalEvent.js）/ 回归全绿：crm-enrich 61、todo-followup 14、today-action-consumer 14、customer-event-action 20、action-funnel 25、customer-event 16、morning-digest 22、report-review 37、alert-eval 42、canonical-state 37、sales-context-strip 10、action-rules 36、crm-sla-action 11、crm-workbench 57；action-funnel-closed-gate 15+2（B13/B16 真实库行数漂移）、customer-event-closed-gate 15+1（B11 真库基线）、customer-event-producer 14+1（A7 同因）、product-import（缺微信临时目录 xlsx 夹具）——**4 处均 stash 对照干净树同复现，存量环境依赖非本次引入**。
+- **遗留**：刀 3 带引用知识问答（published-only 检索 + 引用格式 + 问答埋点 generated/viewed）、刀 4 知识提案 + 批量审核 + 只看 diff、authority=official 的批量置旗（本批仅发布时单条勾选）；存量 219 条需主管在待审核区逐批发布后才可被刀 3 问答引用。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -1500,10 +1514,17 @@
 | content | TEXT NOT NULL | 内容 |
 | tags | TEXT | JSON数组 |
 | scene | TEXT | 适用场景 |
+| status | TEXT NOT NULL DEFAULT 'staging' | 刀 1 治理列：staging/published/rejected（宪法 §3 登记行；一切新增先落 staging，AI 永不发布） |
+| authority | TEXT NOT NULL DEFAULT 'community' | 刀 1 治理列：official（主管审定）/community（默认） |
+| version | INTEGER NOT NULL DEFAULT 1 | 引用展示版号（vN），本批无自增规则 |
+| ttl_date | TEXT | 到期日（可空），Phase 3b 前不做自动过期处置 |
+| reviewed_by | TEXT | 审核署名（actor=身份档案姓名） |
+| reviewed_at | INTEGER | 审核时间 |
+| reject_reason | TEXT | 拒因（拒绝必填，沉底留档不删） |
 | created_at | INTEGER | 毫秒时间戳 |
 | updated_at | INTEGER | 毫秒时间戳 |
 
-> 注：PRD v0.2 设想的 status/source 列未实现（话术提炼功能未做），当前 6 列 + 时间戳。
+> 注：PRD v0.2 设想的 status/source 列——status 于 2026-09-06 刀 1 知识治理落地（§2.79，7 治理列幂等 ALTER + 存量迁移置 staging/community，治理版上线后存量默认不可被问答引用）；source 列随刀 4 知识提案（source=proposal）再入。
 
 ### customer_profile（客户画像）
 | 列 | 类型 | 说明 |

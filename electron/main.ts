@@ -4679,6 +4679,20 @@ function registerIpcHandlers() {
     return salesKnowledgeService.search(payload)
   })
 
+  // 刀 1 知识审核（待审核区 发布/拒绝）：写库端点走 enqueueSalesTask 最外层串行（铁律：enqueue 只加最外层）
+  ipcMain.handle('sales:kb:review', async (_, id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) => {
+    return enqueueSalesTask(() => Promise.resolve(salesKnowledgeService.review(Number(id), action, payload)))
+  })
+
+  // 刀 2 采纳率只读聚合（复盘页「近 7 天：提案 N 条 · 采纳率 X%」）
+  ipcMain.handle('sales:proposal:stats', async () => {
+    try {
+      return { success: true, stats: salesDbService.proposalAdoptionStats(7) }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 报表
   ipcMain.handle('sales:report:generate', async (_, payload) => {
     return salesReportService.generate(payload)

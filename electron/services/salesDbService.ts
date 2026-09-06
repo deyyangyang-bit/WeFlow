@@ -14,6 +14,7 @@ import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/sale
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
 import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType } from '../../shared/customerEvent'
+import { isProposalEventType, isProposalEventStage, type ProposalEventRecord, type ProposalEventType, type ProposalEventStage } from '../../shared/proposalEvent'
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { salesLog } from './salesLogger'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
@@ -35,9 +36,26 @@ export interface KnowledgeEntry {
   content: string
   tags?: string
   scene?: string | null
+  /** 刀 1 治理列（宪法 §3 登记行）：staging/published/rejected，默认 staging */
+  status?: string
+  /** official/community，默认 community */
+  authority?: string
+  /** 引用展示版号（vN），默认 1 */
+  version?: number
+  /** 到期日（YYYY-MM-DD），可空 */
+  ttl_date?: string | null
+  reviewed_by?: string | null
+  reviewed_at?: number | null
+  /** 拒因（拒绝必填，沉底留档反哺） */
+  reject_reason?: string | null
   created_at?: number
   updated_at?: number
 }
+
+/** 知识治理状态（kbReview 状态机唯一合法值） */
+export type KnowledgeStatus = 'staging' | 'published' | 'rejected'
+/** 权威口径：official=主管审定，community=默认 */
+export type KnowledgeAuthority = 'official' | 'community'
 
 export interface ReportSnapshot {
   id?: number
@@ -165,6 +183,14 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
   content TEXT NOT NULL,
   tags TEXT DEFAULT '[]',
   scene TEXT,
+  -- 刀 1 知识治理列（宪法 §3 登记行）：一切新增（人工/CSV/提炼/提案）先落 staging，AI 永不发布
+  status TEXT NOT NULL DEFAULT 'staging',
+  authority TEXT NOT NULL DEFAULT 'community',
+  version INTEGER NOT NULL DEFAULT 1,
+  ttl_date TEXT,
+  reviewed_by TEXT,
+  reviewed_at INTEGER,
+  reject_reason TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -283,6 +309,7 @@ CREATE TABLE IF NOT EXISTS opportunity_eval_case (
 
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
+CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
 CREATE INDEX IF NOT EXISTS idx_customer_session ON customer_profile(session_id);
 CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status);
@@ -321,6 +348,21 @@ CREATE TABLE IF NOT EXISTS alert_eval_case (
 -- 幂等键：(session_id, anchor_key, alert_type) 唯一，供标注回写幂等 upsert
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_eval_case_anchor ON alert_eval_case(session_id, anchor_key, alert_type);
 CREATE INDEX IF NOT EXISTS idx_alert_eval_case_status ON alert_eval_case(alert_type, status, updated_at);
+
+-- 刀 2 采用率埋点（宪法 §3 proposal_event 登记行）：「AI 提案 → 人处理」全程埋点。
+-- append-only（§2.2 例外同款）：无删除标记、无 UPDATE/DELETE 方法，永不删改。
+-- event_type/stage 由 CHECK 硬门禁（shared/proposalEvent.ts TS 层双拦截），expired 为枚举占位本批无写点。
+CREATE TABLE IF NOT EXISTS proposal_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type TEXT NOT NULL CHECK (event_type IN ('proposal', 'knowledge', 'action')),
+  stage TEXT NOT NULL CHECK (stage IN ('generated', 'viewed', 'accepted', 'modified', 'rejected', 'expired')),
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  actor TEXT DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_event_type ON proposal_event(event_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_proposal_event_entity ON proposal_event(entity_type, entity_id, stage);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -404,6 +446,22 @@ class SalesDbService {
     // Migration: alert_eval_case 表体由 SCHEMA_SQL CREATE IF NOT EXISTS 幂等覆盖（同 D7 兜底理由）
     try { this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_eval_case_anchor ON alert_eval_case(session_id, anchor_key, alert_type)') } catch { /* 已存在 */ }
     try { this.db.run('CREATE INDEX IF NOT EXISTS idx_alert_eval_case_status ON alert_eval_case(alert_type, status, updated_at)') } catch { /* 已存在 */ }
+    // Migration: 刀 1 知识治理列（宪法 §3 登记行，设计-Hermes-MVP 刀 1）——幂等 ALTER 加列，只能加列不改名
+    const kbGovCols: Array<[string, string]> = [
+      ['status', "TEXT NOT NULL DEFAULT 'staging'"],
+      ['authority', "TEXT NOT NULL DEFAULT 'community'"],
+      ['version', 'INTEGER NOT NULL DEFAULT 1'],
+      ['ttl_date', 'TEXT'],
+      ['reviewed_by', 'TEXT'],
+      ['reviewed_at', 'INTEGER'],
+      ['reject_reason', 'TEXT'],
+    ]
+    for (const [col, type] of kbGovCols) {
+      try { this.db.run(`ALTER TABLE knowledge_base ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    try { this.db.run('CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at)') } catch { /* 已存在 */ }
+    // 存量迁移（幂等、可重入）：治理前置的旧行一次性置 staging/community——治理版上线后默认不可被问答引用
+    this.migrateKnowledgeGovernance()
     this.persist()
   }
 
@@ -543,7 +601,29 @@ class SalesDbService {
 
   // ─── 知识库 CRUD ─────────────────────────────────────────────────────────
 
-  kbList(filters?: { category?: string; product_line?: string; scene?: string }): KnowledgeEntry[] {
+  /**
+   * 刀 1 存量迁移（幂等、可重入）：治理前置的旧行（status 为 NULL/空）一次性置
+   * status=staging + authority=community——治理版上线后默认不可被问答引用（刀 3 只查 published），
+   * 主管逐批审核发布。只补缺失值，已审定行（status 已有值）不动；可反复执行零副作用。
+   */
+  migrateKnowledgeGovernance(): { staged: number } {
+    const legacy = this.all<{ id: number }>(
+      "SELECT id FROM knowledge_base WHERE status IS NULL OR status = '' OR authority IS NULL OR authority = ''", []
+    )
+    for (const r of legacy) {
+      this.run(
+        `UPDATE knowledge_base SET
+           status = CASE WHEN status IS NULL OR status = '' THEN 'staging' ELSE status END,
+           authority = CASE WHEN authority IS NULL OR authority = '' THEN 'community' ELSE authority END,
+           version = COALESCE(version, 1)
+         WHERE id = ?`,
+        [r.id]
+      )
+    }
+    return { staged: legacy.length }
+  }
+
+  kbList(filters?: { category?: string; product_line?: string; scene?: string; status?: string }): KnowledgeEntry[] {
     let sql = 'SELECT * FROM knowledge_base'
     const conditions: string[] = []
     const params: unknown[] = []
@@ -551,6 +631,7 @@ class SalesDbService {
     if (filters?.category) { conditions.push('category = ?'); params.push(filters.category) }
     if (filters?.product_line) { conditions.push('product_line = ?'); params.push(filters.product_line) }
     if (filters?.scene) { conditions.push('scene = ?'); params.push(filters.scene) }
+    if (filters?.status) { conditions.push('status = ?'); params.push(filters.status) }
 
     if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
     sql += ' ORDER BY updated_at DESC'
@@ -564,13 +645,58 @@ class SalesDbService {
 
   kbCreate(entry: Omit<KnowledgeEntry, 'id' | 'created_at' | 'updated_at'>): KnowledgeEntry {
     const now = Date.now()
+    // 治理铁律（宪法 §3）：一切新增条目（人工/CSV/话术提炼/知识提案）一律先落 staging + community
     this.run(
-      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', 1, ?, ?)`,
       [entry.category, entry.product_line ?? null, entry.title, entry.content, entry.tags ?? '[]', entry.scene ?? null, now, now]
     )
     const id = this.lastInsertRowId()
     return this.kbGet(id)!
+  }
+
+  /**
+   * 刀 1 审核状态机（唯一治理写点）：staging → published｜staging → rejected，跨态一律拒绝。
+   * 拒绝必填拒因（写 reject_reason 沉底留档不删）；发布/拒绝都写 reviewed_by/reviewed_at。
+   * 成功处置同步落埋点 knowledge/accepted|rejected（刀 2 写点②，append-only）。
+   */
+  kbReview(
+    id: number,
+    action: 'publish' | 'reject',
+    opts: { reason?: string; reviewer: string; authority?: KnowledgeAuthority }
+  ): { ok: boolean; error?: string; entry?: KnowledgeEntry } {
+    const entry = this.kbGet(id)
+    if (!entry) return { ok: false, error: '条目不存在' }
+    const reviewer = String(opts.reviewer || '').trim()
+    if (!reviewer) return { ok: false, error: '审核人缺失（actor=当前身份档案姓名）' }
+
+    if (action === 'reject') {
+      const reason = String(opts.reason || '').trim()
+      if (!reason) return { ok: false, error: '拒绝必须填写拒因' }
+      if (entry.status !== 'staging') return { ok: false, error: `状态机不允许 ${entry.status || 'staging'} → rejected` }
+      this.run(
+        "UPDATE knowledge_base SET status = 'rejected', reject_reason = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+        [reason, reviewer, Date.now(), Date.now(), id]
+      )
+      this.proposalEventAdd({
+        event_type: 'knowledge', stage: 'rejected',
+        entity_type: 'knowledge', entity_id: String(id), actor: reviewer
+      })
+      return { ok: true, entry: this.kbGet(id) }
+    }
+
+    // publish
+    if (entry.status !== 'staging') return { ok: false, error: `状态机不允许 ${entry.status || 'staging'} → published` }
+    const authority: KnowledgeAuthority = opts.authority === 'official' ? 'official' : 'community'
+    this.run(
+      "UPDATE knowledge_base SET status = 'published', authority = ?, reject_reason = NULL, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+      [authority, reviewer, Date.now(), Date.now(), id]
+    )
+    this.proposalEventAdd({
+      event_type: 'knowledge', stage: 'accepted',
+      entity_type: 'knowledge', entity_id: String(id), actor: reviewer
+    })
+    return { ok: true, entry: this.kbGet(id) }
   }
 
   kbUpdate(id: number, updates: Partial<Omit<KnowledgeEntry, 'id' | 'created_at'>>): KnowledgeEntry | undefined {
@@ -613,6 +739,86 @@ class SalesDbService {
 
     sql += ' ORDER BY updated_at DESC LIMIT 50'
     return this.all<KnowledgeEntry>(sql, params)
+  }
+
+  // ─── 提案埋点（刀 2，宪法 §3 proposal_event 登记行：append-only，永不删改）───
+
+  /**
+   * 追加一条提案埋点事件（append-only，一行 = 一次阶段迁移）。
+   * event_type/stage 非法 → 抛错（TS 层守卫 + DB CHECK 双拦截，防万能日志表）。
+   * 裁决态（accepted/rejected/modified）只能由人工动作写点触发；无 UPDATE/DELETE 方法。
+   * createdAt 可选：测试回填历史时间戳用；默认当前时间。
+   */
+  proposalEventAdd(input: Omit<ProposalEventRecord, 'id' | 'created_at'> & { createdAt?: number }): ProposalEventRecord {
+    if (!isProposalEventType(input.event_type)) {
+      throw new Error(`[SalesDb] 非法提案事件类型: ${input.event_type}（仅允许 proposal/knowledge/action）`)
+    }
+    if (!isProposalEventStage(input.stage)) {
+      throw new Error(`[SalesDb] 非法提案事件阶段: ${input.stage}（仅允许 generated/viewed/accepted/modified/rejected/expired）`)
+    }
+    if (!String(input.entity_type || '').trim() || !String(input.entity_id || '').trim()) {
+      throw new Error('[SalesDb] 提案事件必须指向实体（entity_type/entity_id 必填）')
+    }
+    const created = input.createdAt ?? Date.now()
+    this.run(
+      'INSERT INTO proposal_event (event_type, stage, entity_type, entity_id, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [input.event_type, input.stage, input.entity_type, input.entity_id, input.actor ?? '', created]
+    )
+    const id = this.lastInsertRowId()
+    return this.get<ProposalEventRecord>('SELECT * FROM proposal_event WHERE id = ?', [id])!
+  }
+
+  proposalEventCount(filters?: { event_type?: ProposalEventType; stage?: ProposalEventStage }): number {
+    const conds: string[] = []
+    const params: unknown[] = []
+    if (filters?.event_type) { conds.push('event_type = ?'); params.push(filters.event_type) }
+    if (filters?.stage) { conds.push('stage = ?'); params.push(filters.stage) }
+    const sql = `SELECT COUNT(*) AS c FROM proposal_event${conds.length ? ' WHERE ' + conds.join(' AND ') : ''}`
+    return Number(this.get<{ c: number }>(sql, params)?.c || 0)
+  }
+
+  /** 某实体类已记录过某阶段的实体 id 集合（viewed 每实体只记一次的去重依据） */
+  proposalEventEntityIds(eventType: ProposalEventType, stage: ProposalEventStage, entityType: string): Set<string> {
+    const rows = this.all<{ entity_id: string }>(
+      'SELECT DISTINCT entity_id FROM proposal_event WHERE event_type = ? AND stage = ? AND entity_type = ?',
+      [eventType, stage, entityType]
+    )
+    return new Set(rows.map((r) => String(r.entity_id)))
+  }
+
+  /**
+   * 采纳率只读聚合（复盘页「近 7 天：提案 N 条 · 采纳率 X%」唯一数据源）。
+   * 口径：提案类 = proposal + knowledge（行动卡 completion 不是提案，不入分母）；
+   * 已处理总数（分母）= accepted + rejected + modified；分子 = accepted + modified；
+   * 分母 0 → rate=null（UI 显示「—」，不伪造 0%）。generated 只上报不入比率。
+   * days=0 表示不限窗口（全历史，同 funnelStats 口径）。
+   */
+  proposalAdoptionStats(days: number = 7): {
+    generated: number
+    processed: number
+    accepted: number
+    rejected: number
+    modified: number
+    rate: number | null
+  } {
+    const since = days > 0 ? Date.now() - days * 86400_000 : 0
+    const rows = this.all<{ stage: string; c: number }>(
+      "SELECT stage, COUNT(*) AS c FROM proposal_event WHERE event_type IN ('proposal', 'knowledge') AND created_at >= ? GROUP BY stage",
+      [since]
+    )
+    const by = (s: string) => Number(rows.find((r) => r.stage === s)?.c || 0)
+    const accepted = by('accepted')
+    const rejected = by('rejected')
+    const modified = by('modified')
+    const processed = accepted + rejected + modified
+    return {
+      generated: by('generated'),
+      processed,
+      accepted,
+      rejected,
+      modified,
+      rate: processed > 0 ? Math.round(((accepted + modified) / processed) * 100) : null
+    }
   }
 
   // ─── 报表快照 ─────────────────────────────────────────────────────────────
@@ -1157,6 +1363,10 @@ class SalesDbService {
       [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', task.source_id ?? null, now]
     )
     const id = this.lastInsertRowId()
+    // 刀 2 埋点：行动卡生成点（任务创建 = action/generated；append-only，失败绝不影响建卡主语义）
+    try {
+      this.proposalEventAdd({ event_type: 'action', stage: 'generated', entity_type: 'follow_up_task', entity_id: String(id), actor: 'system:action-engine' })
+    } catch { /* 埋点尽力而为 */ }
     return this.get<FollowUpTask>('SELECT * FROM follow_up_task WHERE id = ?', [id])!
   }
 

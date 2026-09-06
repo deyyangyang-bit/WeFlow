@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles } from 'lucide-react'
+import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
 import ExtractScriptDialog from '../components/sales/ExtractScriptDialog'
 import './KnowledgeBasePage.scss'
@@ -188,11 +188,21 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
 
 // ─── 知识条目卡片 ─────────────────────────────────────────────────────────────
 
+/** 刀 1 authority 徽标（published 条目必带）：官方=审定权威口径，社区=默认 */
+function AuthorityBadge({ authority }: { authority?: string }) {
+  if (authority === 'official') {
+    return <span className="kb-badge kb-badge-official"><ShieldCheck size={11} />官方</span>
+  }
+  return <span className="kb-badge kb-badge-community"><Shield size={11} />社区</span>
+}
+
 function KnowledgeCard({ entry }: { entry: KnowledgeEntry }) {
   const { openForm, deleteEntry } = useKnowledgeStore()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const tags = parseTags(entry.tags)
   const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
+  const isRejected = entry.status === 'rejected'
+  const isPublished = entry.status === 'published'
 
   const handleDelete = async () => {
     if (confirmDelete) {
@@ -205,7 +215,7 @@ function KnowledgeCard({ entry }: { entry: KnowledgeEntry }) {
   }
 
   return (
-    <div className="kb-card">
+    <div className={`kb-card ${isRejected ? 'kb-card-rejected' : ''}`}>
       <div className="kb-card-header">
         <span className="kb-card-icon"><IconComp size={16} /></span>
         <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
@@ -238,6 +248,110 @@ function KnowledgeCard({ entry }: { entry: KnowledgeEntry }) {
 
       <div className="kb-card-footer">
         <span>更新于 {formatTime(entry.updated_at)}</span>
+        {isPublished && <AuthorityBadge authority={entry.authority} />}
+        {isRejected && (
+          <span className="kb-badge kb-badge-rejected"><XCircle size={11} />已拒绝</span>
+        )}
+      </div>
+      {isRejected && entry.reject_reason && (
+        <div className="kb-card-reject-reason" title={entry.reject_reason}>
+          <AlertTriangle size={11} />拒因：{entry.reject_reason}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── 待审核区（刀 1：staging 列表 + 逐条发布/拒绝，拒绝必填拒因）────────────────
+
+function ReviewItem({ entry }: { entry: KnowledgeEntry }) {
+  const { reviewEntry } = useKnowledgeStore()
+  const [rejecting, setRejecting] = useState(false)
+  const [reason, setReason] = useState('')
+  const [official, setOfficial] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
+
+  const handlePublish = async () => {
+    setBusy(true)
+    const r = await reviewEntry(entry.id, 'publish', { official })
+    setBusy(false)
+    if (!r.success) alert(`发布失败：${r.error || '未知错误'}`)
+  }
+
+  const handleReject = async () => {
+    if (!reason.trim()) return // 拒因必填（PRD 铁律：沉底留档反哺，不删）
+    setBusy(true)
+    const r = await reviewEntry(entry.id, 'reject', { reason: reason.trim() })
+    setBusy(false)
+    if (r.success) {
+      setRejecting(false)
+      setReason('')
+    } else {
+      alert(`拒绝失败：${r.error || '未知错误'}`)
+    }
+  }
+
+  return (
+    <div className="kb-review-item">
+      <div className="kb-review-item-main">
+        <div className="kb-review-item-head">
+          <span className="kb-card-icon"><IconComp size={14} /></span>
+          <span className="kb-review-item-title">{entry.title}</span>
+          <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
+          {entry.product_line && <span className="kb-card-product-line">{entry.product_line}</span>}
+          {entry.scene && <span className="kb-card-scene">{entry.scene}</span>}
+          <span className="kb-review-item-time">更新于 {formatTime(entry.updated_at)}</span>
+        </div>
+        <p className="kb-review-item-content">{entry.content}</p>
+        {rejecting && (
+          <div className="kb-review-reject-box">
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="拒因必填：如与产品库冲突、参数有误、内容过时…（留档反哺，不删除条目）"
+              rows={2}
+              autoFocus
+            />
+            <div className="kb-review-reject-actions">
+              <button className="kb-btn kb-btn-secondary" onClick={() => { setRejecting(false); setReason('') }}>取消</button>
+              <button className="kb-btn kb-btn-danger" onClick={handleReject} disabled={busy || !reason.trim()}>
+                <XCircle size={14} />确认拒绝
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      {!rejecting && (
+        <div className="kb-review-item-actions">
+          <label className="kb-review-official" title="标记为官方权威口径（官方与社区冲突时以官方为准）">
+            <input type="checkbox" checked={official} onChange={e => setOfficial(e.target.checked)} />
+            <ShieldCheck size={13} />官方
+          </label>
+          <button className="kb-btn kb-btn-primary" onClick={handlePublish} disabled={busy}>
+            <CheckCircle2 size={14} />发布
+          </button>
+          <button className="kb-btn kb-btn-secondary" onClick={() => setRejecting(true)} disabled={busy}>
+            <XCircle size={14} />拒绝
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReviewSection({ entries }: { entries: KnowledgeEntry[] }) {
+  if (entries.length === 0) return null
+  return (
+    <div className="kb-review-section">
+      <div className="kb-review-header">
+        <Clock size={16} />
+        <h3>待审核</h3>
+        <span className="kb-review-count">{entries.length}</span>
+        <span className="kb-review-hint">发布后才会被知识问答引用 · 价格类条目请与产品库对账，冲突以产品库为准</span>
+      </div>
+      <div className="kb-review-list">
+        {entries.map(entry => <ReviewItem key={entry.id} entry={entry} />)}
       </div>
     </div>
   )
@@ -258,6 +372,15 @@ export default function KnowledgeBasePage() {
   const [searchInput, setSearchInput] = useState('')
   const [extractOpen, setExtractOpen] = useState(false)
   const [batchExtractOpen, setBatchExtractOpen] = useState(false)
+
+  // 刀 1 治理分区：staging 进待审核区；主列表 published 在前、rejected 沉底留档
+  // （status 缺失的行视为 staging，防迁移前旧快照漏审）
+  const stagingEntries = useMemo(() => entries.filter(e => (e.status ?? 'staging') === 'staging'), [entries])
+  const gridEntries = useMemo(() => {
+    const published = entries.filter(e => e.status === 'published')
+    const rejected = entries.filter(e => e.status === 'rejected')
+    return [...published, ...rejected]
+  }, [entries])
 
   // 初始加载
   useEffect(() => {
@@ -408,16 +531,17 @@ export default function KnowledgeBasePage() {
       )}
 
       <div className="kb-page-body">
+        <ReviewSection entries={stagingEntries} />
         {loading ? (
           <div className="kb-loading">加载中...</div>
-        ) : entries.length === 0 ? (
+        ) : gridEntries.length === 0 ? (
           <div className="kb-empty">
             <BookOpen size={48} />
-            <p>{searchKeyword ? '没有找到匹配的条目' : '知识库为空，点击"新增"添加第一条知识'}</p>
+            <p>{searchKeyword ? '没有找到匹配的条目' : stagingEntries.length > 0 ? '没有已发布的条目，先在上方「待审核」区发布' : '知识库为空，点击"新增"添加第一条知识'}</p>
           </div>
         ) : (
           <div className="kb-card-grid">
-            {entries.map(entry => (
+            {gridEntries.map(entry => (
               <KnowledgeCard key={entry.id} entry={entry} />
             ))}
           </div>

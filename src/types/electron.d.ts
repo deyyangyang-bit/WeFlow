@@ -1859,6 +1859,9 @@ export interface ElectronAPI {
     kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
     kbDelete: (id: number) => Promise<{ success: boolean; error?: string }>
     kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>
+    // 刀 1 知识审核（待审核区 发布/拒绝；拒绝必填拒因）+ 刀 2 采纳率只读聚合
+    kbReview: (id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    proposalStats: () => Promise<{ success: boolean; stats?: { generated: number; processed: number; accepted: number; rejected: number; modified: number; rate: number | null }; error?: string }>
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start?: number; period_end?: number }) => Promise<{ success: boolean; report?: any; error?: string }>
