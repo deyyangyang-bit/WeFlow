@@ -10,7 +10,7 @@ import { wcdbService } from './wcdbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import type { ConfigService } from './config'
 import { salesLog } from './salesLogger'
-import { currentActor } from './proposalEventTracking'
+import { currentActor, trackProposalEvent } from './proposalEventTracking'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,20 @@ export interface KbSearchPayload {
   keyword: string
   category?: string
   product_line?: string
+}
+
+/**
+ * 刀 4 知识提案载荷（设计-Hermes-MVP 刀 4，宪法 §3 提案列登记行）。
+ * evidence_key 硬门（§1.10）：空锚提案不进审核队列——问答路径 = 问题摘要哈希 askKey，
+ * 手动「补充知识」路径 = 客户原话 messageKey 或出处摘要。
+ */
+export interface KbProposePayload {
+  title: string
+  content: string
+  category?: string
+  scene?: string
+  tags?: string[]
+  evidence_key: string
 }
 
 /** 话术提炼候选条目（v2：分析+诊断+优化+多版本） */
@@ -172,6 +186,40 @@ class SalesKnowledgeService {
       })
       if (!r.ok) return { success: false, error: r.error }
       return { success: true, entry: r.entry }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 刀 4 知识提案写入路（唯一入口）：问答无命中「生成知识提案」/ 知识页「补充知识」共用。
+   * 落 knowledge_base staging 行（source='proposal'，治理铁律：先审后发布，AI 永不发布），
+   * 审核走路径 = 刀 1 待审核区（kbReview 状态机，裁决埋点 knowledge/accepted|rejected 沿用不双记）。
+   * 硬门（宪法 §1.10）：evidence_key 必填——空锚提案不进审核队列。
+   * 成功落埋点 proposal/generated（entity_type=knowledge，entity_id=条目 id，刀 2 写点⑥）。
+   */
+  propose(payload: KbProposePayload): { success: boolean; entry?: KnowledgeEntry; error?: string } {
+    try {
+      if (!payload.title?.trim()) return { success: false, error: '提案标题不能为空' }
+      if (!payload.content?.trim()) return { success: false, error: '提案内容不能为空' }
+      const evidenceKey = String(payload.evidence_key || '').trim()
+      if (!evidenceKey) return { success: false, error: '提案必须带证据锚点（客户原话 messageKey 或出处摘要）' }
+
+      const entry = salesDbService.kbCreate({
+        category: payload.category?.trim() || 'faq',
+        title: payload.title.trim(),
+        content: payload.content.trim(),
+        tags: JSON.stringify(payload.tags ?? []),
+        scene: payload.scene,
+        source: 'proposal',
+        evidence_key: evidenceKey
+      })
+      trackProposalEvent({
+        event_type: 'proposal', stage: 'generated',
+        entity_type: 'knowledge', entity_id: Number(entry.id),
+        actor: currentActor()
+      })
+      return { success: true, entry }
     } catch (e) {
       return { success: false, error: String(e) }
     }

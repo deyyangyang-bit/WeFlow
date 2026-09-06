@@ -129,8 +129,9 @@ async function main(): Promise<void> {
   ok('g4 铁律：答案区无发送类 IPC（AI 碰不到发送键，静态断言）',
     !/sendMsg|sendMessage|sendTextMessage|msgSend|chat:send|message:send|sendImage/.test(panelSrc))
   ok('g5 答案固定带「知识答案，仅供参考」标识', panelSrc.includes('知识答案，仅供参考'))
-  ok('g6 无命中分支：「知识库里没有答案」+ 生成知识提案按钮（刀 4 前置灰）',
-    panelSrc.includes('知识库里没有答案') && panelSrc.includes('生成知识提案') && panelSrc.includes('下一版'))
+  ok('g6 无命中分支：「知识库里没有答案」+ 生成知识提案按钮（刀 4 已接活：调 kbPropose、不再置灰「下一版」）',
+    panelSrc.includes('知识库里没有答案') && panelSrc.includes('生成知识提案') &&
+    panelSrc.includes('kbPropose') && !panelSrc.includes('下一版'))
   ok('g7 入口①：聊天页会话侧栏挂问知识库入口 + 面板',
     readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('<KnowledgeAskPanel open={askPanelOpen}') &&
     readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('title="问知识库"'))

@@ -48,6 +48,10 @@ export interface KnowledgeEntry {
   reviewed_at?: number | null
   /** 拒因（拒绝必填，沉底留档反哺） */
   reject_reason?: string | null
+  /** 刀 4 提案列（宪法 §3 登记行）：manual=人工/CSV/提炼及存量默认；proposal=知识提案（propose 唯一写点） */
+  source?: string
+  /** 提案来源锚点（问答路径=askKey 问题哈希 / 手动路径=客户原话 messageKey 或出处摘要）；source=proposal 时必填，非提案行 NULL 合法 */
+  evidence_key?: string | null
   created_at?: number
   updated_at?: number
 }
@@ -191,6 +195,9 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
   reviewed_by TEXT,
   reviewed_at INTEGER,
   reject_reason TEXT,
+  -- 刀 4 提案列（宪法 §3 登记行）：source=proposal 即知识提案（evidence_key 锚点必填，服务层硬门）
+  source TEXT NOT NULL DEFAULT 'manual',
+  evidence_key TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -455,6 +462,9 @@ class SalesDbService {
       ['reviewed_by', 'TEXT'],
       ['reviewed_at', 'INTEGER'],
       ['reject_reason', 'TEXT'],
+      // 刀 4 提案列（宪法 §3 登记行）：source 默认 manual 背填存量；evidence_key 可空（非提案行合法）
+      ['source', "TEXT NOT NULL DEFAULT 'manual'"],
+      ['evidence_key', 'TEXT'],
     ]
     for (const [col, type] of kbGovCols) {
       try { this.db.run(`ALTER TABLE knowledge_base ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
@@ -646,10 +656,12 @@ class SalesDbService {
   kbCreate(entry: Omit<KnowledgeEntry, 'id' | 'created_at' | 'updated_at'>): KnowledgeEntry {
     const now = Date.now()
     // 治理铁律（宪法 §3）：一切新增条目（人工/CSV/话术提炼/知识提案）一律先落 staging + community
+    // 刀 4：source 透传（默认 manual；proposal 行走 salesKnowledgeService.propose，evidence_key 服务层硬门）
     this.run(
-      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', 1, ?, ?)`,
-      [entry.category, entry.product_line ?? null, entry.title, entry.content, entry.tags ?? '[]', entry.scene ?? null, now, now]
+      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, source, evidence_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', 1, ?, ?, ?, ?)`,
+      [entry.category, entry.product_line ?? null, entry.title, entry.content, entry.tags ?? '[]', entry.scene ?? null,
+       entry.source ?? 'manual', entry.evidence_key ?? null, now, now]
     )
     const id = this.lastInsertRowId()
     return this.kbGet(id)!

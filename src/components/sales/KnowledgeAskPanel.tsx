@@ -6,12 +6,13 @@
  *  - 答案区固定带「知识答案，仅供参考」标识
  *  - 引用固定格式 `引用自：《title》（vN）`，点击跳 /knowledge-base 对应条目（深链高亮）
  *  - 本组件无任何发送类 IPC 调用（AI 碰不到发送键，答案永不自动发给客户）
- *  - 无命中 → 「知识库里没有答案」+ 生成知识提案按钮（提案写入属刀 4，本刀置灰提示下一版）
+ *  - 无命中 → 「知识库里没有答案」+ 生成知识提案按钮（刀 4 已接活：staging 行 source=proposal，
+ *    evidence_key=askKey 问题哈希锚点，进知识库「待审核」区，主管发布后问答即可命中）
  *  - viewed（展开）埋点：答案卡默认折叠，展开时记一次（同 askKey 只记一次）
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BookOpen, Search, X, ChevronDown, ChevronUp, AlertCircle, Quote, Plus } from 'lucide-react'
+import { BookOpen, Search, X, ChevronDown, ChevronUp, AlertCircle, Quote, Plus, CheckCircle2 } from 'lucide-react'
 import './KnowledgeAskPanel.scss'
 
 interface AskCitation { id: number; title: string; version: number }
@@ -32,6 +33,9 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
   const [result, setResult] = useState<AskResult | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [askedQuestion, setAskedQuestion] = useState('')
+  // 刀 4：无命中提案接活（proposed=本次提问已生成提案，防重复点击）
+  const [proposing, setProposing] = useState(false)
+  const [proposed, setProposed] = useState(false)
 
   if (!open) return null
 
@@ -41,6 +45,7 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
     setLoading(true)
     setExpanded(false)
     setResult(null)
+    setProposed(false)
     try {
       const r = await (window as any).electronAPI.sales.kbAsk({ question: q })
       setResult(r)
@@ -64,6 +69,23 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
   const openEntry = (id: number) => {
     onClose()
     navigate('/knowledge-base', { state: { focusEntryId: id } })
+  }
+
+  // 刀 4 知识提案：无命中 → staging 行（source=proposal，evidence_key=askKey 锚点）进待审核区
+  const handlePropose = async () => {
+    if (!result || proposed || proposing) return
+    setProposing(true)
+    try {
+      const r = await (window as any).electronAPI.sales.kbPropose({
+        title: askedQuestion,
+        content: `客户常问：${askedQuestion}\n（知识库问答无命中，待补充答案）`,
+        category: 'faq',
+        evidence_key: result.askKey
+      })
+      if (r?.success) setProposed(true)
+    } catch { /* 提案生成尽力而为，失败保留按钮可重试 */ } finally {
+      setProposing(false)
+    }
   }
 
   return (
@@ -102,9 +124,13 @@ export default function KnowledgeAskPanel({ open, onClose }: { open: boolean; on
             <div className="kask-nohit">
               <BookOpen size={28} />
               <p>知识库里没有答案</p>
-              <button className="kask-proposal-btn" disabled title="知识提案功能下一版上线（可先在知识库手动补充并发布）">
-                <Plus size={14} />生成知识提案
-              </button>
+              {proposed ? (
+                <div className="kask-hint"><CheckCircle2 size={14} />知识提案已生成，进知识库「待审核」区，主管发布后问答即可命中</div>
+              ) : (
+                <button className="kask-proposal-btn" onClick={handlePropose} disabled={proposing} title="生成知识提案进审核队列（staging，主管发布后生效）">
+                  <Plus size={14} />{proposing ? '生成中…' : '生成知识提案'}
+                </button>
+              )}
             </div>
           )}
 

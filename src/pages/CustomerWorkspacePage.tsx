@@ -318,6 +318,33 @@ export default function CustomerWorkspacePage() {
     if (hit) await openCustomer(hit)
   }
 
+  // 刀 4 批量通过（确认队列升级，防确认疲劳 PRD 点名）：勾选多张信息待确认卡一次采纳
+  const [selectedInfoKeys, setSelectedInfoKeys] = useState<Set<string>>(new Set())
+  const [batchInfoBusy, setBatchInfoBusy] = useState(false)
+  const toggleInfoSelect = (key: string, checked: boolean) => {
+    setSelectedInfoKeys(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(key); else next.delete(key)
+      return next
+    })
+  }
+  const applyInfoBatch = async () => {
+    const items = actionQueue.filter((it) => it.kind === 'info' && selectedInfoKeys.has(it.key))
+    if (items.length === 0 || batchInfoBusy) return
+    setBatchInfoBusy(true)
+    let accepted = 0, failed = 0
+    for (const it of items) {
+      try {
+        const r = await window.electronAPI.crm.infoQueueApply(Number(it.infoItem.account_id), String(it.infoItem.field), 'accept')
+        if (r.ok) { accepted++; dismissCard(it.key) } else failed++
+      } catch { failed++ }
+    }
+    setBatchInfoBusy(false)
+    setSelectedInfoKeys(new Set())
+    setNotice(failed > 0 ? `批量采纳完成：成功 ${accepted} 条，失败 ${failed} 条` : `已批量采纳 ${accepted} 条 AI 填充`)
+    await fetchQueues()
+  }
+
   // ─── 管理动作（收入档案区 / 更多菜单，不做表格行按钮）──────────────────────
   const runEnrichOne = async (c: any) => {
     if (!c.session_id) { setNotice('该客户未关联微信会话，无法 AI 补全'); return }
@@ -508,6 +535,15 @@ export default function CustomerWorkspacePage() {
         /* ── 屏 1：行动队列 ── */
         <>
           <div className="cws-queue-hint">今天有 <strong>{actionQueue.length}</strong> 个客户需要你处理 · 处理完即消失</div>
+          {selectedInfoKeys.size > 0 && (
+            <div className="cws-batch-bar">
+              <span>已选 {selectedInfoKeys.size} 条信息待确认</span>
+              <button className="crm-btn primary" disabled={batchInfoBusy} onClick={() => void applyInfoBatch()}>
+                <CheckCircle2 size={13} /> {batchInfoBusy ? '采纳中…' : '批量采纳'}
+              </button>
+              <button className="crm-btn" onClick={() => setSelectedInfoKeys(new Set())}>取消选择</button>
+            </div>
+          )}
           <div className="cws-queue">
             {actionQueue.map((it: ActionCardItem) => (
               <div key={it.key} className="cws-action-card" onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
@@ -534,6 +570,9 @@ export default function CustomerWorkspacePage() {
                   )}
                   {it.kind === 'info' && (
                     <>
+                      <label className="cws-info-check" title="勾选后可批量采纳">
+                        <input type="checkbox" checked={selectedInfoKeys.has(it.key)} onChange={(e) => toggleInfoSelect(it.key, e.target.checked)} />
+                      </label>
                       <button className="crm-btn primary" onClick={() => void handleInfo(it, 'accept')}>✓ 采纳</button>
                       <button className="crm-btn" onClick={() => void handleInfo(it, 'reject')}>放弃</button>
                     </>

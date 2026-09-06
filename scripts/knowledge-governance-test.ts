@@ -195,6 +195,87 @@ async function main(): Promise<void> {
   ok('e7 proposal_event append-only（无 UPDATE/DELETE proposal_event 语句）',
     !/UPDATE proposal_event/.test(dbSrc) && !/DELETE FROM proposal_event/.test(dbSrc))
 
+  // ─── f. 刀 4 知识提案写入路 + 批量通过 + 只看 diff（设计-Hermes-MVP 刀 4）───
+  // f1 propose 落 staging：source=proposal + evidence_key 锚点 + proposal/generated 埋点（写点⑥）
+  const propGenBefore = salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'generated' })
+  const prop = salesKnowledgeService.propose({
+    title: 'X 系列续航多久',
+    content: '客户常问：X 系列续航多久？（问答无命中，待补充答案）',
+    category: 'faq',
+    evidence_key: 'local:msg_0.db:11:1700000000:0:wxid_gov:1'
+  })
+  ok('f1 提案落 staging：source=proposal + evidence_key 锚点随行',
+    prop.success && prop.entry?.status === 'staging' && prop.entry?.source === 'proposal' &&
+    prop.entry?.evidence_key === 'local:msg_0.db:11:1700000000:0:wxid_gov:1')
+  ok('f2 提案埋点 proposal/generated（entity=knowledge:<id>，刀 2 写点⑥）',
+    salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'generated' }) === propGenBefore + 1 &&
+    salesDbService.proposalEventEntityIds('proposal', 'generated', 'knowledge').has(String(prop.entry?.id)))
+
+  // f3 硬门（宪法 §1.10）：空锚提案不进审核队列
+  const beforeRows = salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'generated' })
+  const noAnchor = salesKnowledgeService.propose({ title: '无锚提案', content: '内容', evidence_key: '' })
+  ok('f3 evidence_key 硬门：空锚提案被拒且零落库零埋点',
+    !noAnchor.success && (noAnchor.error || '').includes('锚点') &&
+    salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'generated' }) === beforeRows &&
+    salesDbService.kbList({ status: 'staging' }).every(e => e.title !== '无锚提案'))
+
+  // f4 手动新增默认 source=manual（非提案行 evidence_key NULL 合法；存量背填不动）
+  const manualRow = salesDbService.kbCreate({ category: 'product', title: '手动新增条目', content: '直接录入' })
+  ok('f4 非提案行 source 默认 manual + evidence_key NULL',
+    manualRow.source === 'manual' && manualRow.evidence_key === null)
+
+  // f5 批量通过逐条语义 + 失败隔离（不新造批量写路径：逐条走 kbReview 状态机）
+  const b1 = salesDbService.kbCreate({ category: 'faq', title: '批量 1', content: 'c1' })
+  const b2 = salesDbService.kbCreate({ category: 'faq', title: '批量 2', content: 'c2' })
+  const b3 = salesDbService.kbCreate({ category: 'faq', title: '批量 3', content: 'c3' })
+  salesDbService.kbReview(b3.id!, 'reject', { reason: '不需要', reviewer: '主管甲' }) // 预置一个跨态失败行
+  // 模拟前端 reviewEntries 逐条循环语义（同款 try/catch + 错误收集，含不存在 id）
+  const batch: number[] = [b1.id!, b2.id!, b3.id!, 999999]
+  let batchPublished = 0
+  const batchErrors: string[] = []
+  for (const id of batch) {
+    try {
+      const r = salesKnowledgeService.review(id, 'publish')
+      if (r.success) batchPublished++
+      else batchErrors.push(`#${id} ${r.error || '未知错误'}`)
+    } catch (e) {
+      batchErrors.push(`#${id} ${String(e)}`)
+    }
+  }
+  ok('f5 批量逐条语义：成功 2 条过 kbReview 状态机（reviewed_by 身份署名非空）',
+    batchPublished === 2 && salesDbService.kbGet(b1.id!)?.status === 'published' &&
+    !!salesDbService.kbGet(b1.id!)?.reviewed_by && salesDbService.kbGet(b2.id!)?.status === 'published')
+  ok('f6 失败隔离：跨态行与不存在 id 单独报告，不拖垮整批且不污染他行',
+    batchErrors.length === 2 && salesDbService.kbGet(b3.id!)?.status === 'rejected' &&
+    batchErrors[0].includes('#' + b3.id) && batchErrors[1].includes('#999999') &&
+    salesDbService.kbGet(b1.id!)?.status === 'published')
+
+  // f7 提案裁决不双记：发布提案行走写点② knowledge/accepted，proposal/accepted 不虚增（采纳率分母防虚增）
+  const propAccBefore = salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'accepted' })
+  const knowAccBefore = salesDbService.proposalEventCount({ event_type: 'knowledge', stage: 'accepted' })
+  salesKnowledgeService.review(prop.entry!.id!, 'publish')
+  ok('f7 提案发布 = knowledge/accepted 单记（不双记 proposal/accepted，聚合分母不虚增）',
+    salesDbService.proposalEventCount({ event_type: 'proposal', stage: 'accepted' }) === propAccBefore &&
+    salesDbService.proposalEventCount({ event_type: 'knowledge', stage: 'accepted' }) === knowAccBefore + 1)
+
+  // f8 批量/写点静态断言：无新造批量写路径（逐条走既有单条 handler）
+  const mainSrc4 = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
+  const storeSrc = readFileSync(join(ROOT, 'src/stores/knowledgeStore.ts'), 'utf8')
+  const cwsSrc = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8')
+  ok('f8 无批量写路径：知识批量逐条 kbReview、客户批量逐条 infoQueueApply（IPC 零新增批量端点）',
+    !mainSrc4.includes('sales:kb:batch') && !mainSrc4.includes('infoQueue:applyBatch') &&
+    /for \(const id of ids\)[\s\S]{0,300}kbReview\(id, 'publish'\)/.test(storeSrc) &&
+    storeSrc.includes("errors.push(`#${id}") &&
+    /for \(const it of items\)[\s\S]{0,300}infoQueueApply/.test(cwsSrc))
+
+  // f9 只看 diff 渲染静态断言：区级开关 + 同标题冲突检测 + 并排对照
+  const kbSrc = readFileSync(join(ROOT, 'src/pages/KnowledgeBasePage.tsx'), 'utf8')
+  ok('f9 只看 diff：区级开关 + 同标题（trim）冲突检测 + 已发布/提案并排对照渲染',
+    kbSrc.includes('只看 diff') &&
+    /conflictOf[\s\S]{0,200}\(p\.title \|\| ''\)\.trim\(\) === \(e\.title \|\| ''\)\.trim\(\)/.test(kbSrc) &&
+    kbSrc.includes("kb-diff-col-head\">已发布：《") && kbSrc.includes('提案（待审核）') &&
+    /function diffLines\(/.test(kbSrc))
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)
 }

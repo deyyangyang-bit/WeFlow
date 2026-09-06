@@ -245,3 +245,29 @@
     &:disabled { opacity: 0.5; cursor: default; }
   }
 }
+
+/* ─── 刀 4 信息待确认批量通过 ────────────────────────────────────────── */
+
+.cws-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-control);
+}
+
+.cws-info-check {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+
+  input {
+    cursor: pointer;
+    accent-color: var(--color-accent);
+  }
+}

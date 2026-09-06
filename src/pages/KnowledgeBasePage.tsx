@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle } from 'lucide-react'
+import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle, GitCompare, FilePlus2 } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
 import ExtractScriptDialog from '../components/sales/ExtractScriptDialog'
 import './KnowledgeBasePage.scss'
@@ -187,6 +187,81 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ─── 刀 4 知识提案表单（「补充知识」入口：staging 行 source=proposal，证据锚点必填）────────────
+
+function ProposalForm({ onClose }: { onClose: () => void }) {
+  const { proposeEntry } = useKnowledgeStore()
+  const [category, setCategory] = useState('faq')
+  const [title, setTitle] = useState('')
+  const [content, setContent] = useState('')
+  const [evidenceKey, setEvidenceKey] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async () => {
+    if (!title.trim() || !content.trim() || !evidenceKey.trim()) return
+    setSaving(true)
+    const r = await proposeEntry({
+      title: title.trim(),
+      content: content.trim(),
+      category,
+      evidence_key: evidenceKey.trim()
+    })
+    setSaving(false)
+    if (r.success) onClose()
+    else alert(`提案失败：${r.error || '未知错误'}`)
+  }
+
+  return (
+    <div className="kb-form-overlay" onClick={onClose}>
+      <div className="kb-form-dialog" onClick={e => e.stopPropagation()}>
+        <div className="kb-form-header">
+          <h3>补充知识（提案）</h3>
+          <button className="kb-form-close" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="kb-form-body">
+          <div className="kb-form-row">
+            <label>分类 *</label>
+            <select value={category} onChange={e => setCategory(e.target.value)}>
+              {CATEGORY_OPTIONS.filter(o => o.value).map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="kb-form-row">
+            <label>标题 *</label>
+            <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="客户问过但知识库答不上的问题" />
+          </div>
+          <div className="kb-form-row">
+            <label>内容 *</label>
+            <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="建议答案（主管审核发布后才被问答引用）" rows={5} />
+          </div>
+          <div className="kb-form-row">
+            <label>证据锚点 *</label>
+            <input
+              type="text"
+              value={evidenceKey}
+              onChange={e => setEvidenceKey(e.target.value)}
+              placeholder="客户原话 messageKey 或出处摘要（如「9/5 某客户咨询续航」），必填"
+            />
+          </div>
+        </div>
+
+        <div className="kb-form-footer">
+          <button className="kb-btn kb-btn-secondary" onClick={onClose}>取消</button>
+          <button
+            className="kb-btn kb-btn-primary"
+            onClick={handleSubmit}
+            disabled={saving || !title.trim() || !content.trim() || !evidenceKey.trim()}
+          >
+            {saving ? '提交中...' : '提交提案（进待审核）'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── 知识条目卡片 ─────────────────────────────────────────────────────────────
 
 /** 刀 1 authority 徽标（published 条目必带）：官方=审定权威口径，社区=默认 */
@@ -263,14 +338,36 @@ function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highligh
   )
 }
 
-// ─── 待审核区（刀 1：staging 列表 + 逐条发布/拒绝，拒绝必填拒因）────────────────
+// ─── 待审核区（刀 1：staging 列表 + 逐条发布/拒绝，拒绝必填拒因；刀 4：批量通过 + 只看 diff）────────────────
 
-function ReviewItem({ entry }: { entry: KnowledgeEntry }) {
+/** 刀 4 行级对照（只看 diff）：右（提案）行不在左（已发布）行集里 → 新增高亮；反向 → 被改/删高亮。纯展示辅助，不裁决 */
+function diffLines(oldText: string, newText: string): { left: Array<{ text: string; changed: boolean }>; right: Array<{ text: string; changed: boolean }> } {
+  const oldLines = String(oldText || '').split('\n')
+  const newLines = String(newText || '').split('\n')
+  const oldSet = new Set(oldLines.map(l => l.trim()))
+  const newSet = new Set(newLines.map(l => l.trim()))
+  return {
+    left: oldLines.map(l => ({ text: l, changed: l.trim() !== '' && !newSet.has(l.trim()) })),
+    right: newLines.map(l => ({ text: l, changed: l.trim() !== '' && !oldSet.has(l.trim()) }))
+  }
+}
+
+function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
+  entry: KnowledgeEntry
+  /** 刀 4 冲突条目：同标题已发布行（存在才显示「只看 diff」） */
+  conflict?: KnowledgeEntry
+  selected: boolean
+  onToggle: (id: number, checked: boolean) => void
+  /** 区级「只看 diff」开启时强制展开并排对照 */
+  forceDiffOpen?: boolean
+}) {
   const { reviewEntry } = useKnowledgeStore()
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
   const [official, setOfficial] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [showDiff, setShowDiff] = useState(false)
+  const diffOpen = showDiff || Boolean(forceDiffOpen)
   const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
 
   const handlePublish = async () => {
@@ -295,6 +392,9 @@ function ReviewItem({ entry }: { entry: KnowledgeEntry }) {
 
   return (
     <div className="kb-review-item">
+      <label className="kb-review-check" title="勾选后可批量发布">
+        <input type="checkbox" checked={selected} onChange={e => onToggle(entry.id, e.target.checked)} />
+      </label>
       <div className="kb-review-item-main">
         <div className="kb-review-item-head">
           <span className="kb-card-icon"><IconComp size={14} /></span>
@@ -302,9 +402,37 @@ function ReviewItem({ entry }: { entry: KnowledgeEntry }) {
           <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
           {entry.product_line && <span className="kb-card-product-line">{entry.product_line}</span>}
           {entry.scene && <span className="kb-card-scene">{entry.scene}</span>}
+          {entry.source === 'proposal' && <span className="kb-badge kb-badge-proposal">提案</span>}
           <span className="kb-review-item-time">更新于 {formatTime(entry.updated_at)}</span>
         </div>
         <p className="kb-review-item-content">{entry.content}</p>
+        {entry.source === 'proposal' && entry.evidence_key && (
+          <div className="kb-review-evidence" title={entry.evidence_key}>证据锚点:{entry.evidence_key}</div>
+        )}
+        {conflict && (
+          <button className="kb-diff-toggle" onClick={() => setShowDiff(v => !v)} title="与同标题已发布条目并排对照差异">
+            <GitCompare size={13} />{diffOpen ? '收起 diff' : '只看 diff（与已发布条目冲突）'}
+          </button>
+        )}
+        {conflict && diffOpen && (() => {
+          const d = diffLines(conflict.content, entry.content)
+          return (
+            <div className="kb-diff">
+              <div className="kb-diff-col">
+                <div className="kb-diff-col-head">已发布：《{conflict.title}》（v{conflict.version ?? 1}）</div>
+                {d.left.map((l, i) => (
+                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--old' : ''}`}>{l.text || ' '}</div>
+                ))}
+              </div>
+              <div className="kb-diff-col">
+                <div className="kb-diff-col-head">提案（待审核）</div>
+                {d.right.map((l, i) => (
+                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--new' : ''}`}>{l.text || ' '}</div>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
         {rejecting && (
           <div className="kb-review-reject-box">
             <textarea
@@ -341,18 +469,80 @@ function ReviewItem({ entry }: { entry: KnowledgeEntry }) {
   )
 }
 
-function ReviewSection({ entries }: { entries: KnowledgeEntry[] }) {
+function ReviewSection({ entries, publishedEntries }: { entries: KnowledgeEntry[]; publishedEntries: KnowledgeEntry[] }) {
+  const { reviewEntries } = useKnowledgeStore()
+  // 刀 4 批量通过（确认队列升级，防确认疲劳）：勾选多条一次发布
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  // 刀 4「只看 diff」区级开关：只显示与已发布条目同标题冲突的提案（并排对照）
+  const [onlyDiff, setOnlyDiff] = useState(false)
   if (entries.length === 0) return null
+
+  const conflictOf = (e: KnowledgeEntry) =>
+    publishedEntries.find(p => (p.title || '').trim() === (e.title || '').trim())
+  const conflictEntries = entries.filter(e => conflictOf(e))
+  const visible = onlyDiff ? conflictEntries : entries
+
+  const toggleOne = (id: number, checked: boolean) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(id); else next.delete(id)
+      return next
+    })
+  }
+  const allSelected = visible.length > 0 && visible.every(e => selected.has(e.id))
+  const toggleAll = (checked: boolean) => setSelected(checked ? new Set(visible.map(e => e.id)) : new Set())
+  const selectedIds = visible.filter(e => selected.has(e.id)).map(e => e.id)
+
+  const handleBatchPublish = async () => {
+    if (selectedIds.length === 0 || batchBusy) return
+    setBatchBusy(true)
+    const r = await reviewEntries(selectedIds)
+    setBatchBusy(false)
+    setSelected(new Set())
+    if (r.failed > 0) alert(`批量发布完成：成功 ${r.published} 条，失败 ${r.failed} 条\n${r.errors.join('\n')}`)
+  }
+
   return (
     <div className="kb-review-section">
       <div className="kb-review-header">
         <Clock size={16} />
         <h3>待审核</h3>
         <span className="kb-review-count">{entries.length}</span>
+        <label className="kb-review-check" title="全选本区">
+          <input type="checkbox" checked={allSelected} onChange={e => toggleAll(e.target.checked)} />
+        </label>
+        <button
+          className="kb-btn kb-btn-primary kb-btn-sm"
+          onClick={handleBatchPublish}
+          disabled={batchBusy || selectedIds.length === 0}
+          title="勾选多条一次发布（community 口径；标官方请逐条勾选发布）"
+        >
+          <CheckCircle2 size={14} />{batchBusy ? '发布中…' : `批量发布${selectedIds.length > 0 ? `（${selectedIds.length}）` : ''}`}
+        </button>
+        <button
+          className={`kb-btn kb-btn-sm ${onlyDiff ? 'kb-btn-accent' : 'kb-btn-secondary'}`}
+          onClick={() => setOnlyDiff(v => !v)}
+          disabled={conflictEntries.length === 0}
+          title="只显示与已发布条目同标题冲突的提案，展开并排内容对照（冲突以产品库为准，人工裁决）"
+        >
+          <GitCompare size={14} />只看 diff{conflictEntries.length > 0 ? `（${conflictEntries.length}）` : ''}
+        </button>
         <span className="kb-review-hint">发布后才会被知识问答引用 · 价格类条目请与产品库对账，冲突以产品库为准</span>
       </div>
       <div className="kb-review-list">
-        {entries.map(entry => <ReviewItem key={entry.id} entry={entry} />)}
+        {visible.length === 0 ? (
+          <div className="kb-review-evidence">只看 diff：没有与已发布条目同标题冲突的提案</div>
+        ) : visible.map(entry => (
+          <ReviewItem
+            key={entry.id}
+            entry={entry}
+            conflict={conflictOf(entry)}
+            selected={selected.has(entry.id)}
+            onToggle={toggleOne}
+            forceDiffOpen={onlyDiff}
+          />
+        ))}
       </div>
     </div>
   )
@@ -373,6 +563,7 @@ export default function KnowledgeBasePage() {
   const [searchInput, setSearchInput] = useState('')
   const [extractOpen, setExtractOpen] = useState(false)
   const [batchExtractOpen, setBatchExtractOpen] = useState(false)
+  const [proposalOpen, setProposalOpen] = useState(false) // 刀 4「补充知识」提案表单
 
   // 刀 1 治理分区：staging 进待审核区；主列表 published 在前、rejected 沉底留档
   // （status 缺失的行视为 staging，防迁移前旧快照漏审）
@@ -523,6 +714,11 @@ export default function KnowledgeBasePage() {
             一键提炼
           </button>
 
+          <button className="kb-btn kb-btn-secondary" onClick={() => setProposalOpen(true)} title="客户问过但知识库答不上来的问题，登记为提案进待审核（证据锚点必填）">
+            <FilePlus2 size={16} />
+            补充知识
+          </button>
+
           <button className="kb-btn kb-btn-primary" onClick={() => openForm()}>
             <Plus size={16} />
             新增
@@ -546,7 +742,7 @@ export default function KnowledgeBasePage() {
       )}
 
       <div className="kb-page-body">
-        <ReviewSection entries={stagingEntries} />
+        <ReviewSection entries={stagingEntries} publishedEntries={entries.filter(e => e.status === 'published')} />
         {loading ? (
           <div className="kb-loading">加载中...</div>
         ) : gridEntries.length === 0 ? (
@@ -564,6 +760,7 @@ export default function KnowledgeBasePage() {
       </div>
 
       {showForm && <KnowledgeForm onClose={closeForm} />}
+      {proposalOpen && <ProposalForm onClose={() => setProposalOpen(false)} />}
     </div>
   )
 }

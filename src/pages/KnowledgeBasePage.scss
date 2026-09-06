@@ -637,3 +637,99 @@
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px var(--color-accent-border);
 }
+
+/* ─── 刀 4 提案列 + 批量通过 + 只看 diff ─────────────────────────────── */
+
+.kb-review-check {
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+  cursor: pointer;
+
+  input {
+    cursor: pointer;
+    accent-color: var(--color-accent);
+  }
+}
+
+.kb-review-header .kb-review-check {
+  padding-top: 0;
+}
+
+.kb-btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.kb-badge-proposal {
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent-border);
+}
+
+.kb-review-evidence {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-diff-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--color-warning, var(--color-accent));
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.kb-diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.kb-diff-col {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-inset);
+  padding: 8px;
+  min-width: 0;
+}
+
+.kb-diff-col-head {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-diff-line {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-radius: var(--radius-small);
+  padding: 0 4px;
+}
+
+.kb-diff-line--old {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.kb-diff-line--new {
+  background: var(--color-success-bg, var(--color-accent-bg));
+  color: var(--color-success, var(--color-accent));
+}

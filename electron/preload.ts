@@ -810,6 +810,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     kbAsk: (payload: { question: string }) => ipcRenderer.invoke('sales:kb:ask', payload),
     // 刀 3 问答 viewed 埋点（用户展开答案卡；同 askKey 只记一次）
     kbAskViewed: (payload: { question?: string; askKey?: string }) => ipcRenderer.invoke('sales:kb:askViewed', payload),
+    // 刀 4 知识提案写入路（问答无命中/补充知识 → staging 行 source=proposal；evidence_key 硬门必填）
+    kbPropose: (payload: { title: string; content: string; category?: string; scene?: string; tags?: string[]; evidence_key: string }) =>
+      ipcRenderer.invoke('sales:kb:propose', payload),
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start: number; period_end: number }) =>

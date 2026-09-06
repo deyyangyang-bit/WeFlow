@@ -23,6 +23,9 @@ export interface KnowledgeEntry {
   reviewed_by?: string | null
   reviewed_at?: number | null
   reject_reason?: string | null
+  // 刀 4 提案列（宪法 §3 登记行）：proposal=知识提案（待审核区带「提案」徽标 + 证据锚点行）
+  source?: 'manual' | 'proposal' | string
+  evidence_key?: string | null
   created_at: number
   updated_at: number
 }
@@ -45,6 +48,10 @@ interface KnowledgeState {
   deleteEntry: (id: number) => Promise<boolean>
   /** 刀 1 知识审核：发布 / 拒绝（拒绝必填拒因；official=标记官方） */
   reviewEntry: (id: number, action: 'publish' | 'reject', opts?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; error?: string }>
+  /** 刀 4 知识提案：补充知识入口（staging 行 source=proposal；evidence_key 硬门必填，宪法 §1.10） */
+  proposeEntry: (payload: { title: string; content: string; category?: string; scene?: string; tags?: string[]; evidence_key: string }) => Promise<{ success: boolean; error?: string }>
+  /** 刀 4 批量发布（确认队列升级，防确认疲劳）：逐条走 kbReview 状态机（community 口径），结束一次性刷新 */
+  reviewEntries: (ids: number[]) => Promise<{ published: number; failed: number; errors: string[] }>
   setSearchKeyword: (keyword: string) => void
   setFilterCategory: (category: string) => void
   setFilterProductLine: (productLine: string) => void
@@ -175,6 +182,53 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch (e) {
       return { success: false, error: String(e) }
     }
+  },
+
+  proposeEntry: async (payload) => {
+    try {
+      const result = await window.electronAPI.sales.kbPropose(payload)
+      if (result.success) {
+        // 提案落 staging 进待审核区，全量重拉换分区
+        const { searchKeyword, filterCategory, filterProductLine } = get()
+        if (searchKeyword) {
+          await get().search(searchKeyword)
+        } else {
+          await get().fetchList({
+            category: filterCategory || undefined,
+            product_line: filterProductLine || undefined
+          })
+        }
+        return { success: true }
+      }
+      return { success: false, error: result.error }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  },
+
+  reviewEntries: async (ids) => {
+    let published = 0
+    const errors: string[] = []
+    // 逐条走 kbReview 状态机（服务层校验 + 埋点不绕过）；批量发布一律 community，official 需逐条勾选
+    for (const id of ids) {
+      try {
+        const r = await window.electronAPI.sales.kbReview(id, 'publish')
+        if (r.success) published++
+        else errors.push(`#${id} ${r.error || '未知错误'}`)
+      } catch (e) {
+        errors.push(`#${id} ${String(e)}`)
+      }
+    }
+    const { searchKeyword, filterCategory, filterProductLine } = get()
+    if (searchKeyword) {
+      await get().search(searchKeyword)
+    } else {
+      await get().fetchList({
+        category: filterCategory || undefined,
+        product_line: filterProductLine || undefined
+      })
+    }
+    return { published, failed: errors.length, errors }
   },
 
   setSearchKeyword: (keyword) => set({ searchKeyword: keyword }),

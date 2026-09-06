@@ -1415,6 +1415,18 @@
 - **验证**：tsc root 0 / node 158 基线零新增（diff 对照干净树，本批唯一新增错误 ConfigService|null 传参已修）/ vite build ✓ + tsc -b 产物重建 / 回归：knowledge-governance 38、customer-workspace-simple 37、customer360-consumer 13、owner-filter 28、sales-context-strip 10、action-funnel 25、morning-digest 22、report-review 37、alert-eval 42、todo-followup 14、crm-enrich 61 全绿；p0-3-closed-gate 5+1（G3 follow_up_task 直读静态项，stash 对照干净树同复现，存量）。
 - **遗留**：刀 4 知识提案（问答无命中「生成知识提案」按钮已预留，届时置灰改实建 staging 提案行）+ 确认队列批量通过 + 只看 diff；问答多轮追问 / 提问历史不在本刀范围。
 
+## 2.81 Hermes 刀 4 知识提案 + 确认队列升级（2026-09-06，单 commit）
+
+> **依据**：`docs/设计-Hermes-MVP.md` 刀 4（PRD 2.1 第二、三件 + 2.8 两项）。宪法 §3 增补「knowledge_base 提案列」登记行（source/evidence_key 两列，幂等 ALTER 只加列；任务书原文「tags 里标 source=proposal」升级为真列——刀 1 HANDOVER 本预留 source 列，可查询优于 tag 字符串解析，登记先行）+ proposal_event 写点⑥。审核走路径 = 刀 1 待审核区，零新审核 UI 语义。
+
+- **知识提案写入路（唯一写点 `salesKnowledgeService.propose`）**：问答无命中「生成知识提案」（KnowledgeAskPanel 按钮**接活**：title=问题、content=问题快照、evidence_key=askKey 问题哈希——可回查 proposal_event knowledge_ask 台账行）+ 知识页「补充知识」提案表单（ProposalForm，证据锚点必填，messageKey 或出处摘要）。落 `knowledge_base` staging 行（source='proposal'，AI 永不发布铁律沿用）+ 埋点 proposal/generated（entity_type=knowledge，entity_id=条目 id，actor=身份档案）。**硬门（宪法 §1.10）**：evidence_key 必填，空锚提案服务层拦截不进审核队列。kbCreate 透传 source/evidence_key（默认 manual，非提案行 NULL 合法；存量 ALTER DEFAULT 背填 manual）。裁决沿用写点② knowledge/accepted|rejected **不双记 proposal/accepted**——采纳率聚合按 stage 跨 proposal+knowledge 求和，双记会虚增分母。
+- **确认队列批量通过（防确认疲劳，PRD 点名）**：客户工作台信息待确认卡勾选 + 「批量采纳」（applyInfoBatch）与知识库待审核区勾选 + 「批量发布」（store.reviewEntries）——**逐条走既有单条 handler（crm:infoQueue:apply / sales:kb:review），零新批量写路径**（hermes 铁律：单条 handler 内已有状态机校验+埋点，批量循环复用不绕过）；逐条 try/catch 错误收集，失败条目单独报告（「成功 N 条，失败 M 条 + 逐条原因」）不拖垮整批；批量发布一律 community 口径（标官方走单条勾选发布）。
+- **只看 diff（知识审核区）**：区级「只看 diff」开关（冲突数角标）——只显示与已发布条目**同标题（trim 精确命中）**冲突的提案，行级并排对照（`diffLines` 纯函数：已发布列/提案列，行级新增/删除高亮 kb-diff-line--old/--new），区级开启时强制展开对照；无冲突行时提示「没有与已发布条目同标题冲突的提案」。提案卡带「提案」徽标 + 证据锚点行。
+- **桥接**：IPC `sales:kb:propose`（enqueueSalesTask 最外层）+ preload kbPropose + electron.d.ts；store 加 proposeEntry/reviewEntries。
+- **测试（并入 knowledge-governance-test，38→47）**：f1 提案落 staging（source/evidence_key/埋点）；f2 proposal/generated 落行；f3 空锚硬门（零落库零埋点）；f4 非提案行 source=manual 默认；f5 批量逐条语义（2 过状态机+署名）；f6 失败隔离（跨态行+不存在 id 单独报告不拖垮整批不污染他行）；f7 提案裁决不双记（分母防虚增）；f8 无批量写路径静态断言（循环体走单条 handler）；f9 只看 diff 渲染静态断言（区级开关/同标题冲突检测/并排对照/diffLines）。hermes-ask-test g6 同步更新（提案按钮已接活：调 kbPropose，不再置灰「下一版」）。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ + tsc -b 产物重建 / 回归：hermes-ask 29、customer-workspace-simple 37、customer360-consumer 13、settings-nav 59、crm-enrich 61 全绿；action-funnel-closed-gate 15+2（B13/B16 真实库漂移，存量）。
+- **遗留**：提案与现有条目冲突的「同标题」判定为精确匹配（模糊/语义冲突检测随 Phase 3b 向量底座）；「批量通过」信息待确认区固定 accept 口径（批量拒绝无 PRD 诉求，不做）；存量 219 条与新增提案同队列逐批发布。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

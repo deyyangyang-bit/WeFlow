@@ -4685,6 +4685,19 @@ function registerIpcHandlers() {
     return enqueueSalesTask(() => Promise.resolve(salesKnowledgeService.review(Number(id), action, payload)))
   })
 
+  // 刀 4 知识提案写入路（问答无命中/手动补充知识 → staging 行 source=proposal + proposal/generated 埋点）：
+  // 写库端点走 enqueueSalesTask 最外层串行（铁律：enqueue 只加最外层）
+  ipcMain.handle('sales:kb:propose', async (_, payload: { title?: string; content?: string; category?: string; scene?: string; tags?: string[]; evidence_key?: string }) => {
+    return enqueueSalesTask(() => Promise.resolve(salesKnowledgeService.propose({
+      title: String(payload?.title || ''),
+      content: String(payload?.content || ''),
+      category: payload?.category,
+      scene: payload?.scene,
+      tags: payload?.tags,
+      evidence_key: String(payload?.evidence_key || '')
+    })))
+  })
+
   // 刀 2 采纳率只读聚合（复盘页「近 7 天：提案 N 条 · 采纳率 X%」）
   ipcMain.handle('sales:proposal:stats', async () => {
     try {
