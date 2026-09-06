@@ -10,7 +10,12 @@ import { resolve } from 'path'
 delete process.env.ELECTRON_RUN_AS_NODE
 
 const handleElectronOnStart = (options: { reload: () => void }) => {
-  options.reload()
+  // Electron 子进程已退出（用户关窗/应用退出）后，electron 侧任一 entry 重建完成再 reload
+  // 会因 IPC 通道关闭同步抛 ERR_IPC_CHANNEL_CLOSED，把整个 vite dev 打死（2026-09-06 两次实证）。
+  // 子进程不在了就没有可刷新的对象，吞掉即可——下次 npm run dev 自然重启应用。
+  try {
+    options.reload()
+  } catch { /* Electron child already exited; nothing to reload */ }
 }
 
 const exportWorkerElectronShimPlugin = () => {
