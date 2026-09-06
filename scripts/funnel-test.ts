@@ -20,6 +20,7 @@ import { join } from 'path'
 import { salesDbService } from '../electron/services/salesDbService'
 import { FUNNEL_ORDER } from '../shared/salesStage'
 import { toMessageSnippets, extractEvidence } from '../electron/services/salesStageClassifier'
+import { buildFunnelSummary } from '../src/utils/funnelSummary'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -98,6 +99,18 @@ async function runScenario1(): Promise<void> {
   ok('3.1 全部历史 比价=3', fAll['比价'] === 3)
   ok('3.2 全部历史 窗口新进客户 = 6', sAll.newCustomersInWindow === 6)
   ok('3.3 全部历史 时间线覆盖首条日志（40 天前）到今日', sAll.intentTimeline.length >= 40 * 6)
+
+  // ── 6 人话摘要（设计稿四页简化·屏 2）：转化率最低段识别，数据与漏斗同口径 ──
+  const sum30 = buildFunnelSummary(s30, 30)
+  ok('6.1 摘要命中转化率最低段（比价→决策 50%）', !!sum30 && sum30.fromStage === '比价' && sum30.toStage === '决策')
+  ok('6.2 摘要带漏斗人数（2 个比价只 1 个进了决策）', !!sum30 && sum30.fromCount === 2 && sum30.toCount === 1)
+  ok('6.3 摘要句完整（近 30 天 + 掉得最多 + 行动引导）',
+    sum30?.text === '近 30 天：比价 → 决策 掉得最多（2 个比价只 1 个进了决策）。重点看「比价」阶段的客户是不是没人跟。')
+  const sum90 = buildFunnelSummary(s90, 90)
+  ok('6.4 90 天窗口摘要随口径更新（比价 3 → 决策 1）',
+    !!sum90 && sum90.fromCount === 3 && sum90.toCount === 1 && sum90.windowLabel === '近 90 天')
+  const sumAll = buildFunnelSummary(sAll, 0)
+  ok('6.5 全部历史窗口标签（days=0 → 全部历史）', !!sumAll && sumAll.windowLabel === '全部历史')
 }
 
 /**
@@ -154,6 +167,15 @@ async function runScenario2(): Promise<void> {
   ok('4.2 转化率均为 0 且无 NaN', s.conversion.every((c) => c.rate === 0))
   ok('4.3 窗口新进客户 = 1', s.newCustomersInWindow === 1)
   ok('4.4 无建档时 currentDistribution 全 0 / totalCustomers=0', s.totalCustomers === 0 && s.currentDistribution.every((c) => c.count === 0))
+  // 摘要护栏：所有相邻段 from 档都没人 → 不伪造「掉得最多」结论
+  ok('4.5 无可判段时摘要为 null（from 档全 0，不伪造掉段）', buildFunnelSummary(s, 30) === null)
+  // 纯函数边界：空数据 / 空转化率 / 并列取先出现
+  ok('4.6 空数据摘要为 null', buildFunnelSummary(null, 30) === null && buildFunnelSummary({ funnel: [], conversion: [] }, 30) === null)
+  const tie = buildFunnelSummary({
+    funnel: [{ stage: '了解', count: 4 }, { stage: '比价', count: 2 }, { stage: '决策', count: 1 }],
+    conversion: [{ from: '了解', to: '比价', rate: 50 }, { from: '比价', to: '决策', rate: 50 }]
+  }, 7)
+  ok('4.7 并列最低取先出现段（了解→比价）', !!tie && tie.fromStage === '了解' && tie.toStage === '比价' && tie.fromCount === 4 && tie.toCount === 2)
 }
 
 async function main(): Promise<void> {

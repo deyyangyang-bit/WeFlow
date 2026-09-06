@@ -1373,6 +1373,20 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓（SettingsNavShell chunk 正常产出，SettingsPage 代码并入壳 chunk）。
 - **遗留**：light/dark 双模式真机目验（本机无法启动 Electron GUI，样式全部走 token 双模式自动继承）；「自动锁定」待独立刀（先入 DATA-CONSTITUTION §3 登记再建）。
 
+## 2.78 商机/漏斗/合同/跟单中心四页简化（2026-09-06，单 commit）
+
+> **依据**：设计稿 `docs/UI设计稿-四页简化.html`（屏 1 商机 / 屏 2 漏斗 / 屏 3 合同 / 屏 4 跟单中心 + 附录对照表）。**铁律：零后端改动、零口径改动、图表只折叠不删除、纯展示层重组**（electron/ 目录零改动，四个页面全是既有数据源与既有交互的重新编排）。
+
+- **屏 1 商机 `OpportunityPage.tsx`**：① 4 统计卡收成一行小字摘要 `活跃 N · 决策中 N · 金额待确认 N`——「金额待确认」琥珀可点（`pendingOnly` 开关筛 `amount<=0` 行，再点取消，与阶段筛选叠加），**¥304 亿这类金额脏数据大字从首屏消失**（`stats.totalAmount` 不再渲染，口径与接口零改动）；② 漏斗图 + 点击筛阶段不动；③ 列表行 8 样减到 4 样（`.opp-row`：头像+客户名 / 副行 产品×数量·最近信号 / 阶段 pill / 金额——无金额显示灰字「金额待确认」），行内无按钮整行点开详情，**意向度分数条从列表撤进详情弹窗**；④ 详情弹窗重排：顶部蓝块「AI 建议下一步」（新纯函数 `src/utils/oppNextStep.ts` 投影：风险预警命中→显示风险+建议介入（严重度最高优先）→ 否则意向评分最高权重因素（|delta| 最大）一句 → 否则按阶段兜底引导；**零 LLM 零新接口**），下方 意向评分依据（含分数条）/风险预警/商机事件依次默认展开。
+- **屏 2 漏斗 `SalesFunnelPage.tsx` + 新纯函数 `src/utils/funnelSummary.ts`**：顶部一句人话摘要——窗口内转化率最低的相邻段（数据与漏斗同口径：`conversion` + `funnel` 计数，不新造口径），「近 N 天：X → Y 掉得最多（A 个 X 只 B 个进了 Y）。重点看「X」阶段的客户是不是没人跟。」days=0 → 「全部历史」；from 档全 0 不伪造结论返回 null。「每天进入各档位」堆叠图收进 `.funnel-fold` 折叠区（默认收起，`trendOption` 原样渲染）；快照卡 + 7/30/90/全部切换不动。
+- **屏 3 合同 `CrmWorkbenchPage.tsx`**：顶部统计卡收成一行 `本月到账 ¥X · 待签 N · 预警 N`（本月到账沿用 `statsOverview.monthPaid` 口径；待签/预警从销售视角名单 `myWorkbench`（filterByOwner 后）计数；预警非零才 `is-hot` 红色）。「📊 数据看板」折叠区默认收起：到款趋势图 + 客户阶段分布图 + AI 准确率 + 原 4 统计卡**原样**收进（零删除，展开原渲染）。合同 SearchTable（含回款进度条列）+ 子资源四块 + 甲方开票信息不动。
+- **屏 4 跟单中心 `CrmReviewPage.tsx`**：顶部「今天要办」摘要行 `N 笔今日到款待认领 · N 单物流待签收 · N 张发票待开`（今日待认领 = 现有 `claimablePayments` 口径 + `pay_time` 落今天（与按天分组同一 `dayStartOf`）；物流待签收 = `logiLinked`；发票 = `queues.invoices`——零新查询零新接口）。「⚙️ 管理」折叠区默认收起：扫描群聊设置区（原物流 tab 内迁出，两 tab 通用）+ 销售团队管理（原 header 弹层改折叠区内联，`.sales-team-drop--inline`，功能原样）。**8/24 拍板的认领三区 + 按天分组 + 7 天一页全部不动**；款项认领/物流跟单分 Tab 不动。
+- **owner 过滤四页全部保留**（`filterByOwner`/`isSalesView` 取数路径一行未动，测试逐页断言）。
+- **视觉**：折叠行样式抄客户工作台 `.cws-fold`（每页自含类 `.opp-` 无 / `.funnel-fold` / `.crm-fold` / `.review-fold`，lazy chunk 不跨页依赖），verdict 蓝块 = `--color-accent-bg` + `b` accent；全部 `--color-*/--radius-*/--shadow-*` token，零硬编码 hex；旧行样式（`.opp-card` 等）随重组移除。
+- **测试（断言补进既有四套，零新脚本）**：crm-opportunity **45→56**（6a-6k：摘要行/待确认筛选/四样行/分数条进详情/蓝块+投影优先级动态断言/漏斗筛选与 owner 过滤保留）；funnel **40→48**（6.1-6.5 真实库造数据验证最低转化段识别 + 4.5-4.7 纯函数边界：from 全 0 不伪造/null/并列取先）；crm-workbench **53→57**（12a-12d：三数行/销售视角计数/看板折叠默认收起零删除/列表子资源不动）；payments-claim **18→20**（A14 今天要办三计数来源、A15 管理折叠区功能原样）。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / 回归 crm-lead 59 + crm-golden 47 + lead-assignment-view 56 + settings-nav 59 全绿；electron/ 零改动。
+- **遗留**：四页 light/dark 真机目验（dev server 已起，样式全 token 继承）；商机「AI 建议下一步」文案投影为展示层启发式，未来接 LLM 须走既有 insightService 通道（本刀明确不做）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

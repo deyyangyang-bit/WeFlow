@@ -199,6 +199,28 @@ async function main(): Promise<void> {
       /setAllocations\(allocs\)/.test(src2) && !/setAllocations\(filterByOwner/.test(src2))
   }
 
+  // ── 12 展示层简化（设计稿 docs/UI设计稿-四页简化.html 屏 3）：静态断言 ──
+  {
+    const src = readFileSync(join(__dirname, '..', 'src/pages/CrmWorkbenchPage.tsx'), 'utf8')
+    ok('12a 顶部统计卡收成一行小字（crm-kpi-line：本月到账/待签/预警；预警非零 is-hot 红色）',
+      /className="crm-kpi-line"/.test(src) && /stats\.monthPaid/.test(src) &&
+      /pendingSignCount/.test(src) && /warningCount/.test(src) &&
+      /warningCount > 0 \? 'is-hot' : ''/.test(src))
+    ok('12b 待签/预警计数走销售视角名单（myWorkbench = filterByOwner 后），本月到账沿用 statsOverview 口径',
+      /myWorkbench\.filter\(\(c: any\) => c\.status === 'pending_sign'\)/.test(src) &&
+      /myWorkbench\.filter\(\(c: any\) => c\.warning\)/.test(src) &&
+      /filterByOwner\(workbench, identity\)/.test(src))
+    ok('12c 数据看板折叠区默认收起（dashboardOpen useState(false)：2 图 + AI 准确率 + 原 4 统计卡原样折叠保留，零删除）',
+      /const \[dashboardOpen, setDashboardOpen\] = useState\(false\)/.test(src) &&
+      /数据看板（到款趋势 \/ 客户阶段分布 \/ AI 准确率）/.test(src) &&
+      /crm-stats-row/.test(src) && /crm-overview-charts/.test(src) &&
+      /paidTrendOption && <ReactECharts/.test(src) && /stageDistOption && <ReactECharts/.test(src) &&
+      src.indexOf('crm-kpi-line') < src.indexOf('crm-fold') && src.indexOf('crm-fold') < src.indexOf('dashboardOpen && ('))
+    ok('12d 合同列表 + 子资源四块不动（SearchTable/全款进度列/报价单/发票/回款归属/物流）',
+      /<SearchTable/.test(src) && /全款进度/.test(src) && /报价单/.test(src) &&
+      /发票/.test(src) && /回款归属/.test(src) && /物流/.test(src))
+  }
+
   console.log(`\nWORKBENCH RESULT: pass=${pass} fail=${fail}`)
   if (fail > 0) process.exit(1)
 }

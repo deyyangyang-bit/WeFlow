@@ -135,6 +135,20 @@ async function main(): Promise<void> {
     /list\.reduce\(\(s, p\) => s \+ shownAmountOf\(p\), 0\)/.test(pageSrc) &&
     /credited_amount \?\? p\.amount_net/.test(pageSrc))
 
+  // A14: 「今天要办」摘要行（设计稿屏 4）：三计数全部来自现有数据（claimable+pay_time 今天 / logiLinked / queues.invoices），零新接口
+  ok('A14 今天要办摘要行（今日到款待认领 / 物流待签收 / 发票待开，与按天分组同口径 dayStartOf）',
+    /今天要办/.test(pageSrc) &&
+    /dayStartOf\(Number\(p\.pay_time\)\) === dayStartOf\(Date\.now\(\)\)/.test(pageSrc) &&
+    /\{logiLinked\.length\}/.test(pageSrc) && /\{queues\.invoices\.length\}/.test(pageSrc))
+
+  // A15: 「管理」折叠区（扫描群聊设置 + 销售团队收编，默认收起，功能原样；认领三区/7 天页不动）
+  ok('A15 管理折叠区（review-fold 默认收起 manageOpen useState(false)；群聊开关/筛选与销售团队管理功能原样保留）',
+    /const \[manageOpen, setManageOpen\] = useState\(false\)/.test(pageSrc) &&
+    /管理（扫描群聊设置 \/ 销售团队）/.test(pageSrc) &&
+    /groupsSave/.test(pageSrc) && /groupsUpdate/.test(pageSrc) && /openPick/.test(pageSrc) &&
+    /salesTeamAdd\(n\)/.test(pageSrc) && /removeSalesMember/.test(pageSrc) &&
+    /sales-team-drop--inline/.test(pageSrc))
+
   // ── B. 真实库只读（与 crmDbService.paymentsByDay 同款 SQL，同步维护）──────────
   const SQL = await initSqlJs()
   // §2.40 分库：按账号命名的业务库优先（多个账号取最近使用），回退 legacy 名

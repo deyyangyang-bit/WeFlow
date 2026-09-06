@@ -6,13 +6,14 @@
  *       opportunityStats 漏斗聚合、opportunityEvent 事件留痕。
  * 运行：npx tsx scripts/crm-opportunity-test.ts
  */
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
 import { parseBuySignal, parseRiskSignal } from '../electron/services/crmParseRules'
 import { salesDbService } from '../electron/services/salesDbService'
 import { computeIntentScore } from '../electron/services/intentScore'
+import { buildNextStep } from '../src/utils/oppNextStep'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -132,6 +133,45 @@ async function main(): Promise<void> {
   ok('5i riskList 支持 accountId 过滤', crmDbService.riskList({ accountId: accR }).length === 1 && crmDbService.riskList().length >= 1)
   ok('5j resolveRisk 解决 active 风险', crmDbService.resolveRisk(Number(riskRow?.id)) === true && String(crmDbService.riskList({ accountId: accR })[0]?.status) === 'resolved')
   ok('5k 重复解决返回 false', crmDbService.resolveRisk(Number(riskRow?.id)) === false)
+
+  // ── 6 展示层简化（设计稿 docs/UI设计稿-四页简化.html 屏 1）：静态断言 + 建议下一步投影 ──
+  const pageSrc = readFileSync(join(__dirname, '..', 'src/pages/OpportunityPage.tsx'), 'utf8')
+  ok('6a 4 统计卡收成一行小字摘要（opp-summary：活跃/决策中/金额待确认；金额大字¥X亿从首屏消失）',
+    /className="opp-summary"/.test(pageSrc) && /活跃 \{stats\.total\}/.test(pageSrc) &&
+    /决策中 \{decisionCount\}/.test(pageSrc) && /金额待确认 \{pendingAmount\}/.test(pageSrc) &&
+    !/opp-stats/.test(pageSrc) && !/stats\.totalAmount/.test(pageSrc) && !/1e8/.test(pageSrc))
+  ok('6b 「金额待确认」琥珀可点筛选（pendingOnly 开关 → amount<=0 行，再点取消；与阶段筛选叠加）',
+    /const \[pendingOnly, setPendingOnly\] = useState\(false\)/.test(pageSrc) &&
+    /setPendingOnly\(\(v\) => !v\)/.test(pageSrc) &&
+    /!pendingOnly \|\| Number\(o\.amount\) <= 0/.test(pageSrc))
+  ok('6c 列表行减到 4 样（opp-row：头像+客户名 / 副行 产品×数量·最近信号 / 阶段 / 金额待确认灰字），旧 opp-card 行退场',
+    /className="opp-row"/.test(pageSrc) && /opp-row__avatar/.test(pageSrc) && /opp-row__name/.test(pageSrc) &&
+    /opp-row__sub/.test(pageSrc) && /opp-row__amt--pending/.test(pageSrc) && !/opp-card/.test(pageSrc))
+  ok('6d 意向度分数条撤出列表、挪进详情弹窗（opp-factors__score 容器 + opp-score 保留）',
+    /opp-factors__score/.test(pageSrc) && /opp-score__bar/.test(pageSrc) &&
+    !/opp-card__intent/.test(pageSrc))
+  ok('6e 详情弹窗重排：「AI 建议下一步」置顶蓝块（opp-next-step + buildNextStep，零 LLM 零新接口）',
+    /className="opp-next-step"/.test(pageSrc) && /AI 建议下一步/.test(pageSrc) &&
+    /buildNextStep\(\{ stage: selected\.stage, nextStage: NEXT_STAGE\[selected\.stage\], risks, score: scores\[selected\.id\] \|\| null \}\)/.test(pageSrc))
+  ok('6f 漏斗图点击筛阶段交互保留不动', /setStageFilter\(stageFilter === d\.stage \? '' : d\.stage\)/.test(pageSrc))
+  ok('6g owner 过滤不丢（filterByOwner 仍在取数路径）', /setOpps\(filterByOwner\(list/.test(pageSrc))
+
+  // buildNextStep 投影优先级：风险命中 → 评分关键因素 → 阶段兜底（纯函数，零 LLM）
+  const nx1 = buildNextStep({
+    stage: '比价', nextStage: '决策',
+    risks: [{ risk_type: 'price', severity: 'medium', detail: '嫌贵', status: 'active' }],
+    score: { score: 90, level: '高意向', factors: [{ label: '商机进展', delta: 25, reason: '20台' }] }
+  })
+  ok('6h 风险命中优先 → 显示风险 + 建议介入', nx1.includes('风险预警') && nx1.includes('价格异议') && nx1.includes('建议尽快介入'))
+  const nx2 = buildNextStep({
+    stage: '了解', nextStage: '比价', risks: [],
+    score: { score: 72, level: '中意向', factors: [{ label: '近期活跃', delta: 8, reason: '三天两条询价' }, { label: '当前阶段', delta: 15, reason: '已进入了解' }] }
+  })
+  ok('6i 无风险取最高权重因素（|delta| 最大）', nx2.includes('意向评分 72 分') && nx2.includes('当前阶段') && nx2.includes('推进到「比价」'))
+  const nx3 = buildNextStep({ stage: '了解', nextStage: '比价', risks: [], score: null })
+  ok('6j 无风险无评分 → 按阶段兜底引导', nx3.includes('摸清需求与预算'))
+  const nx4 = buildNextStep({ stage: '未知', risks: [], score: null })
+  ok('6k 兜底恒有文案（未知阶段）', nx4.length > 0)
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

@@ -59,7 +59,8 @@ export default function CrmWorkbenchPage() {
   useEffect(() => { void fetchWorkbench() }, [fetchWorkbench])
   useEffect(() => { void fetchCustomers() }, [])
 
-  // ─── P3 可视化：统计概览 + 三图 ────────────────────────────────────────────
+  // ─── P3 可视化：统计概览 + 三图（设计稿屏 3：收进「数据看板」折叠区，默认收起，展开后原样渲染）───
+  const [dashboardOpen, setDashboardOpen] = useState(false)
   const [stats, setStats] = useState<any>(null)
   const fetchStats = async () => {
     try { setStats(await window.electronAPI.crm.statsOverview()) } catch { /* ignore */ }
@@ -297,6 +298,11 @@ export default function CrmWorkbenchPage() {
     await fetchWorkbench()
   }
 
+  // 一行小字摘要（设计稿屏 3）：待签/预警取销售视角名单（filterByOwner 后的 myWorkbench），
+  // 本月到账沿用 statsOverview 的 monthPaid 口径（不新造口径）
+  const pendingSignCount = myWorkbench.filter((c: any) => c.status === 'pending_sign').length
+  const warningCount = myWorkbench.filter((c: any) => c.warning).length
+
   const ownerFiltered = isSalesView(identity)
   return (
     <div className="crm-workbench-page">
@@ -310,42 +316,57 @@ export default function CrmWorkbenchPage() {
       {notice && <div className="crm-notice">{notice}</div>}
       {stats && (
         <>
-          <div className="crm-stats-row">
-            <div className="crm-stat-card"><span className="crm-stat-card__ico neu"><Users size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div></div>
-            <div className="crm-stat-card"><span className="crm-stat-card__ico"><Briefcase size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div></div>
-            <div className="crm-stat-card"><span className="crm-stat-card__ico ok"><Banknote size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月到账（已认领）</span></div></div>
-            <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__ico alert"><AlertTriangle size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div></div>
+          {/* 顶部统计卡收成一行小字（设计稿屏 3：本月到账 / 待签 / 预警，预警非零才红色） */}
+          <div className="crm-kpi-line">
+            <span>本月到账 <b>¥{Number(stats.monthPaid || 0).toLocaleString()}</b></span>
+            <span>待签 <b>{pendingSignCount}</b></span>
+            <span>预警 <b className={warningCount > 0 ? 'is-hot' : ''}>{warningCount}</b></span>
           </div>
-          <div className="crm-overview-charts">
-            <div className="crm-chart-box"><h4>近 8 周到款趋势 <span className="crm-chart-hint">元 · 按 pay_time</span></h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
-            <div className="crm-chart-box"><h4>客户阶段分布 <span className="crm-chart-hint">customer_profile.stage</span></h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
-            <div className="crm-chart-box crm-accuracy-card">
-              <h4>AI 准确率 <span className="crm-chart-hint">近 7 天</span></h4>
-              {accuracy && (
-                <>
-                  <div className="crm-accuracy-card__grid">
-                    <div><span className="crm-accuracy-card__num">{accuracy.acceptRate == null ? '-' : `${accuracy.acceptRate}%`}</span><span className="crm-accuracy-card__label">采纳率</span></div>
-                    <div><span className="crm-accuracy-card__num">{accuracy.enrichAuto}</span><span className="crm-accuracy-card__label">AI 自动写入</span></div>
-                    <div><span className="crm-accuracy-card__num">{accuracy.infoAccept}</span><span className="crm-accuracy-card__label">待确认采纳</span></div>
-                    <div><span className="crm-accuracy-card__num">{accuracy.manualEdit}</span><span className="crm-accuracy-card__label">手动修正</span></div>
-                  </div>
-                  <button className="crm-accuracy-card__toggle" onClick={() => setAccuracyOpen((v) => !v)}>
-                    {accuracyOpen ? '收起明细 ▲' : '展开明细 ▼'}
-                  </button>
-                  {accuracyOpen && (
-                    <div className="crm-accuracy__grid">
-                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoReject}</span><span className="crm-accuracy__label">待确认放弃</span></div>
-                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.writtenTotal > 0 ? `${accuracy.correctionRate}%` : '-'}</span><span className="crm-accuracy__label">修正率（越低越准）</span></div>
-                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteTotal}</span><span className="crm-accuracy__label">报价信号</span></div>
-                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteReplied24}/{accuracy.quoteReplied}</span><span className="crm-accuracy__label">24h 内回复/总回复</span></div>
-                      <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quotePending}</span><span className="crm-accuracy__label">报价待跟进</span></div>
-                    </div>
+          {/* 两张图表 + AI 准确率 + 原 4 统计卡收进「数据看板」折叠区（默认收起，展开后原样渲染，零删除） */}
+          <button className="crm-fold" onClick={() => setDashboardOpen((v) => !v)}>
+            <span>📊 数据看板（到款趋势 / 客户阶段分布 / AI 准确率）</span>
+            <span>{dashboardOpen ? '收起 ▲' : '展开 ▼'}</span>
+          </button>
+          {dashboardOpen && (
+            <>
+              <div className="crm-stats-row">
+                <div className="crm-stat-card"><span className="crm-stat-card__ico neu"><Users size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.customers}</span><span className="crm-stat-card__label">客户总数</span></div></div>
+                <div className="crm-stat-card"><span className="crm-stat-card__ico"><Briefcase size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.activeContractAmount || 0).toLocaleString()}</span><span className="crm-stat-card__label">在途合同（{stats.activeContractCount} 份）</span></div></div>
+                <div className="crm-stat-card"><span className="crm-stat-card__ico ok"><Banknote size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">¥{Number(stats.monthPaid || 0).toLocaleString()}</span><span className="crm-stat-card__label">本月到账（已认领）</span></div></div>
+                <div className="crm-stat-card crm-stat-card--alert"><span className="crm-stat-card__ico alert"><AlertTriangle size={17} /></span><div className="crm-stat-card__body"><span className="crm-stat-card__value">{stats.pendingReview}</span><span className="crm-stat-card__label">待确认事项</span></div></div>
+              </div>
+              <div className="crm-overview-charts">
+                <div className="crm-chart-box"><h4>近 8 周到款趋势 <span className="crm-chart-hint">元 · 按 pay_time</span></h4>{paidTrendOption && <ReactECharts option={paidTrendOption} style={{ height: 190 }} notMerge />}</div>
+                <div className="crm-chart-box"><h4>客户阶段分布 <span className="crm-chart-hint">customer_profile.stage</span></h4>{stageDistOption && <ReactECharts option={stageDistOption} style={{ height: 190 }} notMerge />}</div>
+                <div className="crm-chart-box crm-accuracy-card">
+                  <h4>AI 准确率 <span className="crm-chart-hint">近 7 天</span></h4>
+                  {accuracy && (
+                    <>
+                      <div className="crm-accuracy-card__grid">
+                        <div><span className="crm-accuracy-card__num">{accuracy.acceptRate == null ? '-' : `${accuracy.acceptRate}%`}</span><span className="crm-accuracy-card__label">采纳率</span></div>
+                        <div><span className="crm-accuracy-card__num">{accuracy.enrichAuto}</span><span className="crm-accuracy-card__label">AI 自动写入</span></div>
+                        <div><span className="crm-accuracy-card__num">{accuracy.infoAccept}</span><span className="crm-accuracy-card__label">待确认采纳</span></div>
+                        <div><span className="crm-accuracy-card__num">{accuracy.manualEdit}</span><span className="crm-accuracy-card__label">手动修正</span></div>
+                      </div>
+                      <button className="crm-accuracy-card__toggle" onClick={() => setAccuracyOpen((v) => !v)}>
+                        {accuracyOpen ? '收起明细 ▲' : '展开明细 ▼'}
+                      </button>
+                      {accuracyOpen && (
+                        <div className="crm-accuracy__grid">
+                          <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.infoReject}</span><span className="crm-accuracy__label">待确认放弃</span></div>
+                          <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.writtenTotal > 0 ? `${accuracy.correctionRate}%` : '-'}</span><span className="crm-accuracy__label">修正率（越低越准）</span></div>
+                          <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteTotal}</span><span className="crm-accuracy__label">报价信号</span></div>
+                          <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quoteReplied24}/{accuracy.quoteReplied}</span><span className="crm-accuracy__label">24h 内回复/总回复</span></div>
+                          <div className="crm-accuracy__item"><span className="crm-accuracy__value">{accuracy.quotePending}</span><span className="crm-accuracy__label">报价待跟进</span></div>
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-              {!accuracy && <div className="crm-chart-empty">近 7 天暂无 AI 写入数据</div>}
-            </div>
-          </div>
+                  {!accuracy && <div className="crm-chart-empty">近 7 天暂无 AI 写入数据</div>}
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
       {showNew && (

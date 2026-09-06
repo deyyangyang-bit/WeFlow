@@ -7,6 +7,7 @@
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT, SALES_STAGE_COLOR_INDEX } from '../../shared/funnelPalette'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
+import { buildFunnelSummary } from '../utils/funnelSummary'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
@@ -44,6 +45,8 @@ export default function SalesFunnelPage() {
   const [data, setData] = useState<FunnelStats | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // 「详细趋势」堆叠图收进折叠区（设计稿屏 2：默认收起，图表只折叠不删除）
+  const [trendOpen, setTrendOpen] = useState(false)
 
   const fetch = useCallback(async (d: number) => {
     setLoading(true)
@@ -103,6 +106,9 @@ export default function SalesFunnelPage() {
   const currentOf = (s: string) =>
     data?.currentDistribution.find((c) => c.stage === s)?.count ?? 0
 
+  // 人话摘要（设计稿屏 2）：窗口内转化率最低的相邻段，纯函数规则计算，数据与漏斗同口径
+  const summary = useMemo(() => buildFunnelSummary(data, days), [data, days])
+
   return (
     <div className="funnel-page">
       <div className="funnel-header">
@@ -124,6 +130,12 @@ export default function SalesFunnelPage() {
 
       {data && (
         <div className="funnel-body">
+          {/* 人话结论置顶（设计稿屏 2）：哪段掉得最多，先给一句 */}
+          {summary && (
+            <div className="funnel-verdict">
+              {summary.windowLabel}：<b>{summary.fromStage} → {summary.toStage}</b> 掉得最多（{summary.fromCount} 个{summary.fromStage}只 {summary.toCount} 个进了{summary.toStage}）。重点看「{summary.fromStage}」阶段的客户是不是没人跟。
+            </div>
+          )}
           <div className="funnel-stats">
             <div className="funnel-stat"><span className="funnel-stat__label">客户总数</span><span className="funnel-stat__value">{data.totalCustomers}</span></div>
             <div className="funnel-stat"><span className="funnel-stat__label">窗口新进漏斗</span><span className="funnel-stat__value">{data.newCustomersInWindow}</span></div>
@@ -165,7 +177,12 @@ export default function SalesFunnelPage() {
             </div>
           </div>
 
-          {trendOption && (
+          {/* 堆叠图收进折叠区（设计稿屏 2：默认收起；图表只折叠不删除，展开后原样渲染） */}
+          <button className="funnel-fold" onClick={() => setTrendOpen((v) => !v)}>
+            <span>📈 详细趋势（每天进入各档位的客户数）</span>
+            <span>{trendOpen ? '收起 ▲' : '展开 ▼'}</span>
+          </button>
+          {trendOpen && trendOption && (
             <div className="funnel-trend">
               <h3>窗口内每天进入各档位的去重客户数（堆叠）</h3>
               <div className="funnel-trend__chart">

@@ -5,7 +5,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { RefreshCw, X, CheckCircle2, XCircle, Activity, Banknote, Clock, Star, Target } from 'lucide-react'
+import { buildNextStep, RISK_TYPE_LABEL, RISK_SEVERITY_LABEL } from '../utils/oppNextStep'
+import { RefreshCw, X, CheckCircle2, XCircle, Target } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
 import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT } from '../../shared/funnelPalette'
 import './OpportunityPage.scss'
@@ -49,13 +50,7 @@ interface RiskRow {
   resolved_at: number
 }
 
-// 风险类型文案（P0：竞品 / 价格 / 服务）
-const RISK_TYPE_LABEL: Record<string, string> = {
-  competitor: '竞品比较', price: '价格异议', service: '服务疑虑'
-}
-const RISK_SEVERITY_LABEL: Record<string, string> = {
-  high: '高风险', medium: '中风险', low: '低风险'
-}
+// 风险类型/严重度文案迁至 utils/oppNextStep（与「建议下一步」投影共用单一真源）
 
 // 金额展示：0 = 待确认
 function fmtAmount(n: number): string {
@@ -82,6 +77,8 @@ export default function OpportunityPage() {
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [stats, setStats] = useState<OppStats | null>(null)
   const [stageFilter, setStageFilter] = useState('')
+  // 「金额待确认」筛选（设计稿屏 1：摘要行琥珀可点，点出 amount<=0 的行，再点取消）
+  const [pendingOnly, setPendingOnly] = useState(false)
   const [selected, setSelected] = useState<OppRow | null>(null)
   const [events, setEvents] = useState<OppEvent[]>([])
   const [risks, setRisks] = useState<RiskRow[]>([])
@@ -137,8 +134,11 @@ export default function OpportunityPage() {
     }))
   }, [stats])
 
-  const filtered = stageFilter ? opps.filter((o) => o.stage === stageFilter) : opps
+  const filtered = opps
+    .filter((o) => !stageFilter || o.stage === stageFilter)
+    .filter((o) => !pendingOnly || Number(o.amount) <= 0)
   const pendingAmount = opps.filter((o) => Number(o.amount) <= 0).length
+  const decisionCount = opps.filter((o) => o.status === 'active' && o.stage === '决策').length
 
   // 详情：拉事件时间线 + 客户风险（P0：竞品/价格/服务）；先清上一商机的残留，避免慢 IPC 时闪现旧数据
   const openDetail = async (o: OppRow) => {
@@ -182,19 +182,25 @@ export default function OpportunityPage() {
     <div className="opp-page">
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="opp-header">
-        <h2><Target size={18} /> 商机</h2>
+        <div className="opp-header__main">
+          <h2><Target size={18} /> 商机</h2>
+          {stats && (
+            <span className="opp-summary">
+              活跃 {stats.total} · 决策中 {decisionCount} ·{' '}
+              <button
+                type="button"
+                className={`opp-summary__pending${pendingOnly ? ' on' : ''}`}
+                aria-pressed={pendingOnly}
+                onClick={() => setPendingOnly((v) => !v)}
+              >
+                金额待确认 {pendingAmount}{pendingOnly ? '（再点取消）' : '（点我筛出来）'}
+              </button>
+            </span>
+          )}
+        </div>
         {notice && <span className="opp-notice">{notice}</span>}
         <button className="opp-btn opp-btn--ghost" onClick={() => void fetch()} disabled={loading}><RefreshCw size={14} /> 刷新</button>
       </div>
-
-      {stats && (
-        <div className="opp-stats">
-          <div className="opp-stat"><span className="opp-stat__ico"><Activity size={17} /></span><div className="opp-stat__body"><span className="opp-stat__value">{stats.total}</span><span className="opp-stat__label">活跃商机</span></div></div>
-          <div className="opp-stat"><span className="opp-stat__ico"><Banknote size={17} /></span><div className="opp-stat__body"><span className="opp-stat__value">{stats.totalAmount > 0 ? (stats.totalAmount >= 1e8 ? `¥${(stats.totalAmount / 1e8).toFixed(2)}亿` : `¥${(stats.totalAmount / 10000).toFixed(1)}万`) : '—'}</span><span className="opp-stat__label">商机金额（待人工确认）</span></div></div>
-          <div className="opp-stat"><span className="opp-stat__ico neu"><Clock size={17} /></span><div className="opp-stat__body"><span className="opp-stat__value">{pendingAmount}</span><span className="opp-stat__label">金额待确认</span></div></div>
-          <div className="opp-stat"><span className="opp-stat__ico"><Star size={17} /></span><div className="opp-stat__body"><span className="opp-stat__value">{opps.filter((o) => o.status === 'active' && o.stage === '决策').length}</span><span className="opp-stat__label">决策中</span></div></div>
-        </div>
-      )}
 
       {funnelStages.length > 0 ? (
         <div className="opp-chart">
@@ -228,26 +234,25 @@ export default function OpportunityPage() {
       )}
 
       <div className="card opp-list-card">
-        <h4>商机列表{stageFilter ? ` · ${stageFilter}` : ''} <span className="opp-list-count">{filtered.length} 条</span></h4>
+        <h4>商机列表{stageFilter ? ` · ${stageFilter}` : ''}{pendingOnly ? ' · 金额待确认' : ''} <span className="opp-list-count">{filtered.length} 条</span></h4>
         <div className="opp-list">
         {filtered.map((o) => (
-          <div key={o.id} className="opp-card" onClick={() => void openDetail(o)}>
-            <div className="opp-card__main">
-              <span className="opp-card__date">{fmtTime(Number(o.last_signal_at)).slice(0, 5)}</span>
-              <span className="opp-card__name">{o.account_name || '未命名客户'}</span>
-              <span className="opp-card__product">{o.product || o.name}</span>
-              {Number(o.quantity) > 0 && <span className="opp-card__qty">×{o.quantity}</span>}
-              <span className={`opp-badge opp-badge--${o.stage}`} style={{ background: STAGE_COLORS[o.stage] || FUNNEL_NEUTRAL }}>{o.stage}</span>
-              {scores[o.id]?.level === '高意向' && <span className="crm-pill crm-pill--ok opp-card__intent">{scores[o.id].score} 高意向</span>}
-              <span className={`opp-card__amt${Number(o.amount) > 0 ? '' : ' opp-card__amt--pending'}`}>{Number(o.amount) > 0 ? fmtAmount(Number(o.amount)) : '待确认'}</span>
-              {scores[o.id] && (
-                <span className={`opp-score opp-score--${scores[o.id].level}`} title={scores[o.id].factors.map((f) => `${f.label} ${f.delta >= 0 ? '+' : ''}${f.delta}：${f.reason}`).join('\n')}>
-                  <span className="opp-score__t"><span>意向度</span><span className="opp-score__num">{scores[o.id].score}</span></span>
-                  <span className="opp-score__bar"><span className="opp-score__fill" style={{ width: `${scores[o.id].score}%` }} /></span>
-                </span>
-              )}
-              <span className="opp-card__time">最近信号 {fmtTime(Number(o.last_signal_at))}</span>
+          <div key={o.id} className="opp-row" onClick={() => void openDetail(o)}>
+            <span className="opp-row__avatar" aria-hidden>{(String(o.account_name || '').trim()[0]) || '客'}</span>
+            <div className="opp-row__main">
+              <div className="opp-row__name">{o.account_name || '未命名客户'}</div>
+              <div className="opp-row__sub">
+                {[
+                  o.product || o.name,
+                  Number(o.quantity) > 0 ? `×${o.quantity}` : '',
+                  `最近信号 ${fmtTime(Number(o.last_signal_at))}`
+                ].filter(Boolean).join(' · ')}
+              </div>
             </div>
+            <span className="opp-badge" style={{ background: STAGE_COLORS[o.stage] || FUNNEL_NEUTRAL }}>{o.stage}</span>
+            <span className={`opp-row__amt${Number(o.amount) > 0 ? '' : ' opp-row__amt--pending'}`}>
+              {Number(o.amount) > 0 ? fmtAmount(Number(o.amount)) : '金额待确认'}
+            </span>
           </div>
         ))}
         {!filtered.length && <div className="opp-empty">该阶段暂无商机</div>}
@@ -261,6 +266,11 @@ export default function OpportunityPage() {
               {selected.product || selected.name}
               <button className="opp-btn" onClick={() => setSelected(null)}><X size={14} /></button>
             </h3>
+            {/* 「AI 建议下一步」置顶蓝块（设计稿屏 1）：内容从现有数据投影，零 LLM 零新接口 */}
+            <div className="opp-next-step">
+              <span className="opp-next-step__tag">AI 建议下一步</span>
+              <p>{buildNextStep({ stage: selected.stage, nextStage: NEXT_STAGE[selected.stage], risks, score: scores[selected.id] || null })}</p>
+            </div>
             <div className="opp-detail">
               <div className="opp-detail__row"><span>客户</span><b>{selected.account_name || '—'}</b></div>
               <div className="opp-detail__row"><span>产品</span><b>{selected.product || '—'}</b></div>
@@ -270,9 +280,16 @@ export default function OpportunityPage() {
               <div className="opp-detail__row"><span>最近信号</span><b>{fmtTime(Number(selected.last_signal_at))}</b></div>
               <div className="opp-detail__row"><span>意向评分</span><b>{scores[selected.id] ? `${scores[selected.id].score} / 100 · ${scores[selected.id].level}` : '—'}</b></div>
             </div>
-            {scores[selected.id] && scores[selected.id].factors.length > 0 && (
+            {scores[selected.id] && (
               <div className="opp-factors">
                 <h4>意向评分依据</h4>
+                {/* 意向度分数条从列表挪进详情弹窗（设计稿屏 1） */}
+                <div className="opp-factors__score">
+                  <span className="opp-score" title={scores[selected.id].factors.map((f) => `${f.label} ${f.delta >= 0 ? '+' : ''}${f.delta}：${f.reason}`).join('\n')}>
+                    <span className="opp-score__t"><span>意向度</span><span className="opp-score__num">{scores[selected.id].score}</span></span>
+                    <span className="opp-score__bar"><span className="opp-score__fill" style={{ width: `${scores[selected.id].score}%` }} /></span>
+                  </span>
+                </div>
                 {scores[selected.id].factors.map((f) => (
                   <div key={f.label} className="opp-factor">
                     <span className="opp-factor__label">{f.label}</span>

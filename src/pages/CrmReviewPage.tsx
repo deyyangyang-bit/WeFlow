@@ -120,8 +120,9 @@ export default function CrmReviewPage() {
   const [reviewTab, setReviewTab] = useState<'payments' | 'logistics'>('payments')
   const [claimedOpen, setClaimedOpen] = useState(true) // 已确认到款默认展开、可折叠（header 复用每日分组样式，须真实可点）
   const [salesTeam, setSalesTeam] = useState<Array<{ name: string; orderCount: number; amount: number }>>([]) // 销售团队名单
-  const [teamOpen, setTeamOpen] = useState(false) // 销售团队下拉展开
   const [addSalesName, setAddSalesName] = useState('') // 添加销售输入
+  // 「管理」折叠区（设计稿屏 4：扫描群聊设置 + 销售团队，默认收起，功能原样）
+  const [manageOpen, setManageOpen] = useState(false)
   // ── 物流跟单 ─────────────────────────────────────────────────────────────
   const [logiLinked, setLogiLinked] = useState<any[]>([]) // 已认领待签收
   const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收
@@ -202,6 +203,8 @@ export default function CrmReviewPage() {
   const claimedPayments = payments.filter((p) => p.alloc_status === 'confirmed' && (p.account_id || p.contract_id))
   // 只看未认领：行数已很少，强制全展开（折叠不挡筛选结果）
   const claimablePayments = payments.filter(isClaimable)
+  // 「今天要办」摘要（设计稿屏 4）：今日到款待认领 = 现有 claimable 口径 + pay_time 落在今天（与按天分组同口径），零新查询
+  const todayClaimable = claimablePayments.filter((p) => dayStartOf(Number(p.pay_time)) === dayStartOf(Date.now())).length
   // 开票状态：认领后按订单群 PDF 发票解析结果展示（invoice_status='issued' 即已开票）；
   // 旧自动确认遗留（confirmed 无客户合同）补认领前不显示开票状态
   const invoiceBadgeOf = (p: any) => {
@@ -306,35 +309,6 @@ export default function CrmReviewPage() {
       <div className="crm-header">
         <h2><ClipboardCheck size={18} /> 跟单中心</h2>
         <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
-        <div className="sales-team-wrap">
-          <button className="crm-btn" onClick={() => setTeamOpen((v) => !v)} title="销售团队名单（认领默认销售）">
-            <Users size={14} /> 销售团队（{salesTeam.length}）{teamOpen ? '▴' : '▾'}
-          </button>
-          {teamOpen && (
-            <div className="sales-team-drop">
-              <div className="sales-team-drop__title">
-                在职销售 {salesTeam.length} 人
-                {mySalesName ? <em>当前认领默认：{mySalesName}</em> : null}
-              </div>
-              {salesTeam.length === 0 && <div className="customer-picker__empty">暂无销售成员</div>}
-              {salesTeam.map((m) => (
-                <div key={m.name} className="sales-team-drop__row">
-                  <button className="sales-team-drop__pick" onClick={() => { setMySalesName(m.name); setTeamOpen(false) }}>
-                    {m.name}
-                    <em>{m.orderCount} 单 · ¥{m.amount.toLocaleString()}</em>
-                  </button>
-                  <button className="sales-team-drop__rm" title="移除（离职）" onClick={() => void removeSalesMember(m.name)}>移除</button>
-                </div>
-              ))}
-              <div className="sales-team-drop__add">
-                <input placeholder="添加销售（输入姓名）" value={addSalesName}
-                  onChange={(e) => setAddSalesName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void addSalesMember() }} />
-                <button className="crm-btn" onClick={() => void addSalesMember()}>添加</button>
-              </div>
-            </div>
-          )}
-        </div>
         <div className="cws-tabs">
           {([['payments', '💰 款项认领'], ['logistics', '🚚 物流跟单']] as const).map(([key, label]) => (
             <button key={key} className={`cws-tab ${reviewTab === key ? 'active' : ''}`} onClick={() => setReviewTab(key)}>{label}</button>
@@ -342,58 +316,11 @@ export default function CrmReviewPage() {
         </div>
         <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
       </div>
+      {/* 「今天要办」一行摘要（设计稿屏 4）：数据从现有 queues/payments 计算，零新接口 */}
+      <div className="review-verdict">
+        今天要办：<b>{todayClaimable}</b> 笔今日到款待认领 · <b>{logiLinked.length}</b> 单物流待签收 · <b>{queues.invoices.length}</b> 张发票待开
+      </div>
       {notice && <div className="crm-notice">{notice}</div>}
-
-
-      {reviewTab === 'logistics' && (
-      <>
-      <section>
-        <h3>扫描群聊（{groups.filter((g) => Number(g.enabled) === 1).length}/{groups.length} 启用）· 物流发货 / 货款认领固定群</h3>
-        {groups.map((g) => (
-          <div key={g.id} className="crm-card">
-            <span>{g.group_name} <em className="gtype">{TYPE_LABELS[String(g.group_type)] || g.group_type}</em></span>
-            <select value={String(g.group_type)} onChange={(e) => void retypeGroup(g, e.target.value)}>
-              <option value="logistics">物流发货</option>
-              <option value="payment">货款认领</option>
-              <option value="order">订单截图</option>
-            </select>
-            <label className="gswitch"><input type="checkbox" checked={Number(g.enabled) === 1} onChange={(e) => void toggleGroup(g, e.target.checked)} /> 启用</label>
-          </div>
-        ))}
-        <button className="crm-btn" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
-      </section>
-
-      {showPick && (
-        <div className="crm-modal">
-          <div className="crm-modal-body">
-            <h3>筛选扫描群聊 <button className="crm-btn" onClick={() => setShowPick(false)}><X size={14} /></button></h3>
-            <input className="crm-search" placeholder="搜索群聊名称 / ID" value={pickSearch} onChange={(e) => setPickSearch(e.target.value)} />
-            <div className="pick-list">
-              {groupSessions
-                .filter((x) => !groups.some((g) => g.group_id === x.username))
-                .filter((x) => {
-                  const q = pickSearch.trim().toLowerCase()
-                  if (!q) return true
-                  return String(x.displayName || '').toLowerCase().includes(q) || String(x.username || '').toLowerCase().includes(q)
-                })
-                .slice(0, 50)
-                .map((x) => (
-                  <div key={x.username} className="crm-card">
-                    <span>{x.displayName || x.username}</span>
-                    <select value={pickType[String(x.username)] || 'payment'} onChange={(e) => setPickType((m) => ({ ...m, [String(x.username)]: e.target.value }))}>
-                      <option value="payment">货款认领</option>
-                      <option value="logistics">物流发货</option>
-                      <option value="order">订单截图</option>
-                    </select>
-                    <button className="crm-btn primary" onClick={() => void addGroup(x)}>添加并扫描</button>
-                  </div>
-                ))}
-            </div>
-          </div>
-        </div>
-      )}
-      </>
-      )}
 
       {reviewTab === 'logistics' && (
       <section>
@@ -593,6 +520,85 @@ export default function CrmReviewPage() {
           </div>
         ))}
         </section>
+      )}
+
+      {/* 「管理」折叠区（设计稿屏 4）：扫描群聊设置 + 销售团队管理收编于此，默认收起，功能原样 */}
+      <button className="review-fold" onClick={() => setManageOpen((v) => !v)}>
+        <span>⚙️ 管理（扫描群聊设置 / 销售团队）</span>
+        <span>{manageOpen ? '收起 ▲' : '展开 ▼'}</span>
+      </button>
+      {manageOpen && (
+        <div className="review-manage">
+          <section>
+            <h3>销售团队（{salesTeam.length}）<em className="logi-stats">{mySalesName ? `当前认领默认：${mySalesName}` : '点成员名可设为认领默认'}</em></h3>
+            <div className="sales-team-drop sales-team-drop--inline">
+              <div className="sales-team-drop__title">
+                在职销售 {salesTeam.length} 人
+                {mySalesName ? <em>当前认领默认：{mySalesName}</em> : null}
+              </div>
+              {salesTeam.length === 0 && <div className="customer-picker__empty">暂无销售成员</div>}
+              {salesTeam.map((m) => (
+                <div key={m.name} className="sales-team-drop__row">
+                  <button className="sales-team-drop__pick" onClick={() => setMySalesName(m.name)}>
+                    {m.name}
+                    <em>{m.orderCount} 单 · ¥{m.amount.toLocaleString()}</em>
+                  </button>
+                  <button className="sales-team-drop__rm" title="移除（离职）" onClick={() => void removeSalesMember(m.name)}>移除</button>
+                </div>
+              ))}
+              <div className="sales-team-drop__add">
+                <input placeholder="添加销售（输入姓名）" value={addSalesName}
+                  onChange={(e) => setAddSalesName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void addSalesMember() }} />
+                <button className="crm-btn" onClick={() => void addSalesMember()}>添加</button>
+              </div>
+            </div>
+          </section>
+          <section>
+            <h3>扫描群聊（{groups.filter((g) => Number(g.enabled) === 1).length}/{groups.length} 启用）· 物流发货 / 货款认领固定群</h3>
+            {groups.map((g) => (
+              <div key={g.id} className="crm-card">
+                <span>{g.group_name} <em className="gtype">{TYPE_LABELS[String(g.group_type)] || g.group_type}</em></span>
+                <select value={String(g.group_type)} onChange={(e) => void retypeGroup(g, e.target.value)}>
+                  <option value="logistics">物流发货</option>
+                  <option value="payment">货款认领</option>
+                  <option value="order">订单截图</option>
+                </select>
+                <label className="gswitch"><input type="checkbox" checked={Number(g.enabled) === 1} onChange={(e) => void toggleGroup(g, e.target.checked)} /> 启用</label>
+              </div>
+            ))}
+            <button className="crm-btn" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
+          </section>
+        </div>
+      )}
+      {showPick && (
+        <div className="crm-modal">
+          <div className="crm-modal-body">
+            <h3>筛选扫描群聊 <button className="crm-btn" onClick={() => setShowPick(false)}><X size={14} /></button></h3>
+            <input className="crm-search" placeholder="搜索群聊名称 / ID" value={pickSearch} onChange={(e) => setPickSearch(e.target.value)} />
+            <div className="pick-list">
+              {groupSessions
+                .filter((x) => !groups.some((g) => g.group_id === x.username))
+                .filter((x) => {
+                  const q = pickSearch.trim().toLowerCase()
+                  if (!q) return true
+                  return String(x.displayName || '').toLowerCase().includes(q) || String(x.username || '').toLowerCase().includes(q)
+                })
+                .slice(0, 50)
+                .map((x) => (
+                  <div key={x.username} className="crm-card">
+                    <span>{x.displayName || x.username}</span>
+                    <select value={pickType[String(x.username)] || 'payment'} onChange={(e) => setPickType((m) => ({ ...m, [String(x.username)]: e.target.value }))}>
+                      <option value="payment">货款认领</option>
+                      <option value="logistics">物流发货</option>
+                      <option value="order">订单截图</option>
+                    </select>
+                    <button className="crm-btn primary" onClick={() => void addGroup(x)}>添加并扫描</button>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
