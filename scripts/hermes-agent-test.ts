@@ -59,15 +59,18 @@ async function waitTask(taskId: string, timeoutMs = 4000): Promise<HermesTask | 
   }
 }
 
-/** fake AI：按脚本逐轮返回（脚本项 = 字符串或 (轮次) => 字符串） */
-function scriptCompletion(script: Array<string>, opts?: { firstDelayMs?: number }): { deps: HermesAgentDeps; count: () => number } {
+/** fake AI：按脚本逐轮返回（脚本项 = 字符串或 (轮次) => 字符串）；
+ *  captured() 汇总历轮发往模型的全部消息内容（出站脱敏断言用） */
+function scriptCompletion(script: Array<string>, opts?: { firstDelayMs?: number }): { deps: HermesAgentDeps; count: () => number; captured: () => string } {
   let i = 0
-  const completion: HermesCompletion = async (_messages, _timeoutMs, _signal) => {
+  let seen = ''
+  const completion: HermesCompletion = async (messages, _timeoutMs, _signal) => {
+    seen += messages.map((m) => m.content).join('\n') + '\n'
     const idx = i++
     if (idx === 0 && opts?.firstDelayMs) await new Promise((r) => setTimeout(r, opts.firstDelayMs!))
     return script[Math.min(idx, script.length - 1)]
   }
-  return { deps: { configured: () => true, completion }, count: () => i }
+  return { deps: { configured: () => true, completion }, count: () => i, captured: () => seen }
 }
 
 /** fake 工具（记录调用；可带证据返回；ok=false 模拟执行失败） */
@@ -155,8 +158,9 @@ async function main(): Promise<void> {
     ])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
-    ok('a6 白名单外工具被拒（零执行、步骤 error），改道白名单工具后任务完成',
+    ok('a6 白名单外工具被拒（零执行、步骤 error、标签用通用「执行查询」不透出模型伪造工具名），改道白名单工具后任务完成',
       t?.status === 'completed' && t.steps[0].status === 'error' && t.steps[0].tool === 'db.execute' &&
+      t.steps[0].label === '执行查询' &&
       ft.calls.length === 1 && ft.calls[0].tool === 'customer.search')
   }
 
@@ -253,6 +257,93 @@ async function main(): Promise<void> {
     const t = await waitTask(cont.task!.taskId)
     ok('a25 continue 重置 dataRetries：追问轮无据抢答被纠偏（而非直接 failed）后正常完成',
       t?.status === 'completed' && t.result?.summary === '追问结论OK' && t.evidence.some((e) => e.ref === 'e2'))
+  }
+
+  // a26 失败查询闭锁：任何工具失败后 unresolvedToolFailure=true，后续成功查询才解除；
+  // 闭锁未解除时借旧证据（e1）输出 complete 一律拒绝，补做一次成功查询后才可完成
+  {
+    const ft = makeFakeTools([
+      { name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] },
+      { name: 'chat.recent', ok: false, summary: '聊天记录读取失败' }
+    ])
+    const sc = scriptCompletion([
+      TOOL_CALL('customer.search'),
+      TOOL_CALL('chat.recent'),
+      COMPLETE('借旧证据下结论', ['e1']),
+      TOOL_CALL('customer.search', { query: '重试补查' }),
+      COMPLETE('补查后结论', ['e1', 'e2'])
+    ])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a26 失败查询未澄清 → 借旧证据 complete 被拒（补一次成功查询解除闭锁后才完成）',
+      t?.status === 'completed' && t.result?.summary === '补查后结论' && sc.count() === 5 && t.evidence.length === 2)
+  }
+
+  // a26b 闭锁语义两翼：第一轮闭锁未解除坚持 complete → failed（旧证据替不了失败的新查询）；
+  // continueTask 开新一轮清零闭锁，追问轮引用既有证据（无新查询）重新允许（与 a13b 同口径）
+  {
+    const ft = makeFakeTools([
+      { name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] },
+      { name: 'chat.recent', ok: false, summary: '聊天记录读取失败' }
+    ])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), TOOL_CALL('chat.recent'), COMPLETE('第一轮借旧证据', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t1 = await waitTask(start.task!.taskId)
+    ok('a26b-1 闭锁下坚持 complete → failed（失败查询零证据 + 旧证据不可替）',
+      t1?.status === 'failed' && t1.errorCode === 'ai_invalid_output' && !t1.result)
+    const sc2 = scriptCompletion([COMPLETE('追问轮引用既有证据', ['e1'])])
+    const cont = await hermesAgentService.continueTask(start.task!.taskId, '那现在呢', { ...sc2.deps, tools: ft.tools })
+    const t = await waitTask(cont.task!.taskId)
+    ok('a26b-2 continueTask 清零失败闭锁：追问轮引用既有证据可完成',
+      t?.status === 'completed' && t.result?.summary === '追问轮引用既有证据')
+  }
+
+  // a27 出站脱敏（goal）：目标文本里的当前 sessionId（自定义微信号形态）/wxid/手机号
+  // 不出现在任何模型消息——sessionId 走精确替换，wxid/手机号走 maskPrivateText
+  {
+    const SID = 'wang9231217'
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: 'x' }), COMPLETE('会话目标结论', ['e1'])])
+    const start = await hermesAgentService.startTask(
+      { goal: `客户 wxid_secret_88 手机 13800138000 会话 ${SID} 想买叉车`, context: { kind: 'chat', sessionId: SID } },
+      { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a27 出站脱敏：goal 中的当前 sessionId/wxid/手机号零出现在模型消息（只改发往模型的副本）',
+      t?.status === 'completed' && !sc.captured().includes(SID) &&
+      !sc.captured().includes('wxid_secret_88') && !sc.captured().includes('13800138000'))
+  }
+
+  // a28 出站脱敏（工具结果端到端，真实白名单 + 脏客户名）：客户 name 是自定义微信号（存量脏数据）→
+  // 模型消息里的 data 字段与证据 label 零原值；本机库原值与任务证据表保持原文（只脱发往模型的副本）
+  {
+    const dirty = 'zhang923121'
+    const now2 = Date.now()
+    crmDbService.create('account', { name: dirty, owner_sales: '杨青', session_id: 'wxid_dirty_row', created_at: now2, updated_at: now2 })
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: dirty }), COMPLETE('脏名客户结论', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: '帮我看看这个客户' }, { ...sc.deps })
+    const t = await waitTask(start.task!.taskId)
+    const byId = hermesAgentService.getTask(start.task!.taskId)
+    ok('a28 出站脱敏：客户名为自定义微信号 → 模型消息（data/证据 label）零原值；库原值与本地证据表不动',
+      t?.status === 'completed' && !sc.captured().includes(dirty) && sc.captured().includes('***') &&
+      (byId?.evidence ?? []).some((e) => e.label.includes(dirty)) &&
+      crmDbService.accountSearchByName(dirty, 0).length === 1)
+  }
+
+  // a29 步骤标签固定人话：已知工具 label 固定 publicLabel（模型 reason 绝不上标签），
+  // reason 显式含内部工具 ID 时，快照展示字段（label/summary/证据/结论/错误文案）零内部 ID（step.tool 内部字段保留）
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', publicLabel: '客户搜索', summary: '查询完成' }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: 'x' }, 'customer.search 查一下'), COMPLETE('标签结论')])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    const visible = JSON.stringify({
+      steps: t?.steps.map(({ tool, ...rest }) => rest),
+      evidence: t?.evidence,
+      result: t?.result,
+      errorMessage: t?.errorMessage
+    })
+    ok('a29 步骤 label 固定 publicLabel：reason 含内部工具 ID 也不出现在用户可见快照（内部字段 step.tool 保留）',
+      t?.status === 'completed' && t.steps[0].label === '调用客户搜索' && !visible.includes('customer.search'))
   }
 
   // a19 逐条 finding 都必须有有效引用：一条绑定伪造编号 → 拒绝纠偏，补齐后才接受
