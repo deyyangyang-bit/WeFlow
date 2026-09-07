@@ -1501,13 +1501,25 @@
 
 - **协议 `shared/hermesProtocol.ts` v1（唯一真源）**：Main→Utility（init/restore/task.start/task.continue/task.cancel/task.get/host.response/shutdown/ping）与 Utility→Main（ready/task.response/task.progress/task.checkpoint/host.request/fatal/pong）两消息族；**严格键集递归校验**（`isMainToUtilityMessage`/`isUtilityToMainMessage`，多余字段=边界违规硬拒绝）；**工具结果在途证据 `HermesBridgeEvidence`（无 ref 无 messageKey）**——ref 是 Utility 消费时才分配的登记号，桥接阶段不存在，出现在工具结果=违规拒绝；checkpoint 脱敏形态（`HermesCheckpoint`：goal/context/conversation/evidenceByRef/nextEvidenceSeq/okToolCalls，**无 status/result/steps**——Utility 恢复已收尾任务一律重建为 completed 可继续追问态，展示真源在 Main 缓存）；协议版本不一致 → Utility 发 fatal(protocol_mismatch) → Manager 直接 unavailable **不消耗重启预算**。
 - **Utility 入口 `electron/hermes/hermesUtilityEntry.ts`**：只承载 Agent Loop（复用 `hermesAgentCore`，唯一 Loop 真源）+ 任务运行时（内存 Map，上限 50 FIFO）；**零数据库访问、零模型出网、零持久化**——模型补全与工具执行一律 `host.request` 回宿主（requestId 关联 + 超时 + abort 兜底）；`init` 下发九工具清单仅公开元数据（run 占位永不本地调用）；每任务一个 Core 实例（completion/executeTool 闭包绑定 taskId，多任务并发不串线）；Utility 侧 maskText/maskId 恒等（**不掌握脱敏函数与规则**）；parentPort 关闭或收到 shutdown → 自行退出。**测试注入缝**：`runHermesUtility(port)` 纯函数 + `process.parentPort` 自动引导；`scripts/hermes-utility-child-shim.cjs`（仅动态测试经 `--require` 预载）用 child_process IPC 模拟 parentPort 的 MessageEvent 形态，同一入口 TS 被真实 fork。
-- **Main Manager `electron/hermes/hermesUtilityManager.ts`（零 electron 依赖，fork 经 `HermesUtilityFork` 注入）**：`utilityProcess.fork` + ready 握手 + 请求关联/超时 + start/continue/cancel/get + 进度转发 + 心跳（15s ping，35s 无回应判异常）+ checkpoint 保存（**≤50 份 FIFO**）+ 异常退出检测 + **每应用生命周期至多一次重启**（500ms 延迟）+ shutdown（通知 → 至多等 2s → kill）；状态固定四态 starting/ready/unavailable/stopped；快照缓存 ≤50。**宿主三闸**：①模型走现有 `ConfigService`/`getAiModelConfig`/`callChatCompletion`（**API Key 绝不进 Utility**），出网前 `maskOutboundTextForBridge` 最终隐私检查 + sessionId 精确替换，每请求独立 AbortController；②工具执行重校验工具名（白名单外拒绝）+ 参数 + capabilityContextId（无映射/不匹配 → forbidden），**只有具体数据库读取进现有 `enqueueSalesTask`（Agent Loop 绝不整体入队）**，结果回传前 `maskDataCopyForBridge` 再脱敏 + 证据条目显式重建（messageKey 结构性排除）；③`capabilityContextId` 是不透明 ID，**真实 identity/accountId/sessionId 映射只存 Main `capContexts` Map**。取消：abort 在途模型请求 + 通知 Utility + **在途工具结果丢弃**（回传 cancelled、不登记证据、不产生完成步骤）。
+- **Main Manager `electron/hermes/hermesUtilityManager.ts`（零 electron 依赖，fork 经 `HermesUtilityFork` 注入）**：`utilityProcess.fork` + ready 握手 + 请求关联/超时 + start/continue/cancel/get + 进度转发 + 心跳（15s ping，35s 无回应判异常）+ checkpoint 保存（**≤50 份 FIFO**）+ 异常退出检测 + **每应用生命周期至多一次重启**（500ms 延迟）+ shutdown（通知 → 至多等 2s → kill）；状态固定四态 starting/ready/unavailable/stopped；快照缓存 ≤50。**宿主三闸**：①模型走现有 `ConfigService`/`getAiModelConfig`/`callChatCompletion`（**API Key 绝不进 Utility**），出网前 `maskOutboundTextForBridge` 最终隐私检查 + sessionId 精确替换，每请求独立 AbortController；②工具执行重校验工具名（白名单外拒绝）+ 参数 + capabilityContextId（无映射/不匹配 → forbidden），**只有具体数据库读取进现有 `enqueueSalesTask`（Agent Loop 绝不整体入队）**，结果回传前 `maskDataCopyForBridge` 再脱敏 + 证据条目显式重建（messageKey 结构性排除）；③`capabilityContextId` 是不透明 ID，**真实 identity/sessionId 映射只存 Main `capContexts` Map**（`accountId` 按协议作为工具锚点随上下文进 Utility；identity/sessionId/API Key 绝不进）。取消：abort 在途模型请求 + 通知 Utility + **在途工具结果丢弃**（回传 cancelled、不登记证据、不产生完成步骤）。
 - **接线 `electron/main.ts` + `vite.config.ts`**：四 IPC handler + `hermes:task:progress` 事件改调 Manager（渲染层/preload/`electron.d.ts` 零改动）；whenReady 时 `hermesUtilityManager.start()`（未就绪期报 `agent_starting`）；`shutdownAppServices` **第一步**结束 Utility（铁律：Utility 必须在数据库服务关闭前结束）；vite 新增 `hermesUtilityEntry` 入口（`entryFileNames: 'hermesUtilityEntry.js', codeSplitting: false`，产物仅 Core+协议——已验证产物零 salesDbService/callChatCompletion/apiKey/better-sqlite 痕迹）。
 - **错误文案分层**：Manager 级 `MANAGER_ERROR`（`agent_starting`「Hermes 正在启动，请稍后再试。」/`agent_unavailable`「Hermes 暂时不可用，请重启应用后再试。」/`protocol_mismatch`「Hermes 组件版本不一致，请重新安装或升级应用。」/`timeout`「本次分析超时，请稍后重试。」）与 Core 级 `FRIENDLY_ERROR` 分层。
 - **动态测试 `scripts/hermes-utility-test.ts`（113 断言 / 13 场景，全部真 fork Utility）**：①ready+v1 握手 ②start→工具→模型→complete（prompt 零 wxid 真值、工具 ctx 拿到真实 identity/sessionId）③progress 顺序（planning→running→completed）④白名单外工具 Main 拒绝（forbidden 改道）⑤畸形消息/错误版本拒绝 ⑥模型期间取消（AbortController 中断）⑦工具期间取消+结果丢弃（在途请求回传 cancelled、零证据零完成步骤）⑧首次崩溃自动重启回 ready（旧子进程退出、新子进程存活、服务继续）⑨已收尾任务跨重启恢复+继续追问（checkpoint 还原对话/证据，追问走新模型脚本）⑩运行中任务崩溃 → failed/agent_unavailable ⑪二次崩溃 fail closed → unavailable、startTask/continueTask 拒绝、不启第三个子进程 ⑫shutdown 无孤儿进程、之后拒绝新任务 ⑬静态红线（入口零 electron/DB/AI/配置/队列/日志/旧服务壳 import；main.ts 构造 Manager、不 import 旧 Agent；vite 含新入口）。harness 捕获 Main→Utility 消息序列支撑协议断言。
 - **协议测试**：`hermes-protocol-test` 175→**176**（i3c 改为无 ref 在途证据通过 + i3d 工具结果证据带 ref 拒绝——修复任务 2 遗留的桥接期矛盾：`isHermesProtocolEvidence` 曾要求 ref，而桥接工具结果证据在 Utility 分配 ref 前不可能携带）。
-- **刻意行为注记（Utility 模式与旧进程内模式的差异）**：①用户可见证据 label 为脱敏形态（工具结果出宿主前已再脱敏）；②聊天证据 messageKey 跳转锚点留 Main，**不过进程边界**（快照/checkpoint/校验器三层结构性排除，UI eN 引用协议不变）；③goal 原文按协议明文过进程边界（校验器允许，进程边界即信任边界——宿主与 Utility 同机同用户）。
+- **刻意行为注记（边界终态见 §2.88）**：跨进程一切任务文本与证据均为脱敏形态——原文 goal/contextLabel 与原始证据锚点（含 messageKey）只存 Main，UI 快照由 Main 合并恢复原貌；进程边界即信任边界（宿主与 Utility 同机同用户）。
 - **验证**：`npx tsx scripts/hermes-utility-test.ts` **113/113**；`hermes-protocol` **176/0**；`hermes-agent` **95/0**；hermes-ask 40 / hermes-ask-data 42 / knowledge-governance 57 / owner-filter 28 / customer-workspace-simple 37 / settings-nav 59 全绿；tsc root **0 错误** / node **158 基线零新增**（hermes 新文件零报错）/ `npx tsc -b tsconfig.node.json` 报错均为未触碰的基线文件 / `npx vite build` ✓ 产物 `dist-electron/hermesUtilityEntry.js`（25.6KB，含 Core+协议、引用面干净）。
+
+## 2.88 Hermes Utility 宿主边界补修：任务文本脱敏过界 + 证据锚点回查 + 在途操作收尾 + 版本 fail closed（2026-09-08，commit `fix: close Hermes utility host boundaries`）
+
+> 基于 §2.87（e5a3af1）的四项宿主边界缺口闭合。协议仍为 v1（`evidenceHandle` 为可选新增字段，严格键集校验放行；`HERMES_PROTOCOL_VERSION` 不变）。
+
+- **任务文本脱敏后才过进程边界**：`task.start`/`task.continue` 的 goal/question 在 Main 经 `maskOutboundTextForBridge`（maskText + 该任务宿主 sessionId 精确替换）后下发；Utility 侧 `context.label` 恒为通用「全局/当前会话/当前客户」，客户名/会话标识不入 Utility。原文 goal/contextLabel 只存 Main `rawTextByTask`，progress 快照合并时恢复原文供 UI——**UI 永不显示脱敏文本**；任务淘汰同步删除原文。
+- **证据锚点（messageKey 真源回查）**：Main 桥对每条原始证据分配不透明 `evh-*` `evidenceHandle`，原始证据（含 messageKey）存 `evidenceAnchorsByTask`；跨进程证据只带 handle（messageKey 结构性排除 + 校验器拒绝 messageKey 形态/路径分隔符形态的 handle 值）。Utility 以 eN ref 消费并回传 ref+handle；Main `uiSnapshot` 按 ref/handle 从锚点表恢复原始证据（label 原文 + messageKey 本地跳转锚点，本地回查能力与进程内模式一致），无锚点条目只保留脱敏展示面。checkpoint 永不携带 handle/messageKey——Main 的 ref 锚点在 Main 内存存活，跨 Utility 崩溃恢复后仍按 ref 恢复；任务淘汰删全部锚点表。
+- **shutdown 等待在途宿主操作**：`shutdown()` 幂等（memoized promise）；顺序 = 拒新 host.request（shuttingDown 守卫）→ abort 全部在途模型 AbortController → 通知 Utility → 至多 2s 宽限 → kill → **等全部在途宿主操作（`hostOps` 跟踪）落定才返回**；卡死的工具读库依赖 main.ts 既有 5s `app.exit` 兜底，shutdown 不提前返回、不早关数据库。**child 亲和**：宿主响应只回给发起请求的 child（`respondHost` 校验 child 一致），崩溃/替换后旧请求的延迟结果一律丢弃，绝不发给新 child。
+- **协议版本 fail closed**：`onChildMessage` 在严格校验前先检查数值 `protocolVersion` ≠ 当前 → 立即 `enterUnavailable` + kill 当前 child，**不自动重启、不消耗重启预算**（版本不一致重试无用）；unavailable 状态一切 host.request 被拒（回 `agent_unavailable`，在途请求可收尾不悬挂）。消息/退出监听按 child+generation 绑定，旧进程迟到消息（含错误版本消息）一律在监听层忽略，不误触 fail closed。
+- **测试 `hermes-utility-test` 113→161 断言 / 13→17 场景**：t2 反转（UI 证据经锚点恢复 messageKey 原值；Main→Utility 与 Utility→Main 双向消息全量扫描零 messageKey）；新增 t2b（goal 含手机号/身份证/wxid/sessionId/客户名 → task.start 零敏感值 + 通用标签 + UI 快照保留原文 + 模型出站零原值）；t5 反转（畸形消息不致命仍 ready；数值版本不一致 → 立即 fail closed：child 被 kill、不重启、startTask 拒绝）；t9 增补（restore checkpoint 无 messageKey/handle；崩溃恢复后 Main 锚点仍恢复 messageKey）；新增 t14（模型在途 shutdown → 请求被 abort；工具在途 → shutdown 不提前 resolve、收尾后完成）/t15（崩溃重启后旧请求延迟结果零回传、重启后零宿主响应）/t16（假 child 模拟旧版本 ready → 立即 fail closed + kill + 不重启 + unavailable 拒绝工具执行）/t17（旧 child 迟到的 progress 与旧版本消息一律忽略）。**4 项突变验证**（去 child 亲和 / 去版本 fail-closed / 去 hostOps 等待 / 去 handle 分配）分别被对应场景捕获。
+- **协议测试 `hermes-protocol-test` 176→182**（i3e-i3j：桥接/快照证据允许不透明 handle；messageKey 形态与路径分隔符 handle 拒绝；快照证据 messageKey 仍拒绝；checkpoint 证据携带 handle 拒绝）。
+- **验证**：utility **161/161**、protocol **182/0**、agent **95/0**；tsc root **0 错误** / node **158 基线零新增**（hermes 零报错）/ `npx vite build` ✓ / `git diff --check` 干净。
 
 
 
@@ -1747,7 +1759,7 @@
 |------|------|
 | `salesStage.ts` | **阶段语义层**（§2.24 新建，零依赖纯模块）：`STAGE_CANONICAL`/`FUNNEL_ORDER`、`normalizeStage`（中英→canonical 幂等）、`stageLabel`/`funnelBucket`/`stageToFunnel`。DB 不迁移，UI/统计统一归桶 |
 | `customerEvent.ts` | **客户事件唯一语义源**（§2.35 E3.1 新建，零依赖纯模块）：`CUSTOMER_EVENT_TYPES` 五类型（customer_replied/quote_asked/script_copied/chat_opened/follow_up_done）+ `isCustomerEventType` 守卫（防万能日志表，DB CHECK 之外第一道 TS 拦截）+ `customerEventCategory` 分类派生（customer/action，只读不加列）+ `CustomerEventRecord`（message_key 复用 P0-2B 证据锚点；**§2.36 P0-4.2.1 加 `task_id` 行动轴**——correlation key 非合法性前置，无任务上下文 NULL 不伪造） |
-| `hermesProtocol.ts` | **Hermes 跨进程协议 v1 唯一真源**（§2.87）：Main↔Utility 两消息族 + 严格键集递归校验器 + `HermesBridgeEvidence`（工具结果在途证据，无 ref 无 messageKey）+ 脱敏 checkpoint 形态 |
+| `hermesProtocol.ts` | **Hermes 跨进程协议 v1 唯一真源**（§2.87）：Main↔Utility 两消息族 + 严格键集递归校验器 + `HermesBridgeEvidence`（工具结果在途证据，无 ref 无 messageKey）+ `evidenceHandle` 不透明锚点回查句柄（§2.88，messageKey 形态值拒绝）+ 脱敏 checkpoint 形态（无 handle） |
 
 ### 后端 `electron/services/`
 | 文件 | 说明 |
@@ -1790,8 +1802,8 @@
 ### 后端 `electron/hermes/`（§2.87 UtilityProcess 架构）
 | 文件 | 说明 |
 |------|------|
-| `hermesUtilityEntry.ts` | Utility 入口：Agent Loop 宿主（Core+运行时，零 DB/零模型出网，一律 host.request 回宿主）；`runHermesUtility(port)` 纯函数 + parentPort 自动引导 |
-| `hermesUtilityManager.ts` | Main Manager（唯一可信宿主）：fork/握手/心跳/至多一次重启/四态 + 宿主三闸（Key 不出 Main、白名单与 capId 重校验、结果再脱敏）；零 electron 依赖（fork 注入） |
+| `hermesUtilityEntry.ts` | Utility 入口：Agent Loop 宿主（Core+运行时，零 DB/零模型出网，一律 host.request 回宿主；快照透传 evidenceHandle）；`runHermesUtility(port)` 纯函数 + parentPort 自动引导 |
+| `hermesUtilityManager.ts` | Main Manager（唯一可信宿主，§2.88）：fork/握手/心跳/至多一次重启/四态 + 宿主三闸（Key 不出 Main、白名单与 capId 重校验、结果再脱敏）+ 任务文本脱敏过界与原文锚点（rawTextByTask/evidenceAnchorsByTask/refAnchorsByTask）+ shutdown 等在途宿主操作 + child 亲和 + 版本 fail closed（不重启）+ generation 绑定；零 electron 依赖（fork 注入） |
 
 ### 前端 `src/`
 | 文件 | 说明 |
@@ -1822,7 +1834,7 @@
 ### 测试脚本 `scripts/`
 | 文件 | 说明 |
 |------|------|
-| `hermes-utility-test.ts` | **Hermes UtilityProcess 动态测试**（§2.87，**113 断言/13 场景**，真 fork Utility 入口 TS）：握手/全链路/progress/白名单/畸形消息/取消×2/崩溃重启×2/恢复/fail closed/shutdown/静态红线 |
+| `hermes-utility-test.ts` | **Hermes UtilityProcess 动态测试**（§2.87-88，**161 断言/17 场景**，真 fork Utility 入口 TS）：握手/全链路+锚点恢复/文本脱敏过界/progress/白名单/畸形消息+版本 fail closed/取消×2/崩溃重启×2/恢复+锚点存活/shutdown 等在途操作/child 亲和/旧版本假 child/迟到消息忽略/静态红线 |
 | `hermes-utility-child-shim.cjs` | 动态测试专用 IPC shim（`--require` 预载）：child_process IPC 模拟 parentPort 的 MessageEvent 形态，生产不加载 |
 | `crm-workbench-test.ts` | CRM 业务闭环单测（**48 项**：归属/签约/导入/聚合/成交/删除/到款审核/去重） |
 | `crm-golden-test.ts` | 规则 golden 测试（**31 项**，含 isDealSignal） |

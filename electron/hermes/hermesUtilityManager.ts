@@ -32,6 +32,7 @@ import { maskPrivateText } from '../services/crmSla2Service'
 import {
   HERMES_TOOLS,
   maskStructuredId,
+  type HermesEvidence,
   type HermesToolContext,
   type HermesToolDef,
   type HermesToolResult
@@ -169,6 +170,8 @@ export class HermesUtilityManager {
 
   private state: HermesUtilityState = 'stopped'
   private child: HermesUtilityChild | null = null
+  /** child 世代号：消息/退出监听绑定具体 child，旧进程迟到消息一律忽略 */
+  private generation = 0
   private seq = 0
   private readonly snapshots = new Map<string, HermesTask>()
   private readonly checkpoints = new Map<string, HermesCheckpoint>()
@@ -184,9 +187,19 @@ export class HermesUtilityManager {
   private readonly listeners = new Set<ProgressListener>()
   private restartedOnce = false
   private shuttingDown = false
+  private shutdownPromise: Promise<void> | null = null
   private readyTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private lastPongAt = 0
+  /** Main 保存的原始任务文本（goal/contextLabel 原文，仅供本地 UI 快照；跨进程一律脱敏形态） */
+  private readonly rawTextByTask = new Map<string, { goal: string; contextLabel: string }>()
+  /** taskId → (evidenceHandle → 原始证据含 messageKey)；跨进程证据只带 handle，锚点只存 Main */
+  private readonly evidenceAnchorsByTask = new Map<string, Map<string, HermesEvidence>>()
+  /** taskId → (eN ref → 原始证据)；Utility 上报 ref+handle 时建立，UI 快照按 ref 恢复 messageKey */
+  private readonly refAnchorsByTask = new Map<string, Map<string, HermesEvidence>>()
+  private evidenceHandleSeq = 0
+  /** 在途宿主操作（model.complete / tool.execute）；shutdown 等全部收尾后才返回 */
+  private readonly hostOps = new Set<Promise<unknown>>()
 
   constructor(deps: HermesUtilityManagerDeps) {
     this.forkProcess = deps.forkProcess
@@ -217,15 +230,21 @@ export class HermesUtilityManager {
   /** fork 并发起握手（start 与异常退出重启共用；调用方负责状态守卫） */
   private beginFork(): void {
     this.state = 'starting'
+    const gen = ++this.generation
     try {
       const child = this.forkProcess(this.entryPath)
       this.child = child
       child.on('message', (msg) => {
+        // 世代绑定：只有当前 child 的消息进处理（旧进程/已替换 child 的迟到消息一律忽略）
+        if (this.generation !== gen || this.child !== child) return
         try { this.onChildMessage(msg) } catch (e) {
           this.log('WARN', `Utility 消息处理异常: ${(e as Error)?.message || e}`)
         }
       })
-      child.on('exit', (code) => this.onChildExit(code))
+      child.on('exit', (code) => {
+        if (this.generation !== gen || this.child !== child) return
+        this.onChildExit(code)
+      })
       this.sendToUtility({
         protocolVersion: HERMES_PROTOCOL_VERSION,
         id: createHermesMessageId(),
@@ -270,7 +289,8 @@ export class HermesUtilityManager {
     const taskId = `hermes-${now}-${++this.seq}`
     const capId = `hctx-${now}-${this.seq}`
     const ctx = input.context?.kind === 'chat' || input.context?.kind === 'customer' ? input.context : { kind: 'global' as const }
-    // capabilityContextId → 真实上下文映射只存 Main（identity/sessionId 绝不下发 Utility）
+    // capabilityContextId → 真实上下文映射只存 Main（identity/sessionId 绝不下发 Utility；
+    // accountId 按协议随上下文进 Utility 作工具锚点）
     const cap: CapContext = {
       identity: this.identityFn(),
       accountId: ctx.kind === 'customer' ? Number(ctx.accountId || 0) || undefined : undefined,
@@ -280,17 +300,25 @@ export class HermesUtilityManager {
     this.capContexts.set(capId, cap)
     this.taskCap.set(taskId, capId)
     this.modelAborts.set(taskId, new Set())
+    // 原始任务文本只存 Main（UI 快照真源）；跨进程 goal 一律脱敏（maskText + 当前宿主
+    // sessionId 精确替换）；Utility 侧标签只用通用「全局/当前会话/当前客户」
+    this.rawTextByTask.set(taskId, { goal, contextLabel: input.contextLabel || defaultContextLabel(ctx) })
+    this.evidenceAnchorsByTask.set(taskId, new Map())
+    this.refAnchorsByTask.set(taskId, new Map())
+    const exact = new Map<string, string>()
+    if (cap.sessionId) exact.set(cap.sessionId, '***')
+    const wireGoal = maskOutboundTextForBridge(goal, exact, this.maskTextFn)
     const protoCtx: HermesUtilityContext = {
       kind: ctx.kind,
       capabilityContextId: capId,
       ...(cap.accountId !== undefined ? { accountId: cap.accountId } : {}),
-      label: input.contextLabel || defaultContextLabel(ctx)
+      label: defaultContextLabel(ctx)
     }
     const task: HermesTask = {
       taskId,
       status: 'planning',
       goal,
-      contextLabel: protoCtx.label,
+      contextLabel: input.contextLabel || defaultContextLabel(ctx),
       steps: [],
       evidence: [],
       createdAt: now
@@ -302,7 +330,7 @@ export class HermesUtilityManager {
       id: createHermesMessageId(),
       type: 'task.start',
       taskId,
-      goal,
+      goal: wireGoal,
       context: protoCtx
     })
     this.emit(task)
@@ -331,12 +359,17 @@ export class HermesUtilityManager {
     }
     this.snapshots.set(snap.taskId, running)
     this.emit(running)
+    // 追问文本同样在 Main 脱敏后才下发（maskText + 该任务宿主 sessionId 精确替换）
+    const contCapId = this.taskCap.get(snap.taskId)
+    const contCap = contCapId ? this.capContexts.get(contCapId) : undefined
+    const contExact = new Map<string, string>()
+    if (contCap?.sessionId) contExact.set(contCap.sessionId, '***')
     this.sendToUtility({
       protocolVersion: HERMES_PROTOCOL_VERSION,
       id: createHermesMessageId(),
       type: 'task.continue',
       taskId: snap.taskId,
-      question: q
+      question: maskOutboundTextForBridge(q, contExact, this.maskTextFn)
     })
     const ack = await this.waitTaskAck(snap.taskId, 'continue')
     if (!ack.ok) {
@@ -378,8 +411,16 @@ export class HermesUtilityManager {
     return { ok: true, task: cancelled }
   }
 
-  /** 关闭：通知 Utility → 至多等宽限期 → kill。必须在数据库服务关闭之前调用（main.ts 退出流程） */
-  async shutdown(): Promise<void> {
+  /** 关闭（幂等，memoized）：拒绝新宿主请求 → abort 在途模型 → 通知并停止 Utility →
+   *  等已进入 Main 的 tool/model 宿主操作全部收尾后才返回。必须在数据库服务关闭之前
+   *  调用（main.ts 退出流程）；工具读库卡死时交给外层现有 5s app.exit 兜底，绝不提前
+   *  返回让数据库先关 */
+  shutdown(): Promise<void> {
+    if (!this.shutdownPromise) this.shutdownPromise = this.doShutdown()
+    return this.shutdownPromise
+  }
+
+  private async doShutdown(): Promise<void> {
     this.shuttingDown = true
     this.stopHeartbeat()
     this.clearReadyTimer()
@@ -388,22 +429,30 @@ export class HermesUtilityManager {
       p.resolve({ ok: false, errorCode: 'agent_unavailable' })
     }
     this.pendingAcks.clear()
+    // ① shutdown 已开始：新 host.request 一律拒绝（onHostRequest shuttingDown 守卫）
+    // ② abort 全部在途模型请求（Main 侧真实出网立即中断）
+    for (const set of this.modelAborts.values()) {
+      for (const ac of set) ac.abort()
+    }
+    // ③ 通知 Utility 自行退出 → 至多等宽限期 → kill
     const child = this.child
-    if (!child) {
-      this.state = 'stopped'
-      return
+    if (child) {
+      this.sendToUtility({ protocolVersion: HERMES_PROTOCOL_VERSION, id: createHermesMessageId(), type: 'shutdown' })
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (!this.child) { clearInterval(check); resolve() }
+        }, 25)
+        setTimeout(() => { clearInterval(check); resolve() }, this.timings.shutdownGraceMs)
+      })
+      if (this.child) {
+        try { this.child.kill() } catch { /* 已退出 */ }
+      }
     }
-    this.sendToUtility({ protocolVersion: HERMES_PROTOCOL_VERSION, id: createHermesMessageId(), type: 'shutdown' })
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        if (!this.child) { clearInterval(check); resolve() }
-      }, 25)
-      setTimeout(() => { clearInterval(check); resolve() }, this.timings.shutdownGraceMs)
-    })
-    if (this.child) {
-      try { this.child.kill() } catch { /* 已退出 */ }
-      this.child = null
+    // ④ 等已进入 Main 的宿主操作收尾（abort 已让模型操作尽快落定；工具读库只能等完成）
+    if (this.hostOps.size > 0) {
+      await Promise.allSettled([...this.hostOps])
     }
+    this.child = null
     this.state = 'stopped'
     this.log('INFO', 'Utility 已关闭')
   }
@@ -411,11 +460,19 @@ export class HermesUtilityManager {
   // ── Utility 下行消息 ──────────────────────────────────────────────────────
 
   private onChildMessage(raw: unknown): void {
-    // 入口校验单点：畸形/错误版本一律丢弃（不致命，服务继续可用）
+    // 协议版本 fail-closed（严格校验之前先看版本）：数值版本 ≠ 当前 → 立即 unavailable +
+    // kill 当前 child + 不自动重启（版本不一致重试无用，服务不可继续使用）
+    const v = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>).protocolVersion
+      : undefined
+    if (typeof v === 'number' && v !== HERMES_PROTOCOL_VERSION) {
+      this.log('ERROR', `Utility 协议版本不一致（${String(v)} ≠ ${HERMES_PROTOCOL_VERSION}），fail closed`)
+      this.enterUnavailable()
+      this.killChild()
+      return
+    }
+    // 入口校验单点：畸形消息一律丢弃（不致命，服务继续可用）
     if (!isUtilityToMainMessage(raw)) {
-      const v = raw && typeof raw === 'object' && !Array.isArray(raw)
-        ? (raw as Record<string, unknown>).protocolVersion
-        : undefined
       this.log('WARN', `丢弃 Utility 非法消息（protocolVersion=${String(v)}）`)
       return
     }
@@ -426,7 +483,17 @@ export class HermesUtilityManager {
       case 'task.progress': this.onProgressSnapshot(msg.taskId, msg.snapshot as HermesTask); return
       case 'task.checkpoint': this.onCheckpoint(msg.checkpoint); return
       case 'task.response': this.onTaskResponse(msg); return
-      case 'host.request': void this.onHostRequest(msg.request); return
+      case 'host.request': {
+        // 宿主请求绑定发起时的 child：响应只回给它（child 崩溃重启后，旧请求的延迟结果
+        // 绝不发给新 child）；操作进入 hostOps 跟踪（shutdown 等全部收尾）
+        const childAtRequest = this.child
+        const op = this.onHostRequest(msg.request, childAtRequest).catch((e) => {
+          this.log('WARN', `${msg.request.taskId} host.request 处理异常: ${(e as Error)?.message || e}`)
+        })
+        this.hostOps.add(op)
+        void op.finally(() => { this.hostOps.delete(op) })
+        return
+      }
       case 'fatal': this.onFatal(msg.code, msg.message); return
     }
   }
@@ -525,12 +592,44 @@ export class HermesUtilityManager {
       this.log('WARN', `task.progress taskId 不一致（${taskId} ≠ ${snap.taskId}），丢弃`)
       return
     }
-    this.snapshots.set(taskId, snap)
+    const ui = this.uiSnapshot(taskId, snap)
+    this.snapshots.set(taskId, ui)
     this.evictOldTasks()
-    if (snap.status === 'completed' || snap.status === 'failed' || snap.status === 'cancelled') {
+    if (ui.status === 'completed' || ui.status === 'failed' || ui.status === 'cancelled') {
       this.settled.add(taskId)
     }
-    this.emit(snap)
+    this.emit(ui)
+  }
+
+  /** Utility 快照 → UI 快照合并：①goal/contextLabel 恢复 Main 保存的原文（跨进程是脱敏
+   *  形态，不能让 UI 被脱敏文本覆盖）；②证据按 ref/handle 从 Main 锚点表恢复原始形态
+   *  （含 messageKey 本地回查锚点），无锚点的条目只保留脱敏展示面 */
+  private uiSnapshot(taskId: string, snap: HermesTask): HermesTask {
+    const raw = this.rawTextByTask.get(taskId)
+    const refAnchors = this.refAnchorsByTask.get(taskId)
+    const handleAnchors = this.evidenceAnchorsByTask.get(taskId)
+    const evidence = snap.evidence.map((e) => {
+      const byRef = e.ref ? refAnchors?.get(e.ref) : undefined
+      const byHandle = e.evidenceHandle ? handleAnchors?.get(e.evidenceHandle) : undefined
+      const anchor = byRef ?? byHandle
+      if (anchor) {
+        if (e.ref && refAnchors) refAnchors.set(e.ref, anchor)
+        return { ...anchor, ref: e.ref }
+      }
+      return {
+        ref: e.ref,
+        label: e.label,
+        kind: e.kind,
+        ...(e.entityId !== undefined ? { entityId: e.entityId } : {}),
+        ...(e.excerpt !== undefined ? { excerpt: e.excerpt } : {})
+      }
+    })
+    return {
+      ...snap,
+      goal: raw?.goal ?? snap.goal,
+      contextLabel: raw?.contextLabel ?? snap.contextLabel,
+      evidence
+    }
   }
 
   private onCheckpoint(cp: HermesCheckpoint): void {
@@ -555,8 +654,9 @@ export class HermesUtilityManager {
   private onFatal(code: string, message: string): void {
     this.log('WARN', `Utility fatal: ${code} ${message}`)
     if (code === 'protocol_mismatch') {
-      // 版本不一致重试无用：直接 fail closed（不消耗重启预算）
+      // 版本不一致重试无用：直接 fail closed（不消耗重启预算），并停掉对端
       this.enterUnavailable()
+      this.killChild()
     }
   }
 
@@ -573,34 +673,45 @@ export class HermesUtilityManager {
 
   // ── 宿主能力（Main 唯一可信执行点）─────────────────────────────────────────
 
-  private async onHostRequest(req: HermesHostRequest): Promise<void> {
+  private async onHostRequest(req: HermesHostRequest, child: HermesUtilityChild | null): Promise<void> {
+    // shutdown 已开始 / 非 ready 状态（含版本 fail closed 后的 unavailable）：拒绝一切宿主
+    // 请求执行（不跑模型、不跑工具，立即回错误让 Utility 侧收尾）
+    if (this.shuttingDown || this.state !== 'ready') {
+      this.respondHost(req.requestId, req.taskId, child, {
+        ok: false,
+        error: { code: 'agent_unavailable', message: MANAGER_ERROR.agent_unavailable }
+      })
+      return
+    }
     const capId = this.taskCap.get(req.taskId)
     const cap = capId ? this.capContexts.get(capId) : undefined
     if (!cap) {
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'forbidden', message: '任务上下文不存在或已结束，已拒绝执行。' }
       })
       return
     }
     if (this.cancelledTasks.has(req.taskId)) {
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
       })
       return
     }
     if (req.capability === 'model.complete') {
-      await this.hostModelComplete(req, cap)
+      await this.hostModelComplete(req, cap, child)
       return
     }
-    await this.hostToolExecute(req, cap, capId!)
+    await this.hostToolExecute(req, cap, capId!, child)
   }
 
-  /** 模型补全宿主：API Key 与出网留在 Main；出网前最终隐私检查；每请求独立 AbortController */
+  /** 模型补全宿主：API Key 与出网留在 Main；出网前最终隐私检查；每请求独立 AbortController；
+   *  响应只回给发起请求的 child（亲和） */
   private async hostModelComplete(
     req: Extract<HermesHostRequest, { capability: 'model.complete' }>,
-    cap: CapContext
+    cap: CapContext,
+    child: HermesUtilityChild | null
   ): Promise<void> {
     const exact = new Map<string, string>()
     if (cap.sessionId) exact.set(cap.sessionId, '***')
@@ -613,16 +724,16 @@ export class HermesUtilityManager {
     try {
       const text = await this.modelComplete(safeMessages, req.timeoutMs, ac.signal)
       if (this.cancelledTasks.has(req.taskId)) {
-        this.respondHost(req.requestId, req.taskId, {
+        this.respondHost(req.requestId, req.taskId, child, {
           ok: false,
           error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
         })
         return
       }
-      this.respondHost(req.requestId, req.taskId, { ok: true, text })
+      this.respondHost(req.requestId, req.taskId, child, { ok: true, text })
     } catch (e) {
       const cancelled = this.cancelledTasks.has(req.taskId) || ac.signal.aborted
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: cancelled
           ? { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
@@ -635,14 +746,16 @@ export class HermesUtilityManager {
   }
 
   /** 工具执行宿主：白名单 + capabilityContextId 重校验 → 真实上下文映射 → 只把具体数据库
-   *  读取放进 enqueueSalesTask → 结果回传前再脱敏 */
+   *  读取放进 enqueueSalesTask → 结果回传前再脱敏（原始 messageKey 换成不透明 evidenceHandle
+   *  存 Main 锚点表） */
   private async hostToolExecute(
     req: Extract<HermesHostRequest, { capability: 'tool.execute' }>,
     cap: CapContext,
-    capId: string
+    capId: string,
+    child: HermesUtilityChild | null
   ): Promise<void> {
     if (req.capabilityContextId !== capId) {
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'forbidden', message: '任务上下文不匹配，已拒绝执行。' }
       })
@@ -650,7 +763,7 @@ export class HermesUtilityManager {
     }
     const tool = this.tools.find((t) => t.name === req.tool)
     if (!tool) {
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'not_whitelisted', message: '工具不在白名单内，已拒绝执行。' }
       })
@@ -670,31 +783,45 @@ export class HermesUtilityManager {
     }
     // 取消发生在工具执行期间：结果丢弃（不回传 → Utility 不可能登记证据或产生完成步骤）
     if (this.cancelledTasks.has(req.taskId)) {
-      this.respondHost(req.requestId, req.taskId, {
+      this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
       })
       return
     }
-    this.respondHost(req.requestId, req.taskId, {
+    this.respondHost(req.requestId, req.taskId, child, {
       ok: true,
-      result: this.maskToolResult(tool.name, result, cap.sessionId)
+      result: this.maskToolResult(req.taskId, tool.name, result, cap.sessionId)
     })
   }
 
   /** 工具结果出 Utility 前再脱敏：data 走 Core 同源实现（IDENTITY_FIELD_PATHS 真源共享 +
    *  messageKey 删除 + 敏感值精确收集）；evidence/summary 文本走 maskText + 精确替换；
-   *  证据锚点 messageKey 字段在此彻底剥离（绝不出宿主） */
-  private maskToolResult(toolName: string, result: HermesToolResult, sessionId?: string): HermesProtocolToolResult {
+   *  每条原始证据分配不透明 evidenceHandle（原始 messageKey 只存 Main 锚点表，绝不回传） */
+  private maskToolResult(
+    taskId: string,
+    toolName: string,
+    result: HermesToolResult,
+    sessionId?: string
+  ): HermesProtocolToolResult {
     const exact = new Map<string, string>()
     if (sessionId) exact.set(sessionId, '***')
+    const anchors = this.evidenceAnchorsByTask.get(taskId)
     const data = maskDataCopyForBridge(toolName, result.data ?? null, exact, this.maskTextFn, this.maskIdFn)
-    const evidence = (result.evidence ?? []).map((ev) => ({
-      label: maskOutboundTextForBridge(ev.label, exact, this.maskTextFn),
-      kind: ev.kind,
-      entityId: ev.entityId,
-      excerpt: ev.excerpt !== undefined ? maskOutboundTextForBridge(ev.excerpt, exact, this.maskTextFn) : undefined
-    }))
+    const evidence = (result.evidence ?? []).map((ev) => {
+      let handle: string | undefined
+      if (anchors) {
+        handle = `evh-${Date.now().toString(36)}-${++this.evidenceHandleSeq}`
+        anchors.set(handle, ev)
+      }
+      return {
+        label: maskOutboundTextForBridge(ev.label, exact, this.maskTextFn),
+        kind: ev.kind,
+        entityId: ev.entityId,
+        excerpt: ev.excerpt !== undefined ? maskOutboundTextForBridge(ev.excerpt, exact, this.maskTextFn) : undefined,
+        evidenceHandle: handle
+      }
+    })
     return {
       ok: result.ok,
       data,
@@ -704,11 +831,14 @@ export class HermesUtilityManager {
     }
   }
 
+  /** 回应宿主请求：只发给发起请求的 child（child 已崩溃/被替换 → 丢弃，绝不发给新 child） */
   private respondHost(
     requestId: string,
     taskId: string,
+    child: HermesUtilityChild | null,
     payload: { ok: boolean; text?: string; result?: HermesProtocolToolResult; error?: { code: string; message: string } }
   ): void {
+    if (!child || this.child !== child) return // 亲和失败：旧请求的延迟结果一律丢弃
     const base = { protocolVersion: HERMES_PROTOCOL_VERSION, id: createHermesMessageId(), type: 'host.response' as const, requestId, taskId }
     const msg: MainToUtilityMessage = payload.ok
       ? payload.text !== undefined
@@ -769,6 +899,10 @@ export class HermesUtilityManager {
       this.capContexts.delete(capId)
     }
     this.modelAborts.delete(taskId)
+    // 原始任务文本与证据锚点（含真实 messageKey）随任务淘汰同步删除，Main 侧不留痕
+    this.rawTextByTask.delete(taskId)
+    this.evidenceAnchorsByTask.delete(taskId)
+    this.refAnchorsByTask.delete(taskId)
   }
 }
 

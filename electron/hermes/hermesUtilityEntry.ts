@@ -211,7 +211,8 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     }
   }
 
-  /** 快照 → 协议形态（防御性重建：messageKey 不可能出现在 Utility，此处结构性排除） */
+  /** 快照 → 协议形态（防御性重建：messageKey 不可能出现在 Utility，此处结构性排除；
+   *  evidenceHandle 原样透传——Main 按 taskId+handle 找回原始锚点） */
   function toProtocolSnapshot(rt: HermesAgentTaskRuntime): HermesProtocolTaskSnapshot {
     return {
       taskId: rt.task.taskId,
@@ -224,7 +225,8 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         label: e.label,
         kind: e.kind,
         entityId: e.entityId,
-        excerpt: e.excerpt
+        excerpt: e.excerpt,
+        evidenceHandle: e.evidenceHandle
       })),
       result: rt.task.result
         ? {

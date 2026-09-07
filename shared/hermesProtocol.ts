@@ -88,17 +88,21 @@ export interface HermesProtocolError {
   message: string
 }
 
-/** 协议证据（脱敏形态）：⛔ 无 messageKey 字段（校验器对多余字段硬拒绝） */
+/** 协议证据（脱敏形态）：⛔ 无 messageKey 字段（校验器对多余字段硬拒绝）。
+ *  evidenceHandle 是 Main 桥分配的不透明回查句柄（Main 按 taskId+handle 找回原始
+ *  messageKey/本地证据元数据），可跨进程；messageKey 绝不出宿主 */
 export interface HermesProtocolEvidence {
   ref: string
   label: string
   kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action' | 'result'
   entityId?: number
   excerpt?: string
+  evidenceHandle?: string
 }
 
 /** 工具结果在途证据（host.response tool.execute 分支）：ref 是 Utility 侧消费时才分配的
- *  登记号，桥接阶段不存在——⛔ 无 ref 无 messageKey，校验器对多余字段硬拒绝 */
+ *  登记号，桥接阶段不存在——⛔ 无 ref 无 messageKey；evidenceHandle 为 Main 侧不透明
+ *  回查句柄（原始 messageKey 只存 Main），校验器对多余字段硬拒绝 */
 export type HermesBridgeEvidence = Omit<HermesProtocolEvidence, 'ref'>
 
 /** 工具执行结果（host.response tool.execute 分支 / Main 返回给 Utility 的统一形态） */
@@ -301,10 +305,17 @@ export function isHermesHostRequest(v: unknown): v is HermesHostRequest {
 
 const EVIDENCE_KINDS: readonly string[] = ['customer', 'chat', 'crm', 'knowledge', 'action', 'result']
 
-/** HermesProtocolEvidence 运行时校验（严格键集：⛔ messageKey 等任何多余字段拒绝） */
+/** evidenceHandle 合法性（不透明非空字符串；不得长得像本地锚点） */
+function isEvidenceHandleLike(v: unknown): v is string {
+  if (typeof v !== 'string' || !v.trim()) return false
+  return !v.includes('::') && !v.includes('/') && !v.includes('\\') // messageKey 形态拒绝
+}
+
+/** HermesProtocolEvidence 运行时校验（严格键集：⛔ messageKey 等任何多余字段拒绝；
+ *  evidenceHandle 必须为不透明非空字符串） */
 export function isHermesProtocolEvidence(v: unknown): v is HermesProtocolEvidence {
   if (!isPlainObject(v)) return false
-  const allowed = new Set(['ref', 'label', 'kind', 'entityId', 'excerpt'])
+  const allowed = new Set(['ref', 'label', 'kind', 'entityId', 'excerpt', 'evidenceHandle'])
   for (const k of Object.keys(v)) {
     if (!allowed.has(k)) return false // 多余字段（如 messageKey）= 边界违规，硬拒绝
   }
@@ -313,13 +324,15 @@ export function isHermesProtocolEvidence(v: unknown): v is HermesProtocolEvidenc
   if (!EVIDENCE_KINDS.includes(String(v.kind))) return false
   if (v.entityId !== undefined && (typeof v.entityId !== 'number' || !Number.isFinite(v.entityId))) return false
   if (v.excerpt !== undefined && typeof v.excerpt !== 'string') return false
+  if (v.evidenceHandle !== undefined && !isEvidenceHandleLike(v.evidenceHandle)) return false
   return true
 }
 
-/** 工具结果在途证据校验（无 ref 无 messageKey；ref 由 Utility 消费时分配，出现在工具结果 = 违规） */
+/** 工具结果在途证据校验（无 ref 无 messageKey；ref 由 Utility 消费时分配，出现在工具结果 =
+ *  违规；evidenceHandle 必须为不透明非空字符串） */
 export function isHermesBridgeEvidence(v: unknown): v is HermesBridgeEvidence {
   if (!isPlainObject(v)) return false
-  const allowed = new Set(['label', 'kind', 'entityId', 'excerpt'])
+  const allowed = new Set(['label', 'kind', 'entityId', 'excerpt', 'evidenceHandle'])
   for (const k of Object.keys(v)) {
     if (!allowed.has(k)) return false // ref / messageKey 等多余字段 = 边界违规，硬拒绝
   }
@@ -327,6 +340,7 @@ export function isHermesBridgeEvidence(v: unknown): v is HermesBridgeEvidence {
   if (!EVIDENCE_KINDS.includes(String(v.kind))) return false
   if (v.entityId !== undefined && (typeof v.entityId !== 'number' || !Number.isFinite(v.entityId))) return false
   if (v.excerpt !== undefined && typeof v.excerpt !== 'string') return false
+  if (v.evidenceHandle !== undefined && !isEvidenceHandleLike(v.evidenceHandle)) return false
   return true
 }
 

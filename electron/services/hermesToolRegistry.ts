@@ -41,6 +41,9 @@ export interface HermesEvidence {
   messageKey?: string
   /** 脱敏后的摘句 */
   excerpt?: string
+  /** 不透明回查句柄：只由 Main 桥在跨进程时分配（Main 按 taskId+handle 保留原始
+   *  messageKey 锚点），工具实现与进程内模式永不设置 */
+  evidenceHandle?: string
 }
 
 /** 统一工具输出（任务书 §7 契约） */
@@ -475,4 +478,3 @@ export const HERMES_TOOLS: readonly HermesToolDef[] = [
 export function findHermesTool(name: string): HermesToolDef | undefined {
   return HERMES_TOOLS.find((t) => t.name === name)
 }
-

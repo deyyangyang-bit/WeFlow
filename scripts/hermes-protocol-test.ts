@@ -354,6 +354,36 @@ for (const type of U2M_TYPES) {
       ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
       result: { ok: true, publicSummary: '查到 1 条', evidence: [{ ref: 'e1', label: '客户档案', kind: 'customer', entityId: 5 }] }
     }))
+  ok('i3e host.response.result.evidence 携带不透明 evidenceHandle → 通过（Main 锚点回查句柄）',
+    isMainToUtilityMessage({
+      ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
+      result: { ok: true, publicSummary: '查到 1 条', evidence: [{ label: '客户档案', kind: 'customer', entityId: 5, evidenceHandle: 'evh-abc-123' }] }
+    }))
+  ok('i3f evidenceHandle 为 messageKey 形态（含 ::）→ 拒绝（原始锚点不得借 handle 通道回流）',
+    !isMainToUtilityMessage({
+      ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
+      result: { ok: true, publicSummary: '查到 1 条', evidence: [{ label: 'x', kind: 'chat', evidenceHandle: 'LOCAL::C:/db/test.db::wxid_secret001' }] }
+    }))
+  ok('i3g evidenceHandle 含路径分隔符 → 拒绝',
+    !isMainToUtilityMessage({
+      ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
+      result: { ok: true, publicSummary: '查到 1 条', evidence: [{ label: 'x', kind: 'chat', evidenceHandle: 'LOCAL/db/wxid' }] }
+    }))
+  ok('i3h 快照证据携带 evidenceHandle → 通过（跨进程回传供 Main 恢复原始锚点）',
+    isUtilityToMainMessage({
+      ...base, type: 'task.progress', taskId: 't1',
+      snapshot: { ...SNAPSHOT, evidence: [{ ref: 'e1', label: 'x', kind: 'chat', evidenceHandle: 'evh-abc-123' }] }
+    }))
+  ok('i3i 快照证据携带 messageKey → 仍拒绝',
+    !isUtilityToMainMessage({
+      ...base, type: 'task.progress', taskId: 't1',
+      snapshot: { ...SNAPSHOT, evidence: [{ ref: 'e1', label: 'x', kind: 'chat', messageKey: 'LOCAL::C:/db::wxid' }] }
+    }))
+  ok('i3j checkpoint 证据携带 evidenceHandle → 拒绝（checkpoint 永不携带 handle，锚点只存 Main）',
+    !isUtilityToMainMessage({
+      ...base, type: 'task.checkpoint',
+      checkpoint: { ...CHECKPOINT, evidenceByRef: { ...CHECKPOINT.evidenceByRef, e1: { ...CHECKPOINT.evidenceByRef.e1!, evidenceHandle: 'evh-abc-123' } } }
+    }))
 
   ok('i4a ok=true 同时携带 text 和 result → 拒绝（恰存在一个）',
     !isMainToUtilityMessage({ ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true, text: '模型输出', result: { ok: true, publicSummary: 'x' } }))
