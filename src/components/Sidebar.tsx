@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, MessageCircleQuestion, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, Bot, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-import { useKnowledgeAskStore } from '../stores/knowledgeAskStore'
+import { useHermesStore } from '../stores/hermesStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
 
@@ -21,7 +21,7 @@ interface SidebarUserProfile {
 // 动作项不参与 active 高亮（active 样式只属于真实路由项）
 type NavItemDef =
   | { label: string; path: string; icon: LucideIcon }
-  | { label: string; icon: LucideIcon; action: 'openKnowledgeAsk' }
+  | { label: string; icon: LucideIcon; action: 'openHermes' }
 interface NavGroupDef { key: string; label: string; items: NavItemDef[] }
 
 const NAV_GROUPS: NavGroupDef[] = [
@@ -36,7 +36,7 @@ const NAV_GROUPS: NavGroupDef[] = [
   ] },
   { key: 'review', label: '跟单', items: [{ label: '跟单中心', path: '/crm-review', icon: ClipboardCheck }] },
   { key: 'ai', label: 'AI / 知识', items: [
-    { label: '问一问', icon: MessageCircleQuestion, action: 'openKnowledgeAsk' },
+    { label: 'Hermes', icon: Bot, action: 'openHermes' },
     { label: '重要提醒', path: '/insight-inbox', icon: Sparkles },
     { label: '知识库', path: '/knowledge-base', icon: BookOpen },
     { label: '评测标注', path: '/eval-annotate', icon: ClipboardList }
@@ -347,7 +347,7 @@ function Sidebar({ collapsed }: SidebarProps) {
   }
   // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
-  const openKnowledgeAsk = useKnowledgeAskStore((s) => s.openKnowledgeAsk)
+  const openHermes = useHermesStore((s) => s.openHermes)
   // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮
   const groupActive = (items: NavItemDef[]) => items.some((i) => 'path' in i && isActive(i.path))
   const renderNavItem = (item: NavItemDef, child = false) => {
@@ -358,7 +358,7 @@ function Sidebar({ collapsed }: SidebarProps) {
           key={item.label}
           type="button"
           className={`nav-item ${child ? 'nav-item--child' : ''}`}
-          onClick={() => { if (item.action === 'openKnowledgeAsk') openKnowledgeAsk() }}
+          onClick={() => { if (item.action === 'openHermes') openHermes() }}
           title={collapsed ? item.label : undefined}
           aria-label={item.label}
         >

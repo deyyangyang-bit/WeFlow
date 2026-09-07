@@ -441,6 +441,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     arch: process.arch
   },
 
+  // Hermes 只读智能体（设计-Hermes-MVP 智能体第一刀）：任务四接口 + 进度事件。
+  // 零发送类通道：hermes 命名空间内没有任何 send 类 IPC，AI 碰不到发送键。
+  hermes: {
+    startTask: (payload: {
+      goal: string
+      context?: { kind: 'global' } | { kind: 'chat'; sessionId?: string } | { kind: 'customer'; accountId?: number; sessionId?: string }
+      contextLabel?: string
+    }) => ipcRenderer.invoke('hermes:task:start', payload),
+    continueTask: (payload: { taskId: string; question: string }) =>
+      ipcRenderer.invoke('hermes:task:continue', payload),
+    cancelTask: (taskId: string) => ipcRenderer.invoke('hermes:task:cancel', taskId),
+    getTask: (taskId: string) => ipcRenderer.invoke('hermes:task:get', taskId),
+    // 进度事件：返回退订函数（只移除本次注册的 listener）
+    onTaskProgress: (callback: (task: unknown) => void) => {
+      const listener = (_: unknown, task: unknown) => callback(task)
+      ipcRenderer.on('hermes:task:progress', listener as never)
+      return () => ipcRenderer.removeListener('hermes:task:progress', listener as never)
+    }
+  },
+
   // 数据分析
   analytics: {
     getOverallStatistics: (force?: boolean) => ipcRenderer.invoke('analytics:getOverallStatistics', force),

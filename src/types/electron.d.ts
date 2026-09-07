@@ -1,5 +1,57 @@
 import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
 
+// ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
+export interface HermesEvidenceItem {
+  label: string
+  kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action'
+  /** 知识库条目 id / account id / 行动卡 id（真实查得） */
+  entityId?: number
+  /** 聊天证据回查锚点（P0-2B canonical messageKey，真实查得） */
+  messageKey?: string
+  excerpt?: string
+  /** 证据编号（e1..en；任务内唯一，模型只能引用编号） */
+  ref?: string
+}
+
+export interface HermesTaskStepItem {
+  label: string
+  status: 'running' | 'done' | 'error'
+  tool?: string
+  publicSummary?: string
+}
+
+export interface HermesTaskSnapshot {
+  taskId: string
+  status: 'planning' | 'running' | 'completed' | 'failed' | 'cancelled'
+  goal: string
+  contextLabel: string
+  steps: HermesTaskStepItem[]
+  evidence: HermesEvidenceItem[]
+  result?: { summary: string; findings: string[]; nextSteps: string[] }
+  errorCode?: string
+  errorMessage?: string
+  createdAt: number
+}
+
+export interface HermesTaskStartResult {
+  ok: boolean
+  task?: HermesTaskSnapshot
+  errorCode?: string
+}
+export interface HermesTaskGetResult {
+  ok: boolean
+  task?: HermesTaskSnapshot
+  errorCode?: string
+}
+export interface HermesTaskCancelResult {
+  ok: boolean
+  task?: HermesTaskSnapshot
+}
+export type HermesTaskContextOption =
+  | { kind: 'global' }
+  | { kind: 'chat'; sessionId?: string }
+  | { kind: 'customer'; accountId?: number; sessionId?: string }
+
 export interface SessionChatWindowOpenOptions {
   source?: 'chat' | 'export'
   initialDisplayName?: string
@@ -1124,6 +1176,20 @@ export interface ElectronAPI {
       md5?: string
       error?: string
     }>
+  }
+  // ─── Hermes 只读智能体（设计-Hermes-MVP 智能体第一刀）：只读任务四接口 + 进度事件 ──
+  // 零发送类通道：AI 碰不到发送键；任务真源在主进程内存（不落盘）
+  hermes: {
+    startTask: (payload: {
+      goal: string
+      context?: HermesTaskContextOption
+      contextLabel?: string
+    }) => Promise<HermesTaskStartResult>
+    continueTask: (payload: { taskId: string; question: string }) => Promise<HermesTaskStartResult>
+    cancelTask: (taskId: string) => Promise<HermesTaskCancelResult>
+    getTask: (taskId: string) => Promise<HermesTaskGetResult>
+    /** 进度事件：返回退订函数（只移除本次注册的 listener） */
+    onTaskProgress: (callback: (task: HermesTaskSnapshot) => void) => () => void
   }
   analytics: {
     getOverallStatistics: (force?: boolean) => Promise<{

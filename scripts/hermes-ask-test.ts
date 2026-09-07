@@ -133,13 +133,15 @@ async function main(): Promise<void> {
   ok('g6 无命中分支：「知识库里没有答案」+ 生成知识提案按钮（刀 4 已接活：调 kbPropose、不再置灰「下一版」）',
     panelSrc.includes('知识库里没有答案') && panelSrc.includes('生成知识提案') &&
     panelSrc.includes('kbPropose') && !panelSrc.includes('下一版'))
-  ok('g7 入口①：聊天页会话侧栏挂问知识库入口（调全局打开方法，面板在 App 级挂载）',
-    readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('title="问知识库"') &&
-    /kb-ask-btn[\s\S]{0,200}openKnowledgeAsk\(\)/.test(readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8')))
-  ok('g8 入口②：客户档案「AI 工具」下拉挂问知识库（调全局打开方法，面板在 App 级挂载）',
+  ok('g7 入口①：聊天页会话侧栏挂 Hermes 入口（带会话上下文 openHermes，面板在 App 级挂载）',
+    (() => {
+      const chat = readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8')
+      return chat.includes('title="Hermes"') && /openHermes\(\{ kind: 'chat'/.test(chat)
+    })())
+  ok('g8 入口②：客户档案「AI 工具」下拉挂「让 Hermes 分析」（带客户上下文 openHermes，面板在 App 级挂载）',
     (() => {
       const cws = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8')
-      return cws.includes('问知识库') && /setShowAiTools\(false\); openKnowledgeAsk\(\)/.test(cws)
+      return cws.includes('让 Hermes 分析') && /openHermes\(\{ kind: 'customer'/.test(cws)
     })())
 
   const mainSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
@@ -159,31 +161,31 @@ async function main(): Promise<void> {
   const leadSrc = readFileSync(join(ROOT, 'src/pages/CrmLeadPage.tsx'), 'utf8')
   const assignSrc = readFileSync(join(ROOT, 'electron/services/crmAssignmentService.ts'), 'utf8')
 
-  // h1 侧边栏 AI / 知识分组第一项 = 「问一问」
+  // h1 侧边栏 AI / 知识分组第一项 = 「Hermes」（问一问升级为 Hermes 智能体入口）
   const aiGroup = sidebarSrc.slice(sidebarSrc.indexOf("key: 'ai'"), sidebarSrc.indexOf("key: 'report'"))
-  ok('h1 Sidebar AI / 知识分组含「问一问」且为第一项',
-    aiGroup.includes("label: '问一问'") &&
-    aiGroup.indexOf("label: '问一问'") < aiGroup.indexOf("label: '重要提醒'") &&
+  ok('h1 Sidebar AI / 知识分组含「Hermes」且为第一项',
+    aiGroup.includes("label: 'Hermes'") &&
+    aiGroup.indexOf("label: 'Hermes'") < aiGroup.indexOf("label: '重要提醒'") &&
     aiGroup.indexOf("label: '重要提醒'") < aiGroup.indexOf("label: '知识库'"))
 
-  // h2 「问一问」是动作项：NAV_GROUPS 声明 action 无 path；渲染走 button + 全局打开方法，不走 NavLink
-  ok('h2 「问一问」为动作项（action: openKnowledgeAsk、无 path），渲染为 button 不跳路由',
-    /label: '问一问', icon: \w+, action: 'openKnowledgeAsk' \}/.test(sidebarSrc) &&
-    /if \('action' in item\)[\s\S]{0,600}type="button"[\s\S]{0,300}openKnowledgeAsk\(\)/.test(sidebarSrc) &&
-    !/NavLink[\s\S]{0,80}问一问/.test(sidebarSrc))
+  // h2 「Hermes」是动作项：NAV_GROUPS 声明 action 无 path；渲染走 button + 全局打开方法，不走 NavLink
+  ok('h2 「Hermes」为动作项（action: openHermes、无 path），渲染为 button 不跳路由',
+    /label: 'Hermes', icon: \w+, action: 'openHermes' \}/.test(sidebarSrc) &&
+    /if \('action' in item\)[\s\S]{0,600}type="button"[\s\S]{0,300}openHermes\(\)/.test(sidebarSrc) &&
+    !/NavLink[\s\S]{0,80}Hermes/.test(sidebarSrc))
 
-  // h3 App.tsx 恰好挂载一份 App 级 KnowledgeAskPanel
-  ok('h3 App.tsx 只挂载一个 App 级 KnowledgeAskPanel（消费 knowledgeAskStore）',
-    (appSrc.match(/<KnowledgeAskPanel /g) || []).length === 1 &&
-    appSrc.includes("import KnowledgeAskPanel from './components/sales/KnowledgeAskPanel'") &&
-    appSrc.includes("from './stores/knowledgeAskStore'") &&
-    /<KnowledgeAskPanel open=\{isKnowledgeAskOpen\} onClose=\{closeKnowledgeAsk\} \/>/.test(appSrc))
+  // h3 App.tsx 恰好挂载一份 App 级 HermesPanel（三入口统一消费；组件内部自消费 hermesStore）
+  ok('h3 App.tsx 只挂载一个 App 级 HermesPanel（三入口统一入口）',
+    (appSrc.match(/<HermesPanel \/>/g) || []).length === 1 &&
+    appSrc.includes("import HermesPanel from './components/hermes/HermesPanel'") &&
+    !appSrc.includes('<KnowledgeAskPanel'))
 
-  // h4/h5/h6 旧入口统一走全局打开方法，页面不再各自渲染面板实例
-  ok('h4 ChatPage 旧入口调用全局打开方法 openKnowledgeAsk',
-    chatSrc.includes('useKnowledgeAskStore') && /onClick=\{\(\) => openKnowledgeAsk\(\)\}/.test(chatSrc))
-  ok('h5 CustomerWorkspacePage 旧入口调用全局打开方法 openKnowledgeAsk',
-    cwsSrc.includes('useKnowledgeAskStore') && /setShowAiTools\(false\); openKnowledgeAsk\(\)/.test(cwsSrc))
+  // h4/h5/h6 入口统一走 openHermes 并注入上下文，页面不再各自渲染面板实例
+  ok('h4 ChatPage 入口调 openHermes 并注入 chat 上下文（sessionId + 会话名）',
+    chatSrc.includes('useHermesStore') && /openHermes\(\{ kind: 'chat'[\s\S]{0,200}sessionName/.test(chatSrc))
+  ok('h5 CustomerWorkspacePage 入口调 openHermes 并注入 customer 上下文（accountId + 客户名）',
+    cwsSrc.includes('useHermesStore') &&
+    /openHermes\(\{ kind: 'customer'[\s\S]{0,240}accountId[\s\S]{0,200}customerName/.test(cwsSrc))
   ok('h6 ChatPage / CustomerWorkspacePage 不再各自渲染重复面板实例',
     !chatSrc.includes('<KnowledgeAskPanel') && !cwsSrc.includes('<KnowledgeAskPanel') &&
     !chatSrc.includes('askPanelOpen') && !cwsSrc.includes('askPanelOpen'))

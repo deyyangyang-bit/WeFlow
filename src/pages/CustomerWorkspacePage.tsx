@@ -18,8 +18,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, BookOpen } from 'lucide-react'
-import { useKnowledgeAskStore } from '../stores/knowledgeAskStore'
+import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, Bot } from 'lucide-react'
+import { useHermesStore } from '../stores/hermesStore'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
@@ -206,8 +206,8 @@ export default function CustomerWorkspacePage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
   // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
   const [showAiTools, setShowAiTools] = useState(false)
-  // 刀 3 问知识库入口（档案「AI 工具」下拉）：面板已提升为 App 级单例，这里只调全局打开方法
-  const openKnowledgeAsk = useKnowledgeAskStore((s) => s.openKnowledgeAsk)
+  // Hermes 智能体入口（档案「AI 工具」下拉）：App 级单例抽屉，带着当前客户上下文打开
+  const openHermes = useHermesStore((s) => s.openHermes)
   const [foldTimeline, setFoldTimeline] = useState(false)
   const [foldProfile, setFoldProfile] = useState(false)
   const [foldBiz, setFoldBiz] = useState(false)
@@ -606,7 +606,7 @@ export default function CustomerWorkspacePage() {
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openKnowledgeAsk() }}><BookOpen size={12} /> 问知识库</button>
+                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
                   </div>
                 )}
               </div>

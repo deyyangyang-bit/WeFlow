@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2, BookOpen } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2, BookOpen, Bot } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -47,7 +47,7 @@ import './ChatPage.scss'
 import CustomerCard from '../components/sales/CustomerCard'
 import ReplySuggestion from '../components/sales/ReplySuggestion'
 import SalesContextStrip from '../components/sales/SalesContextStrip'
-import { useKnowledgeAskStore } from '../stores/knowledgeAskStore'
+import { useHermesStore } from '../stores/hermesStore'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -1681,8 +1681,8 @@ function ChatPage(props: ChatPageProps) {
   const [isResizing, setIsResizing] = useState(false)
   const [isMarkingAllSessionsRead, setIsMarkingAllSessionsRead] = useState(false)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
-  // 刀 3 问知识库入口（会话侧栏）：面板已提升为 App 级单例，这里只调全局打开方法
-  const openKnowledgeAsk = useKnowledgeAskStore((s) => s.openKnowledgeAsk)
+  // Hermes 智能体入口（会话侧栏）：App 级单例抽屉，带着当前会话上下文打开
+  const openHermes = useHermesStore((s) => s.openHermes)
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false)
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
@@ -7898,14 +7898,18 @@ function ChatPage(props: ChatPageProps) {
               >
                 {isMarkingAllSessionsRead ? <Loader2 size={16} className="spin" /> : <CheckSquare size={16} />}
               </button>
-              {/* 刀 3 问知识库入口（会话侧栏；面板只产答案，无发送通道） */}
+              {/* Hermes 智能体入口（会话侧栏；带着当前会话上下文打开，只读分析无发送通道） */}
               <button
                 className="icon-btn refresh-btn kb-ask-btn"
-                onClick={() => openKnowledgeAsk()}
-                title="问知识库"
-                aria-label="问知识库"
+                onClick={() => {
+                  const sid = String(currentSessionId || '')
+                  const sess = sessions.find((x) => x.username === sid)
+                  openHermes({ kind: 'chat', sessionId: sid, sessionName: displayNameOrFallback(sid, sess?.displayName) })
+                }}
+                title="Hermes"
+                aria-label="Hermes"
               >
-                <BookOpen size={16} />
+                <Bot size={16} />
               </button>
             </div>
           </div>

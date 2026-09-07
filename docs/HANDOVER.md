@@ -1454,6 +1454,33 @@
 - **验证**：tsc root 0 错误 / node 158 基线零新增 + `tsc -b` 产物重建（E101 新文案已入 .js 产物）/ vite build ✓ / hermes-ask 40 + settings-nav 59 + hermes-ask-data 42 + knowledge-governance 47 + customer-workspace-simple 37 + lead-assignment-view 56 全绿。
 - **遗留**：light/dark 双模式与 collapsed 侧边栏真机目验（样式全 token 继承）；`/chat-window` 独立聊天窗口本就无会话侧栏入口，不受单例化影响（该窗口不挂面板，与改前可达行为一致）。
 
+## 2.84 旧库升级阻断修复：knowledge_base 治理迁移索引时序（2026-09-07，commit 1）
+
+> **故障**：SCHEMA_SQL 先建 `idx_kb_status`（引用 status 列）再跑治理 ALTER——新装库正常（SCHEMA_SQL 自带九列），**存量旧账号**（治理前的旧库无 status 列）二次启动在 doInitialize 报 `no such column: status` 中断初始化，应用不可用。修复 = 三层防护 + 真实旧库升级测试。
+
+- **修复内容**（`electron/services/salesDbService.ts` 三处）：① 移除 SCHEMA_SQL 中过早的 `idx_kb_status`（治理索引延迟到 ALTER 完成后建）；② 新增 `isDuplicateColumnError()`（识别 SQLite `duplicate column name` 错误）——ALTER 幂等忽略的唯一依据，**其余迁移报错一律 salesLog('ERROR') + throw**（不静默吞真实故障）；③ ALTER 后强校验 `tableColumns('knowledge_base')` 九治理列齐备（缺列启动中止提示从自动备份恢复），随后建 `idx_kb_status(status, updated_at)` + `migrateKnowledgeGovernance()` + **persistNow() 立即落盘**（迁移成果不依赖 500ms 防抖窗口，二次启动确定性幂等）。
+- **公共读口 `tableColumns(table)`**：PRAGMA table_info 包装（失败返回 []），供迁移校验与未来迁移复用。
+- **迁移语义不变**：`migrateKnowledgeGovernance` 只补 NULL/空串（staging/community/v1/manual），published/rejected 行零触碰；九字段幂等 ALTER 保留。
+- **测试**（`scripts/knowledge-governance-test.ts` 47→**57**，新增 g1-g10）：raw sql.js 构造治理前置旧库（knowledge_base 仅 9 旧字段 + 旧版 follow_up_task/customer_profile/intent_tag_log，存量 2 行）→ `reopenForWxid(legacyDir)` 走完整升级链 → 存量行保留/九列诞生/默认值正确/落盘后磁盘 PRAGMA 验证/索引存在于 sqlite_master/kbReview 可发布/二次 reopen 幂等（published 不被踩回）/migrateKnowledgeGovernance 零补写/SCHEMA_SQL 无早建索引（源码级）/索引创建位于 ALTER 之后。测试真实性经「注回早建索引复现原故障」验证（测试在 doInitialize 精确抛 `no such column`）。
+- **验证**：tsc root 0 / node 158 基线零新增 / knowledge-governance 57 + hermes-ask 40 + hermes-ask-data 42 + persist-guard 36 + settings-nav 59 全绿 / vite build ✓。
+
+## 2.85 Hermes 只读智能体第一刀（2026-09-07，commit 2）
+
+> **定位升级**：「问一问」（刀 3/5 单轮问答）→「Hermes」只读智能体——用户提交销售目标 → 模型理解上下文 → 制定计划 → 白名单工具多步骤执行 → 证据核验 → 结构化建议。**只读**：零发送类 IPC、AI 结论不写库、任务状态不落盘（主进程内存）。依据 `docs/设计-Hermes-MVP.md` 智能体刀。
+
+- **深模块 `electron/services/hermesAgent.ts`**（对外仅四接口 `startTask/continueTask/cancelTask/getTask`；prompt 格式、严格 JSON 协议、工具校验、重试、证据核验、限制全部内藏）：真实多步骤 Agent Loop——模型输出 `{type:'tool_call',tool,arguments,reason}` / `{type:'complete',summary,findings,nextSteps,evidenceRefs}` 单一 JSON（容忍 ``` 围栏但字段严格校验）；**非法 JSON 纠正重试至多 1 次**（超限 failed `ai_invalid_output`）；**白名单外工具拒绝执行**（回喂错误让模型改道）；**重复同工具同参数不执行**（防绕圈烧步数）；**上限 6 次工具调用 / 90s deadline**（超限 failed，`Date.now() > deadlineAt` 安全点检查）；**取消**（cancelTask 置标志 + AbortController，loop 在 completion 前后安全点丢弃在途结果，已收尾任务不受取消影响）；任务内存 Map 上限 50 FIFO。
+- **证据防伪造（铁律）**：工具每次执行返回的 evidence 由 agent 登记 `e1..en` 编号表（`evidenceByRef` Map 真源）；模型 complete 只能引用编号，**引用不存在的编号一律丢弃**——result.evidence 只含真实工具返回。AI 结论仅供参考（UI 固定 disclaimer），永不写 stage/judgment。
+- **工具白名单 `electron/services/hermesToolRegistry.ts`**（`HERMES_TOOLS` 唯一真源，恰六工具，全部复用既有读口零新查询）：`customer.search`（accountSearchByName）｜`customer.current_view`（getById('account')+getCustomerCurrentView）｜`chat.recent`（getById 校验归属 → chatService.getMessages → **maskPrivateText 脱敏前置**+逐条 200 字截断，每条带 messageKey 证据锚点）｜`crm.customer_business`（opportunityList+contractsByAccount）｜`action.pending`（todoList，与刀 5 runTodayActions 同口径）｜`knowledge.search`（extractKeywords+kbSearchPublished，SQL 级只查 published）。工具输出统一 `{ok,data?,evidence?,publicSummary,errorCode?}`。**owner 过滤唯一语义源 shared/ownerFilter**：客户类工具先取 account 行过 filterByOwner（contract 无 owner 列经 account 归属带出），无权/不存在统一 `not_found`「没有找到这个客户（可能不在你的客户范围内）」——不泄露无权客户存在性。
+- **权限上下文**：身份 `getIdentity()` startTask 时定格进 runtime（模型不可指定身份）；customer/chat/global 三态上下文经 toolContext 传给工具（customer 注入 accountId 锚点引导模型先查客户；**sessionId 只是提示锚点绝非授权凭据**——客户读取一律走 account 行归属校验）。
+- **队列与铁律**：工具读库统一经 `enqueueSalesTask` 串行（防原生 WCDB 并发）；**Loop 本体不入队**——AI 调用是网络 IO 不碰 WCDB，90s Loop 整体入队会阻塞其他 sales 任务；Loop 不在队列内故工具入队无死锁。
+- **失败人话（`FRIENDLY_ERROR` 唯一映射出口）**：not_configured（配置指引）/ timeout（「用时太长，请换个更具体的目标」）/ too_many_steps（「拆得更具体」）/ ai_invalid_output、ai_error、internal（统一「暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。」）——UI 绝不出现 SQL/IPC/堆栈/路径。
+- **IPC**：`hermes:task:start/continue/cancel/get` + `hermes:task:progress` 事件（main.ts 注册 onProgress → 主窗口 webContents.send；preload `onTaskProgress` 返回**精确退订函数** removeListener，不用 removeAllListeners）；preload `hermes` 命名空间零 send 类通道；electron.d.ts 同步 HermesTaskSnapshot/EvidenceItem/StepItem 等类型。
+- **前端**：`src/stores/hermesStore.ts`（zustand：`isHermesOpen`/`context: global|chat|customer`/`lastTaskId`）——**打开全局入口上下文必须变 global**、切换入口不清任务锚点（关闭抽屉/切路由不丢任务，重开按 lastTaskId 经 task:get 恢复）。三入口统一 `openHermes(context)`：Sidebar「问一问」→「Hermes」（Bot 图标动作项，无参=global，不伪造 active）；ChatPage 会话侧栏（Bot 图标，注入 `{kind:'chat',sessionId,sessionName}`）；CustomerWorkspacePage「AI 工具」下拉「问知识库」→「让 Hermes 分析」（注入 `{kind:'customer',accountId,sessionId,customerName}`）。
+- **`src/components/hermes/HermesPanel.tsx`**（App 级唯一实例，右侧抽屉 520px + 轻遮罩，常驻挂载 hidden 控制显隐）：五态=空闲（上下文相关推荐目标 chips）/运行（**只渲染主进程推送的真实步骤**，无步骤显示「正在规划查询步骤」不伪造动画）/完成（结论+发现+建议+证据列表「eN」）/失败（errorMessage 人话）/追问（completed 后 continueTask 带摘要窗口，窗口 16 条 + goal 首条永留）；运行中提供「停止」（cancelTask）；样式零硬编码 hex（--color-* / --danger token，light/dark 自适应）。**旧 KnowledgeAskPanel 摘除挂载**（文件暂留未使用，kbAsk/kbAskData 底层能力保留复用）。
+- **测试 `scripts/hermes-agent-test.ts`（**44/44**，新增）**：a 组 Agent Loop 动态 16（fake completion+fake tools 注入：多步骤循环/围栏解析/重试 1 次/白名单外拒绝/伪造 evidenceRefs 丢弃/步数上限/重复调用跳过/取消丢弃在途/快照隔离/多轮继续/busy 拒绝/任务留存）；b 组权限动态 11（真实 HERMES_TOOLS+/tmp 副本库：owner 三态/管理全见/not_found 不泄露存在性/staging 绝不出现/白名单恰 6 且零写语义）；c 组上下文动态 7（三态上下文进 toolContext/hermesStore 打开全局=global、切入口不清任务）；d 组 UI 静态护栏 10（面板零发送 IPC/五态文案/scss 零 hex/preload 零 send/旧面板摘除/主进程零写路径/FRIENDLY_ERROR 全人话）。e 组（旧库迁移）由 knowledge-governance-test g1-g10 覆盖。hermes-ask-test g7/g8/h1-h5 随架构同步收紧为 HermesPanel 语义（「唯一实例、三入口统一、无发送」断言语义不变）。
+- **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / 回归：hermes-agent 44（新）+ knowledge-governance 57 + hermes-ask 40 + hermes-ask-data 42 + persist-guard 36 + settings-nav 59 + customer-workspace-simple 37 + owner-filter 28 全绿。
+- **遗留**：真实模型端到端联调（本刀测试全用注入 fake/真实只读工具，未打真实 AI 端点）；chat.recent 依赖微信库连接（未连接诚实返回 chat_unavailable）；证据 UI 回查（messageKey → getEvidenceByKey 拉原话）留待下一刀；任务不跨进程重启持久（by design，内存态）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
