@@ -79,22 +79,30 @@ export default function HermesPanel() {
   const taskRef = useRef<HermesTaskSnapshot | null>(null)
   taskRef.current = task
 
-  // 打开抽屉：按 lastTaskId 恢复任务视图（关闭/切路由不丢任务）
+  // 打开/切换上下文：先清空本地视图（新上下文无任务时绝不残留上一上下文的正文），
+  // 再按当前上下文锚点恢复；恢复返回时上下文又已切换则放弃（锚点仍在，切回可恢复）
   useEffect(() => {
     if (!isOpen) return
-    const tid = lastTaskId
-    if (!tid) return
+    setTask(null)
+    if (!lastTaskId) return
     let disposed = false
-    void window.electronAPI.hermes.getTask(tid).then((r) => {
-      if (!disposed && r.ok && r.task) setTask(r.task)
+    void window.electronAPI.hermes.getTask(lastTaskId).then((r) => {
+      const cur = useHermesStore.getState()
+      if (disposed || !r.ok || !r.task) return
+      if (contextKeyOf(cur.context) !== contextKeyOf(context)) return
+      setTask(r.task)
     })
     return () => { disposed = true }
-  }, [isOpen, lastTaskId])
+  }, [isOpen, lastTaskId, context])
 
-  // 进度订阅：全程挂载期订阅（面板 hidden 不退订，路由切换不丢推送）
+  // 进度订阅：全程挂载期订阅（面板 hidden 不退订，路由切换不丢推送）。
+  // 只接受「当前上下文锚点任务」的推送——本上下文没有锚点时一律丢弃，
+  // 其他上下文的后台任务进度绝不会灌进当前视图（taskRef 为空也不再放行）。
   useEffect(() => {
     return window.electronAPI.hermes.onTaskProgress((t) => {
-      if (taskRef.current && t.taskId !== taskRef.current.taskId) return
+      const cur = useHermesStore.getState()
+      const expected = cur.lastTaskByContext[contextKeyOf(cur.context)] ?? null
+      if (!expected || t.taskId !== expected) return
       setTask(t)
     })
   }, [])
@@ -102,6 +110,7 @@ export default function HermesPanel() {
   const handleStart = async (text?: string) => {
     const g = String(text ?? goal).trim()
     if (!g || starting) return
+    const startedKey = contextKeyOf(context) // 发起时上下文（await 期间用户可能切走）
     setStarting(true)
     setStartError('')
     setTask(null)
@@ -117,17 +126,22 @@ export default function HermesPanel() {
       }
       const r = await window.electronAPI.hermes.startTask(payload)
       if (r.ok && r.task) {
+        // 锚点永远写回发起时的上下文（切走也能切回恢复）；
+        // 但正文只显示在发起时的上下文还成立时——绝不把任务挂到新切换的标题下
+        setLastTaskId(r.task.taskId, startedKey)
+        if (contextKeyOf(useHermesStore.getState().context) !== startedKey) return
         setTask(r.task)
-        setLastTaskId(r.task.taskId)
         setGoal('')
-      } else {
+      } else if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
         // 发起失败也只给人话（not_configured 是唯一可行动的错误，其余统一重试话术）
         setStartError(r.errorCode === 'not_configured'
           ? '还没有配置 AI 模型：请到 设置 → AI 设置 完成配置后再试。'
           : '暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。')
       }
     } catch {
-      setStartError('暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。')
+      if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
+        setStartError('暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。')
+      }
     } finally {
       setStarting(false)
     }
@@ -137,12 +151,14 @@ export default function HermesPanel() {
     const q = String(text ?? followUp).trim()
     const tid = taskRef.current?.taskId
     if (!q || !tid || continuing) return
+    const startedKey = contextKeyOf(context)
     setContinuing(true)
     try {
       const r = await window.electronAPI.hermes.continueTask({ taskId: tid, question: q })
       if (r.ok && r.task) {
+        setLastTaskId(r.task.taskId, startedKey)
+        if (contextKeyOf(useHermesStore.getState().context) !== startedKey) return
         setTask(r.task)
-        setLastTaskId(r.task.taskId)
         setFollowUp('')
       }
     } catch {

@@ -1801,11 +1801,15 @@ class CrmDbService {
     return this.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [sid])[0] ?? null
   }
 
-  /** 按客户名模糊匹配（刀 5「某客户到哪步」模板参数化查询；LIKE 只读） */
+  /** 按客户名模糊匹配（刀 5「某客户到哪步」模板参数化查询；LIKE 只读）。
+   *  limit <= 0 表示不限制（Hermes 工具先取完整匹配集合再过滤后 slice 用） */
   accountSearchByName(name: string, limit: number = 5): CrmRow[] {
     const q = String(name || '').trim()
     if (!q) return []
-    return this.all('SELECT * FROM account WHERE name LIKE ? ORDER BY updated_at DESC LIMIT ?', [`%${q}%`, limit])
+    if (limit > 0) {
+      return this.all('SELECT * FROM account WHERE name LIKE ? ORDER BY updated_at DESC LIMIT ?', [`%${q}%`, limit])
+    }
+    return this.all('SELECT * FROM account WHERE name LIKE ? ORDER BY updated_at DESC', [`%${q}%`])
   }
 
   /** 某客户名下合同（创建倒序；刀 5「某客户到哪步」最新合同读口） */

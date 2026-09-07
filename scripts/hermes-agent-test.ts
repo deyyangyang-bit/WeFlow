@@ -85,8 +85,9 @@ function makeFakeTools(specs: FakeToolSpec[]): { tools: HermesToolDef[]; calls: 
 
 const TOOL_CALL = (tool: string, args: Record<string, unknown> = {}, reason = '查一下'): string =>
   JSON.stringify({ type: 'tool_call', tool, arguments: args, reason })
-/** 协议 v2：findings 逐条对象 {text, evidenceRefs}（字符串数组旧格式 = 非法协议） */
-const COMPLETE = (summary: string, refs: string[] = []): string =>
+/** 协议 v2：findings 逐条对象 {text, evidenceRefs}（字符串数组旧格式 = 非法协议）。
+ *  refs 缺省 ['e1']：先 TOOL_CALL 的用例必有 e1（有行证据用行证据，空结果用 result 级兜底证据） */
+const COMPLETE = (summary: string, refs: string[] = ['e1']): string =>
   JSON.stringify({ type: 'complete', summary, findings: [{ text: '发现一', evidenceRefs: refs }], nextSteps: ['建议一'], evidenceRefs: refs })
 
 async function main(): Promise<void> {
@@ -176,9 +177,62 @@ async function main(): Promise<void> {
     const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('编造证据', ['e99', 'e100'])])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
-    ok('a7c 有真实工具执行后伪造 evidenceRefs 全部丢弃（findings 与顶层 refs 同样核验）',
-      t?.status === 'completed' && t.evidence.length === 0 &&
-      t.result!.findings.every((f) => f.evidenceRefs.length === 0))
+    ok('a7c 结论全部引用伪造编号 → 拒绝完成（纠偏后仍无有效引用 → failed，绝不 completed）',
+      t?.status === 'failed' && t.errorCode === 'ai_invalid_output' && !t.result)
+  }
+
+  // a18 「查询无结果」也是可引用证据：空结果兜底登记 result 级 ref，结论「查不到」可绑定
+  {
+    const ft = makeFakeTools([{ name: 'customer.search' }]) // ok 但零行证据 → 兜底 result 证据
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: '不存在的人' }), COMPLETE('没有找到该客户', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a18 空结果兜底 ref 可引用（kind=result、label 诚实标注「无匹配结果」）',
+      t?.status === 'completed' && t.evidence.length === 1 && t.evidence[0].kind === 'result' &&
+      t.evidence[0].label.includes('无匹配结果') && t.result!.findings[0].evidenceRefs[0] === 'e1')
+  }
+
+  // a19 逐条 finding 都必须有有效引用：一条绑定伪造编号 → 拒绝纠偏，补齐后才接受
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const mix = JSON.stringify({ type: 'complete', summary: '两条发现', findings: [
+      { text: '有据发现', evidenceRefs: ['e1'] }, { text: '无据发现', evidenceRefs: ['e99'] }
+    ], nextSteps: [], evidenceRefs: ['e1'] })
+    const fixed = JSON.stringify({ type: 'complete', summary: '补齐后', findings: [{ text: '有据发现', evidenceRefs: ['e1'] }], nextSteps: [], evidenceRefs: ['e1'] })
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), mix, fixed])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a19 findings 单条缺有效引用 → 纠偏后补齐才完成（result.findings 只剩有效条目）',
+      t?.status === 'completed' && t.result!.summary === '补齐后' &&
+      t.result!.findings.length === 1 && t.result!.findings[0].text === '有据发现')
+  }
+
+  // a20 展示证据 = 顶层 refs ∪ findings refs 并集（模型顶层漏写时徽标不悬空）
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const onlyFinding = JSON.stringify({ type: 'complete', summary: '结论', findings: [{ text: '发现一', evidenceRefs: ['e1'] }], nextSteps: [], evidenceRefs: [] })
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), onlyFinding])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a20 顶层漏写但 finding 引用有效 → 证据列表按并集重建（e1 徽标有对应证据）',
+      t?.status === 'completed' && t.evidence.length === 1 && t.evidence[0].ref === 'e1')
+  }
+
+  // a21 多轮追问重新引用先前被裁掉的编号 → 从 evidenceByRef 真源恢复
+  {
+    const ft = makeFakeTools([
+      { name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] },
+      { name: 'chat.recent', evidence: [{ label: '聊天记录（对方）', kind: 'chat', messageKey: 'mk-1' }] }
+    ])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), TOOL_CALL('chat.recent'), COMPLETE('第一轮只用 e2', ['e2'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t1 = await waitTask(start.task!.taskId)
+    const sc2 = scriptCompletion([COMPLETE('追问轮重新引用 e1', ['e1'])])
+    const cont = await hermesAgentService.continueTask(start.task!.taskId, '说说客户档案那条', { ...sc2.deps, tools: ft.tools })
+    const t = await waitTask(cont.task!.taskId)
+    ok('a21 多轮重引旧编号 → 展示证据从 evidenceByRef 重建恢复（e1 徽标不悬空）',
+      t1?.status === 'completed' && t?.status === 'completed' &&
+      t.evidence.length === 1 && t.evidence[0].ref === 'e1' && t.evidence[0].label.includes('客户档案'))
   }
 
   // a8 步数上限：6 次工具调用后第 7 次 → too_many_steps
@@ -406,9 +460,10 @@ async function main(): Promise<void> {
       r.ok === true && (r.data as { count: number }).count === 0 && r.publicSummary.includes('没有已确认的到款'))
   }
 
-  // b17 先过滤后 slice（P2 回归）：他人同名客户霸占候选前列，本人匹配项不被挤出
+  // b17 先过滤后 slice（P2 回归）：55 条他人同名客户（超过任何有限候选窗口）霸占
+  // updated_at 倒序前列，本人匹配项仍不被挤出——验证「完整匹配集合后过滤」而非有限候选
   {
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 55; i++) {
       crmDbService.create('account', {
         name: `压榜同名客户${i}`, owner_sales: '王五', session_id: `wxid_flood_${i}`,
         created_at: now + i, updated_at: now + i // updated_at 递增 → 搜索排序时排在最前
@@ -417,7 +472,7 @@ async function main(): Promise<void> {
     const accLate = crmDbService.create('account', { name: '压榜同名客户本人', owner_sales: '杨青', session_id: 'wxid_late', created_at: now, updated_at: now })
     const r = await toolByName('customer.search').run({ query: '压榜同名' }, ctxOf(ME))
     const names = (r.data as { customers: Array<{ name: string }> }).customers.map((c) => c.name)
-    ok('b17 候选 50 全量过滤后再 slice：本人同名客户不被他人记录挤出（先 LIMIT 后过滤已修复）',
+    ok('b17 完整匹配集合过滤后再 slice：55 条他人记录也不挤出本人客户（无 SQL LIMIT 短板）',
       r.ok === true && names.length === 1 && names[0] === '压榜同名客户本人' &&
       r.evidence?.[0]?.entityId === Number(accLate))
   }
@@ -547,21 +602,31 @@ async function main(): Promise<void> {
   ok('d10 FRIENDLY_ERROR 全员人话（无 SQL/ipc/stack/路径字样）',
     !/SQL|ipcRenderer|stack|\.db\b|SELECT /i.test(agentSrc.slice(agentSrc.indexOf('FRIENDLY_ERROR'), agentSrc.indexOf('// ─── 内部结构'))))
 
-  // d11 审查修复固化（静态）：零数据拒绝 / 工具期间取消丢弃 / 可见性措辞诚实
-  ok('d11a 零数据 complete 拒绝在源码固化（okToolCalls<=0 → 纠偏回喂，坚持则 failed）',
-    /rt\.okToolCalls <= 0/.test(agentSrc) && /MAX_DATA_RETRIES/.test(agentSrc) &&
-    /你还没有通过工具查询到任何真实数据/.test(agentSrc))
-  ok('d11b 工具执行期间取消：返回后立即丢弃（tool.run 两条出口后均有 cancelRequested 检查）',
+  // d11 审查修复固化（静态）：证据约束闭环 / 工具期间取消丢弃 / 可见性措辞诚实 / 锚点驱动
+  ok('d11a 证据约束闭环在源码固化（validateCompletion：零查询拒绝 + 并集非空 + 逐条有效引用 + result 兜底）',
+    agentSrc.includes('validateCompletion') && /rt\.okToolCalls <= 0/.test(agentSrc) &&
+    /MAX_DATA_RETRIES/.test(agentSrc) && /你还没有通过工具查询到任何真实数据/.test(agentSrc) &&
+    /没有绑定任何有效证据编号/.test(agentSrc) && /无匹配结果/.test(agentSrc))
+  ok('d11b 展示证据按并集从 evidenceByRef 重建（顶层+findings refs、多轮重引可恢复）',
+    agentSrc.includes('flatMap((f) => f.evidenceRefs)') && agentSrc.includes('evidenceByRef.get(ref)'))
+  ok('d11c 工具执行期间取消：返回后立即丢弃（tool.run 两条出口后均有 cancelRequested 检查）',
     (agentSrc.match(/if \(rt\.cancelRequested\) \{ this\.discardInFlight\(rt\); return \}/g) || []).length >= 4)
-  ok('d11c 可见性措辞诚实（registry 明示 filterByOwner 非安全边界、不称权限）',
+  ok('d11d 可见性措辞诚实（registry 明示 filterByOwner 非安全边界、不称权限）',
     registrySrc.includes('非安全边界') && registrySrc.includes('可见性过滤') &&
     !/无权/.test(registrySrc))
-  ok('d11d 推荐目标与工具能力对齐（快凉商机/本月到款均有全局工具支撑）',
+  ok('d11e 推荐目标与工具能力对齐（快凉商机/本月到款均有全局工具支撑）',
     registrySrc.includes("'opportunity.my_list'") && registrySrc.includes("'payment.month_paid'") &&
     panelSrc.includes('快凉的商机') && panelSrc.includes('本月到款'))
-  ok('d11e findings 逐条绑证据（d.ts 与面板徽标接线同步）',
+  ok('d11f findings 逐条绑证据（d.ts 与面板徽标接线同步）',
     dtsSrc.includes('evidenceRefs: string[]') && panelSrc.includes('hermes-finding__refs') &&
     panelScss.includes('hermes-finding__refs'))
+  ok('d11g 面板锚点驱动（切换清空/进度按锚点过滤/锚点写回发起方上下文）',
+    panelSrc.includes('setTask(null)') && panelSrc.includes('!== startedKey') &&
+    panelSrc.includes("cur.lastTaskByContext[contextKeyOf(cur.context)]") &&
+    !/if \(taskRef\.current && t\.taskId !== taskRef\.current\.taskId\)/.test(panelSrc))
+  ok('d11h 客户搜索完整匹配集合（accountSearchByName limit=0 无 SQL LIMIT，先过滤后 slice）',
+    registrySrc.includes('accountSearchByName(query, 0)') &&
+    /limit <= 0/.test(readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')))
 
   // e. 旧库迁移：knowledge-governance-test g 节已覆盖（g1-g10 真实旧库文件升级），此处不重复。
   console.log('（e 节：旧库迁移由 knowledge-governance-test g1-g10 覆盖）')

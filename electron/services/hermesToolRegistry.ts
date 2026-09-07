@@ -24,10 +24,11 @@ import { extractKeywords } from './hermesAskService'
 import { maskPrivateText } from './crmSla2Service'
 import { filterByOwner, type IdentityLike } from '../../shared/ownerFilter'
 
-/** 单条证据：label 面向用户；锚点（entityId/messageKey）只允许来自真实查询行 */
+/** 单条证据：label 面向用户；锚点（entityId/messageKey）只允许来自真实查询行。
+ *  kind='result' 是工具结果级证据（查询无结果/未成功时由 agent 兜底登记，结论「查不到」可引用） */
 export interface HermesEvidence {
   label: string
-  kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action'
+  kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action' | 'result'
   /** 知识库条目 id / account id（真实查得） */
   entityId?: number
   /** 聊天证据回查锚点（P0-2B canonical key，真实查得） */
@@ -102,10 +103,7 @@ function resolveAccountOwned(args: Record<string, unknown>, ctx: HermesToolConte
   return { account: visible[0] }
 }
 
-/** 搜索候选上限：先取有界候选全量 → 归属过滤 → 再 slice（禁止先 LIMIT 后过滤） */
-const SEARCH_CANDIDATE_LIMIT = 50
-
-// ─── 六个只读工具（全部复用既有读口；执行器与白名单一一对应）────────────────────
+// ─── 九个只读工具（全部复用既有读口；执行器与白名单一一对应）────────────────────
 
 /** customer.search：按名字模糊搜索（复用刀 5 accountSearchByName 读口 + owner 过滤） */
 const customerSearch: HermesToolDef = {
@@ -116,9 +114,9 @@ const customerSearch: HermesToolDef = {
     const query = strArg(args.query)
     if (!query) return { ok: false, publicSummary: '请提供要搜索的客户名字。', errorCode: 'bad_arguments' }
     const limit = Math.min(Math.max(Math.floor(numArg(args.limit) || 5), 1), 10)
-    // 先取有界候选全量 → 归属过滤 → 再 slice（禁止先 LIMIT 后过滤：否则本人可见行会被
-    // 排前的他人行挤出结果）
-    const candidates = crmDbService.accountSearchByName(query, SEARCH_CANDIDATE_LIMIT)
+    // 先取完整名称匹配集合（limit=0 = SQL 无 LIMIT）→ 归属过滤 → 再 slice。
+    // 禁止先 LIMIT 后过滤：任何有限候选都会被足够多的他人记录挤掉本人可见行。
+    const candidates = crmDbService.accountSearchByName(query, 0)
     const rows = filterByOwner(candidates, ctx.identity).slice(0, limit)
     if (rows.length === 0) {
       // 诚实且不泄露：销售视角下空 = 不存在或不在你名下，统一话术

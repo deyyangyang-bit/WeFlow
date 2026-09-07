@@ -33,8 +33,9 @@ interface HermesState {
   /** ctx 缺省 = 全局入口（侧边栏）；打开只切上下文，不碰任何任务锚点 */
   openHermes: (ctx?: HermesContext) => void
   closeHermes: () => void
-  /** 记录「当前上下文」最近一次任务 id（按 contextKeyOf(current) 写入，跨上下文不互串） */
-  setLastTaskId: (id: string | null) => void
+  /** 记录任务锚点：key 显式传入则写到该上下文（startTask 返回前用户切走上下文时仍写回发起方），
+   *  缺省写「当前上下文」；id=null 删除该锚点 */
+  setLastTaskId: (id: string | null, key?: string) => void
 }
 
 export const useHermesStore = create<HermesState>((set, get) => ({
@@ -43,12 +44,12 @@ export const useHermesStore = create<HermesState>((set, get) => ({
   lastTaskByContext: {},
   openHermes: (ctx) => set({ isHermesOpen: true, context: ctx ?? { kind: 'global' } }),
   closeHermes: () => set({ isHermesOpen: false }),
-  setLastTaskId: (id) => {
-    const key = contextKeyOf(get().context)
+  setLastTaskId: (id, key) => {
+    const k = key ?? contextKeyOf(get().context)
     set((s) => {
       const next = { ...s.lastTaskByContext }
-      if (id) next[key] = id
-      else delete next[key]
+      if (id) next[k] = id
+      else delete next[k]
       return { lastTaskByContext: next }
     })
   }

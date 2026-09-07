@@ -3,7 +3,7 @@ import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from 
 // ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
 export interface HermesEvidenceItem {
   label: string
-  kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action'
+  kind: 'customer' | 'chat' | 'crm' | 'knowledge' | 'action' | 'result'
   /** 知识库条目 id / account id / 行动卡 id（真实查得） */
   entityId?: number
   /** 聊天证据回查锚点（P0-2B canonical messageKey，真实查得） */

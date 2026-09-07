@@ -14,8 +14,9 @@
  *    （filterByOwner 是展示层可见性过滤非安全边界，语义唯一源在工具注册表，模型不可指定身份）
  *  - 结论必须来自真实查询：本任务没有任何成功的工具执行时，complete 一律拒绝（回喂纠偏
  *    至多 1 次，坚持则 failed）；findings 逐条绑定 evidenceRefs
- *  - 证据防伪造：evidenceRefs 只能引用本轮真实工具返回并登记的证据编号（e1..en），
- *    引用不存在的编号一律丢弃，绝不进 result.evidence
+ *  - 证据约束闭环：工具零行证据时兜底登记 result 级证据（查询无结果/未成功，kind='result'）；
+ *    接受 complete 要求「顶层 refs ∪ findings refs 的有效并集非空 + 每条 finding 至少一个
+ *    有效编号」；展示证据按有效引用并集从 evidenceByRef 真源重建（多轮重引可恢复）
  *  - 限制：最大 6 次工具调用；单任务约 90s；重复同工具同参数不执行（回喂提示）；
  *    取消后丢弃在途结果；不无限循环
  *  - 任务状态只存主进程内存（Map，上限 50 条 FIFO），不建表、不落盘
@@ -317,12 +318,14 @@ export class HermesAgentService {
     if (rt.cancelRequested) return { ok: false, errorCode: 'cancelled' }
     if (this.isConfigured(deps) === false) return { ok: false, errorCode: 'not_configured' }
 
-    // 新一轮：清上轮步骤/错误（历史对话保留做摘要窗口；证据表保留可继续引用）
+    // 新一轮：清上轮步骤/错误（历史对话保留做摘要窗口；证据表保留可继续引用；
+    // 重复检测键重置——追问「重新查一下」不算循环）
     rt.task.steps = []
     rt.task.result = undefined
     rt.task.errorCode = undefined
     rt.task.errorMessage = undefined
     rt.task.status = 'running'
+    rt.lastCallKey = ''
     rt.deadlineAt = Date.now() + TASK_DEADLINE_MS
     this.emit(rt)
     void this.runTurn(rt, q, deps).catch((e) => {
@@ -398,14 +401,15 @@ export class HermesAgentService {
         }
 
         if (decision.type === 'complete') {
-          // 零数据 complete 一律拒绝（数据型结论必须来自真实工具执行）：
-          // 回喂纠偏至多 1 次，模型坚持则 failed——绝不把无据结论标记为完成
-          if (rt.okToolCalls <= 0) {
+          // 证据约束闭环：零真实查询 / 结论无任何有效证据引用 / 个别发现缺有效引用 →
+          // 一律拒绝并回喂纠偏（至多 1 次，坚持则 failed）——绝不把无据结论标记为完成
+          const rejectReason = this.validateCompletion(rt, decision)
+          if (rejectReason) {
             if (rt.dataRetries >= MAX_DATA_RETRIES) { this.failTask(rt, 'ai_invalid_output'); return }
             rt.dataRetries++
             this.pushConversation(rt, [
               { role: 'assistant', content: String(said || '').slice(0, 500) },
-              { role: 'user', content: '你还没有通过工具查询到任何真实数据，不能直接给出结论。请根据目标调用合适的白名单工具，拿到数据后再输出 complete。' }
+              { role: 'user', content: rejectReason }
             ])
             continue
           }
@@ -478,13 +482,25 @@ export class HermesAgentService {
         }
         this.emit(rt)
 
-        // 登记真实证据 → 编号表回喂（模型只能引用编号，引用即校验）
+        // 登记真实证据 → 编号表回喂（模型只能引用编号，引用即校验）。
+        // 工具没返回行证据时兜底登记一条 result 级证据（查询无结果/未成功）——
+        // 「查不到」也是真实查询结论，模型给这类结论时必须有编号可绑。
         const refs: Array<{ ref: string; label: string }> = []
         for (const ev of result.evidence ?? []) {
           const ref = `e${++rt.nextEvidenceSeq}`
           rt.evidenceByRef.set(ref, ev)
           rt.task.evidence.push({ ...ev, ref })
           refs.push({ ref, label: ev.label })
+        }
+        if (refs.length === 0) {
+          const fallback: HermesEvidence = {
+            label: `「${decision.tool}」${result.ok ? '查询完成，无匹配结果' : '查询未成功'}${result.publicSummary ? `：${result.publicSummary.slice(0, 60)}` : ''}`,
+            kind: 'result'
+          }
+          const ref = `e${++rt.nextEvidenceSeq}`
+          rt.evidenceByRef.set(ref, fallback)
+          rt.task.evidence.push({ ...fallback, ref })
+          refs.push({ ref, label: fallback.label })
         }
         this.pushConversation(rt, [
           { role: 'user', content: JSON.stringify({
@@ -511,17 +527,40 @@ export class HermesAgentService {
 
   // ─── 收尾（completed / failed / cancelled）─────────────────────────────────
 
-  /** 完成：证据核验（顶层与逐条 findings 的 refs 只保留真实登记的编号；伪造编号一律剔除）→ result */
+  /** 证据约束校验（接受 complete 前置；返回 null = 接受，返回字符串 = 回喂给模型的纠偏语）：
+   *  ① 本任务必须有过成功工具执行（okToolCalls）；② 顶层 refs + 全部 findings refs 的有效并集
+   *  必须非空；③ 每条 finding 至少绑定一个有效编号（「查询无结果」的 result 级证据也算有效引用） */
+  private validateCompletion(rt: AgentTaskRuntime, d: Extract<AgentDecision, { type: 'complete' }>): string | null {
+    if (rt.okToolCalls <= 0) {
+      return '你还没有通过工具查询到任何真实数据，不能直接给出结论。请根据目标调用合适的白名单工具，拿到数据后再输出 complete。'
+    }
+    const has = (ref: string): boolean => rt.evidenceByRef.has(ref)
+    const anyValid = d.evidenceRefs.some(has) || d.findings.some((f) => f.evidenceRefs.some(has))
+    if (!anyValid) {
+      return '你的结论没有引用任何有效证据编号。只能引用工具结果里给你的编号（如 e1、e2），每条发现都要绑定支持它的证据；查询无结果时引用那条「无匹配结果」的证据编号。'
+    }
+    const badFinding = d.findings.find((f) => !f.evidenceRefs.some(has))
+    if (badFinding) {
+      return `发现「${badFinding.text.slice(0, 40)}」没有绑定任何有效证据编号。请为它补充支持它的证据编号（如 e1），或删除这条发现。`
+    }
+    return null
+  }
+
+  /** 完成：有效引用 = 顶层 refs ∪ 全部 findings refs（都过登记表核验），展示证据从
+   *  evidenceByRef 真源按编号重建（多轮追问重新引用旧编号也能恢复）→ result */
   private completeTask(rt: AgentTaskRuntime, d: Extract<AgentDecision, { type: 'complete' }>): void {
     const has = (ref: string): boolean => rt.evidenceByRef.has(ref)
-    const validRefs = d.evidenceRefs.filter(has)
+    const validRefs = [...new Set([...d.evidenceRefs, ...d.findings.flatMap((f) => f.evidenceRefs)])]
+      .filter(has)
+      .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
     rt.task.result = {
       summary: d.summary,
       findings: d.findings.map((f) => ({ text: f.text, evidenceRefs: f.evidenceRefs.filter(has) })),
       nextSteps: d.nextSteps,
     }
-    rt.task.evidence = rt.task.evidence.filter((ev) => validRefs.includes(ev.ref))
-    // 结论里不保留无效引用痕迹：没有可核验证据时 evidence 清空（诚实：AI 结论不冒充有据可查）
+    rt.task.evidence = validRefs
+      .map((ref) => ({ ...rt.evidenceByRef.get(ref)!, ref }))
+      .filter((ev) => !!ev.label)
     rt.task.status = 'completed'
     this.emit(rt)
   }
