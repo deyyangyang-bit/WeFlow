@@ -7,6 +7,8 @@ import HomePage from './pages/HomePage'
 
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
+import { useKnowledgeAskStore } from './stores/knowledgeAskStore'
+import KnowledgeAskPanel from './components/sales/KnowledgeAskPanel'
 import * as configService from './services/config'
 import { Shield } from 'lucide-react'
 import './App.scss'
@@ -95,6 +97,9 @@ function App() {
   } = useAppStore()
 
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
+  // Hermes「问一问」App 级单例：侧边栏 / 聊天页 / 客户档案三入口统一经 knowledgeAskStore 开关
+  const isKnowledgeAskOpen = useKnowledgeAskStore((s) => s.isKnowledgeAskOpen)
+  const closeKnowledgeAsk = useKnowledgeAskStore((s) => s.closeKnowledgeAsk)
   const isAgreementWindow = location.pathname === '/agreement-window'
   const isOnboardingWindow = location.pathname === '/onboarding-window'
   const isVideoPlayerWindow = location.pathname === '/video-player-window'
@@ -715,6 +720,9 @@ function App() {
         onSelect={(action, rememberChoice) => handleWindowCloseAction(action, rememberChoice)}
         onCancel={() => handleWindowCloseAction('cancel')}
       />
+
+      {/* Hermes「问一问」全局唯一面板实例：open=false 时面板自渲染 null（保持内部状态不丢失） */}
+      <KnowledgeAskPanel open={isKnowledgeAskOpen} onClose={closeKnowledgeAsk} />
 
       <div className="main-layout">
         <Sidebar collapsed={sidebarCollapsed} />

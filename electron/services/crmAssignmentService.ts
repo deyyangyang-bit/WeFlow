@@ -595,7 +595,7 @@ export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?:
  */
 export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
   const sales = (ConfigService.getInstance().get('crmSalesList') || []).map((s) => String(s).trim()).filter(Boolean)
-  if (!sales.length) return { ok: false, code: 'E101', message: '销售名单为空（先在线索页维护 crmSalesList）' }
+  if (!sales.length) return { ok: false, code: 'E101', message: '还没有销售名单。请先到线索页「资源池」勾选线索后点击「分配给…」，在弹窗中添加销售姓名。' }
   const mode = (['weight', 'round_robin', 'load'] as const).includes(input?.mode as never) ? input.mode : 'weight'
   const weights = input?.weights && typeof input.weights === 'object' ? input.weights : {}
   const count = Math.max(1, Math.floor(Number(input?.count) || 0))

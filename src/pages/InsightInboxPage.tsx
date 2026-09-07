@@ -299,7 +299,7 @@ export default function InsightInboxPage() {
         {focusedRecordId && (
           <div className="insight-focus-bar">
             <Sparkles size={15} />
-            <span>已定位通知中的见解</span>
+            <span>已定位这条重要提醒</span>
             <button type="button" onClick={clearFocusedRecord}>取消定位</button>
           </div>
         )}
@@ -322,8 +322,8 @@ export default function InsightInboxPage() {
           {!error && !loading && records.length === 0 && (
             <div className="insight-empty-state">
               <Sparkles size={36} />
-              <strong>暂无见解</strong>
-              <span>AI 见解生成后会自动保存在这里。</span>
+              <strong>暂无重要提醒</strong>
+              <span>发现需要及时关注的客户动态时，会在这里提醒你。日常 AI 分析可在客户档案的时间线中查看。</span>
             </div>
           )}
 
@@ -367,7 +367,7 @@ export default function InsightInboxPage() {
                         <button className="insight-action-btn" onClick={() => openChat(record)} title="打开聊天">
                           <MessageSquare size={14} />
                         </button>
-                        <button className="insight-action-btn" onClick={() => { void copyText(record.insight, '见解已复制') }} title="复制见解">
+                        <button className="insight-action-btn" onClick={() => { void copyText(record.insight, '提醒内容已复制') }} title="复制提醒内容">
                           <Copy size={14} />
                         </button>
                         <button className="insight-action-btn code" onClick={() => { void openLog(record.id) }} title="查看请求日志">
@@ -413,7 +413,7 @@ export default function InsightInboxPage() {
             <input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索见解或联系人..."
+              placeholder="搜索提醒或联系人..."
             />
             {keyword && <button onClick={() => setKeyword('')}><X size={14} /></button>}
           </div>

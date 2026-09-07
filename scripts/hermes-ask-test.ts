@@ -8,6 +8,7 @@
  *  e. 未配置模型静默：status=not_configured 不抛错不调用不埋点（isAiConfigured 真实判定）
  *  f. 埋点落行：answer → knowledge/generated（entity=knowledge_ask）；viewed（展开）同 askKey 只记一次
  *  g. 铁律静态断言：答案区无发送类 IPC（AI 碰不到发送键）/ 仅供参考标识 / 两入口接线 / enqueue 最外层
+ *  h. App 级单例 + 侧边栏「问一问」+「重要提醒」术语 + 分配文案去技术化（2026-09-07 前端收口批）
  * 运行：npx tsx scripts/hermes-ask-test.ts
  */
 import { mkdtempSync, readFileSync } from 'fs'
@@ -132,12 +133,14 @@ async function main(): Promise<void> {
   ok('g6 无命中分支：「知识库里没有答案」+ 生成知识提案按钮（刀 4 已接活：调 kbPropose、不再置灰「下一版」）',
     panelSrc.includes('知识库里没有答案') && panelSrc.includes('生成知识提案') &&
     panelSrc.includes('kbPropose') && !panelSrc.includes('下一版'))
-  ok('g7 入口①：聊天页会话侧栏挂问知识库入口 + 面板',
-    readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('<KnowledgeAskPanel open={askPanelOpen}') &&
-    readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('title="问知识库"'))
-  ok('g8 入口②：客户档案「AI 工具」下拉挂问知识库',
-    readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8').includes('问知识库') &&
-    readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8').includes('<KnowledgeAskPanel open={askPanelOpen}'))
+  ok('g7 入口①：聊天页会话侧栏挂问知识库入口（调全局打开方法，面板在 App 级挂载）',
+    readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8').includes('title="问知识库"') &&
+    /kb-ask-btn[\s\S]{0,200}openKnowledgeAsk\(\)/.test(readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8')))
+  ok('g8 入口②：客户档案「AI 工具」下拉挂问知识库（调全局打开方法，面板在 App 级挂载）',
+    (() => {
+      const cws = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8')
+      return cws.includes('问知识库') && /setShowAiTools\(false\); openKnowledgeAsk\(\)/.test(cws)
+    })())
 
   const mainSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
   ok('g9 IPC enqueue 最外层：sales:kb:ask 与 askViewed 均走 enqueueSalesTask（服务内部零 enqueue）',
@@ -146,6 +149,77 @@ async function main(): Promise<void> {
   const trackSrc = readFileSync(join(ROOT, 'electron/services/proposalEventTracking.ts'), 'utf8')
   ok('g10 viewed 去重落在 trackKnowledgeAskViewed（proposalEventEntityIds 单点）',
     trackSrc.includes("proposalEventEntityIds('knowledge', 'viewed', 'knowledge_ask')"))
+
+  // ─── h. App 级单例 + 侧边栏「问一问」+「重要提醒」术语 + 分配文案去技术化 ──────────
+  const appSrc = readFileSync(join(ROOT, 'src/App.tsx'), 'utf8')
+  const sidebarSrc = readFileSync(join(ROOT, 'src/components/Sidebar.tsx'), 'utf8')
+  const chatSrc = readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8')
+  const cwsSrc = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf8')
+  const inboxSrc = readFileSync(join(ROOT, 'src/pages/InsightInboxPage.tsx'), 'utf8')
+  const leadSrc = readFileSync(join(ROOT, 'src/pages/CrmLeadPage.tsx'), 'utf8')
+  const assignSrc = readFileSync(join(ROOT, 'electron/services/crmAssignmentService.ts'), 'utf8')
+
+  // h1 侧边栏 AI / 知识分组第一项 = 「问一问」
+  const aiGroup = sidebarSrc.slice(sidebarSrc.indexOf("key: 'ai'"), sidebarSrc.indexOf("key: 'report'"))
+  ok('h1 Sidebar AI / 知识分组含「问一问」且为第一项',
+    aiGroup.includes("label: '问一问'") &&
+    aiGroup.indexOf("label: '问一问'") < aiGroup.indexOf("label: '重要提醒'") &&
+    aiGroup.indexOf("label: '重要提醒'") < aiGroup.indexOf("label: '知识库'"))
+
+  // h2 「问一问」是动作项：NAV_GROUPS 声明 action 无 path；渲染走 button + 全局打开方法，不走 NavLink
+  ok('h2 「问一问」为动作项（action: openKnowledgeAsk、无 path），渲染为 button 不跳路由',
+    /label: '问一问', icon: \w+, action: 'openKnowledgeAsk' \}/.test(sidebarSrc) &&
+    /if \('action' in item\)[\s\S]{0,600}type="button"[\s\S]{0,300}openKnowledgeAsk\(\)/.test(sidebarSrc) &&
+    !/NavLink[\s\S]{0,80}问一问/.test(sidebarSrc))
+
+  // h3 App.tsx 恰好挂载一份 App 级 KnowledgeAskPanel
+  ok('h3 App.tsx 只挂载一个 App 级 KnowledgeAskPanel（消费 knowledgeAskStore）',
+    (appSrc.match(/<KnowledgeAskPanel /g) || []).length === 1 &&
+    appSrc.includes("import KnowledgeAskPanel from './components/sales/KnowledgeAskPanel'") &&
+    appSrc.includes("from './stores/knowledgeAskStore'") &&
+    /<KnowledgeAskPanel open=\{isKnowledgeAskOpen\} onClose=\{closeKnowledgeAsk\} \/>/.test(appSrc))
+
+  // h4/h5/h6 旧入口统一走全局打开方法，页面不再各自渲染面板实例
+  ok('h4 ChatPage 旧入口调用全局打开方法 openKnowledgeAsk',
+    chatSrc.includes('useKnowledgeAskStore') && /onClick=\{\(\) => openKnowledgeAsk\(\)\}/.test(chatSrc))
+  ok('h5 CustomerWorkspacePage 旧入口调用全局打开方法 openKnowledgeAsk',
+    cwsSrc.includes('useKnowledgeAskStore') && /setShowAiTools\(false\); openKnowledgeAsk\(\)/.test(cwsSrc))
+  ok('h6 ChatPage / CustomerWorkspacePage 不再各自渲染重复面板实例',
+    !chatSrc.includes('<KnowledgeAskPanel') && !cwsSrc.includes('<KnowledgeAskPanel') &&
+    !chatSrc.includes('askPanelOpen') && !cwsSrc.includes('askPanelOpen'))
+
+  // h7 Sidebar「重要提醒」术语（path 不变）且不再有「洞察」导航项
+  ok('h7 Sidebar 显示「重要提醒」（/insight-inbox 不变），不再有「洞察」导航项',
+    sidebarSrc.includes("{ label: '重要提醒', path: '/insight-inbox', icon: Sparkles }") &&
+    !sidebarSrc.includes("label: '洞察'"))
+
+  // h8 /insight-inbox 路由保持不变（App 路由表 + RouteGuard 白名单）
+  ok('h8 /insight-inbox 路由保持不变',
+    appSrc.includes('<Route path="/insight-inbox" element={<InsightInboxPage />} />') &&
+    readFileSync(join(ROOT, 'src/components/RouteGuard.tsx'), 'utf8').includes("'/insight-inbox'"))
+
+  // h9 重要提醒空态含客户档案时间线指引 + 定位提示术语
+  ok('h9 重要提醒空态：暂无重要提醒 + 客户档案时间线指引 + 定位提示',
+    inboxSrc.includes('暂无重要提醒') &&
+    inboxSrc.includes('发现需要及时关注的客户动态时，会在这里提醒你。日常 AI 分析可在客户档案的时间线中查看。') &&
+    inboxSrc.includes('已定位这条重要提醒') &&
+    !inboxSrc.includes('暂无见解') && !inboxSrc.includes('已定位通知中的见解'))
+
+  // h10 面向用户的分配文案不再泄露 crmSalesList / crmAssignWeights（页面文案 + 服务层错误信息）
+  ok('h10 分配文案去技术化：页面与 E101 错误信息不含配置键，人话文案就位',
+    leadSrc.includes('还没有销售名单。到「资源池」页签勾选线索后点击「分配给…」，可在弹窗中直接添加销售姓名。') &&
+    leadSrc.includes('不调整权重时按人数均分；调整后会自动保存，每次分配都会保留审计记录。') &&
+    !leadSrc.includes('维护 crmSalesList') && !leadSrc.includes('（crmAssignWeights）') &&
+    !assignSrc.includes('销售名单为空（先在线索页维护 crmSalesList）'))
+
+  // h11 配置键与内部实现仍保留（未误改变量名/配置键）
+  const frontConfigSrc = readFileSync(join(ROOT, 'src/services/config.ts'), 'utf8')
+  const mainConfigSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
+  ok('h11 配置键 crmSalesList / crmAssignWeights 与服务层读取保持不变',
+    frontConfigSrc.includes("CRM_SALES_LIST: 'crmSalesList'") &&
+    frontConfigSrc.includes("CRM_ASSIGN_WEIGHTS: 'crmAssignWeights'") &&
+    /get\('crmSalesList'\)/.test(assignSrc) && /key === 'crmAssignWeights'/.test(mainConfigSrc) &&
+    readFileSync(join(ROOT, 'electron/services/config.ts'), 'utf8').includes('crmSalesList: string[]'))
 
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)

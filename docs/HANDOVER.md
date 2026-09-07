@@ -1442,6 +1442,18 @@
 - **验证**：tsc root 0 / node 158 基线零新增（错误签名 diff 对照，本批 3 个新增类型错误当场修复）/ vite build ✓ + tsc -b 产物重建 / 回归：hermes-ask 29、knowledge-governance 47、owner-filter 28、lead-assignment-view 56、customer-workspace-simple 37、crm-enrich 61、funnel 48、crm-opportunity 56 全绿。
 - **遗留**：意图分类 LLM 兜底（设计稿允许，规则起步即最终口径，后续按误分率评估）；商机阶段中文枚举沿页面口径（了解/比价/决策/成交，schema 默认 'initial' 归「无阶段」展示）；今日行动模板不触发懒扫描（与今日行动页数字可能存在分钟级差异——同源表但页面会触发扫描）。
 
+## 2.83 前端收口批：分配文案去技术化 + 问一问侧边栏入口（App 级单例）+「重要提醒」术语（2026-09-07，单 commit）
+
+> **范围铁律**：纯前端接线与文案收口——零后端业务逻辑改动、零新表零迁移、不改 Hermes 问答/检索/提案/埋点/IPC 内部逻辑、不改 `/insight-inbox` 路由。唯一 electron/ 触点 = `crmAssignmentService` 的 E101 **错误文案字符串**（经前端 `setNotice(r.message)` 直达销售，属用户可见技术字段名，非逻辑改动）。
+
+- **分配文案去技术化（CrmLeadPage）**：分配控制台空名单与权重提示两句人话替换——「还没有销售名单。到「资源池」页签勾选线索后点击「分配给…」，可在弹窗中直接添加销售姓名。」/「不调整权重时按人数均分；调整后会自动保存，每次分配都会保留审计记录。」；全仓检索 `crmSalesList`/`crmAssignWeights` 后仅另改一处用户可见文案 = `assignBatchLeads` E101 message（同口径人话）；代码变量/配置键/类型/测试/注释一律保留原名。
+- **「问一问」App 级单例**：新 `src/stores/knowledgeAskStore.ts`（zustand 三键：`isKnowledgeAskOpen`/`openKnowledgeAsk`/`closeKnowledgeAsk`，零新依赖）；`App.tsx` 主窗口分支挂载**全应用唯一一份** `KnowledgeAskPanel`（open=false 时面板自渲染 null，关闭不卸载 → 草稿/结果状态不丢失）；ChatPage 会话侧栏书本图标与 CustomerWorkspacePage「AI 工具」下拉**删除局部面板实例与 askPanelOpen state**，改调同一全局打开方法。KnowledgeAskPanel 本身零改动（现仅收 open/onClose 无上下文参数，故 store 不造无效上下文字段；未来要传 sessionId/客户上下文在此扩展）。
+- **Sidebar NAV_GROUPS 扩展动作项**：`NavItemDef` 改 discriminated union——路由项 `{label,path,icon}`（NavLink，active 高亮）｜动作项 `{label,icon,action:'openKnowledgeAsk'}`（`<button type="button">` 点击开面板，**不跳路由、不伪造 active、不改 openGroups**，title/aria-label 保留、键盘原生可操作）；AI / 知识分组第一项新增「问一问」（lucide `MessageCircleQuestion`，1.23.0 已有），collapsed 平铺模式同走 `renderNavItem` 动作分支天然可用；`groupActive` 加 `'path' in i` 守卫防 undefined.startsWith。样式零新增（`.nav-item` 本就 button/reset 双兼容，token 深色自动继承）。
+- **「重要提醒」术语收口**：Sidebar「洞察」→「重要提醒」（path/图标不变）；InsightInboxPage 空态「暂无见解」→「暂无重要提醒」+ 新空态指引「发现需要及时关注的客户动态时，会在这里提醒你。日常 AI 分析可在客户档案的时间线中查看。」；定位条「已定位通知中的见解」→「已定位这条重要提醒」；顺带统一该页可见 UI 文案（搜索 placeholder「搜索提醒或联系人…」、复制按钮「复制提醒内容」/toast「提醒内容已复制」）。**保留不动**：来源 pill/筛选 tab 的「AI 见解」（真实记录类型标签）、设置页功能名、客户时间线标签、请求日志弹窗内部字段。
+- **测试**：`scripts/hermes-ask-test.ts` 29→**40**（h1-h11 新小节：分组第一项/动作项结构断言/App 恰一挂载/两旧入口调全局方法/页面零面板实例/重要提醒术语/路由不变/空态指引/文案去键/配置键保留）。**g7/g8 随任务 B 强制架构同步更新**（断言语义不变=入口存在，接线断言从「页面内渲染面板」收紧为「调全局打开方法」——§2.81 g6 同款先例，非放宽）。
+- **验证**：tsc root 0 错误 / node 158 基线零新增 + `tsc -b` 产物重建（E101 新文案已入 .js 产物）/ vite build ✓ / hermes-ask 40 + settings-nav 59 + hermes-ask-data 42 + knowledge-governance 47 + customer-workspace-simple 37 + lead-assignment-view 56 全绿。
+- **遗留**：light/dark 双模式与 collapsed 侧边栏真机目验（样式全 token 继承）；`/chat-window` 独立聊天窗口本就无会话侧栏入口，不受单例化影响（该窗口不挂面板，与改前可达行为一致）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

@@ -818,8 +818,8 @@ export default function CrmLeadPage() {
                       <span className="load num">在手 {loads[s] ?? 0} 条</span>
                     </div>
                   ))}
-                  {salesList.length === 0 && <div className="empty">销售名单为空（在分配弹窗内维护 crmSalesList）</div>}
-                  <div className="lp-hint" style={{ marginTop: 10 }}>权重缺省按等权分配；调整会保存到配置（crmAssignWeights），执行分配时随批次审计留痕。</div>
+                  {salesList.length === 0 && <div className="empty">还没有销售名单。到「资源池」页签勾选线索后点击「分配给…」，可在弹窗中直接添加销售姓名。</div>}
+                  <div className="lp-hint" style={{ marginTop: 10 }}>不调整权重时按人数均分；调整后会自动保存，每次分配都会保留审计记录。</div>
                 </div>
                 <div className="lp-cardbox">
                   <div className="lp-cardbox__title">本次分配预览</div>

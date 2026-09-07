@@ -47,7 +47,7 @@ import './ChatPage.scss'
 import CustomerCard from '../components/sales/CustomerCard'
 import ReplySuggestion from '../components/sales/ReplySuggestion'
 import SalesContextStrip from '../components/sales/SalesContextStrip'
-import KnowledgeAskPanel from '../components/sales/KnowledgeAskPanel'
+import { useKnowledgeAskStore } from '../stores/knowledgeAskStore'
 
 // 系统消息类型常量
 const SYSTEM_MESSAGE_TYPES = [
@@ -1681,8 +1681,8 @@ function ChatPage(props: ChatPageProps) {
   const [isResizing, setIsResizing] = useState(false)
   const [isMarkingAllSessionsRead, setIsMarkingAllSessionsRead] = useState(false)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
-  // 刀 3 问知识库面板（会话侧栏入口）
-  const [askPanelOpen, setAskPanelOpen] = useState(false)
+  // 刀 3 问知识库入口（会话侧栏）：面板已提升为 App 级单例，这里只调全局打开方法
+  const openKnowledgeAsk = useKnowledgeAskStore((s) => s.openKnowledgeAsk)
   const [showGroupMembersPanel, setShowGroupMembersPanel] = useState(false)
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
@@ -7901,7 +7901,7 @@ function ChatPage(props: ChatPageProps) {
               {/* 刀 3 问知识库入口（会话侧栏；面板只产答案，无发送通道） */}
               <button
                 className="icon-btn refresh-btn kb-ask-btn"
-                onClick={() => setAskPanelOpen(true)}
+                onClick={() => openKnowledgeAsk()}
                 title="问知识库"
                 aria-label="问知识库"
               >
@@ -9503,9 +9503,6 @@ function ChatPage(props: ChatPageProps) {
           </button>
         </div>
       )}
-
-      {/* 刀 3 问知识库面板（会话侧栏入口；只产答案不发送，AI 碰不到发送键） */}
-      <KnowledgeAskPanel open={askPanelOpen} onClose={() => setAskPanelOpen(false)} />
     </div>
   )
 }

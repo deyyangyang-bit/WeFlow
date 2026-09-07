@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, MessageCircleQuestion, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
+import { useKnowledgeAskStore } from '../stores/knowledgeAskStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
 
@@ -16,7 +17,11 @@ interface SidebarUserProfile {
 
 // ─── 导航收口：7 个一级模块（今日行动 / 聊天 / CRM / 跟单 / AI·知识 / 报表 / 系统）───
 // 多子项模块渲染为可展开分组；collapsed 时全部子项图标平铺，保持原行为
-interface NavItemDef { label: string; path: string; icon: LucideIcon }
+// 导航项两类：路由项（path，NavLink 跳转）与动作项（action，点击执行动作不跳路由）；
+// 动作项不参与 active 高亮（active 样式只属于真实路由项）
+type NavItemDef =
+  | { label: string; path: string; icon: LucideIcon }
+  | { label: string; icon: LucideIcon; action: 'openKnowledgeAsk' }
 interface NavGroupDef { key: string; label: string; items: NavItemDef[] }
 
 const NAV_GROUPS: NavGroupDef[] = [
@@ -31,7 +36,8 @@ const NAV_GROUPS: NavGroupDef[] = [
   ] },
   { key: 'review', label: '跟单', items: [{ label: '跟单中心', path: '/crm-review', icon: ClipboardCheck }] },
   { key: 'ai', label: 'AI / 知识', items: [
-    { label: '洞察', path: '/insight-inbox', icon: Sparkles },
+    { label: '问一问', icon: MessageCircleQuestion, action: 'openKnowledgeAsk' },
+    { label: '重要提醒', path: '/insight-inbox', icon: Sparkles },
     { label: '知识库', path: '/knowledge-base', icon: BookOpen },
     { label: '评测标注', path: '/eval-annotate', icon: ClipboardList }
   ] },
@@ -341,18 +347,38 @@ function Sidebar({ collapsed }: SidebarProps) {
   }
   // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
-  const groupActive = (items: NavItemDef[]) => items.some((i) => isActive(i.path))
-  const renderNavItem = (item: NavItemDef, child = false) => (
-    <NavLink
-      key={item.path}
-      to={item.path}
-      className={`nav-item ${child ? 'nav-item--child' : ''} ${isActive(item.path) ? 'active' : ''}`}
-      title={collapsed ? item.label : undefined}
-    >
-      <span className="nav-icon"><item.icon size={20} /></span>
-      <span className="nav-label">{item.label}</span>
-    </NavLink>
-  )
+  const openKnowledgeAsk = useKnowledgeAskStore((s) => s.openKnowledgeAsk)
+  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮
+  const groupActive = (items: NavItemDef[]) => items.some((i) => 'path' in i && isActive(i.path))
+  const renderNavItem = (item: NavItemDef, child = false) => {
+    if ('action' in item) {
+      // 动作项：button 原生键盘可操作；不跳路由、不改 openGroups、无 active 样式
+      return (
+        <button
+          key={item.label}
+          type="button"
+          className={`nav-item ${child ? 'nav-item--child' : ''}`}
+          onClick={() => { if (item.action === 'openKnowledgeAsk') openKnowledgeAsk() }}
+          title={collapsed ? item.label : undefined}
+          aria-label={item.label}
+        >
+          <span className="nav-icon"><item.icon size={20} /></span>
+          <span className="nav-label">{item.label}</span>
+        </button>
+      )
+    }
+    return (
+      <NavLink
+        key={item.path}
+        to={item.path}
+        className={`nav-item ${child ? 'nav-item--child' : ''} ${isActive(item.path) ? 'active' : ''}`}
+        title={collapsed ? item.label : undefined}
+      >
+        <span className="nav-icon"><item.icon size={20} /></span>
+        <span className="nav-label">{item.label}</span>
+      </NavLink>
+    )
+  }
   const exportTaskBadge = activeExportTaskCount > 99 ? '99+' : `${activeExportTaskCount}`
   const lockActionLabel = authEnabled ? '锁定应用' : '开启应用锁'
 
