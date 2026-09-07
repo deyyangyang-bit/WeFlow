@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { Bot, X, Sparkles, CheckCircle2, CircleDot, AlertCircle, Loader2, Undo2 } from 'lucide-react'
-import { useHermesStore, contextKeyOf, type HermesContext } from '../../stores/hermesStore'
+import { useHermesStore, canSettleTaskView, contextKeyOf, type HermesContext } from '../../stores/hermesStore'
 import type { HermesTaskSnapshot } from '../../types/electron'
 import './HermesPanel.scss'
 
@@ -171,9 +171,14 @@ export default function HermesPanel() {
   const handleCancel = async () => {
     const tid = taskRef.current?.taskId
     if (!tid) return
+    const cancelKey = contextKeyOf(context) // 取消发起时的上下文（await 期间用户可能切走）
     try {
       const r = await window.electronAPI.hermes.cancelTask(tid)
-      if (r.ok && r.task) setTask(r.task)
+      // await 返回后当前上下文/锚点仍匹配发起时才写视图：
+      // 取消期间切换到另一客户/聊天或另起新任务，绝不把旧任务响应串显到新标题下
+      const cur = useHermesStore.getState()
+      const anchor = cur.lastTaskByContext[contextKeyOf(cur.context)] ?? null
+      if (r.ok && r.task && canSettleTaskView(contextKeyOf(cur.context), anchor, cancelKey, tid)) setTask(r.task)
     } catch { /* 取消尽力而为；状态以后续进度事件为准 */ }
   }
 

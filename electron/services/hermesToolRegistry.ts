@@ -12,9 +12,14 @@
  *    由服务端或可信本机凭证校验。本文档与测试一律称「可见性过滤」，不得称「权限」。
  *  - 归属过滤必须在候选集合上先全量、后过滤、再 slice——禁止先 LIMIT 后过滤
  *    （否则本人可见行会被排前的他人行挤出结果）
- *  - 聊天内容进模型前强制 maskPrivateText 脱敏（宪法 §2.6）+ 逐条截断
+ *  - 聊天内容进模型前强制 maskPrivateText 脱敏（宪法 §2.6）+ 逐条截断；sender 等
+ *    结构化标识字段走 maskStructuredId（isSessionIdLike 命中微信号三形态一律 ***）
+ *  - 模型可见摘要零会话标识：accountBrief 等不携带 sessionId；customer.by_session
+ *    只认宿主持有的当前 chat context（ctx.contextKind），模型提供的 sessionId 一律
+ *    不读取不采信；非 chat 上下文 → context_required，不存在/越权统一 not_found 不泄露
  *  - evidence 只来自本轮真实工具返回行（id/messageKey 均为查得值，绝不由模型填）
- *  - 工具输出统一 {ok, data?, evidence?, publicSummary, errorCode?}（publicSummary 面向用户可展示）
+ *  - 工具输出统一 {ok, data?, evidence?, publicSummary, errorCode?}（publicSummary 面向用户可展示；
+ *    用户可见的步骤/兜底证据 label 用 publicLabel 人话名称，绝不显示内部工具 ID）
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
@@ -22,6 +27,7 @@ import { chatService, type Message } from './chatService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { extractKeywords } from './hermesAskService'
 import { maskPrivateText } from './crmSla2Service'
+import { isSessionIdLike } from '../../shared/wechatId'
 import { filterByOwner, type IdentityLike } from '../../shared/ownerFilter'
 
 /** 单条证据：label 面向用户；锚点（entityId/messageKey）只允许来自真实查询行。
@@ -51,12 +57,17 @@ export interface HermesToolContext {
   identity: IdentityLike
   /** 任务上下文里的客户（customer 入口注入；chat 入口为 null） */
   accountId?: number
+  /** 宿主持有的会话锚点（chat/customer 入口注入；只是提示锚点绝非授权凭据） */
   sessionId?: string
+  /** 任务入口上下文类型（agent 定格；customer.by_session 只认 chat 上下文） */
+  contextKind?: 'global' | 'chat' | 'customer'
 }
 
 /** 工具定义（name 即白名单键） */
 export interface HermesToolDef {
   name: string
+  /** 人话名称（用户可见：步骤 label / 兜底证据 label 统一用它，绝不显示内部工具 ID） */
+  publicLabel: string
   description: string
   /** 给模型看的参数说明（JSON 对象字段的中文描述） */
   argsHint: string
@@ -78,14 +89,21 @@ function fmtAmount(n: number): string {
   return Number(n || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })
 }
 
-/** account 行 → 对模型/用户可见的安全字段（不外带手机号等敏感列） */
+/** 结构化标识脱敏（只用于 sender 等结构化字段，绝不用于自由正文防误伤）：
+ *  微信号三形态（wxid_ 前缀号 / 自定义微信号 / 群号）命中 isSessionIdLike 一律 ***；
+ *  未命中仍走 maskPrivateText（保留手机号/身份证/wxid_* 文本脱敏） */
+export function maskStructuredId(v: string): string {
+  return isSessionIdLike(v) ? '***' : maskPrivateText(v)
+}
+
+/** account 行 → 对模型/用户可见的安全字段（不外带手机号等敏感列；
+ *  模型可见摘要一律不含 sessionId——会话标识不出宿主，识别会话走 customer.by_session 宿主上下文） */
 function accountBrief(a: CrmRow): Record<string, unknown> {
   return {
     accountId: Number(a.id),
     name: String(a.name || ''),
     stage: String(a.sales_stage || a.stage || ''),
-    company: String(a.company || ''),
-    sessionId: String(a.session_id || '')
+    company: String(a.company || '')
   }
 }
 
@@ -108,6 +126,7 @@ function resolveAccountOwned(args: Record<string, unknown>, ctx: HermesToolConte
 /** customer.search：按名字模糊搜索（复用刀 5 accountSearchByName 读口 + owner 过滤） */
 const customerSearch: HermesToolDef = {
   name: 'customer.search',
+  publicLabel: '客户搜索',
   description: '按客户名字模糊搜索客户档案，返回客户 id、名称、阶段、公司。',
   argsHint: '{"query": "客户名字（必填）", "limit": "最多返回几条，默认 5，上限 10"}',
   run: async (args, ctx) => {
@@ -135,15 +154,19 @@ const customerSearch: HermesToolDef = {
   }
 }
 
-/** customer.by_session：把微信会话解析为客户档案（聊天入口的桥梁工具；归属过滤同口径） */
+/** customer.by_session：把当前任务绑定的微信会话解析为客户档案（聊天入口的桥梁工具）。
+ *  信任边界：只认宿主持有的当前 chat context——模型提供的任何 sessionId 一律不读取、
+ *  不采信；非 chat 上下文 → context_required 人话提示；不存在/越权统一 not_found 不泄露 */
 const customerBySession: HermesToolDef = {
   name: 'customer.by_session',
-  description: '把微信会话 id 解析为客户档案，返回客户 id、名称、阶段（聊天入口分析客户的第一步）。',
-  argsHint: '{"sessionId": "微信会话 id（必填）"}',
-  run: async (args, ctx) => {
-    const sid = strArg(args.sessionId)
-    if (!sid) return { ok: false, publicSummary: '请提供要解析的会话 id。', errorCode: 'bad_arguments' }
-    const acc = crmDbService.accountBySession(sid)
+  publicLabel: '会话客户识别',
+  description: '把当前任务绑定的微信会话解析为客户档案，返回客户 id、名称、阶段（聊天入口分析客户的第一步；无需提供会话 id）。',
+  argsHint: '{}（会话由当前聊天上下文持有，不接受也不需要提供）',
+  run: async (_args, ctx) => {
+    if (ctx.contextKind !== 'chat' || !ctx.sessionId) {
+      return { ok: false, publicSummary: '当前任务没有绑定聊天上下文，无法识别会话对应的客户。请改用 customer.search 按名字查找。', errorCode: 'context_required' }
+    }
+    const acc = crmDbService.accountBySession(ctx.sessionId)
     const visible = acc ? filterByOwner([acc], ctx.identity) : []
     if (!acc || visible.length === 0) {
       // 可见性话术与 customer.search 同口径：不存在/不可见统一 not_found
@@ -162,6 +185,7 @@ const customerBySession: HermesToolDef = {
 /** customer.current_view：客户当前视图（State + 四类判断投影；复用 P0-3 getCustomerCurrentView） */
 const customerCurrentViewTool: HermesToolDef = {
   name: 'customer.current_view',
+  publicLabel: '客户当前视图',
   description: '查看某客户的当前视图：阶段状态与 AI 判断（小结/机会/风险/下一步），不展开证据正文。',
   argsHint: '{"accountId": "客户 id（必填，先用 customer.search 找到）"}',
   run: async (args, ctx) => {
@@ -192,6 +216,7 @@ const customerCurrentViewTool: HermesToolDef = {
 /** chat.recent：最近聊天记录（归属校验 → WCDB 读口 → maskPrivateText 脱敏 + 截断） */
 const chatRecent: HermesToolDef = {
   name: 'chat.recent',
+  publicLabel: '聊天记录查询',
   description: '查看某客户微信会话的最近聊天记录（已自动脱敏手机号/微信号/身份证号），每条带 messageKey 证据锚点。',
   argsHint: '{"accountId": "客户 id（必填，先用 customer.search 找到）", "limit": "条数，默认 10，上限 20"}',
   run: async (args, ctx) => {
@@ -205,9 +230,10 @@ const chatRecent: HermesToolDef = {
       return { ok: false, publicSummary: '暂时无法读取聊天记录（微信数据库未连接或会话不可用）。', errorCode: 'chat_unavailable' }
     }
     const messages = res.messages.map((m: Message) => ({
-      // isSend: 1=我发出 / 0=对方发出；脱敏 + 截断在进模型前完成（宪法 §2.6）
+      // isSend: 1=我发出 / 0=对方发出；脱敏 + 截断在进模型前完成（宪法 §2.6）。
+      // sender 是结构化标识字段：微信号三形态（含自定义微信号）命中 isSessionIdLike 一律 ***
       direction: Number(m.isSend) === 1 ? 'sent' : 'received',
-      sender: maskPrivateText(String(m.senderUsername || '')).slice(0, 30),
+      sender: maskStructuredId(String(m.senderUsername || '')).slice(0, 30),
       text: maskPrivateText(String(m.parsedContent || '')).slice(0, 200),
       time: Number(m.createTime) || 0,
       messageKey: String(m.messageKey || '')
@@ -233,6 +259,7 @@ const chatRecent: HermesToolDef = {
 /** crm.customer_business：某客户商机 + 合同（复用刀 5 读口组合；contract 归属经 account 校验） */
 const crmCustomerBusiness: HermesToolDef = {
   name: 'crm.customer_business',
+  publicLabel: '客户商机与合同查询',
   description: '查看某客户名下的商机（阶段/金额/产品/沉默天数）与合同（状态/金额）。',
   argsHint: '{"accountId": "客户 id（必填，先用 customer.search 找到）"}',
   run: async (args, ctx) => {
@@ -283,6 +310,7 @@ const crmCustomerBusiness: HermesToolDef = {
 /** opportunity.my_list：全局活跃商机列表（复用刀 5 runMyOpportunities 同款读口组合，沉默倒序） */
 const opportunityMyList: HermesToolDef = {
   name: 'opportunity.my_list',
+  publicLabel: '活跃商机盘点',
   description: '查看当前可见的全部活跃商机（客户/产品/阶段/金额/沉默天数，按沉默最久倒序），用于全局盘点与找快凉商机。',
   argsHint: '{"limit": "条数，默认 15，上限 30"}',
   run: async (args, ctx) => {
@@ -328,6 +356,7 @@ const opportunityMyList: HermesToolDef = {
 /** payment.month_paid：本月已确认到款汇总（复用刀 5 monthPaidByOwner 读口，owner 过滤由本工具统一执行） */
 const paymentMonthPaid: HermesToolDef = {
   name: 'payment.month_paid',
+  publicLabel: '本月到款汇总',
   description: '查看本月已确认到款汇总（金额与笔数；管理视角含分组明细）。',
   argsHint: '{}',
   run: async (_args, ctx) => {
@@ -359,6 +388,7 @@ const paymentMonthPaid: HermesToolDef = {
 /** action.pending：待办行动卡（复用刀 5 todoList 读口 + owner 过滤，同 runTodayActions 口径） */
 const actionPending: HermesToolDef = {
   name: 'action.pending',
+  publicLabel: '待办行动卡查询',
   description: '查看当前待办的行动卡（标题/客户/到期时间/优先级）。',
   argsHint: '{"limit": "条数，默认 10，上限 20"}',
   run: async (args, ctx) => {
@@ -393,6 +423,7 @@ const actionPending: HermesToolDef = {
 /** knowledge.search：知识库检索（复用刀 3 extractKeywords + kbSearchPublished，SQL 级只查 published） */
 const knowledgeSearch: HermesToolDef = {
   name: 'knowledge.search',
+  publicLabel: '知识库检索',
   description: '在知识库（已发布条目）里按问题检索，返回条目标题/类目/摘句与条目 id。',
   argsHint: '{"query": "要检索的问题或关键词（必填）"}',
   run: async (args) => {

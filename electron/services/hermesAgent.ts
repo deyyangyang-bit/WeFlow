@@ -14,11 +14,16 @@
  *    （filterByOwner 是展示层可见性过滤非安全边界，语义唯一源在工具注册表，模型不可指定身份）
  *  - 结论必须来自真实查询：本任务没有任何成功的工具执行时，complete 一律拒绝（回喂纠偏
  *    至多 1 次，坚持则 failed）；findings 逐条绑定 evidenceRefs
- *  - 证据约束闭环：工具零行证据时兜底登记 result 级证据（查询无结果/未成功，kind='result'）；
+ *  - 证据约束闭环：成功查询但零行证据时兜底登记 result 级证据（查询完成无匹配结果，kind='result'）；
+ *    失败查询绝不登记 evidence（只能产生 error step，旧证据替不了失败的新查询）；
  *    接受 complete 要求「顶层 refs ∪ findings refs 的有效并集非空 + 每条 finding 至少一个
  *    有效编号」；展示证据按有效引用并集从 evidenceByRef 真源重建（多轮重引可恢复）
+ *  - 信任边界：真实 sessionId/wxid 绝不进模型上下文——prompt 只带语义锚点（chat 入口
+ *    提示「已绑定聊天上下文，无需提供会话 ID」），会话识别走 by_session 的宿主 chat
+ *    上下文（模型提供的 sessionId 一律不采信）；模型可见摘要零会话标识
+ *  - 用户可见标签零内部工具 ID：步骤/兜底证据 label 用工具 publicLabel 人话名称
  *  - 限制：最大 6 次工具调用；单任务约 90s；重复同工具同参数不执行（回喂提示）；
- *    取消后丢弃在途结果；不无限循环
+ *    取消后丢弃在途结果；零数据纠偏次数按轮重置（continueTask）；不无限循环
  *  - 任务状态只存主进程内存（Map，上限 50 条 FIFO），不建表、不落盘
  *  - 日志不记密钥/完整 prompt/大段聊天内容（只记 taskId/状态/工具名）
  */
@@ -319,13 +324,15 @@ export class HermesAgentService {
     if (this.isConfigured(deps) === false) return { ok: false, errorCode: 'not_configured' }
 
     // 新一轮：清上轮步骤/错误（历史对话保留做摘要窗口；证据表保留可继续引用；
-    // 重复检测键重置——追问「重新查一下」不算循环）
+    // 重复检测键重置——追问「重新查一下」不算循环；零数据纠偏次数按轮重置，
+    // 每轮追问都重新拥有完整的纠偏预算，跨轮其他语义不变）
     rt.task.steps = []
     rt.task.result = undefined
     rt.task.errorCode = undefined
     rt.task.errorMessage = undefined
     rt.task.status = 'running'
     rt.lastCallKey = ''
+    rt.dataRetries = 0
     rt.deadlineAt = Date.now() + TASK_DEADLINE_MS
     this.emit(rt)
     void this.runTurn(rt, q, deps).catch((e) => {
@@ -424,7 +431,8 @@ export class HermesAgentService {
         // 白名单校验（清单外 = 调不到：不执行，回喂错误让模型改道）
         const tool = this.resolveTool(decision.tool, deps)
         const step: HermesTaskStep = {
-          label: decision.reason ? `${decision.reason}` : `调用 ${decision.tool}`,
+          // 用户可见步骤名：模型说明优先；兜底用工具人话名称（绝不显示内部工具 ID）
+          label: decision.reason ? `${decision.reason}` : (tool ? `调用${tool.publicLabel}` : '执行查询'),
           status: 'running',
           tool: decision.tool
         }
@@ -483,24 +491,28 @@ export class HermesAgentService {
         this.emit(rt)
 
         // 登记真实证据 → 编号表回喂（模型只能引用编号，引用即校验）。
-        // 工具没返回行证据时兜底登记一条 result 级证据（查询无结果/未成功）——
-        // 「查不到」也是真实查询结论，模型给这类结论时必须有编号可绑。
+        // 成功但零行证据时兜底登记一条 result 级证据（「查询完成，无匹配结果」——
+        // 「查不到」也是真实查询结论，模型给这类结论时必须有编号可绑）；
+        // 失败查询绝不登记任何 evidence（只能产生 error step），旧证据也替不了
+        // 失败的新查询——回喂明确告知本轮没有新编号。
         const refs: Array<{ ref: string; label: string }> = []
-        for (const ev of result.evidence ?? []) {
-          const ref = `e${++rt.nextEvidenceSeq}`
-          rt.evidenceByRef.set(ref, ev)
-          rt.task.evidence.push({ ...ev, ref })
-          refs.push({ ref, label: ev.label })
-        }
-        if (refs.length === 0) {
-          const fallback: HermesEvidence = {
-            label: `「${decision.tool}」${result.ok ? '查询完成，无匹配结果' : '查询未成功'}${result.publicSummary ? `：${result.publicSummary.slice(0, 60)}` : ''}`,
-            kind: 'result'
+        if (result.ok) {
+          for (const ev of result.evidence ?? []) {
+            const ref = `e${++rt.nextEvidenceSeq}`
+            rt.evidenceByRef.set(ref, ev)
+            rt.task.evidence.push({ ...ev, ref })
+            refs.push({ ref, label: ev.label })
           }
-          const ref = `e${++rt.nextEvidenceSeq}`
-          rt.evidenceByRef.set(ref, fallback)
-          rt.task.evidence.push({ ...fallback, ref })
-          refs.push({ ref, label: fallback.label })
+          if (refs.length === 0) {
+            const fallback: HermesEvidence = {
+              label: `${tool.publicLabel}：查询完成，无匹配结果`,
+              kind: 'result'
+            }
+            const ref = `e${++rt.nextEvidenceSeq}`
+            rt.evidenceByRef.set(ref, fallback)
+            rt.task.evidence.push({ ...fallback, ref })
+            refs.push({ ref, label: fallback.label })
+          }
         }
         this.pushConversation(rt, [
           { role: 'user', content: JSON.stringify({
@@ -509,6 +521,7 @@ export class HermesAgentService {
             ok: result.ok,
             data: result.data ?? null,
             error: result.ok ? undefined : (result.publicSummary || result.errorCode || '查询失败'),
+            note: result.ok ? undefined : '本次查询未成功，没有产生新的证据编号；不得引用旧证据把这次失败包装成结论，可换参数重试或改用其他工具。',
             evidence: refs
           }) }
         ])
@@ -583,17 +596,18 @@ export class HermesAgentService {
 
   // ─── 辅助 ──────────────────────────────────────────────────────────────────
 
-  /** 工具执行上下文（身份 + 入口上下文锚点；工具内统一做 owner 过滤）。
+  /** 工具执行上下文（身份 + 入口上下文锚点 + 上下文类型；工具内统一做 owner 过滤）。
    *  注意：sessionId 只是提示锚点，绝非授权凭据——客户类工具必须走
-   *  account 行归属校验（registry 内 filterByOwner），不得信任工具上下文。 */
+   *  account 行归属校验（registry 内 filterByOwner），不得信任工具上下文；
+   *  contextKind 定格任务入口类型（by_session 只认 chat 上下文）。 */
   private toolContext(rt: AgentTaskRuntime): HermesToolContext {
     if (rt.contextKind === 'customer') {
-      return { identity: rt.identity, accountId: rt.accountId, sessionId: rt.sessionId }
+      return { identity: rt.identity, accountId: rt.accountId, sessionId: rt.sessionId, contextKind: 'customer' }
     }
     if (rt.contextKind === 'chat') {
-      return { identity: rt.identity, sessionId: rt.sessionId }
+      return { identity: rt.identity, sessionId: rt.sessionId, contextKind: 'chat' }
     }
-    return { identity: rt.identity }
+    return { identity: rt.identity, contextKind: 'global' }
   }
 
   /** 入口上下文人话标签 */
@@ -602,12 +616,14 @@ export class HermesAgentService {
     return ctx.kind === 'chat' ? '当前会话' : '当前客户'
   }
 
-  /** user prompt：目标 + 上下文锚点（customer 入口注入 accountId；chat 入口引导先用 by_session 解析客户） */
+  /** user prompt：目标 + 上下文锚点。信任边界：真实 sessionId/wxid 绝不写进 prompt——
+   *  customer 入口只注入 accountId；chat 入口只给语义提示，会话识别由
+   *  customer.by_session 走宿主上下文（模型无需也无法提供会话 ID） */
   private buildUserPrompt(rt: AgentTaskRuntime, question: string): string {
     const ctxPart = rt.contextKind === 'customer' && rt.accountId
       ? `\n【当前上下文】用户在查看客户档案（accountId=${Number(rt.accountId)}），可先用 customer.current_view / crm.customer_business / chat.recent 查询该客户。`
-      : rt.contextKind === 'chat' && rt.sessionId
-        ? `\n【当前上下文】用户在会话「${rt.sessionId}」中发起。可先用 customer.by_session（sessionId="${rt.sessionId}"）解析出客户档案，再继续分析该客户。`
+      : rt.contextKind === 'chat'
+        ? '\n【当前上下文】当前任务已绑定聊天上下文，需要识别客户时调用 customer.by_session，无需提供会话 ID。'
         : ''
     return `【销售目标】${question}${ctxPart}\n请开始分析。`
   }

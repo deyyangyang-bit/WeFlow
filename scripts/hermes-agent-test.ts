@@ -4,7 +4,10 @@
  *  a. Agent Loop 动态（fake AI adapter + fake tool registry 注入）：真实多步骤循环 / 严格 JSON 协议 /
  *     非法输出纠正重试至多 1 次 / 白名单外拒绝 / 零工具查询拒绝 complete（结论必须来自真实查询）/
  *     findings 逐条绑证据 / 伪造编号丢弃 / 步数与重复限制 / 取消丢弃在途（含工具执行期间取消）/
- *     多轮继续 / 任务不落盘不丢失
+ *     多轮继续 / 任务不落盘不丢失 / prompt 零 sessionId（a22）/ 失败工具零证据（a23/a24）/
+ *     每轮 continue 重置 dataRetries（a25）/ 空结果兜底证据人话标签（a18）
+ *  a2. 信任边界：accountBrief/prompt 零会话标识（b20/a22）/ by_session 只认宿主 chat 上下文
+ *     （b12/b12a/b12b/b12c/c10）/ 结构化标识脱敏（b21）
  *  b. 可见性过滤动态（真实 HERMES_TOOLS + /tmp 副本库；展示层过滤非安全边界）：销售只查本人+公共未归属 /
  *     不可见客户不泄露存在性 / 知识检索只回 published / 白名单无写工具 / 先过滤后 slice 不漏本人数据
  *  c. 上下文动态：customer/chat/global 三态上下文进 toolContext；hermesStore 三入口语义（打开全局=global、
@@ -36,8 +39,8 @@ import {
   type HermesCompletion,
   type HermesAgentDeps
 } from '../electron/services/hermesAgent'
-import { HERMES_TOOLS, type HermesToolDef, type HermesToolContext } from '../electron/services/hermesToolRegistry'
-import { useHermesStore, contextKeyOf } from '../src/stores/hermesStore'
+import { HERMES_TOOLS, maskStructuredId, type HermesToolDef, type HermesToolContext } from '../electron/services/hermesToolRegistry'
+import { useHermesStore, canSettleTaskView, contextKeyOf } from '../src/stores/hermesStore'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ME: Identity = { name: '杨青', role: '销售' }
@@ -67,16 +70,18 @@ function scriptCompletion(script: Array<string>, opts?: { firstDelayMs?: number 
   return { deps: { configured: () => true, completion }, count: () => i }
 }
 
-/** fake 工具（记录调用；可带证据返回） */
-interface FakeToolSpec { name: string; evidence?: Array<{ label: string; kind: 'customer' | 'crm' | 'chat' | 'knowledge' | 'action'; entityId?: number }>; summary?: string }
+/** fake 工具（记录调用；可带证据返回；ok=false 模拟执行失败） */
+interface FakeToolSpec { name: string; ok?: boolean; publicLabel?: string; evidence?: Array<{ label: string; kind: 'customer' | 'crm' | 'chat' | 'knowledge' | 'action'; entityId?: number }>; summary?: string }
 function makeFakeTools(specs: FakeToolSpec[]): { tools: HermesToolDef[]; calls: Array<{ tool: string; args: Record<string, unknown>; ctx: HermesToolContext }> } {
   const calls: Array<{ tool: string; args: Record<string, unknown>; ctx: HermesToolContext }> = []
   const tools = specs.map((s): HermesToolDef => ({
     name: s.name,
+    publicLabel: s.publicLabel || '测试查询',
     description: 'fake',
     argsHint: '{}',
     run: async (args, ctx) => {
       calls.push({ tool: s.name, args, ctx })
+      if (s.ok === false) return { ok: false, publicSummary: s.summary || '查询失败', errorCode: 'internal' }
       return { ok: true, data: { fake: true }, evidence: s.evidence, publicSummary: s.summary || `${s.name} 完成` }
     }
   }))
@@ -181,15 +186,73 @@ async function main(): Promise<void> {
       t?.status === 'failed' && t.errorCode === 'ai_invalid_output' && !t.result)
   }
 
-  // a18 「查询无结果」也是可引用证据：空结果兜底登记 result 级 ref，结论「查不到」可绑定
+  // a18 「查询无结果」也是可引用证据：空结果兜底登记 result 级 ref，结论「查不到」可绑定；
+  // 证据 label 用工具人话名称，绝不向用户泄露 customer.search 等内部工具 ID
   {
-    const ft = makeFakeTools([{ name: 'customer.search' }]) // ok 但零行证据 → 兜底 result 证据
+    const ft = makeFakeTools([{ name: 'customer.search', publicLabel: '客户搜索' }]) // ok 但零行证据 → 兜底 result 证据
     const sc = scriptCompletion([TOOL_CALL('customer.search', { query: '不存在的人' }), COMPLETE('没有找到该客户', ['e1'])])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
-    ok('a18 空结果兜底 ref 可引用（kind=result、label 诚实标注「无匹配结果」）',
+    ok('a18 空结果兜底 ref 可引用（kind=result、label 人话标注「无匹配结果」且不含内部工具 ID）',
       t?.status === 'completed' && t.evidence.length === 1 && t.evidence[0].kind === 'result' &&
-      t.evidence[0].label.includes('无匹配结果') && t.result!.findings[0].evidenceRefs[0] === 'e1')
+      t.evidence[0].label.includes('无匹配结果') && t.evidence[0].label.includes('客户搜索') &&
+      !t.evidence[0].label.includes('customer.search') && t.result!.findings[0].evidenceRefs[0] === 'e1')
+  }
+
+  // a22 prompt 零会话标识：聊天入口的 user prompt 是语义描述，真实 sessionId 绝不进模型上下文
+  {
+    const SECRET = 'wxid_prompt_secret_99'
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    let captured = ''
+    const completion: HermesCompletion = async (messages) => {
+      captured = messages.map((m) => m.content).join('\n')
+      return captured.includes('tool_result') ? COMPLETE('聊天入口结论') : TOOL_CALL('customer.search', { query: 'x' })
+    }
+    const start = await hermesAgentService.startTask(
+      { goal: '这个会话的客户聊到哪一步了', context: { kind: 'chat', sessionId: SECRET } },
+      { configured: () => true, completion, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a22 prompt 不含真实 sessionId（聊天提示改语义描述「已绑定聊天上下文 / 无需提供会话 ID」）',
+      t?.status === 'completed' && captured.includes('当前任务已绑定聊天上下文') &&
+      captured.includes('无需提供会话 ID') && !captured.includes(SECRET))
+  }
+
+  // a23 失败工具零证据：执行失败只产生 error step，不登记任何可引用 evidence → 结论被拒
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', ok: false, summary: '查询失败：数据源忙' }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: '失败查询' }), COMPLETE('查到了', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a23 失败工具不登记证据（evidence 恒空、步骤 error、无据 complete 坚持 → failed）',
+      t?.status === 'failed' && t.errorCode === 'ai_invalid_output' && t.evidence.length === 0 &&
+      !t.result && t.steps[0].status === 'error' && ft.calls.length === 1)
+  }
+
+  // a24 失败查询零证据：引用「失败查询的编号」→ 无效被拒（坚持 → failed）；成功查询的 e1 不受影响
+  {
+    const ft = makeFakeTools([
+      { name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] },
+      { name: 'chat.recent', ok: false, summary: '聊天记录读取失败' }
+    ])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), TOOL_CALL('chat.recent'), COMPLETE('失败查询的结论', ['e2'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a24 失败查询不产生可引用编号（引用 e2 被拒 → failed；e1 仍在、失败步骤 error）',
+      t?.status === 'failed' && t.errorCode === 'ai_invalid_output' && t.steps[1].status === 'error' &&
+      t.evidence.length === 1 && t.evidence[0].ref === 'e1')
+  }
+
+  // a25 每轮 continue 重置 dataRetries：第一轮烧掉的纠偏次数不带入追问轮
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const sc = scriptCompletion([COMPLETE('第一轮抢答'), TOOL_CALL('customer.search'), COMPLETE('第一轮结论', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    await waitTask(start.task!.taskId)
+    const sc2 = scriptCompletion([COMPLETE('追问轮抢答', ['e99']), TOOL_CALL('customer.search', { query: '追问补查' }), COMPLETE('追问结论OK', ['e2'])])
+    const cont = await hermesAgentService.continueTask(start.task!.taskId, '那下一步呢', { ...sc2.deps, tools: ft.tools })
+    const t = await waitTask(cont.task!.taskId)
+    ok('a25 continue 重置 dataRetries：追问轮无据抢答被纠偏（而非直接 failed）后正常完成',
+      t?.status === 'completed' && t.result?.summary === '追问结论OK' && t.evidence.some((e) => e.ref === 'e2'))
   }
 
   // a19 逐条 finding 都必须有有效引用：一条绑定伪造编号 → 拒绝纠偏，补齐后才接受
@@ -428,15 +491,26 @@ async function main(): Promise<void> {
       names.every((n) => !/create|update|delete|send|publish|write/i.test(n)))
   }
 
-  // b12 customer.by_session：sessionId 解析客户（可见性过滤同口径）
+  // b12-b13 customer.by_session 收紧：只认宿主持有的 chat context，模型提供的 sessionId 一律不采信
   {
-    const r1 = await toolByName('customer.by_session').run({ sessionId: 'wxid_peer' }, ctxOf(ME))
-    ok('b12 他人会话解析 → not_found（可见性话术，不泄露档案是否存在）',
+    const r1 = await toolByName('customer.by_session').run({}, { identity: ME, contextKind: 'chat', sessionId: 'wxid_peer' })
+    ok('b12 他人会话（宿主 chat 上下文）解析 → not_found（可见性话术，不泄露档案是否存在）',
       r1.ok === false && r1.errorCode === 'not_found' && r1.publicSummary.includes('没有找到'))
-    const r2 = await toolByName('customer.by_session').run({ sessionId: 'wxid_me' }, ctxOf(ME))
-    ok('b13 本人会话解析 → 命中客户名与 accountId 证据',
+    const rForge = await toolByName('customer.by_session').run(
+      { sessionId: 'wxid_peer' }, { identity: ME, contextKind: 'chat', sessionId: 'wxid_me' })
+    ok('b12a 模型伪造他人 sessionId → 被忽略，按宿主会话解析出本人客户（不越权、不泄露他人档案）',
+      rForge.ok === true && (rForge.data as { name: string }).name === '杨青的客户' &&
+      rForge.evidence?.[0]?.entityId === Number(accMe))
+    const rG = await toolByName('customer.by_session').run({ sessionId: 'wxid_me' }, ctxOf(ME))
+    ok('b12b 非聊天上下文调用 → context_required + 人话提示（不接受模型提供 sessionId）',
+      rG.ok === false && rG.errorCode === 'context_required' && rG.publicSummary.includes('没有绑定聊天上下文'))
+    const rNoSid = await toolByName('customer.by_session').run({}, { identity: ME, contextKind: 'chat' })
+    ok('b12c chat 上下文但宿主未持有会话 → context_required（不猜、不解析）',
+      rNoSid.ok === false && rNoSid.errorCode === 'context_required')
+    const r2 = await toolByName('customer.by_session').run({}, { identity: ME, contextKind: 'chat', sessionId: 'wxid_me' })
+    ok('b13 本人会话解析 → 命中客户名与 accountId 证据（模型可见摘要不含 sessionId）',
       r2.ok === true && (r2.data as { name: string }).name === '杨青的客户' &&
-      r2.evidence?.[0]?.entityId === Number(accMe) && r2.publicSummary.includes('杨青的客户'))
+      r2.evidence?.[0]?.entityId === Number(accMe) && !('sessionId' in (r2.data as Record<string, unknown>)))
   }
 
   // b14 opportunity.my_list：全局活跃商机（可见性过滤后按沉默倒序）
@@ -484,6 +558,22 @@ async function main(): Promise<void> {
       r.ok === true && (r.data as { tasks: unknown[] }).tasks.length === 0 && r.publicSummary.includes('没有待办'))
   }
 
+  // b20 模型可见客户摘要零会话标识：accountBrief 字段收紧后整个工具输出不含任何 wxid
+  {
+    const r = await toolByName('customer.search').run({ query: '杨青的客户' }, ctxOf(ME))
+    const c0 = (r.data as { customers: Array<Record<string, unknown>> }).customers[0]
+    ok('b20 accountBrief 不含 sessionId（整个工具输出 JSON 不出现 wxid 会话标识）',
+      r.ok === true && !!c0 && !('sessionId' in c0) && !JSON.stringify(r).includes('wxid_me'))
+  }
+
+  // b21 结构化标识脱敏（纯函数动态）：微信号三形态命中 isSessionIdLike 一律 ***，手机号仍走文本脱敏，中文昵称不误伤
+  {
+    ok('b21 结构化标识脱敏：自定义微信号/群号/wxid 一律 ***，手机号走 maskPrivateText，昵称保留',
+      maskStructuredId('wan923121735') === '***' && maskStructuredId('wxid_abc123') === '***' &&
+      maskStructuredId('88886666@chatroom') === '***' && maskStructuredId('13812345678') === '***' &&
+      maskStructuredId('张师傅') === '张师傅')
+  }
+
   // ─── c. 上下文动态 ────────────────────────────────────────────────────────
   {
     // c1 customer 上下文：accountId/sessionId 进 toolContext（fake 工具记录）
@@ -512,6 +602,18 @@ async function main(): Promise<void> {
     await waitTask(start.task!.taskId)
     ok('c3 global 上下文（缺省）：toolContext 无客户锚点',
       ft.calls[0].ctx.accountId === undefined && ft.calls[0].ctx.sessionId === undefined && start.task!.contextLabel === '全局')
+  }
+  // c10 聊天入口端到端（真实 HERMES_TOOLS + 真实库）：模型伪造 sessionId 被忽略，
+  // by_session 只按宿主持有的 chat 上下文解析，伪造他人会话 id 不越权也不入任务快照
+  {
+    const sc = scriptCompletion([TOOL_CALL('customer.by_session', { sessionId: 'wxid_peer' }), COMPLETE('会话客户结论', ['e1'])])
+    const start = await hermesAgentService.startTask(
+      { goal: '这个会话的客户聊到哪一步了', context: { kind: 'chat', sessionId: 'wxid_me' } },
+      { ...sc.deps }) // 不注入 tools → 走真实白名单注册表
+    const t = await waitTask(start.task!.taskId)
+    ok('c10 聊天入口端到端：伪造 sessionId 无效，真实 by_session 按宿主上下文解析本人客户',
+      t?.status === 'completed' && JSON.stringify(t.evidence).includes('杨青的客户') &&
+      !JSON.stringify(t).includes('wxid_peer') && !JSON.stringify(t).includes('wxid_me'))
   }
 
   // c4-c9 hermesStore 三入口语义（zustand 纯前端 store，node 环境可直接驱动）
@@ -544,6 +646,17 @@ async function main(): Promise<void> {
       s.getState().isHermesOpen === false && (s.getState().lastTaskByContext['global'] === 'task-global' &&
         s.getState().lastTaskByContext['customer:9'] === 'task-cust-a' &&
         s.getState().lastTaskByContext['customer:10'] === 'task-cust-b'))
+  }
+
+  // c11 取消收尾门槛（纯判定动态）：取消发起时捕获上下文 key + taskId，
+  // await 返回后只有「当前上下文一致 且 该上下文锚点仍指向同一任务」才允许写视图
+  {
+    ok('c11 取消期间切上下文不串显：同上下文同锚点才放行（切客户/切聊天/另起新任务/锚点被清一律拒绝）',
+      canSettleTaskView('customer:9', 't1', 'customer:9', 't1') &&
+      !canSettleTaskView('customer:10', null, 'customer:9', 't1') &&
+      !canSettleTaskView('chat:s2', 't2', 'chat:s1', 't1') &&
+      !canSettleTaskView('global', null, 'customer:9', 't1') &&
+      !canSettleTaskView('customer:9', 't9', 'customer:9', 't1'))
   }
 
   // ─── d. UI 静态护栏 ───────────────────────────────────────────────────────
@@ -627,6 +740,16 @@ async function main(): Promise<void> {
   ok('d11h 客户搜索完整匹配集合（accountSearchByName limit=0 无 SQL LIMIT，先过滤后 slice）',
     registrySrc.includes('accountSearchByName(query, 0)') &&
     /limit <= 0/.test(readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')))
+
+  // d12 取消竞态门槛接线（handleCancel 捕获发起时上下文 key，await 返回后过 canSettleTaskView 才 setTask）
+  ok('d12 取消收尾走 canSettleTaskView 门槛（捕获 cancelKey + taskId，切上下文/换锚点不写视图）',
+    panelSrc.includes('canSettleTaskView') && /const cancelKey = contextKeyOf\(context\)/.test(panelSrc) &&
+    /canSettleTaskView\(contextKeyOf\(cur\.context\), anchor, cancelKey, tid\)/.test(panelSrc))
+
+  // d13 结构化标识脱敏接线（chat.recent sender 走 maskStructuredId；accountBrief 不再有 sessionId 字段）
+  ok('d13 结构化标识脱敏接线（sender: maskStructuredId + isSessionIdLike；accountBrief 零 sessionId）',
+    registrySrc.includes('sender: maskStructuredId(') && registrySrc.includes('isSessionIdLike') &&
+    !/sessionId: String\(a\.session_id/.test(registrySrc))
 
   // e. 旧库迁移：knowledge-governance-test g 节已覆盖（g1-g10 真实旧库文件升级），此处不重复。
   console.log('（e 节：旧库迁移由 knowledge-governance-test g1-g10 覆盖）')

@@ -25,6 +25,14 @@ export function contextKeyOf(ctx: HermesContext): string {
   return 'global'
 }
 
+/** 异步收尾写视图门槛（取消竞态判定的唯一真源，HermesPanel.handleCancel 消费）：
+ *  发起时捕获上下文 key + taskId，await 返回后只有「当前上下文与发起时一致 且
+ *  该上下文的任务锚点仍指向同一任务」才允许 setTask——取消期间切到另一客户/聊天
+ *  （key 变了）或另起新任务/清空锚点（锚点变了）都拒绝，绝不串显旧任务响应 */
+export function canSettleTaskView(curKey: string, curAnchor: string | null, startedKey: string, taskId: string): boolean {
+  return curKey === startedKey && curAnchor === taskId
+}
+
 interface HermesState {
   isHermesOpen: boolean
   context: HermesContext

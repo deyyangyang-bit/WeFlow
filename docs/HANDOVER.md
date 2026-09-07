@@ -1480,6 +1480,20 @@
 - **验证**：tsc root 0 / node 158 基线零新增 / vite build ✓ / 回归：hermes-agent 69（新）+ knowledge-governance 57 + hermes-ask 40 + hermes-ask-data 42 + persist-guard 36 + settings-nav 59 + customer-workspace-simple 37 + owner-filter 28 全绿。
 - **遗留**：真实模型端到端联调（本刀测试全用注入 fake/真实只读工具，未打真实 AI 端点）；chat.recent 依赖微信库连接（未连接诚实返回 chat_unavailable）；**可见性过滤非安全门禁**（filterByOwner 展示层，真正授权待可信设备/账号绑定后由服务端或可信本机凭证校验）；证据 UI 回查（messageKey → getEvidenceByKey 拉原话）留待下一刀；任务不跨进程重启持久（by design，内存态）。
 
+## 2.86 Hermes 信任边界收紧：会话标识脱敏 + by_session 宿主上下文化 + 失败零证据 + 取消竞态门槛（2026-09-07，commit 3）
+
+> **定位**：只修 §2.85 现有实现的边界缺口——不做 UtilityProcess、不改 UI 设计、不改入口。§2.85 中与本文冲突的语义（by_session 接受模型 sessionId / 失败查询兜底登记证据 / prompt 含真实会话 id）以本节为准。
+
+- **模型侧零会话标识**：`accountBrief` 删除 `sessionId` 字段（模型可见客户摘要只剩 accountId/name/stage/company，整个工具输出 JSON 不出现 wxid）；`buildUserPrompt` 不再写真实 sessionId/wxid——chat 入口改为语义提示「当前任务已绑定聊天上下文，需要识别客户时调用 customer.by_session，无需提供会话 ID」（customer 入口仍只注入 accountId）；真实会话标识不出宿主。
+- **customer.by_session 宿主上下文化**：`HermesToolContext` 新增 `contextKind`（agent 在 `toolContext()` 定格任务入口类型）；工具只认 `ctx.contextKind==='chat' && ctx.sessionId`（宿主持有的当前 chat context），**模型 arguments 里的任何 sessionId 一律不读取、不采信**（argsHint 改 `{}`）；非 chat 上下文（global/customer）或宿主未持有会话 → `context_required` + 人话提示「当前任务没有绑定聊天上下文…请改用 customer.search」；不存在/越权仍统一 `not_found` 不泄露档案存在性。
+- **结构化标识脱敏 `maskStructuredId`**（registry 导出，动态可测）：`isSessionIdLike`（shared/wechatId 三形态：wxid_ 前缀号/自定义微信号/群号）命中一律 `***`，未命中仍走 `maskPrivateText`（保留手机号/身份证/wxid_* 文本脱敏）；**只用于 sender 等结构化字段**（chat.recent 的 `sender`），不新增自由正文宽泛正则防误伤——自定义微信号（如 `wan923121735`）此前漏过 maskPrivateText，已收口。
+- **取消串显竞态门槛 `canSettleTaskView`**（hermesStore 导出纯函数，判定唯一真源）：`HermesPanel.handleCancel` 发起时捕获 `cancelKey = contextKeyOf(context)` + `taskId`，await 返回后只有「当前上下文 key 一致 **且** 该上下文锚点仍指向同一任务」才 `setTask`——取消期间切到另一客户/聊天（key 变）或另起新任务/清锚点（锚点变）都拒绝写视图；startTask/continueTask 语义不变。
+- **每轮重置 dataRetries**：`continueTask` 新一轮把 `dataRetries` 清零（每轮追问重新拥有完整零数据纠偏预算）；证据表/okToolCalls/摘要窗口等跨轮语义不变。
+- **失败证据收紧**：兜底 result 级证据**只对成功查询登记**（ok + 零行 → 「`{publicLabel}：查询完成，无匹配结果`」可引用）；**工具执行失败零 evidence**——只产生 error step，回喂 `note` 明示「没有产生新的证据编号，不得引用旧证据把失败包装成结论」；失败查询拿不到任何新编号可绑。
+- **用户可见标签零内部工具 ID**：`HermesToolDef` 新增 `publicLabel`（九工具人话名称：客户搜索/会话客户识别/客户当前视图/聊天记录查询/客户商机与合同查询/活跃商机盘点/本月到款汇总/待办行动卡查询/知识库检索）；步骤 label 兜底与兜底证据 label 统一用 publicLabel，绝不显示 `customer.search`/`chat.recent` 等内部工具 ID；证据编号 eN 与 findings v2 协议不变。
+- **测试 `scripts/hermes-agent-test.ts` 69→82（+13）**：a18 扩展（兜底 label 人话且不含内部工具 ID）+ 新增 a22（prompt 零真实 sessionId、含语义提示）/a23（失败工具零证据→无据 complete 坚持 failed）/a24（失败查询编号不可引用——引用 e2 被拒、成功 e1 不受影响）/a25（continue 重置 dataRetries——追问轮抢答被纠偏而非直接 failed）；b12-b13 重写 + b12a（伪造 sessionId 被忽略按宿主会话解析）/b12b/b12c（非 chat / 无宿主会话 → context_required）/b20（accountBrief 零 sessionId）/b21（maskStructuredId 三形态 ***、手机号走文本脱敏、昵称不误伤）；c10（真实 HERMES_TOOLS 端到端：聊天入口伪造 sessionId 无效、任务快照零 wxid）/c11（取消收尾门槛四态判定）；d12（handleCancel 接 canSettleTaskView 静态固化）/d13（sender 走 maskStructuredId + accountBrief 零 sessionId 静态固化）。
+- **验证**：`WEFLOW_WORKER=1 npx tsx scripts/hermes-agent-test.ts` **82/82**；tsc root **0 错误** / node **158 基线零新增**（hermes 四文件零报错）/ `npx vite build` ✓ / `git diff --check` 干净；不改数据库 schema、零新依赖。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
