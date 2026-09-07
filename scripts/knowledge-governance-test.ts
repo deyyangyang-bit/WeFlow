@@ -10,12 +10,16 @@
  *     附 generated/viewed（todoCreate 任务创建点 / 卡流 viewed 只记一次）+ enrich 生成点静态断言
  *  e. 采纳率口径：采纳率 = (accepted+modified)/已处理总数（proposal+knowledge 两类），
  *     分母 0 → rate=null（UI 显示「—」不伪造）；窗口外事件不入；generated 不入比率；action 不入分母
+ *  g. 旧库升级（§2.84）：真实构造治理前置旧版 sales DB 文件（knowledge_base 只有旧字段）→
+ *     当前 SalesDbService.initialize 打开升级 → 九治理列齐 + 存量保留 + 默认 staging/community +
+ *     idx_kb_status 存在 + flush/reopen 幂等 + published 不被迁移踩回
  * 运行：npx tsx scripts/knowledge-governance-test.ts
  */
-import { mkdtempSync, readFileSync } from 'fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import initSqlJs from 'sql.js'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -275,6 +279,124 @@ async function main(): Promise<void> {
     /conflictOf[\s\S]{0,200}\(p\.title \|\| ''\)\.trim\(\) === \(e\.title \|\| ''\)\.trim\(\)/.test(kbSrc) &&
     kbSrc.includes("kb-diff-col-head\">已发布：《") && kbSrc.includes('提案（待审核）') &&
     /function diffLines\(/.test(kbSrc))
+
+  // ─── g. 旧库升级（§2.84）：真实构造治理前置旧版 sales DB 文件 → 当前 initialize 打开升级 ───
+  // 不用当前 initialize() 新建的新库测——必须验证「磁盘上的旧文件 → 当前代码打开升级」真实路径。
+  // 旧库 = 治理前置 schema：knowledge_base 只有 9 旧字段（无 status/authority/version/…），
+  // 附带旧版 follow_up_task / customer_profile / intent_tag_log（同为旧字段形态）增强真实性。
+  const WASM = join(dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
+  const SQL = await initSqlJs({ locateFile: () => WASM })
+  const legacyDir = mkdtempSync(join(tmpdir(), 'kb-gov-legacy-'))
+  const legacyDbFile = join(legacyDir, 'weflow-sales.db') // businessDbPath(legacyDir, undefined, 'sales') legacy 名
+  const rawOld = new SQL.Database()
+  rawOld.run(`
+    CREATE TABLE knowledge_base (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      product_line TEXT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      tags TEXT DEFAULT '[]',
+      scene TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE follow_up_task (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      customer_profile_id INTEGER,
+      display_name TEXT,
+      action_type TEXT DEFAULT 'reply_customer',
+      trigger_type TEXT NOT NULL DEFAULT 'ai_detected',
+      title TEXT NOT NULL,
+      due_at INTEGER,
+      status TEXT DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE TABLE customer_profile (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      display_name TEXT,
+      customer_id TEXT,
+      external_source TEXT,
+      stage TEXT DEFAULT 'unknown',
+      tags TEXT DEFAULT '[]',
+      notes TEXT,
+      last_contact_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE intent_tag_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      confidence REAL,
+      source TEXT NOT NULL,
+      reason TEXT,
+      created_at INTEGER NOT NULL
+    );
+  `)
+  const legacyTs = Date.now()
+  rawOld.run(
+    'INSERT INTO knowledge_base (category, product_line, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ['product', 'X系列', '旧库产品条目', 'X 系列续航 8 小时', '[]', legacyTs, legacyTs]
+  )
+  rawOld.run(
+    'INSERT INTO knowledge_base (category, product_line, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ['script', null, '旧库话术条目', '先谈价值再谈价格', '[]', legacyTs, legacyTs]
+  )
+  writeFileSync(legacyDbFile, Buffer.from(rawOld.export()))
+  rawOld.close()
+
+  // 单例已挂 dbDir（a-f 节），用 reopenForWxid 走 persistNow + detach + initialize 完整升级链
+  await salesDbService.reopenForWxid(legacyDir)
+
+  const upRows = salesDbService.kbList()
+  const up1 = upRows.find((e) => e.title === '旧库产品条目')
+  const up2 = upRows.find((e) => e.title === '旧库话术条目')
+  ok('g1 存量两行经旧文件升级后仍在且内容一致',
+    upRows.length === 2 && !!up1 && !!up2 &&
+    up1.content === 'X 系列续航 8 小时' && up1.category === 'product' && up2.content === '先谈价值再谈价格')
+  ok('g2 九个治理字段全部存在（ALTER 补列生效；可空列以 null 存在而非 undefined）',
+    !!up1 && [up1.status, up1.authority, up1.version, up1.ttl_date, up1.reviewed_by, up1.reviewed_at,
+      up1.reject_reason, up1.source, up1.evidence_key].every((f) => f !== undefined))
+  ok('g3 存量默认状态符合设计（staging/community/version 1/source=manual——治理版上线后默认不可被问答引用）',
+    up1?.status === 'staging' && up1?.authority === 'community' && up1?.version === 1 && up1?.source === 'manual')
+
+  // 落盘后从磁盘文件校验：九列真实存在于表结构 + idx_kb_status 索引存在
+  salesDbService.flushNow()
+  const rawUp = new SQL.Database(readFileSync(legacyDbFile))
+  const colNames = (rawUp.exec('PRAGMA table_info(knowledge_base)')[0]?.values ?? []).map((r) => String(r[1]))
+  const govCols = ['status', 'authority', 'version', 'ttl_date', 'reviewed_by', 'reviewed_at', 'reject_reason', 'source', 'evidence_key']
+  ok('g4 磁盘文件 PRAGMA 校验九个治理列真实存在', govCols.every((c) => colNames.includes(c)))
+  const idxRows = rawUp.exec("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_kb_status'")
+  ok('g5 idx_kb_status 索引已建（补列后创建，非 SCHEMA_SQL 提前建）', (idxRows[0]?.values ?? []).length === 1)
+  rawUp.close()
+
+  // published 行不被迁移覆盖：发布一行 → 落盘 → 再次 reopen（第二次 initialize）→ 仍 published
+  const pubRow = upRows.find((e) => e.title === '旧库话术条目')!
+  const pubLegacy = salesDbService.kbReview(pubRow.id!, 'publish', { reviewer: '主管甲' })
+  ok('g6 旧库升级后的存量行可正常走审核状态机发布', pubLegacy.ok && pubLegacy.entry?.status === 'published')
+  salesDbService.flushNow()
+  await salesDbService.reopenForWxid(legacyDir)
+  const afterReopen = salesDbService.kbGet(pubRow.id!)
+  const stagingRow = salesDbService.kbList().find((e) => e.title === '旧库产品条目')
+  ok('g7 第二次 initialize/reopen 幂等：published 不被迁移踩回 staging（reviewed_by 保留）+ 行数不增',
+    afterReopen?.status === 'published' && afterReopen?.reviewed_by === '主管甲' &&
+    salesDbService.kbList().length === 2 && stagingRow?.status === 'staging')
+  ok('g8 存量清扫可重入（reopen 后显式重跑 staged=0，零副作用）', salesDbService.migrateKnowledgeGovernance().staged === 0)
+
+  // 修复本身防回归：SCHEMA_SQL 不再提前建 idx_kb_status；索引创建位于治理列 ALTER 之后
+  const salesDbSrc = readFileSync(join(ROOT, 'electron/services/salesDbService.ts'), 'utf8')
+  const schemaBlock = salesDbSrc.match(/const SCHEMA_SQL = `[\s\S]*?^`/m)?.[0] ?? ''
+  const alterPos = salesDbSrc.indexOf('ALTER TABLE knowledge_base ADD COLUMN')
+  const idxPos = salesDbSrc.indexOf("CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at)")
+  ok('g9 SCHEMA_SQL 不含 idx_kb_status（防 no such column 中断旧库升级回归）',
+    schemaBlock.length > 0 && !/CREATE INDEX IF NOT EXISTS idx_kb_status/.test(schemaBlock))
+  ok('g10 先补列后建索引顺序锚点 + 迁移后列存在性校验在位',
+    alterPos !== -1 && idxPos !== -1 && alterPos < idxPos &&
+    salesDbSrc.includes('missingGov.length > 0') && salesDbSrc.includes('isDuplicateColumnError'))
 
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail > 0 ? 1 : 0)

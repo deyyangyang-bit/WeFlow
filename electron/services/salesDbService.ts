@@ -26,6 +26,14 @@ function dbGuardLog(level: GuardLogLevel, msg: string): void {
   else console.warn(msg)
 }
 
+/**
+ * sql.js「列已存在」错误识别（迁移 ALTER 幂等忽略的唯一依据）。
+ * 命中 = SQLite duplicate column name 错误；其余一律视为真实迁移错误（不静默吞）。
+ */
+function isDuplicateColumnError(e: unknown): boolean {
+  return String((e as Error)?.message || e).includes('duplicate column name')
+}
+
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
 export interface KnowledgeEntry {
@@ -316,7 +324,8 @@ CREATE TABLE IF NOT EXISTS opportunity_eval_case (
 
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_product_line ON knowledge_base(product_line);
-CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at);
+-- idx_kb_status 不在此处建：旧库 knowledge_base 需先走下方 kbGovCols 幂等补列（status 列），
+-- 否则此处直接报 no such column 并中断整个初始化；统一由补列后的 try/catch 兜底创建。
 CREATE INDEX IF NOT EXISTS idx_report_period ON report_snapshot(period_type, period_start);
 CREATE INDEX IF NOT EXISTS idx_customer_session ON customer_profile(session_id);
 CREATE INDEX IF NOT EXISTS idx_todo_status ON follow_up_task(status);
@@ -454,6 +463,9 @@ class SalesDbService {
     try { this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_eval_case_anchor ON alert_eval_case(session_id, anchor_key, alert_type)') } catch { /* 已存在 */ }
     try { this.db.run('CREATE INDEX IF NOT EXISTS idx_alert_eval_case_status ON alert_eval_case(alert_type, status, updated_at)') } catch { /* 已存在 */ }
     // Migration: 刀 1 知识治理列（宪法 §3 登记行，设计-Hermes-MVP 刀 1）——幂等 ALTER 加列，只能加列不改名
+    // ⚠️ 顺序铁律：idx_kb_status 引用 status 列，必须在本组 ALTER 全部完成后才建。SCHEMA_SQL 不建该索引——
+    // 旧库 knowledge_base 尚无 status 列，SCHEMA_SQL 提前建索引会以 no such column 中断整个初始化，
+    // 永远走不到下方补列（旧账号升级阻断根因，§2.84）
     const kbGovCols: Array<[string, string]> = [
       ['status', "TEXT NOT NULL DEFAULT 'staging'"],
       ['authority', "TEXT NOT NULL DEFAULT 'community'"],
@@ -467,12 +479,31 @@ class SalesDbService {
       ['evidence_key', 'TEXT'],
     ]
     for (const [col, type] of kbGovCols) {
-      try { this.db.run(`ALTER TABLE knowledge_base ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+      try {
+        this.db.run(`ALTER TABLE knowledge_base ADD COLUMN ${col} ${type}`)
+      } catch (e) {
+        // 「列已存在」幂等忽略（不打错误日志——已升级库每次启动都会命中）；其余是真实迁移错误——
+        // 响亮失败，禁止带着残缺 schema 继续运行
+        if (!isDuplicateColumnError(e)) {
+          salesLog('ERROR', `[SalesDb] knowledge_base 治理列 ${col} 迁移失败: ${String((e as Error)?.message || e)}`)
+          throw e
+        }
+      }
     }
-    try { this.db.run('CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at)') } catch { /* 已存在 */ }
+    // 迁移后列存在性校验（sql.js 错误分类不可靠时的第二道防线）：缺列启动失败并输出明确日志
+    const kbColsAfter = this.tableColumns('knowledge_base')
+    const missingGov = kbGovCols.map(([c]) => c).filter((c) => !kbColsAfter.includes(c))
+    if (missingGov.length > 0) {
+      const msg = `[SalesDb] knowledge_base 治理列迁移后仍缺失: ${missingGov.join(', ')}——启动中止，请从自动备份恢复`
+      salesLog('ERROR', msg)
+      throw new Error(msg)
+    }
+    // 所有治理字段 ALTER 完成后再建 status 索引（IF NOT EXISTS 幂等；此处失败即真实错误，不静默吞）
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at)')
     // 存量迁移（幂等、可重入）：治理前置的旧行一次性置 staging/community——治理版上线后默认不可被问答引用
     this.migrateKnowledgeGovernance()
-    this.persist()
+    // 迁移完成后立即持久化（不依赖 500ms 防抖窗口——迁移结果必须落盘）
+    this.persistNow()
   }
 
   /**
@@ -554,6 +585,19 @@ class SalesDbService {
    */
   isInitialized(): boolean {
     return this.db !== null
+  }
+
+  /**
+   * 表列名清单（迁移后列存在性校验用，PRAGMA table_info）。
+   * 表不存在 / 查询失败返回空数组（调用方按缺列处理）。
+   */
+  tableColumns(table: string): string[] {
+    if (!this.db) return []
+    try {
+      return this.all<{ name: string }>(`PRAGMA table_info(${table})`, []).map((r) => String(r.name))
+    } catch {
+      return []
+    }
   }
 
   private getDb(): SqlJsDatabase {
