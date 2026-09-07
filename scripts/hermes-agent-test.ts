@@ -39,6 +39,7 @@ import {
   type HermesCompletion,
   type HermesAgentDeps
 } from '../electron/services/hermesAgent'
+import { HermesAgentCore, type HermesAgentTaskRuntime } from '../electron/services/hermesAgentCore'
 import { HERMES_TOOLS, maskStructuredId, type HermesToolDef, type HermesToolContext } from '../electron/services/hermesToolRegistry'
 import { buildMessageKey } from '../shared/messageKey'
 import { useHermesStore, canSettleTaskView, contextKeyOf } from '../src/stores/hermesStore'
@@ -98,6 +99,27 @@ const TOOL_CALL = (tool: string, args: Record<string, unknown> = {}, reason = '�
  *  refs 缺省 ['e1']：先 TOOL_CALL 的用例必有 e1（有行证据用行证据，空结果用 result 级兜底证据） */
 const COMPLETE = (summary: string, refs: string[] = ['e1']): string =>
   JSON.stringify({ type: 'complete', summary, findings: [{ text: '发现一', evidenceRefs: refs }], nextSteps: ['建议一'], evidenceRefs: refs })
+
+/** 构造 Agent Core 任务运行时（不经 service 壳、独立实例化 Core 的最小任务状态） */
+function makeCoreRt(goal: string): HermesAgentTaskRuntime {
+  const now = Date.now()
+  return {
+    task: { taskId: 'core-t1', status: 'planning', goal, contextLabel: '全局', steps: [], evidence: [], createdAt: now },
+    conversation: [],
+    evidenceByRef: new Map(),
+    nextEvidenceSeq: 0,
+    lastCallKey: '',
+    deadlineAt: now + 90_000,
+    abort: null,
+    cancelRequested: false,
+    turnRunning: false,
+    okToolCalls: 0,
+    unresolvedToolFailure: false,
+    dataRetries: 0,
+    identity: { name: '', role: '' },
+    contextKind: 'global'
+  }
+}
 
 async function main(): Promise<void> {
   await salesDbService.initialize(mkdtempSync(join(tmpdir(), 'hermes-agent-sales-')))
@@ -490,11 +512,11 @@ async function main(): Promise<void> {
       t?.status === 'cancelled' && !t.result && ft.calls.length === 0)
   }
 
-  // a11 步数/时长上限内藏（深模块常量，静态断言源码在位）
+  // a11 步数/时长上限内藏（深模块常量，静态断言源码在位；任务 2/4 起 Agent Loop 本体与常量在 hermesAgentCore）
   {
-    const agentSrc = readFileSync(join(ROOT, 'electron/services/hermesAgent.ts'), 'utf8')
+    const coreSrc = readFileSync(join(ROOT, 'electron/services/hermesAgentCore.ts'), 'utf8')
     ok('a11 限制常量在位：MAX_TOOL_CALLS = 6 / TASK_DEADLINE_MS = 90_000',
-      agentSrc.includes('MAX_TOOL_CALLS = 6') && agentSrc.includes('TASK_DEADLINE_MS = 90_000'))
+      coreSrc.includes('MAX_TOOL_CALLS = 6') && coreSrc.includes('TASK_DEADLINE_MS = 90_000'))
   }
 
   // a12 getTask 返回快照拷贝（外部改快照不影响内部真源）
@@ -821,6 +843,9 @@ async function main(): Promise<void> {
   const panelSrc = readFileSync(join(ROOT, 'src/components/hermes/HermesPanel.tsx'), 'utf8')
   const panelScss = readFileSync(join(ROOT, 'src/components/hermes/HermesPanel.scss'), 'utf8')
   const agentSrc = readFileSync(join(ROOT, 'electron/services/hermesAgent.ts'), 'utf8')
+  const coreSrc = readFileSync(join(ROOT, 'electron/services/hermesAgentCore.ts'), 'utf8')
+  // 任务 2/4 起 Agent 源码 = service 壳（hermesAgent.ts）+ Agent Core（hermesAgentCore.ts）
+  const agentAllSrc = agentSrc + coreSrc
   const registrySrc = readFileSync(join(ROOT, 'electron/services/hermesToolRegistry.ts'), 'utf8')
   const preloadSrc = readFileSync(join(ROOT, 'electron/preload.ts'), 'utf8')
   const dtsSrc = readFileSync(join(ROOT, 'src/types/electron.d.ts'), 'utf8')
@@ -864,24 +889,24 @@ async function main(): Promise<void> {
   ok('d8 ChatPage / CustomerWorkspacePage 旧「问知识库」文案摘除',
     !chatSrc.includes('问知识库') && !cwsSrc.includes('问知识库'))
 
-  // d9 主进程零写路径（agent 与 registry 均只读；无 INSERT/UPDATE/写方法调用）
-  ok('d9 hermesAgent + hermesToolRegistry 零写路径（无 INSERT/UPDATE/DELETE、零写方法调用）',
-    !/INSERT INTO|DELETE FROM|\.update\(|kbCreate|kbReview|kbUpdate|kbDelete|todoCreate|customerUpsert|opportunityUpsert|opportunityEventAdd/.test(agentSrc) &&
+  // d9 主进程零写路径（agent 壳+Core 与 registry 均只读；无 INSERT/UPDATE/写方法调用）
+  ok('d9 hermesAgent + hermesAgentCore + hermesToolRegistry 零写路径（无 INSERT/UPDATE/DELETE、零写方法调用）',
+    !/INSERT INTO|DELETE FROM|\.update\(|kbCreate|kbReview|kbUpdate|kbDelete|todoCreate|customerUpsert|opportunityUpsert|opportunityEventAdd/.test(agentAllSrc) &&
     !/INSERT INTO|DELETE FROM|kbCreate|kbReview|kbUpdate|kbDelete|todoCreate|customerUpsert|opportunityUpsert|opportunityEventAdd/.test(registrySrc))
 
-  // d10 失败文案映射全部人话（不出现 SQL/IPC/堆栈字样）
+  // d10 失败文案映射全部人话（不出现 SQL/IPC/堆栈字样；FRIENDLY_ERROR 在 Agent Core）
   ok('d10 FRIENDLY_ERROR 全员人话（无 SQL/ipc/stack/路径字样）',
-    !/SQL|ipcRenderer|stack|\.db\b|SELECT /i.test(agentSrc.slice(agentSrc.indexOf('FRIENDLY_ERROR'), agentSrc.indexOf('// ─── 内部结构'))))
+    !/SQL|ipcRenderer|stack|\.db\b|SELECT /i.test(coreSrc.slice(coreSrc.indexOf('FRIENDLY_ERROR'), coreSrc.indexOf('// ─── 内部结构'))))
 
   // d11 审查修复固化（静态）：证据约束闭环 / 工具期间取消丢弃 / 可见性措辞诚实 / 锚点驱动
   ok('d11a 证据约束闭环在源码固化（validateCompletion：零查询拒绝 + 并集非空 + 逐条有效引用 + result 兜底）',
-    agentSrc.includes('validateCompletion') && /rt\.okToolCalls <= 0/.test(agentSrc) &&
-    /MAX_DATA_RETRIES/.test(agentSrc) && /你还没有通过工具查询到任何真实数据/.test(agentSrc) &&
-    /没有绑定任何有效证据编号/.test(agentSrc) && /无匹配结果/.test(agentSrc))
+    agentAllSrc.includes('validateCompletion') && /rt\.okToolCalls <= 0/.test(agentAllSrc) &&
+    /MAX_DATA_RETRIES/.test(agentAllSrc) && /你还没有通过工具查询到任何真实数据/.test(agentAllSrc) &&
+    /没有绑定任何有效证据编号/.test(agentAllSrc) && /无匹配结果/.test(agentAllSrc))
   ok('d11b 展示证据按并集从 evidenceByRef 重建（顶层+findings refs、多轮重引可恢复）',
-    agentSrc.includes('flatMap((f) => f.evidenceRefs)') && agentSrc.includes('evidenceByRef.get(ref)'))
+    agentAllSrc.includes('flatMap((f) => f.evidenceRefs)') && agentAllSrc.includes('evidenceByRef.get(ref)'))
   ok('d11c 工具执行期间取消：返回后立即丢弃（tool.run 两条出口后均有 cancelRequested 检查）',
-    (agentSrc.match(/if \(rt\.cancelRequested\) \{ this\.discardInFlight\(rt\); return \}/g) || []).length >= 4)
+    (agentAllSrc.match(/if \(rt\.cancelRequested\) \{ this\.discardInFlight\(rt\); return \}/g) || []).length >= 4)
   ok('d11d 可见性措辞诚实（registry 明示 filterByOwner 非安全边界、不称权限）',
     registrySrc.includes('非安全边界') && registrySrc.includes('可见性过滤') &&
     !/无权/.test(registrySrc))
@@ -908,6 +933,73 @@ async function main(): Promise<void> {
   ok('d13 结构化标识脱敏接线（sender: maskStructuredId + isSessionIdLike；accountBrief 零 sessionId）',
     registrySrc.includes('sender: maskStructuredId(') && registrySrc.includes('isSessionIdLike') &&
     !/sessionId: String\(a\.session_id/.test(registrySrc))
+
+  // ─── f. Agent Core 抽离（独立可注入依赖；任务 2/4）────────────────────────────
+
+  // f1 纯注入驱动：不经 hermesAgentService、不经 enqueueSalesTask——执行通道本身是注入的
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const execCalls: Array<{ tool: string; args: Record<string, unknown> }> = []
+    const script = [TOOL_CALL('customer.search', { query: '李林辉' }), COMPLETE('核心结论XYZ', ['e1'])]
+    let i = 0
+    let updates = 0
+    const core = new HermesAgentCore({
+      completion: async () => script[Math.min(i++, script.length - 1)],
+      tools: ft.tools,
+      // 执行通道注入：直调 tool.run，零 salesQueue（证明队列也是外部依赖而非 Core 内建）
+      executeTool: async (tool, args, ctx) => {
+        execCalls.push({ tool: tool.name, args })
+        return tool.run(args, ctx)
+      },
+      maskText: (s) => s,
+      maskId: (s) => s,
+      onUpdate: () => { updates++ },
+      log: () => {}
+    })
+    const rt = makeCoreRt('分析李林辉')
+    await core.runTurn(rt, '分析李林辉')
+    ok('f1 Agent Core 纯注入驱动：多步骤循环完成、执行通道直调（零队列）、onUpdate 有进度回调',
+      rt.task.status === 'completed' && rt.task.result?.summary === '核心结论XYZ' &&
+      execCalls.length === 1 && execCalls[0].args.query === '李林辉' && updates > 0 &&
+      rt.task.evidence.some((e) => e.ref === 'e1'))
+  }
+
+  // f2 注入的 maskText 生效于模型出站、任务快照保持原文（出站脱敏唯一出口在 Core）
+  {
+    const ft = makeFakeTools([{ name: 'customer.search' }])
+    let seen = ''
+    const script = [TOOL_CALL('customer.search'), COMPLETE('脱敏结论')]
+    let i = 0
+    const core = new HermesAgentCore({
+      completion: async (messages) => {
+        seen += messages.map((m) => m.content).join('\n') + '\n'
+        return script[Math.min(i++, script.length - 1)]
+      },
+      tools: ft.tools,
+      executeTool: async (tool, args, ctx) => tool.run(args, ctx),
+      maskText: (s) => s.split('秘密').join('***'),
+      maskId: (s) => s
+    })
+    const rt = makeCoreRt('目标含秘密词')
+    await core.runTurn(rt, '目标含秘密词')
+    ok('f2 注入 maskText：模型出站走注入脱敏（秘密→***），任务快照 goal 保持原文',
+      rt.task.status === 'completed' && seen.includes('***') && !seen.includes('秘密') &&
+      rt.task.goal === '目标含秘密词')
+  }
+
+  // f3 静态护栏：Core 零主进程服务依赖（未来 UtilityProcess 可复用）；service 壳组装 Core
+  {
+    const coreSrc = readFileSync(join(ROOT, 'electron/services/hermesAgentCore.ts'), 'utf8')
+    const agentSrc = readFileSync(join(ROOT, 'electron/services/hermesAgent.ts'), 'utf8')
+    ok('f3a hermesAgentCore 零主进程服务 import（config/identity/queue/logger/aiApiClient/db 全不沾）',
+      !/from '\.\/(config|identityService|salesQueue|salesLogger|ai\/aiApiClient|crmDbService|salesDbService|chatService|crmSla2Service)'/.test(coreSrc))
+    const registryImports = coreSrc.match(/import[^;'\n]*from '\.\/hermesToolRegistry'/g) || []
+    ok('f3b Core 对工具注册表只 import type（运行时零依赖，跨进程可构建）',
+      registryImports.length > 0 && registryImports.every((s) => s.startsWith('import type')))
+    ok('f3c Agent Loop 本体在 Core（service 壳无 while 循环/解析器/证据校验器）',
+      /class HermesAgentCore/.test(coreSrc) &&
+      !/while \(true\)|parseAgentDecision|validateCompletion|buildUserPrompt/.test(agentSrc))
+  }
 
   // e. 旧库迁移：knowledge-governance-test g 节已覆盖（g1-g10 真实旧库文件升级），此处不重复。
   console.log('（e 节：旧库迁移由 knowledge-governance-test g1-g10 覆盖）')

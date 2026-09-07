@@ -292,6 +292,22 @@ export default defineConfig({
         }
       },
       {
+        // Hermes UtilityProcess 入口（Agent Loop 宿主；main.ts 经 utilityProcess.fork 加载）
+        entry: 'electron/hermes/hermesUtilityEntry.ts',
+        onstart: handleElectronOnStart,
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              output: {
+                entryFileNames: 'hermesUtilityEntry.js',
+                codeSplitting: false
+              }
+            }
+          }
+        }
+      },
+      {
         entry: 'electron/preload.ts',
         onstart: handleElectronOnStart,
         vite: {

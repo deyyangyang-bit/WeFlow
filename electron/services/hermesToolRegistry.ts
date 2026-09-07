@@ -476,9 +476,3 @@ export function findHermesTool(name: string): HermesToolDef | undefined {
   return HERMES_TOOLS.find((t) => t.name === name)
 }
 
-/** 给模型 system prompt 的工具清单段落（name + description + argsHint） */
-export function buildToolManifestPrompt(): string {
-  return HERMES_TOOLS
-    .map((t) => `- ${t.name}：${t.description} 参数：${t.argsHint}`)
-    .join('\n')
-}

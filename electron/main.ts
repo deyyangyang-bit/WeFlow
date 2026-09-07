@@ -1,5 +1,5 @@
 import './preload-env'
-import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, utilityProcess } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
 import { join, dirname } from 'path'
@@ -35,7 +35,7 @@ import { applyManualStageCorrection } from './services/legalStageWriters'
 import { createEvidenceResolver } from './services/evidenceResolver'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { hermesAskService } from './services/hermesAskService'
-import { hermesAgentService, type HermesTaskContext } from './services/hermesAgent'
+import { createHermesUtilityManager, type HermesTaskContext } from './hermes/hermesUtilityManager'
 import { classifyAskIntent, askData, markDataAskViewed } from './services/hermesAskDataService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
@@ -96,6 +96,26 @@ initAlertService({
   hasRecentAlert: (sessionId, triggerReason, windowMs) => insightRecordService.hasRecentAlert(sessionId, triggerReason, windowMs),
   addRecord: (input) => insightRecordService.addRecord(input as unknown as Parameters<typeof insightRecordService.addRecord>[0]),
   log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
+})
+
+// Hermes 只读智能体（设计-Hermes-MVP）：Agent Loop 跑在 UtilityProcess 子进程，Main 是唯一
+// 可信宿主——API Key/ConfigService、工具白名单（HERMES_TOOLS）、真实身份与 sessionId 全在
+// Main；capabilityContextId 是不透明 ID，Main 按 ID 映射真实上下文；模型出网前做最终隐私
+// 检查，工具结果回传 Utility 前再脱敏。旧进程内 hermesAgent 仅保留作测试 adapter，生产严禁
+// 回退。forkProcess 适配 Electron UtilityProcess（Manager 自身零 electron 依赖，动态测试可注入）。
+const hermesUtilityManager = createHermesUtilityManager({
+  entryPath: join(__dirname, 'hermesUtilityEntry.js'),
+  forkProcess: (modulePath) => {
+    const child = utilityProcess.fork(modulePath, [], { serviceName: 'hermes-utility' })
+    return {
+      postMessage: (msg) => child.postMessage(msg),
+      on: (event, cb) => {
+        if (event === 'message') { child.on('message', (m) => cb(m)); return }
+        if (event === 'exit') { child.on('exit', (code) => cb(code)); return }
+      },
+      kill: () => { child.kill() }
+    }
+  }
 })
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
@@ -4731,22 +4751,23 @@ function registerIpcHandlers() {
     ))
   })
 
-  // ─── Hermes 只读智能体（设计-Hermes-MVP 智能体第一刀）：四接口 + 进度事件 ─────
-  // Loop 本体不在 enqueueSalesTask 队列内：AI 调用是网络 IO 不碰 WCDB，而 Loop 最长 90s，
-  // 整体入队会阻塞其他 sales 任务；工具读库在 hermesAgent 内部统一入队串行（Loop 不在
-  // 队列内，无死锁）。进度经 hermes:task:progress 推给主窗口（任务快照拷贝）。
-  hermesAgentService.onProgress((task) => {
+  // ─── Hermes 只读智能体（UtilityProcess 架构）：四接口 + 进度事件 ─────────────
+  // Loop 本体在 Utility 子进程，不在 enqueueSalesTask 队列内：AI 调用是网络 IO 不碰 WCDB，
+  // 而 Loop 最长 90s，整体入队会阻塞其他 sales 任务；只有具体数据库读取（工具执行）在
+  // Manager 内统一入队串行（Loop 不在队列内，无死锁）。进度经 hermes:task:progress 推给
+  // 主窗口（任务快照拷贝）。渲染层/preload 接口与旧进程内 Agent 完全兼容。
+  hermesUtilityManager.onProgress((task) => {
     const win = mainWindow
     if (win && !win.isDestroyed()) win.webContents.send('hermes:task:progress', task)
   })
 
   ipcMain.handle('hermes:task:start', async (_, payload: { goal?: string; context?: HermesTaskContext; contextLabel?: string }) => {
     try {
-      return await hermesAgentService.startTask({
+      return await hermesUtilityManager.startTask({
         goal: String(payload?.goal || ''),
         context: payload?.context,
         contextLabel: payload?.contextLabel ? String(payload.contextLabel) : undefined
-      }, { config: configService ?? undefined })
+      })
     } catch (e) {
       salesLog('WARN', `[Hermes] task:start 失败: ${(e as Error)?.message || e}`)
       return { ok: false, errorCode: 'internal' }
@@ -4755,10 +4776,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('hermes:task:continue', async (_, payload: { taskId?: string; question?: string }) => {
     try {
-      return await hermesAgentService.continueTask(
+      return await hermesUtilityManager.continueTask(
         String(payload?.taskId || ''),
-        String(payload?.question || ''),
-        { config: configService ?? undefined }
+        String(payload?.question || '')
       )
     } catch (e) {
       salesLog('WARN', `[Hermes] task:continue 失败: ${(e as Error)?.message || e}`)
@@ -4767,11 +4787,11 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('hermes:task:cancel', (_, taskId?: string) => {
-    return hermesAgentService.cancelTask(String(taskId || ''))
+    return hermesUtilityManager.cancelTask(String(taskId || ''))
   })
 
   ipcMain.handle('hermes:task:get', (_, taskId?: string) => {
-    const task = hermesAgentService.getTask(String(taskId || ''))
+    const task = hermesUtilityManager.getTask(String(taskId || ''))
     return task ? { ok: true, task } : { ok: false, errorCode: 'not_found' }
   })
 
@@ -5819,6 +5839,9 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
 
+  // 启动 Hermes Utility 子进程（fork → init → ready 握手；非阻塞，未就绪期任务报 agent_starting）
+  hermesUtilityManager.start()
+
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (!mainWindow.isVisible()) {
@@ -5851,6 +5874,9 @@ const shutdownAppServices = async (): Promise<void> => {
       app.exit(0)
     }, 5000)
     forceExitTimer.unref()
+    // 先结束 Hermes Utility 子进程（宿主退出流程第一步）：通知 shutdown → 至多等 2s → kill。
+    // 铁律：Utility 必须在数据库服务关闭之前结束，避免在途 host.request 工具读库打到已关闭的 DB
+    try { await hermesUtilityManager.shutdown() } catch {}
     // cloudControlService removed (PRD v2)
     // 停止自动下载服务
     try { await imageDownloadService.stopAutoDownload() } catch {}
