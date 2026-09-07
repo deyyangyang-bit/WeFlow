@@ -40,6 +40,7 @@ import {
   type HermesAgentDeps
 } from '../electron/services/hermesAgent'
 import { HERMES_TOOLS, maskStructuredId, type HermesToolDef, type HermesToolContext } from '../electron/services/hermesToolRegistry'
+import { buildMessageKey } from '../shared/messageKey'
 import { useHermesStore, canSettleTaskView, contextKeyOf } from '../src/stores/hermesStore'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -344,6 +345,72 @@ async function main(): Promise<void> {
     })
     ok('a29 步骤 label 固定 publicLabel：reason 含内部工具 ID 也不出现在用户可见快照（内部字段 step.tool 保留）',
       t?.status === 'completed' && t.steps[0].label === '调用客户搜索' && !visible.includes('customer.search'))
+  }
+
+  // a30 证据锚点零出站：messageKey（canonical/local/server/fallback 四形态，内含本机绝对
+  // 数据库路径与 wxid/自定义微信号发送者标识）在发往模型的 tool_result 副本中被删除；
+  // 本地任务证据仍保留完整 messageKey（回查能力不破坏）；证据编号协议 eN ref 不受影响
+  {
+    const DB_PATH = '/Users/yang/Library/Containers/com.tencent.xinWeChat/Data/.wxaid/db/main.db'
+    const keys = [
+      buildMessageKey({ localId: 101, serverId: 0, createTime: 1770001000, sortSeq: 0, localType: 1, dbPath: DB_PATH, tableName: 'Chat_abc123' }),
+      buildMessageKey({ localId: 102, serverId: 0, createTime: 1770001001, sortSeq: 3, senderUsername: 'wxid_key_leak_01', localType: 1, dbPath: DB_PATH }),
+      buildMessageKey({ localId: 0, serverId: 9001, createTime: 1770001002, sortSeq: 5, senderUsername: 'wan923121735', localType: 1, dbPath: DB_PATH }),
+      buildMessageKey({ localId: 0, serverId: 0, createTime: 1770001003, sortSeq: 7, senderUsername: 'wxid_fb_99', localType: 1 })
+    ]
+    const chatTool: HermesToolDef = {
+      name: 'chat.recent',
+      publicLabel: '聊天记录查询',
+      description: 'fake',
+      argsHint: '{}',
+      run: async () => ({
+        ok: true,
+        data: {
+          customer: '杨青的客户',
+          messages: keys.map((k, i) => ({
+            direction: 'received',
+            sender: '***', // 真实 chat.recent 在工具层已 maskStructuredId（d13/b21 覆盖）
+            text: '聊到叉车价格了',
+            time: 1770001000 + i,
+            messageKey: k
+          })),
+          total: keys.length
+        },
+        evidence: keys.map((k) => ({ label: '聊天记录（对方）', kind: 'chat' as const, messageKey: k, excerpt: '聊到叉车价格了' })),
+        publicSummary: '已读取「杨青的客户」最近 4 条消息。'
+      })
+    }
+    const sc = scriptCompletion([TOOL_CALL('chat.recent'), COMPLETE('聊天结论', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: '这个客户聊了什么' }, { ...sc.deps, tools: [chatTool] })
+    const t = await waitTask(start.task!.taskId)
+    const byId = hermesAgentService.getTask(start.task!.taskId)
+    ok('a30 证据锚点零出站：messageKey 四形态（本机路径/wxid/自定义微信号）模型副本全删除；本地证据 messageKey 完整保留、eN 协议不变',
+      t?.status === 'completed' &&
+      keys.every((k) => !sc.captured().includes(k)) &&
+      !sc.captured().includes(DB_PATH) && !sc.captured().includes('com.tencent.xinWeChat') &&
+      !sc.captured().includes('wxid_key_leak_01') && !sc.captured().includes('wan923121735') && !sc.captured().includes('wxid_fb_99') &&
+      (byId?.evidence ?? []).length === 1 && byId!.evidence[0].messageKey === keys[0] && byId!.evidence[0].ref === 'e1')
+  }
+
+  // a31 sanitizer 工具/路径感知：客户身份字段允许清单外的普通业务字段（合同名/产品名）
+  // 只走 maskPrivateText——「AgreementA/ModelX」类业务名绝不被 isSessionIdLike 误伤；
+  // 客户身份值仍走 maskStructuredId；手机号/身份证/wxid_* 在任意文本字段继续脱敏
+  {
+    const now3 = Date.now()
+    const accBiz = crmDbService.create('account', { name: 'li92312100', owner_sales: '杨青', session_id: 'wxid_biz_row', created_at: now3, updated_at: now3 })
+    // status 非 active：不进 opportunity.my_list（不污染 b14/b15 计数）；customer_business 不筛 status，产品字段照常出现在 data
+    crmDbService.create('opportunity', { account_id: Number(accBiz), product: 'ModelX13800138000型', stage: 'negotiation', status: 'inactive', amount: 50000, owner_sales: '杨青', last_signal_at: now3, created_at: now3, updated_at: now3 })
+    // 合同名恰为 10 字符字母串（旧全局 name 键匹配会误判成自定义微信号打成 ***）；
+    // 身份证/wxid_* 放在另一份合同名（任意文本字段仍须被 maskPrivateText 脱敏）
+    crmDbService.create('contract', { account_id: Number(accBiz), name: 'AgreementA', amount: 30000, status: 'signed', custom_fields: '{}', created_at: now3, updated_at: now3 })
+    crmDbService.create('contract', { account_id: Number(accBiz), name: '320124199001010011号-wxid_kk_01', amount: 20000, status: 'draft', custom_fields: '{}', created_at: now3 + 1, updated_at: now3 + 1 })
+    const sc = scriptCompletion([TOOL_CALL('crm.customer_business', { accountId: Number(accBiz) }), COMPLETE('业务结论', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: '这个客户的商机合同怎么样' }, { ...sc.deps }) // 真实白名单
+    const t = await waitTask(start.task!.taskId)
+    ok('a31 路径感知脱敏：合同名/产品名 ModelX、AgreementA 保持原文（不误伤）；身份值与手机号/身份证/wxid_* 在任意文本字段仍 ***',
+      t?.status === 'completed' && sc.captured().includes('AgreementA') && sc.captured().includes('ModelX') &&
+      !sc.captured().includes('li92312100') && !sc.captured().includes('13800138000') &&
+      !sc.captured().includes('320124199001010011') && !sc.captured().includes('wxid_kk_01'))
   }
 
   // a19 逐条 finding 都必须有有效引用：一条绑定伪造编号 → 拒绝纠偏，补齐后才接受

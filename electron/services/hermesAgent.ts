@@ -21,8 +21,11 @@
  *    非空 + 每条 finding 至少一个有效编号」；展示证据按有效引用并集从 evidenceByRef 真源重建
  *    （多轮重引可恢复）
  *  - 模型出站统一脱敏（唯一出口）：user prompt 与 tool_result 副本统一过 maskPrivateText
- *    + 宿主已知 sessionId 精确替换；data 的结构化身份字段（name/customer）走 maskStructuredId。
- *    只改发往模型的副本——库原值、证据锚点（messageKey/ref）、用户可见任务快照全部不动
+ *    + 宿主已知 sessionId 精确替换；data 按工具/路径感知脱敏——IDENTITY_FIELD_PATHS 允许清单
+ *    内的客户身份字段走 maskStructuredId，清单外普通业务字段（合同名/产品名/知识标题）只走
+ *    maskPrivateText 不做 isSessionIdLike（防 ModelX/AgreementA 类业务名误伤）；
+ *    messageKey（本地证据回查锚点，内含本机路径/发送者标识）在模型副本中直接删除，
+ *    模型引用证据只走 eN ref。只改发往模型的副本——库原值、本地证据表、用户可见任务快照全部不动
  *  - 信任边界：真实 sessionId/wxid 绝不进模型上下文——prompt 只带语义锚点（chat 入口
  *    提示「已绑定聊天上下文，无需提供会话 ID」），会话识别走 by_session 的宿主 chat
  *    上下文（模型提供的 sessionId 一律不采信）；模型可见摘要零会话标识
@@ -248,12 +251,22 @@ function callKeyOf(tool: string, args: Record<string, unknown>): string {
 
 // ─── 模型出站统一脱敏（唯一出口）──────────────────────────────────────────────
 // 发往模型的一切内容（user prompt / tool_result 副本）统一在此脱敏，不依赖每个工具作者自觉；
-// 只处理发往模型的副本——本机库原值、证据锚点（messageKey/ref）、用户可见任务快照全部不动。
+// 只处理发往模型的副本——本机库原值、本地证据锚点、用户可见任务快照全部不动。
 
-/** 结构化身份字段：值可能存放微信号/手机号形态的存量脏数据 → maskStructuredId（微信号三形态一律 ***） */
-const STRUCTURED_IDENTITY_KEYS = new Set(['name', 'customer'])
-/** 本地证据锚点/编号字段绝不改写（保回查能力与证据编号协议） */
-const ANCHOR_KEYS = new Set(['messageKey', 'ref'])
+/** 客户身份字段允许清单（tool.name → 字段路径，集中唯一真源）：这些路径的值可能存放
+ *  微信号/手机号形态的存量脏数据 → maskStructuredId（微信号三形态一律 ***）。
+ *  清单外的普通业务字段（合同名/知识标题/产品名等）只走 maskPrivateText，
+ *  不做 isSessionIdLike 判定——防「ModelX/AgreementA」类业务名被误伤（a31）。
+ *  路径写法：顶层字段 = 'name'；数组内对象字段 = 'customers.name'（下标不入路径） */
+const IDENTITY_FIELD_PATHS: Record<string, ReadonlySet<string>> = {
+  'customer.search': new Set(['customers.name']),
+  'customer.by_session': new Set(['name']),
+  'customer.current_view': new Set(['name']),
+  'crm.customer_business': new Set(['name']),
+  'opportunity.my_list': new Set(['opportunities.customer']),
+  'chat.recent': new Set(['customer']),
+  'action.pending': new Set(['tasks.customer'])
+}
 
 /** 出站文本脱敏：maskPrivateText（手机号/身份证/wxid_*）+ 已知敏感值精确替换 → ***。
  *  精确替换不引入宽泛自由文本正则（普通正文零误伤） */
@@ -265,23 +278,27 @@ function maskOutboundText(text: string, exact: Map<string, string>): string {
   return s
 }
 
-/** data 副本递归脱敏：结构化身份字段走 maskStructuredId、其余字符串走 maskPrivateText；
- *  被改写的整值记入 exact 替换表（同一结果里引用了这些值的自由文本据此精确替换）。
- *  数字与锚点字段不动 */
-function maskDataCopy(key: string, v: unknown, exact: Map<string, string>): unknown {
+/** data 副本递归脱敏（tool/path 感知）：IDENTITY_FIELD_PATHS 允许清单内的客户身份字段走
+ *  maskStructuredId（被改写的整值记入 exact 替换表，同一结果里引用了这些值的自由文本据此
+ *  精确替换）；清单外字符串只走 maskPrivateText；messageKey 是本地证据回查锚点（canonical/
+ *  local/server/fallback 各形态都内含本机数据库路径或发送者标识）——模型副本直接删除，
+ *  模型引用证据只走 eN ref；数字不动。绝不改 result 原对象（本地证据表/库原值保持原值） */
+function maskDataCopy(toolName: string, path: string, v: unknown, exact: Map<string, string>): unknown {
   if (typeof v === 'string') {
-    if (ANCHOR_KEYS.has(key)) return v
-    if (STRUCTURED_IDENTITY_KEYS.has(key)) {
+    if (IDENTITY_FIELD_PATHS[toolName]?.has(path)) {
       const masked = maskStructuredId(v)
       if (masked !== v && !exact.has(v)) exact.set(v, masked)
       return masked
     }
     return maskPrivateText(v)
   }
-  if (Array.isArray(v)) return v.map((item) => maskDataCopy(key, item, exact))
+  if (Array.isArray(v)) return v.map((item) => maskDataCopy(toolName, path, item, exact))
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = maskDataCopy(k, val, exact)
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (k === 'messageKey') continue // 本地回查锚点绝不出站（内含本机路径/发送者标识）
+      out[k] = maskDataCopy(toolName, path ? `${path}.${k}` : k, val, exact)
+    }
     return out
   }
   return v
@@ -570,13 +587,13 @@ export class HermesAgentService {
             refs.push({ ref, label: fallback.label })
           }
         }
-        // 模型出站统一脱敏（唯一出口）：data 走字段级脱敏副本并收集识别出的身份原值，
-        // error/证据 label 等自由文本再过 maskPrivateText + 精确替换（宿主 sessionId 与
-        // data 中识别出的身份原值 → ***）。只改发往模型的副本——用户可见步骤摘要与
-        // 任务证据表仍用原值，库原值与证据锚点不动。
+        // 模型出站统一脱敏（唯一出口）：data 走工具/路径感知的字段级脱敏副本并收集识别出的
+        // 身份原值，error/证据 label 等自由文本再过 maskPrivateText + 精确替换（宿主 sessionId
+        // 与 data 中识别出的身份原值 → ***）。只改发往模型的副本——用户可见步骤摘要与
+        // 任务证据表仍用原值（messageKey 完整保留，回查能力不破坏），库原值不动。
         const exact = new Map<string, string>()
         if (rt.sessionId) exact.set(rt.sessionId, '***')
-        const safeData = maskDataCopy('', result.data ?? null, exact)
+        const safeData = maskDataCopy(tool.name, '', result.data ?? null, exact)
         const safeRefs = refs.map((r) => ({ ref: r.ref, label: maskOutboundText(r.label, exact) }))
         this.pushConversation(rt, [
           { role: 'user', content: JSON.stringify({
