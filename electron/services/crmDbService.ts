@@ -1794,6 +1794,13 @@ class CrmDbService {
   // 三个读口与页面同源：account 名匹配 / 商机与合同经既有列直读 / 月到款 = statsOverview monthPaid
   // 同口径（confirmed + account_id 非空 + pay_time 归类）按 owner 分组，owner 过滤由调用方 filterByOwner 统一执行。
 
+  /** 按微信会话 id 精确取客户档案（Hermes customer.by_session 专用；参数化只读） */
+  accountBySession(sessionId: string): CrmRow | null {
+    const sid = String(sessionId || '').trim()
+    if (!sid) return null
+    return this.all('SELECT * FROM account WHERE session_id = ? LIMIT 1', [sid])[0] ?? null
+  }
+
   /** 按客户名模糊匹配（刀 5「某客户到哪步」模板参数化查询；LIKE 只读） */
   accountSearchByName(name: string, limit: number = 5): CrmRow[] {
     const q = String(name || '').trim()

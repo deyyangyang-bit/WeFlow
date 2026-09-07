@@ -2,14 +2,15 @@
  * hermes-agent-test.ts —— Hermes 只读智能体第一刀测试（设计-Hermes-MVP 智能体刀 6）
  * 覆盖：
  *  a. Agent Loop 动态（fake AI adapter + fake tool registry 注入）：真实多步骤循环 / 严格 JSON 协议 /
- *     非法输出纠正重试至多 1 次 / 白名单外拒绝 / 证据防伪造 / 步数与重复限制 / 取消丢弃在途 /
+ *     非法输出纠正重试至多 1 次 / 白名单外拒绝 / 零工具查询拒绝 complete（结论必须来自真实查询）/
+ *     findings 逐条绑证据 / 伪造编号丢弃 / 步数与重复限制 / 取消丢弃在途（含工具执行期间取消）/
  *     多轮继续 / 任务不落盘不丢失
- *  b. 权限动态（真实 HERMES_TOOLS + /tmp 副本库）：销售只查本人+公共未归属 / 不泄露无权客户存在性 /
- *     知识检索只回 published / 白名单无写工具
+ *  b. 可见性过滤动态（真实 HERMES_TOOLS + /tmp 副本库；展示层过滤非安全边界）：销售只查本人+公共未归属 /
+ *     不可见客户不泄露存在性 / 知识检索只回 published / 白名单无写工具 / 先过滤后 slice 不漏本人数据
  *  c. 上下文动态：customer/chat/global 三态上下文进 toolContext；hermesStore 三入口语义（打开全局=global、
- *     切入口不删任务）
+ *     任务按上下文独立记忆，切换入口不串显）
  *  d. UI 静态护栏：HermesPanel 零发送类 IPC / 五态文案人话 / scss 零硬编码 hex / preload+d.ts 接线 /
- *     旧面板摘除 / 主进程零写路径
+ *     旧面板摘除 / 主进程零写路径 / 可见性措辞诚实
  *  e. 旧库迁移：在 knowledge-governance-test g 节覆盖（本文件不重复）。
  * 运行：npx tsx scripts/hermes-agent-test.ts
  */
@@ -36,7 +37,7 @@ import {
   type HermesAgentDeps
 } from '../electron/services/hermesAgent'
 import { HERMES_TOOLS, type HermesToolDef, type HermesToolContext } from '../electron/services/hermesToolRegistry'
-import { useHermesStore } from '../src/stores/hermesStore'
+import { useHermesStore, contextKeyOf } from '../src/stores/hermesStore'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ME: Identity = { name: '杨青', role: '销售' }
@@ -84,8 +85,9 @@ function makeFakeTools(specs: FakeToolSpec[]): { tools: HermesToolDef[]; calls: 
 
 const TOOL_CALL = (tool: string, args: Record<string, unknown> = {}, reason = '查一下'): string =>
   JSON.stringify({ type: 'tool_call', tool, arguments: args, reason })
+/** 协议 v2：findings 逐条对象 {text, evidenceRefs}（字符串数组旧格式 = 非法协议） */
 const COMPLETE = (summary: string, refs: string[] = []): string =>
-  JSON.stringify({ type: 'complete', summary, findings: ['发现一'], nextSteps: ['建议一'], evidenceRefs: refs })
+  JSON.stringify({ type: 'complete', summary, findings: [{ text: '发现一', evidenceRefs: refs }], nextSteps: ['建议一'], evidenceRefs: refs })
 
 async function main(): Promise<void> {
   await salesDbService.initialize(mkdtempSync(join(tmpdir(), 'hermes-agent-sales-')))
@@ -110,7 +112,7 @@ async function main(): Promise<void> {
   // a3 严格 JSON 容忍围栏（内容仍必须严格匹配协议字段）
   {
     const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion(['```json\n' + COMPLETE('围栏结论') + '\n```'])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), '```json\n' + COMPLETE('围栏结论') + '\n```'])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
     ok('a3 JSON 围栏内合法协议可解析（complete 成功）', t?.status === 'completed' && t.result?.summary === '围栏结论')
@@ -137,24 +139,46 @@ async function main(): Promise<void> {
       t.errorMessage!.includes('暂时无法查询') && !/JSON|protocol|stack/i.test(t.errorMessage!))
   }
 
-  // a6 白名单外工具拒绝：不执行、回喂错误、模型改道后仍可完成
+  // a6 白名单外工具拒绝：不执行、回喂错误；模型改道用白名单工具后才可完成
   {
     const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion([TOOL_CALL('db.execute', { sql: 'SELECT 1' }), COMPLETE('改道完成')])
+    const sc = scriptCompletion([
+      TOOL_CALL('db.execute', { sql: 'SELECT 1' }),
+      TOOL_CALL('customer.search', { query: '改道查询' }),
+      COMPLETE('改道完成')
+    ])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
-    ok('a6 白名单外工具被拒（零执行、步骤 error、任务仍可完成）',
-      t?.status === 'completed' && t.steps[0].status === 'error' &&
-      ft.calls.length === 0 && t.evidence.length === 0)
+    ok('a6 白名单外工具被拒（零执行、步骤 error），改道白名单工具后任务完成',
+      t?.status === 'completed' && t.steps[0].status === 'error' && t.steps[0].tool === 'db.execute' &&
+      ft.calls.length === 1 && ft.calls[0].tool === 'customer.search')
   }
 
-  // a7 证据防伪造：引用不存在的编号 → 一律丢弃
+  // a7 零工具查询的 complete 一律拒绝（数据型结论必须来自真实工具执行）
   {
     const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion([COMPLETE('编造证据', ['e99', 'e100'])])
+    const sc = scriptCompletion([COMPLETE('没查数据就下结论')])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     const t = await waitTask(start.task!.taskId)
-    ok('a7 伪造 evidenceRefs 全部丢弃（result 可信）', t?.status === 'completed' && t.evidence.length === 0)
+    ok('a7a 零工具 complete 被拒（纠偏 1 次仍坚持 → failed，绝不标记完成）',
+      t?.status === 'failed' && t.errorCode === 'ai_invalid_output' && ft.calls.length === 0 && !t.result)
+  }
+  {
+    const ft = makeFakeTools([{ name: 'customer.search' }])
+    const sc = scriptCompletion([COMPLETE('抢答'), TOOL_CALL('customer.search', { query: '补查' }), COMPLETE('查完再答', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a7b 零工具 complete 纠偏后模型先调工具 → 结论被接受（任务完成）',
+      t?.status === 'completed' && ft.calls.length === 1 && t.result?.summary === '查完再答')
+  }
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('编造证据', ['e99', 'e100'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    const t = await waitTask(start.task!.taskId)
+    ok('a7c 有真实工具执行后伪造 evidenceRefs 全部丢弃（findings 与顶层 refs 同样核验）',
+      t?.status === 'completed' && t.evidence.length === 0 &&
+      t.result!.findings.every((f) => f.evidenceRefs.length === 0))
   }
 
   // a8 步数上限：6 次工具调用后第 7 次 → too_many_steps
@@ -201,7 +225,7 @@ async function main(): Promise<void> {
   // a12 getTask 返回快照拷贝（外部改快照不影响内部真源）
   {
     const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion([COMPLETE('快照测试')])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('快照测试')])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     await waitTask(start.task!.taskId)
     const s1 = hermesAgentService.getTask(start.task!.taskId)
@@ -212,15 +236,49 @@ async function main(): Promise<void> {
 
   // a13 多轮继续：completed 任务 continueTask 带摘要窗口续跑成功
   {
-    const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion([COMPLETE('第一轮结论')])
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('第一轮结论', ['e1'])])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     await waitTask(start.task!.taskId)
-    const sc2 = scriptCompletion([TOOL_CALL('customer.search', { query: '追问后的新查询' }), COMPLETE('追问结论XYZ')])
+    const sc2 = scriptCompletion([TOOL_CALL('customer.search', { query: '追问后的新查询' }), COMPLETE('追问结论XYZ', ['e2'])])
     const cont = await hermesAgentService.continueTask(start.task!.taskId, '那下一步呢', { ...sc2.deps, tools: ft.tools })
     const t = await waitTask(cont.task!.taskId)
-    ok('a13 多轮继续：同一 taskId 续跑成功、旧证据表保留可引用',
-      t?.status === 'completed' && t.taskId === start.task!.taskId && t.result?.summary === '追问结论XYZ' && ft.calls.length === 1)
+    ok('a13 多轮继续：同一 taskId 续跑成功、跨轮累计工具执行、追问轮结论引用新证据',
+      t?.status === 'completed' && t.taskId === start.task!.taskId && t.result?.summary === '追问结论XYZ' &&
+      ft.calls.length === 2 && t.evidence.some((e) => e.ref === 'e2'))
+  }
+
+  // a13b 追问轮零新查询、引用上一轮已有证据 → 允许（任务级已有真实工具执行）
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '客户档案：李林辉', kind: 'customer', entityId: 1 }] }])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('第一轮结论', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
+    await waitTask(start.task!.taskId)
+    const sc2 = scriptCompletion([COMPLETE('引用既有证据的追问结论', ['e1'])])
+    const cont = await hermesAgentService.continueTask(start.task!.taskId, '为什么这么说', { ...sc2.deps, tools: ft.tools })
+    const t = await waitTask(cont.task!.taskId)
+    ok('a13b 追问轮零新查询但引用上一轮真实证据 → 接受（e1 仍在核验表中）',
+      t?.status === 'completed' && t.result?.summary === '引用既有证据的追问结论' && t.evidence.length === 1)
+  }
+
+  // a17 取消发生在工具执行期间：返回后立即丢弃（不更新步骤/不登记证据/不回喂）
+  {
+    const ft = makeFakeTools([{ name: 'customer.search', evidence: [{ label: '取消期间的证据', kind: 'crm', entityId: 9 }] }])
+    const taskIdBox: { id: string } = { id: '' }
+    const tools = ft.tools.map((t) => ({
+      ...t,
+      run: async (args: Record<string, unknown>, ctx: HermesToolContext) => {
+        hermesAgentService.cancelTask(taskIdBox.id) // 工具执行中途取消
+        return t.run(args, ctx)
+      }
+    }))
+    const sc = scriptCompletion([TOOL_CALL('customer.search', { query: '取消期间' }), COMPLETE('不应被采纳', ['e1'])])
+    const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools })
+    taskIdBox.id = start.task!.taskId
+    await new Promise((r) => setTimeout(r, 250))
+    const t = hermesAgentService.getTask(start.task!.taskId)
+    ok('a17 工具执行期间取消 → 在途结果被丢弃（cancelled、零证据登记、步骤未标 done）',
+      t?.status === 'cancelled' && t.evidence.length === 0 && !t.steps.some((s) => s.status === 'done'))
   }
 
   // a14 运行中继续 → busy（不并行双 Loop）
@@ -240,7 +298,7 @@ async function main(): Promise<void> {
   }
   {
     const ft = makeFakeTools([{ name: 'customer.search' }])
-    const sc = scriptCompletion([COMPLETE('留存结论')])
+    const sc = scriptCompletion([TOOL_CALL('customer.search'), COMPLETE('留存结论')])
     const start = await hermesAgentService.startTask({ goal: 'g' }, { ...sc.deps, tools: ft.tools })
     await waitTask(start.task!.taskId)
     const t1 = hermesAgentService.getTask(start.task!.taskId)
@@ -265,7 +323,7 @@ async function main(): Promise<void> {
   // b1-b3 customer.search owner 三态
   {
     const r1 = await toolByName('customer.search').run({ query: '王五的客户' }, ctxOf(ME))
-    ok('b1 销售查他人客户 → 空结果不泄露存在性（诚实「没有找到」）',
+    ok('b1 销售查他人客户 → 可见性过滤后空结果（诚实「没有找到」，不泄露行是否存在）',
       r1.ok === true && (r1.data as { customers: unknown[] }).customers.length === 0 && r1.publicSummary.includes('没有找到'))
     const r2 = await toolByName('customer.search').run({ query: '杨青的客户' }, ctxOf(ME))
     ok('b2 销售查本人客户 → 命中并产出证据',
@@ -281,16 +339,16 @@ async function main(): Promise<void> {
     ok('b4 空身份=管理视角全见', r.ok === true && (r.data as { total: number }).total === 1)
   }
 
-  // b5-b6 current_view / chat.recent 归属校验（无权 → not_found，不触读取层）
+  // b5-b7 current_view / chat.recent 可见性校验（不可见 → not_found，不触读取层）
   {
     const r1 = await toolByName('customer.current_view').run({ accountId: Number(accPeer) }, ctxOf(ME))
-    ok('b5 无权 accountId → current_view 返回 not_found（不泄露存在性）',
+    ok('b5 不可见 accountId → current_view 返回 not_found（不泄露行是否存在）',
       r1.ok === false && r1.errorCode === 'not_found' && r1.publicSummary.includes('没有找到'))
     const r2 = await toolByName('customer.current_view').run({ accountId: Number(accMe) }, ctxOf(ME))
     ok('b6 本人 accountId → current_view 可查（无档案视图也诚实返回）',
       r2.ok === true && (r2.data as { found: boolean }).found === false)
     const r3 = await toolByName('chat.recent').run({ accountId: Number(accPeer) }, ctxOf(ME))
-    ok('b7 无权 accountId → chat.recent 返回 not_found（聊天读取前先过归属校验）',
+    ok('b7 不可见 accountId → chat.recent 返回 not_found（聊天读取前先过可见性校验）',
       r3.ok === false && r3.errorCode === 'not_found')
   }
 
@@ -304,14 +362,71 @@ async function main(): Promise<void> {
       r2.ok === true && (r2.data as { entries: unknown[] }).entries.length === 0)
   }
 
-  // b10 白名单静态：恰 6 个、必备 4 个在列、零写语义工具名
+  // b10 白名单静态：恰 9 个、必备工具在列、零写语义工具名
   {
     const names = HERMES_TOOLS.map((t) => t.name)
-    ok('b10 工具白名单恰 6 个且必备四工具在列（customer.search/chat.recent/crm.customer_business/knowledge.search）',
-      names.length === 6 && names.includes('customer.search') && names.includes('chat.recent') &&
-      names.includes('crm.customer_business') && names.includes('knowledge.search'))
+    ok('b10 工具白名单恰 9 个且必备工具在列（search/by_session/current_view/chat.recent/customer_business/my_list/month_paid/action.pending/knowledge.search）',
+      names.length === 9 &&
+      ['customer.search', 'customer.by_session', 'customer.current_view', 'chat.recent',
+        'crm.customer_business', 'opportunity.my_list', 'payment.month_paid',
+        'action.pending', 'knowledge.search'].every((n) => names.includes(n)))
     ok('b11 白名单无写语义工具（零 create/update/delete/send/publish）',
       names.every((n) => !/create|update|delete|send|publish|write/i.test(n)))
+  }
+
+  // b12 customer.by_session：sessionId 解析客户（可见性过滤同口径）
+  {
+    const r1 = await toolByName('customer.by_session').run({ sessionId: 'wxid_peer' }, ctxOf(ME))
+    ok('b12 他人会话解析 → not_found（可见性话术，不泄露档案是否存在）',
+      r1.ok === false && r1.errorCode === 'not_found' && r1.publicSummary.includes('没有找到'))
+    const r2 = await toolByName('customer.by_session').run({ sessionId: 'wxid_me' }, ctxOf(ME))
+    ok('b13 本人会话解析 → 命中客户名与 accountId 证据',
+      r2.ok === true && (r2.data as { name: string }).name === '杨青的客户' &&
+      r2.evidence?.[0]?.entityId === Number(accMe) && r2.publicSummary.includes('杨青的客户'))
+  }
+
+  // b14 opportunity.my_list：全局活跃商机（可见性过滤后按沉默倒序）
+  {
+    const oppMe = crmDbService.create('opportunity', { account_id: Number(accMe), product: 'X系列叉车', stage: 'negotiation', status: 'active', amount: 50000, owner_sales: '杨青', last_signal_at: now - 3 * 86400000, created_at: now, updated_at: now })
+    const oppPeer = crmDbService.create('opportunity', { account_id: Number(accPeer), product: '内部商机', stage: 'initial', status: 'active', amount: 999999, owner_sales: '王五', last_signal_at: now - 30 * 86400000, created_at: now, updated_at: now })
+    void oppPeer
+    const r1 = await toolByName('opportunity.my_list').run({}, ctxOf(ME))
+    const rows = (r1.data as { opportunities: Array<{ customer: string; product: string }> }).opportunities
+    ok('b14 全局商机列表：销售只见本人/公共商机（他人的不可见），客户名带出',
+      r1.ok === true && rows.length === 1 && rows[0].customer === '杨青的客户' && rows[0].product === 'X系列叉车')
+    const r2 = await toolByName('opportunity.my_list').run({}, ctxOf(BOSS))
+    ok('b15 管理视角全见（含他人商机）', r2.ok === true && (r2.data as { total: number }).total === 2)
+    void oppMe
+  }
+
+  // b16 payment.month_paid：空库诚实返回（真实执行 monthPaidByOwner SQL 链路）
+  {
+    const r = await toolByName('payment.month_paid').run({}, ctxOf(ME))
+    ok('b16 本月到款工具：空数据诚实返回「没有已确认的到款」（不编造数字）',
+      r.ok === true && (r.data as { count: number }).count === 0 && r.publicSummary.includes('没有已确认的到款'))
+  }
+
+  // b17 先过滤后 slice（P2 回归）：他人同名客户霸占候选前列，本人匹配项不被挤出
+  {
+    for (let i = 0; i < 45; i++) {
+      crmDbService.create('account', {
+        name: `压榜同名客户${i}`, owner_sales: '王五', session_id: `wxid_flood_${i}`,
+        created_at: now + i, updated_at: now + i // updated_at 递增 → 搜索排序时排在最前
+      })
+    }
+    const accLate = crmDbService.create('account', { name: '压榜同名客户本人', owner_sales: '杨青', session_id: 'wxid_late', created_at: now, updated_at: now })
+    const r = await toolByName('customer.search').run({ query: '压榜同名' }, ctxOf(ME))
+    const names = (r.data as { customers: Array<{ name: string }> }).customers.map((c) => c.name)
+    ok('b17 候选 50 全量过滤后再 slice：本人同名客户不被他人记录挤出（先 LIMIT 后过滤已修复）',
+      r.ok === true && names.length === 1 && names[0] === '压榜同名客户本人' &&
+      r.evidence?.[0]?.entityId === Number(accLate))
+  }
+
+  // b18 action.pending 同口径：全量候选过滤后再 slice（动态走真实 todoList SQL 链路）
+  {
+    const r = await toolByName('action.pending').run({ limit: 5 }, ctxOf(ME))
+    ok('b18 待办工具真实执行（空库返回 0 条、结构完整）',
+      r.ok === true && (r.data as { tasks: unknown[] }).tasks.length === 0 && r.publicSummary.includes('没有待办'))
   }
 
   // ─── c. 上下文动态 ────────────────────────────────────────────────────────
@@ -344,21 +459,36 @@ async function main(): Promise<void> {
       ft.calls[0].ctx.accountId === undefined && ft.calls[0].ctx.sessionId === undefined && start.task!.contextLabel === '全局')
   }
 
-  // c4-c7 hermesStore 三入口语义（zustand 纯前端 store，node 环境可直接驱动）
+  // c4-c9 hermesStore 三入口语义（zustand 纯前端 store，node 环境可直接驱动）
+  // 任务锚点按上下文独立记忆：切到别的客户/全局不会把旧上下文的任务串显到新标题下
   {
     const s = useHermesStore
+    const anchorOf = (): string | null => {
+      const st = s.getState()
+      return st.lastTaskByContext[contextKeyOf(st.context)] ?? null
+    }
     s.getState().openHermes() // 侧边栏全局入口：无参 → global
     ok('c4 全局入口打开 → context 变 global 且 isOpen', s.getState().context.kind === 'global' && s.getState().isHermesOpen)
-    s.getState().setLastTaskId('task-1')
-    s.getState().openHermes({ kind: 'customer', accountId: 9, sessionId: 'wxid_c', customerName: '李林辉' })
-    ok('c5 客户入口打开 → customer 上下文注入（accountId/客户名）且不清任务锚点',
-      s.getState().context.kind === 'customer' && s.getState().context.accountId === 9 && s.getState().lastTaskId === 'task-1')
+    s.getState().setLastTaskId('task-global')
+    s.getState().openHermes({ kind: 'customer', accountId: 9, sessionId: 'wxid_c', customerName: '客户甲' })
+    ok('c5 客户甲入口 → customer 上下文注入，且该上下文无任务锚点（全局任务不串显）',
+      s.getState().context.kind === 'customer' && s.getState().context.accountId === 9 && anchorOf() === null)
+    s.getState().setLastTaskId('task-cust-a')
+    s.getState().openHermes({ kind: 'customer', accountId: 10, sessionId: 'wxid_d', customerName: '客户乙' })
+    ok('c6 切到客户乙 → 标题上下文是乙、正文锚点是乙自己的（甲的任务不跟随）',
+      s.getState().context.accountId === 10 && anchorOf() === null)
+    s.getState().setLastTaskId('task-cust-b')
+    s.getState().openHermes({ kind: 'customer', accountId: 9, sessionId: 'wxid_c', customerName: '客户甲' })
+    ok('c7 切回客户甲 → 恢复甲自己的任务锚点（各上下文互不覆盖）',
+      anchorOf() === 'task-cust-a')
+    s.getState().openHermes() // 全局入口
+    ok('c8 切回全局 → 恢复全局任务锚点（closeHermes/切入口都不删任务）',
+      s.getState().context.kind === 'global' && anchorOf() === 'task-global')
     s.getState().closeHermes()
-    ok('c6 关闭抽屉不删任务（lastTaskId 保留、任务真源在主进程）',
-      s.getState().isHermesOpen === false && s.getState().lastTaskId === 'task-1')
-    s.getState().openHermes()
-    ok('c7 重开抽屉（全局入口）→ context 回 global、任务锚点仍在（重开可恢复）',
-      s.getState().context.kind === 'global' && s.getState().lastTaskId === 'task-1')
+    ok('c9 关闭抽屉不删任务（任务真源在主进程，锚点仍在）',
+      s.getState().isHermesOpen === false && (s.getState().lastTaskByContext['global'] === 'task-global' &&
+        s.getState().lastTaskByContext['customer:9'] === 'task-cust-a' &&
+        s.getState().lastTaskByContext['customer:10'] === 'task-cust-b'))
   }
 
   // ─── d. UI 静态护栏 ───────────────────────────────────────────────────────
@@ -416,6 +546,22 @@ async function main(): Promise<void> {
   // d10 失败文案映射全部人话（不出现 SQL/IPC/堆栈字样）
   ok('d10 FRIENDLY_ERROR 全员人话（无 SQL/ipc/stack/路径字样）',
     !/SQL|ipcRenderer|stack|\.db\b|SELECT /i.test(agentSrc.slice(agentSrc.indexOf('FRIENDLY_ERROR'), agentSrc.indexOf('// ─── 内部结构'))))
+
+  // d11 审查修复固化（静态）：零数据拒绝 / 工具期间取消丢弃 / 可见性措辞诚实
+  ok('d11a 零数据 complete 拒绝在源码固化（okToolCalls<=0 → 纠偏回喂，坚持则 failed）',
+    /rt\.okToolCalls <= 0/.test(agentSrc) && /MAX_DATA_RETRIES/.test(agentSrc) &&
+    /你还没有通过工具查询到任何真实数据/.test(agentSrc))
+  ok('d11b 工具执行期间取消：返回后立即丢弃（tool.run 两条出口后均有 cancelRequested 检查）',
+    (agentSrc.match(/if \(rt\.cancelRequested\) \{ this\.discardInFlight\(rt\); return \}/g) || []).length >= 4)
+  ok('d11c 可见性措辞诚实（registry 明示 filterByOwner 非安全边界、不称权限）',
+    registrySrc.includes('非安全边界') && registrySrc.includes('可见性过滤') &&
+    !/无权/.test(registrySrc))
+  ok('d11d 推荐目标与工具能力对齐（快凉商机/本月到款均有全局工具支撑）',
+    registrySrc.includes("'opportunity.my_list'") && registrySrc.includes("'payment.month_paid'") &&
+    panelSrc.includes('快凉的商机') && panelSrc.includes('本月到款'))
+  ok('d11e findings 逐条绑证据（d.ts 与面板徽标接线同步）',
+    dtsSrc.includes('evidenceRefs: string[]') && panelSrc.includes('hermes-finding__refs') &&
+    panelScss.includes('hermes-finding__refs'))
 
   // e. 旧库迁移：knowledge-governance-test g 节已覆盖（g1-g10 真实旧库文件升级），此处不重复。
   console.log('（e 节：旧库迁移由 knowledge-governance-test g1-g10 覆盖）')

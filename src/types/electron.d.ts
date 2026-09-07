@@ -27,7 +27,12 @@ export interface HermesTaskSnapshot {
   contextLabel: string
   steps: HermesTaskStepItem[]
   evidence: HermesEvidenceItem[]
-  result?: { summary: string; findings: string[]; nextSteps: string[] }
+  result?: {
+    summary: string
+    /** 每条发现绑定支持它的证据编号（主进程已核验，伪造编号被剔除） */
+    findings: Array<{ text: string; evidenceRefs: string[] }>
+    nextSteps: string[]
+  }
   errorCode?: string
   errorMessage?: string
   createdAt: number

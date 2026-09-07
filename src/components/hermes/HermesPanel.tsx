@@ -3,8 +3,9 @@
  *
  * App 级唯一实例（App.tsx 挂载一份）：右侧抽屉 + 半透明遮罩（不过暗，可点关闭）。
  * 三入口（Sidebar / ChatPage / CustomerWorkspacePage）经 hermesStore.openHermes(context) 打开，
- * 上下文（global / chat / customer）随入口注入；关闭抽屉 / 路由切换不删任务——
- * 任务真源在主进程内存，重开抽屉按 lastTaskId 经 hermes.task.get 恢复视图并重订阅进度。
+ * 上下文（global / chat / customer）随入口注入；任务锚点按上下文独立记忆（lastTaskByContext），
+ * 切换入口不串显别的上下文的任务；关闭抽屉 / 路由切换不删任务——任务真源在主进程内存，
+ * 切回原上下文时按该上下文锚点经 hermes.task.get 恢复视图并重订阅进度。
  *
  * 铁律（hermes-agent-test 静态断言锚点，改本文件先跑测试）：
  *  - 五态：空闲（推荐目标）/ 运行（只渲染主进程推送的真实步骤，绝不伪造）/ 完成（结论 +
@@ -16,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { Bot, X, Sparkles, CheckCircle2, CircleDot, AlertCircle, Loader2, Undo2 } from 'lucide-react'
-import { useHermesStore, type HermesContext } from '../../stores/hermesStore'
+import { useHermesStore, contextKeyOf, type HermesContext } from '../../stores/hermesStore'
 import type { HermesTaskSnapshot } from '../../types/electron'
 import './HermesPanel.scss'
 
@@ -64,7 +65,8 @@ function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
 export default function HermesPanel() {
   const isOpen = useHermesStore((s) => s.isHermesOpen)
   const context = useHermesStore((s) => s.context)
-  const lastTaskId = useHermesStore((s) => s.lastTaskId)
+  // 按当前上下文取任务锚点（各客户/会话/全局独立记忆，切换入口不串显别的上下文的任务）
+  const lastTaskId = useHermesStore((s) => s.lastTaskByContext[contextKeyOf(s.context)] ?? null)
   const setLastTaskId = useHermesStore((s) => s.setLastTaskId)
   const closeHermes = useHermesStore((s) => s.closeHermes)
 
@@ -224,7 +226,14 @@ export default function HermesPanel() {
                 <div className="hermes-card">
                   <div className="hermes-card__tag">发现</div>
                   <ul className="hermes-list">
-                    {task!.result.findings.map((f, i) => <li key={i}>{f}</li>)}
+                    {task!.result.findings.map((f, i) => (
+                      <li key={i}>
+                        {f.text}
+                        {f.evidenceRefs.length > 0 && (
+                          <span className="hermes-finding__refs">{f.evidenceRefs.join('、')}</span>
+                        )}
+                      </li>
+                    ))}
                   </ul>
                 </div>
               )}

@@ -2,15 +2,18 @@
  * hermesAgent.ts —— Hermes 只读智能体（设计-Hermes-MVP 智能体第一刀，深模块）
  *
  * 对外只有四个接口：startTask / continueTask / cancelTask / getTask。
- * prompt 格式、严格 JSON 协议、工具选择校验、owner 过滤（经工具注册表）、
+ * prompt 格式、严格 JSON 协议、工具选择校验、可见性过滤（ownerFilter 展示层，经工具注册表）、
  * 非法输出重试、证据核验、超时/步数上限——全部内藏在本模块，调用方（IPC 层）零逻辑。
  *
  * 铁律（hermes-agent-test 动态/静态断言锚点，改本文件先跑测试）：
  *  - 真实多步骤 Agent Loop：模型 → 白名单选工具 → 本地校验 → 执行 → 结果回喂 → complete；
  *    绝不用关键词模板冒充 Loop，绝不伪造步骤（每个 step 对应一次真实模型决策或真实工具执行）
- *  - 严格 JSON 协议：{type:'tool_call',tool,arguments,reason} / {type:'complete',summary,findings,nextSteps,evidenceRefs}；
- *    非法 JSON 纠正重试至多 1 次；模型不输出 SQL/不指定 IPC/不碰文件系统/绕不过 owner 过滤
- *    （owner 语义唯一源在工具注册表内 filterByOwner，模型不可指定身份）
+ *  - 严格 JSON 协议：{type:'tool_call',tool,arguments,reason} /
+ *    {type:'complete',summary,findings:[{text,evidenceRefs}],nextSteps,evidenceRefs}；
+ *    非法 JSON 纠正重试至多 1 次；模型不输出 SQL/不指定 IPC/不碰文件系统/绕不过可见性过滤
+ *    （filterByOwner 是展示层可见性过滤非安全边界，语义唯一源在工具注册表，模型不可指定身份）
+ *  - 结论必须来自真实查询：本任务没有任何成功的工具执行时，complete 一律拒绝（回喂纠偏
+ *    至多 1 次，坚持则 failed）；findings 逐条绑定 evidenceRefs
  *  - 证据防伪造：evidenceRefs 只能引用本轮真实工具返回并登记的证据编号（e1..en），
  *    引用不存在的编号一律丢弃，绝不进 result.evidence
  *  - 限制：最大 6 次工具调用；单任务约 90s；重复同工具同参数不执行（回喂提示）；
@@ -47,9 +50,15 @@ export interface HermesTaskStep {
   publicSummary?: string
 }
 
+/** 单条发现：结论事实必须绑定支持它的证据编号（核验后保留，伪造编号剔除） */
+export interface HermesFinding {
+  text: string
+  evidenceRefs: string[]
+}
+
 export interface HermesTaskResult {
   summary: string
-  findings: string[]
+  findings: HermesFinding[]
   nextSteps: string[]
 }
 
@@ -90,6 +99,8 @@ type ProgressListener = (task: HermesTask) => void
 const MAX_TOOL_CALLS = 6
 const TASK_DEADLINE_MS = 90_000
 const MAX_INVALID_RETRIES = 1
+/** 零数据 complete 纠偏次数（回喂让模型先去调工具；坚持则 failed） */
+const MAX_DATA_RETRIES = 1
 const MAX_KEPT_TASKS = 50
 /** 多轮摘要窗口：最近保留的对话条数（system + goal 首条不占） */
 const CONVERSATION_WINDOW = 16
@@ -127,6 +138,10 @@ interface AgentTaskRuntime {
   abort: AbortController | null
   cancelRequested: boolean
   turnRunning: boolean
+  /** 任务级成功工具执行计数（跨轮累计；0 = 还没有真实数据，complete 一律拒绝） */
+  okToolCalls: number
+  /** 零数据 complete 的纠偏次数（至多 1 次，坚持则 failed） */
+  dataRetries: number
   /** 任务上下文（startTask 时定格；工具 owner 过滤与 prompt 锚点共用） */
   identity: IdentityLike
   contextKind: 'global' | 'chat' | 'customer'
@@ -140,12 +155,13 @@ const AGENT_SYSTEM_PROMPT = [
   '硬性规则：',
   '1. 你只能输出一个 JSON 对象，绝不输出任何其他文字、解释或 Markdown 代码块。',
   '2. 需要数据时输出：{"type":"tool_call","tool":"工具名","arguments":{...},"reason":"一句话说明为什么查"}。',
-  '3. 数据足够时输出：{"type":"complete","summary":"一句话结论","findings":["发现"],"nextSteps":["建议"],"evidenceRefs":["e1"]}',
-  '4. 结论里的每一个事实都必须来自工具返回的数据，绝不编造数字、客户、合同或知识内容。',
-  '5. evidenceRefs 只能引用工具结果里给你的证据编号（如 e1、e2），绝不虚构编号。',
-  '6. 你没有写权限：不能发消息、不能建待办、不能改客户或商机、不能发布知识。',
-  '7. 工具查不到就照实说，不要猜测无权限的客户是否存在。',
-  '8. 绝不输出 SQL、内部接口名或文件路径。',
+  '3. 数据足够时输出：{"type":"complete","summary":"一句话结论","findings":[{"text":"发现","evidenceRefs":["e1"]}],"nextSteps":["建议"],"evidenceRefs":["e1"]}——findings 每条发现必须绑定支持它的证据编号。',
+  '4. 没有通过工具查询到任何真实数据之前，绝不能输出 complete；必须先调用工具。',
+  '5. 结论里的每一个事实都必须来自工具返回的数据，绝不编造数字、客户、合同或知识内容。',
+  '6. evidenceRefs 只能引用工具结果里给你的证据编号（如 e1、e2），绝不虚构编号。',
+  '7. 你是只读助手：不能发消息、不能建待办、不能改客户或商机、不能发布知识。',
+  '8. 工具查不到就照实说，不要猜测你看不到的客户是否存在。',
+  '9. 绝不输出 SQL、内部接口名或文件路径。',
   '可用工具清单：'
 ].join('\n')
 
@@ -153,7 +169,7 @@ const AGENT_SYSTEM_PROMPT = [
 
 type AgentDecision =
   | { type: 'tool_call'; tool: string; arguments: Record<string, unknown>; reason: string }
-  | { type: 'complete'; summary: string; findings: string[]; nextSteps: string[]; evidenceRefs: string[] }
+  | { type: 'complete'; summary: string; findings: Array<{ text: string; evidenceRefs: string[] }>; nextSteps: string[]; evidenceRefs: string[] }
 
 /** 提取首个 {...} JSON（容忍模型裹 ```json 围栏——但内容仍必须严格匹配协议字段） */
 function extractJsonObject(text: string): Record<string, unknown> | null {
@@ -186,7 +202,24 @@ function parseAgentDecision(text: string): AgentDecision | null {
     const arr = (v: unknown): string[] =>
       Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 8) : []
     const refs = Array.isArray(j.evidenceRefs) ? j.evidenceRefs.map((x) => String(x || '').trim()).filter(Boolean) : []
-    return { type: 'complete', summary, findings: arr(j.findings), nextSteps: arr(j.nextSteps), evidenceRefs: refs }
+    // findings 协议 v2：对象数组 [{text, evidenceRefs}]；字符串数组（旧格式）= 非法协议走重试
+    const findings: Array<{ text: string; evidenceRefs: string[] }> = []
+    if (Array.isArray(j.findings)) {
+      for (const item of j.findings) {
+        if (!item || typeof item !== 'object') continue
+        const rec = item as Record<string, unknown>
+        const text = String(rec.text || '').trim()
+        if (!text) continue
+        const frefs = Array.isArray(rec.evidenceRefs)
+          ? rec.evidenceRefs.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6)
+          : []
+        findings.push({ text, evidenceRefs: frefs })
+        if (findings.length >= 8) break
+      }
+      // 旧格式（纯字符串条目）解析不出任何结构化发现 = 非法协议，强制纠偏
+      if (findings.length === 0 && j.findings.length > 0) return null
+    }
+    return { type: 'complete', summary, findings, nextSteps: arr(j.nextSteps), evidenceRefs: refs }
   }
   return null
 }
@@ -257,6 +290,8 @@ export class HermesAgentService {
       abort: null,
       cancelRequested: false,
       turnRunning: false,
+      okToolCalls: 0,
+      dataRetries: 0,
       identity: getIdentity() ?? { name: '', role: '' },
       contextKind: ctx.kind,
       accountId: ctx.kind === 'customer' ? Number(ctx.accountId || 0) || undefined : undefined,
@@ -363,6 +398,17 @@ export class HermesAgentService {
         }
 
         if (decision.type === 'complete') {
+          // 零数据 complete 一律拒绝（数据型结论必须来自真实工具执行）：
+          // 回喂纠偏至多 1 次，模型坚持则 failed——绝不把无据结论标记为完成
+          if (rt.okToolCalls <= 0) {
+            if (rt.dataRetries >= MAX_DATA_RETRIES) { this.failTask(rt, 'ai_invalid_output'); return }
+            rt.dataRetries++
+            this.pushConversation(rt, [
+              { role: 'assistant', content: String(said || '').slice(0, 500) },
+              { role: 'user', content: '你还没有通过工具查询到任何真实数据，不能直接给出结论。请根据目标调用合适的白名单工具，拿到数据后再输出 complete。' }
+            ])
+            continue
+          }
           this.completeTask(rt, decision)
           return
         }
@@ -412,12 +458,18 @@ export class HermesAgentService {
         try {
           result = await enqueueSalesTask(() => tool.run(decision.arguments, this.toolContext(rt)))
         } catch (e) {
+          if (rt.cancelRequested) { this.discardInFlight(rt); return }
           // 工具实现异常也不外泄底层细节（错误码给人话；细节只进日志，不含聊天内容）
           salesLog('WARN', `[HermesAgent] ${rt.task.taskId} 工具 ${decision.tool} 异常: ${(e as Error)?.message || e}`)
           result = { ok: false, publicSummary: '查询失败', errorCode: 'internal' }
         }
 
+        // 取消发生在工具执行期间：返回后立即检查，丢弃在途结果
+        // （不改步骤、不登记证据、不回喂，绝不影响任务证据表）
+        if (rt.cancelRequested) { this.discardInFlight(rt); return }
+
         if (result.ok) {
+          rt.okToolCalls++
           step.status = 'done'
           step.publicSummary = result.publicSummary
         } else {
@@ -459,12 +511,13 @@ export class HermesAgentService {
 
   // ─── 收尾（completed / failed / cancelled）─────────────────────────────────
 
-  /** 完成：证据核验（只保留真实登记的 refs；伪造编号一律丢弃）→ result */
+  /** 完成：证据核验（顶层与逐条 findings 的 refs 只保留真实登记的编号；伪造编号一律剔除）→ result */
   private completeTask(rt: AgentTaskRuntime, d: Extract<AgentDecision, { type: 'complete' }>): void {
-    const validRefs = d.evidenceRefs.filter((ref) => rt.evidenceByRef.has(ref))
+    const has = (ref: string): boolean => rt.evidenceByRef.has(ref)
+    const validRefs = d.evidenceRefs.filter(has)
     rt.task.result = {
       summary: d.summary,
-      findings: d.findings,
+      findings: d.findings.map((f) => ({ text: f.text, evidenceRefs: f.evidenceRefs.filter(has) })),
       nextSteps: d.nextSteps,
     }
     rt.task.evidence = rt.task.evidence.filter((ev) => validRefs.includes(ev.ref))
@@ -510,12 +563,12 @@ export class HermesAgentService {
     return ctx.kind === 'chat' ? '当前会话' : '当前客户'
   }
 
-  /** user prompt：目标 + 上下文锚点（ customer 入口注入 accountId，引导模型先查客户） */
+  /** user prompt：目标 + 上下文锚点（customer 入口注入 accountId；chat 入口引导先用 by_session 解析客户） */
   private buildUserPrompt(rt: AgentTaskRuntime, question: string): string {
     const ctxPart = rt.contextKind === 'customer' && rt.accountId
       ? `\n【当前上下文】用户在查看客户档案（accountId=${Number(rt.accountId)}），可先用 customer.current_view / crm.customer_business / chat.recent 查询该客户。`
       : rt.contextKind === 'chat' && rt.sessionId
-        ? `\n【当前上下文】用户在会话「${rt.sessionId}」中发起。`
+        ? `\n【当前上下文】用户在会话「${rt.sessionId}」中发起。可先用 customer.by_session（sessionId="${rt.sessionId}"）解析出客户档案，再继续分析该客户。`
         : ''
     return `【销售目标】${question}${ctxPart}\n请开始分析。`
   }

@@ -280,6 +280,19 @@
         border-radius: 50%;
         background: var(--color-accent);
       }
+
+      // 发现条目内联证据徽标（eN 编号，与证据列表一一对应）
+      .hermes-finding__refs {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 5px;
+        border-radius: 6px;
+        font-size: 11px;
+        line-height: 16px;
+        color: var(--color-text-secondary);
+        background: var(--color-bg-hover);
+        vertical-align: 1px;
+      }
     }
   }
 

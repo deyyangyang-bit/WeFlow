@@ -6,7 +6,12 @@
  *    清单外工具名不存在 = 模型调不到（hermesAgent 拒绝执行）
  *  - 全部只读：零写库、零发送类 IPC、零文件系统访问；AI 结论永不落库（不写 stage/judgment）
  *  - 销售身份客户类工具先过 filterByOwner（shared/ownerFilter 唯一语义源，本文件不建第二套）；
- *    查不到/无权一律返回 ok:false + 'not_found'（不泄露无权客户存在性）
+ *    查不到/不可见一律返回 ok:false + 'not_found'（可见性话术，不泄露行是否存在）
+ *  - ⚠️ filterByOwner 是展示层可见性过滤（ownerFilter.ts 头注释明示：非安全边界，
+ *    身份为本机自我声明）——Hermes 不宣称访问控制保证；真正门禁待可信设备/账号绑定后
+ *    由服务端或可信本机凭证校验。本文档与测试一律称「可见性过滤」，不得称「权限」。
+ *  - 归属过滤必须在候选集合上先全量、后过滤、再 slice——禁止先 LIMIT 后过滤
+ *    （否则本人可见行会被排前的他人行挤出结果）
  *  - 聊天内容进模型前强制 maskPrivateText 脱敏（宪法 §2.6）+ 逐条截断
  *  - evidence 只来自本轮真实工具返回行（id/messageKey 均为查得值，绝不由模型填）
  *  - 工具输出统一 {ok, data?, evidence?, publicSummary, errorCode?}（publicSummary 面向用户可展示）
@@ -83,7 +88,7 @@ function accountBrief(a: CrmRow): Record<string, unknown> {
   }
 }
 
-/** 客户类工具的统一归属校验：取 account 行 → filterByOwner；失败返回 not_found（不泄露存在性） */
+/** 客户类工具的统一可见性校验：取 account 行 → filterByOwner；不可见/不存在统一 not_found（可见性话术，不泄露行是否存在） */
 function resolveAccountOwned(args: Record<string, unknown>, ctx: HermesToolContext): { account: CrmRow } | { err: HermesToolResult } {
   const accountId = numArg(args.accountId)
   if (!accountId) {
@@ -97,6 +102,9 @@ function resolveAccountOwned(args: Record<string, unknown>, ctx: HermesToolConte
   return { account: visible[0] }
 }
 
+/** 搜索候选上限：先取有界候选全量 → 归属过滤 → 再 slice（禁止先 LIMIT 后过滤） */
+const SEARCH_CANDIDATE_LIMIT = 50
+
 // ─── 六个只读工具（全部复用既有读口；执行器与白名单一一对应）────────────────────
 
 /** customer.search：按名字模糊搜索（复用刀 5 accountSearchByName 读口 + owner 过滤） */
@@ -108,7 +116,10 @@ const customerSearch: HermesToolDef = {
     const query = strArg(args.query)
     if (!query) return { ok: false, publicSummary: '请提供要搜索的客户名字。', errorCode: 'bad_arguments' }
     const limit = Math.min(Math.max(Math.floor(numArg(args.limit) || 5), 1), 10)
-    const rows = filterByOwner(crmDbService.accountSearchByName(query, limit), ctx.identity)
+    // 先取有界候选全量 → 归属过滤 → 再 slice（禁止先 LIMIT 后过滤：否则本人可见行会被
+    // 排前的他人行挤出结果）
+    const candidates = crmDbService.accountSearchByName(query, SEARCH_CANDIDATE_LIMIT)
+    const rows = filterByOwner(candidates, ctx.identity).slice(0, limit)
     if (rows.length === 0) {
       // 诚实且不泄露：销售视角下空 = 不存在或不在你名下，统一话术
       return { ok: true, data: { customers: [], total: 0 }, publicSummary: `没有找到名字含「${query}」的客户。` }
@@ -122,6 +133,30 @@ const customerSearch: HermesToolDef = {
         entityId: Number(r.id)
       })),
       publicSummary: `找到 ${rows.length} 个客户：${rows.map((r) => String(r.name || '')).join('、')}。`
+    }
+  }
+}
+
+/** customer.by_session：把微信会话解析为客户档案（聊天入口的桥梁工具；归属过滤同口径） */
+const customerBySession: HermesToolDef = {
+  name: 'customer.by_session',
+  description: '把微信会话 id 解析为客户档案，返回客户 id、名称、阶段（聊天入口分析客户的第一步）。',
+  argsHint: '{"sessionId": "微信会话 id（必填）"}',
+  run: async (args, ctx) => {
+    const sid = strArg(args.sessionId)
+    if (!sid) return { ok: false, publicSummary: '请提供要解析的会话 id。', errorCode: 'bad_arguments' }
+    const acc = crmDbService.accountBySession(sid)
+    const visible = acc ? filterByOwner([acc], ctx.identity) : []
+    if (!acc || visible.length === 0) {
+      // 可见性话术与 customer.search 同口径：不存在/不可见统一 not_found
+      return { ok: false, publicSummary: '没有找到这个会话对应的客户档案（可能不在你的客户范围内）。', errorCode: 'not_found' }
+    }
+    const row = visible[0]
+    return {
+      ok: true,
+      data: accountBrief(row),
+      evidence: [{ label: `客户档案：${String(row.name || '')}`, kind: 'customer', entityId: Number(row.id) }],
+      publicSummary: `该会话对应客户「${String(row.name || '')}」（当前阶段 ${String(row.sales_stage || row.stage || '未知')}），可用 accountId=${Number(row.id)} 继续查询。`
     }
   }
 }
@@ -247,6 +282,82 @@ const crmCustomerBusiness: HermesToolDef = {
   }
 }
 
+/** opportunity.my_list：全局活跃商机列表（复用刀 5 runMyOpportunities 同款读口组合，沉默倒序） */
+const opportunityMyList: HermesToolDef = {
+  name: 'opportunity.my_list',
+  description: '查看当前可见的全部活跃商机（客户/产品/阶段/金额/沉默天数，按沉默最久倒序），用于全局盘点与找快凉商机。',
+  argsHint: '{"limit": "条数，默认 15，上限 30"}',
+  run: async (args, ctx) => {
+    const limit = Math.min(Math.max(Math.floor(numArg(args.limit) || 15), 1), 30)
+    const all = crmDbService.opportunityList({ status: 'active' })
+    const visible = filterByOwner(
+      all as unknown as Array<Record<string, unknown> & { owner_sales?: string | null }>,
+      ctx.identity
+    )
+    const now = Date.now()
+    const rows = visible
+      .map((o) => {
+        const last = Number(o.last_signal_at || 0)
+        const silent = last > 0 ? Math.max(0, Math.floor((now - (last > 1e11 ? last : last * 1000)) / 86400000)) : null
+        return {
+          id: Number(o.id),
+          customer: String(o.account_name || o.name || ''),
+          product: String(o.product || ''),
+          stage: String(o.stage || ''),
+          amount: Number(o.amount || 0),
+          silentDays: silent
+        }
+      })
+      .sort((a, b) => (b.silentDays ?? -1) - (a.silentDays ?? -1))
+      .slice(0, limit)
+    if (rows.length === 0) {
+      return { ok: true, data: { opportunities: [], total: 0 }, publicSummary: '当前没有可见的活跃商机。' }
+    }
+    const coldest = rows[0]
+    return {
+      ok: true,
+      data: { opportunities: rows, total: rows.length },
+      evidence: rows.slice(0, 5).map((o) => ({
+        label: `商机：${o.product || o.customer}（${o.stage}${o.silentDays != null ? `，沉默 ${o.silentDays} 天` : ''}）`,
+        kind: 'crm' as const,
+        entityId: o.id
+      })),
+      publicSummary: `可见活跃商机 ${rows.length} 条。最快凉：${coldest.customer}（${coldest.stage}${coldest.silentDays != null ? `，已沉默 ${coldest.silentDays} 天` : ''}）。`
+    }
+  }
+}
+
+/** payment.month_paid：本月已确认到款汇总（复用刀 5 monthPaidByOwner 读口，owner 过滤由本工具统一执行） */
+const paymentMonthPaid: HermesToolDef = {
+  name: 'payment.month_paid',
+  description: '查看本月已确认到款汇总（金额与笔数；管理视角含分组明细）。',
+  argsHint: '{}',
+  run: async (_args, ctx) => {
+    const groups = filterByOwner(
+      crmDbService.monthPaidByOwner() as unknown as Array<Record<string, unknown> & { owner_sales?: string | null }>,
+      ctx.identity
+    )
+    const totalAmount = groups.reduce((s, g) => s + Number(g.amount || 0), 0)
+    const totalCount = groups.reduce((s, g) => s + Number(g.count || 0), 0)
+    if (totalCount === 0) {
+      return { ok: true, data: { amount: 0, count: 0, groups: [] }, publicSummary: '本月还没有已确认的到款记录。' }
+    }
+    const detail = groups
+      .map((g) => `${String(g.owner_sales || '').trim() || '公共未归属'} ¥${fmtAmount(Number(g.amount || 0))}（${Number(g.count || 0)} 笔）`)
+      .join('，')
+    return {
+      ok: true,
+      data: {
+        amount: totalAmount,
+        count: totalCount,
+        groups: groups.map((g) => ({ owner: String(g.owner_sales || '').trim(), amount: Number(g.amount || 0), count: Number(g.count || 0) }))
+      },
+      evidence: [{ label: `本月已确认到款 ¥${fmtAmount(totalAmount)}（${totalCount} 笔）`, kind: 'crm' }],
+      publicSummary: `本月已确认到款 ¥${fmtAmount(totalAmount)}，共 ${totalCount} 笔${groups.length > 1 ? `。分组：${detail}` : '。'}`
+    }
+  }
+}
+
 /** action.pending：待办行动卡（复用刀 5 todoList 读口 + owner 过滤，同 runTodayActions 口径） */
 const actionPending: HermesToolDef = {
   name: 'action.pending',
@@ -254,10 +365,11 @@ const actionPending: HermesToolDef = {
   argsHint: '{"limit": "条数，默认 10，上限 20"}',
   run: async (args, ctx) => {
     const limit = Math.min(Math.max(Math.floor(numArg(args.limit) || 10), 1), 20)
+    // 先全量候选 → 归属过滤 → 再 slice（todoList 不传 limit 取全量；本机行动卡量级有限）
     const rows = filterByOwner(
-      salesDbService.todoList({ status: 'pending', limit }) as unknown as Array<Record<string, unknown> & { owner_sales?: string | null }>,
+      salesDbService.todoList({ status: 'pending' }) as unknown as Array<Record<string, unknown> & { owner_sales?: string | null }>,
       ctx.identity
-    )
+    ).slice(0, limit)
     const tasks = rows.map((t) => ({
       id: Number(t.id || 0),
       title: String(t.title || ''),
@@ -320,9 +432,12 @@ const knowledgeSearch: HermesToolDef = {
  */
 export const HERMES_TOOLS: readonly HermesToolDef[] = [
   customerSearch,
+  customerBySession,
   customerCurrentViewTool,
   chatRecent,
   crmCustomerBusiness,
+  opportunityMyList,
+  paymentMonthPaid,
   actionPending,
   knowledgeSearch
 ]

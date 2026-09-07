@@ -5,8 +5,10 @@
  * 由 App.tsx 挂载的唯一一份 HermesPanel 消费。取代 knowledgeAskStore 的纯布尔开关：
  * 面板升级为带上下文的智能体工作台，入口必须声明上下文（global / chat / customer 三态）。
  *
- * 任务真源在主进程内存（hermesAgent.getTask(taskId)）：本 store 只记 lastTaskId 锚点，
- * 关闭抽屉 / 路由切换都不删任务——重开抽屉时面板按 lastTaskId 恢复视图并重新订阅进度。
+ * 任务真源在主进程内存（hermesAgent.getTask(taskId)）：本 store 只按上下文记任务 id 锚点
+ * （lastTaskByContext，key 由 contextKeyOf 生成）——不同客户/会话/全局各记各的任务，
+ * 切换入口不会把 A 上下文的任务正文串显到 B 上下文的标题下；关闭抽屉 / 路由切换都不删任务，
+ * 切回原上下文时面板按该上下文的锚点恢复视图并重新订阅进度。
  */
 import { create } from 'zustand'
 
@@ -16,22 +18,38 @@ export type HermesContext =
   | { kind: 'chat'; sessionId: string; sessionName: string }
   | { kind: 'customer'; accountId: number; sessionId: string; customerName: string }
 
+/** 上下文 → 任务锚点 key（每个上下文独立记忆任务；同客户/同会话切回可恢复） */
+export function contextKeyOf(ctx: HermesContext): string {
+  if (ctx.kind === 'customer') return `customer:${ctx.accountId}`
+  if (ctx.kind === 'chat') return `chat:${ctx.sessionId}`
+  return 'global'
+}
+
 interface HermesState {
   isHermesOpen: boolean
   context: HermesContext
-  /** 最近一次任务 id（主进程内存真源的锚点；null=本次会话还没有任务） */
-  lastTaskId: string | null
-  /** ctx 缺省 = 全局入口（侧边栏）；打开不清任务、不重置 lastTaskId */
+  /** 各上下文最近一次任务 id（主进程内存真源的锚点；无记录 = 该上下文还没有任务） */
+  lastTaskByContext: Record<string, string>
+  /** ctx 缺省 = 全局入口（侧边栏）；打开只切上下文，不碰任何任务锚点 */
   openHermes: (ctx?: HermesContext) => void
   closeHermes: () => void
+  /** 记录「当前上下文」最近一次任务 id（按 contextKeyOf(current) 写入，跨上下文不互串） */
   setLastTaskId: (id: string | null) => void
 }
 
-export const useHermesStore = create<HermesState>((set) => ({
+export const useHermesStore = create<HermesState>((set, get) => ({
   isHermesOpen: false,
   context: { kind: 'global' },
-  lastTaskId: null,
+  lastTaskByContext: {},
   openHermes: (ctx) => set({ isHermesOpen: true, context: ctx ?? { kind: 'global' } }),
   closeHermes: () => set({ isHermesOpen: false }),
-  setLastTaskId: (id) => set({ lastTaskId: id })
+  setLastTaskId: (id) => {
+    const key = contextKeyOf(get().context)
+    set((s) => {
+      const next = { ...s.lastTaskByContext }
+      if (id) next[key] = id
+      else delete next[key]
+      return { lastTaskByContext: next }
+    })
+  }
 }))
