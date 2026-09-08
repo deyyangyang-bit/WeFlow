@@ -391,6 +391,9 @@ export class HermesAgentCore {
             ])
             continue
           }
+          // 把已接受的模型结论留在对话窗口，供跨轮 checkpoint 在 Utility 重启后恢复完整
+          // 上下文；Utility 收到的模型文本已经在 Main 出站前完成二次脱敏。
+          this.pushConversation(rt, { role: 'assistant', content: String(said || '').slice(0, 2000) })
           this.completeTask(rt, decision)
           return
         }

@@ -7,7 +7,12 @@
 import type { IpcMain } from 'electron'
 import { getIdentity, getActorLabel, setIdentity, shouldPromptOnboarding, dismissOnboarding } from './identityService'
 
-export function registerIdentityIpcHandlers(ipcMain: IpcMain): void {
+export interface IdentityIpcHandlerOptions {
+  /** 身份档案写入后通知依赖身份上下文的内存能力失效。 */
+  onIdentityChanged?: () => void | Promise<void>
+}
+
+export function registerIdentityIpcHandlers(ipcMain: IpcMain, options: IdentityIpcHandlerOptions = {}): void {
   // 读取档案 + 计算好的 actor 署名 + 是否还需弹首次引导
   ipcMain.handle('identity:get', async () => {
     const profile = getIdentity()
@@ -24,6 +29,7 @@ export function registerIdentityIpcHandlers(ipcMain: IpcMain): void {
     const name = String(payload?.name || '').trim()
     if (!name) return { ok: false, code: 'E101', message: '姓名必填' }
     setIdentity(name, payload?.role)
+    await options.onIdentityChanged?.()
     return { ok: true, data: { name, role: getIdentity()?.role || '', actorLabel: getActorLabel() || '' } }
   })
 

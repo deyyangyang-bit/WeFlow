@@ -1,9 +1,9 @@
 /**
- * hermesProtocol.ts —— Hermes Main ↔ UtilityProcess 共享通信协议（版本 1，唯一真源）
+ * hermesProtocol.ts —— Hermes Main ↔ UtilityProcess 共享通信协议（版本 2，唯一真源）
  *
- * 本模块是 Main 进程与未来 Hermes UtilityProcess 之间的消息协议层：类型（discriminated union）
+ * 本模块是 Main 进程与 Hermes UtilityProcess 之间的消息协议层：类型（discriminated union）
  * 与运行时校验都在这里，两边共用，禁止任何一侧自建第二套消息形态。
- * 本轮只定义协议（含校验），不 fork UtilityProcess、不接线 Main Bridge（后续刀）。
+ * 本模块只定义协议（含校验），UtilityProcess 与 Main Bridge 共用同一真源。
  *
  * 协议边界（宪法 §1.12 / HANDOVER §2.86 信任边界的跨进程版，违反 = 出宿主）：
  *  - 消息中禁止出现：API Key、模型供应商完整配置、ConfigService 对象、用户身份对象、
@@ -178,8 +178,8 @@ export type MainToUtilityMessage =
   | (HermesMessageBase & { type: 'restore'; checkpoint: HermesCheckpoint })
   | (HermesMessageBase & { type: 'task.start'; taskId: string; runId: number; goal: string; context: HermesUtilityContext })
   | (HermesMessageBase & { type: 'task.continue'; taskId: string; runId: number; question: string })
-  | (HermesMessageBase & { type: 'task.cancel'; taskId: string })
-  | (HermesMessageBase & { type: 'task.get'; taskId: string })
+  | (HermesMessageBase & { type: 'task.cancel'; taskId: string; runId: number })
+  | (HermesMessageBase & { type: 'task.get'; taskId: string; runId: number })
   | (HermesMessageBase & {
       type: 'host.response'
       requestId: string
@@ -203,7 +203,7 @@ export type UtilityToMainMessage =
       taskId: string
       /** 受理回执所属轮次（continue 受理时回传收到的那轮；Main 按轮次匹配回执，防旧轮次迟到回执错配新轮次） */
       runId: number
-      op: 'start' | 'continue' | 'cancel' | 'get'
+      op: 'continue' | 'cancel' | 'get'
       ok: boolean
       snapshot?: HermesProtocolTaskSnapshot
       errorCode?: string
@@ -471,8 +471,8 @@ const M2U_KEY_SETS: Record<string, readonly string[]> = {
   restore: [...ENV_KEYS, 'checkpoint'],
   'task.start': [...ENV_KEYS, 'taskId', 'runId', 'goal', 'context'],
   'task.continue': [...ENV_KEYS, 'taskId', 'runId', 'question'],
-  'task.cancel': [...ENV_KEYS, 'taskId'],
-  'task.get': [...ENV_KEYS, 'taskId'],
+  'task.cancel': [...ENV_KEYS, 'taskId', 'runId'],
+  'task.get': [...ENV_KEYS, 'taskId', 'runId'],
   'host.response': [...ENV_KEYS, 'requestId', 'taskId', 'ok', 'text', 'result', 'error'],
   shutdown: ENV_KEYS,
   ping: ENV_KEYS
@@ -518,7 +518,7 @@ export function isMainToUtilityMessage(raw: unknown): raw is MainToUtilityMessag
       break
     case 'task.cancel':
     case 'task.get':
-      payloadOk = hasTaskId(m)
+      payloadOk = hasTaskId(m) && isRunId(m.runId)
       break
     case 'host.response': {
       if (typeof m.requestId !== 'string' || !m.requestId.trim() || !hasTaskId(m) || typeof m.ok !== 'boolean') break
@@ -545,7 +545,7 @@ export function isMainToUtilityMessage(raw: unknown): raw is MainToUtilityMessag
   return isHermesSerializable(raw)
 }
 
-const RESPONSE_OPS: readonly string[] = ['start', 'continue', 'cancel', 'get']
+const RESPONSE_OPS: readonly string[] = ['continue', 'cancel', 'get']
 
 /** Utility → Main 消息运行时校验（严格键集 → 七类逐一校验载荷 → 可序列化硬门禁） */
 export function isUtilityToMainMessage(raw: unknown): raw is UtilityToMainMessage {

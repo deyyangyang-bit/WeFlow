@@ -1,7 +1,7 @@
 /**
  * hermes-protocol-test.ts —— Hermes Main ↔ UtilityProcess 共享协议测试（任务 2/4）
  * 覆盖：
- *  a. 协议版本与信封：HERMES_PROTOCOL_VERSION=1 / Main→Utility 九类 + Utility→Main 七类消息全部通过
+ *  a. 协议版本与信封：HERMES_PROTOCOL_VERSION=2 / Main→Utility 九类 + Utility→Main 七类消息全部通过
  *     运行时校验（discriminated union 不只靠 TS 类型）/ 非法版本·缺 id·未知 type·非对象拒绝
  *  b. 可序列化硬门禁：函数 / Error 原对象 / 类实例（AbortController·ConfigService·db 实例·Electron
  *     对象同型）/ BigInt / Symbol 一律拒绝；undefined 字段按 JSON 语义等价缺席
@@ -83,8 +83,8 @@ const M2U: Record<string, unknown> = {
   restore: { ...base, type: 'restore', checkpoint: CHECKPOINT },
   'task.start': { ...base, type: 'task.start', taskId: 't1', runId: 1, goal: '分析李林辉', context: CTX },
   'task.continue': { ...base, type: 'task.continue', taskId: 't1', runId: 2, question: '为什么' },
-  'task.cancel': { ...base, type: 'task.cancel', taskId: 't1' },
-  'task.get': { ...base, type: 'task.get', taskId: 't1' },
+  'task.cancel': { ...base, type: 'task.cancel', taskId: 't1', runId: 1 },
+  'task.get': { ...base, type: 'task.get', taskId: 't1', runId: 1 },
   'host.response': { ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true, text: '{"type":"complete"}' },
   shutdown: { ...base, type: 'shutdown' },
   ping: { ...base, type: 'ping' }
@@ -277,6 +277,12 @@ for (const type of U2M_TYPES) {
   ok('f2j checkpoint runId=0 → 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, runId: 0 }))
   ok('f2k restore 消息携带的 checkpoint 缺 runId → 拒绝',
     !isMainToUtilityMessage({ ...base, type: 'restore', checkpoint: { ...CHECKPOINT, runId: undefined } }))
+  ok('f2l task.cancel 缺 runId → 拒绝',
+    !isMainToUtilityMessage({ ...base, type: 'task.cancel', taskId: 't1' }))
+  ok('f2m task.get runId=0 → 拒绝',
+    !isMainToUtilityMessage({ ...base, type: 'task.get', taskId: 't1', runId: 0 }))
+  ok('f2n task.response op=start → 拒绝',
+    !isUtilityToMainMessage({ ...base, type: 'task.response', taskId: 't1', op: 'start', runId: 1, ok: true }))
 }
 
 // ─── g. 边界扫描（发送前护栏；不替代发送方脱敏）────────────────────────────────

@@ -1533,6 +1533,18 @@
 - **协议测试 `hermes-protocol-test` 182→195**（f2a-f2k：runId 缺失/0/1.5/MAX_SAFE_INTEGER 及 start/continue/response/checkpoint/restore 全形态校验；i3k/i3l：`opaque-handle-123`/`evh-Abc_123` 格式外 handle 拒绝；fixtures 补 runId、错误版本 2→3）。
 - **验证**：utility **244/0**（26 场景）、protocol **195/0**、agent **95/0**；knowledge-governance 57 / hermes-ask 40 / hermes-ask-data 42 / persist-guard 36 / settings-nav 59 / customer-workspace-simple 37 / owner-filter 28 全绿；tsc root **0 错误** / node **158 基线零新增**（hermes 零报错）/ `npx vite build` ✓ / `git diff --check` 干净。
 
+## 2.90 Hermes Utility 异步生命周期竞态补修：二次 capability 校验 + 跨轮 checkpoint + 合法回执 runId（2026-09-08）
+
+> 基于 §2.89，继续只修 UtilityProcess 生命周期边界：模型/工具 await 返回后的旧上下文结果不得回流，跨轮终态不得因“零新工具”漏存，cancel/get 错误回执不得因 `runId=0` 被自身出口拒发。协议继续 v2，不涉及任务 4 打包。
+
+- **异步返回后二次统一校验**：`HermesUtilityManager.validateHostOperation()` 在模型或工具 await 返回后、构造任何结果前统一复验 shutdown、child 亲和、task 存在、cancelled/expired、task→capability 映射、capability fingerprint、当前上下文 fingerprint 与当前 task runId；失败统一转为 `context_expired` / `cancelled` / `stale_run`。模型链固定为 `await → 二次 capability/指纹校验 → 二次脱敏 → host.response → Utility progress/checkpoint/UI`；工具链固定为 `await enqueueSalesTask → 二次校验 → maskToolResult → evidenceHandle/anchor → host.response`。指纹在途变化时旧模型原文与旧工具结果均不进入 Utility、证据表、checkpoint 或 UI；工具过期路径不会分配 handle 或写 `evidenceAnchorsByTask`。取消优先于指纹变化，仍保持 `cancelled`。
+- **身份修改主动失效**：`identity:set` 注册支持兼容旧调用方的可选 `onIdentityChanged`；Main 接线 `hermesUtilityManager.invalidateCapabilities('identity_changed')`。既有 `myWxid` 的 `account_changed` 快速失效不变，await 返回后二次 fingerprint 校验仍是最终兜底；新身份/上下文任务可重新创建。
+- **checkpoint 跨轮完整性**：Utility `checkpointMark` 最终结构为 `{ runId, okToolCalls, status }`；成功工具计数变化保存 checkpoint，每个 runId 第一次进入 completed/failed/cancelled 终态都保存一次，即便本轮零新工具且上一轮也是 completed。恢复时 Main 只发送 `checkpoint.runId === taskRunGeneration.get(taskId)` 的 checkpoint，Utility 同时以恢复 checkpoint seed `checkpointMark`，避免第三轮 running 更新覆盖第二轮终态。第二轮直接引用历史 e1 完成后保存 `runId=2`；杀 Utility 自动恢复后，第三轮模型输入保留第一轮对话、第二轮问题与结论、历史证据 e1；注入 `runId=1` 旧 checkpoint 不得覆盖 Main 当前 `runId=2`。
+- **cancel/get 回执协议**：`task.cancel`/`task.get` 请求携带正整数 `runId`；未知任务回显请求 runId 的 `not_found`，已知任务只接受当前轮次，旧轮次返回 `stale_run` 且不得取消/读取当前任务；当前轮次 cancel/get 正常生效/返回。响应协议删除没有生产者的 `op:'start'` 死分支，`runId=0` 继续被运行时校验拒绝。
+- **新增动态覆盖**：`hermes-utility-test` 新增 t26（模型 await 指纹竞态）、t27（第二轮零新工具 checkpoint + 崩溃恢复第三轮）、t28（cancel/get 合法/旧轮次回执）、t29（identity:set 主动失效）、t30（工具 await 指纹竞态与 evidenceHandle/anchor 不分配）、t31（failed/cancelled 终态 checkpoint 各 runId 只发一次）；高保真真实 fork 共 **32 场景 / 291 通过 / 0 失败**。`hermes-protocol-test` 新增 cancel/get 缺失/非法 runId 与 `task.response op=start` 拒绝，**198/0**。
+- **突变验证**：临时移除模型/工具 await 后复验，t26/t30（并连带 t7）变红，结果 **282/5**；临时忽略 checkpoint runId，t27 变红，结果 **277/2**；临时忽略 cancel/get runId，t28 回执等待超时，结果 **286/1**。三类突变均在恢复实现后复绿。
+- **本轮验收**：`npx tsc --noEmit` **0**；`npx tsc -b tsconfig.node.json --force` 保持 **158 条既有基线错误**、Hermes 相关 **0 条新增**；`hermes-agent-test` **95/0**；knowledge-governance **57/0**；hermes-ask **40/0**；hermes-ask-data **42/0**；persist-guard **36/0**；settings-nav **59/0**；customer-workspace-simple **37/0**；owner-filter **28/0**；`npx vite build` 成功；`git diff --check` 干净。
+
 
 ## 3. 已交付功能清单
 

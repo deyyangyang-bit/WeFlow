@@ -44,6 +44,12 @@
  *  - t24 模型响应二次脱敏（真实 fork）：模型文本里的手机号/wxid 进 Utility 前脱敏
  *  - t25 出口兜底（模型响应脱敏被删 → 统一出口拒发 → boundary_violation 快速落定）+
  *        伪造 evidenceHandle 无法恢复 messageKey 锚点
+ *  - t26 模型 await 期间指纹变化：原始模型结果不回 Utility、不进 UI
+ *  - t30 工具 await 期间指纹变化：结果不回 Utility、不登记 evidenceHandle/anchor
+ *  - t27 第二轮零新工具终态 checkpoint 带 runId=2，崩溃恢复后第三轮上下文完整
+ *  - t28 cancel/get 回显合法 runId；旧轮次不取消/读取当前任务
+ *  - t29 identity:set 回调主动失效 capability（并保留兼容的可选回调接口）
+ *  - t31 failed/cancelled 每个 runId 仅发出一次终态 checkpoint
  *
  * 运行：npx tsx scripts/hermes-utility-test.ts
  */
@@ -57,6 +63,8 @@ import {
 import type { HermesUtilityChild, HermesUtilityFork } from '../electron/hermes/hermesUtilityManager'
 import { FRIENDLY_ERROR, type HermesCompletion, type HermesTask } from '../electron/services/hermesAgentCore'
 import type { HermesToolDef, HermesToolResult } from '../electron/services/hermesToolRegistry'
+import { registerIdentityIpcHandlers } from '../electron/services/identityIpcHandlers'
+import { ConfigService } from '../electron/services/config'
 import { HERMES_PROTOCOL_VERSION, type MainToUtilityMessage } from '../shared/hermesProtocol'
 
 // ─── 断言计数 ────────────────────────────────────────────────────────────────
@@ -287,7 +295,7 @@ async function startReady(mgr: Manager): Promise<void> {
   await waitFor('manager ready', () => mgr.getState() === 'ready')
 }
 
-// ─── 17 个动态场景 ────────────────────────────────────────────────────────────
+// ─── 32 个动态场景 ────────────────────────────────────────────────────────────
 
 const tests: Array<{ name: string; fn: () => Promise<void> }> = [
   {
@@ -1167,6 +1175,255 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       ok(!JSON.stringify(after.evidence).includes('messageKey'), '伪造 handle 未恢复任何 messageKey')
       eq(after.evidence[0].label, '伪造证据', '无锚点条目仅保留脱敏展示面')
       ok(!JSON.stringify(after.evidence).includes('wxid_secret001'), '伪造 handle 未带回原始会话锚点值')
+    }
+  },
+  {
+    name: 't26 模型 await 期间指纹变化：原始模型结果不回 Utility、不进 UI',
+    fn: async () => {
+      const harness = makeHarness()
+      const gatedModel = makeGatedModel(completeWith(['e1'], '竞态模型原始结果'))
+      const fp = { value: 'fingerprint-A' }
+      const mgr = makeManager(harness, {
+        modelComplete: gatedModel.fn,
+        tools: [makeSearchTool().tool],
+        contextFingerprint: () => fp.value
+      })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '模型竞态测试', context: { kind: 'chat', sessionId: 'wxid_model_race' } })
+      const taskId = r.task!.taskId
+      await waitFor('模型调用在途', () => gatedModel.calls.length === 1)
+      fp.value = 'fingerprint-B'
+      gatedModel.releaseAll()
+      await waitFor('模型竞态任务 context_expired', () =>
+        mgr.getTask(taskId)?.status === 'failed' && mgr.getTask(taskId)?.errorCode === 'context_expired')
+      const snap = mgr.getTask(taskId)!
+      eq(snap.result, undefined, '指纹变化后的模型结果不进入 UI 结论')
+      eq(snap.evidence.length, 0, '指纹变化后的模型结果不进入 UI 证据')
+      const successResponses = harness.sent.filter((m) => {
+        const msg = m as MainToUtilityMessage & { taskId?: string; ok?: boolean; text?: string; result?: unknown }
+        return msg.type === 'host.response' && msg.taskId === taskId && msg.ok === true
+      })
+      eq(successResponses.length, 0, '指纹变化后不发送成功 host.response')
+      ok(!JSON.stringify(harness.sent).includes('竞态模型原始结果'), '模型原始结果不进入 Utility 消息')
+    }
+  },
+  {
+    name: 't30 工具 await 期间指纹变化：结果不回 Utility、不登记 evidenceHandle/anchor',
+    fn: async () => {
+      const harness = makeHarness()
+      const gated = makeGatedTool(SEARCH_RESULT)
+      const { fn: modelComplete } = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'], '工具竞态完成')])
+      const fp = { value: 'tool-fingerprint-A' }
+      const mgr = makeManager(harness, {
+        modelComplete,
+        tools: [gated.tool],
+        contextFingerprint: () => fp.value
+      })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '工具竞态测试' })
+      const taskId = r.task!.taskId
+      await waitFor('工具调用在途', () => gated.calls.length === 1)
+      fp.value = 'tool-fingerprint-B'
+      gated.releaseAll()
+      await waitFor('工具竞态任务 context_expired', () =>
+        mgr.getTask(taskId)?.status === 'failed' && mgr.getTask(taskId)?.errorCode === 'context_expired')
+      const snap = mgr.getTask(taskId)!
+      eq(gated.calls.length, 1, '指纹失效后工具只执行首个在途调用')
+      eq(snap.evidence.length, 0, '指纹变化后的工具结果不进入 UI 证据')
+      eq(snap.result, undefined, '指纹变化后的工具结果不产生 UI 结论')
+      const successResponses = harness.sent.filter((m) => {
+        const msg = m as MainToUtilityMessage & { taskId?: string; ok?: boolean; result?: unknown }
+        return msg.type === 'host.response' && msg.taskId === taskId && msg.ok === true && msg.result !== undefined
+      })
+      eq(successResponses.length, 0, '指纹变化后不发送成功工具 host.response')
+      const anchors = (mgr as unknown as { evidenceAnchorsByTask: Map<string, Map<string, unknown>> }).evidenceAnchorsByTask
+      eq(anchors.get(taskId)?.size || 0, 0, '指纹变化后不分配 evidenceHandle/登记 Main anchor')
+      ok(!JSON.stringify(harness.sent).includes('客户：张三'), '工具原始结果不进入 Utility 消息')
+    }
+  },
+  {
+    name: 't27 第二轮零新工具终态 checkpoint 带 runId=2，崩溃恢复后第三轮上下文完整',
+    fn: async () => {
+      const harness = makeHarness()
+      const { tool } = makeSearchTool()
+      const first = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'], '第一轮结论')])
+      const second = makeScriptedModel([completeWith(['e1'], '第二轮结论')])
+      let currentModel: HermesCompletion = first.fn
+      const mgr = makeManager(harness, { modelComplete: (...args) => currentModel(...args), tools: [tool] })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '第一轮问题' })
+      const taskId = r.task!.taskId
+      await waitFor('第一轮 completed', () => mgr.getTask(taskId)?.status === 'completed')
+      const asMgr = mgr as unknown as {
+        checkpoints: Map<string, { runId: number; conversation: Array<{ content: string }>; evidenceByRef: Record<string, unknown> }>
+        onCheckpoint: (cp: unknown) => void
+      }
+      const cp1 = JSON.parse(JSON.stringify(asMgr.checkpoints.get(taskId))) as typeof asMgr.checkpoints extends Map<string, infer V> ? V : never
+      eq(cp1.runId, 1, '第一轮终态保存 runId=1 checkpoint')
+      currentModel = second.fn
+      const r2 = await mgr.continueTask(taskId, '第二轮问题：直接引用历史 e1')
+      ok(r2.ok, '第二轮开启成功')
+      await waitFor('第二轮 completed', () => mgr.getTask(taskId)?.status === 'completed' && mgr.getTask(taskId)?.result?.summary === '第二轮结论')
+      const cp2 = asMgr.checkpoints.get(taskId)!
+      eq(cp2.runId, 2, '第二轮零新工具终态保存 runId=2 checkpoint')
+      ok(cp2.conversation.some((m) => m.content.includes('第二轮结论')), 'checkpoint 保留第二轮结论上下文')
+      ok(cp2.evidenceByRef.e1 !== undefined, 'checkpoint 保留历史证据 e1')
+      const lastCheckpoint = harness.received.filter((m) => (m as MainToUtilityMessage).type === 'task.checkpoint').pop() as
+        MainToUtilityMessage & { type: 'task.checkpoint'; checkpoint: { taskId: string; runId: number } } | undefined
+      eq(lastCheckpoint?.checkpoint.runId, 2, 'Utility 上行的第二轮终态 checkpoint runId=2')
+      // 注入第一轮旧 checkpoint，Main 当前轮次门禁不得允许它覆盖第二轮。
+      asMgr.onCheckpoint(cp1)
+      eq(asMgr.checkpoints.get(taskId)?.runId, 2, '旧 runId=1 checkpoint 不覆盖当前 runId=2')
+
+      harness.children[0].kill()
+      await waitFor('第二轮恢复后 ready', () => mgr.getState() === 'ready' && harness.children.length === 2)
+      const restore = harness.sent.filter((m) => (m as MainToUtilityMessage).type === 'restore').pop() as
+        MainToUtilityMessage & { type: 'restore'; checkpoint: { taskId: string; runId: number; conversation: Array<{ content: string }> } } | undefined
+      ok(!!restore, '第二轮完成后重启发送 restore')
+      eq(restore?.checkpoint.runId, 2, '恢复只发送当前合法 runId=2 checkpoint')
+
+      let thirdMessages: Array<{ role: string; content: string }> = []
+      let releaseThird: (() => void) | null = null
+      const thirdCompletion: HermesCompletion = async (messages, _timeoutMs, signal) => {
+        thirdMessages = JSON.parse(JSON.stringify(messages))
+        await new Promise<void>((resolve, reject) => {
+          releaseThird = resolve
+          if (signal.aborted) reject(new Error('aborted'))
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+        return completeWith(['e1'], '第三轮结论')
+      }
+      currentModel = thirdCompletion
+      const r3 = await mgr.continueTask(taskId, '第三轮追问：为什么保留 e1')
+      ok(r3.ok, '第三轮追问进入恢复任务')
+      await waitFor('第三轮模型输入', () => thirdMessages.length > 0)
+      const prompt = JSON.stringify(thirdMessages)
+      ok(prompt.includes('第一轮问题'), '第三轮模型输入包含第一轮对话')
+      ok(prompt.includes('第二轮问题：直接引用历史 e1'), '第三轮模型输入包含第二轮问题')
+      ok(prompt.includes('第二轮结论'), '第三轮模型输入包含第二轮结论上下文')
+      ok(prompt.includes('e1') && prompt.includes('客户：张三'), '第三轮模型输入包含历史证据 e1')
+      eq(asMgr.checkpoints.get(taskId)?.runId, 2, '第三轮尚未终态时 checkpoint 仍是第二轮 runId=2')
+      releaseThird?.()
+      await waitFor('第三轮收尾', () => mgr.getTask(taskId)?.status === 'completed')
+    }
+  },
+  {
+    name: 't28 cancel/get 回显合法 runId；旧轮次不取消/读取当前任务',
+    fn: async () => {
+      const harness = makeHarness()
+      const gatedModel = makeGatedModel(completeWith(['e1']))
+      const mgr = makeManager(harness, { modelComplete: gatedModel.fn, tools: [makeSearchTool().tool] })
+      await startReady(mgr)
+      const child = harness.children[0]
+      const post = (msg: unknown): void => child.postMessage(msg)
+      const responseFor = (taskId: string, op: string, runId: number) => harness.received.find((m) => {
+        const msg = m as MainToUtilityMessage & { taskId?: string; op?: string; runId?: number }
+        return msg.type === 'task.response' && msg.taskId === taskId && msg.op === op && msg.runId === runId
+      }) as (MainToUtilityMessage & { type: 'task.response'; runId: number; ok: boolean; errorCode?: string; snapshot?: { status: string } }) | undefined
+
+      post({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't28-unknown-cancel', type: 'task.cancel', taskId: 'unknown-cancel', runId: 7 })
+      post({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't28-unknown-get', type: 'task.get', taskId: 'unknown-get', runId: 8 })
+      await waitFor('未知 cancel/get 回执', () => !!responseFor('unknown-cancel', 'cancel', 7) && !!responseFor('unknown-get', 'get', 8))
+      eq(responseFor('unknown-cancel', 'cancel', 7)?.errorCode, 'not_found', '未知 cancel 通过 Utility 出口返回 not_found')
+      eq(responseFor('unknown-get', 'get', 8)?.errorCode, 'not_found', '未知 get 通过 Utility 出口返回 not_found')
+
+      const r = await mgr.startTask({ goal: '当前轮次 cancel/get 测试' })
+      const taskId = r.task!.taskId
+      await waitFor('模型调用在途', () => gatedModel.calls.length === 1)
+      post({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't28-stale-cancel', type: 'task.cancel', taskId, runId: 2 })
+      post({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't28-stale-get', type: 'task.get', taskId, runId: 2 })
+      await waitFor('旧轮次 cancel/get 回执', () => !!responseFor(taskId, 'cancel', 2) && !!responseFor(taskId, 'get', 2))
+      eq(responseFor(taskId, 'cancel', 2)?.errorCode, 'stale_run', '旧 runId cancel 不取消当前任务')
+      eq(responseFor(taskId, 'get', 2)?.errorCode, 'stale_run', '旧 runId get 不读取当前任务')
+      ok(mgr.getTask(taskId)?.status !== 'cancelled', '旧 runId cancel 后任务仍未取消')
+      post({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't28-current-get', type: 'task.get', taskId, runId: 1 })
+      await waitFor('当前轮次 get 回执', () => !!responseFor(taskId, 'get', 1))
+      ok(responseFor(taskId, 'get', 1)?.ok === true, '当前 runId get 正常返回快照')
+      mgr.cancelTask(taskId)
+      gatedModel.releaseAll()
+      await waitFor('当前轮次 cancel 生效', () => mgr.getTask(taskId)?.status === 'cancelled')
+    }
+  },
+  {
+    name: 't29 identity:set 回调主动失效 capability，并保持可选回调兼容',
+    fn: async () => {
+      const cfg = ConfigService.getInstance()
+      const previousName = cfg.get('identityName')
+      const previousRole = cfg.get('identityRole')
+      const previousDismissed = cfg.get('identityOnboardingDismissed')
+      try {
+        const { forkProcess, fakes } = makeFakeFork()
+        const mgr = makeManager({ forkProcess })
+        mgr.start()
+        fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't29-ready', type: 'ready' })
+        await waitFor('ready', () => mgr.getState() === 'ready')
+        let changed = 0
+        const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>()
+        registerIdentityIpcHandlers({
+          handle: (channel: string, handler: (...args: unknown[]) => Promise<unknown>) => { handlers.set(channel, handler) }
+        } as never, {
+          onIdentityChanged: () => {
+            changed++
+            mgr.invalidateCapabilities('identity_changed')
+          }
+        })
+        const setHandler = handlers.get('identity:set')!
+        const bad = await setHandler({}, { name: '', role: '销售' })
+        eq((bad as { ok: boolean }).ok, false, '非法身份修改不触发失效回调')
+        eq(changed, 0, '非法身份修改回调次数为 0')
+        const r = await mgr.startTask({ goal: '身份修改失效测试' })
+        const set = await setHandler({}, { name: 'Hermes 测试', role: '销售' })
+        eq((set as { ok: boolean }).ok, true, '合法身份修改成功')
+        eq(changed, 1, 'identity:set 调用可选 onIdentityChanged 回调一次')
+        await waitFor('identity_changed 终止任务', () =>
+          mgr.getTask(r.task!.taskId)?.status === 'failed' && mgr.getTask(r.task!.taskId)?.errorCode === 'context_expired')
+        const mainSrc = readFileSync(MAIN_TS, 'utf8')
+        const identitySrc = readFileSync(join(ROOT, 'electron', 'services', 'identityIpcHandlers.ts'), 'utf8')
+        ok(identitySrc.includes('onIdentityChanged'), 'identity IPC 暴露可选变更回调')
+        ok(mainSrc.includes("onIdentityChanged: () => hermesUtilityManager.invalidateCapabilities('identity_changed')"), 'main.ts 接线 identity_changed 主动失效')
+      } finally {
+        cfg.set('identityName', previousName)
+        cfg.set('identityRole', previousRole)
+        cfg.set('identityOnboardingDismissed', previousDismissed)
+      }
+    }
+  },
+  {
+    name: 't31 failed/cancelled 每个 runId 仅发出一次终态 checkpoint',
+    fn: async () => {
+      const failedHarness = makeHarness()
+      const failedModel = makeScriptedModel([completeWith([], '无工具结论')])
+      const failedMgr = makeManager(failedHarness, { modelComplete: failedModel.fn, tools: [makeSearchTool().tool] })
+      await startReady(failedMgr)
+      const failed = await failedMgr.startTask({ goal: '失败终态 checkpoint 测试' })
+      const failedTaskId = failed.task!.taskId
+      await waitFor('失败终态', () => failedMgr.getTask(failedTaskId)?.status === 'failed')
+      const failedCheckpoints = failedHarness.received.filter((m) => {
+        const msg = m as MainToUtilityMessage & { taskId?: string; checkpoint?: { taskId: string; runId: number } }
+        return msg.type === 'task.checkpoint' && msg.checkpoint?.taskId === failedTaskId
+      }) as Array<MainToUtilityMessage & { type: 'task.checkpoint'; checkpoint: { taskId: string; runId: number } }>
+      eq(failedCheckpoints.length, 1, 'failed runId=1 终态 checkpoint 只发出一次')
+      eq(failedCheckpoints[0]?.checkpoint.runId, 1, 'failed checkpoint 携带当前 runId=1')
+
+      const cancelledHarness = makeHarness()
+      const cancelledModel = makeGatedModel(completeWith(['e1']))
+      const cancelledMgr = makeManager(cancelledHarness, { modelComplete: cancelledModel.fn, tools: [makeSearchTool().tool] })
+      await startReady(cancelledMgr)
+      const started = await cancelledMgr.startTask({ goal: '取消终态 checkpoint 测试' })
+      const cancelledTaskId = started.task!.taskId
+      await waitFor('取消模型在途', () => cancelledModel.calls.length === 1)
+      cancelledMgr.cancelTask(cancelledTaskId)
+      cancelledModel.releaseAll()
+      await waitFor('取消终态 checkpoint', () => cancelledHarness.received.some((m) => {
+        const msg = m as MainToUtilityMessage & { checkpoint?: { taskId: string; runId: number } }
+        return msg.type === 'task.checkpoint' && msg.checkpoint?.taskId === cancelledTaskId
+      }))
+      const cancelledCheckpoints = cancelledHarness.received.filter((m) => {
+        const msg = m as MainToUtilityMessage & { checkpoint?: { taskId: string; runId: number } }
+        return msg.type === 'task.checkpoint' && msg.checkpoint?.taskId === cancelledTaskId
+      }) as Array<MainToUtilityMessage & { type: 'task.checkpoint'; checkpoint: { taskId: string; runId: number } }>
+      eq(cancelledCheckpoints.length, 1, 'cancelled runId=1 终态 checkpoint 只发出一次')
+      eq(cancelledCheckpoints[0]?.checkpoint.runId, 1, 'cancelled checkpoint 携带当前 runId=1')
     }
   }
 ]

@@ -72,7 +72,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
   let initialized = false
   const tasks = new Map<string, HermesAgentTaskRuntime>()
   const contextByTask = new Map<string, HermesUtilityContext>()
-  const checkpointMark = new Map<string, { okToolCalls: number; status: string }>()
+  const checkpointMark = new Map<string, { runId: number; okToolCalls: number; status: string }>()
   const pending = new Map<string, { settle: (p: HostResponsePayload) => void }>()
   let manifestTools: HermesToolDef[] = []
 
@@ -289,14 +289,15 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     })
   }
 
-  /** checkpoint 触发：每次成功的工具结果后（okToolCalls 变化）与任务终态后 */
+  /** checkpoint 触发：成功工具计数变化，或带新 runId 的本轮第一次进入终态。 */
   function maybeCheckpoint(rt: HermesAgentTaskRuntime): void {
     const mark = checkpointMark.get(rt.task.taskId)
     const terminal = rt.task.status === 'completed' || rt.task.status === 'failed' || rt.task.status === 'cancelled'
-    const okChanged = !mark || mark.okToolCalls !== rt.okToolCalls
-    const wentTerminal = terminal && (!mark || mark.status !== rt.task.status)
-    if (!okChanged && !wentTerminal) return
-    checkpointMark.set(rt.task.taskId, { okToolCalls: rt.okToolCalls, status: rt.task.status })
+    const runChanged = !mark || mark.runId !== rt.runId
+    const okChanged = mark ? mark.okToolCalls !== rt.okToolCalls : rt.okToolCalls > 0
+    const terminalChanged = terminal && (runChanged || !mark || mark.status !== rt.task.status)
+    if (!okChanged && !terminalChanged) return
+    checkpointMark.set(rt.task.taskId, { runId: rt.runId, okToolCalls: rt.okToolCalls, status: rt.task.status })
     if (!contextByTask.has(rt.task.taskId)) return
     send({
       protocolVersion: HERMES_PROTOCOL_VERSION,
@@ -310,7 +311,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
    *  当前轮次；任务不存在时 0 = 无已知轮次——Main 只用它做 continue 回执的轮次匹配） */
   function sendTaskResponse(
     taskId: string,
-    op: 'start' | 'continue' | 'cancel' | 'get',
+    op: 'continue' | 'cancel' | 'get',
     ok: boolean,
     runId: number,
     rt?: HermesAgentTaskRuntime,
@@ -403,6 +404,9 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     }
     tasks.set(cp.taskId, rt)
     contextByTask.set(cp.taskId, cp.context)
+    // 恢复后继续追问时，上一份 checkpoint 已经是当前轮次的最后已知标记；否则
+    // checkpointMark 为空会把第三轮的 running onUpdate 误当成变化，覆盖第二轮终态。
+    checkpointMark.set(cp.taskId, { runId: cp.runId, okToolCalls: cp.okToolCalls, status: 'completed' })
     log('INFO', `恢复任务 ${cp.taskId}（对话 ${rt.conversation.length} 条 / 证据 ${evidence.length} 条）`)
   }
 
@@ -442,9 +446,13 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     runTurnGuarded(createCore(taskId, capId), rt, question)
   }
 
-  function onCancel(taskId: string): void {
+  function onCancel(taskId: string, runId: number): void {
     const rt = tasks.get(taskId)
-    if (!rt) { sendTaskResponse(taskId, 'cancel', false, 0, undefined, 'not_found'); return }
+    if (!rt) { sendTaskResponse(taskId, 'cancel', false, runId, undefined, 'not_found'); return }
+    if (rt.runId !== runId) {
+      sendTaskResponse(taskId, 'cancel', false, runId, undefined, 'stale_run')
+      return
+    }
     rt.cancelRequested = true
     rt.abort?.abort() // abort 在途模型 host.request（Main 侧同步 abort 真实出网请求）
     // 只在任务未收尾时置 cancelled（已完成的结果不受取消影响）
@@ -454,13 +462,18 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       rt.task.errorMessage = FRIENDLY_ERROR.cancelled
       rt.turnRunning = false
       emitProgress(rt)
+      maybeCheckpoint(rt)
     }
     sendTaskResponse(taskId, 'cancel', true, rt.runId, rt)
   }
 
-  function onGet(taskId: string): void {
+  function onGet(taskId: string, runId: number): void {
     const rt = tasks.get(taskId)
-    if (!rt) { sendTaskResponse(taskId, 'get', false, 0, undefined, 'not_found'); return }
+    if (!rt) { sendTaskResponse(taskId, 'get', false, runId, undefined, 'not_found'); return }
+    if (rt.runId !== runId) {
+      sendTaskResponse(taskId, 'get', false, runId, undefined, 'stale_run')
+      return
+    }
     sendTaskResponse(taskId, 'get', true, rt.runId, rt)
   }
 
@@ -491,8 +504,8 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       case 'restore': if (initialized) restoreFromCheckpoint(msg.checkpoint); return
       case 'task.start': if (initialized) onStart(msg.taskId, msg.goal, msg.context, msg.runId); return
       case 'task.continue': if (initialized) onContinue(msg.taskId, msg.question, msg.runId); return
-      case 'task.cancel': if (initialized) onCancel(msg.taskId); return
-      case 'task.get': if (initialized) onGet(msg.taskId); return
+      case 'task.cancel': if (initialized) onCancel(msg.taskId, msg.runId); return
+      case 'task.get': if (initialized) onGet(msg.taskId, msg.runId); return
       case 'host.response': onHostResponse(msg.requestId, {
         ok: msg.ok, text: msg.text, result: msg.result, error: msg.error
       }); return

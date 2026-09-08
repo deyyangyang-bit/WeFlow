@@ -459,7 +459,8 @@ export class HermesUtilityManager {
       protocolVersion: HERMES_PROTOCOL_VERSION,
       id: createHermesMessageId(),
       type: 'task.cancel',
-      taskId: id
+      taskId: id,
+      runId: this.taskRunGeneration.get(id) || 1
     })
     const cancelled: HermesTask = {
       ...snap,
@@ -576,6 +577,10 @@ export class HermesUtilityManager {
   private restoreSettledCheckpoints(): void {
     for (const [taskId, cp] of this.checkpoints) {
       if (!this.settled.has(taskId)) continue
+      if (cp.runId !== this.taskRunGeneration.get(taskId)) {
+        this.log('WARN', `task.checkpoint 恢复轮次过期 taskId=${taskId} runId=${cp.runId}，丢弃`)
+        continue
+      }
       this.sendToUtility({
         protocolVersion: HERMES_PROTOCOL_VERSION,
         id: createHermesMessageId(),
@@ -783,6 +788,61 @@ export class HermesUtilityManager {
 
   // ── 宿主能力（Main 唯一可信执行点）─────────────────────────────────────────
 
+  /**
+   * 宿主异步操作的统一生命周期校验。
+   *
+   * 该校验必须在每个模型/工具 await 返回后、构造任何成功或失败回执前再次执行。
+   * 返回 stale_run 表示旧 child、旧轮次、shutdown 或任务已不存在：调用方不得写当前
+   * 任务快照，respondHost 也会因 child 亲和检查阻止结果进入新 Utility。
+   */
+  private validateHostOperation(
+    taskId: string,
+    expectedCapId: string,
+    expectedFingerprint: string,
+    expectedRunId?: number,
+    expectedChild?: HermesUtilityChild | null
+  ): 'ok' | 'cancelled' | 'context_expired' | 'stale_run' {
+    if (this.shuttingDown || (expectedChild !== undefined && this.child !== expectedChild)) return 'stale_run'
+    if (!this.snapshots.has(taskId)) return 'stale_run'
+    if (this.cancelledTasks.has(taskId)) return 'cancelled'
+    if (this.expiredTasks.has(taskId)) return 'context_expired'
+    if (this.taskCap.get(taskId) !== expectedCapId) return 'context_expired'
+    const cap = this.capContexts.get(expectedCapId)
+    if (!cap || cap.fingerprint !== expectedFingerprint) return 'context_expired'
+    if (expectedRunId !== undefined && this.taskRunGeneration.get(taskId) !== expectedRunId) return 'stale_run'
+    let currentFingerprint = ''
+    try { currentFingerprint = this.contextFingerprintFn() } catch { return 'context_expired' }
+    if (currentFingerprint !== expectedFingerprint) return 'context_expired'
+    return 'ok'
+  }
+
+  /** 将统一校验结果转换为受控回执；context_expired 是唯一会封禁 capability 的结果。 */
+  private settleInvalidHostOperation(
+    req: HermesHostRequest,
+    child: HermesUtilityChild | null,
+    result: 'cancelled' | 'context_expired' | 'stale_run'
+  ): void {
+    if (result === 'context_expired') {
+      this.expireTask(req.taskId, 'context_expired')
+      this.respondHost(req.requestId, req.taskId, child, {
+        ok: false,
+        error: { code: 'context_expired', message: MANAGER_ERROR.context_expired }
+      })
+      return
+    }
+    if (result === 'cancelled') {
+      this.respondHost(req.requestId, req.taskId, child, {
+        ok: false,
+        error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
+      })
+      return
+    }
+    this.respondHost(req.requestId, req.taskId, child, {
+      ok: false,
+      error: { code: 'stale_run', message: '任务轮次已过期，本次结果已丢弃。' }
+    })
+  }
+
   private async onHostRequest(req: HermesHostRequest, child: HermesUtilityChild | null): Promise<void> {
     // shutdown 已开始 / 非 ready 状态（含版本 fail closed 后的 unavailable）：拒绝一切宿主
     // 请求执行（不跑模型、不跑工具，立即回错误让 Utility 侧收尾）
@@ -806,29 +866,24 @@ export class HermesUtilityManager {
       })
       return
     }
-    if (this.cancelledTasks.has(req.taskId)) {
-      this.respondHost(req.requestId, req.taskId, child, {
-        ok: false,
-        error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
-      })
-      return
-    }
-    // 指纹重校验（每次 host.request 都重读）：账号/身份变化 = 旧 capability 立即失效，
-    // 拒绝模型与工具执行，任务终止为 failed/context_expired，且不可被任何后续消息复活
-    if (this.contextFingerprintFn() !== cap.fingerprint) {
-      this.log('WARN', `host.request 指纹不一致，任务能力失效 taskId=${req.taskId}`)
-      this.expireTask(req.taskId, 'context_expired')
-      this.respondHost(req.requestId, req.taskId, child, {
-        ok: false,
-        error: { code: 'context_expired', message: MANAGER_ERROR.context_expired }
-      })
+    const capStatus = this.validateHostOperation(req.taskId, capId!, cap.fingerprint,
+      this.taskRunGeneration.get(req.taskId), child)
+    if (capStatus !== 'ok') {
+      if (capStatus === 'stale_run') {
+        this.respondHost(req.requestId, req.taskId, child, {
+          ok: false,
+          error: { code: 'stale_run', message: '任务轮次已过期，本次请求已拒绝。' }
+        })
+      } else {
+        this.settleInvalidHostOperation(req, child, capStatus)
+      }
       return
     }
     if (req.capability === 'model.complete') {
-      await this.hostModelComplete(req, cap, child)
+      await this.hostModelComplete(req, cap, capId!, this.taskRunGeneration.get(req.taskId), child)
       return
     }
-    await this.hostToolExecute(req, cap, capId!, child)
+    await this.hostToolExecute(req, cap, capId!, this.taskRunGeneration.get(req.taskId), child)
   }
 
   /** 模型补全宿主：API Key 与出网留在 Main；出网前最终隐私检查；每请求独立 AbortController；
@@ -836,6 +891,8 @@ export class HermesUtilityManager {
   private async hostModelComplete(
     req: Extract<HermesHostRequest, { capability: 'model.complete' }>,
     cap: CapContext,
+    capId: string,
+    expectedRunId: number | undefined,
     child: HermesUtilityChild | null
   ): Promise<void> {
     const exact = new Map<string, string>()
@@ -848,11 +905,9 @@ export class HermesUtilityManager {
     this.modelAborts.get(req.taskId)?.add(ac)
     try {
       const text = await this.modelComplete(safeMessages, req.timeoutMs, ac.signal)
-      if (this.cancelledTasks.has(req.taskId)) {
-        this.respondHost(req.requestId, req.taskId, child, {
-          ok: false,
-          error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
-        })
+      const status = this.validateHostOperation(req.taskId, capId, cap.fingerprint, expectedRunId, child)
+      if (status !== 'ok') {
+        this.settleInvalidHostOperation(req, child, status)
         return
       }
       // 模型返回文本是不可信外部输入：回传 Utility 前再过统一出站脱敏（maskText +
@@ -860,14 +915,19 @@ export class HermesUtilityManager {
       const safeText = maskOutboundTextForBridge(String(text ?? ''), exact, this.maskTextFn)
       this.respondHost(req.requestId, req.taskId, child, { ok: true, text: safeText })
     } catch (e) {
-      const cancelled = this.cancelledTasks.has(req.taskId) || ac.signal.aborted
-      this.respondHost(req.requestId, req.taskId, child, {
-        ok: false,
-        error: cancelled
-          ? { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
-          : { code: 'ai_error', message: FRIENDLY_ERROR.ai_error }
-      })
-      if (!cancelled) this.log('WARN', `${req.taskId} 模型调用失败: ${(e as Error)?.message || e}`)
+      const status = this.validateHostOperation(req.taskId, capId, cap.fingerprint, expectedRunId, child)
+      if (status !== 'ok') {
+        this.settleInvalidHostOperation(req, child, status)
+      } else {
+        const cancelled = this.cancelledTasks.has(req.taskId) || ac.signal.aborted
+        this.respondHost(req.requestId, req.taskId, child, {
+          ok: false,
+          error: cancelled
+            ? { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
+            : { code: 'ai_error', message: FRIENDLY_ERROR.ai_error }
+        })
+        if (!cancelled) this.log('WARN', `${req.taskId} 模型调用失败: ${(e as Error)?.message || e}`)
+      }
     } finally {
       this.modelAborts.get(req.taskId)?.delete(ac)
     }
@@ -880,6 +940,7 @@ export class HermesUtilityManager {
     req: Extract<HermesHostRequest, { capability: 'tool.execute' }>,
     cap: CapContext,
     capId: string,
+    expectedRunId: number | undefined,
     child: HermesUtilityChild | null
   ): Promise<void> {
     if (req.capabilityContextId !== capId) {
@@ -909,12 +970,10 @@ export class HermesUtilityManager {
       this.log('WARN', `${req.taskId} 工具 ${req.tool} 执行异常: ${(e as Error)?.message || e}`)
       result = { ok: false, publicSummary: '查询失败', errorCode: 'internal' }
     }
-    // 取消发生在工具执行期间：结果丢弃（不回传 → Utility 不可能登记证据或产生完成步骤）
-    if (this.cancelledTasks.has(req.taskId)) {
-      this.respondHost(req.requestId, req.taskId, child, {
-        ok: false,
-        error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
-      })
+    // 工具 await 返回后统一复验：在此之前不做脱敏、evidenceHandle 分配或 evidence anchor 登记。
+    const status = this.validateHostOperation(req.taskId, capId, cap.fingerprint, expectedRunId, child)
+    if (status !== 'ok') {
+      this.settleInvalidHostOperation(req, child, status)
       return
     }
     this.respondHost(req.requestId, req.taskId, child, {

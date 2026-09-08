@@ -2153,7 +2153,9 @@ function registerIpcHandlers() {
   })
 
   // 本地身份档案（PRD §1.2a；identity:* 三端点，只读写本地配置，见 identityIpcHandlers.ts）
-  registerIdentityIpcHandlers(ipcMain)
+  registerIdentityIpcHandlers(ipcMain, {
+    onIdentityChanged: () => hermesUtilityManager.invalidateCapabilities('identity_changed')
+  })
 
   // AI 见解
   ipcMain.handle('insight:testConnection', async () => {
