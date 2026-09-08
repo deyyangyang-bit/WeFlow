@@ -23,6 +23,14 @@
  *    已收尾（completed/failed/cancelled）任务在 Utility 重启后 restore；运行中任务随崩溃
  *    置 failed/agent_unavailable（崩溃时在途结果一律丢弃）
  *  - 入口校验：Main ↔ Utility 双向消息先过协议运行时校验，不过 = 丢弃（畸形不致命）
+ *  - 出口扫描（v2）：Main → Utility 唯一出口 sendToUtility 执行协议校验 +
+ *    findHermesBoundaryIssues 双检；拒发返回 false，调用方让任务立即落定
+ *    failed/boundary_violation，绝不挂到宿主超时；Utility → Main 出口同规（Entry.send）
+ *  - 任务轮次（v2 runId）：task.start=1，continueTask 递增；Utility 回传 progress/
+ *    checkpoint/回执必须携带当前轮次，旧轮次迟到消息一律丢弃，取消/终态不可被覆盖复活
+ *  - 上下文指纹：startTask 定格（缺省 = 清洗后 myWxid + 身份姓名 + 身份角色，只存 Main），
+ *    每次 host.request / continueTask 重读比对，不一致 = capability 失效、任务终止
+ *    failed/context_expired；config:set myWxid 切库后主动 invalidateCapabilities
  *  - 日志走 salesLog，只记 taskId/状态/工具名，不记密钥/完整 prompt/聊天内容
  */
 import { callChatCompletion, getAiModelConfig, isAiConfigured } from '../services/ai/aiApiClient'
@@ -50,6 +58,7 @@ import {
 import {
   HERMES_PROTOCOL_VERSION,
   createHermesMessageId,
+  findHermesBoundaryIssues,
   isMainToUtilityMessage,
   isUtilityToMainMessage,
   type HermesCheckpoint,
@@ -114,7 +123,9 @@ export const MANAGER_ERROR: Record<string, string> = {
   agent_starting: 'Hermes 正在启动，请稍后再试。',
   agent_unavailable: 'Hermes 暂时不可用，请重启应用后再试。',
   protocol_mismatch: 'Hermes 组件版本不一致，请重新安装或升级应用。',
-  timeout: '本次分析超时，请稍后重试。'
+  timeout: '本次分析超时，请稍后重试。',
+  context_expired: '当前账号或身份已经变化，请重新发起 Hermes 任务。',
+  boundary_violation: '本次查询未能安全处理，请重新发起任务。'
 }
 
 export interface HermesUtilityManagerDeps {
@@ -123,6 +134,11 @@ export interface HermesUtilityManagerDeps {
   entryPath: string
   configured?: () => boolean
   identity?: () => IdentityLike
+  /** 当前上下文指纹（账号/身份组合的本地摘要，只存 Main 绝不下发 Utility；
+   *  缺省 = 清洗后 myWxid + 身份姓名 + 身份角色。startTask 定格，每次 host.request /
+   *  continueTask 重读比对，不一致 = 旧任务能力失效）。注意：这只是本地展示范围的
+   *  任务上下文隔离机制，UtilityProcess 不是安全沙箱 */
+  contextFingerprint?: () => string
   /** 测试注入：模型补全（缺省 callChatCompletion + AGENT_TEMPERATURE + JSON 响应格式） */
   modelComplete?: HermesCompletion
   /** 工具白名单唯一真源（缺省 HERMES_TOOLS） */
@@ -133,12 +149,14 @@ export interface HermesUtilityManagerDeps {
   timings?: Partial<HermesUtilityTimings>
 }
 
-/** capabilityContextId → 真实上下文映射（只存 Main；Utility 只见不透明 ID） */
+/** capabilityContextId → 真实上下文映射（只存 Main；Utility 只见不透明 ID。
+ *  fingerprint = 发起任务时的上下文指纹定格，host.request / continueTask 时重读比对） */
 interface CapContext {
   identity: IdentityLike
   accountId?: number
   sessionId?: string
   contextKind: 'global' | 'chat' | 'customer'
+  fingerprint: string
 }
 
 type ProgressListener = (task: HermesTask) => void
@@ -162,6 +180,7 @@ export class HermesUtilityManager {
   private readonly timings: HermesUtilityTimings
   private readonly configuredFn: () => boolean
   private readonly identityFn: () => IdentityLike
+  private readonly contextFingerprintFn: () => string
   private readonly modelComplete: HermesCompletion
   private readonly tools: readonly HermesToolDef[]
   private readonly maskTextFn: (s: string) => string
@@ -180,7 +199,14 @@ export class HermesUtilityManager {
   private readonly taskCap = new Map<string, string>()
   private readonly modelAborts = new Map<string, Set<AbortController>>()
   private readonly cancelledTasks = new Set<string>()
+  /** 已失效任务（账号/身份指纹变化或边界违规）：capability 已封，progress/checkpoint/
+   *  continue/host.request 一律拒绝复活 */
+  private readonly expiredTasks = new Set<string>()
+  /** taskId → 当前轮次号（task.start=1；continueTask 递增。Utility 回传消息必须携带
+   *  当前轮次 runId，旧轮次迟到消息在 progress/checkpoint/ack 三处被门禁丢弃） */
+  private readonly taskRunGeneration = new Map<string, number>()
   private readonly pendingAcks = new Map<string, {
+    expectedRunId: number
     resolve: (r: { ok: boolean; errorCode?: string }) => void
     timer: ReturnType<typeof setTimeout>
   }>()
@@ -207,6 +233,14 @@ export class HermesUtilityManager {
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings }
     this.configuredFn = deps.configured ?? (() => isAiConfigured(ConfigService.getInstance()))
     this.identityFn = deps.identity ?? (() => getIdentity() ?? { name: '', role: '' })
+    // 上下文指纹缺省实现：清洗后 myWxid + 身份姓名 + 身份角色的组合摘要（JSON 数组避免
+    // 分隔符歧义）。真实值只存 Main——指纹与组成部分绝不进任何跨进程消息
+    this.contextFingerprintFn = deps.contextFingerprint ?? (() => {
+      let wxid = ''
+      try { wxid = String(ConfigService.getInstance().getMyWxidCleaned() || '').trim() } catch { /* 无配置环境 */ }
+      const id = this.identityFn()
+      return JSON.stringify([wxid, String(id?.name || ''), String(id?.role || '')])
+    })
     this.modelComplete = deps.modelComplete ?? ((messages, timeoutMs, signal) =>
       callChatCompletion(
         getAiModelConfig(ConfigService.getInstance()),
@@ -290,12 +324,13 @@ export class HermesUtilityManager {
     const capId = `hctx-${now}-${this.seq}`
     const ctx = input.context?.kind === 'chat' || input.context?.kind === 'customer' ? input.context : { kind: 'global' as const }
     // capabilityContextId → 真实上下文映射只存 Main（identity/sessionId 绝不下发 Utility；
-    // accountId 按协议随上下文进 Utility 作工具锚点）
+    // accountId 按协议随上下文进 Utility 作工具锚点）；指纹定格发起时刻的账号/身份组合
     const cap: CapContext = {
       identity: this.identityFn(),
       accountId: ctx.kind === 'customer' ? Number(ctx.accountId || 0) || undefined : undefined,
       sessionId: 'sessionId' in ctx ? String(ctx.sessionId || '') || undefined : undefined,
-      contextKind: ctx.kind
+      contextKind: ctx.kind,
+      fingerprint: this.contextFingerprintFn()
     }
     this.capContexts.set(capId, cap)
     this.taskCap.set(taskId, capId)
@@ -325,19 +360,28 @@ export class HermesUtilityManager {
     }
     this.snapshots.set(taskId, task)
     this.evictOldTasks()
-    this.sendToUtility({
+    // 轮次号从 1 起（协议 runId；Utility 回传消息必须携带当前轮次）
+    this.taskRunGeneration.set(taskId, 1)
+    const started = this.sendToUtility({
       protocolVersion: HERMES_PROTOCOL_VERSION,
       id: createHermesMessageId(),
       type: 'task.start',
       taskId,
+      runId: 1,
       goal: wireGoal,
       context: protoCtx
     })
+    if (!started) {
+      // 出站唯一出口拒发（结构非法或边界违规）：任务立即失败，不等宿主超时
+      this.expireTask(taskId, 'boundary_violation')
+      return { ok: false, errorCode: 'boundary_violation', task: this.snapshots.get(taskId) }
+    }
     this.emit(task)
     return { ok: true, task: { ...task, steps: [], evidence: [] } }
   }
 
-  /** 多轮追问：清上轮步骤/结果后下发 Utility；等受理回执（崩溃后任务丢失时准确报错） */
+  /** 多轮追问：清上轮步骤/结果后下发 Utility；等受理回执（崩溃后任务丢失时准确报错）。
+   *  每次追问先重读上下文指纹并递增轮次号——旧轮次的迟到消息从此全部被门禁丢弃 */
   async continueTask(taskId: string, question: string): Promise<{ ok: boolean; task?: HermesTask; errorCode?: string }> {
     const snap = this.snapshots.get(String(taskId || '').trim())
     if (!snap) return { ok: false, errorCode: 'not_found' }
@@ -345,6 +389,15 @@ export class HermesUtilityManager {
     if (!q) return { ok: false, errorCode: 'bad_request' }
     if (snap.status === 'running' || snap.status === 'planning') return { ok: false, errorCode: 'busy' }
     if (this.cancelledTasks.has(snap.taskId)) return { ok: false, errorCode: 'cancelled' }
+    if (this.expiredTasks.has(snap.taskId)) return { ok: false, errorCode: 'context_expired' }
+    // 指纹重校验：账号/身份在任务收尾后发生变化 = 旧能力已失效，不能靠追问复活
+    const contCapId0 = this.taskCap.get(snap.taskId)
+    const contCap0 = contCapId0 ? this.capContexts.get(contCapId0) : undefined
+    if (!contCap0) return { ok: false, errorCode: 'context_expired' }
+    if (this.contextFingerprintFn() !== contCap0.fingerprint) {
+      this.expireTask(snap.taskId, 'context_expired')
+      return { ok: false, errorCode: 'context_expired' }
+    }
     if (!this.configuredFn()) return { ok: false, errorCode: 'not_configured' }
     if (this.state === 'starting') return { ok: false, errorCode: 'agent_starting' }
     if (this.state !== 'ready') return { ok: false, errorCode: 'agent_unavailable' }
@@ -364,16 +417,27 @@ export class HermesUtilityManager {
     const contCap = contCapId ? this.capContexts.get(contCapId) : undefined
     const contExact = new Map<string, string>()
     if (contCap?.sessionId) contExact.set(contCap.sessionId, '***')
-    this.sendToUtility({
+    // 递增轮次号后再下发：旧轮次在途消息自此全部过期
+    const nextRun = (this.taskRunGeneration.get(snap.taskId) || 1) + 1
+    this.taskRunGeneration.set(snap.taskId, nextRun)
+    const sent = this.sendToUtility({
       protocolVersion: HERMES_PROTOCOL_VERSION,
       id: createHermesMessageId(),
       type: 'task.continue',
       taskId: snap.taskId,
+      runId: nextRun,
       question: maskOutboundTextForBridge(q, contExact, this.maskTextFn)
     })
-    const ack = await this.waitTaskAck(snap.taskId, 'continue')
+    if (!sent) {
+      // 出站唯一出口拒发（结构非法或边界违规）：回滚轮次，任务立即置 failed/boundary_violation
+      this.taskRunGeneration.set(snap.taskId, nextRun - 1)
+      this.expireTask(snap.taskId, 'boundary_violation', true)
+      return { ok: false, errorCode: 'boundary_violation', task: this.snapshots.get(snap.taskId) }
+    }
+    const ack = await this.waitTaskAck(snap.taskId, 'continue', nextRun)
     if (!ack.ok) {
       // Utility 不认识该任务（如崩溃且无 checkpoint 可恢复）：回滚到原快照并报错
+      this.taskRunGeneration.set(snap.taskId, nextRun - 1)
       this.snapshots.set(snap.taskId, snap)
       this.emit(snap)
       return { ok: false, errorCode: ack.errorCode || 'not_found' }
@@ -480,7 +544,7 @@ export class HermesUtilityManager {
     switch (msg.type) {
       case 'ready': this.onReady(); return
       case 'pong': this.lastPongAt = Date.now(); return
-      case 'task.progress': this.onProgressSnapshot(msg.taskId, msg.snapshot as HermesTask); return
+      case 'task.progress': this.onProgressSnapshot(msg.taskId, msg.snapshot as HermesTask, msg.runId); return
       case 'task.checkpoint': this.onCheckpoint(msg.checkpoint); return
       case 'task.response': this.onTaskResponse(msg); return
       case 'host.request': {
@@ -587,9 +651,33 @@ export class HermesUtilityManager {
     this.log('ERROR', 'Utility 不可用（重启预算已用尽或协议不匹配），已拒绝新任务')
   }
 
-  private onProgressSnapshot(taskId: string, snap: HermesTask): void {
+  /** Utility 进度快照门禁（防乱序/防复活）：任务存在、capability 仍有效、轮次一致、
+   *  取消/终态不被覆盖——任一不过只记 taskId/runId/原因后丢弃（绝不凭空创建或复活状态） */
+  private onProgressSnapshot(taskId: string, snap: HermesTask, runId: number): void {
     if (snap.taskId !== taskId) {
       this.log('WARN', `task.progress taskId 不一致（${taskId} ≠ ${snap.taskId}），丢弃`)
+      return
+    }
+    if (!this.snapshots.has(taskId)) {
+      this.log('WARN', `task.progress 未知任务 taskId=${taskId}，丢弃`)
+      return
+    }
+    if (!this.taskCap.has(taskId) || this.expiredTasks.has(taskId)) {
+      this.log('WARN', `task.progress capability 已失效 taskId=${taskId}，丢弃`)
+      return
+    }
+    if (runId !== this.taskRunGeneration.get(taskId)) {
+      this.log('WARN', `task.progress 轮次过期 taskId=${taskId} runId=${runId}，丢弃`)
+      return
+    }
+    if (this.cancelledTasks.has(taskId) && snap.status !== 'cancelled') {
+      this.log('WARN', `task.progress 迟到消息被取消终态拦截 taskId=${taskId} runId=${runId}，丢弃`)
+      return
+    }
+    const current = this.snapshots.get(taskId)!
+    const currentTerminal = current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled'
+    if (currentTerminal && snap.status !== current.status) {
+      this.log('WARN', `task.progress 终态后变化被拒 taskId=${taskId} runId=${runId}，丢弃`)
       return
     }
     const ui = this.uiSnapshot(taskId, snap)
@@ -632,8 +720,28 @@ export class HermesUtilityManager {
     }
   }
 
+  /** checkpoint 保存门禁：任务归属 + capability 有效 + 轮次一致；取消任务的 checkpoint
+   *  一律拒收（取消即终态，恢复面只剩 Main 缓存快照，Utility 侧无从继续）。不过 =
+   *  只记 taskId/runId/原因后丢弃，绝不进入 checkpoint Map */
   private onCheckpoint(cp: HermesCheckpoint): void {
-    this.checkpoints.set(cp.taskId, cp)
+    const taskId = cp.taskId
+    if (!this.snapshots.has(taskId)) {
+      this.log('WARN', `task.checkpoint 未知任务 taskId=${taskId}，丢弃`)
+      return
+    }
+    if (!this.taskCap.has(taskId) || this.expiredTasks.has(taskId)) {
+      this.log('WARN', `task.checkpoint capability 已失效 taskId=${taskId}，丢弃`)
+      return
+    }
+    if (this.cancelledTasks.has(taskId)) {
+      this.log('WARN', `task.checkpoint 已取消任务拒收 taskId=${taskId}，丢弃`)
+      return
+    }
+    if (cp.runId !== this.taskRunGeneration.get(taskId)) {
+      this.log('WARN', `task.checkpoint 轮次过期 taskId=${taskId} runId=${cp.runId}，丢弃`)
+      return
+    }
+    this.checkpoints.set(taskId, cp)
     while (this.checkpoints.size > MAX_CHECKPOINTS) {
       const oldest = this.checkpoints.keys().next().value
       if (oldest === undefined) break
@@ -641,10 +749,12 @@ export class HermesUtilityManager {
     }
   }
 
+  /** 受理回执：只有轮次匹配的 continue 回执才能解除等待（旧轮次迟到回执一律丢弃，
+   *  防止旧回执错配新一轮的 pending） */
   private onTaskResponse(msg: UtilityToMainMessage & { type: 'task.response' }): void {
     const key = `${msg.taskId}:${msg.op}`
     const ack = this.pendingAcks.get(key)
-    if (ack) {
+    if (ack && msg.runId === ack.expectedRunId) {
       clearTimeout(ack.timer)
       this.pendingAcks.delete(key)
       ack.resolve({ ok: msg.ok, errorCode: msg.errorCode })
@@ -660,14 +770,14 @@ export class HermesUtilityManager {
     }
   }
 
-  private waitTaskAck(taskId: string, op: 'continue'): Promise<{ ok: boolean; errorCode?: string }> {
+  private waitTaskAck(taskId: string, op: 'continue', expectedRunId: number): Promise<{ ok: boolean; errorCode?: string }> {
     return new Promise((resolve) => {
       const key = `${taskId}:${op}`
       const timer = setTimeout(() => {
         this.pendingAcks.delete(key)
         resolve({ ok: true }) // 回执超时按已受理处理（后续异常由退出检测兜底）
       }, this.timings.ackTimeoutMs)
-      this.pendingAcks.set(key, { resolve, timer })
+      this.pendingAcks.set(key, { expectedRunId, resolve, timer })
     })
   }
 
@@ -686,9 +796,13 @@ export class HermesUtilityManager {
     const capId = this.taskCap.get(req.taskId)
     const cap = capId ? this.capContexts.get(capId) : undefined
     if (!cap) {
+      // capability 缺席 = 已失效（账号/身份变化或边界违规封禁）：给稳定错误码让人话归因
+      const expired = this.expiredTasks.has(req.taskId)
       this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
-        error: { code: 'forbidden', message: '任务上下文不存在或已结束，已拒绝执行。' }
+        error: expired
+          ? { code: 'context_expired', message: MANAGER_ERROR.context_expired }
+          : { code: 'forbidden', message: '任务上下文不存在或已结束，已拒绝执行。' }
       })
       return
     }
@@ -696,6 +810,17 @@ export class HermesUtilityManager {
       this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
         error: { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
+      })
+      return
+    }
+    // 指纹重校验（每次 host.request 都重读）：账号/身份变化 = 旧 capability 立即失效，
+    // 拒绝模型与工具执行，任务终止为 failed/context_expired，且不可被任何后续消息复活
+    if (this.contextFingerprintFn() !== cap.fingerprint) {
+      this.log('WARN', `host.request 指纹不一致，任务能力失效 taskId=${req.taskId}`)
+      this.expireTask(req.taskId, 'context_expired')
+      this.respondHost(req.requestId, req.taskId, child, {
+        ok: false,
+        error: { code: 'context_expired', message: MANAGER_ERROR.context_expired }
       })
       return
     }
@@ -730,7 +855,10 @@ export class HermesUtilityManager {
         })
         return
       }
-      this.respondHost(req.requestId, req.taskId, child, { ok: true, text })
+      // 模型返回文本是不可信外部输入：回传 Utility 前再过统一出站脱敏（maskText +
+      // 宿主已知标识符精确替换）。残留边界违规由 respondHost 的出口扫描兜底拒发
+      const safeText = maskOutboundTextForBridge(String(text ?? ''), exact, this.maskTextFn)
+      this.respondHost(req.requestId, req.taskId, child, { ok: true, text: safeText })
     } catch (e) {
       const cancelled = this.cancelledTasks.has(req.taskId) || ac.signal.aborted
       this.respondHost(req.requestId, req.taskId, child, {
@@ -831,7 +959,9 @@ export class HermesUtilityManager {
     }
   }
 
-  /** 回应宿主请求：只发给发起请求的 child（child 已崩溃/被替换 → 丢弃，绝不发给新 child） */
+  /** 回应宿主请求：只发给发起请求的 child（child 已崩溃/被替换 → 丢弃，绝不发给新 child）。
+   *  成功载荷被出站唯一出口拒发（脱敏后仍含边界违规）时：立即回受控错误让 Utility 侧
+   *  马上落定（绝不挂到请求超时），并把任务终止为 failed/boundary_violation */
   private respondHost(
     requestId: string,
     taskId: string,
@@ -845,10 +975,60 @@ export class HermesUtilityManager {
         ? { ...base, ok: true, text: payload.text }
         : { ...base, ok: true, result: payload.result }
       : { ...base, ok: false, error: payload.error ?? { code: 'internal', message: FRIENDLY_ERROR.internal } }
-    this.sendToUtility(msg)
+    if (this.sendToUtility(msg)) return
+    if (!payload.ok) return // 错误响应由 Main 常量构造，理论必过；真被拒只留出口日志
+    this.log('WARN', `host.response 出口拒发，任务按边界违规收尾 taskId=${taskId}`)
+    this.sendToUtility({
+      protocolVersion: HERMES_PROTOCOL_VERSION,
+      id: createHermesMessageId(),
+      type: 'host.response',
+      requestId,
+      taskId,
+      ok: false,
+      error: { code: 'boundary_violation', message: MANAGER_ERROR.boundary_violation }
+    })
+    this.expireTask(taskId, 'boundary_violation')
   }
 
   // ── 内部辅助 ──────────────────────────────────────────────────────────────
+
+  /** 任务能力失效（capability 封禁单点）：删除 capability 映射并加入 expiredTasks →
+   *  abort 在途模型请求 → 快照未收尾时置 failed/errorCode 并广播。此后该任务的
+   *  continue/host.request 一律 context_expired，progress/checkpoint 一律被门禁丢弃 */
+  private expireTask(taskId: string, errorCode: 'context_expired' | 'boundary_violation', force = false): void {
+    const capId = this.taskCap.get(taskId)
+    if (capId) {
+      this.taskCap.delete(taskId)
+      this.capContexts.delete(capId)
+    }
+    this.expiredTasks.add(taskId)
+    for (const ac of this.modelAborts.get(taskId) ?? []) ac.abort()
+    const snap = this.snapshots.get(taskId)
+    const terminal = snap && (snap.status === 'completed' || snap.status === 'failed' || snap.status === 'cancelled')
+    if (snap && (!terminal || force)) {
+      const failed: HermesTask = {
+        ...snap,
+        status: 'failed',
+        errorCode,
+        errorMessage: MANAGER_ERROR[errorCode] ?? FRIENDLY_ERROR.internal,
+        steps: [],
+        result: undefined
+      }
+      this.snapshots.set(taskId, failed)
+      this.settled.add(taskId)
+      this.emit(failed)
+    }
+  }
+
+  /** 账号/身份切换的主动失效入口（main.ts 在 config:set myWxid 切库后调用）：立即终止
+   *  全部未收尾任务并封禁其 capability。已完成任务只封能力不复写结果（历史展示不变，
+   *  但 continue/host.request 全部被拒）。reason 仅进日志，便于归因 account_changed 等 */
+  invalidateCapabilities(reason: string): void {
+    const taskIds = [...this.taskCap.keys()]
+    if (taskIds.length === 0) return
+    this.log('WARN', `上下文变化，失效全部任务能力 reason=${reason} count=${taskIds.length}`)
+    for (const taskId of taskIds) this.expireTask(taskId, 'context_expired')
+  }
 
   /** 工具清单（只含公开元数据四字段；绝无工具实现与凭据） */
   private manifest(): HermesToolManifestEntry[] {
@@ -860,13 +1040,24 @@ export class HermesUtilityManager {
     }))
   }
 
-  private sendToUtility(msg: MainToUtilityMessage): void {
-    if (!this.child) return
+  /** Main → Utility 唯一出口：协议运行时校验 + findHermesBoundaryIssues 边界扫描双检。
+   *  返回是否真正发出——调用方据此让对应任务及时落定（如 boundary_violation），
+   *  绝不出现「拒发后干等宿主超时」。日志只含消息 type 与违规路径，不含违规值 */
+  private sendToUtility(msg: MainToUtilityMessage): boolean {
+    if (!this.child) return false
+    const type = String((msg as { type?: unknown }).type)
     if (!isMainToUtilityMessage(msg)) {
-      this.log('WARN', `拒绝发送非法出站消息 type=${String((msg as { type?: unknown }).type)}`)
-      return
+      this.log('WARN', `拒绝发送非法出站消息 type=${type}`)
+      return false
     }
+    const issues = findHermesBoundaryIssues(msg)
+    if (issues.length > 0) {
+      this.log('WARN', `拒绝发送边界违规出站消息 type=${type} 违规: ${issues.join('; ')}`)
+      return false
+    }
+
     this.child.postMessage(msg)
+    return true
   }
 
   private killChild(): void {
@@ -893,6 +1084,8 @@ export class HermesUtilityManager {
     this.checkpoints.delete(taskId)
     this.settled.delete(taskId)
     this.cancelledTasks.delete(taskId)
+    this.expiredTasks.delete(taskId)
+    this.taskRunGeneration.delete(taskId)
     const capId = this.taskCap.get(taskId)
     if (capId) {
       this.taskCap.delete(taskId)

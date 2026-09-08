@@ -61,6 +61,7 @@ const SNAPSHOT: HermesProtocolTaskSnapshot = {
 const CHECKPOINT: HermesCheckpoint = {
   protocolVersion: HERMES_PROTOCOL_VERSION,
   taskId: 't1',
+  runId: 1,
   savedAt: 1_700_000_000_000,
   goal: '分析李林辉',
   context: CTX,
@@ -80,8 +81,8 @@ const CHECKPOINT: HermesCheckpoint = {
 const M2U: Record<string, unknown> = {
   init: { ...base, type: 'init', tools: [{ name: 'customer.search', publicLabel: '客户搜索', description: '按名字搜索', argsHint: '{"query":"客户名字"}' }] },
   restore: { ...base, type: 'restore', checkpoint: CHECKPOINT },
-  'task.start': { ...base, type: 'task.start', taskId: 't1', goal: '分析李林辉', context: CTX },
-  'task.continue': { ...base, type: 'task.continue', taskId: 't1', question: '为什么' },
+  'task.start': { ...base, type: 'task.start', taskId: 't1', runId: 1, goal: '分析李林辉', context: CTX },
+  'task.continue': { ...base, type: 'task.continue', taskId: 't1', runId: 2, question: '为什么' },
   'task.cancel': { ...base, type: 'task.cancel', taskId: 't1' },
   'task.get': { ...base, type: 'task.get', taskId: 't1' },
   'host.response': { ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true, text: '{"type":"complete"}' },
@@ -91,8 +92,8 @@ const M2U: Record<string, unknown> = {
 
 const U2M: Record<string, unknown> = {
   ready: { ...base, type: 'ready' },
-  'task.response': { ...base, type: 'task.response', taskId: 't1', op: 'get', ok: true, snapshot: SNAPSHOT },
-  'task.progress': { ...base, type: 'task.progress', taskId: 't1', snapshot: { ...SNAPSHOT, status: 'running', result: undefined } },
+  'task.response': { ...base, type: 'task.response', taskId: 't1', runId: 1, op: 'get', ok: true, snapshot: SNAPSHOT },
+  'task.progress': { ...base, type: 'task.progress', taskId: 't1', runId: 1, snapshot: { ...SNAPSHOT, status: 'running', result: undefined } },
   'task.checkpoint': { ...base, type: 'task.checkpoint', checkpoint: CHECKPOINT },
   'host.request': {
     ...base, type: 'host.request',
@@ -107,7 +108,7 @@ const U2M_TYPES = ['ready', 'task.response', 'task.progress', 'task.checkpoint',
 
 // ─── a. 协议版本与信封 ─────────────────────────────────────────────────────────
 
-ok('a1 协议版本固定为 1', HERMES_PROTOCOL_VERSION === 1)
+ok('a1 协议版本固定为 2（v2 = runId 轮次 + evidenceHandle 收紧）', HERMES_PROTOCOL_VERSION === 2)
 
 for (const type of M2U_TYPES) {
   ok(`a2 Main→Utility ${type} 通过运行时校验`, isMainToUtilityMessage(M2U[type]) === true)
@@ -120,7 +121,7 @@ for (const type of U2M_TYPES) {
   const bad = (name: string, msg: Record<string, unknown>, validate: (v: unknown) => boolean): void => {
     ok(name, validate(msg) === false)
   }
-  bad('a4a protocolVersion=2 拒绝', { ...base, protocolVersion: 2, type: 'ping' }, isMainToUtilityMessage)
+  bad('a4a protocolVersion=3 拒绝', { ...base, protocolVersion: 3, type: 'ping' }, isMainToUtilityMessage)
   bad('a4b protocolVersion 缺失拒绝', { id: 'm', type: 'ping' }, isMainToUtilityMessage)
   bad('a4c protocolVersion 非数字拒绝', { ...base, protocolVersion: '1', type: 'ping' }, isMainToUtilityMessage)
   bad('a5a id 缺失拒绝', { protocolVersion: 1, type: 'ping' }, isMainToUtilityMessage)
@@ -207,7 +208,7 @@ for (const type of U2M_TYPES) {
   ok('e2b 缺 evidenceByRef 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, evidenceByRef: undefined }))
   ok('e2c 缺 goal 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, goal: '' }))
   ok('e2d 缺 context 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, context: undefined as unknown as HermesUtilityContext }))
-  ok('e2e 错误 protocolVersion 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, protocolVersion: 2 }))
+  ok('e2e 错误 protocolVersion 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, protocolVersion: 3 }))
   ok('e3 evidenceByRef 条目带 messageKey（本机路径/发送者标识出宿主）→ 硬拒绝',
     !isHermesCheckpoint({
       ...CHECKPOINT,
@@ -255,6 +256,27 @@ for (const type of U2M_TYPES) {
     !isHermesProtocolTaskSnapshot({ ...SNAPSHOT, result: { summary: 's', findings: [{ text: 'x' }] as never, nextSteps: [] } }))
   ok('f4 非法 status 拒绝', !isHermesProtocolTaskSnapshot({ ...SNAPSHOT, status: 'queued' }))
   ok('f5 task.progress 消息缺 snapshot → 拒绝', !isUtilityToMainMessage({ ...base, type: 'task.progress', taskId: 't1' }))
+}
+
+// ─── f2. runId 任务轮次号（v2：start/continue/progress/response/checkpoint 必带）──
+
+{
+  ok('f2a task.progress 缺 runId → 拒绝', !isUtilityToMainMessage({ ...base, type: 'task.progress', taskId: 't1', snapshot: SNAPSHOT }))
+  ok('f2b task.progress runId=0 → 拒绝（轮次从 1 起）',
+    !isUtilityToMainMessage({ ...base, type: 'task.progress', taskId: 't1', runId: 0, snapshot: SNAPSHOT }))
+  ok('f2c task.progress runId=1.5 → 拒绝',
+    !isUtilityToMainMessage({ ...base, type: 'task.progress', taskId: 't1', runId: 1.5, snapshot: SNAPSHOT }))
+  ok('f2d task.progress runId=安全整数上限 → 通过',
+    isUtilityToMainMessage({ ...base, type: 'task.progress', taskId: 't1', runId: Number.MAX_SAFE_INTEGER, snapshot: SNAPSHOT }))
+  ok('f2e task.start 缺 runId → 拒绝', !isMainToUtilityMessage({ ...base, type: 'task.start', taskId: 't1', goal: 'g', context: CTX }))
+  ok('f2f task.continue 缺 runId → 拒绝', !isMainToUtilityMessage({ ...base, type: 'task.continue', taskId: 't1', question: 'q' }))
+  ok('f2g task.continue runId=0 → 拒绝', !isMainToUtilityMessage({ ...base, type: 'task.continue', taskId: 't1', runId: 0, question: 'q' }))
+  ok('f2h task.response 缺 runId → 拒绝',
+    !isUtilityToMainMessage({ ...base, type: 'task.response', taskId: 't1', op: 'get', ok: true, snapshot: SNAPSHOT }))
+  ok('f2i checkpoint 缺 runId → 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, runId: undefined }))
+  ok('f2j checkpoint runId=0 → 拒绝', !isHermesCheckpoint({ ...CHECKPOINT, runId: 0 }))
+  ok('f2k restore 消息携带的 checkpoint 缺 runId → 拒绝',
+    !isMainToUtilityMessage({ ...base, type: 'restore', checkpoint: { ...CHECKPOINT, runId: undefined } }))
 }
 
 // ─── g. 边界扫描（发送前护栏；不替代发送方脱敏）────────────────────────────────
@@ -371,7 +393,7 @@ for (const type of U2M_TYPES) {
     }))
   ok('i3h 快照证据携带 evidenceHandle → 通过（跨进程回传供 Main 恢复原始锚点）',
     isUtilityToMainMessage({
-      ...base, type: 'task.progress', taskId: 't1',
+      ...base, type: 'task.progress', taskId: 't1', runId: 1,
       snapshot: { ...SNAPSHOT, evidence: [{ ref: 'e1', label: 'x', kind: 'chat', evidenceHandle: 'evh-abc-123' }] }
     }))
   ok('i3i 快照证据携带 messageKey → 仍拒绝',
@@ -383,6 +405,16 @@ for (const type of U2M_TYPES) {
     !isUtilityToMainMessage({
       ...base, type: 'task.checkpoint',
       checkpoint: { ...CHECKPOINT, evidenceByRef: { ...CHECKPOINT.evidenceByRef, e1: { ...CHECKPOINT.evidenceByRef.e1!, evidenceHandle: 'evh-abc-123' } } }
+    }))
+  ok('i3k evidenceHandle 非 evh- 前缀任意字符串 → 拒绝（v2 格式收紧 /^evh-[a-z0-9-]+$/）',
+    !isMainToUtilityMessage({
+      ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
+      result: { ok: true, publicSummary: '查到 1 条', evidence: [{ label: 'x', kind: 'chat', evidenceHandle: 'opaque-handle-123' }] }
+    }))
+  ok('i3l evidenceHandle 含大写/下划线 → 拒绝',
+    !isMainToUtilityMessage({
+      ...base, type: 'host.response', requestId: 'r1', taskId: 't1', ok: true,
+      result: { ok: true, publicSummary: '查到 1 条', evidence: [{ label: 'x', kind: 'chat', evidenceHandle: 'evh-Abc_123' }] }
     }))
 
   ok('i4a ok=true 同时携带 text 和 result → 拒绝（恰存在一个）',

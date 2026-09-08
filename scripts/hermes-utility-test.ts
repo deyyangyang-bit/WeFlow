@@ -28,6 +28,22 @@
  *  - t15 child 亲和：崩溃重启后旧请求的延迟结果绝不发给新 child
  *  - t16 旧协议版本 child 上线 → 立即 fail closed（kill + 不重启 + unavailable 拒绝宿主执行）
  *  - t17 旧 child 迟到消息一律忽略（监听绑定 child/generation，含旧版本消息不误触 fail closed）
+ *  - t18 上下文指纹（第三轮 P1-1）：身份姓名/角色/账号 wxid 任一变化 → 下一次 host.request
+ *        拒绝（context_expired）+ 任务终止 failed/context_expired + capability 封禁；
+ *        continue 拒绝复活；迟到 progress 不能覆盖终态
+ *  - t19 指纹（真实 fork）：运行中变化 → 工具不再执行、任务 failed/context_expired；
+ *        指纹原文/组件绝不进任何跨进程消息；新上下文新建任务正常完成
+ *  - t20 取消终态 vs 迟到消息（P1-2）：cancel 后注入当前轮次 running/completed progress
+ *        仍 cancelled；迟到 checkpoint 不进 checkpoint Map
+ *  - t21 runId 轮次门禁（真实 fork）：continue 开第二轮后旧轮次 progress/checkpoint 迟到
+ *        被拒；第二轮合法 progress 正常；未知 taskId 的 progress/checkpoint 被拒不凭空创建
+ *  - t22 崩溃恢复后旧 runId 消息无法覆盖新状态（failed/agent_unavailable 保持）
+ *  - t23 Main→Utility 出口扫描（P2）：毒化 goal/question 直呼 sendToUtility 拒发；
+ *        调用点脱敏被删（maskText 恒等）时 startTask/continueTask 出口兜底拒发并立即
+ *        failed/boundary_violation（不等宿主超时），日志只含 type/路径不含原值
+ *  - t24 模型响应二次脱敏（真实 fork）：模型文本里的手机号/wxid 进 Utility 前脱敏
+ *  - t25 出口兜底（模型响应脱敏被删 → 统一出口拒发 → boundary_violation 快速落定）+
+ *        伪造 evidenceHandle 无法恢复 messageKey 锚点
  *
  * 运行：npx tsx scripts/hermes-utility-test.ts
  */
@@ -41,7 +57,7 @@ import {
 import type { HermesUtilityChild, HermesUtilityFork } from '../electron/hermes/hermesUtilityManager'
 import { FRIENDLY_ERROR, type HermesCompletion, type HermesTask } from '../electron/services/hermesAgentCore'
 import type { HermesToolDef, HermesToolResult } from '../electron/services/hermesToolRegistry'
-import type { MainToUtilityMessage } from '../shared/hermesProtocol'
+import { HERMES_PROTOCOL_VERSION, type MainToUtilityMessage } from '../shared/hermesProtocol'
 
 // ─── 断言计数 ────────────────────────────────────────────────────────────────
 
@@ -153,18 +169,29 @@ function makeFakeFork(): { forkProcess: HermesUtilityFork; fakes: FakeChild[] } 
   return { forkProcess, fakes }
 }
 
-/** 建一个接好测试依赖的 Manager（configured=true / 假身份 / 可注入模型与工具） */
+/** 建一个接好测试依赖的 Manager（configured=true / 假身份 / 稳定指纹 / 可注入模型与工具） */
 function makeManager(
   harness: { forkProcess: HermesUtilityFork },
-  opts?: { modelComplete?: HermesCompletion; tools?: HermesToolDef[] }
+  opts?: {
+    modelComplete?: HermesCompletion
+    tools?: HermesToolDef[]
+    contextFingerprint?: () => string
+    maskText?: (s: string) => string
+    maskId?: (s: string) => string
+    log?: (level: 'WARN' | 'INFO' | 'ERROR', msg: string) => void
+  }
 ): Manager {
   const mgr = createHermesUtilityManager({
     entryPath: ENTRY_TS,
     forkProcess: harness.forkProcess,
     configured: () => true,
     identity: () => ({ name: '王销售', role: 'sales' }),
+    contextFingerprint: opts?.contextFingerprint ?? (() => 'test-fingerprint'),
     modelComplete: opts?.modelComplete,
     tools: opts?.tools,
+    maskText: opts?.maskText,
+    maskId: opts?.maskId,
+    log: opts?.log,
     timings: { restartDelayMs: 200, shutdownGraceMs: 300 }
   })
   openManagers.push(mgr)
@@ -264,7 +291,7 @@ async function startReady(mgr: Manager): Promise<void> {
 
 const tests: Array<{ name: string; fn: () => Promise<void> }> = [
   {
-    name: 't1 ready + 协议 v1 握手（init 清单只含公开元数据）',
+    name: 't1 ready + 协议 v2 握手（init 清单只含公开元数据）',
     fn: async () => {
       const harness = makeHarness()
       const mgr = makeManager(harness, { tools: [makeSearchTool().tool] })
@@ -414,13 +441,13 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       // Main 桥 re-validate：伪造 capabilityContextId → 拒绝
       const asMgr = mgr as unknown as { onChildMessage: (raw: unknown) => void }
       asMgr.onChildMessage({
-        protocolVersion: 1, id: 'hm-test-forged-1', type: 'host.request',
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-test-forged-1', type: 'host.request',
         request: { capability: 'tool.execute', requestId: 'raw-1', taskId, capabilityContextId: 'forged-cap', tool: 'customer.search', arguments: {} }
       })
       const resp1 = findHostResponse(harness.sent, 'raw-1')
       ok(!!resp1 && resp1.ok === false && resp1.error?.code === 'forbidden', 'capId 不匹配 → Main 拒绝（forbidden）')
       asMgr.onChildMessage({
-        protocolVersion: 1, id: 'hm-test-forged-2', type: 'host.request',
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-test-forged-2', type: 'host.request',
         request: { capability: 'tool.execute', requestId: 'raw-2', taskId, capabilityContextId: 'forged-cap', tool: 'evil.exfiltrate', arguments: {} }
       })
       const resp2 = findHostResponse(harness.sent, 'raw-2')
@@ -440,11 +467,11 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       // 非对象/严格校验不过的消息：丢弃，不致命
       asMgr.onChildMessage('garbage-string')
       asMgr.onChildMessage(null)
-      asMgr.onChildMessage({ protocolVersion: 1, id: 'hm-y', type: 'ready', messageKey: 'LOCAL::C:/x' })
-      asMgr.onChildMessage({ protocolVersion: 1, id: 'hm-z', type: 'task.progress', taskId: 'fake', snapshot: { bogus: true } })
+      asMgr.onChildMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-y', type: 'ready', messageKey: 'LOCAL::C:/x' })
+      asMgr.onChildMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-z', type: 'task.progress', taskId: 'fake', runId: 1, snapshot: { bogus: true } })
       eq(mgr.getState(), 'ready', '畸形消息后状态仍 ready')
       // 数值版本 ≠ 当前：立即 fail closed（kill 当前 child + 不自动重启 + 拒新任务）
-      asMgr.onChildMessage({ protocolVersion: 2, id: 'hm-x', type: 'ready' })
+      asMgr.onChildMessage({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 'hm-x', type: 'ready' })
       await waitFor('fail closed', () => mgr.getState() === 'unavailable')
       await waitFor('版本不一致的 Utility child 已退出', () => harness.children[0].exited)
       await new Promise((res) => setTimeout(res, 300))
@@ -656,6 +683,13 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       // vite 构建
       const viteSrc = readFileSync(VITE_TS, 'utf8')
       ok(viteSrc.includes('hermesUtilityEntry.ts'), 'vite 增加 Utility 入口构建')
+      // 第三轮：双向唯一出口 + 指纹生产组成 + 账号切换失效接线
+      ok(src.includes('findHermesBoundaryIssues'), 'Utility→Main 出口执行边界扫描（Entry.send）')
+      const mgrSrc = readFileSync(join(ROOT, 'electron', 'hermes', 'hermesUtilityManager.ts'), 'utf8')
+      ok(mgrSrc.includes('findHermesBoundaryIssues'), 'Main→Utility 出口执行边界扫描（sendToUtility）')
+      ok(mgrSrc.includes('getMyWxidCleaned'), '指纹缺省实现含清洗后 myWxid')
+      ok(mgrSrc.includes('this.identityFn()'), '指纹缺省实现含身份（姓名/角色）')
+      ok(mainSrc.includes("invalidateCapabilities('account_changed')"), 'config:set myWxid 切库后主动失效全部任务能力')
     }
   },
   {
@@ -725,14 +759,14 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       mgr.start()
       eq(fakes.length, 1, 'fork 了一次')
       // 旧版本 child 发 ready：版本检查先于严格校验，立即 fail closed
-      fakes[0].emitMessage({ protocolVersion: 2, id: 'hm-v2-ready', type: 'ready' })
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 'hm-old-ready', type: 'ready' })
       await waitFor('立即 unavailable', () => mgr.getState() === 'unavailable')
       eq(fakes[0].killed, true, '旧版本 child 被 kill')
       await new Promise((res) => setTimeout(res, 300))
       eq(fakes.length, 1, '版本不一致不自动重启（重启预算不消耗）')
       // unavailable 状态拒绝一切宿主请求执行
       fakes[0].emitMessage({
-        protocolVersion: 1, id: 'hm-t16-req', type: 'host.request',
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-t16-req', type: 'host.request',
         request: { capability: 'tool.execute', requestId: 't16-r1', taskId: 't16-task', capabilityContextId: 'cap-1', tool: 'customer.search', arguments: {} }
       })
       await new Promise((res) => setTimeout(res, 100))
@@ -748,22 +782,391 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const { forkProcess, fakes } = makeFakeFork()
       const mgr = makeManager({ forkProcess })
       mgr.start()
-      fakes[0].emitMessage({ protocolVersion: 1, id: 'r1', type: 'ready' })
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 'r1', type: 'ready' })
       await waitFor('首个 child ready', () => mgr.getState() === 'ready')
       fakes[0].emitExit(1) // 崩溃 → 自动重启
       await waitFor('第二个 child 已 fork', () => fakes.length === 2)
-      fakes[1].emitMessage({ protocolVersion: 1, id: 'r2', type: 'ready' })
+      fakes[1].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 'r2', type: 'ready' })
       await waitFor('重启后 ready', () => mgr.getState() === 'ready')
       // 旧 child（已被替换）迟到消息：合法 progress 不进快照；错误版本不触发 fail closed
       fakes[0].emitMessage({
-        protocolVersion: 1, id: 'late-1', type: 'task.progress', taskId: 'late-task',
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 'late-1', type: 'task.progress', taskId: 'late-task', runId: 1,
         snapshot: { taskId: 'late-task', status: 'running', goal: '迟到消息', contextLabel: '全局', steps: [], evidence: [], createdAt: 1 }
       })
-      fakes[0].emitMessage({ protocolVersion: 2, id: 'late-2', type: 'ready' })
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 'late-2', type: 'ready' })
       await new Promise((res) => setTimeout(res, 100))
       eq(mgr.getTask('late-task'), null, '旧 child 的 progress 不进入快照')
       eq(mgr.getState(), 'ready', '旧 child 的旧版本消息不触发 fail closed（监听层已忽略）')
       eq(fakes.length, 2, '无额外重启')
+    }
+  },
+  {
+    name: 't18 上下文指纹：姓名/角色/账号任一变化 → host.request 拒绝 + 任务终止 + 不可复活',
+    fn: async () => {
+      const { forkProcess, fakes } = makeFakeFork()
+      const { tool, calls: toolCalls } = makeSearchTool()
+      // 指纹组件与生产缺省实现同构：清洗后 wxid + 身份姓名 + 身份角色
+      const fp = { wxid: 'wxid_fp_old', name: '王销售', role: 'sales' }
+      const mgr = makeManager({ forkProcess }, {
+        tools: [tool],
+        contextFingerprint: () => JSON.stringify([fp.wxid, fp.name, fp.role])
+      })
+      mgr.start()
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't18-ready', type: 'ready' })
+      await waitFor('ready', () => mgr.getState() === 'ready')
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      const injectReq = (reqId: string, taskId: string, capId: string): void => inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: `t18-${reqId}`, type: 'host.request',
+        request: { capability: 'tool.execute', requestId: reqId, taskId, capabilityContextId: capId, tool: 'customer.search', arguments: { query: '张三' } }
+      })
+      const hostResp = (reqId: string) =>
+        fakes[0].inbox.find((m) => (m as MainToUtilityMessage).type === 'host.response'
+          && (m as MainToUtilityMessage & { requestId?: string }).requestId === reqId) as
+          MainToUtilityMessage & { ok: boolean; error?: { code: string; message: string } } | undefined
+      const lastStart = () => fakes[0].inbox.filter((m) => (m as MainToUtilityMessage).type === 'task.start').pop() as
+        MainToUtilityMessage & { context: { capabilityContextId: string } }
+
+      // ① 身份姓名变化
+      const r1 = await mgr.startTask({ goal: '指纹-姓名' })
+      ok(r1.ok && !!r1.task, '任务1 创建')
+      const t1 = r1.task!.taskId
+      const start1 = lastStart()
+      eq(start1.context.capabilityContextId.length > 0, true, 'task.start 携带不透明 capId')
+      injectReq('req-a', t1, start1.context.capabilityContextId)
+      await waitFor('req-a 响应', () => !!hostResp('req-a'))
+      ok(hostResp('req-a')?.ok === true, '指纹一致时工具请求正常受理')
+      eq(toolCalls.length, 1, '工具执行 1 次')
+      fp.name = '李销售'
+      injectReq('req-b', t1, start1.context.capabilityContextId)
+      await waitFor('req-b 响应', () => !!hostResp('req-b'))
+      const respB = hostResp('req-b')
+      ok(!!respB && !respB.ok && respB.error?.code === 'context_expired', '姓名变化后 host.request 拒绝 context_expired')
+      eq(respB!.error?.message, '当前账号或身份已经变化，请重新发起 Hermes 任务。', '稳定人话文案')
+      await waitFor('任务1 终止', () => mgr.getTask(t1)?.status === 'failed' && mgr.getTask(t1)?.errorCode === 'context_expired')
+      eq(toolCalls.length, 1, '指纹失效后不再执行数据库工具')
+
+      // ② 身份角色变化（新任务定格新指纹后再变角色）
+      const r2 = await mgr.startTask({ goal: '指纹-角色' })
+      ok(r2.ok && !!r2.task, '新指纹下任务2 创建')
+      const t2 = r2.task!.taskId
+      const start2 = lastStart()
+      fp.role = 'manager'
+      injectReq('req-c', t2, start2.context.capabilityContextId)
+      await waitFor('req-c 响应', () => !!hostResp('req-c'))
+      const respC = hostResp('req-c')
+      ok(!!respC && !respC.ok && respC.error?.code === 'context_expired', '角色变化后 host.request 拒绝')
+
+      // ③ 账号 wxid 变化
+      const r3 = await mgr.startTask({ goal: '指纹-wxid' })
+      ok(r3.ok && !!r3.task, '新指纹下任务3 创建')
+      const t3 = r3.task!.taskId
+      const start3 = lastStart()
+      fp.wxid = 'wxid_fp_new'
+      injectReq('req-d', t3, start3.context.capabilityContextId)
+      await waitFor('req-d 响应', () => !!hostResp('req-d'))
+      const respD = hostResp('req-d')
+      ok(!!respD && !respD.ok && respD.error?.code === 'context_expired', '账号变化后 host.request 拒绝')
+
+      // ④ 过期任务不可复活：continue 拒绝、capability 封禁、迟到 progress 不能覆盖
+      const c = await mgr.continueTask(t1, '复活尝试')
+      ok(!c.ok && c.errorCode === 'context_expired', '过期任务 continue 拒绝 context_expired')
+      injectReq('req-e', t1, start1.context.capabilityContextId)
+      await waitFor('req-e 响应', () => !!hostResp('req-e'))
+      ok(hostResp('req-e')?.error?.code === 'context_expired', '封禁后再次 host.request 仍拒绝')
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't18-late', type: 'task.progress', taskId: t1, runId: 1,
+        snapshot: { taskId: t1, status: 'running', goal: '复活', contextLabel: '全局', steps: [], evidence: [], createdAt: 1 }
+      })
+      eq(mgr.getTask(t1)?.status, 'failed', '迟到 progress 不能复活 context_expired 任务')
+      // 指纹原文与组件绝不进 Utility 消息
+      const wire = JSON.stringify(fakes[0].inbox)
+      ok(!wire.includes('wxid_fp_old') && !wire.includes('wxid_fp_new'), '指纹 wxid 组件不进 Utility 消息')
+      ok(!wire.includes('李销售'), '身份姓名不进 Utility 消息')
+    }
+  },
+  {
+    name: 't19 指纹（真实 fork）：运行中账号变化 → 工具不再执行 + failed/context_expired；新上下文新任务正常',
+    fn: async () => {
+      const harness = makeHarness()
+      const gated = makeGatedTool(SEARCH_RESULT)
+      const { fn: modelComplete } = makeScriptedModel([toolCall('customer.search'), toolCall('customer.search'), completeWith(['e1'])])
+      const fp = { wxid: 'wxid_secret_fp_9', name: '王销售', role: 'sales' }
+      const mgr = makeManager(harness, {
+        modelComplete, tools: [gated.tool],
+        contextFingerprint: () => `FPRINT(${JSON.stringify([fp.wxid, fp.name, fp.role])})`
+      })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '运行中指纹变化' })
+      const taskIdA = r.task!.taskId
+      await waitFor('工具执行在途', () => gated.calls.length === 1)
+      fp.wxid = 'wxid_secret_fp_10'
+      gated.releaseAll()
+      await waitFor('任务A 终止', () => mgr.getTask(taskIdA)?.status === 'failed' && mgr.getTask(taskIdA)?.errorCode === 'context_expired')
+      eq(gated.calls.length, 1, '数据库工具不再执行（仅首轮 1 次）')
+      eq(mgr.getTask(taskIdA)!.errorMessage, '当前账号或身份已经变化，请重新发起 Hermes 任务。', '稳定人话文案')
+      await new Promise((res) => setTimeout(res, 200))
+      eq(mgr.getTask(taskIdA)!.status, 'failed', 'Utility 迟到 progress 未改变 Main 终态')
+      // 新上下文新建任务：指纹重新定格，全链路正常完成
+      const r2 = await mgr.startTask({ goal: '新账号新任务' })
+      ok(r2.ok && !!r2.task, '新上下文 startTask 成功')
+      const taskIdB = r2.task!.taskId
+      await waitFor('任务B 工具在途', () => gated.calls.length === 2)
+      gated.releaseAll()
+      await waitFor('任务B 完成', () => mgr.getTask(taskIdB)?.status === 'completed')
+      eq(mgr.getTask(taskIdB)!.result?.summary, '测试结论', '新上下文任务正常完成')
+      // 指纹原文与组件绝不进任何跨进程消息
+      const wire = JSON.stringify([...harness.sent, ...harness.received])
+      ok(!wire.includes('wxid_secret_fp_9') && !wire.includes('wxid_secret_fp_10'), '指纹 wxid 组件不进跨进程消息')
+      ok(!wire.includes('FPRINT('), '指纹串本身不进跨进程消息')
+    }
+  },
+  {
+    name: 't20 取消终态不被迟到消息覆盖：running/completed progress 被拒；迟到 checkpoint 不进 Map',
+    fn: async () => {
+      const { forkProcess, fakes } = makeFakeFork()
+      const mgr = makeManager({ forkProcess }, { tools: [makeSearchTool().tool] })
+      mgr.start()
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't20-ready', type: 'ready' })
+      await waitFor('ready', () => mgr.getState() === 'ready')
+      const r = await mgr.startTask({ goal: '取消乱序测试' })
+      const taskId = r.task!.taskId
+      ok(r.ok && !!r.task, '任务创建')
+      mgr.cancelTask(taskId)
+      eq(mgr.getTask(taskId)?.status, 'cancelled', '取消后 cancelled')
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      const mkSnap = (status: string): HermesTask => ({
+        taskId, status: status as HermesTask['status'], goal: 'x', contextLabel: '全局', steps: [], evidence: [], createdAt: 1
+      })
+      // 当前轮次（runId=1）的迟到 running / completed 都不能覆盖取消终态
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't20-late-running', type: 'task.progress', taskId, runId: 1, snapshot: mkSnap('running') })
+      eq(mgr.getTask(taskId)?.status, 'cancelled', '迟到 running 不覆盖 cancelled')
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't20-late-done', type: 'task.progress', taskId, runId: 1,
+        snapshot: { ...mkSnap('completed'), result: { summary: '伪造结论', findings: [], nextSteps: [] } }
+      })
+      eq(mgr.getTask(taskId)?.status, 'cancelled', '迟到 completed 不覆盖 cancelled')
+      ok(mgr.getTask(taskId)!.result === undefined, '伪造结论未进入快照')
+      // 迟到 checkpoint（当前轮次）不进 checkpoint Map
+      const asMgr = mgr as unknown as { checkpoints: Map<string, unknown> }
+      eq(asMgr.checkpoints.has(taskId), false, '取消任务无 checkpoint')
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't20-late-cp', type: 'task.checkpoint',
+        checkpoint: {
+          protocolVersion: HERMES_PROTOCOL_VERSION, taskId, runId: 1, savedAt: 1, goal: 'x',
+          context: { kind: 'global', capabilityContextId: 'c', label: '全局' },
+          conversation: [], evidenceByRef: {}, nextEvidenceSeq: 0, okToolCalls: 0
+        }
+      })
+      eq(asMgr.checkpoints.has(taskId), false, '取消后迟到 checkpoint 不进 Map')
+    }
+  },
+  {
+    name: 't21 runId 轮次门禁：第二轮开启后旧轮次 progress/checkpoint 迟到被拒；未知任务被拒',
+    fn: async () => {
+      const harness = makeHarness()
+      const { tool } = makeSearchTool()
+      const first = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'])])
+      const second = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'], '第二轮结论')])
+      let currentModel: HermesCompletion = first.fn
+      const mgr = makeManager(harness, { modelComplete: (...args) => currentModel(...args), tools: [tool] })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '轮次测试' })
+      const taskId = r.task!.taskId
+      await waitFor('第一轮 completed', () => mgr.getTask(taskId)?.status === 'completed')
+      currentModel = second.fn
+      const c = await mgr.continueTask(taskId, '继续查')
+      ok(c.ok, 'continue 开启第二轮（runId 递增）')
+      await waitFor('第二轮 running', () => mgr.getTask(taskId)?.status === 'running')
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      const mkSnap = (status: string): HermesTask => ({
+        taskId, status: status as HermesTask['status'], goal: '旧轮次', contextLabel: '全局', steps: [], evidence: [], createdAt: 1
+      })
+      // 旧轮次（runId=1）迟到 running / failed
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't21-old-running', type: 'task.progress', taskId, runId: 1, snapshot: mkSnap('running') })
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't21-old-failed', type: 'task.progress', taskId, runId: 1,
+        snapshot: { ...mkSnap('failed'), errorCode: 'timeout', errorMessage: '旧轮次伪造' }
+      })
+      await new Promise((res) => setTimeout(res, 100))
+      ok(mgr.getTask(taskId)!.status === 'running' || mgr.getTask(taskId)!.status === 'completed', '旧轮次迟到消息未覆盖第二轮状态')
+      eq(mgr.getTask(taskId)!.errorCode, undefined, '旧轮次伪造错误未进入快照')
+      // 旧轮次迟到 checkpoint 不进 Map（先清掉第一轮合法 checkpoint 再验证）
+      const asMgr = mgr as unknown as { checkpoints: Map<string, { runId: number }> }
+      asMgr.checkpoints.delete(taskId)
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't21-old-cp', type: 'task.checkpoint',
+        checkpoint: {
+          protocolVersion: HERMES_PROTOCOL_VERSION, taskId, runId: 1, savedAt: 2, goal: 'g',
+          context: { kind: 'global', capabilityContextId: 'c', label: '全局' },
+          conversation: [], evidenceByRef: {}, nextEvidenceSeq: 0, okToolCalls: 0
+        }
+      })
+      eq(asMgr.checkpoints.has(taskId), false, '旧轮次 checkpoint 未进入 Map')
+      // 第二轮合法消息不受影响：正常完成
+      await waitFor('第二轮 completed', () => mgr.getTask(taskId)?.status === 'completed' && mgr.getTask(taskId)?.result?.summary === '第二轮结论')
+      // 未知 taskId：progress/checkpoint 均被拒不凭空创建
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't21-ghost-p', type: 'task.progress', taskId: 'ghost-task', runId: 1, snapshot: mkSnap('running') })
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't21-ghost-c', type: 'task.checkpoint',
+        checkpoint: {
+          protocolVersion: HERMES_PROTOCOL_VERSION, taskId: 'ghost-task', runId: 1, savedAt: 3, goal: 'g',
+          context: { kind: 'global', capabilityContextId: 'c', label: '全局' },
+          conversation: [], evidenceByRef: {}, nextEvidenceSeq: 0, okToolCalls: 0
+        }
+      })
+      eq(mgr.getTask('ghost-task'), null, '未知 taskId progress 未创建任务')
+      eq(asMgr.checkpoints.has('ghost-task'), false, '未知 taskId checkpoint 未入库')
+    }
+  },
+  {
+    name: 't22 首次崩溃恢复后：旧 runId 消息无法覆盖 failed/agent_unavailable 状态',
+    fn: async () => {
+      const harness = makeHarness()
+      const gated = makeGatedTool(SEARCH_RESULT)
+      const { fn: modelComplete } = makeScriptedModel([toolCall('customer.search')])
+      const mgr = makeManager(harness, { modelComplete, tools: [gated.tool] })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '崩溃恢复轮次' })
+      const taskId = r.task!.taskId
+      await waitFor('工具执行在途', () => gated.calls.length === 1)
+      harness.children[0].kill()
+      await waitFor('failed/agent_unavailable', () => mgr.getTask(taskId)?.status === 'failed' && mgr.getTask(taskId)?.errorCode === 'agent_unavailable')
+      await waitFor('重启 ready', () => mgr.getState() === 'ready' && harness.children.length === 2)
+      gated.releaseAll()
+      // 新 child 上线后，旧轮次消息直接注入消息入口也无法覆盖
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't22-old-running', type: 'task.progress', taskId, runId: 1, snapshot: { taskId, status: 'running', goal: '旧轮次复活', contextLabel: '全局', steps: [], evidence: [], createdAt: 1 } })
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't22-old-done', type: 'task.progress', taskId, runId: 1,
+        snapshot: { taskId, status: 'completed', goal: '旧轮次复活', contextLabel: '全局', steps: [], evidence: [], createdAt: 1, result: { summary: '伪造', findings: [], nextSteps: [] } }
+      })
+      await new Promise((res) => setTimeout(res, 100))
+      eq(mgr.getTask(taskId)!.status, 'failed', 'failed 终态不被旧 runId 消息复活')
+      eq(mgr.getTask(taskId)!.errorCode, 'agent_unavailable', 'errorCode 保持 agent_unavailable')
+    }
+  },
+  {
+    name: 't23 Main→Utility 出口扫描：毒化 goal/question 拒发；脱敏被删时任务立即 boundary_violation',
+    fn: async () => {
+      // (a) 直打唯一出口：毒化 task.start / 禁止字段 / 干净消息对照
+      const { forkProcess, fakes } = makeFakeFork()
+      const logs: string[] = []
+      const mgr = makeManager({ forkProcess }, { tools: [makeSearchTool().tool], log: (_l, m) => logs.push(m) })
+      mgr.start()
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't23-ready', type: 'ready' })
+      await waitFor('ready', () => mgr.getState() === 'ready')
+      const send = (mgr as unknown as { sendToUtility: (m: unknown) => boolean }).sendToUtility.bind(mgr)
+      eq(send({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't23-poison', type: 'task.start',
+        taskId: 'eg-1', runId: 1, goal: '跟进 wxid_leak_77 的订单',
+        context: { kind: 'global', capabilityContextId: 'eg-cap', label: '全局' }
+      }), false, '毒化 goal（wxid_*）被出口拒发')
+      ok(!fakes[0].inbox.some((m) => (m as MainToUtilityMessage).type === 'task.start'), 'Utility 未收到毒化 task.start')
+      eq(send({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't23-clean', type: 'task.start',
+        taskId: 'eg-2', runId: 1, goal: '分析正常客户',
+        context: { kind: 'global', capabilityContextId: 'eg-cap', label: '全局' }
+      }), true, '干净 task.start 正常发出')
+      ok(fakes[0].inbox.some((m) => (m as MainToUtilityMessage & { taskId?: string }).taskId === 'eg-2'), 'Utility 收到干净 task.start')
+      eq(send({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't23-forbidden', type: 'task.continue',
+        taskId: 'eg-2', runId: 2, question: 'q', messageKey: 'LOCAL::x'
+      } as Record<string, unknown>), false, '携带禁止字段 messageKey 的 task.continue 拒发（结构+扫描双闸）')
+      ok(logs.some((l) => l.includes('task.start') && l.includes('违规') && !l.includes('wxid_leak_77')), '拒发日志含 type 与违规路径、不含违规原值')
+      // (b) 调用点脱敏「被删除」（maskText 恒等模拟）：统一出口兜底，任务立即 failed/boundary_violation
+      const harness = makeHarness()
+      const logs2: string[] = []
+      const { fn: modelComplete } = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'])])
+      const mgr2 = makeManager(harness, { modelComplete, tools: [makeSearchTool().tool], maskText: (s) => s, log: (_l, m) => logs2.push(m) })
+      await startReady(mgr2)
+      const bad = await mgr2.startTask({ goal: '跟进 wxid_leak_99 客户' })
+      eq(bad.ok, false, '毒化 goal 的 startTask 失败')
+      eq(bad.errorCode, 'boundary_violation', 'errorCode boundary_violation')
+      eq(bad.task?.status, 'failed', '任务快照立即置 failed')
+      eq(bad.task?.errorMessage, '本次查询未能安全处理，请重新发起任务。', '人话文案')
+      ok(!harness.sent.some((m) => (m as MainToUtilityMessage).type === 'task.start'), '毒化任务未向 Utility 下发 task.start')
+      ok(!logs2.some((l) => l.includes('wxid_leak_99')), '日志不含违规原值')
+      // (c) continue 毒化 question：同样出口兜底
+      const good = await mgr2.startTask({ goal: '干净目标' })
+      ok(good.ok && !!good.task, '干净任务创建')
+      const goodId = good.task!.taskId
+      await waitFor('干净任务完成', () => mgr2.getTask(goodId)?.status === 'completed')
+      const bad2 = await mgr2.continueTask(goodId, '追问 wxid_leak_55 的记录')
+      eq(bad2.ok, false, '毒化 question 的 continue 失败')
+      eq(bad2.errorCode, 'boundary_violation', 'continue errorCode boundary_violation')
+      ok(!harness.sent.some((m) => (m as MainToUtilityMessage).type === 'task.continue'), '毒化 question 未下发 task.continue')
+      eq(bad2.task?.errorCode, 'boundary_violation', '任务快照置 failed/boundary_violation')
+      eq(bad2.task?.errorMessage, '本次查询未能安全处理，请重新发起任务。', 'continue 人话文案')
+    }
+  },
+  {
+    name: 't24 模型响应二次脱敏：模型文本里的手机号/wxid 进 Utility 前脱敏',
+    fn: async () => {
+      const harness = makeHarness()
+      const { tool } = makeSearchTool()
+      const { fn: modelComplete } = makeScriptedModel([
+        toolCall('customer.search'),
+        completeWith(['e1'], '结论：联系 13812345678 或 wxid_leak_009')
+      ])
+      const mgr = makeManager(harness, { modelComplete, tools: [tool] })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '模型响应脱敏测试', context: { kind: 'customer', accountId: 5, sessionId: 'wxid_real_001' } })
+      const taskId = r.task!.taskId
+      await waitFor('completed', () => mgr.getTask(taskId)?.status === 'completed')
+      const respTexts = harness.sent
+        .filter((m) => (m as MainToUtilityMessage).type === 'host.response' && (m as MainToUtilityMessage & { ok?: boolean }).ok === true)
+        .map((m) => JSON.stringify(m)).join('\n')
+      ok(respTexts.length > 0, '捕获成功 host.response')
+      ok(!respTexts.includes('13812345678'), '回传 Utility 的模型文本不含手机号')
+      ok(!respTexts.includes('wxid_leak_009'), '回传 Utility 的模型文本不含 wxid')
+      ok(!respTexts.includes('wxid_real_001'), '回传 Utility 的模型文本不含宿主 sessionId')
+      ok(respTexts.includes('***'), '敏感值已替换为 ***')
+      const snapText = JSON.stringify(mgr.getTask(taskId))
+      ok(!snapText.includes('13812345678') && !snapText.includes('wxid_leak_009'), 'UI 结论不含原值')
+    }
+  },
+  {
+    name: 't25 出口兜底（模型响应脱敏被删 → 快速 boundary_violation）+ 伪造 evidenceHandle 无法恢复锚点',
+    fn: async () => {
+      // (a) 模型文本未被调用点脱敏（maskText 恒等模拟）：出口扫描拒发 → Utility 收受控错误 → 任务快速终态
+      const harness = makeHarness()
+      const { tool } = makeSearchTool()
+      const { fn: modelComplete } = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'], '结论含 wxid_raw_42 泄漏')])
+      const logs: string[] = []
+      const mgr = makeManager(harness, { modelComplete, tools: [tool], maskText: (s) => s, log: (_l, m) => logs.push(m) })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '出口兜底测试' })
+      const taskId = r.task!.taskId
+      await waitFor('任务快速落定', () => mgr.getTask(taskId)?.status === 'failed' && mgr.getTask(taskId)?.errorCode === 'boundary_violation')
+      eq(mgr.getTask(taskId)!.errorMessage, '本次查询未能安全处理，请重新发起任务。', '人话文案')
+      const errResp = harness.sent.find((m) => (m as MainToUtilityMessage).type === 'host.response'
+        && (m as MainToUtilityMessage & { error?: { code?: string } }).error?.code === 'boundary_violation')
+      ok(!!errResp, 'Utility 收到 boundary_violation 受控错误（可立即收尾，不等超时）')
+      ok(!JSON.stringify(harness.sent).includes('wxid_raw_42'), '带毒文本从未发出')
+      ok(logs.some((l) => l.includes('host.response') && l.includes('违规') && !l.includes('wxid_raw_42')), '日志含 type/路径、不含违规原值')
+      // (b) 伪造 evidenceHandle 无法恢复 messageKey 锚点（独立干净环境）
+      const harness2 = makeHarness()
+      const { tool: tool2 } = makeSearchTool()
+      const { fn: modelComplete2 } = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'])])
+      const mgr2 = makeManager(harness2, { modelComplete: modelComplete2, tools: [tool2] })
+      await startReady(mgr2)
+      const r2 = await mgr2.startTask({ goal: '伪造 handle 测试', context: { kind: 'customer', accountId: 5, sessionId: 'wxid_real_002' } })
+      const taskId2 = r2.task!.taskId
+      await waitFor('completed', () => mgr2.getTask(taskId2)?.status === 'completed')
+      ok(mgr2.getTask(taskId2)!.evidence.some((e) => e.messageKey === 'LOCAL::C:/db/test.db::wxid_secret001'), '真实登记 handle 恢复原始锚点')
+      const currentRun = (mgr2 as unknown as { taskRunGeneration: Map<string, number> }).taskRunGeneration.get(taskId2)!
+      ;(mgr2 as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't25-forged', type: 'task.progress', taskId: taskId2, runId: currentRun,
+        snapshot: {
+          taskId: taskId2, status: 'completed', goal: '伪造', contextLabel: '全局', steps: [],
+          evidence: [{ ref: 'e9', label: '伪造证据', kind: 'chat', evidenceHandle: 'evh-999-forged' }],
+          createdAt: 1, result: { summary: '伪造结论', findings: [], nextSteps: [] }
+        }
+      })
+      const after = mgr2.getTask(taskId2)!
+      ok(!JSON.stringify(after.evidence).includes('messageKey'), '伪造 handle 未恢复任何 messageKey')
+      eq(after.evidence[0].label, '伪造证据', '无锚点条目仅保留脱敏展示面')
+      ok(!JSON.stringify(after.evidence).includes('wxid_secret001'), '伪造 handle 未带回原始会话锚点值')
     }
   }
 ]

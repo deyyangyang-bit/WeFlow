@@ -14,8 +14,9 @@
  *  - 出站脱敏最终关卡在 Main（模型出网前最终隐私检查 + 工具结果回传前再脱敏）：
  *    Utility 侧 maskText/maskId 为恒等，不掌握脱敏函数与规则
  *  - parentPort 关闭 / 收到 shutdown → 自行退出；Main 退出流程先结束 Utility 再关数据库
- *  - 协议：shared/hermesProtocol v1 唯一真源；入口校验不过 = 丢弃；
- *    显式版本不一致 → fatal(protocol_mismatch)（重试无用，Main 直接 fail closed）
+ *  - 协议：shared/hermesProtocol v2 唯一真源（v2 = runId 任务轮次号 + evidenceHandle 格式
+ *    收紧）；入口校验不过 = 丢弃；显式版本不一致 → fatal(protocol_mismatch)（重试无用，
+ *    Main 直接 fail closed）；出站唯一出口过 isUtilityToMainMessage + findHermesBoundaryIssues 双检
  *  - 多任务并发：每个任务一个 Core 实例（completion/executeTool 闭包绑定 taskId），
  *    host.request 互不串线；Core 本身无状态（状态在 rt）
  */
@@ -30,6 +31,7 @@ import type { HermesToolDef, HermesToolResult } from '../services/hermesToolRegi
 import {
   HERMES_PROTOCOL_VERSION,
   createHermesMessageId,
+  findHermesBoundaryIssues,
   isMainToUtilityMessage,
   isUtilityToMainMessage,
   type HermesCheckpoint,
@@ -81,10 +83,17 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     else console.log(`[HermesUtility][INFO] ${msg}`)
   }
 
-  /** 出站发送（发送前协议校验；非法出站消息一律拒发并记日志） */
+  /** 出站发送（唯一出口：协议校验 + 边界扫描双检；任一不过 = 拒发并记日志。
+   *  日志只含消息 type 与违规路径，绝不含违规值/对话内容） */
   const send = (msg: UtilityToMainMessage): void => {
+    const type = String((msg as { type?: unknown }).type)
     if (!isUtilityToMainMessage(msg)) {
-      log('WARN', `拒绝发送非法出站消息 type=${String((msg as { type?: unknown }).type)}`)
+      log('WARN', `拒绝发送非法出站消息 type=${type}`)
+      return
+    }
+    const issues = findHermesBoundaryIssues(msg)
+    if (issues.length > 0) {
+      log('WARN', `拒绝发送边界违规出站消息 type=${type} 违规: ${issues.join('; ')}`)
       return
     }
     port.postMessage(msg)
@@ -163,8 +172,11 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         ).then((p) => {
           if (!p.ok) {
             const code = p.error?.code || 'internal'
-            // 取消走异常路径（Core 在安全点丢弃在途结果）；其余按工具失败回喂
-            if (code === 'cancelled') throw new Error('cancelled')
+            // 取消 / 宿主判定任务已终止（账号或身份变化、边界违规）：走异常路径让 Core 在
+            // 安全点静默停轮——Main 侧快照已是终态，回喂只会产生被门禁丢弃的迟到进度
+            if (code === 'cancelled' || code === 'context_expired' || code === 'boundary_violation') {
+              throw new Error('cancelled')
+            }
             return { ok: false, publicSummary: p.error?.message || '查询失败', errorCode: code }
           }
           return p.result ?? { ok: false, publicSummary: '查询失败', errorCode: 'internal' }
@@ -180,7 +192,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
   // ── 任务运行时 ─────────────────────────────────────────────────────────────
 
   /** 建任务运行时（上下文只有协议脱敏形态；真实 identity/sessionId 不进 Utility） */
-  function buildRuntime(taskId: string, goal: string, context: HermesUtilityContext): HermesAgentTaskRuntime {
+  function buildRuntime(taskId: string, goal: string, context: HermesUtilityContext, runId: number): HermesAgentTaskRuntime {
     const now = Date.now()
     return {
       task: {
@@ -192,6 +204,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         evidence: [],
         createdAt: now
       },
+      runId,
       conversation: [],
       evidenceByRef: new Map(),
       nextEvidenceSeq: 0,
@@ -247,6 +260,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     return {
       protocolVersion: HERMES_PROTOCOL_VERSION,
       taskId: rt.task.taskId,
+      runId: rt.runId,
       savedAt: Date.now(),
       goal: rt.task.goal,
       context,
@@ -270,6 +284,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       id: createHermesMessageId(),
       type: 'task.progress',
       taskId: rt.task.taskId,
+      runId: rt.runId,
       snapshot: toProtocolSnapshot(rt)
     })
   }
@@ -291,10 +306,13 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     })
   }
 
+  /** 受理回执：runId 回传本次受理对应的轮次（continue 由入站消息回显，cancel/get 用任务
+   *  当前轮次；任务不存在时 0 = 无已知轮次——Main 只用它做 continue 回执的轮次匹配） */
   function sendTaskResponse(
     taskId: string,
     op: 'start' | 'continue' | 'cancel' | 'get',
     ok: boolean,
+    runId: number,
     rt?: HermesAgentTaskRuntime,
     errorCode?: string
   ): void {
@@ -303,6 +321,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       id: createHermesMessageId(),
       type: 'task.response',
       taskId,
+      runId,
       op,
       ok,
       snapshot: rt ? toProtocolSnapshot(rt) : undefined,
@@ -369,6 +388,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       evidenceByRef: new Map(Object.entries(cp.evidenceByRef).map(([ref, ev]) => [ref, { ...ev }])),
       nextEvidenceSeq: cp.nextEvidenceSeq,
       lastCallKey: '',
+      runId: cp.runId,
       deadlineAt: Date.now(),
       abort: null,
       cancelRequested: false,
@@ -386,9 +406,9 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     log('INFO', `恢复任务 ${cp.taskId}（对话 ${rt.conversation.length} 条 / 证据 ${evidence.length} 条）`)
   }
 
-  function onStart(taskId: string, goal: string, context: HermesUtilityContext): void {
+  function onStart(taskId: string, goal: string, context: HermesUtilityContext, runId: number): void {
     if (tasks.has(taskId)) { log('WARN', `任务重复 start: ${taskId}`); return }
-    const rt = buildRuntime(taskId, goal, context)
+    const rt = buildRuntime(taskId, goal, context, runId)
     tasks.set(taskId, rt)
     contextByTask.set(taskId, context)
     evictTasks()
@@ -396,15 +416,17 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     runTurnGuarded(createCore(taskId, context.capabilityContextId), rt, goal)
   }
 
-  function onContinue(taskId: string, question: string): void {
+  function onContinue(taskId: string, question: string, runId: number): void {
     const rt = tasks.get(taskId)
-    if (!rt) { sendTaskResponse(taskId, 'continue', false, undefined, 'not_found'); return }
+    // 回执 runId 一律回显 Main 下发的轮次号（任务不存在时也回显——Main 按轮次匹配回执）
+    if (!rt) { sendTaskResponse(taskId, 'continue', false, runId, undefined, 'not_found'); return }
     if (rt.turnRunning || rt.task.status === 'running' || rt.task.status === 'planning') {
-      sendTaskResponse(taskId, 'continue', false, undefined, 'busy')
+      sendTaskResponse(taskId, 'continue', false, runId, undefined, 'busy')
       return
     }
-    if (rt.cancelRequested) { sendTaskResponse(taskId, 'continue', false, undefined, 'cancelled'); return }
+    if (rt.cancelRequested) { sendTaskResponse(taskId, 'continue', false, runId, undefined, 'cancelled'); return }
     // 新一轮：清上轮步骤/错误；对话窗口与证据表保留（与 in-process 服务语义一致）
+    rt.runId = runId
     rt.task.steps = []
     rt.task.result = undefined
     rt.task.errorCode = undefined
@@ -414,7 +436,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     rt.unresolvedToolFailure = false
     rt.dataRetries = 0
     rt.deadlineAt = Date.now() + TASK_DEADLINE_MS
-    sendTaskResponse(taskId, 'continue', true, rt)
+    sendTaskResponse(taskId, 'continue', true, runId, rt)
     emitProgress(rt)
     const capId = contextByTask.get(taskId)?.capabilityContextId || ''
     runTurnGuarded(createCore(taskId, capId), rt, question)
@@ -422,7 +444,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
 
   function onCancel(taskId: string): void {
     const rt = tasks.get(taskId)
-    if (!rt) { sendTaskResponse(taskId, 'cancel', false, undefined, 'not_found'); return }
+    if (!rt) { sendTaskResponse(taskId, 'cancel', false, 0, undefined, 'not_found'); return }
     rt.cancelRequested = true
     rt.abort?.abort() // abort 在途模型 host.request（Main 侧同步 abort 真实出网请求）
     // 只在任务未收尾时置 cancelled（已完成的结果不受取消影响）
@@ -433,13 +455,13 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       rt.turnRunning = false
       emitProgress(rt)
     }
-    sendTaskResponse(taskId, 'cancel', true, rt)
+    sendTaskResponse(taskId, 'cancel', true, rt.runId, rt)
   }
 
   function onGet(taskId: string): void {
     const rt = tasks.get(taskId)
-    if (!rt) { sendTaskResponse(taskId, 'get', false, undefined, 'not_found'); return }
-    sendTaskResponse(taskId, 'get', true, rt)
+    if (!rt) { sendTaskResponse(taskId, 'get', false, 0, undefined, 'not_found'); return }
+    sendTaskResponse(taskId, 'get', true, rt.runId, rt)
   }
 
   function onHostResponse(requestId: string, payload: HostResponsePayload): void {
@@ -467,8 +489,8 @@ export function runHermesUtility(port: HermesUtilityPort): void {
     switch (msg.type) {
       case 'init': onInit(msg.tools); return
       case 'restore': if (initialized) restoreFromCheckpoint(msg.checkpoint); return
-      case 'task.start': if (initialized) onStart(msg.taskId, msg.goal, msg.context); return
-      case 'task.continue': if (initialized) onContinue(msg.taskId, msg.question); return
+      case 'task.start': if (initialized) onStart(msg.taskId, msg.goal, msg.context, msg.runId); return
+      case 'task.continue': if (initialized) onContinue(msg.taskId, msg.question, msg.runId); return
       case 'task.cancel': if (initialized) onCancel(msg.taskId); return
       case 'task.get': if (initialized) onGet(msg.taskId); return
       case 'host.response': onHostResponse(msg.requestId, {

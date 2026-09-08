@@ -1521,6 +1521,17 @@
 - **协议测试 `hermes-protocol-test` 176→182**（i3e-i3j：桥接/快照证据允许不透明 handle；messageKey 形态与路径分隔符 handle 拒绝；快照证据 messageKey 仍拒绝；checkpoint 证据携带 handle 拒绝）。
 - **验证**：utility **161/161**、protocol **182/0**、agent **95/0**；tsc root **0 错误** / node **158 基线零新增**（hermes 零报错）/ `npx vite build` ✓ / `git diff --check` 干净。
 
+## 2.89 Hermes 任务生命周期边界加固：capability↔指纹绑定 + runId 轮次门禁 + 双向统一出口扫描（2026-09-08，commit `fix: harden Hermes task lifecycle boundaries`）
+
+> 基于 §2.88（边界终态）的第三轮补修：闭合「账号/身份变化后旧 capability 仍可用」「取消/续轮后迟到消息覆盖终态」「出口扫描未接真实协议出口」三类缺口。**协议升级 v2**（runId 必填 + evidenceHandle 格式收紧，属线上格式变更；两侧同应用成对分发，版本号 fail closed 保证半升级时拒绝而非静默丢消息）。定位：本地展示范围/任务上下文隔离，非安全沙箱。
+
+- **P1-1 capability 与上下文指纹绑定**：Manager 可注入 `contextFingerprint?: () => string`（生产缺省 = 清洗后 myWxid + 身份姓名 + 身份角色 的 JSON 序列化；**真实值绝不入 Utility 消息或 checkpoint**）。`startTask` 定格指纹入 CapContext；每次 `host.request` 与 `continueTask` 都重读比对——不一致 → 拒模型/工具（稳定错误码 `context_expired`，文案「当前账号或身份已经变化，请重新发起 Hermes 任务。」）+ `expireTask` 封禁 capability + abort 在途模型 + 快照置 `failed/context_expired`，此后 continue/host.request/迟到 progress 均不能复活。`config:set myWxid` 切库后 Main 主动调 `hermesUtilityManager.invalidateCapabilities('account_changed')`（本地身份更新依赖指纹重校验兜底）。`expireTask(taskId, errorCode, force=false)` 为单点终态写入：删 cap 映射 → expiredTasks → abort → 非终态（或 force）复写快照并广播。
+- **P1-2 runId 轮次号防乱序**：协议 v2 为 `task.start`/`task.continue`/`task.progress`/`task.response`/`task.checkpoint` 增加 `runId`（安全整数 ≥1）。start=1，Main `continueTask` 递增（`taskRunGeneration` Map）并等待**带同轮次 runId 的受理回执**（not_found/busy/cancelled 回执也回显收到的 runId；回执轮次不匹配不解除等待）；Utility 回传 progress/checkpoint 必带当前轮次，Main 三处门禁只收当前轮次——旧轮次迟到消息一律拒收（日志只记 taskId/runId/原因）。配合终态门禁：取消任务只接受 cancelled 状态、已终态任务拒绝异状态 progress、checkpoint 一律拒收取消任务（恢复面只剩 Main 快照）；未知 taskId 不凭空创建。崩溃恢复后旧 child/旧轮次消息同样无法覆盖新状态。
+- **P2 双向唯一出口边界扫描**：Main→Utility 唯一出口 `Manager.sendToUtility`（返回 boolean）与 Utility→Main 唯一出口 `Entry.send` 均执行「协议运行时校验 + `findHermesBoundaryIssues`」双检——毒化 goal/question、禁止字段（messageKey/sessionId/apiKey 等结构键）、wxid_/@chatroom 值一律拒发，日志只含消息 type 与违规路径（不含违规值/prompt/模型响应/sessionId/Key）。调用点脱敏若被绕过，出口兜底：startTask/continueTask 返回受控错误（不再傻等 90s 超时），任务立即 `failed/boundary_violation`（文案「本次查询未能安全处理，请重新发起任务。」），host.request 拒发路径同样让任务快速落定。**模型响应二次脱敏**：模型返回文本是不可信外部输入，`hostModelComplete` 回传 Utility 前再过 `maskOutboundTextForBridge` + 宿主已知标识符精确替换 + 扫描。`evidenceHandle` 收紧为 `/^evh-[a-z0-9-]+$/`（协议 i3k/i3l）；Main 恢复锚点只认自己登记过的 handle，伪造 handle 无锚点只保留脱敏展示面（同状态终态幂等重发仍允许，异状态拒绝）。
+- **Entry 侧贯通**：`HermesAgentTaskRuntime` 新增 `runId`（宿主构建/续轮时赋值，Core 本体不读）；Entry `send` 出口双检 + executeTool 对 `cancelled/context_expired/boundary_violation` 抛受控错误让 Core 安全点静默停轮；checkpoint/progress/task.response 全带 runId。
+- **测试 `hermes-utility-test` 161→244 断言 / 17→26 场景**：t18（假 child：姓名/角色/账号任一变化 → host.request 拒绝 context_expired + 任务终止 + continue/二次 request/迟到 progress 均不可复活 + 指纹组件零入 Utility 消息）、t19（真 fork：工具在途时账号变化 → 工具不再执行 + failed/context_expired；新上下文新任务正常全链路 + 跨进程消息零指纹原值）、t20（取消后 runId 匹配的 running/completed progress 与 checkpoint 均被拒、伪造结论不入快照）、t21（第二轮开启后旧轮次 running/failed/checkpoint 被拒 + 第二轮正常完成 + 未知 taskId 不创建）、t22（首次崩溃恢复后旧 runId 消息无法覆盖 failed/agent_unavailable）、t23（毒化 goal/question 出口拒发 + messageKey 禁止字段拒绝 + 脱敏被删时 startTask/continueTask 立即 boundary_violation + 日志零原值）、t24（模型文本手机号/wxid/宿主 sessionId 回传前脱敏为 ***）、t25（模型响应脱敏被删 → 快速 boundary_violation + Utility 收受控错误；伪造 evidenceHandle 不恢复锚点，真实 handle 恢复 messageKey）。**3 项突变验证**：移除 host.request 指纹重校验 → t18/t19 红；移除 progress/checkpoint runId 门禁 → t21 红（t20/t22 由取消/终态门禁双层防护）；绕过出口扫描 → t23/t25 红。均已还原复绿。
+- **协议测试 `hermes-protocol-test` 182→195**（f2a-f2k：runId 缺失/0/1.5/MAX_SAFE_INTEGER 及 start/continue/response/checkpoint/restore 全形态校验；i3k/i3l：`opaque-handle-123`/`evh-Abc_123` 格式外 handle 拒绝；fixtures 补 runId、错误版本 2→3）。
+- **验证**：utility **244/0**（26 场景）、protocol **195/0**、agent **95/0**；knowledge-governance 57 / hermes-ask 40 / hermes-ask-data 42 / persist-guard 36 / settings-nav 59 / customer-workspace-simple 37 / owner-filter 28 全绿；tsc root **0 错误** / node **158 基线零新增**（hermes 零报错）/ `npx vite build` ✓ / `git diff --check` 干净。
 
 
 ## 3. 已交付功能清单
@@ -1759,7 +1770,7 @@
 |------|------|
 | `salesStage.ts` | **阶段语义层**（§2.24 新建，零依赖纯模块）：`STAGE_CANONICAL`/`FUNNEL_ORDER`、`normalizeStage`（中英→canonical 幂等）、`stageLabel`/`funnelBucket`/`stageToFunnel`。DB 不迁移，UI/统计统一归桶 |
 | `customerEvent.ts` | **客户事件唯一语义源**（§2.35 E3.1 新建，零依赖纯模块）：`CUSTOMER_EVENT_TYPES` 五类型（customer_replied/quote_asked/script_copied/chat_opened/follow_up_done）+ `isCustomerEventType` 守卫（防万能日志表，DB CHECK 之外第一道 TS 拦截）+ `customerEventCategory` 分类派生（customer/action，只读不加列）+ `CustomerEventRecord`（message_key 复用 P0-2B 证据锚点；**§2.36 P0-4.2.1 加 `task_id` 行动轴**——correlation key 非合法性前置，无任务上下文 NULL 不伪造） |
-| `hermesProtocol.ts` | **Hermes 跨进程协议 v1 唯一真源**（§2.87）：Main↔Utility 两消息族 + 严格键集递归校验器 + `HermesBridgeEvidence`（工具结果在途证据，无 ref 无 messageKey）+ `evidenceHandle` 不透明锚点回查句柄（§2.88，messageKey 形态值拒绝）+ 脱敏 checkpoint 形态（无 handle） |
+| `hermesProtocol.ts` | **Hermes 跨进程协议 v2 唯一真源**（§2.87/§2.89）：Main↔Utility 两消息族 + 严格键集递归校验器 + `HermesBridgeEvidence`（工具结果在途证据，无 ref 无 messageKey）+ `evidenceHandle` 不透明锚点回查句柄（`/^evh-[a-z0-9-]+$/` 收紧，messageKey 形态值拒绝）+ runId 轮次号必填（start/continue/progress/response/checkpoint）+ 脱敏 checkpoint 形态（无 handle） |
 
 ### 后端 `electron/services/`
 | 文件 | 说明 |
@@ -1802,8 +1813,8 @@
 ### 后端 `electron/hermes/`（§2.87 UtilityProcess 架构）
 | 文件 | 说明 |
 |------|------|
-| `hermesUtilityEntry.ts` | Utility 入口：Agent Loop 宿主（Core+运行时，零 DB/零模型出网，一律 host.request 回宿主；快照透传 evidenceHandle）；`runHermesUtility(port)` 纯函数 + parentPort 自动引导 |
-| `hermesUtilityManager.ts` | Main Manager（唯一可信宿主，§2.88）：fork/握手/心跳/至多一次重启/四态 + 宿主三闸（Key 不出 Main、白名单与 capId 重校验、结果再脱敏）+ 任务文本脱敏过界与原文锚点（rawTextByTask/evidenceAnchorsByTask/refAnchorsByTask）+ shutdown 等在途宿主操作 + child 亲和 + 版本 fail closed（不重启）+ generation 绑定；零 electron 依赖（fork 注入） |
+| `hermesUtilityEntry.ts` | Utility 入口：Agent Loop 宿主（Core+运行时，零 DB/零模型出网，一律 host.request 回宿主；快照透传 evidenceHandle；runId 贯通回传）；U2M 唯一出口 `send` 执行协议校验 + `findHermesBoundaryIssues` 双检（§2.89）；`runHermesUtility(port)` 纯函数 + parentPort 自动引导 |
+| `hermesUtilityManager.ts` | Main Manager（唯一可信宿主，§2.88/§2.89）：fork/握手/心跳/至多一次重启/四态 + 宿主三闸（Key 不出 Main、白名单与 capId 重校验、结果再脱敏）+ 任务文本脱敏过界与原文锚点（rawTextByTask/evidenceAnchorsByTask/refAnchorsByTask）+ capability↔contextFingerprint 绑定（startTask 定格 + host.request/continueTask 每次重校验，失效即 `expireTask` 封禁；`invalidateCapabilities` 批量失效）+ runId 轮次门禁（progress/checkpoint/ack 只收当前轮次）+ M2U 唯一出口 `sendToUtility` 双检 + 模型响应二次脱敏 + boundary_violation/context_expired 快速落定 + shutdown 等在途宿主操作 + child 亲和 + 版本 fail closed（不重启）+ generation 绑定；零 electron 依赖（fork 注入） |
 
 ### 前端 `src/`
 | 文件 | 说明 |

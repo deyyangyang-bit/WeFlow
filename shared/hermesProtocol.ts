@@ -33,7 +33,11 @@
 
 // ─── 协议版本 ────────────────────────────────────────────────────────────────
 
-export const HERMES_PROTOCOL_VERSION = 1 as const
+/** 协议版本 v2：v2 起引入 runId 任务轮次号（task.start/task.continue/task.progress/
+ *  task.response/checkpoint 必带；Main 只接受当前轮次的回传，旧轮次迟到消息一律丢弃），
+ *  并收紧 evidenceHandle 格式为 /^evh-[a-z0-9-]+$/。Main 与 Utility 同应用分发、永远成对
+ *  升级——版本号只用于半更新/外来进程的 fail closed 判定 */
+export const HERMES_PROTOCOL_VERSION = 2 as const
 
 // ─── 共享载荷类型 ──────────────────────────────────────────────────────────────
 
@@ -147,6 +151,8 @@ export interface HermesProtocolTaskSnapshot {
 export interface HermesCheckpoint {
   protocolVersion: typeof HERMES_PROTOCOL_VERSION
   taskId: string
+  /** 任务轮次号（与产生它的 task.start/task.continue 一致；Main 按轮次门禁拒绝旧轮次 checkpoint） */
+  runId: number
   savedAt: number
   goal: string
   context: HermesUtilityContext
@@ -170,8 +176,8 @@ interface HermesMessageBase {
 export type MainToUtilityMessage =
   | (HermesMessageBase & { type: 'init'; tools: HermesToolManifestEntry[] })
   | (HermesMessageBase & { type: 'restore'; checkpoint: HermesCheckpoint })
-  | (HermesMessageBase & { type: 'task.start'; taskId: string; goal: string; context: HermesUtilityContext })
-  | (HermesMessageBase & { type: 'task.continue'; taskId: string; question: string })
+  | (HermesMessageBase & { type: 'task.start'; taskId: string; runId: number; goal: string; context: HermesUtilityContext })
+  | (HermesMessageBase & { type: 'task.continue'; taskId: string; runId: number; question: string })
   | (HermesMessageBase & { type: 'task.cancel'; taskId: string })
   | (HermesMessageBase & { type: 'task.get'; taskId: string })
   | (HermesMessageBase & {
@@ -195,12 +201,14 @@ export type UtilityToMainMessage =
   | (HermesMessageBase & {
       type: 'task.response'
       taskId: string
+      /** 受理回执所属轮次（continue 受理时回传收到的那轮；Main 按轮次匹配回执，防旧轮次迟到回执错配新轮次） */
+      runId: number
       op: 'start' | 'continue' | 'cancel' | 'get'
       ok: boolean
       snapshot?: HermesProtocolTaskSnapshot
       errorCode?: string
     })
-  | (HermesMessageBase & { type: 'task.progress'; taskId: string; snapshot: HermesProtocolTaskSnapshot })
+  | (HermesMessageBase & { type: 'task.progress'; taskId: string; runId: number; snapshot: HermesProtocolTaskSnapshot })
   | (HermesMessageBase & { type: 'task.checkpoint'; checkpoint: HermesCheckpoint })
   | (HermesMessageBase & { type: 'host.request'; request: HermesHostRequest })
   | (HermesMessageBase & { type: 'fatal'; code: string; message: string })
@@ -305,10 +313,11 @@ export function isHermesHostRequest(v: unknown): v is HermesHostRequest {
 
 const EVIDENCE_KINDS: readonly string[] = ['customer', 'chat', 'crm', 'knowledge', 'action', 'result']
 
-/** evidenceHandle 合法性（不透明非空字符串；不得长得像本地锚点） */
+/** evidenceHandle 合法性（Main 侧 maskToolResult 生成的固定格式 evh-…；本地锚点
+ *  messageKey 形态与任意伪造字符串一律拒绝——恢复锚点前先过形态门） */
+const EVIDENCE_HANDLE_RE = /^evh-[a-z0-9-]+$/
 function isEvidenceHandleLike(v: unknown): v is string {
-  if (typeof v !== 'string' || !v.trim()) return false
-  return !v.includes('::') && !v.includes('/') && !v.includes('\\') // messageKey 形态拒绝
+  return typeof v === 'string' && EVIDENCE_HANDLE_RE.test(v)
 }
 
 /** HermesProtocolEvidence 运行时校验（严格键集：⛔ messageKey 等任何多余字段拒绝；
@@ -369,7 +378,7 @@ const STEP_KEYS: readonly string[] = ['label', 'status', 'tool', 'publicSummary'
 const RESULT_KEYS: readonly string[] = ['summary', 'findings', 'nextSteps']
 const FINDING_KEYS: readonly string[] = ['text', 'evidenceRefs']
 const CHECKPOINT_KEYS: readonly string[] = [
-  'protocolVersion', 'taskId', 'savedAt', 'goal', 'context',
+  'protocolVersion', 'taskId', 'runId', 'savedAt', 'goal', 'context',
   'conversation', 'evidenceByRef', 'nextEvidenceSeq', 'okToolCalls'
 ]
 
@@ -418,6 +427,7 @@ export function isHermesCheckpoint(v: unknown): v is HermesCheckpoint {
   if (!isPlainObject(v) || !keysDeclared(v, CHECKPOINT_KEYS)) return false
   if (v.protocolVersion !== HERMES_PROTOCOL_VERSION) return false
   if (typeof v.taskId !== 'string' || !v.taskId.trim()) return false
+  if (!isRunId(v.runId)) return false
   if (typeof v.savedAt !== 'number' || !Number.isFinite(v.savedAt)) return false
   if (typeof v.goal !== 'string' || !v.goal) return false
   if (!isHermesUtilityContext(v.context)) return false
@@ -459,8 +469,8 @@ const ENV_KEYS: readonly string[] = ['protocolVersion', 'id', 'type']
 const M2U_KEY_SETS: Record<string, readonly string[]> = {
   init: [...ENV_KEYS, 'tools'],
   restore: [...ENV_KEYS, 'checkpoint'],
-  'task.start': [...ENV_KEYS, 'taskId', 'goal', 'context'],
-  'task.continue': [...ENV_KEYS, 'taskId', 'question'],
+  'task.start': [...ENV_KEYS, 'taskId', 'runId', 'goal', 'context'],
+  'task.continue': [...ENV_KEYS, 'taskId', 'runId', 'question'],
   'task.cancel': [...ENV_KEYS, 'taskId'],
   'task.get': [...ENV_KEYS, 'taskId'],
   'host.response': [...ENV_KEYS, 'requestId', 'taskId', 'ok', 'text', 'result', 'error'],
@@ -470,12 +480,17 @@ const M2U_KEY_SETS: Record<string, readonly string[]> = {
 
 const U2M_KEY_SETS: Record<string, readonly string[]> = {
   ready: ENV_KEYS,
-  'task.response': [...ENV_KEYS, 'taskId', 'op', 'ok', 'snapshot', 'errorCode'],
-  'task.progress': [...ENV_KEYS, 'taskId', 'snapshot'],
+  'task.response': [...ENV_KEYS, 'taskId', 'runId', 'op', 'ok', 'snapshot', 'errorCode'],
+  'task.progress': [...ENV_KEYS, 'taskId', 'runId', 'snapshot'],
   'task.checkpoint': [...ENV_KEYS, 'checkpoint'],
   'host.request': [...ENV_KEYS, 'request'],
   fatal: [...ENV_KEYS, 'code', 'message'],
   pong: ENV_KEYS
+}
+
+/** runId 任务轮次号校验：正安全整数（≥1；Main 从 task.start=1 起递增） */
+function isRunId(v: unknown): boolean {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 1
 }
 
 /** Main → Utility 消息运行时校验（严格键集 → 九类逐一校验载荷 → 可序列化硬门禁） */
@@ -493,11 +508,13 @@ export function isMainToUtilityMessage(raw: unknown): raw is MainToUtilityMessag
       payloadOk = isHermesCheckpoint(m.checkpoint)
       break
     case 'task.start':
-      payloadOk = hasTaskId(m) && typeof m.goal === 'string' && m.goal.trim().length > 0
+      payloadOk = hasTaskId(m) && isRunId(m.runId)
+        && typeof m.goal === 'string' && m.goal.trim().length > 0
         && isHermesUtilityContext(m.context)
       break
     case 'task.continue':
-      payloadOk = hasTaskId(m) && typeof m.question === 'string' && m.question.trim().length > 0
+      payloadOk = hasTaskId(m) && isRunId(m.runId)
+        && typeof m.question === 'string' && m.question.trim().length > 0
       break
     case 'task.cancel':
     case 'task.get':
@@ -544,13 +561,14 @@ export function isUtilityToMainMessage(raw: unknown): raw is UtilityToMainMessag
       break
     case 'task.response':
       payloadOk = hasTaskId(m)
+        && isRunId(m.runId)
         && RESPONSE_OPS.includes(String(m.op))
         && typeof m.ok === 'boolean'
         && (m.snapshot === undefined || isHermesProtocolTaskSnapshot(m.snapshot))
         && (m.errorCode === undefined || typeof m.errorCode === 'string')
       break
     case 'task.progress':
-      payloadOk = hasTaskId(m) && isHermesProtocolTaskSnapshot(m.snapshot)
+      payloadOk = hasTaskId(m) && isRunId(m.runId) && isHermesProtocolTaskSnapshot(m.snapshot)
       break
     case 'task.checkpoint':
       payloadOk = isHermesCheckpoint(m.checkpoint)

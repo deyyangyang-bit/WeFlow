@@ -109,6 +109,7 @@ function makeCoreRt(goal: string): HermesAgentTaskRuntime {
     evidenceByRef: new Map(),
     nextEvidenceSeq: 0,
     lastCallKey: '',
+    runId: 1,
     deadlineAt: now + 90_000,
     abort: null,
     cancelRequested: false,

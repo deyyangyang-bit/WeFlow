@@ -2142,6 +2142,9 @@ function registerIpcHandlers() {
       } catch (e) {
         console.error('[Sales] myWxid 变更后切换业务库失败:', e)
       }
+      // 账号已切换：主动失效全部 Hermes 任务能力（未收尾任务置 failed/context_expired；
+      // 旧 capability 此后一律拒绝）。兜底防线是 Manager 每次 host.request 的指纹重校验
+      hermesUtilityManager.invalidateCapabilities('account_changed')
     }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)

@@ -112,6 +112,10 @@ export const FRIENDLY_ERROR: Record<string, string> = {
 /** 内存任务运行时（真源；对外快照由调用方拷贝） */
 export interface HermesAgentTaskRuntime {
   task: HermesTask
+  /** 任务轮次号（协议 runId；start=1，continueTask 由 Main 递增。Utility 回传消息携带，
+   *  Main 只接受当前轮次的 progress/checkpoint——旧轮次迟到消息一律丢弃。Core 本体不读它，
+   *  由宿主在构建 runtime 时赋值并在续轮时更新） */
+  runId: number
   conversation: HermesAgentMessage[]
   /** 证据登记表 ref → evidence（防伪造校验的真源） */
   evidenceByRef: Map<string, HermesEvidence>

@@ -116,6 +116,7 @@ export class HermesAgentService {
       evidenceByRef: new Map(),
       nextEvidenceSeq: 0,
       lastCallKey: '',
+      runId: 1,
       deadlineAt: now + TASK_DEADLINE_MS,
       abort: null,
       cancelRequested: false,
