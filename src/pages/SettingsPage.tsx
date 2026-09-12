@@ -9,16 +9,17 @@ import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, RecoveryKeyOutcome } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
   Palette, Database, HardDrive, Info, RefreshCw, ChevronDown, Download, Mic,
   ShieldCheck, Fingerprint, Lock, KeyRound, Bell, Globe, BarChart2, X, UserRound,
-  Sparkles, Loader2, CheckCircle2, XCircle
+  Sparkles, Loader2, CheckCircle2, XCircle, CloudDownload, AlertTriangle
 } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import AuditTrailSection from '../components/settings/AuditTrailSection'
+import MigrationReportSection from '../components/settings/MigrationReportSection'
 import { displayNameOrFallback } from '../utils/displayName'
 import './SettingsPage.scss'
 
@@ -249,6 +250,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [autoBackupNetworkPath, setAutoBackupNetworkPath] = useState('')
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null)
   const [autoBackupRunning, setAutoBackupRunning] = useState(false)
+  // 恢复密钥（跨机器恢复凭证；口令只在输入框与内存中出现，不落盘不打日志）
+  const [recoveryPassphrase, setRecoveryPassphrase] = useState('')
+  const [recoveryBusy, setRecoveryBusy] = useState<'' | 'export' | 'import'>('')
+  // 从网络备份恢复（换新电脑第二步：替换本机业务库，成功后由主进程重启应用）
+  const [networkRestoreRunning, setNetworkRestoreRunning] = useState(false)
+  const [networkRestoreConfirmOpen, setNetworkRestoreConfirmOpen] = useState(false)
+  const [networkRestoreError, setNetworkRestoreError] = useState('')
+  // 采用恢复密钥确认（仅新机首次恢复门禁开放时出现；本机旧密钥与旧备份先移入隔离目录）
+  const [adoptKeyConfirmOpen, setAdoptKeyConfirmOpen] = useState(false)
   // 本地身份档案（PRD 1.2a；角色仅署名用途，与应用锁完全独立）
   const [identityName, setIdentityName] = useState('')
   const [identityRole, setIdentityRole] = useState('')
@@ -920,9 +930,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     } catch { /* 状态读取失败静默，不阻塞设置页 */ }
   }
 
-  // 自动备份：手动立即备份
+  // 自动备份：手动立即备份（恢复流程进行中禁止并发操作）
   const handleAutoBackupRunNow = async () => {
-    if (autoBackupRunning) return
+    if (autoBackupRunning || networkRestoreRunning || recoveryBusy) return
     setAutoBackupRunning(true)
     try {
       const res = await window.electronAPI.backup.autoRunNow()
@@ -937,6 +947,104 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAutoBackupRunning(false)
       await refreshAutoBackupStatus()
     }
+  }
+
+  // 从网络备份恢复：先确认（会替换本机业务数据库、成功后应用自动重启），再执行
+  const handleNetworkRestore = () => {
+    if (networkRestoreRunning || autoBackupRunning || recoveryBusy) return
+    setNetworkRestoreError('')
+    setNetworkRestoreConfirmOpen(true)
+  }
+
+  const confirmNetworkRestore = async () => {
+    setNetworkRestoreConfirmOpen(false)
+    setNetworkRestoreRunning(true)
+    setNetworkRestoreError('')
+    try {
+      // 省略 backupId = 恢复网络层最新有效链；成功后由主进程 IPC 立即重启应用，前端不再重复触发重启
+      const res = await window.electronAPI.backup.autoRestore({ source: 'network' })
+      if (res.success) {
+        showMessage('恢复完成，应用即将自动重启', true)
+      } else {
+        const detail = res.error || '恢复失败（未返回具体原因）'
+        setNetworkRestoreError(detail)
+        showMessage(`恢复失败：${detail}`, false)
+      }
+    } catch (e) {
+      const detail = String(e)
+      setNetworkRestoreError(detail)
+      showMessage(`恢复失败：${detail}`, false)
+    } finally {
+      setNetworkRestoreRunning(false)
+      await refreshAutoBackupStatus()
+    }
+  }
+
+  // 恢复密钥：导出（口令加密后写盘；换电脑恢复前在旧电脑做一次）
+  const handleRecoveryKeyExport = async (): Promise<RecoveryKeyOutcome | null> => {
+    if (recoveryBusy) return null
+    if (recoveryPassphrase.length < 8) {
+      showMessage('请先填写至少 8 位恢复密钥口令（导出文件靠它加密）', false)
+      return null
+    }
+    setRecoveryBusy('export')
+    try {
+      const res = await window.electronAPI.backup.recoveryKeyExport({ passphrase: recoveryPassphrase })
+      if (res.success) showMessage(`恢复密钥已导出（主密钥指纹 ${res.fingerprint}）：${res.filePath}。请妥善保存口令与文件`, true)
+      else showMessage(`恢复密钥导出失败：${res.error || '未知错误'}`, false)
+      return res
+    } catch (e) {
+      showMessage(`恢复密钥导出失败：${String(e)}`, false)
+      return null
+    } finally {
+      setRecoveryBusy('')
+    }
+  }
+
+  // 恢复密钥：导入（新机器安装主备份密钥；口令错误明确失败；已有不同密钥默认不覆盖）
+  // 新机首次恢复门禁开放时，先弹确认框走「采用恢复密钥」——本机旧密钥与本地备份整体移入隔离目录。
+  const handleRecoveryKeyImport = async (): Promise<RecoveryKeyOutcome | null> => {
+    if (recoveryBusy || networkRestoreRunning) return null
+    if (!recoveryPassphrase) {
+      showMessage('请先填写导出时设置的恢复密钥口令', false)
+      return null
+    }
+    if (autoBackupStatus?.recovery?.canAdoptRecoveryKey) {
+      setAdoptKeyConfirmOpen(true)
+      return null
+    }
+    return await runRecoveryKeyImport(false)
+  }
+
+  const runRecoveryKeyImport = async (adopt: boolean): Promise<RecoveryKeyOutcome | null> => {
+    setRecoveryBusy('import')
+    try {
+      const res = await window.electronAPI.backup.recoveryKeyImport({ passphrase: recoveryPassphrase, adopt })
+      if (res.success) {
+        if (res.status === 'adopted') {
+          showMessage(`已采用恢复密钥（指纹 ${res.fingerprint}）：本机原密钥与 ${res.quarantinedBackups ?? 0} 份本地备份已移入隔离目录 ${res.quarantineDir}（可恢复）。请继续点「从网络备份恢复」`, true)
+        } else if (res.status === 'installed') {
+          showMessage(`恢复密钥已导入并启用（主密钥指纹 ${res.fingerprint}）。可从网络备份层恢复旧机器数据`, true)
+        } else {
+          showMessage(`导入的恢复密钥与本机现有密钥一致（指纹 ${res.fingerprint}）`, true)
+        }
+        setRecoveryPassphrase('')
+      } else {
+        showMessage(`恢复密钥导入失败：${res.error || '未知错误'}`, false)
+      }
+      return res
+    } catch (e) {
+      showMessage(`恢复密钥导入失败：${String(e)}`, false)
+      return null
+    } finally {
+      setRecoveryBusy('')
+      await refreshAutoBackupStatus()
+    }
+  }
+
+  const confirmAdoptRecoveryKey = async () => {
+    setAdoptKeyConfirmOpen(false)
+    await runRecoveryKeyImport(true)
   }
 
   // 本地身份档案：保存（姓名必填；角色仅署名用途，宪法 §1.12）
@@ -2824,12 +2932,81 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 ? `上次：${new Date(autoBackupStatus.last.at).toLocaleString()}（本机 ${autoBackupStatus.last.local === 'ok' ? '✓' : autoBackupStatus.last.local} / 网络 ${autoBackupStatus.last.network === 'ok' ? '✓' : autoBackupStatus.last.network === 'skipped_unreachable' ? '不可达已跳过' : autoBackupStatus.last.network === 'skipped_not_configured' ? '未配置' : autoBackupStatus.last.network}）`
                 : '尚未备份'}
               {autoBackupStatus?.nextPlannedAt ? `　下次计划：${new Date(autoBackupStatus.nextPlannedAt).toLocaleString()}（每日 ${autoBackupStatus.configuredTime}，各保留最近 20 份）` : ''}
+              {autoBackupStatus?.keyProtection ? `　密钥保护：${autoBackupStatus.keyProtection === 'electron-safeStorage' ? '系统安全设施' : autoBackupStatus.keyProtection === 'local-wrap-v1' ? '本机封装（降级，建议在支持系统安全设施的环境使用）' : autoBackupStatus.keyProtection}` : ''}
             </span>
           </div>
           <div className="setting-control">
-            <button className="btn btn-secondary" onClick={handleAutoBackupRunNow} disabled={autoBackupRunning}>
+            <button className="btn btn-secondary" onClick={handleAutoBackupRunNow} disabled={autoBackupRunning || networkRestoreRunning || recoveryBusy !== ''}>
               {autoBackupRunning ? <Loader2 size={16} className="spin" /> : <HardDrive size={16} />}
               {autoBackupRunning ? '备份中...' : '立即备份'}
+            </button>
+          </div>
+        </div>
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>从网络备份恢复</span>
+            <span className="setting-desc">
+              读取上方「网络备份路径」里旧机器的备份链，替换本机业务数据库（weflow-crm / weflow-sales 及各微信账号分库），恢复最新有效备份链。换新电脑的完整顺序：①旧电脑「导出恢复密钥」→ ②新电脑「导入恢复密钥」→ ③点本按钮恢复。恢复成功后应用会自动重启，前端无需再操作
+            </span>
+          </div>
+          <div className="setting-control">
+            <button
+              className="btn btn-secondary"
+              onClick={handleNetworkRestore}
+              disabled={networkRestoreRunning || autoBackupRunning || recoveryBusy !== ''}
+            >
+              {networkRestoreRunning ? <Loader2 size={16} className="spin" /> : <CloudDownload size={16} />}
+              {networkRestoreRunning ? '恢复中...' : '从网络备份恢复'}
+            </button>
+          </div>
+        </div>
+        {networkRestoreError && (
+          <div className="setting-item">
+            <div className="setting-label" style={{ width: '100%' }}>
+              <span style={{ color: 'var(--color-danger, #ef4444)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <AlertTriangle size={16} />
+                上次网络恢复失败
+              </span>
+              <span className="setting-desc" style={{ color: 'var(--color-danger, #ef4444)' }}>
+                网络备份路径未配置 / 恢复密钥错误 / 备份链损坏 / 数据库校验失败 / 恢复失败都会在此显示，未改动本机业务库：{networkRestoreError}
+              </span>
+            </div>
+          </div>
+        )}
+        {autoBackupStatus?.recovery?.pending && (
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>等待从网络备份恢复</span>
+              <span className="setting-desc">
+                已采用恢复密钥，自动备份已暂停（避免本机空库被推到网络层覆盖旧机器备份链）。请点上方「从网络备份恢复」完成恢复；若确认不再恢复、要把本机当作新机器用，点「立即备份」即可解除暂停
+              </span>
+            </div>
+          </div>
+        )}
+        <div className="setting-item">
+          <div className="setting-label">
+            <span>恢复密钥（换电脑恢复用）</span>
+            <span className="setting-desc">
+              主备份密钥已加密封装在本机（{autoBackupStatus?.keyProtection === 'electron-safeStorage' ? '系统安全设施' : '本机封装'}），备份文件本身不含密钥。换新电脑时：先在旧电脑导出恢复密钥（用至少 8 位口令加密），再在新电脑导入同一文件与口令，之后即可从网络备份路径恢复旧机器数据。口令丢失将无法跨机器恢复，请务必牢记
+            </span>
+          </div>
+          <div className="setting-control">
+            <input
+              type="password"
+              className="field-input"
+              style={{ width: '200px', marginRight: '8px' }}
+              placeholder="恢复密钥口令（≥8 位）"
+              value={recoveryPassphrase}
+              onChange={(e) => setRecoveryPassphrase(e.target.value)}
+              autoComplete="new-password"
+            />
+            <button className="btn btn-secondary" style={{ marginRight: '8px' }} onClick={handleRecoveryKeyExport} disabled={recoveryBusy !== '' || networkRestoreRunning}>
+              {recoveryBusy === 'export' ? <Loader2 size={16} className="spin" /> : <Download size={16} />}
+              {recoveryBusy === 'export' ? '导出中...' : '导出恢复密钥'}
+            </button>
+            <button className="btn btn-secondary" onClick={handleRecoveryKeyImport} disabled={recoveryBusy !== '' || networkRestoreRunning}>
+              {recoveryBusy === 'import' ? <Loader2 size={16} className="spin" /> : <KeyRound size={16} />}
+              {recoveryBusy === 'import' ? '导入中...' : '导入恢复密钥'}
             </button>
           </div>
         </div>
@@ -5368,6 +5545,82 @@ JSON 输出格式：
           </div>
         </div>
       )}
+
+      {networkRestoreConfirmOpen && (
+        <div className="modal-overlay" onClick={() => setNetworkRestoreConfirmOpen(false)}>
+          <div className="api-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <CloudDownload size={20} />
+              <h3>从网络备份恢复</h3>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                将用网络备份路径中的最新有效备份链替换本机业务数据库（weflow-crm / weflow-sales 及各微信账号分库）。
+              </p>
+              <div className="warning-list">
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>本机现有业务数据将被覆盖，请先确认不需要保留</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>恢复成功后应用会自动重启，请勿重复点击</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>备份链或数据库校验失败时不会替换任何文件，本机数据保持不变</span>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setNetworkRestoreConfirmOpen(false)}>
+                取消
+              </button>
+              <button className="btn btn-primary" onClick={confirmNetworkRestore}>
+                确认恢复
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {adoptKeyConfirmOpen && (
+        <div className="modal-overlay" onClick={() => setAdoptKeyConfirmOpen(false)}>
+          <div className="api-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <AlertTriangle size={20} />
+              <h3>采用恢复密钥</h3>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                本机当前的主备份密钥是首次启动时自动生成的，与导入的恢复密钥不是同一把。
+              </p>
+              <div className="warning-list">
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>继续将采用导入的恢复密钥，本机原密钥与本地 {autoBackupStatus?.recovery?.localBackupDirs ?? 0} 份备份会被整体移入隔离目录（不删除、可人工恢复）</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>采用后自动备份会暂停，直到完成「从网络备份恢复」</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>请仅在换新电脑、要恢复旧机器数据时确认</span>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setAdoptKeyConfirmOpen(false)}>
+                取消
+              </button>
+              <button className="btn btn-primary" onClick={confirmAdoptRecoveryKey}>
+                确认采用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 
@@ -5783,6 +6036,11 @@ JSON 输出格式：
           </div>
         </div>
       </div>
+
+      <div className="divider" />
+
+      {/* 存量迁移报告（audit_event 只读投影：总数/成功/跳过/失败/冲突 + 逐条原因 + CSV 导出） */}
+      <MigrationReportSection />
 
       <div className="divider" />
 

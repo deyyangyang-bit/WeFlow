@@ -42,7 +42,9 @@ const ACTION_LABELS: Record<string, string> = {
   customer_type_set: '客户类型',
   import_batch: '资源录入',
   lead_sla_stock_reset: 'SLA 重置',
-  lead_tag_owner_cleanup: '归属清理'
+  lead_tag_owner_cleanup: '归属清理',
+  migration_02_account_to_customer: '存量迁移②',
+  migration_03_lead_to_identity: '存量迁移③'
 }
 
 /** 动作 pill 语义（五语义：蓝=信息/绿=正常/琥珀=待办/红=异常/灰=中性） */
@@ -56,7 +58,9 @@ const ACTION_SEMANTIC: Record<string, 'info' | 'success' | 'warning' | 'danger' 
   customer_type_set: 'neutral',
   import_batch: 'info',
   lead_sla_stock_reset: 'neutral',
-  lead_tag_owner_cleanup: 'warning'
+  lead_tag_owner_cleanup: 'warning',
+  migration_02_account_to_customer: 'info',
+  migration_03_lead_to_identity: 'info'
 }
 
 /** 联系方式脱敏：手机号 152****5273；微信号保留前 3 后 2；其余原样 */
