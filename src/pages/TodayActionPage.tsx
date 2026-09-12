@@ -5,7 +5,7 @@
  *       → 主两栏(左:筛选chips+信号卡流 | 右:待办侧栏)
  *       → 可折叠「数据概览」(来源/紧急度/阶段)
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -63,27 +63,27 @@ export default function TodayActionPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<{ session_id: string; name?: string } | null>(null)
 
   // 晨间摘要（设计-AI见解重定位 §3.1）：每日一条「今天先跟谁」，取代高意向提示条
-  const [digest, setDigest] = useState<{ date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean } | null>(null)
+  const [digest, setDigest] = useState<any>(null)
   const [digestDismissed, setDigestDismissed] = useState(false)
   const [digestRegenerating, setDigestRegenerating] = useState(false)
+  const [digestError, setDigestError] = useState('')
+  const [digestExpanded, setDigestExpanded] = useState(false)
+  const digestEpoch = useRef(0)
   const fetchDigest = useCallback(async () => {
+    const epoch = digestEpoch.current
     try {
       const res = await (window as any).electronAPI.sales.morningDigestGet()
-      setDigest(res?.ok && res.data && Array.isArray(res.data.items) && res.data.items.length > 0 ? res.data : null)
-    } catch { setDigest(null) }
+      if (epoch !== digestEpoch.current) return
+      setDigest(res?.ok ? res.data : null); setDigestError('')
+    } catch (e) { if (epoch === digestEpoch.current) setDigestError(String(e)) }
   }, [])
-  // 手动重生成（用户测试入口，不必等早上 8 点）：覆盖当天旧行后回拉
   const regenerateDigest = useCallback(async () => {
-    setDigestRegenerating(true)
-    try {
-      await (window as any).electronAPI.sales.morningDigestRegenerate()
-    } catch (e) {
-      console.warn('[TodayAction] 晨间摘要重新生成失败:', e)
-    }
-    await fetchDigest()
-    setDigestRegenerating(false)
+    const epoch = digestEpoch.current
+    setDigestRegenerating(true); setDigestError('')
+    try { await (window as any).electronAPI.sales.morningDigestRegenerate() }
+    catch (e) { if (epoch === digestEpoch.current) setDigestError(String(e)) }
+    if (epoch === digestEpoch.current) { await fetchDigest(); setDigestRegenerating(false) }
   }, [fetchDigest])
-
   // 打开弹窗时拉取客户列表（可选关联），重置表单
   const openTodoModal = useCallback(async () => {
     setShowTodoModal(true)
@@ -125,12 +125,21 @@ export default function TodayActionPage() {
   const PAGE_SIZE = 10
 
   useEffect(() => { fetchToday() }, [fetchToday])
-  useEffect(() => { void fetchDigest() }, [fetchDigest])
+  useEffect(() => {
+    void fetchDigest()
+    void (window as any).electronAPI.sales.morningDigestGenerate()
+    const timer = setInterval(() => { void fetchDigest() }, 5_000)
+    return () => { clearInterval(timer); digestEpoch.current++ }
+  }, [fetchDigest])
   // 切微信号 = 换库（§2.40）：账号切换后重查
-  useWxidRefresh(() => { void fetchToday(); void fetchDigest(); setDigestDismissed(false) })
+  useWxidRefresh(() => {
+    digestEpoch.current++; setDigest(null); setDigestError(''); setDigestDismissed(false); setDigestRegenerating(false)
+    void fetchToday(); void fetchDigest(); void (window as any).electronAPI.sales.morningDigestGenerate()
+  })
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
+    void (window as any).electronAPI.sales.actionRefresh()
     await fetchToday()
     setRefreshing(false)
   }, [fetchToday])
@@ -207,31 +216,30 @@ export default function TodayActionPage() {
       )}
 
       {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除） */}
-      {!digestDismissed && digest && digest.items.length > 0 && (
-        <div className="signal-notice signal-notice--digest">
-          <Sunrise size={14} />
-          <div className="signal-notice__digest-body">
-            {digest.items.map((it) => (
-              <button
-                key={it.sessionId}
-                className="signal-notice__digest-item"
-                onClick={() => navigate(`/customers?sid=${encodeURIComponent(it.sessionId)}`)}
-              >
-                <strong>{it.displayName}</strong>——{it.reason}
-              </button>
-            ))}
-          </div>
-          <span className="signal-notice__dismiss" onClick={() => setDigestDismissed(true)}>收起</span>
-          <button
-            className="signal-notice__digest-refresh"
-            title="重新生成今日摘要"
-            disabled={digestRegenerating}
-            onClick={regenerateDigest}
-          >
-            <RefreshCw size={12} className={digestRegenerating ? 'spinning' : undefined} />
-          </button>
+      {!digestDismissed && <section className="signal-notice signal-notice--digest" aria-label="当前账号开工简报">
+        <Sunrise size={14} />
+        <div className="signal-notice__digest-body">
+          <strong>开工简报 · 仅当前账号</strong>
+          <p>{digest?.coverage?.message || '正在读取本地事项；聊天分析覆盖尚未核验'}</p>
+          {digest && <small>生成于 {new Date(digest.createdAt).toLocaleString()} {digest.date !== new Date().toLocaleDateString('sv-SE') ? '（旧快照，等待更新）' : ''}</small>}
+          {digestError && <p role="alert">{digestError} <button onClick={() => void fetchDigest()}>重试</button></p>}
+          {digest && (() => {
+            const pending = digest.items.filter((it: any) => !it.status || it.status === 'pending')
+            const visible = digestExpanded ? pending : pending.slice(0, 5)
+            return <>
+              {!pending.length && <p>当前暂无已记录的待办；未分析消息不计为“无需跟进”。</p>}
+              {visible.map((it: any, index: number) => <button key={it.itemKey || `${it.sessionId}:${index}`} className="signal-notice__digest-item" onClick={() => it.sessionId && !/^(todo|logi|lead):/.test(it.sessionId) ? navigate(`/customers?sid=${encodeURIComponent(it.sessionId)}`) : document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior:'smooth' })}>
+                <strong>{it.group === 'must' ? '今天必须处理' : '建议优先跟进'} · {it.displayName}</strong>——{it.reason}
+                {it.dueAt && <small> · 期限 {new Date(it.dueAt).toLocaleString()}</small>}
+              </button>)}
+              {pending.length > 5 && <button className="crm-btn" onClick={() => setDigestExpanded(v => !v)}>{digestExpanded ? '收起' : `展开其余 ${pending.length - 5} 个事项`}</button>}
+              <details><summary>历史事项状态</summary>{digest.items.filter((it: any) => it.status && it.status !== 'pending').map((it: any) => <p key={it.itemKey}>{it.displayName} · {it.reason} · {it.status}</p>)}</details>
+            </>
+          })()}
         </div>
-      )}
+        <button className="crm-btn" onClick={() => setDigestDismissed(true)}>收起</button>
+        <button className="crm-btn" disabled={digestRegenerating} onClick={() => void regenerateDigest()}>{digestRegenerating ? '正在整理…' : '更新简报'}</button>
+      </section>}
 
       {/* 主两栏 */}
       <div className="today-action-page__main">
@@ -280,7 +288,7 @@ export default function TodayActionPage() {
             <>
               <div className="signal-list">
                 {pageItems.map(item => (
-                  <AIActionCard key={item.sessionId} item={item} />
+                  <AIActionCard key={item.itemKey} item={item} />
                 ))}
               </div>
 

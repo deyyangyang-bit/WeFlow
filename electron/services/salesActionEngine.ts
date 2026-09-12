@@ -23,6 +23,7 @@ import { salesKnowledgeService } from './salesKnowledgeService'
 import { crmDbService } from './crmDbService'
 import { scanLeadSla } from './crmLeadService'
 import { runAftersalesScan } from './crmAftersalesService'
+import { runDeliveryScan } from './crmDeliveryService'
 import { normalizeStage } from '../../shared/salesStage'
 import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
@@ -75,6 +76,10 @@ export type SignalSource =
   | { type: 'alert'; alertType: string; label: string; reason: string; recordId: string; messageKey: string }
 
 export interface UnifiedSignal {
+  itemKey?: string
+  dueAt?: number | null
+  sourceKind?: string
+  sourceId?: number | null
   sessionId: string
   displayName: string
   stage: string
@@ -283,32 +288,33 @@ export function setActionEngineConfig(config: ConfigService): void {
   configRef = config
 }
 
+/** 扫描是命令；getUnifiedSignals/getTodayActions 只读，不能在读取中隐式执行。 */
+let refreshPending: Promise<void> | null = null
+let scanDbPath: string | null = null
+export function refreshActionSignals(): Promise<void> {
+  if (refreshPending) return refreshPending
+  const scope = salesDbService.captureScope()
+  refreshPending = enqueueSalesTask(async () => {
+    if (!scope || salesDbService.captureScope() !== scope || !salesDbService.isInitialized()) return
+    if (scanDbPath !== scope) { lastFullScanAt = 0; scanDbPath = scope }
+    const day = new Date(); day.setHours(0, 0, 0, 0)
+    if (lastFullScanAt < day.getTime()) await runFullScan()
+    else await lazyScan()
+    if (salesDbService.captureScope() !== scope) return
+    scanLeadSla()
+    salesKnowledgeService.scanTtlReminders()
+  }).finally(() => { refreshPending = null })
+  return refreshPending
+}
+
 /**
  * 启动定时全量扫描（每天 08:00）
  */
 export function startActionEngineScheduler(): void {
   if (scanTimer) return
-  // 每 30 分钟检查一次是否到了扫描时间
-  scanTimer = setInterval(() => {
-    const now = new Date()
-    const hours = now.getHours()
-    const minutes = now.getMinutes()
-    // 08:00-08:30 窗口内且今天还没扫过
-    if (hours === 8 && minutes < 30) {
-      const todayStart = new Date(now)
-      todayStart.setHours(0, 0, 0, 0)
-      if (lastFullScanAt < todayStart.getTime()) {
-        salesLog('INFO', '[ActionEngine] 触发每日全量扫描')
-        enqueueSalesTask(() => runFullScan()).catch(e => {
-          salesLog('ERROR', `[ActionEngine] 全量扫描失败: ${e}`)
-        })
-      }
-    }
-  }, 30 * 60 * 1000)
-}
-
-export function stopActionEngineScheduler(): void {
-  if (scanTimer) { clearInterval(scanTimer); scanTimer = null }
+  const tick = () => { void refreshActionSignals().catch(e => salesLog('ERROR', `[ActionEngine] 扫描失败: ${e}`)) }
+  tick()
+  scanTimer = setInterval(tick, 60_000)
 }
 
 /**
@@ -564,12 +570,24 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   lastFullScanAt = nowMs
   // SLA 接通：每日全量扫描顺带扫描超时线索 → 生成首触 SLA 卡（幂等；独立于 action_engine 重扫，created_by='sla' 不受清理）
   try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) }
+  // TTL 巡检接通（PRD 2.9）：到期知识生成待处理提醒卡（幂等；created_by='knowledge_ttl_scan' 不受 action_engine 重扫清理）
+  try {
+    const ttl = salesKnowledgeService.scanTtlReminders()
+    if (ttl.reminded > 0) salesLog('INFO', `[ActionEngine] TTL 到期提醒 ${ttl.reminded}/${ttl.scanned}`)
+  } catch (e) { salesLog('WARN', `[ActionEngine] TTL 巡检失败: ${e}`) }
   // 售后规则（PRD §1.6/§1.7/§1.7a/§1.7b）：R9 经销商拿货 / R10 成交回访 / R11 阶段停滞 / 设备周期提醒 / R12 经销商回购
   // （created_by='aftersales' 独立于 action_engine 重扫清理，规则内自带去重）
   try {
     const asr = runAftersalesScan(nowMs)
     if (asr.r9 + asr.r10 + asr.r11 + asr.device + asr.r12 > 0) salesLog('INFO', `[ActionEngine] 售后规则出卡 ${JSON.stringify(asr)}`)
   } catch (e) { salesLog('WARN', `[ActionEngine] 售后规则扫描失败: ${e}`) }
+  // 交付售后（2026-09-10）：数量差异任务 / 改装质保提醒 / 以旧换新提案（created_by='delivery' 独立于 action_engine 重扫）
+  try {
+    const dsr = runDeliveryScan(nowMs)
+    if (dsr.diffCreated + dsr.diffClosed + dsr.warrantyNear + dsr.warrantyExpired + dsr.tradeIn > 0) {
+      salesLog('INFO', `[ActionEngine] 交付售后出卡 ${JSON.stringify(dsr)}`)
+    }
+  } catch (e) { salesLog('WARN', `[ActionEngine] 交付售后扫描失败: ${e}`) }
   salesLog('INFO', `[ActionEngine] 全量扫描完成，候选 ${customerBest.size} 客户，生成 ${generated} 条任务，R6 ${r6Generated} 条`)
   return { generated, r6Generated }
 }
@@ -714,14 +732,6 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
   const todayStart = new Date(); todayStart.setHours(0,0,0,0)
   const todayStartMs = todayStart.getTime()
 
-  // 1. 沿用现有扫描逻辑
-  if (lastFullScanAt < todayStartMs) {
-    await enqueueSalesTask(() => runFullScan())
-  }
-  await enqueueSalesTask(() => lazyScan())
-  // SLA 接通：每次卡流扫描都补一次 SLA 扫描（应用连续运行期间，新到期线索即时出首触卡）
-  await enqueueSalesTask(() => { try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) } })
-
   // 2. 查 pending tasks
   const pendingTasks = salesDbService.todoList({ status: 'pending' })
   const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
@@ -742,7 +752,8 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         reason: String(task.title || ''),
         rawTaskId: task.id ?? 0
       }
-      signalMap.set(sid, {
+      signalMap.set(`task:${task.id}`, {
+        itemKey: `task:${task.id}`, dueAt: task.due_at, sourceKind: task.trigger_type, sourceId: task.source_id,
         sessionId: sid,
         displayName: task.display_name || profile?.display_name || task.title || '个人待办',
         stage: profile ? normalizeStage(profile.stage) : 'manual',
@@ -757,7 +768,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     }
     // SLA 首触卡不进主卡流：无客户上下文，属散任务，只在今日行动右侧 TodoSidebar 展示
     // （职责分工 §2.19：主卡流 = 客户动作，散任务 = 侧栏清单）
-    if (task.trigger_type === 'sla_lead') continue
+    // SLA 事项保留原 taskId；完成时仍走专用业务入口。
     // 物流超期卡：虚拟 sessionId logi:<logistics_id>（事实驱动，不参与沉默天数过滤）
     if (task.trigger_type === 'rule_r8_logistics_overdue') {
       const sid = String(task.session_id || '')
@@ -769,7 +780,8 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         reason: String(task.title || '发货超期未确认签收'),
         rawTaskId: task.id ?? 0
       }
-      signalMap.set(sid, {
+      signalMap.set(`task:${task.id}`, {
+        itemKey: `task:${task.id}`, dueAt: task.due_at, sourceKind: task.trigger_type, sourceId: task.source_id,
         sessionId: sid,
         displayName: String(task.display_name || '未知客户'),
         stage: 'followup',
@@ -782,14 +794,11 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
       })
       continue
     }
-    const sid = task.session_id || ''
-    if (!sid) continue
+    const sid = task.session_id || `todo:${task.id}`
     const profile = salesDbService.customerGetBySession(sid)
     const stage = normalizeStage(profile?.stage)
-    if (['won', 'lost'].includes(stage)) continue
     const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor(profile.created_at / 1000) : 0)
     const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
-    if (silentDays <= 0) continue
 
     const rule = RULES.find(r => r.id === task.trigger_type)
     const rulePriority = rule ? rule.priority : 'info'
@@ -818,16 +827,17 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         }
         return labels[task.trigger_type || ''] || '待确认'
       })(),
-      reason: buildReason(task.trigger_type || '', silentDays),
+      reason: task.title || buildReason(task.trigger_type || '', silentDays),
       rawTaskId: task.id ?? 0
     }
 
-    const existing = signalMap.get(sid)
+    const existing = signalMap.get(`task:${task.id}`)
     if (existing) {
       existing.sources.push(source)
       existing.priorityScore = Math.min(140, Math.max(existing.priorityScore, baseScore))
     } else {
-      signalMap.set(sid, {
+      signalMap.set(`task:${task.id}`, {
+        itemKey: `task:${task.id}`, dueAt: task.due_at, sourceKind: task.trigger_type, sourceId: task.source_id,
         sessionId: sid,
         displayName: task.display_name || profile?.display_name || '未知',
         stage,
@@ -860,7 +870,7 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         recordId: rec.id,
         messageKey: String(rec.messageKey || '')
       }
-      const existing = signalMap.get(rec.sessionId)
+      const existing = signalMap.get(`alert:${rec.id}`)
       if (existing) {
         existing.sources.push(source)
         existing.priorityScore = Math.min(140, Math.max(existing.priorityScore, ALERT_BOOST))
@@ -868,7 +878,8 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
         const profile = salesDbService.customerGetBySession(rec.sessionId)
         const stage = normalizeStage(profile?.stage)
         const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor(profile.created_at / 1000) : 0)
-        signalMap.set(rec.sessionId, {
+        signalMap.set(`alert:${rec.id}`, {
+          itemKey: `alert:${rec.id}`,
           sessionId: rec.sessionId,
           displayName: rec.displayName || profile?.display_name || '未知',
           stage,
@@ -935,32 +946,16 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
  * 完成/跳过统一信号：标记 task done/skipped
  * （设计-AI见解重定位 §3.2 起 insight 不再进卡流，insight read 标记随合流分支一并移除）
  */
-export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped'): void {
-  // 手动待办：虚拟 sessionId todo:<taskId>（无客户），完成/跳过即关闭该任务
-  if (String(sessionId || '').startsWith('todo:')) {
-    const taskId = Number(String(sessionId).slice(5))
-    const task = taskId > 0 ? salesDbService.getTask(taskId) : undefined
-    if (task?.id) completeAction(task.id, action)
-    return
-  }
-  // SLA 首触卡不在主卡流（散任务走侧栏，完成闭环走 crm:lead:slaComplete IPC），此处无需 lead: 分支
-  // 物流超期卡：虚拟 sessionId logi:<logistics_id>，完成 = 确认签收（卡 done + logistics signed + activity 三一致）
-  if (String(sessionId || '').startsWith('logi:')) {
-    const logisticsId = Number(String(sessionId).slice(5))
-    const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
-    for (const t of tasks) if (t.id) completeAction(t.id, action)
-    if (action === 'done' && logisticsId > 0) {
-      try { crmDbService.markLogisticsSigned(logisticsId, { actor: '今日行动' }) } catch (e) {
-        salesLog('WARN', `[UnifiedSignals] markLogisticsSigned ${logisticsId} failed: ${e}`)
-      }
-    }
-    return
-  }
-  // 标记该 sessionId 的所有 pending tasks
-  const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
-  for (const t of tasks) {
-    if (t.id) completeAction(t.id, action)
-  }
+export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped', taskId?: number): void {
+  if (action !== 'done' && action !== 'skipped') throw new Error('操作无效')
+  const id = taskId || (sessionId.startsWith('todo:') ? Number(sessionId.slice(5)) : 0)
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('请选择具体待办；不能按客户批量完成')
+  const task = salesDbService.getTask(id)
+  if (!task || task.status !== 'pending') return
+  if ((task.session_id || `todo:${id}`) !== sessionId) throw new Error('待办与客户不匹配')
+  // 付款/签收的正式事实必须由业务入口确认；读卡、已读不能冒充业务完成。
+  if (task.trigger_type === 'rule_r8_logistics_overdue' && action === 'done') throw new Error('请到物流记录确认签收')
+  completeAction(id, action)
 }
 
 export async function getTodayActions(): Promise<TodayActionResult> {
@@ -973,15 +968,6 @@ export async function getTodayActions(): Promise<TodayActionResult> {
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
   const todayStartMs = todayStart.getTime()
-
-  // 如果今天还没扫描过，先跑一次全量 + 懒扫描补充
-  if (lastFullScanAt < todayStartMs) {
-    await enqueueSalesTask(() => runFullScan())
-  }
-  // 懒扫描：无论是否刚跑完全量，都补扫一次（填补 08:00 后的增量窗口）
-  await enqueueSalesTask(() => lazyScan())
-  // SLA 接通：每次卡流扫描都补一次 SLA 扫描（应用连续运行期间，新到期线索即时出首触卡）
-  await enqueueSalesTask(() => { try { scanLeadSla() } catch (e) { salesLog('WARN', `[ActionEngine] SLA 扫描失败: ${e}`) } })
 
   // 查询所有 pending 任务
   const pendingTasks = salesDbService.todoList({ status: 'pending', limit: 100 })
@@ -1112,13 +1098,15 @@ export async function generateActionAnalysis(actionItem: ActionItem): Promise<Ac
   }
 
   try {
-    // 并行获取：WCDB 聊天记录 + 知识库检索
+    // 并行获取：WCDB 聊天记录 + 知识库检索（只经 AI 有效读取唯一原语 kbValidEntries；
+    // 检索命中条目记引用台账 source=action，PRD 2.9 效果回流：引用次数/引用时间/关联客户阶段）
     const [chatHistory, knowledgeContext] = await Promise.all([
       fetchRecentMessages(actionItem.sessionId),
       Promise.resolve(salesKnowledgeService.buildKnowledgeContext(
         `${actionItem.title} ${actionItem.displayName} ${actionItem.stage}`,
         1500,
-        2
+        2,
+        { source: 'action', sessionId: actionItem.sessionId }
       ))
     ])
 
@@ -1155,6 +1143,7 @@ export async function generateActionAnalysis(actionItem: ActionItem): Promise<Ac
 }`
 
     const text = await simpleCompletion(configRef, systemPrompt, userPrompt, {
+      usageContext: { purpose: 'action' },
       temperature: 0.3,
       maxTokens: 800,
       responseFormatJson: true,

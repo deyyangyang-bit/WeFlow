@@ -12,6 +12,7 @@ export type SignalSource =
 // ActionStats.insightOnly/merged 字段保留恒 0，防前端引用断裂
 
 export interface ActionItem {
+  itemKey: string
   sessionId: string
   displayName: string
   stage: string
@@ -96,7 +97,7 @@ interface TodayActionState {
   setFilter: (f: SignalFilter) => void
   dismissNotice: () => void
   fetchToday: () => Promise<void>
-  completeItem: (sessionId: string, action: 'done' | 'skipped') => Promise<void>
+  completeItem: (item: ActionItem, action: 'done' | 'skipped') => Promise<void>
   fetchSuggestion: (item: ActionItem) => Promise<void>
   fetchTodos: () => Promise<void>
   createTodo: (payload: { title: string; session_id?: string; due_at?: number }) => Promise<{ ok: boolean; error?: string }>
@@ -112,6 +113,7 @@ function tierToPriority(tier: string): ActionItem['priority'] {
 function mapSignal(sig: any): ActionItem {
   const taskSource = sig.sources?.find((s: any) => s.type === 'task')
   const base: ActionItem = {
+    itemKey: sig.itemKey || `task:${taskSource?.rawTaskId || sig.sessionId}`,
     sessionId: sig.sessionId,
     displayName: sig.displayName || '未知',
     stage: sig.stage || 'unknown',
@@ -135,6 +137,7 @@ function mapSignal(sig: any): ActionItem {
   return base
 }
 
+let readEpoch = 0
 export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   items: [],
   stats: null,
@@ -194,12 +197,14 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
   dismissNotice: () => set({ noticeDismissed: true }),
 
   fetchToday: async () => {
+    const epoch = ++readEpoch
     const prev = get()._retryTimer
     if (prev) { clearTimeout(prev); set({ _retryTimer: null }) }
 
     set({ loading: true, error: null })
     try {
       const result = await (window as any).electronAPI.sales.actionGetUnified()
+      if (epoch !== readEpoch) return
       const items = (result.signals || []).map(mapSignal)
       set({
         items,
@@ -212,6 +217,7 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
         const timer = setTimeout(async () => {
           try {
             const retry = await (window as any).electronAPI.sales.actionGetUnified()
+            if (epoch !== readEpoch) return
             if (retry.signals?.length > 0) {
               set({ items: (retry.signals || []).map(mapSignal), stats: retry.stats, generatedAt: retry.generatedAt, _retryTimer: null })
             }
@@ -231,15 +237,15 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
     }
   },
 
-  completeItem: async (sessionId: string, action: 'done' | 'skipped') => {
+  completeItem: async (item: ActionItem, action: 'done' | 'skipped') => {
     try {
-      await (window as any).electronAPI.sales.actionCompleteUnified(sessionId, action)
+      await (window as any).electronAPI.sales.actionCompleteUnified(item.sessionId, action, item.id)
       set(state => ({
-        items: state.items.filter(item => item.sessionId !== sessionId)
+        items: state.items.filter(row => row.itemKey !== item.itemKey)
       }))
       void get().fetchTodos()
     } catch (e) {
-      console.error('完成信号失败:', e)
+      set({ error: String(e) })
     }
   },
 
@@ -270,3 +276,10 @@ export const useTodayActionStore = create<TodayActionState>((set, get) => ({
     }
   }
 }))
+
+if (typeof window !== 'undefined') window.addEventListener('wxid-changed', () => {
+  readEpoch++
+  const timer = useTodayActionStore.getState()._retryTimer
+  if (timer) clearTimeout(timer)
+  useTodayActionStore.setState({ items: [], todos: [], stats: null, generatedAt: null, error: null, loading: true, _retryTimer: null })
+})

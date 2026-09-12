@@ -1,3 +1,4 @@
+import { callChatCompletion, type ChatMessage } from './ai/aiApiClient'
 /**
  * insightService.ts
  *
@@ -334,91 +335,11 @@ function callApi(
   maxTokens: number = API_MAX_TOKENS_DEFAULT,
   options: CallApiOptions = {}
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
-    let urlObj: URL
-    try {
-      urlObj = new URL(endpoint)
-    } catch (e) {
-      reject(new Error(`无效的 API URL: ${endpoint}`))
-      return
-    }
-
-    const normalizedMaxTokens = normalizeApiMaxTokens(maxTokens)
-    const payload: Record<string, unknown> = {
-      model,
-      messages,
-      temperature: options.temperature ?? API_TEMPERATURE,
-      stream: false
-    }
-    if (options.useMaxCompletionTokens) {
-      payload.max_completion_tokens = normalizedMaxTokens
-    } else {
-      payload.max_tokens = normalizedMaxTokens
-    }
-    if (options.disableThinking) {
-      payload.thinking = { type: 'disabled' }
-      payload.enable_thinking = false
-    }
-    if (options?.responseFormatJson) {
-      payload.response_format = { type: 'json_object' }
-    }
-    const body = JSON.stringify(payload)
-
-    const requestOptions = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'POST' as const,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body).toString(),
-        Authorization: `Bearer ${apiKey}`
-      }
-    }
-
-    const isHttps = urlObj.protocol === 'https:'
-    const requestFn = isHttps ? https.request : http.request
-    const req = requestFn(requestOptions, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        try {
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
-            return
-          }
-          const parsed = JSON.parse(data)
-          const content = parsed?.choices?.[0]?.message?.content
-          if (typeof content === 'string' && content.trim()) {
-            resolve(content.trim())
-          } else {
-            const finishReason = parsed?.choices?.[0]?.finish_reason
-            const reasoningContent = parsed?.choices?.[0]?.message?.reasoning_content
-            if (typeof reasoningContent === 'string' && reasoningContent.trim()) {
-              reject(new Error(`API 仅返回推理内容未返回正文${finishReason ? `（finish_reason=${finishReason}）` : ''}，请增大最大输出 Token 或关闭思考模式`))
-              return
-            }
-            reject(new Error(`API 返回格式异常${finishReason ? `（finish_reason=${finishReason}）` : ''}: ${data.slice(0, 200)}`))
-          }
-        } catch (e) {
-          reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
-        }
-      })
-    })
-
-    req.setTimeout(timeoutMs, () => {
-      req.destroy()
-      reject(new Error('API 请求超时'))
-    })
-
-    req.on('error', (e) => reject(e))
-    req.write(body)
-    req.end()
+  return callChatCompletion({ apiBaseUrl, apiKey, model, maxTokens }, messages as ChatMessage[], {
+    ...options, timeoutMs, maxTokens, usageContext: { purpose: 'insight', promptVersion: 'legacy-v1' }
   })
 }
 
-// ─── InsightService 主类 ──────────────────────────────────────────────────────
 
 class InsightService {
   private readonly config: ConfigService
@@ -1779,7 +1700,7 @@ ${afterText}
         reason: `AI 见解阶段：${salesStage}`
       })
       salesLog('INFO', `[CrmImport] AI 见解判定「${displayName}」有意向（${salesStage}）→ CRM ${crmStage}（${res.created ? '新建' : '已存在'}）`)
-      // 商机阶段联动（P0）：客户阶段推进 → 活跃商机同步（了解→比价→决策 顺推；成交→won；流失→lost）
+      // 商机阶段联动（P0）：客户阶段推进 → 活跃商机同步（了解→比价→决策 顺推；成交→待登记提醒；流失→自动丢单）
       if (res.id) {
         try {
           const synced = crmDbService.syncOpportunityStageByAccount(Number(res.id), salesStage)
@@ -1800,6 +1721,7 @@ ${afterText}
     silentDays?: number
     salesStage?: string
   }): Promise<SessionInsightTriggerResult> {
+    const scope = salesDbService.captureScope()
     const { sessionId, displayName, triggerReason, silentDays, salesStage } = params
     if (!sessionId) return { success: false, message: '会话无效，无法生成见解' }
     if (!this.isEnabled()) return { success: false, message: '请先在设置中开启「AI 见解」' }
@@ -1930,6 +1852,7 @@ ${afterText}
     )
 
     try {
+      if (scope !== salesDbService.captureScope()) return { success: false, message: "账号已切换" }
       const apiStartedAt = Date.now()
       const result = await callApi(
         apiBaseUrl,
@@ -1939,6 +1862,7 @@ ${afterText}
         API_TIMEOUT_MS,
         maxTokens
       )
+      if (scope !== salesDbService.captureScope()) return { success: false, message: "账号已切换，结果已放弃" }
       const apiDurationMs = Date.now() - apiStartedAt
 
       insightLog('INFO', `API 返回原文: ${result.slice(0, 150)}`)
@@ -1959,9 +1883,7 @@ ${afterText}
         parsedStage = stageMatch[1]
         insight = insight.replace(/\s*【阶段[：:]\s*(了解|比价|决策|成交|流失|未知)\s*】\s*/, '').trim()
         // AI 判定非客户（阶段=未知）→ 加入黑名单，后续不再触发 AI 见解
-        if (parsedStage === '未知') {
-          this.blacklistNonCustomer(sessionId)
-        }
+        // 未知表示证据不足，不能据此写入非客户黑名单。
         // P0-2A.4：不再直接修改 customer_profile.stage。AI 阶段判断降级为 signal：
         // 只建档/改名（display_name）+ intent_tag_log 判断记录；stage 由合法写者维护。
         if (parsedStage !== '未知') {

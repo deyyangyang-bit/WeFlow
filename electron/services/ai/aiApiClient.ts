@@ -1,3 +1,4 @@
+import { startUsage, type UsageContext } from './aiUsageLedger'
 /**
  * aiApiClient.ts
  *
@@ -35,6 +36,7 @@ export interface ChatMessage {
 }
 
 export interface CallOptions {
+  usageContext?: UsageContext
   /** 覆盖默认温度 */
   temperature?: number
   /** 覆盖默认超时（毫秒） */
@@ -79,6 +81,21 @@ function normalizeMaxTokens(value: unknown): number {
   return Math.min(MAX_TOKENS_MAX, Math.max(MAX_TOKENS_MIN, Math.floor(numeric)))
 }
 
+/**
+ * 生成“关闭思考”扩展参数。该字段不是 OpenAI 标准字段，各兼容服务商支持度不同：
+ * DeepSeek 接受 enable_thinking=false；GLM（含官方 bigmodel.cn 端点）会以
+ * 400/1210 拒绝该字段，因此对 GLM 省略扩展参数，保持模型默认行为。
+ */
+export function buildDisableThinkingPayload(config: Pick<AiModelConfig, 'apiBaseUrl' | 'model'>): Record<string, unknown> {
+  let isBigModelHost = false
+  try {
+    const hostname = new URL(config.apiBaseUrl).hostname.toLowerCase()
+    isBigModelHost = hostname === 'bigmodel.cn' || hostname.endsWith('.bigmodel.cn')
+  } catch { /* URL 合法性由请求入口统一报告 */ }
+  const isGlmModel = /^glm(?:[-_.]|$)/i.test(String(config.model || '').trim())
+  return isBigModelHost || isGlmModel ? {} : { enable_thinking: false }
+}
+
 // ─── 核心调用 ─────────────────────────────────────────────────────────────────
 
 /**
@@ -89,7 +106,8 @@ export function callChatCompletion(
   messages: ChatMessage[],
   options: CallOptions = {}
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const recordUsage = startUsage(config.model, options.usageContext)
+  return new Promise<string>((resolve, reject) => {
     const { apiBaseUrl, apiKey, model } = config
     const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
 
@@ -118,9 +136,7 @@ export function callChatCompletion(
     }
 
     if (options.disableThinking) {
-      // thinking:{type:'disabled'} 属 /responses 接口格式，注入 /chat/completions 会被
-      // deepseek 等通用兼容接口判 400；关思考在 chat-completions 只用 enable_thinking:false
-      payload.enable_thinking = false
+      Object.assign(payload, buildDisableThinkingPayload(config))
     }
 
     if (options.responseFormatJson) {
@@ -173,6 +189,10 @@ export function callChatCompletion(
             return
           }
           const parsed = JSON.parse(data)
+          recordUsage(parsed?.usage, String(parsed?.choices?.[0]?.finish_reason || 'unknown'), 'response')
+          if (parsed?.choices?.[0]?.finish_reason === 'length') {
+            reject(new AiApiError('模型输出被截断，请增加输出上限后重试')); return
+          }
           const content = parsed?.choices?.[0]?.message?.content
           if (typeof content === 'string' && content.trim()) {
             resolve(content.trim())
@@ -215,9 +235,10 @@ export function callChatCompletion(
       }, { once: true })
     }
 
+    if (options.signal?.aborted) { req.destroy(); reject(new AiApiError("请求已取消")); return }
     req.write(body)
     req.end()
-  })
+  }).catch(error => { recordUsage(null, 'unknown', options.signal?.aborted ? 'cancelled' : 'failed'); throw error })
 }
 
 // ─── 配置读取 ─────────────────────────────────────────────────────────────────

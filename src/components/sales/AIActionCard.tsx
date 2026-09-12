@@ -108,8 +108,8 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
     }
   }
 
-  const handleComplete = useCallback(() => completeItem(item.sessionId, 'done'), [item.sessionId, completeItem])
-  const handleSkip = useCallback(() => completeItem(item.sessionId, 'skipped'), [item.sessionId, completeItem])
+  const handleComplete = useCallback(() => completeItem(item, 'done'), [item, completeItem])
+  const handleSkip = useCallback(() => completeItem(item, 'skipped'), [item, completeItem])
 
   const handleSuggest = useCallback(async () => {
     setLoadingSuggestion(true)

@@ -87,6 +87,7 @@ export async function classifyStage(
 
   try {
     const raw = await simpleCompletion(config, SYSTEM_PROMPT, userPrompt, {
+      usageContext: { purpose: 'stage' },
       temperature: 0.1,
       maxTokens: 300,
       disableThinking: true,
