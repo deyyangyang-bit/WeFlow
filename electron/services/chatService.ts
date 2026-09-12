@@ -2083,6 +2083,64 @@ class ChatService {
     }
   }
 
+  // ── 跨账号只读联系人（加好友自动检测多分库覆盖，2026-09-09 原子化）──────────────
+  /**
+   * 读取指定微信账号的联系人（只读；加好友自动检测「任一账号命中即停 SLA1」用）。
+   *   - 当前账号 → 走常规 getContacts（内存缓存/分类全量复用）；
+   *   - 其他账号 → wcdbService.readContactsForAccount 单次 worker 消息内完成
+   *     「快照原连接 → 开目标 → 读联系人 → 恢复原账号/关闭临时连接」；
+   *     worker 消息串行门保证普通 WCDB 请求不可能插入切换窗口、不可能观察到目标账号临时连接。
+   * 无该账号 key/目录不存在/打开失败都只影响本账号（返回明确错误），不中止其他账号扫描。
+   * ⚠️ 只读：绝不写目标账号任何数据；仅在低频后台调度（30 分钟级）使用。
+   */
+  async getContactsForAccount(wxid: string, options?: GetContactsOptions): Promise<{ success: boolean; contacts?: ContactInfo[]; error?: string }> {
+    const targetWxid = String(wxid || '').trim()
+    const currentWxid = String(this.configService.get('myWxid') || '').trim()
+    if (!targetWxid || targetWxid === currentWxid) return this.getContacts(options)
+
+    const dbPath = String(this.configService.get('dbPath') || '').trim()
+    const wxidConfigs = (this.configService.get('wxidConfigs') || {}) as Record<string, { decryptKey?: string }>
+    const decryptKey = String(wxidConfigs[targetWxid]?.decryptKey || '').trim()
+    const targetDir = this.configService.getAccountDir(dbPath, targetWxid)
+    if (!decryptKey || !targetDir) {
+      return { success: false, error: `账号 ${targetWxid} 缺少解密密钥或账号目录（跳过该分库）` }
+    }
+    let swap: Awaited<ReturnType<typeof wcdbService.readContactsForAccount>>
+    try {
+      swap = await wcdbService.readContactsForAccount(targetDir, decryptKey)
+    } catch (e) {
+      return { success: false, error: `账号 ${targetWxid} 联系人读取异常（跳过该分库）: ${String(e)}` }
+    }
+    // 恢复/关闭失败 = 连接状态不可信：本次按失败处理（contacts 不作为命中依据），并断开本层缓存
+    // 连接标记，让后续常规路径重走 ensureConnected 自愈；worker 侧真实终态以 swap.connectionState 为准
+    if (!swap.success) {
+      const expectedCurrentDir = currentWxid ? this.configService.getAccountDir(dbPath, currentWxid) : null
+      const finalStateMismatch = this.connected && (
+        !swap.connectionState?.connected ||
+        (!!expectedCurrentDir && swap.connectionState.accountDir !== expectedCurrentDir)
+      )
+      if (swap.stage === 'restore' || swap.stage === 'close' || finalStateMismatch) {
+        this.connected = false
+        console.error(`[ChatService] 跨账号读取 ${targetWxid} 后连接恢复失败（stage=${swap.stage}），已标记断开待自愈: ${swap.error || ''}`)
+      }
+      return { success: false, error: swap.error || `账号 ${targetWxid} 联系人读取失败（${swap.stage || 'unknown'}）` }
+    }
+    const contacts: ContactInfo[] = []
+    for (const row of (swap.contacts || []) as Record<string, any>[]) {
+      const username = String(row.username || '').trim()
+      if (!username || username.endsWith('@chatroom') || username.startsWith('gh_')) continue
+      contacts.push({
+        username,
+        displayName: row.remark || row.nick_name || row.alias || username,
+        remark: row.remark || undefined,
+        nickname: row.nick_name || undefined,
+        alias: row.alias || undefined,
+        type: 'friend'
+      })
+    }
+    return { success: true, contacts }
+  }
+
   private getContactsCacheScope(): string {
     const dbPath = String(this.configService.get('dbPath') || '').trim()
     const myWxid = String(this.configService.getMyWxidCleaned() || '').trim()

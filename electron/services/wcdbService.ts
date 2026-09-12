@@ -197,6 +197,26 @@ export class WcdbService {
     return this.callWorker('isConnected')
   }
 
+  /** 只读返回真实数据库连接及其当前账号。 */
+  async getConnectionState(): Promise<{ connected: boolean; accountDir: string | null; wxid: string | null }> {
+    return this.callWorker('getConnectionState')
+  }
+
+  /**
+   * 跨账号只读联系人「原子轮换」（单次 worker 消息内完成：快照原连接 → 开目标 → 读联系人 →
+   * 恢复原账号/关闭临时连接）。配合 worker 串行消息门，普通 WCDB 请求不可能插入切换窗口。
+   * 失败返回带阶段（stage: open/read/restore/close）的明确错误；connectionState 恒返回真实终态。
+   */
+  async readContactsForAccount(accountDir: string, hexKey: string): Promise<{
+    success: boolean
+    contacts?: any[]
+    error?: string
+    stage?: 'open' | 'read' | 'restore' | 'close'
+    connectionState: { connected: boolean; accountDir: string | null; wxid: string | null }
+  }> {
+    return this.callWorker('readContactsForAccount', { accountDir, hexKey })
+  }
+
   /**
    * 获取会话列表
    */

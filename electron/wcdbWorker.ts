@@ -1,12 +1,21 @@
 import { parentPort, workerData } from 'worker_threads'
 import { WcdbCore } from './services/wcdbCore'
+import { createSerialTaskGate } from './services/serialTaskGate'
 
 const core = new WcdbCore()
 
-if (parentPort) {
-    parentPort.on('message', async (msg) => {
-        const { id, type, payload } = msg
+/** 消息串行门：所有 worker 请求严格 FIFO 执行。跨账号只读轮换（readContactsForAccount）
+ *  是一次消息内的原子操作，配合本门，普通请求不可能插入「开目标→读→恢复/关闭」的切换窗口，
+ *  也就不可能观察到目标账号的临时连接或撞上已关闭的连接（2026-09-09 并发修复）。 */
+const messageGate = createSerialTaskGate()
 
+export interface WcdbWorkerMessage { id: number; type: string; payload?: any }
+export type WcdbWorkerPost = (msg: { id: number; result?: unknown; error?: string }) => void
+
+/** 处理一条 worker 消息（经串行门；fire-and-forget，结果/错误经 post 回传）。导出供并发回归测试复用。 */
+export function handleWcdbWorkerMessage(core: WcdbCore, msg: WcdbWorkerMessage, post: WcdbWorkerPost): void {
+    void messageGate.run(async () => {
+        const { id, type, payload } = msg
         try {
             let result: any
 
@@ -46,6 +55,12 @@ if (parentPort) {
                     break
                 case 'isConnected':
                     result = core.isConnected()
+                    break
+                case 'getConnectionState':
+                    result = core.getConnectionState()
+                    break
+                case 'readContactsForAccount':
+                    result = await core.readContactsForAccount(payload.accountDir, payload.hexKey)
                     break
                 case 'getSessions':
                     result = await core.getSessions()
@@ -300,9 +315,13 @@ if (parentPort) {
                     result = { success: false, error: `Unknown method: ${type}` }
             }
 
-            parentPort!.postMessage({ id, result })
+            post({ id, result })
         } catch (e) {
-            parentPort!.postMessage({ id, error: String(e) })
+            post({ id, error: String(e) })
         }
     })
+}
+
+if (parentPort) {
+    parentPort.on('message', (msg) => handleWcdbWorkerMessage(core, msg, (m) => parentPort!.postMessage(m as never)))
 }

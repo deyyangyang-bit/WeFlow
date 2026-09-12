@@ -42,6 +42,19 @@ type MediaStreamInflightEntry = {
   finished: boolean
 }
 
+/** 跨账号原子轮换的失败阶段：open=打开目标 / read=读取联系人 / restore=恢复原账号 / close=关闭临时连接 */
+export type AccountSwapStage = 'open' | 'read' | 'restore' | 'close'
+
+/** readContactsForAccount 的结构化结果：connectionState 恒返回（真实终态），失败时 stage/error 指明阶段 */
+export interface AccountSwapContactsResult {
+  success: boolean
+  contacts?: any[]
+  error?: string
+  stage?: AccountSwapStage
+  /** 轮换结束后的真实连接状态（供调用方核对恢复/关闭是否落地） */
+  connectionState: { connected: boolean; accountDir: string | null; wxid: string | null }
+}
+
 export class WcdbCore {
   private resourcesPath: string | null = null
   private userDataPath: string | null = null
@@ -1984,6 +1997,99 @@ export class WcdbCore {
   isConnected(): boolean {
     return this.initialized && this.handle !== null
   }
+
+  /** 只读返回真实数据库连接及其当前账号，不以 worker 是否存在代替连接状态。 */
+  getConnectionState(): { connected: boolean; accountDir: string | null; wxid: string | null } {
+    return {
+      connected: this.initialized && this.handle !== null,
+      accountDir: this.currentPath,
+      wxid: this.currentWxid
+    }
+  }
+
+  /**
+   * 跨账号只读联系人「原子轮换」（加好友自动检测多分库覆盖用）：整段操作在本方法内一次完成，
+   * 与 worker 层消息串行门配合后，普通 WCDB 请求不可能插入切换窗口、不可能观察到目标账号的临时连接：
+   *   ① 记录真实当前连接状态（getConnectionState，含 currentKey 快照）；
+   *   ② 打开目标账号；③ 读取 compact 联系人；
+   *   ④ 原来有连接 → 恢复原账号；原来无连接 → 关闭临时连接。
+   * 任一步失败：先尽力执行可执行的清理（恢复/关闭），再返回带阶段（stage）的明确错误；
+   * 读取成功但恢复/关闭失败时不冒充完全成功（success=false + contacts 供排障）。
+   * ⚠️ 只读：绝不写目标账号任何数据。
+   */
+  async readContactsForAccount(accountDir: string, hexKey: string): Promise<AccountSwapContactsResult> {
+    const previous = this.getConnectionState()
+    const hadPrevious = previous.connected === true
+    const prevDir = previous.accountDir
+    const prevKey = this.currentKey
+    const finish = (r: Omit<AccountSwapContactsResult, 'connectionState'>): AccountSwapContactsResult =>
+      ({ ...r, connectionState: this.getConnectionState() })
+    const cleanup = async (contacts?: any[]): Promise<AccountSwapContactsResult | null> => {
+      if (hadPrevious) {
+        if (!prevDir || !prevKey) {
+          return finish({ success: false, error: 'readContactsForAccount restore 失败: 原连接缺少路径或密钥快照，无法恢复', stage: 'restore', contacts })
+        }
+        try {
+          const restored = await this.open(prevDir, prevKey)
+          if (!restored) {
+            return finish({ success: false, error: `readContactsForAccount restore 失败: 原账号 ${previous.wxid || prevDir} 重开返回失败`, stage: 'restore', contacts })
+          }
+        } catch (e) {
+          return finish({ success: false, error: `readContactsForAccount restore 失败: ${String(e)}`, stage: 'restore', contacts })
+        }
+      } else {
+        try {
+          this.close()
+        } catch (e) {
+          return finish({ success: false, error: `readContactsForAccount close 失败: ${String(e)}`, stage: 'close', contacts })
+        }
+      }
+      return null
+    }
+
+    // ② 打开目标账号
+    let opened = false
+    try {
+      opened = await this.open(accountDir, hexKey)
+    } catch (e) {
+      const cleanupFailure = await cleanup()
+      if (cleanupFailure) return cleanupFailure
+      return finish({ success: false, error: `readContactsForAccount open 失败: ${String(e)}`, stage: 'open' })
+    }
+    if (!opened) {
+      // open() 切换账号时会先关闭原连接；目标打开失败后必须检查恢复/关闭结果，
+      // 清理失败优先返回 restore/close，不能被原始 open 错误掩盖。
+      const cleanupFailure = await cleanup()
+      if (cleanupFailure) return cleanupFailure
+      return finish({ success: false, error: `readContactsForAccount open 失败（目标账号目录不可打开）`, stage: 'open' })
+    }
+
+    // ③ 读取联系人（只读）。失败时同样执行能执行的清理（恢复/关闭），再返回明确错误
+    let readError: string | null = null
+    let contacts: any[] | undefined
+    try {
+      const compact = await this.getContactsCompact()
+      if (!compact.success || !Array.isArray(compact.contacts)) {
+        readError = `readContactsForAccount read 失败: ${compact.error || '联系人读取失败'}`
+      } else {
+        contacts = compact.contacts
+      }
+    } catch (e) {
+      readError = `readContactsForAccount read 失败: ${String(e)}`
+    }
+    if (readError) {
+      const cleanupFailure = await cleanup()
+      if (cleanupFailure) return cleanupFailure
+      return finish({ success: false, error: readError, stage: 'read' })
+    }
+
+    // ④ 恢复原账号 / 关闭临时连接（能执行的清理必须执行）
+    const cleanupFailure = await cleanup(contacts)
+    if (cleanupFailure) return cleanupFailure
+    return finish({ success: true, contacts })
+  }
+
+
 
   async getSessions(): Promise<{ success: boolean; sessions?: any[]; error?: string }> {
     if (!this.ensureReady()) {
