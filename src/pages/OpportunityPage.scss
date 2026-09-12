@@ -109,3 +109,108 @@
 /* 详情内意向度分数条容器（从列表挪进详情，加宽展示） */
 .opp-factors__score { margin-bottom: 8px;
   .opp-score { width: 200px; } }
+
+// ─── 成交登记表单 / 丢单原因表单 / 报价历史（宪法 §1.5/§1.6）─────────────────────
+
+.opp-form { width: 640px; max-width: 92vw; }
+.opp-form__grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.opp-form__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+.opp-form__grid input[type='number'],
+.opp-form__grid input[type='text'],
+.opp-form__grid input[type='date'],
+.opp-form__grid select {
+  background: var(--color-bg-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-primary);
+  font-size: 12.5px;
+  padding: 6px 10px;
+  outline: none;
+  width: 100%;
+  &:focus { border-color: var(--color-accent-border); }
+}
+.opp-form__range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  input { width: 140px; }
+  i { color: var(--color-text-tertiary); font-style: normal; }
+}
+.opp-form__hint {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+.opp-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+
+  .opp-form__hint { margin-right: auto; grid-column: auto; }
+}
+
+// 成交/交付登记信息块（空字段「未登记」统一口径）
+.opp-detail--deal {
+  border-top: 1px dashed var(--color-divider);
+  padding-top: 10px;
+}
+
+// 报价历史（只读）
+.opp-quotes {
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
+  margin-bottom: 14px;
+
+  h4 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: var(--color-text-secondary);
+  }
+
+  .opp-quotes__hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--color-text-tertiary);
+  }
+}
+.opp-quotes__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--color-text-tertiary);
+    border-bottom: 1px solid var(--color-border);
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+
+  td {
+    border-bottom: 1px solid var(--color-divider);
+    padding: 5px 8px;
+    color: var(--color-text-primary);
+  }
+
+  td.num { font-variant-numeric: tabular-nums; }
+  tr.is-bound td { background: var(--color-accent-bg); }
+}

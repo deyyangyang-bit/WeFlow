@@ -8,11 +8,12 @@
 import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { createHash } from 'crypto'
 import PizZip from 'pizzip'
 import ExcelJS from 'exceljs'
 import { crmDbService } from '../electron/services/crmDbService'
 import { amountToChinese } from '../electron/services/moneyCn'
-import { renderDocx, generateDocBuffer, buildPlaceholderTemplate } from '../electron/services/crmDocGenCore'
+import { renderDocx, generateDocBuffer, buildPlaceholderTemplate, quotationHashPatch } from '../electron/services/crmDocGenCore'
 
 let pass = 0, fail = 0
 const ok = (name: string, cond: boolean): void => { if (cond) pass++; else { fail++; console.error('FAIL:', name) } }
@@ -187,6 +188,31 @@ async function main(): Promise<void> {
         ok('xlsx sheet 存在', false)
       }
     }
+  }
+
+  // ─── 报价产物存证（宪法 §1.6 修订 2026-09-09）：SHA-256 + artifact_hash/pdf_hash 映射 ───
+  {
+    const hid = crmDbService.create('product', { model: 'HASH-1', name: '存证测试车', unit_price: 1000, specs: '{}', variants: '[]', created_at: Date.now() })
+    const hAcc = crmDbService.create('account', { name: '存证测试公司', created_at: Date.now(), updated_at: Date.now() })
+    const hCid = crmDbService.create('contract', { account_id: hAcc, name: '存证测试-合同', amount: 1000, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now() })
+    const hq1 = crmDbService.createQuotation({ contract_id: hCid, items: [{ product_id: hid, qty: 1 }] })
+    ok('chain v1 创建', hq1.ok)
+    // 同合同连续创建第二个报价 → 版本链递增（append-only）
+    const hq2 = crmDbService.createQuotation({ contract_id: hCid, items: [{ product_id: hid, qty: 2 }] })
+    ok('chain v2 递增', hq2.ok && Number(crmDbService.getById('quotation', hq2.id as number)?.version) === 2)
+    ok('chain v1 已被关闭', Number(crmDbService.getById('quotation', hq1.id as number)?.effective_to) > 0)
+    // 历史版本渲染仍是只读操作（生成不落库，写回哈希才会被 update 守卫拦截）
+    const rHist = await generateDocBuffer('quotation', hq1.id as number, quotationTpl)
+    ok('历史版本渲染不受限（写回层负责只读守卫）', rHist.ok)
+    const rCur = await generateDocBuffer('quotation', hq2.id as number, quotationTpl)
+    ok('generate quotation v2 ok', rCur.ok)
+    if (rCur.ok) {
+      ok('docgen 产物带 SHA-256（64 位 hex）', typeof rCur.sha256 === 'string' && /^[0-9a-f]{64}$/.test(rCur.sha256))
+      ok('docgen SHA-256 与 buffer 重算一致', rCur.sha256 === createHash('sha256').update(rCur.buffer).digest('hex'))
+    }
+    ok('DOCX 产物 → artifact_hash', JSON.stringify(quotationHashPatch('docx', 'h1')) === JSON.stringify({ artifact_hash: 'h1' }))
+    ok('真实 PDF → pdf_hash', JSON.stringify(quotationHashPatch('pdf', 'h2')) === JSON.stringify({ pdf_hash: 'h2' }))
+    ok('xlsx 等非 PDF 产物归 artifact_hash', JSON.stringify(quotationHashPatch('xlsx', 'h3')) === JSON.stringify({ artifact_hash: 'h3' }))
   }
 
   // ─── 未知类型 ───────────────────────────────────────────────────────────

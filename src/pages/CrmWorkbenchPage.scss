@@ -187,3 +187,40 @@
     &.is-hot { color: var(--color-danger); } } }
 .crm-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; background: var(--color-bg-surface-muted); border: none; border-radius: var(--radius-control); color: var(--color-text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; margin-bottom: 12px;
   &:hover { color: var(--color-text-primary); } }
+
+// ─── 视图切换（合同工作台 / 交付售后）─────────────────────────────────────────
+.crm-view-tabs {
+  display: inline-flex;
+  background: var(--color-bg-inset);
+  border-radius: var(--radius-control);
+  padding: 2px;
+  gap: 2px;
+}
+.crm-view-tab {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+
+  &:hover { color: var(--color-text-primary); }
+  &.on {
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+    font-weight: 600;
+    box-shadow: var(--shadow-card);
+  }
+}
+
+.crm-workbench-page {
+ .crm-new-form fieldset { display: contents; border:0; padding:0; }
+ .entry-error { color:var(--color-danger, #b42318); width:100%; font-size:12px; }
+ .price-override { color:#9a6700; }
+ .entry-actions { display:flex; flex-wrap:wrap; gap:8px; grid-column:1 / -1; }
+ .quo-item { flex-wrap:wrap; min-width:0; font-variant-numeric:tabular-nums; }
+ .quo-item input { width:100px; }
+ .quo-list { max-height:220px; overflow:auto; }
+}

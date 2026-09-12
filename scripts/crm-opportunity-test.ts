@@ -14,6 +14,7 @@ import { parseBuySignal, parseRiskSignal } from '../electron/services/crmParseRu
 import { salesDbService } from '../electron/services/salesDbService'
 import { computeIntentScore } from '../electron/services/intentScore'
 import { buildNextStep } from '../src/utils/oppNextStep'
+import { apply as applyM04 } from './migration/04-history-deal-opportunity'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -88,9 +89,11 @@ async function main(): Promise<void> {
   const n2 = crmDbService.syncOpportunityStageByAccount(accId, '了解')
   ok('3b 阶段倒退不回退', n2 === 0 && String(crmDbService.opportunityById(r1.id)?.stage) === '比价')
   const n3 = crmDbService.syncOpportunityStageByAccount(accId, '成交')
-  ok('3c 客户成交 → 商机 won 关单', n3 === 2 && String(crmDbService.opportunityById(r1.id)?.status) === 'won')
-  const wonEvents = crmDbService.opportunityEvents(r1.id).some((e) => e.event_type === 'won')
-  ok('3d 关单事件留痕', wonEvents)
+  ok('3c 客户成交 → 只生成待成交登记提醒，不直接置 won', n3 === 2 && String(crmDbService.opportunityById(r1.id)?.status) === 'active')
+  const pendingEvents = crmDbService.opportunityEvents(r1.id).some((e) => e.event_type === 'deal_pending')
+  ok('3d 待成交登记事件留痕（无 won 事件）', pendingEvents && !crmDbService.opportunityEvents(r1.id).some((e) => e.event_type === 'won'))
+  const n3b = crmDbService.syncOpportunityStageByAccount(accId, '成交')
+  ok('3d2 待成交登记提醒幂等（二次联动不重复）', n3b === 0 && crmDbService.opportunityEvents(r1.id).filter((e) => e.event_type === 'deal_pending').length === 1)
   // 流失场景：新建一个商机后客户流失
   const acc2 = crmDbService.ensureAccount('南京某商贸')
   crmDbService.opportunityUpsertBySignal(acc2, '南京某商贸', { product: '电动搬运车', quantity: 2, amount: 0, stage: '了解', detail: '询价2台电动搬运车' })
@@ -100,12 +103,12 @@ async function main(): Promise<void> {
 
   // ── 4 opportunityStats / list：漏斗聚合与客户名 JOIN ───────────────────────
   const stats = crmDbService.opportunityStats()
-  ok('4a 漏斗总数为 active 商机数', stats.total === 0) // 前两个都关单了，active=0
+  ok('4a 漏斗总数为 active 商机数（成交联动不再自动关单）', stats.total === 2) // accId 两商机仍 active
   const acc3 = crmDbService.ensureAccount('无锡某仓储')
   crmDbService.opportunityUpsertBySignal(acc3, '无锡某仓储', { product: '堆高车', quantity: 4, amount: 16000, stage: '了解', detail: '要4台堆高车' })
   const stats2 = crmDbService.opportunityStats()
-  ok('4b 漏斗统计 active=1', stats2.total === 1)
-  ok('4c 漏斗金额聚合', stats2.totalAmount === 16000)
+  ok('4b 漏斗统计 active=3', stats2.total === 3)
+  ok('4c 漏斗金额聚合', stats2.totalAmount === 86000)
   const list = crmDbService.opportunityList()
   ok('4d 列表 JOIN 客户名', list.some((o) => String(o.account_name) === '无锡某仓储'))
   ok('4e 阶段手动推进留痕', (() => {
@@ -172,6 +175,223 @@ async function main(): Promise<void> {
   ok('6j 无风险无评分 → 按阶段兜底引导', nx3.includes('摸清需求与预算'))
   const nx4 = buildNextStep({ stage: '未知', risks: [], score: null })
   ok('6k 兜底恒有文案（未知阶段）', nx4.length > 0)
+
+  // ── 7 正式成交登记（宪法 §1.5 修订 2026-09-09：字段/won/事件/审计同一事务）──
+  {
+    const accD = crmDbService.ensureAccount('珠海成交登记测试公司')
+    const oppD = crmDbService.opportunityUpsertBySignal(accD, '珠海成交登记测试公司', { product: '2吨电动叉车', quantity: 3, amount: 0, stage: '决策', detail: '要3台2吨车' })
+    const prodId = crmDbService.create('product', { model: 'CPD15', name: '平衡重叉车', unit_price: 50000, specs: '{}', variants: '[]', created_at: Date.now() })
+    const prodModel = String(crmDbService.getById('product', prodId)?.model)
+    const cidD = crmDbService.create('contract', { account_id: accD, name: '珠海-合同', amount: 150000, status: 'signed', created_at: Date.now(), updated_at: Date.now() })
+    const qv1 = crmDbService.createQuotation({ contract_id: cidD, items: [{ product_id: prodId, qty: 3 }] })
+    ok('7a-0 报价版本创建成功（供成交绑定）', qv1.ok && Number(qv1.version) === 1)
+    const d1 = crmDbService.registerOpportunityDeal(oppD.id, {
+      amount_cny: 150000, original_currency: 'USD', original_amount: 21000, rate_note: '汇率 7.14，付款回单 #A1',
+      main_model: prodModel, model_extra: '托盘 X2', order_qty: 3,
+      expected_ship_start: Date.now(), expected_ship_end: Date.now() + 5 * 86400000,
+      delivery_date: Date.now() + 30 * 86400000, type: '整车',
+      quote_version_id: Number(qv1.id), note: '客户定金已付'
+    })
+    ok('7a 正式成交登记成功', d1.ok)
+    const wonOpp = crmDbService.opportunityById(oppD.id)
+    ok('7b 成交金额/币种/原币额/汇率说明落库',
+      Number(wonOpp?.amount_cny) === 150000 && Number(wonOpp?.amount) === 150000 &&
+      String(wonOpp?.original_currency) === 'USD' && Number(wonOpp?.original_amount) === 21000 &&
+      String(wonOpp?.rate_note).includes('7.14'))
+    ok('7c 主型号/订单量/整车类型/发运窗口/报价版本落库',
+      String(wonOpp?.main_model) === prodModel && Number(wonOpp?.order_qty) === 3 && String(wonOpp?.type) === '整车' &&
+      Number(wonOpp?.expected_ship_end) >= Number(wonOpp?.expected_ship_start) &&
+      Number(wonOpp?.quote_version_id) === Number(qv1.id))
+    ok('7d status=won', String(wonOpp?.status) === 'won')
+    ok('7e 商机事件 won 留痕', crmDbService.opportunityEvents(oppD.id).some((e) => e.event_type === 'won' && String(e.detail).includes('定金')))
+    ok('7f audit_event 留痕（opportunity_deal_register ×1）',
+      Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'opportunity_deal_register' AND entity_type = 'opportunity' AND entity_id = ?", [oppD.id])[0]?.c) === 1)
+    ok('7g 补充型号进 custom_fields.supplementary_models', (() => {
+      try { return String(JSON.parse(String(wonOpp?.custom_fields || '{}')).supplementary_models) === '托盘 X2' } catch { return false }
+    })())
+
+    // ── 校验失败逐项拒绝 + 零残留（回滚语义：状态/事件/审计三者纹丝不动）──
+    const accE = crmDbService.ensureAccount('珠海失败校验公司')
+    const oppE = crmDbService.opportunityUpsertBySignal(accE, '珠海失败校验公司', { product: '电动搬运车', quantity: 2, amount: 0, stage: '比价', detail: '询价2台' })
+    // 为「报价版本归属/有效版本」用例准备：本客户合同 v1 被 v2 替代成历史版本；另建别家客户的报价
+    const cidE = crmDbService.create('contract', { account_id: accE, name: '珠海失败校验-合同', amount: 120000, status: 'signed', created_at: Date.now(), updated_at: Date.now() })
+    const qvE1 = crmDbService.createQuotation({ contract_id: cidE, items: [{ product_id: prodId, qty: 2 }] })
+    const qvE2 = crmDbService.createQuotation({ contract_id: cidE, items: [{ product_id: prodId, qty: 2, unit_price: 58000 }] })
+    ok('7h-0 v2 递增且替代 v1', qvE1.ok && qvE2.ok && Number(qvE2.version) === 2 && Number(crmDbService.getById('quotation', qvE1.id as number)?.effective_to) > 0)
+    const accOther = crmDbService.ensureAccount('青岛别家公司')
+    const cidOther = crmDbService.create('contract', { account_id: accOther, name: '青岛-合同', amount: 9000, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now() })
+    const qOther = crmDbService.createQuotation({ contract_id: cidOther, items: [{ product_id: prodId, qty: 2 }] })
+    ok('7h-1 别家客户报价已建', qOther.ok)
+    const snapE = () => ({
+      status: String(crmDbService.opportunityById(oppE.id)?.status),
+      events: crmDbService.opportunityEvents(oppE.id).length,
+      audits: Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE entity_type = 'opportunity' AND entity_id = ? AND action = 'opportunity_deal_register'", [oppE.id])[0]?.c)
+    })
+    const beforeE = snapE()
+    const expectFail = (name: string, payload: Record<string, unknown>): void => {
+      const r = crmDbService.registerOpportunityDeal(oppE.id, payload as never)
+      const after = snapE()
+      ok(name, !r.ok && after.status === 'active' && after.events === beforeE.events && after.audits === beforeE.audits)
+    }
+    const base = { amount_cny: 120000, main_model: prodModel, order_qty: 2, type: '整车' }
+    expectFail('7h 成交金额必须 > 0（amount_cny=0）', { ...base, amount_cny: 0 })
+    expectFail('7i 订单量必须正整数（0）', { ...base, order_qty: 0 })
+    expectFail('7i2 订单量必须正整数（2.5）', { ...base, order_qty: 2.5 })
+    expectFail('7j 发运结束早于开始被拒', { ...base, expected_ship_start: Date.now() + 86400000, expected_ship_end: Date.now() })
+    expectFail('7k 非CNY缺原币金额被拒', { ...base, original_currency: 'USD' })
+    expectFail('7k2 非CNY缺汇率说明被拒', { ...base, original_currency: 'EUR', original_amount: 15000 })
+    expectFail('7l 非法主型号（产品库无此型号）被拒', { ...base, main_model: '幽灵型号-999' })
+    expectFail('7l2 空主型号被拒', { ...base, main_model: '' })
+    expectFail('7m 报价版本不存在被拒', { ...base, quote_version_id: 999999 })
+    expectFail('7m2 报价版本属于别家客户被拒', { ...base, quote_version_id: Number(qOther.id) })
+    expectFail('7m3 历史报价版本（已被替代）不可绑定', { ...base, quote_version_id: Number(qvE1.id) })
+    expectFail('7t 成交类型为空被拒（回滚）', { ...base, type: '' })
+    expectFail('7t2 成交类型非法值被拒（回滚）', { ...base, type: '随便写' })
+    expectFail('7t3 成交类型缺省被拒（回滚）', { amount_cny: 120000, main_model: prodModel, order_qty: 2 })
+    let orphanCurrentId = 0
+    crmDbService.runTx((tx) => {
+      orphanCurrentId = tx.run(
+        'INSERT INTO quotation (contract_id, items, total, version, effective_from, effective_to, created_at) VALUES (?,?,?,?,?,?,?)',
+        [cidE, '[]', 1, 99, Date.now(), 0, Date.now()]
+      )
+    })
+    expectFail('7m4 effective_to=0 但非合同指针版本仍不可绑定', { ...base, quote_version_id: orphanCurrentId })
+
+    // 绑定本客户当前有效版本 v2 → 成功（归属与有效版本判定放行）
+    const d2 = crmDbService.registerOpportunityDeal(oppE.id, { ...base, quote_version_id: Number(qvE2.id), actor: '测试销售' })
+    ok('7n 绑定当前有效版本登记成功', d2.ok && String(crmDbService.opportunityById(oppE.id)?.status) === 'won')
+    ok('7o 丢单只写状态和原因（不写成交字段）', (() => {
+      const accL = crmDbService.ensureAccount('珠海丢单公司')
+      const oppL = crmDbService.opportunityUpsertBySignal(accL, '珠海丢单公司', { product: '堆高车', quantity: 1, amount: 0, stage: '比价', detail: '询价' })
+      const closeOk = crmDbService.opportunityClose(oppL.id, 'lost', '价格过高')
+      const o = crmDbService.opportunityById(oppL.id)
+      return closeOk && String(o?.status) === 'lost' && Number(o?.amount_cny || 0) === 0 && !o?.main_model &&
+        crmDbService.opportunityEvents(oppL.id).some((e) => e.event_type === 'lost' && String(e.detail).includes('价格过高'))
+    })())
+
+    // ── 事务回滚机制：事务中途抛错 → 已执行语句全部回滚（runTx ROLLBACK 语义）──
+    const rbAcc = crmDbService.ensureAccount('回滚探针客户')
+    try {
+      crmDbService.runTx((tx) => {
+        tx.run('UPDATE account SET name = ? WHERE id = ?', ['不应留存', rbAcc])
+        tx.run('INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
+          [oppE.id, 'rollback_probe', '', '不应留存', Date.now()])
+        throw new Error('模拟事务中途失败')
+      })
+    } catch { /* 预期抛错 */ }
+    ok('7p 事务中途失败整体回滚（改名+事件均未留存）',
+      String(crmDbService.all('SELECT name FROM account WHERE id = ?', [rbAcc])[0]?.name) === '回滚探针客户' &&
+      !crmDbService.opportunityEvents(oppE.id).some((e) => e.event_type === 'rollback_probe'))
+  }
+
+  // ── 8 模块 04 迁移 apply：历史成交 → won 商机 + 存量报价版本链规范化（复用 crmDbService 单点）──
+  {
+    const accM = crmDbService.ensureAccount('洛阳历史成交迁移公司')
+    const cidM = crmDbService.create('contract', {
+      account_id: accM, name: '洛阳-历史成交合同', amount: 88000, status: 'signed',
+      sign_date: Date.now() - 10 * 86400000, created_at: Date.now() - 40 * 86400000, updated_at: Date.now() - 40 * 86400000
+    })
+    // 三条散写存量行模拟迁移前数据（无 version/effective 语义）——迁移面对的正是这类存量
+    crmDbService.runTx((tx) => {
+      for (const [total, daysAgo] of [[1000, 40], [2000, 30], [88000, 20]] as Array<[number, number]>) {
+        tx.run('INSERT INTO quotation (contract_id, items, total, created_at, custom_fields) VALUES (?,?,?,?,?)',
+          [cidM, '[]', total, Date.now() - daysAgo * 86400000, '{}'])
+      }
+    })
+    const rep1 = applyM04('crm-opportunity-test')
+    ok('8a 迁移补建 won 商机', rep1.wonOppCreated >= 1)
+    const mOpp = crmDbService.opportunityList({ accountId: accM, status: 'won' })[0]
+    ok('8b won 商机 source=migration + amount_cny 回填', !!mOpp && String(mOpp.source) === 'migration' && Number(mOpp.amount_cny) === 88000)
+    const chain = crmDbService.quotationHistoryForContract(cidM)
+    ok('8c 版本链规范化 version=1..3（按创建序）', chain.length === 3 && Number(chain[0].version) === 3 && Number(chain[2].version) === 1)
+    ok('8d effective_from 回填 ← created_at', chain.every((row) => Number(row.effective_from) > 0))
+    ok('8e 旧版本 effective_to 关闭、最新版本开放',
+      Number(chain[2].effective_to) > 0 && Number(chain[1].effective_to) > 0 && Number(chain[0].effective_to) === 0)
+    ok('8f 合同指针接管 → 最新版本', Number(crmDbService.getById('contract', cidM)?.quote_version_id) === Number(chain[0].id))
+    ok('8g 迁移幂等（重复执行零第二份数据、链不再改写）', (() => {
+      const before = crmDbService.all('SELECT id, version, effective_from, effective_to FROM quotation WHERE contract_id = ? ORDER BY id', [cidM])
+      const auditsBefore = Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'quote_version_backfill' AND entity_id = ?", [Number(chain[0].id)])[0]?.c)
+      const rep2 = applyM04('crm-opportunity-test-again')
+      const after = crmDbService.all('SELECT id, version, effective_from, effective_to FROM quotation WHERE contract_id = ? ORDER BY id', [cidM])
+      const auditsAfter = Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'quote_version_backfill' AND entity_id = ?", [Number(chain[0].id)])[0]?.c)
+      return rep2.wonOppCreated === 0 && JSON.stringify(before) === JSON.stringify(after) && auditsAfter === auditsBefore
+    })())
+    const cidReverse = crmDbService.create('contract', {
+      account_id: accM, name: '创建时间逆序合同', amount: 1, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now()
+    })
+    crmDbService.runTx((tx) => {
+      tx.run('INSERT INTO quotation (contract_id, items, total, created_at) VALUES (?,?,?,?)', [cidReverse, '[]', 2, 200])
+      tx.run('INSERT INTO quotation (contract_id, items, total, created_at) VALUES (?,?,?,?)', [cidReverse, '[]', 1, 100])
+    })
+    const reverseNormalized = crmDbService.normalizeQuotationVersionChain(cidReverse)
+    ok('8h ID 与 created_at 逆序时归一后仍能被幂等判定识别', reverseNormalized.ok && crmDbService.quotationChainNormalized(cidReverse))
+  }
+
+  // ── 9 成交登记旁路收口回归（2026-09-10）：won 拒绝 / 阶段联动仅提醒 / type 校验 / 报价行校验 ──
+  {
+    // opportunityClose 只允许丢单（won 一律拒绝；丢单原因必填）
+    const accW = crmDbService.ensureAccount('won拒绝探针公司')
+    const oppW = crmDbService.opportunityUpsertBySignal(accW, 'won拒绝探针公司', { product: '电动叉车', quantity: 1, amount: 0, stage: '了解', detail: 'x' })
+    ok('9a opportunityClose(won) 被拒绝', crmDbService.opportunityClose(oppW.id, 'won' as never, 'x') === false && String(crmDbService.opportunityById(oppW.id)?.status) === 'active')
+    ok('9a2 opportunityClose(lost) 缺原因被拒绝', crmDbService.opportunityClose(oppW.id, 'lost', '   ') === false && String(crmDbService.opportunityById(oppW.id)?.status) === 'active')
+
+    // 阶段自动成交 → 待登记提醒（不置 won）+ 幂等 + 提醒后仍可正式成交
+    const nW = crmDbService.syncOpportunityStageByAccount(accW, '成交')
+    ok('9b 阶段成交只产生待登记提醒，不改 status', nW === 1 && String(crmDbService.opportunityById(oppW.id)?.status) === 'active')
+    const pendingCount = () => crmDbService.opportunityEvents(oppW.id).filter((e) => e.event_type === 'deal_pending').length
+    ok('9b2 待登记提醒事件留痕', pendingCount() === 1)
+    ok('9b3 提醒幂等（二次联动不重复）', crmDbService.syncOpportunityStageByAccount(accW, '成交') === 0 && pendingCount() === 1)
+    ok('9b4 提醒后仍可正式成交登记', (() => {
+      crmDbService.create('product', { model: 'WON-1', name: 'won探针车', unit_price: 5000, specs: '{}', variants: '[]', created_at: Date.now() })
+      const r = crmDbService.registerOpportunityDeal(oppW.id, { amount_cny: 10000, main_model: 'WON-1', order_qty: 2, type: '整车' })
+      return r.ok && String(crmDbService.opportunityById(oppW.id)?.status) === 'won'
+    })())
+
+    // 改装正常成交（type 校验放行合法枚举）
+    const accG = crmDbService.ensureAccount('改装成交公司')
+    const oppG = crmDbService.opportunityUpsertBySignal(accG, '改装成交公司', { product: '手动搬运车', quantity: 1, amount: 0, stage: '决策', detail: 'x' })
+    crmDbService.create('product', { model: 'MOD-1', name: '改装测试车', unit_price: 1000, specs: '{}', variants: '[]', created_at: Date.now() })
+    ok('9c 改装正常成交', crmDbService.registerOpportunityDeal(oppG.id, { amount_cny: 2000, main_model: 'MOD-1', order_qty: 1, type: '改装' }).ok && String(crmDbService.opportunityById(oppG.id)?.status) === 'won' && String(crmDbService.opportunityById(oppG.id)?.type) === '改装')
+
+    // 已关闭商机禁止再次丢单/覆盖成交（won/lost 均拒）
+    ok('9c2 已 won 商机再次丢单被拒（成交字段不覆盖）', (() => {
+      const again = crmDbService.opportunityClose(oppG.id, 'lost', '误操作再次丢单')
+      const o = crmDbService.opportunityById(oppG.id)
+      return again === false && String(o?.status) === 'won' && String(o?.type) === '改装' &&
+        Number(o?.amount_cny) === 2000 && String(o?.main_model) === 'MOD-1' &&
+        !crmDbService.opportunityEvents(oppG.id).some((e) => e.event_type === 'lost')
+    })())
+    ok('9c3 已 lost 商机再次丢单被拒（lost 事件不重复）', (() => {
+      const accL2 = crmDbService.ensureAccount('重复丢单公司')
+      const oppL2 = crmDbService.opportunityUpsertBySignal(accL2, '重复丢单公司', { product: '堆高车', quantity: 1, amount: 0, stage: '比价', detail: 'x' })
+      const first = crmDbService.opportunityClose(oppL2.id, 'lost', '价格高')
+      const second = crmDbService.opportunityClose(oppL2.id, 'lost', '再丢一次')
+      return first === true && second === false &&
+        crmDbService.opportunityEvents(oppL2.id).filter((e) => e.event_type === 'lost').length === 1
+    })())
+
+    // 报价行校验（数量/单价/产品主数据）
+    const accQ = crmDbService.ensureAccount('报价校验公司')
+    const cidQ = crmDbService.create('contract', { account_id: accQ, name: '报价校验合同', amount: 0, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now() })
+    const prodQ = crmDbService.create('product', { model: 'Q-1', name: '报价校验车', unit_price: 5000, specs: '{}', variants: '[]', created_at: Date.now() })
+    ok('9d 报价数量必须正整数（0 拒绝）', !crmDbService.createQuotation({ contract_id: cidQ, items: [{ product_id: prodQ, qty: 0 }] }).ok)
+    ok('9d2 报价数量必须正整数（小数拒绝）', !crmDbService.createQuotation({ contract_id: cidQ, items: [{ product_id: prodQ, qty: 1.5 }] }).ok)
+    ok('9d3 报价单价不可为负', !crmDbService.createQuotation({ contract_id: cidQ, items: [{ product_id: prodQ, qty: 1, unit_price: -1 }] }).ok)
+    ok('9d4 报价产品必须命中产品主数据', !crmDbService.createQuotation({ contract_id: cidQ, items: [{ product_id: 999999, qty: 1 }] }).ok)
+    ok('9d5 合法报价（unit_price=0 允许）正常创建', crmDbService.createQuotation({ contract_id: cidQ, items: [{ product_id: prodQ, qty: 1, unit_price: 0 }] }).ok)
+  }
+
+  // ── 10 通用 IPC 边界封堵（crmIpcHandlers 源码静态断言：商机禁止通用散写，非法调用抛错）──
+  const ipcSrc = readFileSync(join(__dirname, '..', 'electron/services/crmIpcHandlers.ts'), 'utf8')
+  ok('10a crm:entity:create 禁止 entity=opportunity 并抛错',
+    /crm:entity:create/.test(ipcSrc) && /entity === 'opportunity'/.test(ipcSrc))
+  // 2026-09-10 收口：原 shipped_qty/delivery_date 白名单零调用者且绕过 registerDelivery（丢审计+差异任务同步），整路关闭
+  ok('10b crm:entity:update 商机一律抛错（交付写入唯一入口 registerDelivery，白名单已移除）',
+    /crm:entity:update/.test(ipcSrc) &&
+    /crm:entity:update', async[\s\S]{0,400}entity === 'opportunity'[\s\S]{0,200}throw new Error/.test(ipcSrc) &&
+    !/ALLOWED/.test(ipcSrc) && !/'shipped_qty',\s*'delivery_date'/.test(ipcSrc))
+  ok('10c 抛错文案指引专用端点（非静默忽略）',
+    /商机禁止走通用更新：成交登记用 crm:opportunity:registerDeal，交付登记用 crm:delivery:register/.test(ipcSrc))
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

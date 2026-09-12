@@ -33,8 +33,9 @@ async function main(): Promise<void> {
   const lid = crmDbService.create('logistics', { tracking_no: 'YT001', contract_id: cid, created_at: Date.now() })
   crmDbService.logActivity('logistics', lid, 'shipped', '已发货 YT001')
 
-  // 报价（挂 contract → account）→ 报价动作
-  const qid = crmDbService.create('quotation', { contract_id: cid, total: 100, created_at: Date.now() })
+  // 报价（挂 contract → account）→ 报价动作（宪法 §1.6：报价行走版本链单点，散写已被守卫禁止）
+  const qProductId = crmDbService.create('product', { model: 'TL-1', name: '时间线测试车', unit_price: 100, specs: '{}', variants: '[]', created_at: Date.now() })
+  const qid = crmDbService.createQuotation({ contract_id: cid, items: [{ product_id: qProductId, qty: 1 }] }).id as number
   crmDbService.logActivity('quotation', qid, 'quoted', '已报价 ¥100')
 
   // 到款 + 归属（均挂 account）→ 到款动作 / 归属动作

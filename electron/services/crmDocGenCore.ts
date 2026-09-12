@@ -3,6 +3,7 @@
  * 职责：数据装配（crmDbService）+ docx 渲染（docxtemplater）+ 开票申请 Excel（exceljs）。
  * crmDocGenService.ts 仅做 electron 侧的模板路径解析 / 落盘 / 写回 attachment_path。
  */
+import { createHash } from 'crypto'
 import PizZip from 'pizzip'
 import Docxtemplater from 'docxtemplater'
 import ExcelJS from 'exceljs'
@@ -13,10 +14,22 @@ export const DOC_TYPES = ['quotation', 'contract', 'invoice-info', 'invoice-app'
 export type DocType = (typeof DOC_TYPES)[number]
 
 export type DocgenResult =
-  | { ok: true; buffer: Buffer; ext: 'docx' | 'xlsx'; entity: string; entityId: number }
+  | { ok: true; buffer: Buffer; ext: 'docx' | 'xlsx'; entity: string; entityId: number; sha256: string }
   | { ok: false; reason: string }
 
 // ── 工具 ────────────────────────────────────────────────────────────────
+/** 产物 SHA-256 存证（宪法 §1.6 修订 2026-09-09）：报价文件生成完成后对最终产物计算。 */
+export function sha256Hex(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex')
+}
+
+/**
+ * 报价产物存证字段映射：DOCX（及一切真实生成的非 PDF 产物）→ artifact_hash；
+ * 只有真实 PDF（转换链路产出）才写 pdf_hash。ext='pdf' 当前无生成路径，分支为转换链路预留。
+ */
+export function quotationHashPatch(ext: string, sha256: string): Record<string, string> {
+  return ext === 'pdf' ? { pdf_hash: sha256 } : { artifact_hash: sha256 }
+}
 function parseItems(json?: string | null): CrmRow[] {
   try { return JSON.parse(String(json || '[]')) as CrmRow[] } catch { return [] }
 }
@@ -364,7 +377,8 @@ export async function generateDocBuffer(
   const t = type as DocType
   try {
     if (t === 'invoice-app') {
-      return { ok: true, buffer: await buildInvoiceAppWorkbook(buildInvoiceAppData(recordId)), ext: 'xlsx', entity: 'invoice', entityId: recordId }
+      const wb = await buildInvoiceAppWorkbook(buildInvoiceAppData(recordId))
+      return { ok: true, buffer: wb, ext: 'xlsx', entity: 'invoice', entityId: recordId, sha256: sha256Hex(wb) }
     }
     if (!templateBuf) return { ok: false, reason: '缺少模版文件' }
     let data: CrmRow
@@ -373,7 +387,8 @@ export async function generateDocBuffer(
     else data = buildInvoiceInfoData(recordId)
     // attachment_path 写回目标：invoice-info 落 invoice 行（contract 行无该列）
     const entity = t === 'quotation' ? 'quotation' : t === 'invoice-info' ? 'invoice' : 'contract'
-    return { ok: true, buffer: renderDocx(templateBuf, data), ext: 'docx', entity, entityId: recordId }
+    const buffer = renderDocx(templateBuf, data)
+    return { ok: true, buffer, ext: 'docx', entity, entityId: recordId, sha256: sha256Hex(buffer) }
   } catch (e) {
     return { ok: false, reason: String(e) }
   }

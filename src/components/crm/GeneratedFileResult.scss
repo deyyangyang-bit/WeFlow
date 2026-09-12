@@ -1,0 +1,4 @@
+.generated-file-result { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:12px; margin:8px 0; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:8px; min-width:0;
+  &__path { flex:1 1 180px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+  &__error { width:100%; color:var(--color-danger, #b42318); }
+}

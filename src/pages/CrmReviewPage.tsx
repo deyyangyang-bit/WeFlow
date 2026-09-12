@@ -1,3 +1,4 @@
+import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/GeneratedFileResult'
 /**
  * CrmReviewPage.tsx —— 跟单中心：到款认领（7 天一页，销售认领+开票状态）/ 物流跟单（7 天一页，待认领+待签收+已签收）/ 发票待开
  * 2026-08-24 改造：去掉 AI 自动确认（销售手动认领），到款按天分组展示，认领后显示开票状态（订单群 PDF 发票解析）。
@@ -101,6 +102,17 @@ function WeekDayGroups(props: {
 }
 
 export default function CrmReviewPage() {
+  const [generatedArtifacts, setGeneratedArtifacts] = useState<Record<string, GeneratedArtifact>>({})
+  const [generating, setGenerating] = useState<string | null>(null)
+  const generateInvoice = async (type: string, id: number) => {
+    if (generating) return
+    const key = `${type}:${id}`; setGenerating(key)
+    try {
+      const result = await window.electronAPI.crm.docGenerate(type, id)
+      if (result.ok && result.path) setGeneratedArtifacts(v => ({ ...v, [key]: { label: type === 'invoice-info' ? '开票信息单' : '开票申请单', path: result.path! } }))
+      else setNotice(result.reason || '生成失败')
+    } catch (e) { setNotice(String(e)) } finally { setGenerating(null) }
+  }
   const { queues, fetchQueues, scanNow, loading, notice, setNotice } = useCrmStore()
   const [contracts, setContracts] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
@@ -515,8 +527,9 @@ export default function CrmReviewPage() {
               <option value="">关联合同…</option>
               {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-            <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-info', i.id).then((r) => setNotice(r.ok ? `开票信息单：${r.path}` : '生成失败')) }}>开票信息单</button>
-            <button className="crm-btn" onClick={() => { void window.electronAPI.crm.docGenerate('invoice-app', i.id).then((r) => setNotice(r.ok ? `开票申请单：${r.path}` : '生成失败')) }}>开票申请</button>
+            <button className="crm-btn" disabled={!!generating} onClick={() => void generateInvoice('invoice-info', i.id)}>开票信息单</button>
+            <button className="crm-btn" disabled={!!generating} onClick={() => void generateInvoice('invoice-app', i.id)}>开票申请</button>
+            {['invoice-info', 'invoice-app'].map(type => generatedArtifacts[`${type}:${i.id}`] && <GeneratedFileResult key={`${type}:${i.id}`} artifact={generatedArtifacts[`${type}:${i.id}`]} onClose={() => setGeneratedArtifacts(v => { const next = { ...v }; delete next[`${type}:${i.id}`]; return next })} />)}
           </div>
         ))}
         </section>

@@ -18,12 +18,16 @@ import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
-import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS } from './crmLeadService'
+import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail } from './crmLeadService'
 import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
 import { bindLeadWxid } from './crmFriendDetectService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
+import { registerDelivery, saveEquipment, proposeTradeIn, decideTradeIn, runDeliveryScan, listDeliveryTasks, suggestDeliveryDate, recomputeAllRepeatLevels } from './crmDeliveryService'
+import { runFirstClassification, listFirstClassifyRounds, confirmFirstClassification, rejectFirstClassification, setFirstClassifyConfig, setFirstClassifyAiConfig } from './crmFirstClassifyService'
 import { departureHandoff } from './crmOwnershipService'
+import { listNotifyInbox, markNotifyRead } from './crmNotifyService'
+import { sla2EvidenceGetForLead } from './crmSla2EvidenceService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
@@ -71,11 +75,48 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   })
   // 线索流转装配：SLA 小时数从配置读取
   setLeadConfig({ get: (k) => (k === 'crmLeadSlaHours' ? config.get('crmLeadSlaHours') : undefined) })
+  // 认领满 24h 首次分类装配（PRD 2.4）：配置 shim + 完整 config（AI 调用需要 apiBaseUrl/apiKey）
+  setFirstClassifyAiConfig(config)
+  setFirstClassifyConfig({
+    get: (k) => {
+      if (k === 'crmFirstClassifyEnabled') return config.get('crmFirstClassifyEnabled')
+      if (k === 'crmFirstClassifyDelayHours') return config.get('crmFirstClassifyDelayHours')
+      if (k === 'crmFirstClassifyScanIntervalMin') return config.get('crmFirstClassifyScanIntervalMin')
+      return undefined
+    }
+  })
 
+  ipcMain.handle('crm:contract:entryScope', () => crmDbService.contractEntryScope())
+  ipcMain.handle('crm:contract:byCreationRequest', (_, requestId, scope) => {
+    crmDbService.assertContractEntryScope(scope)
+    return crmDbService.contractByCreationRequest(requestId)
+  })
+  ipcMain.handle('crm:contract:beginEntry', (_, input, scope) => {
+    crmDbService.assertContractEntryScope(scope)
+    return crmDbService.beginContractEntry(input)
+  })
+  ipcMain.handle('crm:contract:entryQuotation', (_, data, scope) => {
+    crmDbService.assertContractEntryScope(scope)
+    const result = crmDbService.createQuotation(data)
+    if (result.ok) crmDbService.persistNowStrict()
+    return result
+  })
   ipcMain.handle('crm:entity:list', async (_, entity: string, opts?) => crmDbService.list(entity, opts || {}))
   ipcMain.handle('crm:entity:get', async (_, entity: string, id: number) => crmDbService.getById(entity, id))
-  ipcMain.handle('crm:entity:create', async (_, entity: string, payload) => crmDbService.create(entity, payload))
-  ipcMain.handle('crm:entity:update', async (_, entity: string, id: number, patch) => crmDbService.update(entity, id, patch))
+  // 通用 IPC 边界限制（宪法 §1.5）：商机禁止走通用散写，renderer 只能经 registerOpportunityDeal 成交
+  ipcMain.handle('crm:entity:create', async (_, entity: string, payload) => {
+    if (entity === 'opportunity') throw new Error('商机创建禁止走通用 IPC：请使用商机业务方法')
+    return crmDbService.create(entity, payload)
+  })
+  // 通用 IPC 边界限制（宪法 §1.5）：商机禁止走通用散写——成交字段只能经 registerOpportunityDeal，
+  // 交付字段（shipped_qty/delivery_date/over_ship_reason）只能经 registerDelivery（crm:delivery:register），
+  // 通用 update 不保留第二套写入路径（2026-09-10 收口：原 shipped_qty/delivery_date 白名单无调用者，关闭）
+  ipcMain.handle('crm:entity:update', async (_, entity: string, id: number, patch) => {
+    if (entity === 'opportunity') {
+      throw new Error('商机禁止走通用更新：成交登记用 crm:opportunity:registerDeal，交付登记用 crm:delivery:register')
+    }
+    return crmDbService.update(entity, id, patch)
+  })
   ipcMain.handle('crm:form:get', async (_, entity: string) => crmDbService.formDefinition(entity))
   ipcMain.handle('crm:fieldmeta:save', async (_, meta) => crmDbService.saveFieldMeta(meta))
   ipcMain.handle('crm:review:queues', async () => crmDbService.reviewQueues())
@@ -113,7 +154,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:opportunity:events', async (_, id: number) => crmDbService.opportunityEvents(Number(id)))
   ipcMain.handle('crm:opportunity:stats', async () => crmDbService.opportunityStats())
   ipcMain.handle('crm:opportunity:stage', async (_, id: number, stage: string) => crmDbService.opportunityUpdateStage(Number(id), String(stage || ''), 'manual'))
-  ipcMain.handle('crm:opportunity:close', async (_, id: number, status: 'won' | 'lost', reason: string) => crmDbService.opportunityClose(Number(id), status, String(reason || '')))
+  ipcMain.handle('crm:opportunity:close', async (_, id: number, status: 'lost', reason: string) => crmDbService.opportunityClose(Number(id), status, String(reason || '')))
+  // 正式成交登记（宪法 §1.5 修订 2026-09-09）：成交字段 + status=won + opportunity_event + audit_event
+  // 同一事务，任一步失败整体回滚；丢单仍走 opportunity:close('lost')（只写状态和原因）
+  ipcMain.handle('crm:opportunity:registerDeal', async (_, id: number, payload) => crmDbService.registerOpportunityDeal(Number(id), payload || {}))
   // 客户意向评分 0-100（P0）：跨库装配（account → session → salesDb 意向事件 + crmDb 商机）
   ipcMain.handle('crm:opportunity:intentScore', async (_, accountId: number) => {
     const acc = crmDbService.getById('account', Number(accountId))
@@ -265,6 +309,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     return { imported: n }
   })
   ipcMain.handle('crm:quotation:create', async (_, data) => crmDbService.createQuotation(data))
+  // 报价版本链读口（宪法 §1.6 修订 2026-09-09）：当前有效报价 / 报价历史（历史版本只读，update 守卫拒绝改写）
+  ipcMain.handle('crm:quotation:current', async (_, contractId: number) => crmDbService.currentQuotationForContract(Number(contractId)))
+  ipcMain.handle('crm:quotation:history', async (_, contractId: number) => crmDbService.quotationHistoryForContract(Number(contractId)))
   // AI 报价辅助：私聊需求 → 产品库选型 → 生成报价单草稿
   ipcMain.handle('crm:quotation:ai', async (_, sessionId: string, displayName: string) => aiGenerateQuotation(sessionId, displayName, config))
   // 资深销售助理深度分析：七板块销售分析报告
@@ -279,7 +326,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:autoConfirm:history', async (_, limit?: number) => crmDbService.autoConfirmHistory(limit ?? 50))
   // 撤销单条自动确认（仅自动处理的条目可撤，非自动返回 reason 说明）
   ipcMain.handle('crm:autoConfirm:undo', async (_, entity: string, id: number) => undoAutoConfirm(entity as AutoEntity, Number(id)))
-  ipcMain.handle('crm:doc:generate', async (_, type: string, recordId: number) => generateDoc(type, recordId))
+  ipcMain.handle('crm:doc:generate', async (_, type: string, recordId: number, options?) => generateDoc(type, recordId, options))
   ipcMain.handle('crm:alias:learn', async (_, alias: string, accountId: number) => crmDbService.aliasLearn(alias, accountId))
   ipcMain.handle('crm:product:aiDesc', async (_, payload) => {
     return simpleCompletion(config, '你是产品文案。根据产品信息生成一段简洁的中文描述，只输出描述文本。', JSON.stringify(payload), { maxTokens: 512 })
@@ -358,6 +405,32 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:customer:setType', async (_, req: { customerId?: number; type?: string; actor?: string }) =>
     setCustomerType(Number(req?.customerId), String(req?.type ?? ''), String(req?.actor || '')))
 
+  // ── 交付售后（PRD 售后生命周期配套，宪法 §1.1/§1.5/§3 登记 2026-09-10）──────────
+  // 交付登记 / 设备档案 / 以旧换新 / 复购等级均为后端单点写入（不再走 crm:entity:update 散写）
+  ipcMain.handle('crm:delivery:register', async (_, oppId: number, payload) => registerDelivery(Number(oppId), payload || {}))
+  ipcMain.handle('crm:delivery:saveEquipment', async (_, customerId: number, fields) => saveEquipment(Number(customerId), fields || {}))
+  ipcMain.handle('crm:delivery:proposeTradeIn', async (_, customerId: number, basis) => proposeTradeIn(Number(customerId), basis || {}))
+  ipcMain.handle('crm:delivery:decideTradeIn', async (_, customerId: number, decision: string) =>
+    decideTradeIn(Number(customerId), String(decision) as 'accept' | 'reject'))
+  ipcMain.handle('crm:delivery:scan', async () => runDeliveryScan())
+  ipcMain.handle('crm:delivery:tasks', async () => listDeliveryTasks())
+  ipcMain.handle('crm:delivery:suggestDate', async (_, oppId: number) => suggestDeliveryDate(Number(oppId)))
+  ipcMain.handle('crm:delivery:recomputeRepeat', async () => recomputeAllRepeatLevels())
+
+  // ── 认领满 24h AI 首次分类（PRD 2.4，宪法 §3 first_classification 登记行）──────────
+  // B 档：结果只进 proposed 提案行；confirm/reject 人工裁决；模型失败 failed 可重试不写假结果。
+  // 手动「立即分析」= run（不受 24h 限制；已有 proposed/confirmed/rejected 轮次时不重复调模型，返回现状）
+  ipcMain.handle('crm:firstClassify:run', async (_, req: { leadId?: number; assignmentId?: number; actor?: string }) =>
+    enqueueSalesTask(() => runFirstClassification({
+      leadId: Number(req?.leadId) || undefined, assignmentId: Number(req?.assignmentId) || undefined,
+      trigger: 'manual', actor: String(req?.actor || '')
+    })))
+  ipcMain.handle('crm:firstClassify:list', async (_, opts) => listFirstClassifyRounds((opts || {}) as any))
+  ipcMain.handle('crm:firstClassify:confirm', async (_, req: { roundId?: number; actor?: string }) =>
+    enqueueSalesTask(() => confirmFirstClassification(Number(req?.roundId), String(req?.actor || ''))))
+  ipcMain.handle('crm:firstClassify:reject', async (_, req: { roundId?: number; actor?: string; reason?: string }) =>
+    enqueueSalesTask(() => rejectFirstClassification(Number(req?.roundId), String(req?.actor || ''), String(req?.reason || ''))))
+
   // ── 离职移交（PRD §1.9）：lead 批量走 transferAssignment 循环（reason='离职'）+
   //    owner 三列（account/opportunity/logistics）同事务直改 + ownership_history + audit_event ──
   ipcMain.handle('crm:ownership:departure', async (_, req: { fromSales?: string; toSales?: string; actor?: string }) =>
@@ -367,6 +440,37 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // audit_event / ownership_history 均 append-only（宪法 §1.12/§1.8），无软删列、永不删改
   ipcMain.handle('crm:audit:query', async (_, opts) => queryAuditEvents((opts || {}) as any))
   ipcMain.handle('crm:ownership:history', async (_, opts) => listOwnershipHistory((opts || {}) as any))
+
+  // ── 存量迁移报告（migration_report SSOT，R 只读）——与 audit_event 解耦：
+  //    audit_event 只留「实际写入」业务留痕，报告快照每次启动扫描都刷新为最新一份 ──
+  ipcMain.handle('crm:migration:report:list', async () => {
+    try {
+      const parse = (s: unknown): unknown => { try { return JSON.parse(String(s ?? '[]')) } catch { return [] } }
+      const rows = crmDbService.listMigrationReports().map((r) => ({
+        module: String(r.module || ''),
+        title: String(r.title || ''),
+        summary: parse(r.summary),
+        failures: parse(r.failures),
+        conflicts: parse(r.conflicts),
+        ranAt: Number(r.ran_at || 0)
+      }))
+      return { ok: true, data: rows }
+    } catch (e) {
+      return { ok: false, data: [], error: String((e as Error)?.message || e) }
+    }
+  })
+
+  // ── 主管升级提醒（SLA1 三次超时通知闭环的 UI 供数；写者唯一=lanSyncService 通知消费）──
+  ipcMain.handle('crm:notify:list', async (_, opts?: { status?: string; limit?: number; offset?: number }) =>
+    listNotifyInbox(opts || {}))
+  ipcMain.handle('crm:notify:markRead', async (_, req: { ids?: number[] }) =>
+    markNotifyRead(Array.isArray(req?.ids) ? req.ids : []))
+
+  // ── SLA2「查看依据」（屏 5 右证据回查出口；脱敏 + 字段裁剪，见 crmSla2EvidenceService）──
+  ipcMain.handle('crm:sla2:evidence', async (_, leadId: number) => sla2EvidenceGetForLead(Number(leadId)))
+
+  // ── 导入查重明细（2026-09-08 查重完善：按批次取脱敏明细行，供结果展示与 CSV 导出）──
+  ipcMain.handle('crm:import:dedupeDetail', async (_, batchId: number) => getImportDedupeDetail(Number(batchId)))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
   enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })

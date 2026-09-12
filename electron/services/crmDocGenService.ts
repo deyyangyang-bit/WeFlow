@@ -10,7 +10,7 @@ import { join } from 'path'
 import { app } from 'electron'
 import { crmDbService } from './crmDbService'
 import { salesLog } from './salesLogger'
-import { DOC_TYPES, generateDocBuffer, type DocType } from './crmDocGenCore'
+import { DOC_TYPES, generateDocBuffer, quotationHashPatch, type DocType } from './crmDocGenCore'
 
 export { DOC_TYPES }
 export type { DocType }
@@ -28,17 +28,34 @@ function templatePath(type: DocType): string {
   throw new Error(`模版缺失: ${type}.docx（已查找: ${candidates.join(' , ')}）`)
 }
 
-export async function generateDoc(type: string, recordId: number): Promise<{ ok: boolean; path?: string; reason?: string }> {
+export async function generateDoc(type: string, recordId: number, options?: { reuseExisting?: boolean; scope?: { accountKey: string; generation: number } }): Promise<{ ok: boolean; path?: string; reason?: string }> {
   try {
+    const scope = options?.scope || crmDbService.contractEntryScope()
+    crmDbService.assertContractEntryScope(scope)
+    if (options?.reuseExisting && type === 'contract') {
+      const existing = crmDbService.getById('contract', recordId)
+      const file = String(existing?.attachment_path || '')
+      if (file && existsSync(file)) return { ok: true, path: file }
+    }
     const t = type as DocType
     const tplBuf = t === 'invoice-app' ? undefined : readFileSync(templatePath(t))
     const r = await generateDocBuffer(type, recordId, tplBuf)
     if (!r.ok) return { ok: false, reason: r.reason }
+    crmDbService.assertContractEntryScope(scope)
     const outDir = join(app.getPath('userData'), 'crm-docs')
     if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
     const outPath = join(outDir, `${t}-${recordId}-${Date.now()}.${r.ext}`)
     writeFileSync(outPath, r.buffer)
-    try { crmDbService.update(r.entity, r.entityId, { attachment_path: outPath }) } catch { /* 元数据写回失败不影响生成 */ }
+    try {
+      const patch: Record<string, unknown> = { attachment_path: outPath }
+      // 报价产物存证（宪法 §1.6 修订 2026-09-09）：生成完成后算 SHA-256 落库；
+      // DOCX 产物 → artifact_hash，只有真实 PDF（转换链路）才写 pdf_hash
+      if (r.entity === 'quotation' && r.sha256) Object.assign(patch, quotationHashPatch(r.ext, r.sha256))
+      crmDbService.update(r.entity, r.entityId, patch)
+    } catch (e) {
+      // 元数据写回失败不影响生成；历史报价版本只读守卫（宪法 §1.6）会在此显式留痕
+      salesLog('WARN', `[CrmDocGen] 元数据写回失败（${r.entity}#${r.entityId}）: ${e}`)
+    }
     salesLog('INFO', `[CrmDocGen] generated ${outPath}`)
     return { ok: true, path: outPath }
   } catch (e) {

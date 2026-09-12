@@ -55,13 +55,14 @@ function matchProduct(keyword: string, products: CrmRow[]): CrmRow | null {
 
 /**
  * AI 报价辅助：给客户生成报价单草稿（挂到该客户最近可挂款合同）。
- * @returns { ok, quotationId?, contractId?, reason?, matched? }
+ * createQuotation 走 append-only 版本链（宪法 §1.6）：每次报价 = 新版本行。
+ * @returns { ok, quotationId?, version?, contractId?, reason?, matched? }
  */
 export async function aiGenerateQuotation(
   sessionId: string,
   displayName: string,
   config: ConfigService
-): Promise<{ ok: boolean; quotationId?: number; contractId?: number; reason?: string; matched?: Array<{ keyword: string; productName: string }> }> {
+): Promise<{ ok: boolean; quotationId?: number; version?: number; contractId?: number; reason?: string; matched?: Array<{ keyword: string; productName: string }> }> {
   if (!sessionId) return { ok: false, reason: '会话无效' }
   if (!isAiConfigured(config)) return { ok: false, reason: 'AI 未配置' }
   try {
@@ -107,8 +108,8 @@ export async function aiGenerateQuotation(
 
     const q = crmDbService.createQuotation({ contract_id: contractId, items })
     if (!q.ok || !q.id) return { ok: false, reason: q.reason || '报价单创建失败' }
-    salesLog('INFO', `[CrmQuote] ${displayName} AI 报价生成：${matched.length} 项 → 报价单 ${q.id}`)
-    return { ok: true, quotationId: q.id, contractId, matched }
+    salesLog('INFO', `[CrmQuote] ${displayName} AI 报价生成：${matched.length} 项 → 报价单 ${q.id} v${q.version ?? 1}（合同 ${contractId}）`)
+    return { ok: true, quotationId: q.id, version: q.version, contractId, matched }
   } catch (e) {
     salesLog('WARN', `[CrmQuote] 报价生成失败 ${displayName}: ${e}`)
     return { ok: false, reason: String(e) }

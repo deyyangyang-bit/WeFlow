@@ -1,8 +1,10 @@
+import { isPriceOverride, quoteRowError } from '../../shared/priceOverride'
+import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/GeneratedFileResult'
 /**
  * CrmWorkbenchPage.tsx —— 合同工作台：合同列表+全款进度+四子资源+发货卡点+文档生成
  * （客户工作台已拆分到 CustomerWorkspacePage /customers，本页专注合同闭环）
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2, Users, Banknote, AlertTriangle } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
@@ -10,11 +12,12 @@ import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
+import DeliveryAftersales from '../components/crm/DeliveryAftersales'
 // 阶段分布/管道图色板单一真源（红线 3）：Apple 蓝渐变族
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
 import './CrmWorkbenchPage.scss'
 
-interface QuoRow { productId: number; name: string; model?: string; price: number; qty: string }
+interface QuoRow { productId: number; name: string; model?: string; price: number; unitPrice: string; qty: string }
 
 export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
@@ -28,6 +31,63 @@ export default function CrmWorkbenchPage() {
   const [allocations, setAllocations] = useState<any[]>([])
   const [logistics, setLogistics] = useState<any[]>([])
   const [showNew, setShowNew] = useState(false)
+  const entryScopeRef = useRef<{ accountKey: string; generation: number } | null>(null)
+  const entryEpoch = useRef(0)
+  const requestRef = useRef('')
+  const [headerChoices, setHeaderChoices] = useState<Record<string, boolean> | null>(null)
+  const [headerConfirmed, setHeaderConfirmed] = useState(false)
+  const draftKey = () => entryScopeRef.current ? `contract-entry:${entryScopeRef.current.accountKey}` : ''
+  const persistDraft = (stage: string, items: QuoRow[]) => {
+    try { if (draftKey()) localStorage.setItem(draftKey(), JSON.stringify({ creation_request_id: requestRef.current, stage, items })) }
+    catch { setNotice('本地恢复入口不可用；刷新后请先查看合同列表确认，不要重复创建') }
+  }
+  const discardDraft = () => { try { if (draftKey()) localStorage.removeItem(draftKey()) } catch { /* storage disabled */ } }
+  const openNew = async () => {
+    const epoch = entryEpoch.current
+    const scope = await window.electronAPI.crm.contractEntryScope()
+    if (epoch !== entryEpoch.current) return
+    entryScopeRef.current = scope
+    let draft: any = null
+    try { draft = JSON.parse(localStorage.getItem(draftKey()) || 'null') } catch { /* no draft */ }
+    if (draft?.creation_request_id && Array.isArray(draft.items)) {
+      const contract = await window.electronAPI.crm.contractByCreationRequest(draft.creation_request_id, scope)
+      if (epoch !== entryEpoch.current) return
+      const complete = contract && (draft.items.length === 0 || Number(contract.quote_version_id) > 0) && !['generating_document', 'partial_document_failed', 'creating_with_document'].includes(draft.stage)
+      if (!complete) {
+        requestRef.current = draft.creation_request_id; setNewQuoItems(draft.items)
+        if (contract) {
+          const cf = JSON.parse(contract.custom_fields || '{}')
+          createdRef.current = { accountId: Number(contract.account_id), contractId: Number(contract.id), quotationId: Number(contract.quote_version_id) || undefined }
+          setNewAccountId(Number(contract.account_id)); setNewName(String(contract.name || '').replace(/-合同$/, '')); setNewAmount(String(contract.amount || 0))
+          setNewBuyerAddr(cf.buyer_addr || ''); setNewBuyerBank(cf.buyer_bank || ''); setNewBuyerAccount(cf.buyer_account || ''); setNewBuyerTax(cf.tax_no || ''); setNewBuyerPhone(cf.buyer_phone || '')
+          const needsDoc = ['generating_document', 'partial_document_failed', 'creating_with_document'].includes(draft.stage)
+          setGenerateOnCreate(needsDoc); setCreateStage(needsDoc ? 'partial_document_failed' : 'partial_quotation_failed')
+          setCreateError('已恢复未完成流程，请继续最后一步；不会重复创建合同。')
+        }
+        setShowNew(true); return
+      }
+      discardDraft()
+    }
+    requestRef.current = crypto.randomUUID(); setHeaderConfirmed(false); setHeaderChoices(null); setCreateStage('editing'); setCreateError(''); createdRef.current = {}
+    setShowNew(true); setSelected(null)
+  }
+  const creatingRef = useRef(false)
+  const quoteCreatingRef = useRef(false)
+  const createdRef = useRef<{ accountId?: number; contractId?: number; quotationId?: number }>({})
+  const [createStage, setCreateStage] = useState('editing')
+  const [createError, setCreateError] = useState('')
+  const [quoteBusy, setQuoteBusy] = useState(false)
+  const [artifact, setArtifact] = useState<GeneratedArtifact | null>(null)
+  const [generatingDoc, setGeneratingDoc] = useState(false)
+  const [generateOnCreate, setGenerateOnCreate] = useState(false)
+  const formLocked = createStage !== 'editing'
+  const resetNew = () => {
+    if (creatingRef.current) return
+    discardDraft(); requestRef.current = ''; setHeaderChoices(null); setHeaderConfirmed(false)
+    createdRef.current = {}; setCreateStage('editing'); setCreateError(''); setShowNew(false)
+    setNewAccountId(0); setNewName(''); setNewAmount(''); setNewQuoItems([])
+    setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
+  }
   const [newAccountId, setNewAccountId] = useState(0) // 选中的已有客户（零操作建合同：不再重复建 account）
   const [newName, setNewName] = useState('')
   const [newAmount, setNewAmount] = useState('')
@@ -74,7 +134,7 @@ export default function CrmWorkbenchPage() {
   }
   useEffect(() => { void fetchAccuracy() }, [])
   // 切微信号 = 换库（§2.40）：账号切换后四路数据全部重查
-  useWxidRefresh(() => { void fetchWorkbench(); void fetchCustomers(); void fetchStats(); void fetchAccuracy() })
+  useWxidRefresh(() => { entryEpoch.current++; creatingRef.current = false; entryScopeRef.current = null; resetNew(); setSelected(null); setShowQuo(false); setArtifact(null); void fetchWorkbench(); void fetchCustomers(); void fetchStats(); void fetchAccuracy() })
   const STAGE_LABEL_MAP: Record<string, string> = {
     contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
   }
@@ -134,7 +194,7 @@ export default function CrmWorkbenchPage() {
     const accountId = Number(searchParams.get('account') || 0)
     if (searchParams.get('new') !== '1' || accountId <= 0) return
     setNewAccountId(accountId)
-    setShowNew(true)
+    void openNew().catch(e => setNotice(String(e)))
     void fetchCustomers().then((rows) => {
       const hit = rows.find((x: any) => Number(x.id) === accountId)
       if (hit) {
@@ -228,63 +288,95 @@ export default function CrmWorkbenchPage() {
 
   const addQuoRow = (p: any) => {
     if (quoRows.some((r) => r.productId === p.id)) return
-    setQuoRows((rs) => [...rs, { productId: p.id, name: p.name, price: Number(p.unit_price ?? 0), qty: '1' }])
+    setQuoRows((rs) => [...rs, { productId: p.id, name: p.name, price: Number(p.unit_price ?? 0), unitPrice: String(p.unit_price ?? 0), qty: '1' }])
   }
 
-  const quoTotal = quoRows.reduce((s, r) => s + r.price * (parseFloat(r.qty) || 0), 0)
+  const quoTotal = quoRows.reduce((s, r) => s + Math.round(Number(r.unitPrice) * Number(r.qty) * 100) / 100, 0)
 
   // 新建合同：从产品库勾选型号（可多选，同产品去重），创建时自动生成报价单行项
   const addNewQuoRow = (p: any) => {
     if (newQuoItems.some((r) => r.productId === p.id)) return
-    setNewQuoItems((rs) => [...rs, { productId: p.id, name: p.name, model: String(p.model || ''), price: Number(p.unit_price ?? 0), qty: '1' }])
+    setNewQuoItems((rs) => [...rs, { productId: p.id, name: p.name, model: String(p.model || ''), price: Number(p.unit_price ?? 0), unitPrice: String(p.unit_price ?? 0), qty: '1' }])
   }
-  const newQuoTotal = newQuoItems.reduce((s, r) => s + r.price * (parseFloat(r.qty) || 0), 0)
+  const newQuoTotal = newQuoItems.reduce((s, r) => s + Math.round(Number(r.unitPrice) * Number(r.qty) * 100) / 100, 0)
 
+  const rowError = (row: QuoRow) => quoteRowError({ qty: row.qty, unit_price: row.unitPrice })
+  const rowPayload = (row: QuoRow) => ({ product_id: row.productId, qty: Number(row.qty), unit_price: Number(row.unitPrice) })
   const createQuotation = async () => {
-    if (!selected) return
-    const items = quoRows
-      .filter((r) => (parseFloat(r.qty) || 0) > 0)
-      .map((r) => ({ product_id: r.productId, qty: parseFloat(r.qty) || 0 }))
-    if (!items.length) { setNotice('请至少添加一个产品行项'); return }
-    const r = await window.electronAPI.crm.quotationCreate({ contract_id: selected.id, items })
-    setNotice(r.ok ? '报价单已创建' : `创建失败：${r.reason}`)
-    if (r.ok) { setShowQuo(false); await select(selected) }
+    if (!selected || quoteCreatingRef.current) return
+    const error = quoRows.map(rowError).find(Boolean)
+    if (!quoRows.length || error) { setNotice(error || '请至少添加一个产品行项'); return }
+    quoteCreatingRef.current = true; setQuoteBusy(true)
+    try {
+      const r = await window.electronAPI.crm.quotationCreate({ contract_id: selected.id, items: quoRows.map(rowPayload) })
+      setNotice(r.ok ? '报价单已创建' : `创建失败：${r.reason}`)
+      if (r.ok) { setShowQuo(false); await select(selected) }
+    } catch (e) { setNotice(String(e)) } finally { quoteCreatingRef.current = false; setQuoteBusy(false) }
   }
 
   const genDoc = async (type: string, id: number) => {
-    const r = await window.electronAPI.crm.docGenerate(type, id)
-    setNotice(r.ok ? `已生成：${r.path}` : `生成失败：${r.reason}`)
+    if (generatingDoc) return
+    setGeneratingDoc(true)
+    try {
+      const r = await window.electronAPI.crm.docGenerate(type, id)
+      if (r.ok && r.path) setArtifact({ label: type === 'contract' ? '合同已生成' : '报价单已生成', path: r.path })
+      else setNotice(`生成失败：${r.reason}`)
+    } catch (e) { setNotice(String(e)) } finally { setGeneratingDoc(false) }
   }
 
-  const createContract = async () => {
-    // 手填金额优先；未填则取型号合计（勾选的型号创建时自动生成报价单行项）
-    const manualAmount = parseFloat(newAmount)
-    const amount = manualAmount > 0 ? manualAmount : newQuoTotal
-    if (!newName.trim()) { setNotice('请填写客户名称'); return }
-    // 甲方开票信息只写入非空字段（自动确认引擎也会写 tax_no，键一致）
-    const custom_fields: Record<string, string> = {}
-    if (newBuyerAddr.trim()) custom_fields.buyer_addr = newBuyerAddr.trim()
-    if (newBuyerBank.trim()) custom_fields.buyer_bank = newBuyerBank.trim()
-    if (newBuyerAccount.trim()) custom_fields.buyer_account = newBuyerAccount.trim()
-    if (newBuyerTax.trim()) custom_fields.tax_no = newBuyerTax.trim()
-    if (newBuyerPhone.trim()) custom_fields.buyer_phone = newBuyerPhone.trim()
-    // 已选客户 → 直接挂到该客户（不重复建 account）；未选 → 新建
-    let accountId = newAccountId
-    if (!accountId) {
-      accountId = await window.electronAPI.crm.create('account', { name: newName.trim(), created_at: Date.now(), updated_at: Date.now() })
+  const createContract = async (withDocument = generateOnCreate) => {
+    if (creatingRef.current) return
+    const error = newQuoItems.map(rowError).find(Boolean)
+    const amount = newAmount.trim() === '' ? newQuoTotal : Number(newAmount)
+    if (!newName.trim()) { setCreateError('请填写客户名称'); return }
+    if (error) { setCreateError(error); return }
+    if (!Number.isFinite(amount) || amount < 0 || (!newQuoItems.length && amount <= 0)) { setCreateError('请填写有效合同金额，无产品行时金额须大于 0'); return }
+    const scope = entryScopeRef.current
+    if (!scope || !requestRef.current) { setCreateError('请重新打开新建合同'); return }
+    const epoch = entryEpoch.current
+    const checkScope = () => { if (epoch !== entryEpoch.current) throw new Error('账号已切换') }
+    const custom_fields = { buyer_addr: newBuyerAddr.trim(), buyer_bank: newBuyerBank.trim(), buyer_account: newBuyerAccount.trim(), tax_no: newBuyerTax.trim(), buyer_phone: newBuyerPhone.trim() }
+    const existingAccount = customers.find(c => Number(c.id) === newAccountId)
+    let accountFields: Record<string, string> = {}
+    try { accountFields = JSON.parse(existingAccount?.custom_fields || '{}') } catch { /* no stored header */ }
+    const headerKeys = Object.keys(custom_fields) as Array<keyof typeof custom_fields>
+    const differences = headerKeys.filter(key => String(accountFields[key] || '') !== custom_fields[key])
+    if (!createdRef.current.contractId && newAccountId && !headerConfirmed && headerKeys.some(key => String(accountFields[key] || '').trim()) && differences.length) {
+      setHeaderChoices(Object.fromEntries(differences.map(key => [key, true]))); setGenerateOnCreate(withDocument); return
     }
-    const contractId = await window.electronAPI.crm.create('contract', { account_id: accountId, name: `${newName.trim()}-合同`, amount, status: 'pending_sign', custom_fields: JSON.stringify(custom_fields), created_at: Date.now(), updated_at: Date.now() })
-    // 勾选的型号 → 自动生成报价单（行项单价取产品库）
-    if (newQuoItems.length > 0) {
-      await window.electronAPI.crm.quotationCreate({
-        contract_id: contractId,
-        items: newQuoItems.map((r) => ({ product_id: r.productId, qty: parseFloat(r.qty) || 1 }))
-      })
-    }
-    setShowNew(false); setNewName(''); setNewAmount(''); setNewAccountId(0)
-    setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
-    setNewQuoItems([]); setNewQuoSearch('')
-    await fetchWorkbench()
+    creatingRef.current = true; setCreateError(''); setGenerateOnCreate(withDocument)
+    persistDraft(withDocument ? 'creating_with_document' : 'creating_contract', newQuoItems)
+    try {
+      setCreateStage('creating_contract')
+      const contract = await window.electronAPI.crm.contractBeginEntry({ requestId: requestRef.current, accountId: newAccountId, name: newName, amount, header: custom_fields, updateHeaderKeys: Object.keys(headerChoices || {}).filter(key => headerChoices?.[key]) }, scope)
+      checkScope()
+      const contractId = Number(contract.id)
+      createdRef.current = { ...createdRef.current, accountId: Number(contract.account_id), contractId }
+      if (newQuoItems.length && !createdRef.current.quotationId) {
+        setCreateStage('creating_quotation')
+        const result = await window.electronAPI.crm.contractEntryQuotation({ contract_id: contractId, items: newQuoItems.map(rowPayload), creation_request_id: requestRef.current }, scope)
+        checkScope()
+        if (!result.ok || !result.id) { setCreateStage('partial_quotation_failed'); setCreateError(`合同已创建，但报价单创建失败：${result.reason || '未返回报价编号'}`); return }
+        createdRef.current.quotationId = result.id
+      }
+      if (withDocument) {
+        setCreateStage('generating_document')
+        persistDraft('generating_document', newQuoItems)
+        const result = await window.electronAPI.crm.docGenerate('contract', contractId, { reuseExisting: true, scope })
+        checkScope()
+        if (!result.ok || !result.path) { setCreateStage('partial_document_failed'); setCreateError(`合同和报价已保存，但文档生成失败：${result.reason || '未返回文件'}`); return }
+        setArtifact({ label: '合同已生成', path: result.path })
+      }
+      checkScope(); discardDraft(); setCreateStage('complete'); setNotice('合同已创建')
+      await fetchWorkbench(); await fetchCustomers()
+      const savedContract = await window.electronAPI.crm.get('contract', contractId)
+      if (savedContract) await select(savedContract)
+      creatingRef.current = false; resetNew()
+    } catch (e) {
+      if (epoch !== entryEpoch.current) return
+      setCreateStage(createdRef.current.contractId ? 'partial_quotation_failed' : 'editing')
+      setCreateError(`${createdRef.current.contractId ? '合同已创建，请从失败步骤重试：' : ''}${String(e)}`)
+    } finally { if (epoch === entryEpoch.current) creatingRef.current = false }
   }
 
   // 已建合同：保存/更新甲方开票信息（覆盖式写入 custom_fields）
@@ -303,6 +395,9 @@ export default function CrmWorkbenchPage() {
   const pendingSignCount = myWorkbench.filter((c: any) => c.status === 'pending_sign').length
   const warningCount = myWorkbench.filter((c: any) => c.warning).length
 
+  // 视图切换：合同工作台（默认）/ 交付售后（成交单交付登记 + 设备档案 + 售后投影）
+  const [view, setView] = useState<'contracts' | 'delivery'>('contracts')
+
   const ownerFiltered = isSalesView(identity)
   return (
     <div className="crm-workbench-page">
@@ -310,10 +405,19 @@ export default function CrmWorkbenchPage() {
       <div className="crm-header">
         <h2><Briefcase size={18} /> 合同工作台</h2>
         <span className="crm-header__sub">合同闭环 · 报价 / 发货 / 回款 / 开票 · r7</span>
+        <div className="crm-view-tabs">
+          <button className={`crm-view-tab ${view === 'contracts' ? 'on' : ''}`} onClick={() => setView('contracts')}>合同工作台</button>
+          <button className={`crm-view-tab ${view === 'delivery' ? 'on' : ''}`} onClick={() => setView('delivery')}>交付售后</button>
+        </div>
         <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
-        <button className="crm-btn crm-btn--primary" onClick={() => { setShowNew((v) => !v); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
+        {view === 'contracts' && (
+          <button className="crm-btn crm-btn--primary" disabled={creatingRef.current} onClick={() => { if (showNew) resetNew(); else { void openNew().catch(e => setNotice(String(e))) }; if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
+        )}
       </div>
+      {view === 'delivery' && <DeliveryAftersales />}
+      {view === 'contracts' && (<>
       {notice && <div className="crm-notice">{notice}</div>}
+      {artifact && <GeneratedFileResult artifact={artifact} onClose={() => setArtifact(null)} />}
       {stats && (
         <>
           {/* 顶部统计卡收成一行小字（设计稿屏 3：本月到账 / 待签 / 预警，预警非零才红色） */}
@@ -370,9 +474,10 @@ export default function CrmWorkbenchPage() {
         </>
       )}
       {showNew && (
-        <div className="crm-new-form">
+        <div className="crm-new-form"><h3>新建合同</h3><fieldset disabled={formLocked}>
           <select value={newAccountId} onChange={(e) => {
             const id = Number(e.target.value)
+            setHeaderConfirmed(false); setHeaderChoices(null)
             setNewAccountId(id)
             const c = customers.find((x) => Number(x.id) === id)
             if (c) {
@@ -384,13 +489,15 @@ export default function CrmWorkbenchPage() {
               setNewBuyerAccount(String(cf.buyer_account || ''))
               setNewBuyerTax(String(cf.tax_no || ''))
               setNewBuyerPhone(String(cf.buyer_phone || c.phone || ''))
+            } else {
+              setNewName(''); setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
             }
           }}>
-            <option value={0}>选择已有客户（自动带出名称与开票信息）…</option>
+            <option value={0}>新建客户（或选择下方已有客户）</option>
             {customers.map((c) => <option key={c.id} value={c.id}>{displayNameOf(c)}{c.company ? ` · ${c.company}` : ''}</option>)}
           </select>
-          <input placeholder="客户名称" value={newName} onChange={(e) => setNewName(e.target.value)} />
-          <input placeholder="合同金额（未填则取型号合计）" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
+          <input placeholder="客户名称" readOnly={newAccountId > 0} value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <input placeholder={`合同金额（当前报价合计 ${newQuoTotal.toFixed(2)}）`} value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
           <span className="crm-new-form__divider">型号（从产品库选，可多选；创建即生成报价单）</span>
           <div className="crm-new-form__quotes">
             <input className="crm-new-form__search" placeholder="搜索产品/型号…" value={newQuoSearch} onChange={(e) => setNewQuoSearch(e.target.value)} />
@@ -416,13 +523,16 @@ export default function CrmWorkbenchPage() {
             {newQuoItems.map((r) => (
               <div key={r.productId} className="quo-item">
                 <span>{r.name}{r.model ? ` · ${r.model}` : ''} · ¥{r.price.toLocaleString()}</span>
+                <label>本次单价 <input aria-label="本次单价" type="number" min="0" step="0.01" value={r.unitPrice} onChange={(e) => setNewQuoItems(rs => rs.map(x => x.productId === r.productId ? { ...x, unitPrice: e.target.value } : x))} /></label>
+                {isPriceOverride(r.price, r.unitPrice) && <small className="price-override">已改价</small>}
+                {rowError(r) && <small className="entry-error">{rowError(r)}</small>}
                 <input type="number" min="1" value={r.qty}
                   onChange={(e) => setNewQuoItems((rs) => rs.map((x) => x.productId === r.productId ? { ...x, qty: e.target.value } : x))} />
                 <button className="crm-btn" onClick={() => setNewQuoItems((rs) => rs.filter((x) => x.productId !== r.productId))}><X size={12} /></button>
               </div>
             ))}
             {newQuoItems.length > 0 && (
-              <div className="crm-new-form__total">型号合计 ¥{newQuoTotal.toLocaleString()}（未填金额时作为合同金额，可改）</div>
+              <div className="crm-new-form__total">型号合计 ¥{newQuoTotal.toLocaleString()}（未填金额时作为合同金额，可改）· {newQuoItems.filter(r => isPriceOverride(r.price, r.unitPrice)).length} 项改价（记录审计）</div>
             )}
           </div>
           <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
@@ -431,7 +541,21 @@ export default function CrmWorkbenchPage() {
           <input placeholder="银行账号" value={newBuyerAccount} onChange={(e) => setNewBuyerAccount(e.target.value)} />
           <input placeholder="税号" value={newBuyerTax} onChange={(e) => setNewBuyerTax(e.target.value)} />
           <input placeholder="电话" value={newBuyerPhone} onChange={(e) => setNewBuyerPhone(e.target.value)} />
-          <button className="crm-btn primary" onClick={() => void createContract()}>创建</button>
+          </fieldset>
+          {newAmount.trim() && newQuoItems.length > 0 && Number(newAmount) !== newQuoTotal && <div className="crm-notice">合同金额已手工设定；当前报价合计 ¥{newQuoTotal.toFixed(2)} <button className="crm-btn" disabled={formLocked} onClick={() => setNewAmount('')}>同步报价合计</button></div>}
+          {headerChoices && !headerConfirmed && <div className="entry-header-confirm" role="dialog" aria-label="更新客户抬头">
+            <strong>本合同抬头与客户档案不同，要同步哪些字段？</strong>
+            {Object.keys(headerChoices).map(key => { const labels: Record<string,string> = { buyer_addr:'地址', buyer_bank:'开户行', buyer_account:'银行账号', tax_no:'税号', buyer_phone:'电话' }; const values: Record<string,string> = { buyer_addr:newBuyerAddr, buyer_bank:newBuyerBank, buyer_account:newBuyerAccount, tax_no:newBuyerTax, buyer_phone:newBuyerPhone }; let old: any = {}; try { old = JSON.parse(customers.find(c => Number(c.id) === newAccountId)?.custom_fields || '{}') } catch {} return <label key={key}><input type="checkbox" checked={headerChoices[key]} onChange={e => setHeaderChoices(v => ({ ...v, [key]:e.target.checked }))} />{labels[key]}：{old[key] || '空'} → {values[key] || '空'}</label> })}
+            <button className="crm-btn" onClick={() => setHeaderConfirmed(true)}>确认勾选项（再点击创建）</button>
+            <button className="crm-btn" onClick={() => { setHeaderChoices({}); setHeaderConfirmed(true) }}>不更新客户档案</button>
+          </div>}
+          {createError && <div role="alert" className="entry-error">{createError}</div>}
+          <div className="entry-actions">
+            <button className="crm-btn primary" disabled={creatingRef.current || (formLocked && !createError)} onClick={() => void createContract(formLocked ? generateOnCreate : false)}>{creatingRef.current ? '正在保存…' : createStage === 'partial_quotation_failed' ? '重新创建报价单' : createStage === 'partial_document_failed' ? '重新生成合同' : '仅创建'}</button>
+            {!formLocked && <button className="crm-btn primary" disabled={creatingRef.current} onClick={() => void createContract(true)}>创建并生成合同</button>}
+            {createdRef.current.contractId && <button className="crm-btn" onClick={async () => { const c = await window.electronAPI.crm.get('contract', createdRef.current.contractId!); if (c) await select(c) }}>查看合同详情</button>}
+            <button className="crm-btn" disabled={creatingRef.current} onClick={resetNew}>取消</button>
+          </div>
         </div>
       )}
       {stats && (
@@ -525,6 +649,9 @@ export default function CrmWorkbenchPage() {
               {quoRows.map((r) => (
                 <div key={r.productId} className="quo-item">
                   <span>{r.name} · ¥{r.price.toLocaleString()}</span>
+                <label>本次单价 <input aria-label="本次单价" type="number" min="0" step="0.01" value={r.unitPrice} onChange={(e) => setQuoRows(rs => rs.map(x => x.productId === r.productId ? { ...x, unitPrice: e.target.value } : x))} /></label>
+                {isPriceOverride(r.price, r.unitPrice) && <small className="price-override">已改价</small>}
+                {rowError(r) && <small className="entry-error">{rowError(r)}</small>}
                   <input type="number" min="1" value={r.qty}
                     onChange={(e) => setQuoRows((rs) => rs.map((x) => x.productId === r.productId ? { ...x, qty: e.target.value } : x))} />
                   <button className="crm-btn" onClick={() => setQuoRows((rs) => rs.filter((x) => x.productId !== r.productId))}><X size={12} /></button>
@@ -532,12 +659,13 @@ export default function CrmWorkbenchPage() {
               ))}
             </div>
             <div className="form-actions">
-              <span className="quo-total">合计 ¥{quoTotal.toLocaleString()}</span>
-              <button className="crm-btn primary" onClick={() => void createQuotation()}>创建报价单</button>
+              <span className="quo-total">合计 ¥{quoTotal.toLocaleString()} · {quoRows.filter(r => isPriceOverride(r.price, r.unitPrice)).length} 项改价（记录审计）</span>
+              <button className="crm-btn primary" disabled={quoteBusy} onClick={() => void createQuotation()}>创建报价单</button>
             </div>
           </div>
         </div>
       )}
+      </>)}
     </div>
   )
 }

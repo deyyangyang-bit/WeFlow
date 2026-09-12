@@ -81,16 +81,71 @@ async function main(): Promise<void> {
   ok('4c 发货后不可回退', crmDbService.shipContract(gapContractId).ok === false)
   ok('4d 发货后不可签约', crmDbService.signContract(gapContractId).ok === false)
 
-  // ── 5 报价单：行项必须来自 product ─────────────────────────────────────────
+  // ── 5 报价版本链（宪法 §1.6 修订 2026-09-09：append-only，每次报价 INSERT 新版本行）──
+  const quoCountBefore = Number(crmDbService.all('SELECT COUNT(*) AS c FROM quotation')[0]?.c)
   const bad = crmDbService.createQuotation({ contract_id: contractId, items: [{ product_id: 999, qty: 1 }] })
   ok('5a 不存在型号被拒', !bad.ok)
+  ok('5a2 拒绝后零残留（事务回滚不产生版本行）', Number(crmDbService.all('SELECT COUNT(*) AS c FROM quotation')[0]?.c) === quoCountBefore)
+  ok('5a3 报价禁止散写（create 守卫指向版本链单点）', (() => {
+    try { crmDbService.create('quotation', { contract_id: contractId, total: 1 }); return false } catch { return true }
+  })())
   const productId = crmDbService.create('product', {
     model: 'CDD12', name: '电动堆高车', unit_price: 3800, specs: '{}', variants: '[]', created_at: Date.now()
   })
-  const quo = crmDbService.createQuotation({ contract_id: contractId, items: [{ product_id: productId, qty: 2 }] })
-  ok('5b 报价单创建成功', quo.ok && typeof quo.id === 'number')
-  const q = crmDbService.getById('quotation', quo.id)
+  const quo1 = crmDbService.createQuotation({ contract_id: contractId, items: [{ product_id: productId, qty: 2 }] })
+  ok('5b 报价单创建成功', quo1.ok && typeof quo1.id === 'number')
+  const q = crmDbService.getById('quotation', quo1.id as number)
   ok('5c 报价合计=2×3800', Number(q?.total) === 7600)
+  ok('5d 首版本 version=1 + effective_from 已写 + 未关闭', Number(q?.version) === 1 && Number(q?.effective_from) > 0 && Number(q?.effective_to) === 0)
+  ok('5e 合同指针 quote_version_id → v1', Number(crmDbService.getById('contract', contractId)?.quote_version_id) === Number(quo1.id))
+
+  // 连续创建多个报价：版本按合同递增、旧版本生效期关闭、指针随动
+  const quo2 = crmDbService.createQuotation({ contract_id: contractId, items: [{ product_id: productId, qty: 3 }] })
+  ok('5f v2 版本递增=2', quo2.ok && Number(crmDbService.getById('quotation', quo2.id as number)?.version) === 2)
+  const q1After = crmDbService.getById('quotation', quo1.id as number)
+  ok('5g v2 生效即关闭 v1（effective_to 落在生效窗口后）',
+    Number(q1After?.effective_to) > 0 && Number(q1After?.effective_to) >= Number(q1After?.effective_from))
+  ok('5h 合同指针随动 → v2', Number(crmDbService.getById('contract', contractId)?.quote_version_id) === Number(quo2.id))
+  const quo3 = crmDbService.createQuotation({ contract_id: contractId, items: [{ product_id: productId, qty: 1, unit_price: 3000 }] })
+  ok('5i v3 递增=3 + 自定义单价合计 3000',
+    quo3.ok && Number(crmDbService.getById('quotation', quo3.id as number)?.version) === 3 &&
+    Number(crmDbService.getById('quotation', quo3.id as number)?.total) === 3000)
+
+  // 当前有效报价 / 报价历史读口
+  const qCur = crmDbService.currentQuotationForContract(contractId)
+  ok('5j 当前有效报价 = v3', !!qCur && Number(qCur.id) === Number(quo3.id))
+  const qHist = crmDbService.quotationHistoryForContract(contractId)
+  ok('5k 报价历史返回全部版本（新→旧）', qHist.length === 3 && Number(qHist[0].id) === Number(quo3.id) && Number(qHist[2].id) === Number(quo1.id))
+
+  // 历史版本只读：被替代版本拒绝任何改写且数据未动
+  let histReject = false
+  try { crmDbService.update('quotation', Number(quo1.id), { total: 1 }) } catch { histReject = true }
+  ok('5l 历史版本更新被拒', histReject)
+  ok('5m 历史版本数据未被改动', Number(crmDbService.getById('quotation', quo1.id as number)?.total) === 7600)
+  let curReject = false
+  try { crmDbService.update('quotation', Number(quo3.id), { total: 1 }) } catch { curReject = true }
+  ok('5n 现行版本价格字段不可直改（须走新版本）', curReject)
+  crmDbService.update('quotation', Number(quo3.id), { attachment_path: '/tmp/q3.docx', artifact_hash: 'deadbeef' })
+  ok('5o 现行版本允许文件/存证哈希回写', String(crmDbService.getById('quotation', quo3.id as number)?.artifact_hash) === 'deadbeef')
+
+  // 版本创建 / 切换 / 合同指针 / 审计同一事务：三次创建恰三条 quote_version_create 审计
+  ok('5p 版本链审计留痕（quote_version_create ×3）',
+    Number(crmDbService.all(
+      "SELECT COUNT(*) AS c FROM audit_event WHERE action = 'quote_version_create' AND entity_type = 'quotation' AND entity_id IN (?,?,?)",
+      [quo1.id, quo2.id, quo3.id])[0]?.c) === 3)
+
+  // 存量脏链可能同时有多个 effective_to=0；新建版本必须一次关闭全部旧现行行。
+  const dirtyContractId = crmDbService.create('contract', {
+    account_id: accountId, name: '多现行报价修复合同', amount: 100, status: 'pending_sign', created_at: Date.now(), updated_at: Date.now()
+  })
+  const dirtyIds: number[] = []
+  crmDbService.runTx((tx) => {
+    dirtyIds.push(tx.run('INSERT INTO quotation (contract_id,items,total,version,effective_from,effective_to,created_at) VALUES (?,?,?,?,?,?,?)', [dirtyContractId, '[]', 1, 1, 1, 0, 1]))
+    dirtyIds.push(tx.run('INSERT INTO quotation (contract_id,items,total,version,effective_from,effective_to,created_at) VALUES (?,?,?,?,?,?,?)', [dirtyContractId, '[]', 2, 2, 2, 0, 2]))
+  })
+  const repaired = crmDbService.createQuotation({ contract_id: dirtyContractId, items: [{ product_id: productId, qty: 1 }] })
+  const remainingCurrent = crmDbService.all('SELECT id FROM quotation WHERE contract_id = ? AND COALESCE(effective_to,0) = 0', [dirtyContractId])
+  ok('5q 新版本一次关闭脏链中全部旧现行版本', repaired.ok && remainingCurrent.length === 1 && Number(remainingCurrent[0].id) === Number(repaired.id) && dirtyIds.every((id) => Number(crmDbService.getById('quotation', id)?.effective_to) > 0))
 
   // ── 6 事件/行为日志（status_history + activity_log 埋点）───────────────────
   const hist = crmDbService.contractStatusHistory(gapContractId)
@@ -98,7 +153,7 @@ async function main(): Promise<void> {
   ok('6a 签约/发货状态历史落库', histActs.includes('signed') && histActs.includes('shipped'))
   const confirmAct = crmDbService.activityBy('allocation', allocIds[0])
   ok('6b 归属确认写入 activity', confirmAct.some((a) => a.action === 'confirmed'))
-  const quoAct = crmDbService.activityBy('quotation', quo.id as number)
+  const quoAct = crmDbService.activityBy('quotation', quo1.id as number)
   ok('6c 报价单创建写入 activity', quoAct.some((a) => a.action === 'created'))
 
   // ── 7 AI 意向客户导入（幂等 + 联动列 + 聚合）────────────────────────────────
@@ -143,7 +198,9 @@ async function main(): Promise<void> {
     account_id: delAcc.id, name: '删测-合同', amount: 3000, status: 'pending_sign',
     created_at: Date.now(), updated_at: Date.now()
   })
-  crmDbService.create('quotation', { contract_id: delContract, total: 3000, created_at: Date.now() })
+  // 报价行走版本链单点（宪法 §1.6：散写已被 create 守卫禁止）
+  const delProductId = crmDbService.create('product', { model: 'DEL-1', name: '删除测试车', unit_price: 3000, specs: '{}', variants: '[]', created_at: Date.now() })
+  ok('9a0 版本链创建报价成功', crmDbService.createQuotation({ contract_id: delContract, items: [{ product_id: delProductId, qty: 1 }] }).ok)
   crmDbService.create('invoice', { contract_id: delContract, invoice_no: '删测发票', amount: 3000, created_at: Date.now() })
   crmDbService.create('logistics', { contract_id: delContract, tracking_no: 'SF000', created_at: Date.now() })
   const delPay = crmDbService.createPaymentRecord({ payer: '宁波删除测试科技有限公司', amount_net: 3000, pay_channel: 'bank_direct', created_at: Date.now() })
