@@ -18,7 +18,9 @@ import JumpToDatePopover from '../components/JumpToDatePopover'
 import { ContactSnsTimelineDialog } from '../components/Sns/ContactSnsTimelineDialog'
 import { type ContactSnsTimelineTarget, isSingleContactSession } from '../components/Sns/contactSnsTimeline'
 import * as configService from '../services/config'
-import BizPage, { BizAccountList, BizMessageArea, BizAccount } from './BizPage'
+import { BizAccountList, BizMessageArea, type BizAccount } from './BizPage'
+import { formatYmdDateFromSeconds, formatYmdHmDateTime } from './Export/utils/format'
+import { parseJsonOr } from '../../shared/safeJson'
 import {
   finishBackgroundTask,
   isBackgroundTaskCancelRequested,
@@ -782,11 +784,7 @@ function normalizeChatCacheScope(dbPath: unknown, wxid: unknown): string {
 
 function safeParseJson<T>(raw: string | null): T | null {
   if (!raw) return null
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
+  return parseJsonOr<T | null>(raw, null)
 }
 
 const SIDEBAR_USER_PROFILE_CACHE_KEY = 'sidebar_user_profile_cache_v1'
@@ -866,26 +864,6 @@ function readCachedCurrentUserProfile(preferredWxid?: string | null): CachedCurr
   }
 
   return null
-}
-
-function formatYmdDateFromSeconds(timestamp?: number): string {
-  if (!timestamp || !Number.isFinite(timestamp)) return '—'
-  const d = new Date(timestamp * 1000)
-  const y = d.getFullYear()
-  const m = `${d.getMonth() + 1}`.padStart(2, '0')
-  const day = `${d.getDate()}`.padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-function formatYmdHmDateTime(timestamp?: number): string {
-  if (!timestamp || !Number.isFinite(timestamp)) return '—'
-  const d = new Date(timestamp)
-  const y = d.getFullYear()
-  const m = `${d.getMonth() + 1}`.padStart(2, '0')
-  const day = `${d.getDate()}`.padStart(2, '0')
-  const h = `${d.getHours()}`.padStart(2, '0')
-  const min = `${d.getMinutes()}`.padStart(2, '0')
-  return `${y}-${m}-${day} ${h}:${min}`
 }
 
 function formatYmdHmDateTimeFromSeconds(timestamp?: number): string {

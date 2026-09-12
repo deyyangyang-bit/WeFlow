@@ -256,7 +256,7 @@ export class HermesUtilityManager {
       callChatCompletion(
         getAiModelConfig(ConfigService.getInstance()),
         messages.map((m) => ({ role: m.role, content: m.content })),
-        { temperature: AGENT_TEMPERATURE, timeoutMs, signal, responseFormatJson: true }
+        { temperature: AGENT_TEMPERATURE, timeoutMs, signal, responseFormatJson: true, usageContext: { purpose: 'hermes' } }
       ))
     this.tools = deps.tools ?? HERMES_TOOLS
     this.maskTextFn = deps.maskText ?? ((s) => maskPrivateText(s))

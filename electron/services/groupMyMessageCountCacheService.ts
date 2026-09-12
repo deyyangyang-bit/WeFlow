@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { ConfigService } from './config'
+import { toNonNegativeInt } from '../utils/numberUtils'
 
 const CACHE_VERSION = 1
 const MAX_GROUP_ENTRIES_PER_SCOPE = 3000
@@ -20,11 +21,6 @@ interface GroupMyMessageCountScopeMap {
 interface GroupMyMessageCountCacheStore {
   version: number
   scopes: Record<string, GroupMyMessageCountScopeMap>
-}
-
-function toNonNegativeInt(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
-  return Math.max(0, Math.floor(value))
 }
 
 function normalizeEntry(raw: unknown): GroupMyMessageCountCacheEntry | null {

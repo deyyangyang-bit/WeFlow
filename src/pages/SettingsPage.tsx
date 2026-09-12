@@ -9,7 +9,7 @@ import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, RecoveryKeyOutcome } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -343,9 +343,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiModelApiKey, setAiModelApiKey] = useState('')
   const [aiModelApiModel, setAiModelApiModel] = useState('gpt-4o-mini')
   const [aiModelApiMaxTokens, setAiModelApiMaxTokens] = useState(1024)
-  const [aiInsightSilenceDays, setAiInsightSilenceDays] = useState(3)
-  const [aiInsightSilenceMaxDays, setAiInsightSilenceMaxDays] = useState(30)
-  const [aiInsightScanLimit, setAiInsightScanLimit] = useState(50)
+  const [aiDailyCallLimitEnabled, setAiDailyCallLimitEnabled] = useState(true)
+  const [aiDailyCallLimit, setAiDailyCallLimit] = useState(60)
+  const [aiUsageBudget, setAiUsageBudget] = useState<AiUsageBudgetSnapshot | null>(null)
+  const [priceTableAsOf, setPriceTableAsOf] = useState('')
   const [aiInsightAllowContext, setAiInsightAllowContext] = useState(false)
   const [aiInsightAllowMomentsContext, setAiInsightAllowMomentsContext] = useState(false)
   const [aiInsightMomentsContextCount, setAiInsightMomentsContextCount] = useState(5)
@@ -361,8 +362,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiInsightNonCustomerBlacklist, setAiInsightNonCustomerBlacklist] = useState<string[]>([])
   const [insightFilterType, setInsightFilterType] = useState<InsightSessionFilterTypeValue>('all')
   const [insightWhitelistSearch, setInsightWhitelistSearch] = useState('')
-  const [aiInsightCooldownMinutes, setAiInsightCooldownMinutes] = useState(120)
-  const [aiInsightScanIntervalHours, setAiInsightScanIntervalHours] = useState(4)
   const [aiInsightContextCount, setAiInsightContextCount] = useState(40)
   const [aiInsightSystemPrompt, setAiInsightSystemPrompt] = useState('')
   const [aiInsightTelegramEnabled, setAiInsightTelegramEnabled] = useState(false)
@@ -674,15 +673,14 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAiModelApiKey = await configService.getAiModelApiKey()
       const savedAiModelApiModel = await configService.getAiModelApiModel()
       const savedAiModelApiMaxTokens = await configService.getAiModelApiMaxTokens()
-      const savedAiInsightSilenceDays = await configService.getAiInsightSilenceDays()
+      const savedAiDailyCallLimitEnabled = await configService.getAiDailyCallLimitEnabled()
+      const savedAiDailyCallLimit = await configService.getAiDailyCallLimit()
       const savedAiInsightAllowContext = await configService.getAiInsightAllowContext()
       const savedAiInsightAllowMomentsContext = await configService.getAiInsightAllowMomentsContext()
       const savedAiInsightMomentsContextCount = await configService.getAiInsightMomentsContextCount()
       const savedAiInsightMomentsBindings = await configService.getAiInsightMomentsBindings()
       const savedAiInsightFilterMode = await configService.getAiInsightFilterMode()
       const savedAiInsightFilterList = await configService.getAiInsightFilterList()
-      const savedAiInsightCooldownMinutes = await configService.getAiInsightCooldownMinutes()
-      const savedAiInsightScanIntervalHours = await configService.getAiInsightScanIntervalHours()
       const savedAiInsightContextCount = await configService.getAiInsightContextCount()
       const savedAiInsightSystemPrompt = await configService.getAiInsightSystemPrompt()
       const savedAiInsightTelegramEnabled = await configService.getAiInsightTelegramEnabled()
@@ -707,7 +705,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiModelApiKey(savedAiModelApiKey)
       setAiModelApiModel(savedAiModelApiModel)
       setAiModelApiMaxTokens(savedAiModelApiMaxTokens)
-      setAiInsightSilenceDays(savedAiInsightSilenceDays)
+      setAiDailyCallLimitEnabled(savedAiDailyCallLimitEnabled)
+      setAiDailyCallLimit(savedAiDailyCallLimit)
+      // 当日额度快照：只读展示，失败不影响设置页其他字段
+      void window.electronAPI.sales.aiUsageGet()
+        .then((res: AiUsageGetPayload) => {
+          setAiUsageBudget(res?.budget ?? null)
+          setPriceTableAsOf(String(res?.priceTableAsOf || ''))
+        })
+        .catch(() => undefined)
       setAiInsightAllowContext(savedAiInsightAllowContext)
       setAiInsightAllowMomentsContext(savedAiInsightAllowMomentsContext)
       setAiInsightMomentsContextCount(savedAiInsightMomentsContextCount)
@@ -716,8 +722,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiInsightFilterList(new Set(savedAiInsightFilterList))
       const savedNonCustomerBlacklist = await configService.getAiInsightNonCustomerBlacklist()
       setAiInsightNonCustomerBlacklist(savedNonCustomerBlacklist)
-      setAiInsightCooldownMinutes(savedAiInsightCooldownMinutes)
-      setAiInsightScanIntervalHours(savedAiInsightScanIntervalHours)
       setAiInsightContextCount(savedAiInsightContextCount)
       setAiInsightSystemPrompt(savedAiInsightSystemPrompt)
       setAiInsightTelegramEnabled(savedAiInsightTelegramEnabled)
@@ -3668,6 +3672,66 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
 
       <div className="form-group">
+        <label>每日 AI 调用上限</label>
+        <span className="form-hint">
+          达到上限后当天所有 AI 调用被直接阻断（不会静默超支），阻断事件计入简报的覆盖缺口。
+          用量到 <code>80%</code> 时在下方显示预警。
+          估算口径：早间简报每天 1 轮、每轮最多处理 20 个会话，而抽取是<strong>逐会话</strong>调用，
+          故一轮最多 20 次；再加按需识别每次 1 次。默认 <code>60</code>，按实际用量调整。
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '10px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <input
+              type="checkbox"
+              checked={aiDailyCallLimitEnabled}
+              onChange={(e) => {
+                const val = e.target.checked
+                setAiDailyCallLimitEnabled(val)
+                scheduleConfigSave('aiDailyCallLimitEnabled', () => configService.setAiDailyCallLimitEnabled(val))
+              }}
+            />
+            启用
+          </label>
+          <input
+            type="number"
+            className="field-input"
+            value={aiDailyCallLimit}
+            min={1}
+            max={100000}
+            step={1}
+            disabled={!aiDailyCallLimitEnabled}
+            onChange={(e) => {
+              const parsed = parseInt(e.target.value, 10)
+              const val = Math.min(100000, Math.max(1, Number.isFinite(parsed) ? parsed : 60))
+              setAiDailyCallLimit(val)
+              scheduleConfigSave('aiDailyCallLimit', () => configService.setAiDailyCallLimit(val))
+            }}
+            style={{ width: 160 }}
+          />
+          <span className="form-hint" style={{ margin: 0 }}>次 / 天</span>
+        </div>
+        {aiUsageBudget && (
+          <span
+            className="form-hint"
+            style={{
+              marginTop: '8px',
+              color: aiUsageBudget.level === 'blocked'
+                ? 'var(--danger, #d9534f)'
+                : aiUsageBudget.level === 'warn' ? 'var(--warning, #d9860b)' : undefined
+            }}
+          >
+            {aiUsageBudget.message}
+            {aiUsageBudget.blockedCalls > 0 ? `，今日已被阻断 ${aiUsageBudget.blockedCalls} 次` : ''}
+            {aiUsageBudget.unpricedCalls > 0
+              ? `；另有 ${aiUsageBudget.unpricedCalls} 次调用无刊例价（未收录模型），金额未计入`
+              : aiUsageBudget.cost > 0
+                ? `；估算支出 ≈ ${aiUsageBudget.cost} ${aiUsageBudget.currency}（${priceTableAsOf} 官方刊例价）`
+                : ''}
+          </span>
+        )}
+      </div>
+
+      <div className="form-group">
         <label>连接测试</label>
         <span className="form-hint">
           测试通用模型连接，见解与足迹都会使用这套配置。
@@ -4032,112 +4096,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="divider" />
 
       {/* 行为配置 */}
-      <div className="form-group">
-        <label>活跃触发冷却期（分钟）</label>
-        <span className="form-hint">
-          有新消息时触发活跃分析的冷却时间。设为 <strong>0</strong> 表示无冷却，每条新消息都可能触发见解（AI 言论自由模式）。建议按需调整，费用自理。
-        </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiInsightCooldownMinutes}
-          min={0}
-          max={10080}
-          onChange={(e) => {
-            const val = Math.max(0, parseInt(e.target.value, 10) || 0)
-            setAiInsightCooldownMinutes(val)
-            scheduleConfigSave('aiInsightCooldownMinutes', () => configService.setAiInsightCooldownMinutes(val))
-          }}
-          style={{ width: 120 }}
-        />
-        {aiInsightCooldownMinutes === 0 && (
-          <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--color-warning, #f59e0b)' }}>
-            无冷却 — 每次 DB 变更均可触发
-          </span>
-        )}
-      </div>
-
-      <div className="form-group">
-        <label>沉默联系人扫描间隔（小时）</label>
-        <span className="form-hint">
-          多久扫描一次沉默联系人。重启生效。最小 0.1 小时（6 分钟）。
-        </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiInsightScanIntervalHours}
-          min={0.1}
-          max={168}
-          step={0.5}
-          onChange={(e) => {
-            const val = Math.max(0.1, parseFloat(e.target.value) || 4)
-            setAiInsightScanIntervalHours(val)
-            scheduleConfigSave('aiInsightScanIntervalHours', () => configService.setAiInsightScanIntervalHours(val))
-          }}
-          style={{ width: 120 }}
-        />
-      </div>
-
-      <div className="form-group">
-        <label>沉默联系人阈值（天）</label>
-        <span className="form-hint">
-          与某私聊联系人超过此天数没有消息往来时，触发沉默类见解。
-        </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiInsightSilenceDays}
-          min={1}
-          max={365}
-          onChange={(e) => {
-            const val = Math.max(1, parseInt(e.target.value, 10) || 3)
-            setAiInsightSilenceDays(val)
-            scheduleConfigSave('aiInsightSilenceDays', () => configService.setAiInsightSilenceDays(val))
-          }}
-          style={{ width: 100 }}
-        />
-      </div>
-
-      <div className="form-group">
-        <label>沉默上限（天）</label>
-        <span className="form-hint">
-          超过此天数的沉默联系人不再提醒（视为已流失）。建议 30 天。
-        </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiInsightSilenceMaxDays}
-          min={7}
-          max={180}
-          onChange={(e) => {
-            const val = Math.max(7, Math.min(180, parseInt(e.target.value, 10) || 30))
-            setAiInsightSilenceMaxDays(val)
-            scheduleConfigSave('aiInsightSilenceMaxDays', () => configService.setAiInsightSilenceMaxDays(val))
-          }}
-          style={{ width: 100 }}
-        />
-      </div>
-
-      <div className="form-group">
-        <label>每次扫描上限（条）</label>
-        <span className="form-hint">
-          每次沉默扫描最多生成几条见解。高意向客户优先。建议 50 条。
-        </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiInsightScanLimit}
-          min={1}
-          max={200}
-          onChange={(e) => {
-            const val = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 50))
-            setAiInsightScanLimit(val)
-            scheduleConfigSave('aiInsightScanLimit', () => configService.setAiInsightScanLimit(val))
-          }}
-          style={{ width: 100 }}
-        />
-      </div>
-
       <div className="form-group">
         <label>允许发送近期对话内容用于分析</label>
         <span className="form-hint">
@@ -4778,9 +4736,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <div className="api-docs">
           <div className="api-item">
             <p className="api-desc" style={{ lineHeight: 1.7 }}>
-              <strong>触发方式一：活跃会话分析</strong> — 每当微信数据库变化（即你收到新消息）时，经过约 2 秒防抖后，对符合黑白名单规则的活跃会话进行分析。<br />
-              <strong>触发方式二：沉默扫描</strong> — 每 4 小时独立扫描一次，对超过阈值天数无消息的联系人发出提醒。<br />
-              <strong>频率控制</strong> — 冷却期、沉默间隔、黑白名单均在本地判断，不额外发送给模型。<br />
+              <strong>AI 只做三件事</strong> — ① <strong>早间简报</strong>：每天首次打开首页时自动生成一轮（同日重复打开不会重复生成，也可在简报卡片上手动「重新生成」）；② <strong>「AI 识别这个客户」</strong>：在客户工作台手动点击，读取该客户最近聊天并抽取跟进承诺；③ <strong>客户画像</strong>：在客户工作台手动发起。<br />
+              <strong>没有后台自动分析</strong> — 不存在「收到新消息就自动分析」「定时扫描沉默联系人」这类链路；任何识别进行中，相关入口会全局互斥禁用，不会重复发起。<br />
+              <strong>无新内容不调用模型</strong> — 已识别过的会话再次点击不会重复计费；未配置 AI 或微信数据库未连接时直接提示，不发起请求。<br />
+              <strong>调试按钮</strong> — 上方的「立即触发测试见解」是手动调试入口，点击即对一个符合条件的私聊会话发起一次真实调用（会发通知，并计入用量账本）。<br />
+              <strong>费用可见可控</strong> — 每次调用都记入用量账本，可在上方「每日 AI 调用上限」查看当日次数与估算支出；达到上限会在请求发出前阻断并提示。<br />
               <strong>隐私</strong> — 所有分析请求均直接从你的电脑发往你填写的 API 地址，不经过任何 WeFlow 服务器。
             </p>
           </div>

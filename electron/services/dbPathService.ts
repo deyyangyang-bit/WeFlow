@@ -485,35 +485,6 @@ export class DbPathService {
     return sorted;
   }
 
-  /**
-   * 获取默认数据库路径
-   */
-  getDefaultPath(): string {
-    const home = homedir()
-    if (process.platform === 'darwin') {
-      // 优先返回 4.0.5+ 新路径
-      const appSupportBase = join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Library', 'Application Support', 'com.tencent.xinWeChat')
-      if (existsSync(appSupportBase)) {
-        try {
-          const entries = readdirSync(appSupportBase)
-          for (const entry of entries) {
-            if (/^\d+\.\d+b\d+\.\d+/.test(entry) || /^\d+\.\d+\.\d+/.test(entry)) {
-              const candidate = join(appSupportBase, entry)
-              if (existsSync(candidate)) return candidate
-            }
-          }
-        } catch { }
-      }
-      // 旧版本路径兜底
-      return join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Documents', 'xwechat_files')
-    }
-    // Windows: 优先4.x路径，兜底3.x路径
-    const win4Path = join(home, 'Documents', 'xwechat_files')
-    if (existsSync(win4Path)) return win4Path
-    const win3Path = join(home, 'Documents', 'WeChat Files')
-    if (existsSync(win3Path)) return win3Path
-    return win4Path
-  }
 }
 
 export const dbPathService = new DbPathService()

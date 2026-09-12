@@ -24,10 +24,6 @@ export type TaskScope = 'single' | 'multi' | 'content' | 'sns'
 
 export type ContentType = 'text' | 'voice' | 'image' | 'video' | 'emoji' | 'file'
 
-export type ContentCardType = ContentType | 'sns'
-
-export type SessionLayout = 'shared' | 'per-session'
-
 export type DisplayNamePreference = 'group-nickname' | 'remark' | 'nickname'
 
 export type ExportConflictStrategy = 'incremental' | 'overwrite' | 'rename'
@@ -240,11 +236,6 @@ export interface SessionContentMetric {
   lastTimestamp?: number
 }
 
-export interface TimeRangeBounds {
-  minDate: Date
-  maxDate: Date
-}
-
 export interface SessionExportCacheMeta {
   updatedAt: number
   stale: boolean
@@ -253,25 +244,7 @@ export interface SessionExportCacheMeta {
   rangeFiltered?: boolean
 }
 
-// ─── Session Load Trace ──────────────────────────────────────
-
-export type SessionLoadStageStatus = 'pending' | 'loading' | 'done' | 'failed'
-
-export interface SessionLoadStageState {
-  status: SessionLoadStageStatus
-  startedAt?: number
-  finishedAt?: number
-  error?: string
-}
-
-export interface SessionLoadTraceState {
-  messageCount: SessionLoadStageState
-  mediaMetrics: SessionLoadStageState
-}
-
 // ─── Contacts Loading ────────────────────────────────────────
-
-export type SessionDataSource = 'cache' | 'network' | null
 export type ContactsDataSource = 'cache' | 'network' | null
 
 export interface ContactsLoadSession {
@@ -292,29 +265,6 @@ export interface ContactsLoadIssue {
 }
 
 // ─── Automation Draft (for the create/edit form) ─────────────
-
-export interface AutomationTaskDraft {
-  mode: 'create' | 'edit'
-  id?: string
-  name: string
-  enabled: boolean
-  sessionIds: string[]
-  sessionNames: string[]
-  outputDir: string
-  useGlobalOutputDir: boolean
-  scope: Exclude<TaskScope, 'sns'>
-  contentType?: ContentType
-  optionTemplate: Omit<ElectronExportOptions, 'dateRange'>
-  dateRangeConfig: import('../../types/exportAutomation').ExportAutomationDateRangeConfig | string | null
-  intervalDays: number
-  intervalHours: number
-  firstTriggerAtEnabled: boolean
-  firstTriggerAtValue: string
-  stopAtEnabled: boolean
-  stopAtValue: string
-  maxRunsEnabled: boolean
-  maxRuns: number
-}
 
 // ─── Re-exports for convenience ──────────────────────────────
 

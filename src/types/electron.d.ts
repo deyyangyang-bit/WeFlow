@@ -601,7 +601,6 @@ export interface ElectronAPI {
     openAgreementWindow: () => Promise<boolean>
     completeOnboarding: () => Promise<boolean>
     openOnboardingWindow: (options?: { mode?: 'add-account' }) => Promise<boolean>
-    setTitleBarOverlay: (options: { symbolColor: string }) => void
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => Promise<void>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>
     openImageViewerWindow: (imagePath: string, liveVideoPath?: string) => Promise<void>
@@ -696,124 +695,13 @@ export interface ElectronAPI {
     debug: (data: any) => void
   }
   diagnostics: {
-    getExportCardLogs: (options?: { limit?: number }) => Promise<{
-      logs: Array<{
-        id: string
-        ts: number
-        source: 'frontend' | 'main' | 'backend' | 'worker'
-        level: 'debug' | 'info' | 'warn' | 'error'
-        message: string
-        traceId?: string
-        stepId?: string
-        stepName?: string
-        status?: 'running' | 'done' | 'failed' | 'timeout'
-        durationMs?: number
-        data?: Record<string, unknown>
-      }>
-      activeSteps: Array<{
-        traceId: string
-        stepId: string
-        stepName: string
-        source: 'frontend' | 'main' | 'backend' | 'worker'
-        elapsedMs: number
-        stallMs: number
-        startedAt: number
-        lastUpdatedAt: number
-        message?: string
-      }>
-      summary: {
-        totalLogs: number
-        activeStepCount: number
-        errorCount: number
-        warnCount: number
-        timeoutCount: number
-        lastUpdatedAt: number
-      }
-    }>
-    clearExportCardLogs: () => Promise<{ success: boolean }>
     recordResourceStats: (payload: unknown) => Promise<{ success: boolean; count?: number }>
-    getResourceStats: (options?: { limit?: number }) => Promise<{
-      entries: Array<{ ts: number; payload: Record<string, unknown> }>
-      summary: {
-        count: number
-        firstTs: number
-        lastTs: number
-        samples?: number
-        longFrames?: number
-        maxRecentFrameMs?: number
-        maxQueued?: number
-        maxQueuedCache?: number
-        maxQueuedDecrypt?: number
-        maxQueuedHigh?: number
-        maxQueuedNormal?: number
-        maxQueuedLow?: number
-        maxPending?: number
-        maxActiveCache?: number
-        maxActiveDecrypt?: number
-        maxHighWaterQueued?: number
-        maxHighWaterQueuedDecrypt?: number
-        maxHighWaterQueuedLow?: number
-        maxHighWaterActiveDecrypt?: number
-        mediaStreamLoadSamples?: number
-        mediaStreamAvgLoadMs?: number
-        mediaStreamMaxLoadMs?: number
-        mediaStreamNativeLoads?: number
-        mediaStreamPageCacheHits?: number
-        mediaStreamInflightMerges?: number
-        mediaStreamAvoidedNativeLoads?: number
-        mediaStreamAvoidedNativeRate?: number
-        mediaStreamPageCacheHitRate?: number
-        mediaStreamRowsLoaded?: number
-        mediaStreamDuplicateRows?: number
-        mediaStreamDuplicateRate?: number
-        mediaStreamNoProgressStops?: number
-        preloadAccepted?: number
-        preloadDeduped?: number
-        preloadHandled?: number
-        preloadDedupRate?: number
-        preloadCanceledActive?: number
-        preloadDroppedQueued?: number
-        preloadDeferredLowPriority?: number
-        preloadLowPriorityIdleDeferrals?: number
-        preloadActiveCacheSnapshots?: number
-        preloadActiveCacheSnapshotSkipped?: number
-        preloadActiveCacheSnapshotCanceled?: number
-        preloadLowPriorityRejected?: number
-        imagePreloadRejectedCapacity?: number
-        imagePredecryptRequests?: number
-        imagePredecryptBackpressureSkips?: number
-        imagePredecryptRejectedCapacity?: number
-        imagePredecryptDeferred?: number
-        imagePredecryptPreviewUpgrades?: number
-        imagePredecryptRejectRate?: number
-        imagePredecryptBackpressureRate?: number
-        predecryptHiddenSkips?: number
-        rangeHiddenSkips?: number
-        rangeDuplicateSkips?: number
-        rangeVisibilityReschedules?: number
-        transientStatePruneRuns?: number
-        preloadTotalsBaselineCaptured?: boolean
-        counterDeltas?: Record<string, number>
-        preloadTotalDeltas?: Record<string, number>
-      }
-    }>
     clearResourceStats: () => Promise<{ success: boolean }>
-    exportExportCardLogs: (payload: {
-      filePath: string
-      frontendLogs?: unknown[]
-    }) => Promise<{
-      success: boolean
-      filePath?: string
-      summaryPath?: string
-      count?: number
-      error?: string
-    }>
   }
   dbPath: {
     autoDetect: () => Promise<{ success: boolean; path?: string; error?: string }>
     scanWxids: (rootPath: string) => Promise<WxidInfo[]>
     scanWxidCandidates: (rootPath: string) => Promise<WxidInfo[]>
-    getDefault: () => Promise<string>
   }
   wcdb: {
     testConnection: (dbPath: string, hexKey: string, wxid: string) => Promise<{ success: boolean; error?: string; sessionCount?: number }>
@@ -1839,10 +1727,6 @@ export interface ElectronAPI {
     pauseTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
     resumeTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
     cancelTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
-    exportSession: (sessionId: string, outputPath: string, options: ExportOptions) => Promise<{
-      success: boolean
-      error?: string
-    }>
     exportContacts: (outputDir: string, options: { format: 'json' | 'csv' | 'vcf'; exportAvatars: boolean; contactTypes: { friends: boolean; groups: boolean; officials: boolean; blocked?: boolean }; selectedUsernames?: string[] }) => Promise<{
       success: boolean
       successCount?: number
@@ -1898,9 +1782,7 @@ export interface ElectronAPI {
       }>
       error?: string
     }>
-    debugResource: (url: string) => Promise<{ success: boolean; status?: number; headers?: any; error?: string }>
     proxyImage: (payload: { url: string; key?: string | number }) => Promise<{ success: boolean; dataUrl?: string; videoPath?: string; status?: number; error?: string }>
-    downloadImage: (payload: { url: string; key?: string | number }) => Promise<{ success: boolean; data?: any; contentType?: string; error?: string }>
     exportTimeline: (options: {
       outputDir: string
       format: 'json' | 'html' | 'arkmejson' | 'markdown'
@@ -1917,7 +1799,6 @@ export interface ElectronAPI {
     selectExportDir: () => Promise<{ canceled: boolean; filePath?: string }>
     getSnsUsernames: () => Promise<{ success: boolean; usernames?: string[]; error?: string }>
     getUserPostCounts: (options?: { preferCache?: boolean; forceRefresh?: boolean }) => Promise<{ success: boolean; counts?: Record<string, number>; error?: string }>
-    getExportStatsFast: () => Promise<{ success: boolean; data?: { totalPosts: number; totalFriends: number; myPosts: number | null }; error?: string }>
     getExportStats: (options?: { allowTimelineFallback?: boolean; preferCache?: boolean; forceRefresh?: boolean }) => Promise<{ success: boolean; data?: { totalPosts: number; totalFriends: number; myPosts: number | null }; error?: string }>
     getUserPostStats: (username: string) => Promise<{ success: boolean; data?: { username: string; totalPosts: number }; error?: string }>
     installBlockDeleteTrigger: () => Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }>
@@ -1959,11 +1840,9 @@ export interface ElectronAPI {
   }
   insight: {
     testConnection: () => Promise<{ success: boolean; message: string }>
-    getTodayStats: () => Promise<Array<{ sessionId: string; count: number; times: string[] }>>
     listRecords: (filters?: InsightRecordFilters) => Promise<InsightRecordListResult>
     getRecord: (id: string) => Promise<InsightRecordResult>
     markRecordRead: (id: string) => Promise<{ success: boolean; error?: string }>
-    clearRecords: (filters?: InsightRecordFilters) => Promise<{ success: boolean; removed: number; error?: string }>
     triggerTest: () => Promise<{ success: boolean; message: string }>
     triggerSessionInsight: (payload: {
       sessionId: string
@@ -2179,15 +2058,32 @@ export interface ElectronAPI {
     reviewGenerate: () => Promise<{ success: boolean; report?: any; error?: string }>
 
     // 晨间摘要（设计-AI见解重定位 §3.1）
-    morningDigestGet: () => Promise<{ ok: boolean; data: { date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean; createdAt: number } | null }>
-    morningDigestRegenerate: () => Promise<{ ok: boolean; data: { date: string; items: Array<{ sessionId: string; displayName: string; reason: string }>; text: string; aiUsed: boolean; createdAt: number } }>
+    // notReady：业务库尚未就绪（启动早期/切账号重开库），此时 data 必为 null 且不是空态
+    morningDigestGet: () => Promise<{ ok: boolean; data: MorningDigestPayload | null; notReady?: boolean }>
+    morningDigestRegenerate: () => Promise<{ ok: boolean; data: MorningDigestPayload }>
+
+    // AI 按需识别（PRD §5.2/§4.7）：单飞作用域全局
+    identifyCustomer: (params: { sessionId: string; displayName?: string }) => Promise<{
+      success: boolean
+      /** true = 调用前判定无新消息，未发起模型调用（账本无记录） */
+      noNewContent?: boolean
+      newTasks?: number
+      latestAt?: number
+      /** true = 已有识别在进行中（全局单飞），本次被拒绝 */
+      busy?: boolean
+      error?: string
+    }>
+    identifyState: () => Promise<IdentifyActivityPayload>
+    onIdentifyActivity: (cb: (state: IdentifyActivityPayload) => void) => () => void
+
+    // AI 用量账本与当日额度快照（PRD §5.5）
+    aiUsageGet: () => Promise<AiUsageGetPayload>
 
     // 客户画像
     customerGet: (sessionId: string) => Promise<{ success: boolean; profile: any; error?: string }>
     customerCurrentView: (sessionId: string) => Promise<{ success: boolean; data?: any; error?: string }>
     customerUpsert: (data: { session_id: string; display_name?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
-    dashboardStats: () => Promise<{ success: boolean; stats?: DashboardStats; error?: string }>
     funnelStats: (days?: number) => Promise<{ success: boolean; data?: {
       funnel: Array<{ stage: string; count: number }>
       conversion: Array<{ from: string; to: string; rate: number }>
@@ -2249,7 +2145,6 @@ export interface ElectronAPI {
     todoList: (filters?: { status?: string; limit?: number }) => Promise<{ success: boolean; tasks: any[]; error?: string }>
     todoCreate: (payload: { session_id?: string; trigger_type: string; title: string; due_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
     todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number; priority_score?: number; feedback_log?: string; completed_at?: number }) => Promise<{ success: boolean; task?: any; error?: string }>
-    todoScan: (period?: string) => Promise<{ success: boolean; newTasks?: number; verifiedTasks?: Array<{ todo_id: number; judgment: string; reason: string }>; error?: string }>
     profileBatch: (limit?: number, monthsBack?: number) => Promise<{ success: boolean; processed?: number; error?: string }>
     profileProgress: () => Promise<{ total: number; done: number; running: boolean }>
   }
@@ -2409,16 +2304,6 @@ export interface EvalStats {
   gate: EvalGateStatus
 }
 
-export interface DashboardStats {
-  stageCounts: Record<string, number>
-  highIntentCount: number
-  totalCustomers: number
-  newCustomersThisWeek: number
-  pendingTodos: number
-  overdueTodos: number
-  suspectedTodos: number
-}
-
 export interface ExportOptions {
   format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'arkme-json' | 'html' | 'markdown' | 'txt' | 'excel' | 'weclone' | 'sql'
   contentType?: 'text' | 'voice' | 'image' | 'video' | 'emoji' | 'file'
@@ -2533,6 +2418,63 @@ export interface FirstClassifyRoundRow {
   decided_at?: number | null
   created_at: number
   updated_at?: number
+}
+
+/**
+ * AI 识别单飞状态（PRD §4.7：作用域全局）。
+ * 任一识别进行中，所有入口按钮（客户 360 的识别按钮、今日行动页的重新生成简报）同时禁用。
+ */
+export interface IdentifyActivityPayload {
+  busy: boolean
+  kind: 'identify' | 'digest' | null
+  label: string
+  startedAt: number
+}
+
+/** 简报覆盖信息（PRD §6.1 六态 + W3b 真实游标区间） */
+export interface DigestCoveragePayload {
+  state: 'empty_account' | 'crm_only' | 'pending_data' | 'all_covered_clear' | 'failed_or_blocked' | 'stale_snapshot'
+  message: string
+  from: number | null
+  to: number | null
+  pending: number
+  activeSessions: number
+  analyzedSessions: number
+  failedSessions: number
+  source: 'fresh' | 'snapshot'
+  reason?: string
+  snapshotAt?: number
+}
+
+/** 晨间简报（事实版；items/text 保持不变，coverage 为六态载体） */
+export interface MorningDigestPayload {
+  date: string
+  items: Array<{ sessionId: string; displayName: string; reason: string; taskId?: number; status?: string; group?: string }>
+  text: string
+  aiUsed: boolean
+  createdAt: number
+  coverage?: DigestCoveragePayload
+}
+
+/** 当日用量与额度快照（PRD §5.5）。cost 的单位由 currency 决定；
+ *  unpricedCalls > 0 表示有调用使用了未收录刊例价的模型，金额未计入，不得读作 0 花费。 */
+export interface AiUsageBudgetSnapshot {
+  calls: number
+  blockedCalls: number
+  cost: number
+  currency: 'USD' | 'CNY'
+  unpricedCalls: number
+  limit: number
+  level: 'ok' | 'warn' | 'blocked' | 'off'
+  message: string
+}
+
+export interface AiUsageGetPayload {
+  ok: boolean
+  rows: Array<Record<string, unknown>>
+  budget: AiUsageBudgetSnapshot | null
+  priceTableAsOf: string
+  priceTableSource: string
 }
 
 declare global {

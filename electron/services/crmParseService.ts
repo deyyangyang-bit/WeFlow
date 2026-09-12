@@ -267,7 +267,7 @@ async function scanAll(): Promise<number> {
           if (isSend === 0 && accountId && isPaymentPromiseCandidate(textForSignal, 0)) {
             try {
               await processPaymentCandidate({
-                llm: (system, user) => simpleCompletion(configRef!, system, user, { responseFormatJson: true, maxTokens: 300, temperature: 0.2 }),
+                llm: (system, user) => simpleCompletion(configRef!, system, user, { responseFormatJson: true, maxTokens: 300, temperature: 0.2, usageContext: { purpose: 'payment' } }),
                 isConfigured: () => Boolean(configRef && isAiConfigured(configRef)),
                 log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)
               }, {
@@ -520,7 +520,7 @@ async function aiParseShorthand(content: string, quotedContent: string): Promise
     const out = await simpleCompletion(configRef,
       '你是归属解析器。把「归属简语」拆成JSON数组，元素 {customer,sales,amount}。只输出JSON。',
       `归属简语：${content}\n被引用到款：${quotedContent}`,
-      { responseFormatJson: true, maxTokens: 512 })
+      { responseFormatJson: true, maxTokens: 512, usageContext: { purpose: 'crm_parse' } })
     const m = out.match(/\[[\s\S]*\]/)
     if (!m) return null
     const arr = JSON.parse(m[0]) as Array<{ customer?: string; sales?: string; amount?: number | string }>
@@ -538,7 +538,7 @@ async function aiParseShipping(content: string): Promise<ShippingInfo | null> {
   try {
     const out = await simpleCompletion(configRef,
       '你是地址解析器。从聊天文本提取收货信息，输出JSON {receiver,phone,address,city}，缺失字段用空字符串。只输出JSON。',
-      content, { responseFormatJson: true, maxTokens: 300 })
+      content, { responseFormatJson: true, maxTokens: 300, usageContext: { purpose: 'crm_parse' } })
     const m = out.match(/\{[\s\S]*\}/)
     if (!m) return null
     const o = JSON.parse(m[0]) as Record<string, unknown>
@@ -559,7 +559,7 @@ async function handleScreenshot(group: CrmRow, msg: CrmRow): Promise<void> {
     const out = await callChatCompletion(getAiModelConfig(configRef), [
       { role: 'system', content: '你是银行到账截图OCR。只输出JSON {amount,payer,time}，time格式 M月D日HH:MM:SS。' },
       { role: 'user', content: '识别这张到账截图。' }
-    ], { responseFormatJson: true, imagesBase64: [{ data, mime: 'image/png' }], maxTokens: 300 })
+    ], { responseFormatJson: true, imagesBase64: [{ data, mime: 'image/png' }], maxTokens: 300, usageContext: { purpose: 'crm_parse_ocr' } })
     const m = out.match(/\{[\s\S]*\}/)
     if (!m) return
     const j = JSON.parse(m[0]) as { amount?: number | string; payer?: string; time?: string }

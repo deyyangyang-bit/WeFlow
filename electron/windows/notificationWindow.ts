@@ -240,7 +240,6 @@ export function createNotificationWindow() {
       preload: join(__dirname, "preload.js"), // FIX: Use correct relative path (same dir in dist)
       contextIsolation: true,
       nodeIntegration: false,
-      // devTools: true // Enable DevTools
     },
   });
 
@@ -251,7 +250,6 @@ export function createNotificationWindow() {
 
   applyWindowSize(notificationWindow, width, height);
 
-  // notificationWindow.webContents.openDevTools({ mode: 'detach' }) // DEBUG: Force Open DevTools
   notificationWindow.setIgnoreMouseEvents(true, { forward: true }); // 初始点击穿透
 
   // 处理鼠标事件 (如果需要从渲染进程转发，但目前特定区域处理?)

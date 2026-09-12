@@ -101,11 +101,14 @@ interface ConfigSchema {
   aiModelApiKey: string
   aiModelApiModel: string
   aiModelApiMaxTokens: number
+  /** 每日 AI 调用上限开关（PRD §5.5：日上限 + 80% 预警保留为常规配置项） */
+  aiDailyCallLimitEnabled: boolean
+  /** 每日 AI 调用次数上限；仅按次数硬拦截，不按金额（刊例价对未收录模型为 null） */
+  aiDailyCallLimit: number
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
   aiInsightApiModel: string
-  aiInsightSilenceDays: number
   aiInsightAllowContext: boolean
   aiInsightAllowMomentsContext: boolean
   aiInsightMomentsContextCount: number
@@ -122,10 +125,6 @@ interface ConfigSchema {
   reportExcludedSessions: string[]
   aiInsightWhitelistEnabled: boolean
   aiInsightWhitelist: string[]
-  /** 活跃分析冷却时间（分钟），0 表示无冷却 */
-  aiInsightCooldownMinutes: number
-  /** 沉默联系人扫描间隔（小时） */
-  aiInsightScanIntervalHours: number
   /** 发送上下文时的最大消息条数 */
   aiInsightContextCount: number
   /** 自定义 system prompt，空字符串表示使用内置默认值 */
@@ -308,11 +307,15 @@ export class ConfigService {
       aiModelApiKey: '',
       aiModelApiModel: 'gpt-4o-mini',
       aiModelApiMaxTokens: 1024,
+      // 粗估起步（PRD §5.5 要求按「简报每天 1 轮 + 按需按钮」估）：
+      // 抽取是逐会话调用，一轮 ≤20 个会话最多 20 次；一次按需识别 1 次。
+      // 故「每天 1 轮满批 + 少量按需」≈ 30 次，取 60 留一倍余量；按实际用量调整。
+      aiDailyCallLimitEnabled: true,
+      aiDailyCallLimit: 60,
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',
       aiInsightApiModel: 'gpt-4o-mini',
-      aiInsightSilenceDays: 3,
       aiInsightAllowContext: false,
       aiInsightAllowMomentsContext: false,
       aiInsightMomentsContextCount: 5,
@@ -324,8 +327,6 @@ export class ConfigService {
       reportExcludedSessions: [],
       aiInsightWhitelistEnabled: false,
       aiInsightWhitelist: [],
-      aiInsightCooldownMinutes: 120,
-      aiInsightScanIntervalHours: 4,
       aiInsightContextCount: 40,
       aiInsightSocialContextCount: 3,
       crmInternalList: ['库叉', '文件传输助手'],

@@ -87,11 +87,6 @@ async function main(): Promise<void> {
     return stats.length === 1 && stats[0].citations === 1 && !!stats[0].last_cited_at &&
       stats[0].logical_id === r.citations![0].logical_id
   })())
-  ok('c7 面板固定引用格式「引用自：《title》（vN）」静态断言', (() => {
-    const panel = readFileSync(join(ROOT, 'src/components/sales/KnowledgeAskPanel.tsx'), 'utf8')
-    return panel.includes('引用自：《') && panel.includes('》（v') && panel.includes("navigate('/knowledge-base'")
-  })())
-
   // ─── d. 脱敏前置（宪法 §2.6）─────────────────────────────────────────────
   const pubMask = salesDbService.kbCreate({ category: 'faq', title: '销售联系话术样例', content: '有问题联系 13800138000 或加 wxid_abc123def，身份证 110101199001011234' })
   salesDbService.kbReview(pubMask.id!, 'publish', { reviewer: '主管甲' })
@@ -138,13 +133,12 @@ async function main(): Promise<void> {
     buildAskUserPrompt('Q', [{ title: 'T', content: 'C', version: 3 }]).includes('【知识库参考】') &&
     buildAskUserPrompt('Q', [{ title: 'T', content: 'C', version: 3 }]).includes('《T》（v3）'))
 
-  const panelSrc = readFileSync(join(ROOT, 'src/components/sales/KnowledgeAskPanel.tsx'), 'utf8')
+  // P1-1（2026-09-12 代码收口）：原断言读取的 KnowledgeAskPanel.tsx 已删除。
+  // 「问一问」面板由 App 级 HermesPanel 接管，原面板专有文案（引用自 / 仅供参考 / 无命中提案按钮）
+  // 随组件一并移除，不再断言；但「AI 碰不到发送键」是安全铁律，改挂活的 HermesPanel 继续守。
+  const panelSrc = readFileSync(join(ROOT, 'src/components/hermes/HermesPanel.tsx'), 'utf8')
   ok('g4 铁律：答案区无发送类 IPC（AI 碰不到发送键，静态断言）',
     !/sendMsg|sendMessage|sendTextMessage|msgSend|chat:send|message:send|sendImage/.test(panelSrc))
-  ok('g5 答案固定带「知识答案，仅供参考」标识', panelSrc.includes('知识答案，仅供参考'))
-  ok('g6 无命中分支：「知识库里没有答案」+ 生成知识提案按钮（刀 4 已接活：调 kbPropose、不再置灰「下一版」）',
-    panelSrc.includes('知识库里没有答案') && panelSrc.includes('生成知识提案') &&
-    panelSrc.includes('kbPropose') && !panelSrc.includes('下一版'))
   ok('g7 入口①：聊天页会话侧栏挂 Hermes 入口（带会话上下文 openHermes，面板在 App 级挂载）',
     (() => {
       const chat = readFileSync(join(ROOT, 'src/pages/ChatPage.tsx'), 'utf8')

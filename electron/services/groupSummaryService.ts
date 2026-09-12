@@ -1,10 +1,10 @@
-import https from 'https'
-import http from 'http'
-import { URL } from 'url'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import { ConfigService } from './config'
 import { chatService, type Message } from './chatService'
 import { wcdbService } from './wcdbService'
+import { type AiModelConfig } from './ai/aiApiClient'
+import { buildApiUrl, clampText, stripJsonFence, shouldFallbackJsonMode, normalizeSessionIdList } from './ai/promptUtils'
+import { callChatCompletion, getAiModelConfig, type ChatMessage } from './ai/aiApiClient'
 import {
   groupSummaryRecordService,
   type GroupSummaryLog,
@@ -16,7 +16,6 @@ import {
   type GroupSummaryTriggerType
 } from './groupSummaryRecordService'
 
-const API_TIMEOUT_MS = 90_000
 const API_TEMPERATURE = 0.4
 const MIN_SUMMARY_MESSAGES = 5
 const MAX_MANUAL_RANGE_SECONDS = 48 * 60 * 60
@@ -40,12 +39,6 @@ const SUMMARY_CONFIG_KEYS = new Set([
   'myWxid'
 ])
 
-interface SharedAiModelConfig {
-  apiBaseUrl: string
-  apiKey: string
-  model: string
-}
-
 interface GroupSummaryTriggerResult {
   success: boolean
   message: string
@@ -63,29 +56,6 @@ interface GroupSummaryDayTriggerResult {
   records: GroupSummaryRecordSummary[]
 }
 
-class ApiRequestError extends Error {
-  statusCode?: number
-  responseBody?: string
-
-  constructor(message: string, statusCode?: number, responseBody?: string) {
-    super(message)
-    this.name = 'ApiRequestError'
-    this.statusCode = statusCode
-    this.responseBody = responseBody
-  }
-}
-
-function buildApiUrl(baseUrl: string, path: string): string {
-  const base = baseUrl.replace(/\/+$/, '')
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  return `${base}${suffix}`
-}
-
-function normalizeSessionIdList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)))
-}
-
 function normalizeIntervalHours(value: unknown): number {
   const allowed = new Set([1, 2, 4, 8, 12, 24])
   const numeric = Math.floor(Number(value) || 4)
@@ -96,31 +66,6 @@ function getStartOfDaySeconds(date: Date = new Date()): number {
   const next = new Date(date)
   next.setHours(0, 0, 0, 0)
   return Math.floor(next.getTime() / 1000)
-}
-
-function clampText(value: unknown, maxLength: number): string {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, Math.max(0, maxLength - 1))}…`
-}
-
-function stripJsonFence(value: string): string {
-  const text = String(value || '').trim()
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
-  if (fenced) return fenced[1].trim()
-  const firstBrace = text.indexOf('{')
-  const lastBrace = text.lastIndexOf('}')
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return text.slice(firstBrace, lastBrace + 1).trim()
-  }
-  return text
-}
-
-function shouldFallbackJsonMode(error: unknown): boolean {
-  const statusCode = (error as ApiRequestError)?.statusCode
-  if (statusCode === 400 || statusCode === 404 || statusCode === 422) return true
-  const text = `${(error as Error)?.message || ''}\n${(error as ApiRequestError)?.responseBody || ''}`.toLowerCase()
-  return text.includes('response_format') || text.includes('json_object') || text.includes('json mode')
 }
 
 function formatTimestamp(createTime: number): string {
@@ -135,79 +80,7 @@ function formatTimestamp(createTime: number): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 
-function callChatCompletions(
-  apiBaseUrl: string,
-  apiKey: string,
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  options?: { responseFormatJson?: boolean }
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
-    let urlObj: URL
-    try {
-      urlObj = new URL(endpoint)
-    } catch {
-      reject(new Error(`无效的 API URL: ${endpoint}`))
-      return
-    }
-
-    const payload: Record<string, unknown> = {
-      model,
-      messages,
-      temperature: API_TEMPERATURE,
-      stream: false
-    }
-    if (options?.responseFormatJson) {
-      payload.response_format = { type: 'json_object' }
-    }
-
-    const body = JSON.stringify(payload)
-    const requestOptions = {
-      hostname: urlObj.hostname,
-      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-      path: urlObj.pathname + urlObj.search,
-      method: 'POST' as const,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body).toString(),
-        Authorization: `Bearer ${apiKey}`
-      }
-    }
-
-    const requestFn = urlObj.protocol === 'https:' ? https.request : http.request
-    const req = requestFn(requestOptions, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        try {
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
-            return
-          }
-          const parsed = JSON.parse(data)
-          const content = parsed?.choices?.[0]?.message?.content
-          if (typeof content === 'string' && content.trim()) {
-            resolve(content.trim())
-          } else {
-            reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
-          }
-        } catch {
-          reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
-        }
-      })
-    })
-
-    req.setTimeout(API_TIMEOUT_MS, () => {
-      req.destroy()
-      reject(new Error('API 请求超时'))
-    })
-    req.on('error', reject)
-    req.write(body)
-    req.end()
-  })
-}
-
+/** 解析模型返回的话题 JSON；根节点或 topics 不合法时抛错，由调用方降级处理 */
 function parseTopics(rawOutput: string): GroupSummaryTopic[] {
   const parsed = JSON.parse(stripJsonFence(rawOutput)) as unknown
   if (!parsed || typeof parsed !== 'object') {
@@ -425,7 +298,8 @@ class GroupSummaryService {
     return this.dbConnected
   }
 
-  private getSharedAiModelConfig(): SharedAiModelConfig {
+  // 群总结链路不使用 maxTokens，故只取 AiModelConfig 的这三个字段
+  private getSharedAiModelConfig(): Pick<AiModelConfig, 'apiBaseUrl' | 'apiKey' | 'model'> {
     const apiBaseUrl = String(
       this.config.get('aiModelApiBaseUrl')
       || this.config.get('aiInsightApiBaseUrl')
@@ -654,6 +528,8 @@ class GroupSummaryService {
     if (!apiBaseUrl || !apiKey) {
       return { success: false, message: '请先填写通用 AI 模型配置（API 地址和 Key）' }
     }
+    // 统一走 aiApiClient：账本记账与日上限拦截在那一层生效（PRD §5.5「旁路调用纳入账本」）
+    const aiConfig = getAiModelConfig(this.config)
 
     try {
       const messages = await this.readMessagesInPeriod(params.sessionId, params.periodStart, params.periodEnd)
@@ -678,7 +554,7 @@ ${transcript}
 
 请只输出指定 JSON。`
       const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
-      const requestMessages = [
+      const requestMessages: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ]
@@ -689,13 +565,13 @@ ${transcript}
       let responseFormatFallbackReason = ''
       const startedAt = Date.now()
       try {
-        rawOutput = await callChatCompletions(apiBaseUrl, apiKey, model, requestMessages, { responseFormatJson: true })
+        rawOutput = await callChatCompletion(aiConfig, requestMessages, { responseFormatJson: true, usageContext: { purpose: 'group_summary' } })
       } catch (error) {
         if (!shouldFallbackJsonMode(error)) throw error
         responseFormatJson = false
         responseFormatFallback = true
         responseFormatFallbackReason = (error as Error).message || 'response_format 不受支持'
-        rawOutput = await callChatCompletions(apiBaseUrl, apiKey, model, requestMessages)
+        rawOutput = await callChatCompletion(aiConfig, requestMessages, { usageContext: { purpose: 'group_summary' } })
       }
 
       let topics: GroupSummaryTopic[]

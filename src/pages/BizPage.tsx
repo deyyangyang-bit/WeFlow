@@ -426,17 +426,3 @@ export const BizMessageArea: React.FC<{
       </div>
   );
 };
-
-const BizPage: React.FC = () => {
-  const [selectedAccount, setSelectedAccount] = useState<BizAccount | null>(null);
-  return (
-      <div className="biz-page">
-        <div className="biz-sidebar">
-          <BizAccountList onSelect={setSelectedAccount} selectedUsername={selectedAccount?.username} />
-        </div>
-        <BizMessageArea account={selectedAccount} />
-      </div>
-  );
-}
-
-export default BizPage;

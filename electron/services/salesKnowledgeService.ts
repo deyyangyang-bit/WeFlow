@@ -672,7 +672,8 @@ class SalesKnowledgeService {
         maxTokens: 2000,
         responseFormatJson: true,
         disableThinking: true,
-        timeoutMs: 30_000
+        timeoutMs: 30_000,
+        usageContext: { purpose: 'kb_extract' }
       })
 
       // 3. 解析 AI 输出

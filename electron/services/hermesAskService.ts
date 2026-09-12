@@ -128,7 +128,7 @@ function defaultCompletion(config?: ConfigService): (system: string, user: strin
     return callChatCompletion(
       mc,
       [{ role: 'system', content: system }, { role: 'user', content: user }],
-      { temperature: ASK_TEMPERATURE }
+      { temperature: ASK_TEMPERATURE, usageContext: { purpose: 'hermes' } }
     )
   }
 }

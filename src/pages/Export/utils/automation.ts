@@ -86,12 +86,6 @@ export const formatAutomationScheduleLabel = (schedule: ExportAutomationSchedule
   return `每间隔 ${parts.length > 0 ? parts.join(' ') : '0 小时'} 执行一次`
 }
 
-export const resolveAutomationFirstTriggerSummary = (task: ExportAutomationTask): string => {
-  const firstTriggerAt = normalizeAutomationFirstTriggerAt(task.schedule.firstTriggerAt)
-  if (firstTriggerAt <= 0) return '未指定（默认按创建时间+间隔）'
-  return new Date(firstTriggerAt).toLocaleString('zh-CN')
-}
-
 export const formatAutomationCurrentState = (
   task: ExportAutomationTask,
   queueState: 'queued' | 'running' | null,
@@ -155,34 +149,6 @@ export const buildAutomationSchedule = (
 })
 
 // ─── Date part helpers ───────────────────────────────────────
-
-export const buildAutomationDatePart = (timestamp: number): string => {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return ''
-  const year = date.getFullYear()
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-export const buildAutomationTodayDatePart = (): string => buildAutomationDatePart(Date.now())
-
-export const normalizeAutomationDatePart = (value: string): string => {
-  const text = String(value || '').trim()
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : ''
-}
-
-export const normalizeAutomationTimePart = (value: string): string => {
-  const text = String(value || '').trim()
-  if (!/^\d{2}:\d{2}$/.test(text)) return '00:00'
-  const [hoursText, minutesText] = text.split(':')
-  const hours = Math.floor(Number(hoursText))
-  const minutes = Math.floor(Number(minutesText))
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return '00:00'
-  const safeHours = Math.min(23, Math.max(0, hours))
-  const safeMinutes = Math.min(59, Math.max(0, minutes))
-  return `${`${safeHours}`.padStart(2, '0')}:${`${safeMinutes}`.padStart(2, '0')}`
-}
 
 // ─── Date range for automation ───────────────────────────────
 
@@ -257,37 +223,5 @@ export const resolveAutomationRangeMode = (
   return 'custom'
 }
 
-export const createAutomationSelectionByMode = (
-  mode: Exclude<AutomationRangeMode, 'custom' | 'lastNDays'>,
-  now = new Date()
-): ExportDateRangeSelection => {
-  const preset: ExportDateRangePreset = mode
-  return resolveExportDateRangeConfig({
-    version: 1,
-    preset,
-    useAllTime: mode === 'all'
-  }, now)
-}
-
-export const formatAutomationRangeLabel = (
-  config: ExportAutomationDateRangeConfig | string | null | undefined,
-  selection?: ExportDateRangeSelection
-): string => {
-  const resolved = selection || resolveAutomationDateRangeSelection(config, new Date())
-  const mode = resolveAutomationRangeMode(config, resolved)
-  if (mode === 'all') return '每次触发导出全部历史消息'
-  if (mode === 'today') return '每次触发导出当天'
-  if (mode === 'yesterday') return '每次触发导出前1天（昨日）'
-  if (mode === 'last7days') return '每次触发导出前7天'
-  if (mode === 'last30days') return '每次触发导出前30天'
-  if (mode === 'last1year') return '每次触发导出前1年'
-  if (mode === 'lastNDays') {
-    return `每次触发导出前 ${readAutomationLastNDays(config) || AUTOMATION_LAST_N_DAYS_DEFAULT} 天`
-  }
-  return `完整时间：${getExportDateRangeLabel(resolved)}`
-}
-
 // ─── Task ID factories ───────────────────────────────────────
-
-export const createTaskId = (): string => `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 export const createAutomationTaskId = (): string => `auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

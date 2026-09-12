@@ -251,7 +251,7 @@ export function buildAskDataUserPrompt(question: string, rows: Record<string, un
 function defaultCompletion(config?: ConfigService): (system: string, user: string) => Promise<string> {
   return (system, user) => {
     const mc = getAiModelConfig(config as ConfigService)
-    return callChatCompletion(mc, [{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: ASK_DATA_TEMPERATURE })
+    return callChatCompletion(mc, [{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: ASK_DATA_TEMPERATURE, usageContext: { purpose: 'hermes' } })
   }
 }
 

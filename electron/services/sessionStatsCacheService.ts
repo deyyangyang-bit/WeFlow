@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { app } from 'electron'
 import { ConfigService } from './config'
+import { toNonNegativeInt } from '../utils/numberUtils'
 
 /** 缓存版本号。增加/修改 SessionStatsCacheStats 字段后必须提升，避免旧缓存被误用。 */
 const CACHE_VERSION = 4
@@ -42,11 +43,6 @@ interface SessionStatsScopeMap {
 interface SessionStatsCacheStore {
   version: number
   scopes: Record<string, SessionStatsScopeMap>
-}
-
-function toNonNegativeInt(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
-  return Math.max(0, Math.floor(value))
 }
 
 function normalizeStats(raw: unknown): SessionStatsCacheStats | null {

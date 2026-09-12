@@ -95,68 +95,6 @@ export const applyProgressToTaskPerformance = (
 
 // ─── Finalize performance on task completion ─────────────────
 
-export const finalizeTaskPerformance = (task: ExportTask, now: number): TaskPerformance | undefined => {
-  if (!isTextBatchTask(task) || !task.performance) return task.performance
-  const performance = cloneTaskPerformance(task.performance)
-  const nextSessions: Record<string, TaskSessionPerformance> = {}
-  for (const [sessionId, sourceSession] of Object.entries(performance.sessions)) {
-    const session: TaskSessionPerformance = { ...sourceSession }
-    if (session.finishedAt) continue
-    if (session.lastPhase && typeof session.lastPhaseStartedAt === 'number') {
-      const delta = Math.max(0, now - session.lastPhaseStartedAt)
-      performance.stages[resolvePerfStageByPhase(session.lastPhase)] += delta
-    }
-    session.elapsedMs = Math.max(session.elapsedMs, now - session.startedAt)
-    session.finishedAt = now
-    session.lastPhase = undefined
-    session.lastPhaseStartedAt = undefined
-    nextSessions[sessionId] = session
-  }
-  for (const [sessionId, sourceSession] of Object.entries(performance.sessions)) {
-    if (nextSessions[sessionId]) continue
-    nextSessions[sessionId] = { ...sourceSession }
-  }
-  performance.sessions = nextSessions
-  return performance
-}
-
 // ─── Stage totals (live, accounts for in-progress sessions) ──
 
-export const getTaskPerformanceStageTotals = (
-  performance: TaskPerformance | undefined,
-  now: number
-): Record<TaskPerfStage, number> => {
-  const totals: Record<TaskPerfStage, number> = {
-    collect: performance?.stages.collect || 0,
-    build: performance?.stages.build || 0,
-    write: performance?.stages.write || 0,
-    other: performance?.stages.other || 0
-  }
-  if (!performance) return totals
-  for (const session of Object.values(performance.sessions)) {
-    if (session.finishedAt) continue
-    if (!session.lastPhase || typeof session.lastPhaseStartedAt !== 'number') continue
-    const delta = Math.max(0, now - session.lastPhaseStartedAt)
-    totals[resolvePerfStageByPhase(session.lastPhase)] += delta
-  }
-  return totals
-}
-
 // ─── Top N slowest sessions ──────────────────────────────────
-
-export const getTaskPerformanceTopSessions = (
-  performance: TaskPerformance | undefined,
-  now: number,
-  limit = 5
-): Array<TaskSessionPerformance & { liveElapsedMs: number }> => {
-  if (!performance) return []
-  return Object.values(performance.sessions)
-    .map((session) => {
-      const liveElapsedMs = session.finishedAt
-        ? session.elapsedMs
-        : Math.max(session.elapsedMs, now - session.startedAt)
-      return { ...session, liveElapsedMs }
-    })
-    .sort((a, b) => b.liveElapsedMs - a.liveElapsedMs)
-    .slice(0, limit)
-}

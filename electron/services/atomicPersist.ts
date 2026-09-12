@@ -26,6 +26,7 @@ import { basename, dirname, join } from 'path'
 import type { Database as SqlJsDatabase } from 'sql.js'
 import initSqlJs from 'sql.js'
 import { archiveStampOf } from './businessDbPath'
+import { salesLog } from './salesLogger'
 import { autoBackupLocalRoot, listBackupDirs, type AutoBackupManifest } from './autoBackupCore'
 
 /** sql.js 构造器类型（其 d.ts 未导出 SqlJsStatic 具名类型，从默认导出推导） */
@@ -33,6 +34,16 @@ type SqlJsStaticType = Awaited<ReturnType<typeof initSqlJs>>
 
 export type GuardLogLevel = 'INFO' | 'WARN' | 'ERROR'
 export type GuardLogger = (level: GuardLogLevel, message: string) => void
+
+/**
+ * §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见）。
+ * 各业务库 service 统一复用本实现，勿再各自复制一份。
+ */
+export function dbGuardLog(level: GuardLogLevel, msg: string): void {
+  salesLog(level, msg)
+  if (level === 'ERROR') console.error(msg)
+  else console.warn(msg)
+}
 
 /** 默认日志：走 console（service 层会注入 salesLog 桥接，测试注入收集器） */
 const defaultLog: GuardLogger = (level, message) => {

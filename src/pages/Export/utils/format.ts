@@ -17,14 +17,6 @@ export const formatDurationMs = (ms: number): string => {
 
 // ─── Absolute dates ──────────────────────────────────────────
 
-export const formatAbsoluteDate = (timestamp: number): string => {
-  const d = new Date(timestamp)
-  const y = d.getFullYear()
-  const m = `${d.getMonth() + 1}`.padStart(2, '0')
-  const day = `${d.getDate()}`.padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 export const formatYmdDateFromSeconds = (timestamp?: number): string => {
   if (!timestamp || !Number.isFinite(timestamp)) return '—'
   const d = new Date(timestamp * 1000)
@@ -70,23 +62,6 @@ export const formatLatestMessageTimeFromSeconds = (
     return { text: `${hours} 小时前`, title: absolute }
   }
   return { text: absolute, title: absolute }
-}
-
-export const formatRecentExportTime = (timestamp?: number, now = Date.now()): string => {
-  if (!timestamp) return ''
-  const diff = Math.max(0, now - timestamp)
-  const minute = 60 * 1000
-  const hour = 60 * minute
-  const day = 24 * hour
-  if (diff < hour) {
-    const minutes = Math.max(1, Math.floor(diff / minute))
-    return `${minutes} 分钟前`
-  }
-  if (diff < day) {
-    const hours = Math.max(1, Math.floor(diff / hour))
-    return `${hours} 小时前`
-  }
-  return formatAbsoluteDate(timestamp)
 }
 
 // ─── Path formatting ─────────────────────────────────────────
@@ -168,42 +143,10 @@ export const getAvatarLetter = (name: string): string => {
 
 // ─── DateTime local value (for <input type="datetime-local">) ─
 
-export const toDateTimeLocalValue = (timestamp: number): string => {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return ''
-  const year = date.getFullYear()
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  const hours = `${date.getHours()}`.padStart(2, '0')
-  const minutes = `${date.getMinutes()}`.padStart(2, '0')
-  return `${year}-${month}-${day}T${hours}:${minutes}`
-}
-
-export const parseDateTimeLocalValue = (value: string): number | null => {
-  const text = String(value || '').trim()
-  if (!text) return null
-  const parsed = new Date(text)
-  const timestamp = parsed.getTime()
-  if (!Number.isFinite(timestamp)) return null
-  return Math.floor(timestamp)
-}
-
 // ─── Number normalization ────────────────────────────────────
-
-export const normalizeMessageCount = (value: unknown): number | undefined => {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < 0) return undefined
-  return Math.floor(parsed)
-}
 
 export const normalizeTimestampSeconds = (value: unknown): number | undefined => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined
   return Math.floor(parsed)
-}
-
-export const mergeStableCount = (incoming: number | undefined, previous: number | undefined): number | undefined => {
-  if (typeof incoming !== 'number') return previous
-  if (incoming === 0 && typeof previous === 'number' && previous > 0) return previous
-  return incoming
 }

@@ -4409,7 +4409,7 @@ export class ExportContext {
         return { rows, memberSet, firstTime, lastTime }
     }
 
-    public async collectMessages(sessionId: string, cleanedMyWxid: string, dateRange?: { start: number; end: number } | null, senderUsernameFilter?: string, collectMode: MessageCollectMode = 'full', targetMediaTypes?: Set<number>, control?: ExportTaskControl, onCollectProgress?: (payload: { fetched: number; done?: boolean }) => void, _legacyCursorFallbackFlag = true, allowRangeFallback = true, useCursorTimeRange = true, allowModeFallback = true): Promise<{ rows: any[]; memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>; firstTime: number | null; lastTime: number | null; error?: string }> {
+    public async collectMessages(sessionId: string, cleanedMyWxid: string, dateRange?: { start: number; end: number } | null, senderUsernameFilter?: string, collectMode: MessageCollectMode = 'full', targetMediaTypes?: Set<number>, control?: ExportTaskControl, onCollectProgress?: (payload: { fetched: number; done?: boolean }) => void, allowRangeFallback = true, useCursorTimeRange = true, allowModeFallback = true): Promise<{ rows: any[]; memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>; firstTime: number | null; lastTime: number | null; error?: string }> {
         const weliveCollected = await this.collectMessagesFromWeliveRaw(
           sessionId,
           cleanedMyWxid,
@@ -4742,7 +4742,6 @@ export class ExportContext {
             mediaTypeFilter || undefined,
             control,
             onCollectProgress,
-            false,
             allowRangeFallback,
             useCursorTimeRange,
             false
@@ -4760,7 +4759,6 @@ export class ExportContext {
             targetMediaTypes,
             control,
             onCollectProgress,
-            _legacyCursorFallbackFlag,
             false,
             false,
             allowModeFallback

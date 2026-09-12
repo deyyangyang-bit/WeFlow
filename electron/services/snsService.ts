@@ -1322,50 +1322,6 @@ class SnsService {
         return { ...result, timeline: enrichedTimeline }
     }
 
-    async debugResource(url: string): Promise<{ success: boolean; status?: number; headers?: any; error?: string }> {
-        return new Promise((resolve) => {
-            try {
-                const https = require('https')
-                const urlObj = new URL(url)
-
-                const options = {
-                    hostname: urlObj.hostname,
-                    path: urlObj.pathname + urlObj.search,
-                    method: 'GET',
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090719) XWEB/8351',
-                        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'Accept-Language': 'zh-CN,zh;q=0.9',
-                        'Connection': 'keep-alive',
-                        'Range': 'bytes=0-10'
-                    }
-                }
-
-                const req = https.request(options, (res: any) => {
-                    resolve({
-                        success: true,
-                        status: res.statusCode,
-                        headers: {
-                            'x-enc': res.headers['x-enc'],
-                            'x-time': res.headers['x-time'],
-                            'content-length': res.headers['content-length'],
-                            'content-type': res.headers['content-type']
-                        }
-                    })
-                    req.destroy()
-                })
-
-                req.on('error', (e: any) => resolve({ success: false, error: e.message }))
-                req.end()
-            } catch (e: any) {
-                resolve({ success: false, error: e.message })
-            }
-        })
-    }
-
-
-
     async proxyImage(url: string, key?: string | number): Promise<{ success: boolean; dataUrl?: string; videoPath?: string; status?: number; error?: string }> {
         if (!url) return { success: false, error: 'url 不能为空' }
         const cacheKey = `${this.normalizeCacheUrl(url)}|${key ?? ''}`

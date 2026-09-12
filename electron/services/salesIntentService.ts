@@ -12,6 +12,7 @@ import { salesDbService, type IntentTagLog } from './salesDbService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
 import { toMessageSnippets, extractEvidence } from './salesStageClassifier'
+import { formatMessages } from './salesMessageText'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -46,46 +47,6 @@ const SYSTEM_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销
 5. 如果聊天记录不足以判断，stage 设为"了解"，confidence 设为 0.3 以下`
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
-
-function extractContent(msg: any): string {
-  // 兼容 parsedContent（chatService 格式）和 message_content（WCDB 原始格式）
-  const raw = String(msg.parsedContent || msg.rawContent || msg.message_content || msg.content || '').trim()
-  if (!raw) return ''
-  // 跳过 XML/系统消息
-  if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(raw)) return ''
-  // 尝试从 XML 中提取纯文本
-  const textMatch = raw.match(/<content[^>]*>([^<]+)<\/content>/i)
-  if (textMatch) return textMatch[1].trim()
-  if (raw.startsWith('<')) return ''
-  return raw
-}
-
-function getIsSend(msg: any): number {
-  if (msg.isSend !== undefined && msg.isSend !== null) return Number(msg.isSend)
-  if (msg.computed_is_send !== undefined) return Number(msg.computed_is_send)
-  if (msg.is_send !== undefined) return Number(msg.is_send)
-  return 0
-}
-
-function formatMessagesForPrompt(messages: any[], peerName: string): string {
-  const lines: string[] = []
-  let totalLen = 0
-
-  for (const msg of messages) {
-    const content = extractContent(msg)
-    if (!content) continue
-
-    const sender = getIsSend(msg) === 1 ? '我' : peerName
-    const line = `${sender}：${content.slice(0, 200)}`
-    
-    if (totalLen + line.length > MAX_CONTEXT_CHARS) break
-    lines.push(line)
-    totalLen += line.length + 1
-  }
-
-  // 按时间正序（getMessages 返回倒序）
-  return lines.reverse().join('\n')
-}
 
 function parseAiResponse(text: string): { stage: string; confidence: number; reason: string } | null {
   try {
@@ -156,7 +117,10 @@ class SalesIntentService {
       } catch { /* ignore */ }
 
       // 5. 格式化对话文本
-      const chatText = formatMessagesForPrompt(messages, peerName)
+      const chatText = formatMessages(messages, peerName, {
+        maxLineChars: 200,
+        maxTotalChars: MAX_CONTEXT_CHARS
+      })
       if (!chatText.trim()) {
         return { success: false, error: '聊天记录中没有有效的文本消息' }
       }
@@ -168,7 +132,7 @@ class SalesIntentService {
         config,
         SYSTEM_PROMPT,
         userMessage,
-        { responseFormatJson: true, temperature: 0.3, maxTokens: 200 }
+        { responseFormatJson: true, temperature: 0.3, maxTokens: 200, usageContext: { purpose: 'intent' } }
       )
 
       // 7. 解析 AI 响应

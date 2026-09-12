@@ -73,7 +73,7 @@ export async function aiGenerateQuotation(
       .slice(-20)
     if (texts.length === 0) return { ok: false, reason: '无聊天记录' }
 
-    const out = await simpleCompletion(config, EXTRACT_PROMPT, `客户：${displayName}\n聊天记录：\n${texts.join('\n')}`, { responseFormatJson: true, temperature: 0.2, maxTokens: 300 })
+    const out = await simpleCompletion(config, EXTRACT_PROMPT, `客户：${displayName}\n聊天记录：\n${texts.join('\n')}`, { responseFormatJson: true, temperature: 0.2, maxTokens: 300, usageContext: { purpose: 'quote' } })
     const need = parseExtractResult(out)
     if (!need) return { ok: false, reason: '未提取到产品需求' }
 

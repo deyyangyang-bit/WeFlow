@@ -1,7 +1,7 @@
 import * as path from 'path'
-import * as fs from 'fs'
 import { normalizeTimestampSeconds } from './timestamp'
 import { ExportOptions } from '../types'
+import { pathExists } from '../media/fileCopy'
 
 export function sanitizeExportFileNamePart(value: string): string {
   return String(value || '')
@@ -65,15 +65,6 @@ export function buildSessionExportBaseName(
     parts.push(buildDateRangeFileNamePart(options.dateRange))
   }
   return sanitizeExportFileNamePart(parts.join('_')) || 'session'
-}
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fs.promises.access(p)
-    return true
-  } catch {
-    return false
-  }
 }
 
 export async function reserveUniqueOutputPath(preferredPath: string, reservedPaths: Set<string>): Promise<string> {

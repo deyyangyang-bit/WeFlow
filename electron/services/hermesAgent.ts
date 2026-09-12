@@ -199,7 +199,7 @@ export class HermesAgentService {
       return callChatCompletion(
         mc,
         messages.map((m) => ({ role: m.role, content: m.content })),
-        { temperature: AGENT_TEMPERATURE, timeoutMs, signal, responseFormatJson: true }
+        { temperature: AGENT_TEMPERATURE, timeoutMs, signal, responseFormatJson: true, usageContext: { purpose: 'hermes' } }
       )
     })
     return new HermesAgentCore({

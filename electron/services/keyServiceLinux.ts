@@ -63,20 +63,16 @@ export class KeyServiceLinux {
       };
 
       onStatus?.('正在尝试结束当前微信进程...', 0)
-      console.log('[Debug] 开始执行进程清理逻辑...');
 
       try {
-        const { stdout, stderr } = await execAsync('killall -9 wechat wechat-bin xwechat', { env: envWithPath });
-        console.log(`[Debug] killall 成功退出. stdout: ${stdout}, stderr: ${stderr}`);
+        await execAsync('killall -9 wechat wechat-bin xwechat', { env: envWithPath });
       } catch (err: any) {
         // 命令如果没找到进程通常会返回 code 1，这也是正常的，但我们需要记录下来
         console.log(`[Debug] killall 报错或未找到进程: ${err.message}`);
 
         // Fallback: 尝试使用 pkill 兜底
         try {
-          console.log('[Debug] 尝试使用备用命令 pkill...');
           await execAsync('pkill -9 -x "wechat|wechat-bin|xwechat"', { env: envWithPath });
-          console.log('[Debug] pkill 执行完成');
         } catch (e: any) {
           console.log(`[Debug] pkill 报错或未找到进程: ${e.message}`);
         }
@@ -120,7 +116,6 @@ export class KeyServiceLinux {
           });
 
           child.unref();
-          console.log(`[Debug] 尝试拉起 ${binName} 完毕`);
         } catch (e: any) {
           console.log(`[Debug] 尝试拉起 ${binName} 发生异常:`, e.message);
         }
@@ -136,7 +131,6 @@ export class KeyServiceLinux {
           const pids = stdout.trim().split(/\s+/).filter(p => p);
           if (pids.length > 0) {
             pid = parseInt(pids[0], 10);
-            console.log(`[Debug] 第 ${i + 1} 秒，通过 pidof 成功获取 PID: ${pid}`);
             break;
           }
         } catch (err: any) {
@@ -148,7 +142,6 @@ export class KeyServiceLinux {
             const pids = pgrepOut.trim().split(/\s+/).filter(p => p);
             if (pids.length > 0) {
               pid = parseInt(pids[0], 10);
-              console.log(`[Debug] 第 ${i + 1} 秒，通过 pgrep 成功获取 PID: ${pid}`);
               break;
             }
           } catch (e: any) {
@@ -355,11 +348,8 @@ export class KeyServiceLinux {
       const helperPath = this.getHelperPath()
 
       try {
-        console.log(`[Debug] 准备执行 Helper: ${helperPath} image_mem ${pid} ${ciphertextHex}`);
-
         const { stdout: memOut, stderr } = await execFileAsync(helperPath, ['image_mem', pid.toString(), ciphertextHex])
 
-        console.log(`[Debug] Helper stdout: ${memOut}`);
         if (stderr) {
           console.warn(`[Debug] Helper stderr: ${stderr}`);
         }

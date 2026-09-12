@@ -19,6 +19,7 @@ import { salesDbService, type FollowUpTask } from './salesDbService'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
 import { onOpportunityDealRegistered } from './crmLifecycleHooks'
 import { computeRepeatLevel } from '../../shared/crmRepeat'
+import { parseJsonObject } from '../../shared/safeJson'
 
 const DAY_MS = 86400_000
 
@@ -182,7 +183,7 @@ export function syncDiffTask(oppId: number, actor = 'system:delivery'): { create
     if (existing) {
       // 幂等：同商机只留一张；但部分发货等使差异量变化时，原地更新卡面而不是装没看见
       let analysis: Record<string, unknown> = {}
-      try { analysis = JSON.parse(String(existing.analysis || '{}')) } catch { analysis = {} }
+      analysis = parseJsonObject(existing.analysis)
       if (Number(analysis.orderQty) === orderQty && Number(analysis.shippedQty) === shippedQty && Number(analysis.gap) === gap) {
         return { created: 0, closed: 0, updated: 0 } // 无变化零写入
       }
@@ -220,7 +221,7 @@ export function syncDiffTask(oppId: number, actor = 'system:delivery'): { create
   const pending = salesDbService.pendingTaskBySource(DIFF_TRIGGER, id)
   if (!pending) return { created: 0, closed: 0, updated: 0 }
   let analysis: Record<string, unknown> = {}
-  try { analysis = JSON.parse(String(pending.analysis || '{}')) } catch { analysis = {} }
+  analysis = parseJsonObject(pending.analysis)
   analysis.closedReason = `实发量已补齐（shipped_qty=${shippedQty} ≥ order_qty=${orderQty}），差异任务自动关闭`
   analysis.closedBy = actor
   analysis.closedAt = Date.now()
@@ -326,7 +327,7 @@ export function saveEquipment(customerId: number, fields: EquipmentFields = {}, 
 // ─── ④ 改装质保提醒（显式 warranty_start_date + warranty_days，无真实日期不猜）──
 /** 任务卡 analysis JSON 解析（容错：空/坏 JSON → {}；旧数据卡无 analysis 视为周期未知） */
 function parseTaskAnalysis(raw: unknown): Record<string, unknown> {
-  try { return JSON.parse(String(raw || '{}')) } catch { return {} }
+  return parseJsonObject(raw)
 }
 
 /** 质保卡被服务自动失效关闭后允许同一周期恢复；人工完成的 done 卡仍然终态判重。 */
@@ -547,7 +548,7 @@ export function decideTradeIn(customerId: number, decision: 'accept' | 'reject',
   const pending = salesDbService.pendingTaskBySource(TRADE_IN_TRIGGER, id)
   if (pending) {
     let analysis: Record<string, unknown> = {}
-    try { analysis = JSON.parse(String(pending.analysis || '{}')) } catch { analysis = {} }
+    analysis = parseJsonObject(pending.analysis)
     analysis.decision = decision
     analysis.decidedBy = by
     analysis.decidedAt = now

@@ -12,7 +12,6 @@ import { getActorLabel } from './identityService'
 import { emitCustomerTypeSet } from './crmLifecycleHooks'
 
 export const CUSTOMER_TYPES = ['dealer', 'end_user'] as const
-export type CustomerType = (typeof CUSTOMER_TYPES)[number]
 
 export interface CustomerTypeResult { ok: boolean; data?: { customerId: number; type: string; unchanged: boolean }; code?: string; message?: string }
 

@@ -135,7 +135,7 @@ export async function judgeAndImportCrmCustomer(
       config,
       INTENT_JUDGE_PROMPT,
       `客户：${record.displayName}\nAI 画像：\n${record.finalProfile.slice(0, 2000)}`,
-      { responseFormatJson: true, temperature: 0.2, maxTokens: 200 }
+      { responseFormatJson: true, temperature: 0.2, maxTokens: 200, usageContext: { purpose: 'crm_import' } }
     )
     const judge = parseJudgeResult(out)
     if (!judge || !judge.hasIntent) {

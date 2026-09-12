@@ -10,6 +10,7 @@ import {
   getAvatarLetter
 } from './contactSnsTimeline'
 import { displayNameOrFallback, pickDisplayName } from '../../utils/displayName'
+import { formatYmdDateFromSeconds } from '../../pages/Export/utils/format'
 import './ContactSnsTimelineDialog.scss'
 
 const TIMELINE_PAGE_SIZE = 20
@@ -36,16 +37,7 @@ const normalizeTotalPosts = (value?: number | null): number | null => {
   return Math.max(0, Math.floor(Number(value)))
 }
 
-const formatYmdDateFromSeconds = (timestamp?: number): string => {
-  if (!timestamp || !Number.isFinite(timestamp)) return '—'
-  const date = new Date(timestamp * 1000)
-  const year = date.getFullYear()
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const buildContactSnsRankings = (posts: SnsPost[]): { likes: ContactSnsRankItem[]; comments: ContactSnsRankItem[] } => {
+const buildContactSnsRankings =(posts: SnsPost[]): { likes: ContactSnsRankItem[]; comments: ContactSnsRankItem[] } => {
   const likeMap = new Map<string, ContactSnsRankItem>()
   const commentMap = new Map<string, ContactSnsRankItem>()
 

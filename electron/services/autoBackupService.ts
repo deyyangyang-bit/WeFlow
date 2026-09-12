@@ -504,8 +504,3 @@ export function startAutoBackupScheduler(d: AutoBackupDeps): void {
   if (tickTimer.unref) tickTimer.unref()
   console.log(`[AutoBackup] 调度器已启动（每日 ${String(d.config.get('autoBackupTime') || AUTO_BACKUP_DEFAULT_TIME)}，保留 ${AUTO_BACKUP_KEEP} 份）`)
 }
-
-export function stopAutoBackupScheduler(): void {
-  if (bootTimer) { clearTimeout(bootTimer); bootTimer = null }
-  if (tickTimer) { clearInterval(tickTimer); tickTimer = null }
-}

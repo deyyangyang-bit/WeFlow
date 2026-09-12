@@ -423,24 +423,6 @@ class InsightRecordService {
     return { success: true }
   }
 
-  clearRecords(filters: InsightRecordFilters = {}): { success: boolean; removed: number; error?: string } {
-    this.ensureLoaded()
-    const scope = this.getCurrentAccountScope()
-    const sessionId = String(filters.sessionId || '').trim()
-    const startTime = Number(filters.startTime || 0)
-    const endTime = Number(filters.endTime || 0)
-    let removed = 0
-    this.records = this.records.filter((record) => {
-      if (record.accountScope !== scope) return true
-      if (sessionId && record.sessionId !== sessionId) return true
-      if (startTime > 0 && record.createdAt < startTime) return true
-      if (endTime > 0 && record.createdAt > endTime) return true
-      removed += 1
-      return false
-    })
-    this.persist()
-    return { success: true, removed }
-  }
 }
 
 export const insightRecordService = new InsightRecordService()

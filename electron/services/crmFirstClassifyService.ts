@@ -31,6 +31,7 @@ import { trackProposalEvent } from './proposalEventTracking'
 import { setCustomerType } from './crmCustomerService'
 import { onInfoFieldConfirmed, onCustomerTypeSet, onOpportunityDealRegistered } from './crmLifecycleHooks'
 import { normalizeStage } from '../../shared/salesStage'
+import { parseJsonObject } from '../../shared/safeJson'
 import {
   FIRST_CLASSIFY_PROMPT, GAP_DEFS, gapDefByKey, gapSourceId, decodeGapSourceId,
   detectInfoGaps, parseFirstClassifyResult,
@@ -102,7 +103,7 @@ function gapFactsForLead(leadId: number): LeadFacts {
   const accountId = Number(lead?.account_id || 0)
   const acc = accountId > 0 ? crmDbService.all('SELECT * FROM account WHERE id = ?', [accountId])[0] : null
   let custom: Record<string, unknown> = {}
-  try { custom = JSON.parse(String(acc?.custom_fields || '{}')) } catch { custom = {} }
+  custom = parseJsonObject(acc?.custom_fields)
   const customerId = Number(acc?.customer_id || 0)
   const cust = customerId > 0 ? crmDbService.all('SELECT * FROM customer WHERE id = ? AND deleted = 0', [customerId])[0] : null
   let orderQty = 0
@@ -179,7 +180,7 @@ async function gatherMaterials(facts: LeadFacts, lead?: CrmRow | null): Promise<
         .map((f) => `${f}=${String(acc[f] || '').trim()}`)
         .filter((s) => !s.endsWith('='))
       let custom: Record<string, unknown> = {}
-      try { custom = JSON.parse(String(acc.custom_fields || '{}')) } catch { custom = {} }
+      custom = parseJsonObject(acc.custom_fields)
       for (const f of ['needs', 'budget', 'intent_model', 'purchase_timeframe']) {
         const v = String(custom[f] || '').trim()
         if (v) profileLines.push(`${f}=${v}`)
@@ -374,7 +375,7 @@ export async function confirmFirstClassification(roundId: number, actor: string)
     if (acc) {
       const meta = parseEnrichMeta(String(acc.enrich_meta || ''))
       let custom: Record<string, unknown> = {}
-      try { custom = JSON.parse(String(acc.custom_fields || '{}')) } catch { custom = {} }
+      custom = parseJsonObject(acc.custom_fields)
       const updates: Record<string, { value: string; meta: { source: 'ai'; confidence: number; at: number; evidence?: string; model?: string; sourceId?: string } }> = {}
       for (const [field, p] of Object.entries(result.fields)) {
         if (!(ENRICH_FIELDS as readonly string[]).includes(field)) continue // quantity 等无正式落点
@@ -496,7 +497,7 @@ export function reevaluateInfoGapCards(leadId: number, actor: string): { closed:
     const def = GAP_DEFS.find((g) => g.gapIndex === decoded.gapIndex)
     if (!def || missing.has(def.key)) continue // 仍缺 → 保留
     let analysis: Record<string, unknown> = {}
-    try { analysis = JSON.parse(String(card.analysis || '{}')) } catch { analysis = {} }
+    analysis = parseJsonObject(card.analysis)
     analysis.closedReason = `字段已确认（${def.label} 已有正式事实），反问卡自动关闭`
     analysis.closedBy = actor
     analysis.closedAt = Date.now()

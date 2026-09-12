@@ -104,7 +104,7 @@ export async function deepAnalyzeSession(
       config,
       DEEP_ANALYSIS_PROMPT,
       `客户：${displayName}\n微信聊天记录：\n${texts.join('\n')}`,
-      { maxTokens: 2000 }
+      { maxTokens: 2000, usageContext: { purpose: 'deep_analysis' } }
     )
     if (!out || out.trim().length < 20) return { ok: false, reason: 'AI 未输出有效分析' }
     salesLog('INFO', `[DeepAnalysis] ${displayName} 深度分析完成（${out.length} 字）`)

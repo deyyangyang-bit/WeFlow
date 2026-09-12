@@ -362,7 +362,8 @@ class SalesReportService {
           aiSummary = await simpleCompletion(
             this.config,
             `你是一个 B2B 销售经营分析助手。根据提供的统计数据，用 2-3 句中文总结${periodLabel}的销售沟通情况，给出 1 条可执行建议。只输出正文，不要标题或列表。`,
-            `${periodLabel}统计：消息总量 ${totalMessages} 条，活跃客户 ${contactMessages.size} 人。互动最多的客户：${topNames || '无'}。每日消息趋势：${dailyMessageCounts.map(d => `${d.date}:${d.count}`).join(', ') || '无数据'}。`
+            `${periodLabel}统计：消息总量 ${totalMessages} 条，活跃客户 ${contactMessages.size} 人。互动最多的客户：${topNames || '无'}。每日消息趋势：${dailyMessageCounts.map(d => `${d.date}:${d.count}`).join(', ') || '无数据'}。`,
+            { usageContext: { purpose: 'report' } }
           )
         } catch (e) {
           console.warn('[SalesReport] AI 摘要生成失败:', e)
@@ -436,7 +437,7 @@ class SalesReportService {
         this.config,
         '你是一个 B2B 销售教练，帮销售员做周复盘。输出简洁可执行的建议，不要废话。',
         prompt,
-        { temperature: 0.7, maxTokens: 600, disableThinking: true, timeoutMs: 30_000 }
+        { temperature: 0.7, maxTokens: 600, disableThinking: true, timeoutMs: 30_000, usageContext: { purpose: 'report' } }
       )
 
       // 持久化为 report_snapshot（period_type = 'weekly_review'）
@@ -485,10 +486,6 @@ export function startWeeklyReviewScheduler(config: ConfigService): void {
       }
     }
   }, 30 * 60 * 1000)
-}
-
-export function stopWeeklyReviewScheduler(): void {
-  if (reviewTimer) { clearInterval(reviewTimer); reviewTimer = null }
 }
 
 export const salesReportService = new SalesReportService()

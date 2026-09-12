@@ -10,6 +10,7 @@ import { enqueueSalesTask } from './salesQueue'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
+import { formatMessages } from './salesMessageText'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -38,42 +39,6 @@ const SYSTEM_PROMPT = `你是一个 B2B 工业设备（叉车/仓储设备）销
 7. 用中文回复`
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
-
-function extractMsgContent(msg: any): string {
-  const raw = String(msg.parsedContent || msg.rawContent || msg.message_content || msg.content || '').trim()
-  if (!raw) return ''
-  if (/^(<\?xml|<msg\b|<appmsg\b|<img\b|<emoji\b|<voip\b|<sysmsg\b)/i.test(raw)) return ''
-  const textMatch = raw.match(/<content[^>]*>([^<]+)<\/content>/i)
-  if (textMatch) return textMatch[1].trim()
-  if (raw.startsWith('<')) return ''
-  return raw
-}
-
-function getMsgIsSend(msg: any): number {
-  if (msg.isSend !== undefined && msg.isSend !== null) return Number(msg.isSend)
-  if (msg.computed_is_send !== undefined) return Number(msg.computed_is_send)
-  if (msg.is_send !== undefined) return Number(msg.is_send)
-  return 0
-}
-
-function formatMessages(messages: any[], peerName: string): string {
-  const lines: string[] = []
-  let totalLen = 0
-
-  for (const msg of messages) {
-    const content = extractMsgContent(msg)
-    if (!content) continue
-
-    const sender = getMsgIsSend(msg) === 1 ? '我' : peerName
-    const line = `${sender}：${content.slice(0, 150)}`
-
-    if (totalLen + line.length > MAX_CONTEXT_CHARS) break
-    lines.push(line)
-    totalLen += line.length + 1
-  }
-
-  return lines.reverse().join('\n')
-}
 
 function parseSuggestions(text: string): string[] | null {
   try {
@@ -147,7 +112,10 @@ class SalesReplyService {
           }
         } catch { /* ignore */ }
 
-        chatText = formatMessages(messages, peerName)
+        chatText = formatMessages(messages, peerName, {
+          maxLineChars: 150,
+          maxTotalChars: MAX_CONTEXT_CHARS
+        })
       }
 
       if (!chatText.trim()) {
@@ -171,7 +139,7 @@ class SalesReplyService {
         config,
         SYSTEM_PROMPT,
         userMessage,
-        { responseFormatJson: true, temperature: 0.7, maxTokens: 500 }
+        { responseFormatJson: true, temperature: 0.7, maxTokens: 500, usageContext: { purpose: 'reply' } }
       )
 
       // 6. 解析结果

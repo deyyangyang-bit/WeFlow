@@ -5,11 +5,11 @@
 
 import type { ChatSession as AppChatSession, ContactInfo } from '../../../types/models'
 import type { ConversationTab, DisplayNamePreference, SessionRow } from '../types'
-import { displayNameOrFallback, pickDisplayName } from '../../../utils/displayName'
+import { displayNameOrFallback } from '../../../utils/displayName'
 
 // ─── Session type classification ─────────────────────────────
 
-export const toKindByContactType = (session: AppChatSession, contact?: ContactInfo): ConversationTab => {
+const toKindByContactType = (session: AppChatSession, contact?: ContactInfo): ConversationTab => {
   if (session.username.endsWith('@chatroom')) return 'group'
   if (session.username.startsWith('gh_')) return 'official'
   if (contact?.type === 'official') return 'official'
@@ -17,7 +17,7 @@ export const toKindByContactType = (session: AppChatSession, contact?: ContactIn
   return 'private'
 }
 
-export const toKindByContact = (contact: ContactInfo): ConversationTab => {
+const toKindByContact = (contact: ContactInfo): ConversationTab => {
   if (contact.type === 'group') return 'group'
   if (contact.type === 'official') return 'official'
   if (contact.type === 'former_friend') return 'former_friend'
@@ -26,25 +26,12 @@ export const toKindByContact = (contact: ContactInfo): ConversationTab => {
 
 // ─── Session filtering predicates ────────────────────────────
 
-export const isContentScopeSession = (session: SessionRow): boolean =>
-  session.kind === 'private' || session.kind === 'group' || session.kind === 'former_friend'
-
-export const isExportConversationSession = (session: SessionRow): boolean =>
-  session.kind === 'private' || session.kind === 'group' || session.kind === 'former_friend'
-
 export const isSingleContactSession = (sessionId: string): boolean => {
   const normalized = String(sessionId || '').trim()
   if (!normalized) return false
   if (normalized.includes('@chatroom')) return false
   if (normalized.startsWith('gh_')) return false
   return true
-}
-
-export const matchesContactTab = (contact: ContactInfo, tab: ConversationTab): boolean => {
-  if (tab === 'private') return contact.type === 'friend'
-  if (tab === 'group') return contact.type === 'group'
-  if (tab === 'official') return contact.type === 'official'
-  return contact.type === 'former_friend'
 }
 
 // ─── Build session rows from sessions + contacts ─────────────
@@ -116,17 +103,6 @@ export const toSessionRowsWithContacts = (
     .sort((a, b) => (b.sortTimestamp || b.lastTimestamp || 0) - (a.sortTimestamp || a.lastTimestamp || 0))
 }
 
-// ─── Array equality check ────────────────────────────────────
-
-export const areStringArraysEqual = (left: string[], right: string[]): boolean => {
-  if (left === right) return true
-  if (left.length !== right.length) return false
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false
-  }
-  return true
-}
-
 export const getSelectionScopeFromRows = (rows: SessionRow[]): import('../types').TaskScope => {
   if (rows.length === 0) return 'single'
   if (rows.length === 1) return 'single'
@@ -141,16 +117,4 @@ export const resolveScopeDisplayNames = (
     if (pref === 'nickname') return displayNameOrFallback(r.username, r.nickname, r.remark, r.displayName)
     return displayNameOrFallback(r.username, r.remark, r.nickname, r.displayName)
   })
-}
-
-// ─── Name comparison helper ──────────────────────────────────
-
-export const toComparableNameSet = (values: Array<string | undefined | null>): Set<string> => {
-  const set = new Set<string>()
-  for (const value of values) {
-    const normalized = pickDisplayName(value)?.trim() || ''
-    if (!normalized) continue
-    set.add(normalized)
-  }
-  return set
 }

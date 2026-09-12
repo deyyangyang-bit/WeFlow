@@ -20,6 +20,7 @@ import { ENRICH_PROMPT, parseEnrichResult } from './crmEnrichCore'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { salesLog } from './salesLogger'
+import { parseJsonObject } from '../../shared/safeJson'
 import { trackProposalEvent } from './proposalEventTracking'
 import type { ConfigService } from './config'
 
@@ -155,7 +156,7 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
   const current: Record<string, string | null> = {}
   for (const f of ENRICH_FIELDS) current[f] = acc[f] != null && String(acc[f]).trim() !== '' ? String(acc[f]) : null
   let customFields: Record<string, unknown> = {}
-  try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+  customFields = parseJsonObject(acc.custom_fields)
   for (const f of ENRICH_FIELDS) {
     if (current[f] == null && customFields[f] != null && String(customFields[f]).trim() !== '') current[f] = String(customFields[f])
   }

@@ -173,8 +173,11 @@ async function main(): Promise<void> {
     /trackProposalEvent\(\{ event_type: 'proposal', stage: 'generated'/.test(enrichSrc) &&
     /for \(const field of newPendingFields\)/.test(enrichSrc))
   const engineSrc = readFileSync(join(ROOT, 'electron/services/salesActionEngine.ts'), 'utf8')
-  ok('d11 卡流渲染点挂 trackActionCardsViewed + 完成闭环挂 action/accepted',
-    /trackActionCardsViewed\(actionItems\.map\(i => i\.id\)\)/.test(engineSrc) &&
+  // P1-6（2026-09-12 代码收口）：原 A 段校验的卡流渲染点
+  // trackActionCardsViewed(actionItems.map(...)) 位于已删除的 getTodayActions
+  // ——旧「今日行动」读口，前端早已迁到 getUnifiedSignals，无渲染方调用该 IPC。
+  // 该调用删除前也只在死函数内，故仅保留仍活着的完成闭环断言。
+  ok('d11 完成闭环挂 action/accepted',
     /event_type: 'action', stage: 'accepted'/.test(engineSrc))
   const crmSrc = readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')
   ok('d12 applyInfoField 双分支挂 proposal/accepted|rejected', (crmSrc.match(/event_type: 'proposal', stage: '(accepted|rejected)'/g) || []).length === 2)

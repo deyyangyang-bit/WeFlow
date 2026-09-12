@@ -22,6 +22,7 @@ import { computeRepeatLevel, crmCustomerKeyForOpportunity } from '../../utils/cr
 // 归属过滤档（与父页面 CrmWorkbenchPage 同一语义源；展示层便利过滤，非安全边界 宪法 §1.12）
 import { filterByOwner, filterCustomerTasks, buildCustomerOwners, countWonByCustomerKey, type DeliveryAccountOwner } from '../../utils/deliveryAftersalesView'
 import { isSalesView, type IdentityLike } from '../../utils/leadAssignmentView'
+import { fmtDate, fmtQty, toDateInput, fromDateInput } from '../../utils/formatBiz'
 import './DeliveryAftersales.scss'
 
 // OpportunityRecord 类型上无 owner_sales 列（归属 SSOT 三表之一，查询已带出）；本地扩展补齐，不改 electron.d.ts
@@ -59,29 +60,6 @@ const EQUIP_FIELDS: ReadonlyArray<{ key: string; label: string; type: 'text' | '
   { key: 'warranty_start_date', label: '质保起算日', type: 'date' },
   { key: 'warranty_days', label: '质保期限(天)', type: 'number' }
 ]
-
-// ─── 空值兜底：日期 0 / 文本 '' → 「未登记」 ──────────────────────────────────
-
-function fmtDate(ms: number | undefined): string {
-  const n = Number(ms || 0)
-  if (!n) return '未登记'
-  const d = new Date(n)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-function fmtQty(n: number | undefined): string {
-  return Number(n) > 0 ? `${Number(n)} 台` : '未登记'
-}
-function toDateInput(ms: number | undefined): string {
-  const n = Number(ms || 0)
-  if (!n) return ''
-  const d = new Date(n)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-function fromDateInput(v: string): number {
-  if (!v) return 0
-  const t = new Date(`${v}T00:00:00`).getTime()
-  return Number.isFinite(t) ? t : 0
-}
 
 /** 完整数值转换：非负整数 → number；空串/小数/脏输入 → null（不静默截断取整） */
 function parseNonNegInt(raw: string): number | null {

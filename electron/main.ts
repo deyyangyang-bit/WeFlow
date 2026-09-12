@@ -1,4 +1,6 @@
 import { configureAiUsageLedger, readAiUsage } from './services/ai/aiUsageLedger'
+import { configureAiBudget, PRICE_TABLE_AS_OF, PRICE_TABLE_SOURCE } from './services/ai/aiBudget'
+import { aiDailyLimitAuditDetail } from './services/ai/aiDailyLimitAudit'
 import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, utilityProcess } from 'electron'
 import { Worker } from 'worker_threads'
@@ -16,16 +18,15 @@ import { imagePreloadService } from './services/imagePreloadService'
 import { analyticsService } from './services/analyticsService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
-import { exportService, ExportOptions, ExportProgress } from './services/export'
+import { ExportOptions, ExportProgress } from './services/export'
 import { exportTaskControlService } from './services/exportTaskControlService'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
 import { voiceTranscribeService } from './services/voiceTranscribeService'
 import { videoService } from './services/videoService'
-import { snsService, isVideoUrl } from './services/snsService'
+import { snsService } from './services/snsService'
 import { windowsHelloService } from './services/windowsHelloService'
-import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
 
 
 // ─── 销售助手模块 ─────────────────────────────────────────────────────────────
@@ -42,9 +43,9 @@ import { classifyAskIntent, askData, markDataAskViewed } from './services/hermes
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
-import { salesFollowUpService } from './services/salesFollowUpService'
+import { salesFollowUpService, identifyCoordinator } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, refreshActionSignals, completeUnifiedSignal, recordUserActionEvent } from './services/salesActionEngine'
+import { setActionEngineConfig, startActionEngineScheduler, completeAction, generateSuggestion, generateActionAnalysis, getUnifiedSignals, refreshActionSignals, completeUnifiedSignal, recordUserActionEvent } from './services/salesActionEngine'
 import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
 import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
@@ -74,7 +75,7 @@ import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2
 import { startSla2LlmScanScheduler, setSla2LlmScanDeps } from './services/crmSla2LlmScanService'
 import { setSla2EvidenceResolver } from './services/crmSla2EvidenceService'
 import { startPaymentPromiseScanScheduler } from './services/crmPaymentPromiseService'
-import { getAiModelConfig, callChatCompletion, isAiConfigured } from './services/ai/aiApiClient'
+import { getAiModelConfig, getAiBudgetSnapshot, callChatCompletion, isAiConfigured } from './services/ai/aiApiClient'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
@@ -208,173 +209,6 @@ const getNumericRecordValue = (value: unknown, path: string[]): number => {
   }
   const numeric = Number(current)
   return Number.isFinite(numeric) ? numeric : 0
-}
-
-const summarizeResourceDiagnostics = (
-  entries: ResourceDiagnosticsEntry[],
-  preloadTotalsBaseline: Record<string, number> | null = resourceDiagnosticsPreloadTotalsBaseline
-): Record<string, unknown> => {
-  const counterDeltas: Record<string, number> = {}
-  const preloadTotalDeltas: Record<string, number> = {}
-  let longFrames = 0
-  let maxRecentFrameMs = 0
-  let maxQueued = 0
-  let maxQueuedCache = 0
-  let maxQueuedDecrypt = 0
-  let maxQueuedHigh = 0
-  let maxQueuedNormal = 0
-  let maxQueuedLow = 0
-  let maxActiveCache = 0
-  let maxActiveDecrypt = 0
-  let maxPending = 0
-  let maxHighWaterQueued = 0
-  let maxHighWaterQueuedDecrypt = 0
-  let maxHighWaterQueuedLow = 0
-  let maxHighWaterActiveDecrypt = 0
-  let mediaStreamMaxLoadMs = 0
-
-  for (const entry of entries) {
-    const payload = entry.payload
-    longFrames += getNumericRecordValue(payload, ['frameDelta', 'longFrames'])
-    maxRecentFrameMs = Math.max(maxRecentFrameMs, getNumericRecordValue(payload, ['frameDelta', 'recentMaxFrameMs']))
-    maxQueued = Math.max(maxQueued, getNumericRecordValue(payload, ['preloadStats', 'queued']))
-    maxQueuedCache = Math.max(maxQueuedCache, getNumericRecordValue(payload, ['preloadStats', 'queuedCache']))
-    maxQueuedDecrypt = Math.max(maxQueuedDecrypt, getNumericRecordValue(payload, ['preloadStats', 'queuedDecrypt']))
-    maxQueuedHigh = Math.max(maxQueuedHigh, getNumericRecordValue(payload, ['preloadStats', 'queuedHigh']))
-    maxQueuedNormal = Math.max(maxQueuedNormal, getNumericRecordValue(payload, ['preloadStats', 'queuedNormal']))
-    maxQueuedLow = Math.max(maxQueuedLow, getNumericRecordValue(payload, ['preloadStats', 'queuedLow']))
-    maxActiveCache = Math.max(maxActiveCache, getNumericRecordValue(payload, ['preloadStats', 'activeCache']))
-    maxActiveDecrypt = Math.max(maxActiveDecrypt, getNumericRecordValue(payload, ['preloadStats', 'activeDecrypt']))
-    maxPending = Math.max(maxPending, getNumericRecordValue(payload, ['preloadStats', 'pending']))
-    maxHighWaterQueued = Math.max(maxHighWaterQueued, getNumericRecordValue(payload, ['preloadStats', 'highWater', 'queued']))
-    maxHighWaterQueuedDecrypt = Math.max(maxHighWaterQueuedDecrypt, getNumericRecordValue(payload, ['preloadStats', 'highWater', 'queuedDecrypt']))
-    maxHighWaterQueuedLow = Math.max(maxHighWaterQueuedLow, getNumericRecordValue(payload, ['preloadStats', 'highWater', 'queuedLow']))
-    maxHighWaterActiveDecrypt = Math.max(maxHighWaterActiveDecrypt, getNumericRecordValue(payload, ['preloadStats', 'highWater', 'activeDecrypt']))
-    mediaStreamMaxLoadMs = Math.max(
-      mediaStreamMaxLoadMs,
-      getNumericRecordValue(payload, ['counters', 'mediaStreamMaxLoadMs']),
-      getNumericRecordValue(payload, ['delta', 'mediaStreamMaxLoadMs'])
-    )
-
-    const delta = getRecordValue(payload, 'delta')
-    if (delta && typeof delta === 'object') {
-      for (const [key, value] of Object.entries(delta as Record<string, unknown>)) {
-        const numeric = Number(value)
-        if (!Number.isFinite(numeric)) continue
-        counterDeltas[key] = (counterDeltas[key] || 0) + numeric
-      }
-    }
-  }
-
-  const lastTotals = getRecordValue(getRecordValue(entries[entries.length - 1]?.payload, 'preloadStats'), 'totals')
-  const firstTotals = preloadTotalsBaseline || getRecordValue(getRecordValue(entries[0]?.payload, 'preloadStats'), 'totals')
-  if (firstTotals && typeof firstTotals === 'object' && lastTotals && typeof lastTotals === 'object') {
-    const keys = new Set([
-      ...Object.keys(firstTotals as Record<string, unknown>),
-      ...Object.keys(lastTotals as Record<string, unknown>)
-    ])
-    for (const key of keys) {
-      const first = Number((firstTotals as Record<string, unknown>)[key])
-      const last = Number((lastTotals as Record<string, unknown>)[key])
-      if (!Number.isFinite(first) || !Number.isFinite(last)) continue
-      preloadTotalDeltas[key] = last - first
-    }
-  }
-
-  const mediaStreamLoadSamples = counterDeltas.mediaStreamLoadSamples || 0
-  const mediaStreamLoadMsTotal = counterDeltas.mediaStreamLoadMsTotal || 0
-  const mediaStreamPageCacheHits = counterDeltas.mediaStreamPageCacheHits || 0
-  const mediaStreamInflightMerges = counterDeltas.mediaStreamInflightMerges || 0
-  const mediaStreamAvoidedNativeLoads = mediaStreamPageCacheHits + mediaStreamInflightMerges
-  const mediaStreamNativeLoads = counterDeltas.mediaStreamNativeLoads || 0
-  const mediaStreamRowsLoaded = counterDeltas.mediaStreamRowsLoaded || 0
-  const mediaStreamDuplicateRows = counterDeltas.mediaStreamDuplicateRows || 0
-  const mediaStreamNoProgressStops = counterDeltas.mediaStreamNoProgressStops || 0
-  const preloadAccepted = preloadTotalDeltas.accepted || 0
-  const preloadMergedQueued = preloadTotalDeltas.mergedQueued || 0
-  const preloadSkippedActive = preloadTotalDeltas.skippedActive || 0
-  const preloadSkippedPending = preloadTotalDeltas.skippedPending || 0
-  const preloadDeduped = preloadMergedQueued + preloadSkippedActive + preloadSkippedPending
-  const preloadHandled = preloadAccepted + preloadDeduped
-  const preloadCanceledActive = preloadTotalDeltas.canceledActive || 0
-  const preloadDroppedQueued = preloadTotalDeltas.droppedQueued || 0
-  const preloadDeferredLowPriority = preloadTotalDeltas.deferredLowPriority || 0
-  const preloadLowPriorityIdleDeferrals = preloadTotalDeltas.lowPriorityIdleDeferrals || 0
-  const preloadActiveCacheSnapshots = preloadTotalDeltas.activeCacheSnapshots || 0
-  const preloadActiveCacheSnapshotSkipped = preloadTotalDeltas.activeCacheSnapshotSkipped || 0
-  const preloadActiveCacheSnapshotCanceled = preloadTotalDeltas.activeCacheSnapshotCanceled || 0
-  const preloadLowPriorityRejected = preloadTotalDeltas.lowPriorityRejected || 0
-  const imagePreloadRejectedCapacity = counterDeltas.imagePreloadRejectedCapacity || 0
-  const imagePredecryptRequests = counterDeltas.imagePredecryptRequests || 0
-  const imagePredecryptBackpressureSkips = counterDeltas.imagePredecryptBackpressureSkips || 0
-  const imagePredecryptRejectedCapacity = counterDeltas.imagePredecryptRejectedCapacity || 0
-  const imagePredecryptDeferred = counterDeltas.imagePredecryptDeferred || 0
-  const imagePredecryptPreviewUpgrades = counterDeltas.imagePredecryptPreviewUpgrades || 0
-  const predecryptHiddenSkips = counterDeltas.predecryptHiddenSkips || 0
-  const rangeHiddenSkips = counterDeltas.rangeHiddenSkips || 0
-  const rangeDuplicateSkips = counterDeltas.rangeDuplicateSkips || 0
-  const rangeVisibilityReschedules = counterDeltas.rangeVisibilityReschedules || 0
-  const transientStatePruneRuns = counterDeltas.transientStatePruneRuns || 0
-
-  return {
-    samples: entries.length,
-    longFrames,
-    maxRecentFrameMs,
-    maxQueued,
-    maxQueuedCache,
-    maxQueuedDecrypt,
-    maxQueuedHigh,
-    maxQueuedNormal,
-    maxQueuedLow,
-    maxPending,
-    maxActiveCache,
-    maxActiveDecrypt,
-    maxHighWaterQueued,
-    maxHighWaterQueuedDecrypt,
-    maxHighWaterQueuedLow,
-    maxHighWaterActiveDecrypt,
-    mediaStreamLoadSamples,
-    mediaStreamAvgLoadMs: mediaStreamLoadSamples > 0 ? mediaStreamLoadMsTotal / mediaStreamLoadSamples : 0,
-    mediaStreamMaxLoadMs,
-    mediaStreamNativeLoads,
-    mediaStreamPageCacheHits,
-    mediaStreamInflightMerges,
-    mediaStreamAvoidedNativeLoads,
-    mediaStreamAvoidedNativeRate: mediaStreamLoadSamples > 0 ? mediaStreamAvoidedNativeLoads / mediaStreamLoadSamples : 0,
-    mediaStreamPageCacheHitRate: mediaStreamLoadSamples > 0 ? mediaStreamPageCacheHits / mediaStreamLoadSamples : 0,
-    mediaStreamRowsLoaded,
-    mediaStreamDuplicateRows,
-    mediaStreamDuplicateRate: mediaStreamRowsLoaded > 0 ? mediaStreamDuplicateRows / mediaStreamRowsLoaded : 0,
-    mediaStreamNoProgressStops,
-    preloadAccepted,
-    preloadDeduped,
-    preloadHandled,
-    preloadDedupRate: preloadHandled > 0 ? preloadDeduped / preloadHandled : 0,
-    preloadCanceledActive,
-    preloadDroppedQueued,
-    preloadDeferredLowPriority,
-    preloadLowPriorityIdleDeferrals,
-    preloadActiveCacheSnapshots,
-    preloadActiveCacheSnapshotSkipped,
-    preloadActiveCacheSnapshotCanceled,
-    preloadLowPriorityRejected,
-    imagePreloadRejectedCapacity,
-    imagePredecryptRequests,
-    imagePredecryptBackpressureSkips,
-    imagePredecryptRejectedCapacity,
-    imagePredecryptDeferred,
-    imagePredecryptPreviewUpgrades,
-    imagePredecryptRejectRate: imagePredecryptRequests > 0 ? imagePredecryptRejectedCapacity / imagePredecryptRequests : 0,
-    imagePredecryptBackpressureRate: imagePredecryptRequests > 0 ? imagePredecryptBackpressureSkips / imagePredecryptRequests : 0,
-    predecryptHiddenSkips,
-    rangeHiddenSkips,
-    rangeDuplicateSkips,
-    rangeVisibilityReschedules,
-    transientStatePruneRuns,
-    preloadTotalsBaselineCaptured: Boolean(preloadTotalsBaseline),
-    counterDeltas,
-    preloadTotalDeltas
-  }
 }
 
 const normalizeExportTaskId = (taskId: unknown): string => String(taskId || '').trim()
@@ -2126,6 +1960,12 @@ function registerIpcHandlers() {
     const prevWeights = key === 'crmAssignWeights'
       ? (configService?.get('crmAssignWeights') as Record<string, number> | undefined) ?? {}
       : null
+    // AI 每日调用上限变更审计（AI 简报 PRD §4.4/§7.4-3）：上限是当天 AI 花费的硬门禁，
+    // 改上限必须留痕。与权重调整同一拦截点、同一「尽力而为」口径（取改前值 → 写库后落 diff；
+    // 审计失败不阻塞配置保存；crmDb 未就绪（引导期）静默跳过）。旧值原样带入，
+    // 「要不要记、记什么」由 aiDailyLimitAuditDetail 这一纯函数裁决（默认/钳制口径与读取侧一致）。
+    const isAiLimitKey = key === 'aiDailyCallLimit'
+    const prevAiLimit: unknown = isAiLimitKey ? configService?.get('aiDailyCallLimit') : undefined
     if (key === 'launchAtStartup') {
       result = applyLaunchAtStartupPreference(value === true)
     } else {
@@ -2148,6 +1988,18 @@ function registerIpcHandlers() {
         }
       } catch (e) {
         console.warn('[Sales] 权重调整审计写入失败（配置已保存）:', e)
+      }
+    }
+    // AI 每日调用上限变更审计（与设置页「审计流水」同库同表；提额与降额同记——append-only
+    // 单点口径下，放宽与收紧都是改变当天 AI 开销门禁的敏感操作，direction 供前端筛选区分）
+    if (isAiLimitKey) {
+      try {
+        const detail = aiDailyLimitAuditDetail(prevAiLimit, value)
+        if (detail && crmDbService.currentDbPath()) {
+          crmDbService.auditAppend(getIdentity()?.name || '操作员', 'ai_daily_limit_change', 'config', null, detail)
+        }
+      } catch (e) {
+        console.warn('[Sales] AI 调用上限变更审计写入失败（配置已保存）:', e)
       }
     }
     // §2.40 微信号分库：myWxid 实际变化 → 迁移 + 重开两业务库（失败不阻塞配置写入）
@@ -2177,10 +2029,6 @@ function registerIpcHandlers() {
     return insightService.testConnection()
   })
 
-  ipcMain.handle('insight:getTodayStats', async () => {
-    return insightService.getTodayStats()
-  })
-
   ipcMain.handle('insight:listRecords', async (_, filters?: {
     keyword?: string
     sessionId?: string
@@ -2199,14 +2047,6 @@ function registerIpcHandlers() {
 
   ipcMain.handle('insight:markRecordRead', async (_, id: string) => {
     return insightRecordService.markRecordRead(id)
-  })
-
-  ipcMain.handle('insight:clearRecords', async (_, filters?: {
-    sessionId?: string
-    startTime?: number
-    endTime?: number
-  }) => {
-    return insightRecordService.clearRecords(filters || {})
   })
 
   ipcMain.handle('insight:triggerTest', async () => {
@@ -2447,15 +2287,6 @@ function registerIpcHandlers() {
     salesLog('DEBUG', `[Renderer] ${msg}`)
   })
 
-  ipcMain.handle('diagnostics:getExportCardLogs', async (_, options?: { limit?: number }) => {
-    return exportCardDiagnosticsService.snapshot(options?.limit)
-  })
-
-  ipcMain.handle('diagnostics:clearExportCardLogs', async () => {
-    exportCardDiagnosticsService.clear()
-    return { success: true }
-  })
-
   ipcMain.handle('diagnostics:recordResourceStats', async (_, payload?: unknown) => {
     resourceDiagnosticsEntries.push({
       ts: Date.now(),
@@ -2465,20 +2296,6 @@ function registerIpcHandlers() {
       resourceDiagnosticsEntries.shift()
     }
     return { success: true, count: resourceDiagnosticsEntries.length }
-  })
-
-  ipcMain.handle('diagnostics:getResourceStats', async (_, options?: { limit?: number }) => {
-    const limit = Math.max(1, Math.min(500, Number(options?.limit || maxResourceDiagnosticsEntries)))
-    const entries = resourceDiagnosticsEntries.slice(-limit)
-    return {
-      entries,
-      summary: {
-        count: resourceDiagnosticsEntries.length,
-        firstTs: resourceDiagnosticsEntries[0]?.ts || 0,
-        lastTs: resourceDiagnosticsEntries[resourceDiagnosticsEntries.length - 1]?.ts || 0,
-        ...summarizeResourceDiagnostics(entries, resourceDiagnosticsPreloadTotalsBaseline)
-      }
-    }
   })
 
   ipcMain.handle('diagnostics:clearResourceStats', async () => {
@@ -2495,17 +2312,6 @@ function registerIpcHandlers() {
       resourceDiagnosticsPreloadTotalsBaseline = null
     }
     return { success: true }
-  })
-
-  ipcMain.handle('diagnostics:exportExportCardLogs', async (_, payload?: {
-    filePath?: string
-    frontendLogs?: unknown[]
-  }) => {
-    const filePath = typeof payload?.filePath === 'string' ? payload.filePath.trim() : ''
-    if (!filePath) {
-      return { success: false, error: '导出路径不能为空' }
-    }
-    return exportCardDiagnosticsService.exportCombinedLogs(filePath, payload?.frontendLogs || [])
   })
 
   ipcMain.handle('app:checkForUpdates', async () => {
@@ -2665,21 +2471,6 @@ function registerIpcHandlers() {
   })
 
   // 更新窗口控件主题色
-  ipcMain.on('window:setTitleBarOverlay', (event, options: { symbolColor: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      try {
-        win.setTitleBarOverlay({
-          color: '#00000000',
-          symbolColor: options.symbolColor,
-          height: 40
-        })
-      } catch (error) {
-        console.warn('TitleBarOverlay not enabled for this window:', error)
-      }
-    }
-  })
-
   // 打开视频播放窗口
   ipcMain.handle('window:openVideoPlayerWindow', (_, videoPath: string, videoWidth?: number, videoHeight?: number) => {
     createVideoPlayerWindow(videoPath, videoWidth, videoHeight)
@@ -2831,10 +2622,6 @@ function registerIpcHandlers() {
     return dbPathService.scanWxidCandidates(rootPath)
   })
 
-  ipcMain.handle('dbpath:getDefault', async () => {
-    return dbPathService.getDefaultPath()
-  })
-
   // WCDB 数据库相关
   ipcMain.handle('wcdb:testConnection', async (_, dbPath: string, hexKey: string, wxid: string) => {
     const cfg = configService || new ConfigService()
@@ -2843,15 +2630,6 @@ function registerIpcHandlers() {
       return { success: false, error: '未找到账号目录' }
     }
     return wcdbService.testConnection(accountDir, hexKey)
-  })
-
-  ipcMain.handle('wcdb:open', async (_, dbPath: string, hexKey: string, wxid: string) => {
-    const cfg = configService || new ConfigService()
-    const accountDir = cfg.getAccountDir(dbPath, wxid)
-    if (!accountDir) {
-      return false
-    }
-    return wcdbService.open(accountDir, hexKey)
   })
 
   ipcMain.handle('wcdb:close', async () => {
@@ -3293,58 +3071,14 @@ function registerIpcHandlers() {
     return snsService.getExportStats(options)
   })
 
-  ipcMain.handle('sns:getExportStatsFast', async () => {
-    return snsService.getExportStatsFast()
-  })
-
   ipcMain.handle('sns:getUserPostStats', async (_, username: string) => {
     return snsService.getUserPostStats(username)
-  })
-
-  ipcMain.handle('sns:debugResource', async (_, url: string) => {
-    return snsService.debugResource(url)
   })
 
   ipcMain.handle('sns:proxyImage', async (_, payload: string | { url: string; key?: string | number }) => {
     const url = typeof payload === 'string' ? payload : payload?.url
     const key = typeof payload === 'string' ? undefined : payload?.key
     return snsService.proxyImage(url, key)
-  })
-
-  ipcMain.handle('sns:downloadImage', async (_, payload: { url: string; key?: string | number }) => {
-    try {
-      const { url, key } = payload
-      const result = await snsService.downloadImage(url, key)
-
-      if (!result.success || !result.data) {
-        return { success: false, error: result.error || '下载图片失败' }
-      }
-
-      const { dialog } = await import('electron')
-      const ext = (result.contentType || '').split('/')[1] || 'jpg'
-      const defaultPath = `SNS_${Date.now()}.${ext}`
-
-
-      const filters = isVideoUrl(url)
-        ? [{ name: 'Videos', extensions: ['mp4', 'mov', 'avi', 'mkv'] }]
-        : [{ name: 'Images', extensions: [ext, 'jpg', 'jpeg', 'png', 'webp', 'gif'] }]
-
-      const { filePath, canceled } = await dialog.showSaveDialog({
-        defaultPath,
-        filters
-      })
-
-      if (canceled || !filePath) {
-        return { success: false, error: '用户已取消' }
-      }
-
-      const fs = await import('fs/promises')
-      await fs.writeFile(filePath, result.data)
-
-      return { success: true, filePath }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
   })
 
   ipcMain.handle('sns:exportTimeline', async (event, options: any) => {
@@ -3724,10 +3458,6 @@ function registerIpcHandlers() {
   })
 
   // 导出相关
-  ipcMain.handle('export:getExportStats', async (_, sessionIds: string[], options: any) => {
-    return exportService.getExportStats(sessionIds, options)
-  })
-
   ipcMain.handle('export:pauseTask', async (_, taskId: string) => {
     const normalizedTaskId = normalizeExportTaskId(taskId)
     if (!normalizedTaskId) return { success: false, error: '缺少导出任务 ID' }
@@ -3947,86 +3677,6 @@ function registerIpcHandlers() {
         clearTimeout(progressTimer)
         progressTimer = null
       }
-    }
-  })
-
-  ipcMain.handle('export:exportSession', async (event, sessionId: string, outputPath: string, options: ExportOptions) => {
-    const cfg = configService || new ConfigService()
-    configService = cfg
-    const imageKeys = cfg.getImageKeysForCurrentWxid()
-    const singleDbPath = String(cfg.get('dbPath') || '').trim()
-    const singleMyWxid = String(cfg.getMyWxidCleaned() || '').trim()
-    const singleAccountDir = cfg.getAccountDir(singleDbPath, String(cfg.get('myWxid') || '').trim()) || undefined
-    const singleCachePath = String(cfg.get('cachePath') || '').trim()
-    const singleEmojiCacheDir = singleCachePath ? join(singleCachePath, 'Emojis') : join(app.getPath('documents'), 'WeFlow', 'Emojis')
-    const workerPath = join(__dirname, 'exportWorker.js')
-
-    try {
-      return await new Promise<any>((resolve) => {
-        const worker = new Worker(workerPath, {
-          workerData: {
-            mode: 'single',
-            sessionId,
-            outputPath,
-            options,
-            dbPath: singleDbPath,
-            decryptKey: String(cfg.get('decryptKey') || '').trim(),
-            myWxid: singleMyWxid,
-            accountDir: singleAccountDir,
-            imageXorKey: imageKeys.xorKey,
-            imageAesKey: imageKeys.aesKey,
-            resourcesPath: app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources'),
-            userDataPath: app.getPath('userData'),
-            cachePath: singleCachePath,
-            emojiCacheDir: singleEmojiCacheDir,
-            logEnabled: cfg.get('logEnabled'),
-            isPackaged: app.isPackaged
-          }
-        })
-
-        let settled = false
-        const finalize = (value: any) => {
-          if (settled) return
-          settled = true
-          worker.removeAllListeners()
-          void worker.terminate()
-          resolve(value)
-        }
-        const fail = (error: unknown) => {
-          const errorMessage = error instanceof Error ? error.message : String(error)
-          console.error(`[export-worker-single] ${errorMessage}`)
-          finalize({ success: false, error: `导出 Worker 执行失败: ${errorMessage}` })
-        }
-
-        worker.on('message', (msg: any) => {
-          if (msg && msg.type === 'export:progress') {
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('export:progress', msg.data)
-            }
-            return
-          }
-          if (msg && msg.type === 'export:result') {
-            finalize(msg.data)
-            return
-          }
-          if (msg && msg.type === 'export:error') {
-            fail(String(msg.error || '导出 Worker 执行失败'))
-          }
-        })
-        worker.on('error', fail)
-        worker.on('exit', (code) => {
-          if (settled) return
-          if (code === 0) {
-            finalize({ success: false, error: '导出 Worker 未返回结果' })
-          } else {
-            fail(`导出 Worker 异常退出: ${code}`)
-          }
-        })
-      })
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      console.error(`[export-worker-single] ${errorMessage}`)
-      return { success: false, error: `导出 Worker 启动失败: ${errorMessage}` }
     }
   })
 
@@ -4901,15 +4551,6 @@ function registerIpcHandlers() {
     }
   })
 
-  // 仪表盘聚合统计
-  ipcMain.handle('sales:dashboard:stats', async () => {
-    try {
-      return { success: true, stats: salesDbService.getDashboardStats() }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
   // 销售漏斗（历史累计流转；days=0 全部历史，默认 30 天）
   ipcMain.handle('sales:funnel:stats', async (_e, days?: number) => {
     try {
@@ -5153,13 +4794,29 @@ function registerIpcHandlers() {
     }
   })
 
-  ipcMain.handle('sales:todo:scan', async (_, period?: string) => {
+  // ─── AI 识别（按需触发，PRD §5.2）──────────────────────────────────────────
+  // 单飞作用域全局（PRD §4.7）：任一识别进行中，所有入口按钮全部禁用。
+  // 账本 purpose='manual_identify'，产出 trigger_type='ai_detected' + created_by=当前销售（PRD §3）。
+  ipcMain.handle('sales:identify:customer', async (_, params?: { sessionId?: string; displayName?: string }) => {
+    const sessionId = String(params?.sessionId || '').trim()
+    if (!sessionId) return { success: false, error: '缺少客户标识' }
+    if (!configService) return { success: false, error: '配置服务未就绪' }
+    const cfg: ConfigService = configService
+    // 单飞：先占位再排队（同步执行，无竞态）。占位后即全局置忙，两个入口按钮同时禁用。
+    // 已被占用 → 明确拒绝并提示，绝不静默（PRD §7.2「无静默路径」）
+    const label = String(params?.displayName || '').trim() || sessionId
+    const release = identifyCoordinator.acquire('identify', label)
+    if (!release) return { success: false, busy: true, error: `正在识别「${identifyCoordinator.get().label}」，请稍候` }
     try {
-      return await salesFollowUpService.scan(configService, period || 'week')
+      // ⛔ 死锁红线：enqueueSalesTask 只在此最外层入口调用，被排队函数内部绝不再 enqueue
+      return await enqueueSalesTask(async () => salesFollowUpService.identifyCustomer(cfg, { sessionId, displayName: label }))
     } catch (e) {
       return { success: false, error: String(e) }
+    } finally {
+      release()
     }
   })
+  ipcMain.handle('sales:identify:state', () => identifyCoordinator.get())
 
   ipcMain.handle('sales:profile:batch', async (_, limit?: number, monthsBack?: number) => {
     try {
@@ -5174,10 +4831,6 @@ function registerIpcHandlers() {
   })
 
   // ─── 今日行动引擎 IPC ───────────────────────────────────────────────────────
-  ipcMain.handle('sales:action:getToday', async () => {
-    return getTodayActions()
-  })
-
   ipcMain.handle('sales:action:complete', async (_, taskId: number, action: 'done' | 'skipped') => {
     completeAction(taskId, action)
     return { success: true }
@@ -5228,8 +4881,19 @@ function registerIpcHandlers() {
 
   // ─── 晨间摘要 IPC（设计-AI见解重定位 §3.1）─────────────────────────────────
   ipcMain.handle('sales:morningDigest:generate', async () => { void morningDigestService.generateTodayDigest().catch(e => salesLog('WARN', `[Digest] ${e}`)); return { ok: true } })
-  ipcMain.handle('sales:aiUsage:get', () => ({ ok: true, rows: readAiUsage(), budgetStatus: 'observation_only' }))
+  // 用量账本 + 当日额度快照（PRD §5.5）。budget 由 aiBudget 判定：off / ok / warn / blocked。
+  ipcMain.handle('sales:aiUsage:get', () => ({
+    ok: true,
+    rows: readAiUsage(),
+    budget: configService ? getAiBudgetSnapshot(configService) : null,
+    priceTableAsOf: PRICE_TABLE_AS_OF,
+    priceTableSource: PRICE_TABLE_SOURCE
+  }))
+  // 启动早期前端会轮询本端点，此时业务库可能尚未就绪（引导期/切账号重开库）。不抛 IPC 错误
+  // （抛错会在首屏显示成「错误态」，且与「无快照」无法区分）：返回可区分的 notReady，前端据它
+  // 保持加载态，交由 300ms/2s/10s 时间预算状态机推进——不伪装为空态。
   ipcMain.handle('sales:morningDigest:get', async () => {
+    if (!salesDbService.isInitialized()) return { ok: true, data: null, notReady: true }
     return { ok: true, data: morningDigestService.getLatestDigest() }
   })
   ipcMain.handle('sales:morningDigest:regenerate', async () => {
@@ -5504,6 +5168,12 @@ app.whenReady().then(async () => {
   // 先初始化配置，以便在启动早期判定是否需要静默启动
   configService = new ConfigService()
   configureAiUsageLedger(app.getPath('userData'), () => String(configService?.get('myWxid') || ''))
+  // 日上限全局注入：闸门在 aiApiClient 内生效，不依赖各调用点自觉传参（PRD §5.5）
+  configureAiBudget(() => {
+    const cfg = configService
+    if (!cfg) return 0
+    return getAiModelConfig(cfg).dailyCallLimit ?? 0
+  })
   applyAutoUpdateChannel('startup')
   syncLaunchAtStartupPreference()
   const onboardingDone = configService.get('onboardingDone') === true
@@ -5563,8 +5233,9 @@ app.whenReady().then(async () => {
   wcdbService.setLogEnabled(configService.get('logEnabled') === true)
   registerIpcHandlers()
   chatService.addDbMonitorListener((type, json) => {
+    // 只留推送服务：AI 见解的 DB 变更自动链已在 R（PRD §5.4）删除——
+    // 识别与分析一律由人触发，不再因「客户发了消息」自动调模型。
     messagePushService.handleDbMonitorChange(type, json)
-    insightService.handleDbMonitorChange(type, json)
   })
 
   // 提前创建主窗口（隐藏），让渲染进程加载与数据库预热并行进行
@@ -5786,9 +5457,14 @@ app.whenReady().then(async () => {
     // 密钥封装：优先系统安全设施（Windows DPAPI / macOS 钥匙串）；不可用回退 local-wrap（状态页如实展示）
     startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion(), secretBox: electronSecretBox() ?? undefined })
     startActionEngineScheduler()
-    // 晨间摘要（设计-AI见解重定位 §3.1）：每日 08:05-08:35 窗口生成一条「今天先跟谁」，
-    // 错开 08:00 全量扫描；「今日已生成」以 report_snapshot 落库行为准，重启不重复
-    morningDigestService.startScheduler()
+    // 晨间摘要：触发者只有人——「每天第一次打开今日行动页」与「重新生成简报」（PRD §4.1/§5.3）。
+    // 定时器已移除：后台自发调用会在用户没打开页面时也烧额度（PRD §7.3「账本佐证无后台 purpose 记录」）。
+    // 单飞状态广播：任一识别起止都通知所有入口按钮（PRD §4.7 全局作用域）
+    identifyCoordinator.subscribe((state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('sales:identify:activity', state)
+      }
+    })
     // SLA1 回收器（PRD 1.4 第一段「加了没有」机械计时）：status=assigned 且 sla1_deadline 过期 → 自动回收
     // （A 档引擎动作，reason='SLA超时回收'，actor='system:sla'；间隔 crmSlaRecycleIntervalMin 分钟，默认 30）
     // 角色差异（内网同步设计 §5）：回收是中枢权威动作——配置为终端（terminal）的机器不跑回收器，
@@ -5862,7 +5538,7 @@ app.whenReady().then(async () => {
       llm: async (system, user) => {
         // ConfigService.getInstance()（与 crmSla2Service 同款）：调度器闭包晚于模块初始化，避免空引用
         const mc = getAiModelConfig(ConfigService.getInstance())
-        return callChatCompletion(mc, [{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0.2 })
+        return callChatCompletion(mc, [{ role: 'system', content: system }, { role: 'user', content: user }], { temperature: 0.2, usageContext: { purpose: 'sla2' } })
       },
       isConfigured: () => isAiConfigured(ConfigService.getInstance()),
       log: (level, message) => salesLog(level as 'INFO' | 'WARN', message)

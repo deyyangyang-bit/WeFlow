@@ -150,15 +150,3 @@ export interface ChatRecordItem {
   chatRecordDesc?: string   // 嵌套聊天记录描述
   chatRecordList?: ChatRecordItem[] // 嵌套聊天记录列表
 }
-
-
-// 分析数据
-export interface AnalyticsData {
-  totalMessages: number
-  totalDays: number
-  myMessages: number
-  otherMessages: number
-  messagesByType: Record<number, number>
-  messagesByHour: number[]
-  messagesByDay: number[]
-}

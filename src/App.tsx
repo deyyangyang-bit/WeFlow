@@ -3,7 +3,6 @@ import { Routes, Route, Navigate, useNavigate, useLocation, type Location } from
 import TitleBar from './components/TitleBar'
 import Sidebar from './components/Sidebar'
 import RouteGuard from './components/RouteGuard'
-import HomePage from './pages/HomePage'
 
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
@@ -20,7 +19,7 @@ import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import WindowCloseDialog from './components/WindowCloseDialog'
 import { resolveAutomationScopeKey } from './pages/Export/hooks/useAutomation'
 
-// 全部页面懒加载：主窗口首屏只解析 App 壳 + HomePage；
+// 全部页面懒加载：主窗口首屏只解析 App 壳；
 // 常驻的通知窗口等独立窗口路由也因此只加载各自的小 chunk，
 // 显著降低每个渲染进程的 JS 堆占用与启动时间
 const WelcomePage = lazy(() => import('./pages/WelcomePage'))
@@ -34,7 +33,6 @@ const MyFootprintPage = lazy(() => import('./pages/MyFootprintPage'))
 const VideoWindow = lazy(() => import('./pages/VideoWindow'))
 const ImageWindow = lazy(() => import('./pages/ImageWindow'))
 const SnsPage = lazy(() => import('./pages/SnsPage'))
-const BizPage = lazy(() => import('./pages/BizPage'))
 const ContactsPage = lazy(() => import('./pages/ContactsPage'))
 const ResourcesPage = lazy(() => import('./pages/ResourcesPage'))
 const ChatHistoryPage = lazy(() => import('./pages/ChatHistoryPage'))
@@ -45,7 +43,6 @@ const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const EvalAnnotatePage = lazy(() => import('./pages/EvalAnnotatePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
-const SalesDashboardPage = lazy(() => import('./pages/SalesDashboardPage'))
 const SalesFunnelPage = lazy(() => import('./pages/SalesFunnelPage'))
 const ActionFunnelPage = lazy(() => import('./pages/ActionFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
@@ -739,8 +736,6 @@ function App() {
               <Routes location={routeLocation}>
                 <Route path="/" element={<TodayActionPage />} />
                 <Route path="/home" element={<TodayActionPage />} />
-                <Route path="/dashboard" element={<SalesDashboardPage />} />
-                <Route path="/welcome" element={<HomePage />} />
                 <Route path="/account-management" element={<AccountManagementPage />} />
                 <Route path="/chat" element={<ChatPage />} />
 
@@ -770,7 +765,6 @@ function App() {
                 <Route path="/crm-review" element={<CrmReviewPage />} />
                 <Route path="/crm-product" element={<CrmProductPage />} />
                 <Route path="/leads" element={<CrmLeadPage />} />
-                <Route path="/biz" element={<BizPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />
                 <Route path="/backup" element={<BackupPage />} />

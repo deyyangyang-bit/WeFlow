@@ -115,18 +115,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   diagnostics: {
-    getExportCardLogs: (options?: { limit?: number }) =>
-      ipcRenderer.invoke('diagnostics:getExportCardLogs', options),
-    clearExportCardLogs: () =>
-      ipcRenderer.invoke('diagnostics:clearExportCardLogs'),
     recordResourceStats: (payload: any) =>
       ipcRenderer.invoke('diagnostics:recordResourceStats', payload),
-    getResourceStats: (options?: { limit?: number }) =>
-      ipcRenderer.invoke('diagnostics:getResourceStats', options),
     clearResourceStats: () =>
-      ipcRenderer.invoke('diagnostics:clearResourceStats'),
-    exportExportCardLogs: (payload: { filePath: string; frontendLogs?: unknown[] }) =>
-      ipcRenderer.invoke('diagnostics:exportExportCardLogs', payload)
+      ipcRenderer.invoke('diagnostics:clearResourceStats')
   },
 
   // 窗口控制
@@ -150,7 +142,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openAgreementWindow: () => ipcRenderer.invoke('window:openAgreementWindow'),
     completeOnboarding: () => ipcRenderer.invoke('window:completeOnboarding'),
     openOnboardingWindow: (options?: { mode?: 'add-account' }) => ipcRenderer.invoke('window:openOnboardingWindow', options),
-    setTitleBarOverlay: (options: { symbolColor: string }) => ipcRenderer.send('window:setTitleBarOverlay', options),
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) =>
       ipcRenderer.invoke('window:openVideoPlayerWindow', videoPath, videoWidth, videoHeight),
     resizeToFitVideo: (videoWidth: number, videoHeight: number) =>
@@ -179,16 +170,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dbPath: {
     autoDetect: () => ipcRenderer.invoke('dbpath:autoDetect'),
     scanWxids: (rootPath: string) => ipcRenderer.invoke('dbpath:scanWxids', rootPath),
-    scanWxidCandidates: (rootPath: string) => ipcRenderer.invoke('dbpath:scanWxidCandidates', rootPath),
-    getDefault: () => ipcRenderer.invoke('dbpath:getDefault')
+    scanWxidCandidates: (rootPath: string) => ipcRenderer.invoke('dbpath:scanWxidCandidates', rootPath)
   },
 
   // WCDB 数据库
   wcdb: {
     testConnection: (dbPath: string, hexKey: string, wxid: string) =>
       ipcRenderer.invoke('wcdb:testConnection', dbPath, hexKey, wxid),
-    open: (dbPath: string, hexKey: string, wxid: string) =>
-      ipcRenderer.invoke('wcdb:open', dbPath, hexKey, wxid),
     close: () => ipcRenderer.invoke('wcdb:close'),
 
   },
@@ -555,8 +543,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 导出
   export: {
-    getExportStats: (sessionIds: string[], options: any) =>
-      ipcRenderer.invoke('export:getExportStats', sessionIds, options),
     exportSessions: (sessionIds: string[], outputDir: string, options: any, controlOptions?: { taskId?: string }) =>
       ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options, controlOptions),
     pauseTask: (taskId: string) =>
@@ -565,8 +551,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('export:resumeTask', taskId),
     cancelTask: (taskId: string) =>
       ipcRenderer.invoke('export:cancelTask', taskId),
-    exportSession: (sessionId: string, outputPath: string, options: any) =>
-      ipcRenderer.invoke('export:exportSession', sessionId, outputPath, options),
     exportContacts: (outputDir: string, options: any) =>
       ipcRenderer.invoke('export:exportContacts', outputDir, options),
     onProgress: (callback: (payload: {
@@ -605,13 +589,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sns:getTimeline', limit, offset, usernames, keyword, startTime, endTime),
     getSnsUsernames: () => ipcRenderer.invoke('sns:getSnsUsernames'),
     getUserPostCounts: (options?: { preferCache?: boolean; forceRefresh?: boolean }) => ipcRenderer.invoke('sns:getUserPostCounts', options),
-    getExportStatsFast: () => ipcRenderer.invoke('sns:getExportStatsFast'),
     getExportStats: (options?: { allowTimelineFallback?: boolean; preferCache?: boolean; forceRefresh?: boolean }) =>
       ipcRenderer.invoke('sns:getExportStats', options),
     getUserPostStats: (username: string) => ipcRenderer.invoke('sns:getUserPostStats', username),
-    debugResource: (url: string) => ipcRenderer.invoke('sns:debugResource', url),
     proxyImage: (payload: { url: string; key?: string | number }) => ipcRenderer.invoke('sns:proxyImage', payload),
-    downloadImage: (payload: { url: string; key?: string | number }) => ipcRenderer.invoke('sns:downloadImage', payload),
     exportTimeline: (options: any) => ipcRenderer.invoke('sns:exportTimeline', options),
     onExportProgress: (callback: (payload: any) => void) => {
       ipcRenderer.on('sns:exportProgress', (_, payload) => callback(payload))
@@ -653,11 +634,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // AI 见解
   insight: {
     testConnection: () => ipcRenderer.invoke('insight:testConnection'),
-    getTodayStats: () => ipcRenderer.invoke('insight:getTodayStats'),
     listRecords: (filters?: any) => ipcRenderer.invoke('insight:listRecords', filters),
     getRecord: (id: string) => ipcRenderer.invoke('insight:getRecord', id),
     markRecordRead: (id: string) => ipcRenderer.invoke('insight:markRecordRead', id),
-    clearRecords: (filters?: any) => ipcRenderer.invoke('insight:clearRecords', filters),
     triggerTest: () => ipcRenderer.invoke('insight:triggerTest'),
     triggerSessionInsight: (payload: {
       sessionId: string
@@ -887,7 +866,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) =>
       ipcRenderer.invoke('sales:customer:list', filters),
     customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
-    dashboardStats: () => ipcRenderer.invoke('sales:dashboard:stats'),
     funnelStats: (days?: number) => ipcRenderer.invoke('sales:funnel:stats', days),
     // P0-4.2.2/4.3：Action Funnel（Task-level 六段聚合 + 下钻；纯只读）
     actionFunnelGet: (days?: number | null) => ipcRenderer.invoke('sales:actionFunnel:get', days),
@@ -915,12 +893,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:todo:create', payload),
     todoUpdate: (id: number, updates: { status?: string; title?: string; due_at?: number }) =>
       ipcRenderer.invoke('sales:todo:update', id, updates),
-    todoScan: (period?: string) => ipcRenderer.invoke('sales:todo:scan', period),
     profileBatch: (limit?: number, monthsBack?: number) => ipcRenderer.invoke('sales:profile:batch', limit, monthsBack),
     profileProgress: () => ipcRenderer.invoke('sales:profile:progress'),
 
     // 今日行动引擎
-    actionGetToday: () => ipcRenderer.invoke('sales:action:getToday'),
     actionComplete: (taskId: number, action: 'done' | 'skipped') =>
       ipcRenderer.invoke('sales:action:complete', taskId, action),
     actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item),
@@ -940,6 +916,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     aiUsageGet: () => ipcRenderer.invoke('sales:aiUsage:get'),
     morningDigestGet: () => ipcRenderer.invoke('sales:morningDigest:get'),
     morningDigestRegenerate: () => ipcRenderer.invoke('sales:morningDigest:regenerate'),
+
+    // AI 按需识别（PRD §5.2/§4.7）：单飞作用域全局——任一识别进行中，所有入口按钮全部禁用
+    identifyCustomer: (params: { sessionId: string; displayName?: string }) =>
+      ipcRenderer.invoke('sales:identify:customer', params),
+    identifyState: () => ipcRenderer.invoke('sales:identify:state'),
+    onIdentifyActivity: (cb: (state: { busy: boolean; kind: 'identify' | 'digest' | null; label: string; startedAt: number }) => void) => {
+      const handler = (_: any, state: any) => cb(state)
+      ipcRenderer.on('sales:identify:activity', handler)
+      return () => ipcRenderer.removeListener('sales:identify:activity', handler)
+    },
 
     // 知识库批量导入
     kbImportCsv: (csvContent: string) => ipcRenderer.invoke('sales:kb:importCsv', csvContent),

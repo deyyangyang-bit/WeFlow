@@ -18,6 +18,7 @@ import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
 import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { parseJsonObject, parseJsonArray } from '../../shared/safeJson'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
 
@@ -713,7 +714,7 @@ export default function CrmLeadPage() {
 
   const ov = overview
   // 屏 2 蓝横幅：最新导入批次统计（audit_event action=lead_import）
-  const impDetail = (() => { try { return JSON.parse(String(importAudit?.detail || '{}')) } catch { return {} as Record<string, unknown> } })()
+  const impDetail = parseJsonObject(importAudit?.detail)
   const segDefs: Array<{ id: typeof poolSeg; label: string; count: number }> = [
     { id: 'pool', label: '待分配', count: poolCounts.pool },
     { id: 'assigned', label: '已分配·待认领', count: poolCounts.assignedN },
@@ -1247,9 +1248,9 @@ export default function CrmLeadPage() {
             {classifyRound && (() => {
               let res: Record<string, any> = {}
               let ev: Record<string, any> = {}
-              try { res = JSON.parse(classifyRound.result_json || '{}') } catch { res = {} }
-              try { ev = JSON.parse(classifyRound.evidence_json || '{}') } catch { ev = {} }
-              const gaps: string[] = (() => { try { return JSON.parse(classifyRound.gaps_json || '[]') } catch { return [] } })()
+              res = parseJsonObject(classifyRound.result_json)
+              ev = parseJsonObject(classifyRound.evidence_json)
+              const gaps = parseJsonArray<string>(classifyRound.gaps_json)
               const fields = (res.fields && typeof res.fields === 'object') ? Object.entries(res.fields) as Array<[string, any]> : []
               return (
                 <div>
