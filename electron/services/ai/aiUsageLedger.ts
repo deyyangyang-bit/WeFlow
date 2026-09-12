@@ -25,6 +25,29 @@ export function readAiUsage(): UsageRow[] {
   if (!Array.isArray(data)) throw new Error('用量账本格式无效')
   return data
 }
+/**
+ * 记录一条「被额度阻断、未发出请求」的账本行。
+ * tokens 一律 null（不是 0）——本次没有消耗，但也不能被读成「零成本调用」。
+ * 该行会出现在 coverage 的缺口统计里（PRD §5.5「被阻断的事件计入覆盖缺口展示」）。
+ */
+export function recordBlockedCall(model: string, context: UsageContext = {}, error: string = ''): void {
+  const scope = scopeProvider(), root = directory
+  if (!root || !scope) return
+  const file = join(root, `${createHash('sha256').update(scope).digest('hex')}.json`)
+  const row: UsageRow = {
+    id: randomUUID(), at: Date.now(), model, purpose: context.purpose || 'unclassified',
+    trigger: context.trigger || 'unspecified', promptVersion: context.promptVersion || 'legacy',
+    durationMs: 0, finishReason: error || 'budget_blocked', status: 'blocked',
+    inputTokens: null, cachedInputTokens: null, outputTokens: null, reasoningTokens: null
+  }
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 })
+    const previous = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : []
+    if (!Array.isArray(previous)) throw new Error('用量账本格式无效')
+    atomicWriteFileSync(file, Buffer.from(JSON.stringify([...previous, row])))
+  } catch { console.warn('[AiUsage] 阻断记录写入失败；额度拦截已生效，但缺口统计会少一行') }
+}
+
 /** Closure binds original account before HTTP starts; no customer data is logged. */
 export function startUsage(model: string, context: UsageContext = {}): (usage: unknown, finish: string, status: string) => void {
   const scope = scopeProvider(), root = directory, at = Date.now(), id = randomUUID()

@@ -130,7 +130,6 @@
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
 
-  .cws-done__emoji { font-size: 32px; }
   .cws-done__title { font-size: 15px; font-weight: 700; color: var(--color-text-primary); margin-top: 8px; }
   .cws-done__sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 6px; }
 }
@@ -269,5 +268,31 @@
   input {
     cursor: pointer;
     accent-color: var(--color-accent);
+  }
+}
+
+// ─── AI 识别这个客户：结果提示（PRD §6.2 六态）────────────────────────────────
+// 无新内容/成功/失败/额度不足都必须在档案头部可见，不得静默。
+.cws-identify-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+
+  small {
+    opacity: 0.75;
+  }
+
+  &--ok {
+    color: var(--color-success, #16a34a);
+  }
+
+  &--no_new {
+    color: var(--color-text-secondary, #6b7280);
+  }
+
+  &--error,
+  &--quota {
+    color: var(--color-danger, #dc2626);
   }
 }

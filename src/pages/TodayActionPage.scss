@@ -219,6 +219,16 @@
     &:hover { filter: none; }
   }
 
+  // 收起后的重开入口（digestDismissed 时渲染）：与 crm-btn 同族，只补对齐/间距，不引入第二套样式
+  &--digest-reopen {
+    align-self: flex-start;
+    margin-bottom: 14px;
+    border-color: var(--color-accent-border);
+    color: var(--color-accent);
+
+    &:hover { background: var(--color-accent-bg); }
+  }
+
   &__digest-body {
     display: flex;
     flex-direction: column;

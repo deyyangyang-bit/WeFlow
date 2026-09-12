@@ -17,14 +17,7 @@ import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType }
 import { isProposalEventType, isProposalEventStage, type ProposalEventRecord, type ProposalEventType, type ProposalEventStage } from '../../shared/proposalEvent'
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { salesLog } from './salesLogger'
-import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
-
-/** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
-function dbGuardLog(level: GuardLogLevel, msg: string): void {
-  salesLog(level, msg)
-  if (level === 'ERROR') console.error(msg)
-  else console.warn(msg)
-}
+import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
 
 /**
  * sql.js「列已存在」错误识别（迁移 ALTER 幂等忽略的唯一依据）。
@@ -72,9 +65,6 @@ export interface KnowledgeEntry {
   created_at?: number
   updated_at?: number
 }
-
-/** 知识治理状态（kbReview 状态机唯一合法值）。closed = 被同链新版本接替关闭的历史 published（只读留档） */
-export type KnowledgeStatus = 'staging' | 'published' | 'rejected' | 'closed'
 /** 权威口径：official=主管审定，community=默认 */
 export type KnowledgeAuthority = 'official' | 'community'
 
@@ -233,6 +223,17 @@ CREATE TABLE IF NOT EXISTS report_snapshot (
   created_at INTEGER NOT NULL
 );
 
+-- AI 扫描持久游标（宪法 §3 登记行）：记录「上次处理到哪」，替代内存 lastSeenTimestamp。
+-- 按微信账号分库（salesDb 本身按账号隔离），故只需 scope 维度区分消费方。
+-- last_processed_at 是 WCDB 口径的秒级时间戳（铁律：WCDB 时间戳是秒）。
+CREATE TABLE IF NOT EXISTS ai_scan_cursor (
+  scope TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  last_processed_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (scope, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS customer_profile (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
@@ -267,7 +268,9 @@ CREATE TABLE IF NOT EXISTS follow_up_task (
   source_message_id TEXT,
   promise_summary TEXT,
   action_type TEXT DEFAULT 'reply_customer',
-  trigger_type TEXT NOT NULL DEFAULT 'ai_detected',
+  -- 中性默认值（PRD §3，2026-09-12）：漏传调用方不得被静默误标为「AI 识别」。
+  -- 存量库已有表不会重建，服务层 todoCreate 同步以 'unknown' 兜底（两处一致）。
+  trigger_type TEXT NOT NULL DEFAULT 'unknown',
   title TEXT NOT NULL,
   due_at INTEGER,
   status TEXT DEFAULT 'pending',
@@ -1251,6 +1254,49 @@ ORDER BY kb.updated_at DESC LIMIT ?`
     return rows.length
   }
 
+  // ─── AI 扫描持久游标（宪法 §3 登记行）──────────────────────────────────────
+
+  /**
+   * 读某消费方在某会话上「上次处理到哪」（秒级 WCDB 口径）。
+   * 无记录返回 0 = 从未处理（首轮由调用方按 7 天回看截断，不拿过去时刻当基点）。
+   */
+  cursorGet(scope: string, sessionId: string): number {
+    const row = this.get<{ last_processed_at: number }>(
+      'SELECT last_processed_at FROM ai_scan_cursor WHERE scope = ? AND session_id = ?',
+      [scope, sessionId]
+    )
+    const ts = Number(row?.last_processed_at || 0)
+    return Number.isFinite(ts) && ts > 0 ? ts : 0
+  }
+
+  /**
+   * 落盘某消费方在某会话上的处理进度。游标只前进不后退（乱序调用不把进度打回去）。
+   * tsSec 为秒级；非正数忽略（不写假进度）。
+   */
+  cursorSet(scope: string, sessionId: string, tsSec: number): void {
+    const ts = Math.floor(Number(tsSec) || 0)
+    if (!sessionId || ts <= 0) return
+    const current = this.cursorGet(scope, sessionId)
+    if (ts <= current) return
+    this.run(
+      `INSERT INTO ai_scan_cursor (scope, session_id, last_processed_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(scope, session_id) DO UPDATE SET last_processed_at = excluded.last_processed_at, updated_at = excluded.updated_at`,
+      [scope, sessionId, ts, Date.now()]
+    )
+  }
+
+  /** 批量读某消费方的全部游标（简报一次装配时用，避免逐会话查询） */
+  cursorMap(scope: string): Map<string, number> {
+    const rows = this.all<{ session_id: string; last_processed_at: number }>(
+      'SELECT session_id, last_processed_at FROM ai_scan_cursor WHERE scope = ?',
+      [scope]
+    )
+    const m = new Map<string, number>()
+    for (const row of rows) m.set(String(row.session_id), Number(row.last_processed_at || 0))
+    return m
+  }
+
   // ─── 客户画像 ─────────────────────────────────────────────────────────────
 
   customerGetBySession(sessionId: string): CustomerProfile | undefined {
@@ -1316,55 +1362,6 @@ ORDER BY kb.updated_at DESC LIMIT ?`
   /** 迁移用：回写 customer_profile.customer_id（跨库对齐，幂等——只写目标值） */
   setCustomerProfileCustomerId(id: number, customerId: string): void {
     this.run('UPDATE customer_profile SET customer_id = ?, updated_at = ? WHERE id = ?', [customerId, Date.now(), id])
-  }
-
-  /**
-   * 仪表盘聚合统计（纯本地 COUNT/GROUP BY，无 WCDB/AI 调用）
-   */
-  getDashboardStats(): {
-    stageCounts: Record<string, number>
-    highIntentCount: number
-    totalCustomers: number
-    newCustomersThisWeek: number
-    pendingTodos: number
-    overdueTodos: number
-    suspectedTodos: number
-  } {
-    // 本周一 0 点（毫秒），逻辑同周报
-    const d = new Date()
-    const day = d.getDay() || 7
-    d.setDate(d.getDate() - day + 1)
-    d.setHours(0, 0, 0, 0)
-    const weekStartMs = d.getTime()
-
-    const stageCounts: Record<string, number> = {}
-    try {
-      const rows = this.all<{ stage: string; cnt: number }>(
-        'SELECT stage, COUNT(*) as cnt FROM customer_profile GROUP BY stage', []
-      )
-      for (const r of rows) stageCounts[r.stage || 'unknown'] = Number(r.cnt) || 0
-    } catch { /* ignore */ }
-
-    const highIntentCount = Number(this.get<{ c: number }>(
-      "SELECT COUNT(*) as c FROM customer_profile WHERE stage IN ('比价','决策')", []
-    )?.c || 0)
-    const totalCustomers = Number(this.get<{ c: number }>(
-      'SELECT COUNT(*) as c FROM customer_profile', []
-    )?.c || 0)
-    const newCustomersThisWeek = Number(this.get<{ c: number }>(
-      'SELECT COUNT(*) as c FROM customer_profile WHERE created_at >= ?', [weekStartMs]
-    )?.c || 0)
-    const pendingTodos = Number(this.get<{ c: number }>(
-      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'pending'", []
-    )?.c || 0)
-    const overdueTodos = Number(this.get<{ c: number }>(
-      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'overdue'", []
-    )?.c || 0)
-    const suspectedTodos = Number(this.get<{ c: number }>(
-      "SELECT COUNT(*) as c FROM follow_up_task WHERE status = 'suspected'", []
-    )?.c || 0)
-
-    return { stageCounts, highIntentCount, totalCustomers, newCustomersThisWeek, pendingTodos, overdueTodos, suspectedTodos }
   }
 
   // ─── 意向标签 ─────────────────────────────────────────────────────────────
@@ -1766,10 +1763,13 @@ ORDER BY kb.updated_at DESC LIMIT ?`
 
   todoCreate(task: Omit<FollowUpTask, 'id' | 'created_at' | 'completed_at'>): FollowUpTask {
     const now = Date.now()
+    // trigger_type 兜底为中性值 'unknown'（PRD §3 / 宪法 §3 登记行）：漏传调用方不得被静默标成「AI 识别」。
+    // 存量库的 follow_up_task 表 DEFAULT 仍是历史值（CREATE IF NOT EXISTS 不重建），服务层兜底是唯一双库一致的保证点。
+    const triggerType = String(task.trigger_type || '').trim() || 'unknown'
     this.run(
       `INSERT INTO follow_up_task (session_id, customer_profile_id, display_name, source_message_id, promise_summary, action_type, trigger_type, title, due_at, status, priority_score, created_by, confidence, feedback_log, source_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', task.trigger_type, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', task.source_id ?? null, now]
+      [task.session_id ?? null, task.customer_profile_id ?? null, task.display_name ?? null, task.source_message_id ?? null, task.promise_summary ?? null, task.action_type ?? 'reply_customer', triggerType, task.title, task.due_at ?? null, task.status ?? 'pending', task.priority_score ?? 0, task.created_by ?? 'ai', task.confidence ?? null, task.feedback_log ?? '[]', task.source_id ?? null, now]
     )
     const id = this.lastInsertRowId()
     // 刀 2 埋点：行动卡生成点（任务创建 = action/generated；append-only，失败绝不影响建卡主语义）

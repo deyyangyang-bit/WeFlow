@@ -1,13 +1,12 @@
 import fs from 'fs'
 import path from 'path'
-import https from 'https'
-import http from 'http'
-import { URL } from 'url'
 import { app } from 'electron'
 import { randomUUID, createHash } from 'crypto'
 import { ConfigService } from './config'
 import { chatService, type Message } from './chatService'
 import { wcdbService } from './wcdbService'
+import { callChatCompletion, type AiModelConfig, type ChatMessage } from './ai/aiApiClient'
+import { clampText, appendPromptCurrentTime } from './ai/promptUtils'
 
 const API_TIMEOUT_MS = 45_000
 const API_TEMPERATURE = 0.7
@@ -19,13 +18,6 @@ const MONTHLY_OUTPUT_MIN_TOKENS = 1600
 const FINAL_OUTPUT_MIN_TOKENS = 2400
 
 type ProfileStatusValue = 'none' | 'ready' | 'running' | 'failed'
-
-interface SharedAiModelConfig {
-  apiBaseUrl: string
-  apiKey: string
-  model: string
-  maxTokens: number
-}
 
 interface ActiveProfileTask {
   taskId: string
@@ -131,18 +123,6 @@ class AbortRequestError extends Error {
   }
 }
 
-class ApiRequestError extends Error {
-  statusCode?: number
-  responseBody?: string
-
-  constructor(message: string, statusCode?: number, responseBody?: string) {
-    super(message)
-    this.name = 'ApiRequestError'
-    this.statusCode = statusCode
-    this.responseBody = responseBody
-  }
-}
-
 function isAbortError(error: unknown): boolean {
   return (error as Error)?.name === 'AbortError' || String((error as Error)?.message || '').includes('取消')
 }
@@ -181,32 +161,6 @@ function normalizeApiMaxTokens(value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 1024
   return Math.min(2_000_000, Math.max(1, Math.floor(numeric)))
-}
-
-function buildApiUrl(baseUrl: string, apiPath: string): string {
-  const base = baseUrl.replace(/\/+$/, '')
-  const suffix = apiPath.startsWith('/') ? apiPath : `/${apiPath}`
-  return `${base}${suffix}`
-}
-
-function formatPromptCurrentTime(date: Date = new Date()): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  return `当前系统时间：${year}年${month}月${day}日 ${hours}:${minutes}`
-}
-
-function appendPromptCurrentTime(prompt: string): string {
-  const base = String(prompt || '').trimEnd()
-  return base ? `${base}\n\n${formatPromptCurrentTime()}` : formatPromptCurrentTime()
-}
-
-function clampText(value: unknown, maxLength: number): string {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, Math.max(0, maxLength - 1))}…`
 }
 
 function truncateStructuredText(value: unknown, maxLength: number): string {
@@ -259,85 +213,32 @@ function buildRecentTwelveMonthWindows(now: Date = new Date()): MonthWindow[] {
   return windows
 }
 
+/**
+ * 画像调用统一入口。
+ *
+ * **必须走 `callChatCompletion`**：额度闸门（日上限）与用量账本只在该层生效，
+ * 直连 `/chat/completions` 会让画像调用成为不受限、不入账的旁路（PRD §5.5）。
+ * 错误语义保持不变：失败抛 `AiApiError`（含 statusCode），中止抛「请求已取消」，
+ * 由 `isAbortError` 识别后由重试层转换为 `AbortRequestError`。
+ */
 function callProfileApi(
-  config: SharedAiModelConfig,
+  config: AiModelConfig,
   messages: Array<{ role: string; content: string }>,
   maxTokens: number,
   signal?: AbortSignal
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    try {
-      abortIfNeeded(signal)
-      const endpoint = buildApiUrl(config.apiBaseUrl, '/chat/completions')
-      const urlObj = new URL(endpoint)
-      const payload = JSON.stringify({
-        model: config.model,
-        messages,
-        max_tokens: normalizeApiMaxTokens(maxTokens),
-        temperature: API_TEMPERATURE,
-        stream: false
-      })
-      const requestOptions = {
-        hostname: urlObj.hostname,
-        port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST' as const,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload).toString(),
-          Authorization: `Bearer ${config.apiKey}`
-        }
-      }
-
-      const requestFn = urlObj.protocol === 'https:' ? https.request : http.request
-      const req = requestFn(requestOptions, (res) => {
-        let data = ''
-        res.on('data', (chunk) => { data += chunk })
-        res.on('end', () => {
-          try {
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
-              return
-            }
-            const parsed = JSON.parse(data)
-            const content = parsed?.choices?.[0]?.message?.content
-            if (typeof content === 'string' && content.trim()) {
-              resolve(content.trim())
-            } else {
-              reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
-            }
-          } catch {
-            reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
-          }
-        })
-      })
-
-      const onAbort = () => {
-        req.destroy(new AbortRequestError())
-      }
-      signal?.addEventListener('abort', onAbort, { once: true })
-
-      req.setTimeout(API_TIMEOUT_MS, () => {
-        req.destroy()
-        reject(new Error('API 请求超时'))
-      })
-      req.on('error', (error) => {
-        signal?.removeEventListener('abort', onAbort)
-        reject(isAbortError(error) || signal?.aborted ? new AbortRequestError() : error)
-      })
-      req.on('close', () => {
-        signal?.removeEventListener('abort', onAbort)
-      })
-      req.write(payload)
-      req.end()
-    } catch (error) {
-      reject(error)
-    }
+  abortIfNeeded(signal)
+  return callChatCompletion(config, messages as ChatMessage[], {
+    maxTokens,
+    temperature: API_TEMPERATURE,
+    timeoutMs: API_TIMEOUT_MS,
+    signal,
+    usageContext: { purpose: 'profile', trigger: 'manual_button' }
   })
 }
 
 async function callProfileApiWithRetry(
-  config: SharedAiModelConfig,
+  config: AiModelConfig,
   messages: Array<{ role: string; content: string }>,
   maxTokens: number,
   signal?: AbortSignal
@@ -408,7 +309,7 @@ class InsightProfileService {
     return 'default'
   }
 
-  private getSharedAiModelConfig(): SharedAiModelConfig {
+  private getSharedAiModelConfig(): AiModelConfig {
     const apiBaseUrl = String(
       this.config.get('aiModelApiBaseUrl')
       || this.config.get('aiInsightApiBaseUrl')
@@ -922,7 +823,7 @@ class InsightProfileService {
   }
 
   private async generateMonthlySummary(
-    config: SharedAiModelConfig,
+    config: AiModelConfig,
     displayName: string,
     monthLabel: string,
     material: PreparedMonthMaterial,
@@ -961,7 +862,7 @@ ${material.text}
   }
 
   private async generateFinalProfile(
-    config: SharedAiModelConfig,
+    config: AiModelConfig,
     displayName: string,
     months: MonthWindow[],
     emptyMonths: string[],

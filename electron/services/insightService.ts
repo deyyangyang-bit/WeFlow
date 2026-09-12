@@ -1,22 +1,29 @@
-import { callChatCompletion, type ChatMessage } from './ai/aiApiClient'
+import { callChatCompletion, type ChatMessage, type AiModelConfig } from './ai/aiApiClient'
+import {
+  buildApiUrl,
+  clampText,
+  stripJsonFence,
+  shouldFallbackJsonMode,
+  normalizeSessionIdList,
+  appendPromptCurrentTime
+} from './ai/promptUtils'
 /**
  * insightService.ts
  *
- * AI 见解后台服务：
- * 1. 监听 DB 变更事件（debounce 500ms 防抖，避免开机/重连时爆发大量事件阻塞主线程）
- * 2. 沉默联系人扫描（独立 setInterval，每 4 小时一次）
- * 3. 触发后拉取真实聊天上下文（若用户授权），组装 prompt 调用单一 AI 模型
- * 4. 输出 ≤80 字见解，通过现有 showNotification 弹出右下角通知
+ * AI 见解服务（按需触发）：
+ * 1. 无后台自动链路：不监听 DB 变更、无定时扫描（PRD《AI简报与按需识别》§5.4 删除，
+ *    原 2s 防抖与 120min 冷却两道刹车随链路一并消失）
+ * 2. 入口全部由用户显式触发：见解生成、批量画像、足迹复盘、单客户按需识别
+ * 3. 触发后拉取真实聊天上下文（若用户授权），组装 prompt 调模型（经 ai/aiApiClient 收口记账）
+ * 4. 输出 ≤80 字见解，通过 showNotification 弹出右下角通知
  *
  * 设计原则：
- * - 不引入任何额外 npm 依赖，使用 Node 原生 https 模块调用 OpenAI 兼容 API
+ * - 不引入任何额外 npm 依赖，模型调用统一走 ai/aiApiClient（账本 + 日上限闸门）
  * - 所有失败静默处理，不影响主流程
  * - 触发频率、冷却与名单过滤均在本地完成，不把调度统计塞进模型 prompt
  */
 
 import https from 'https'
-import http from 'http'
-import { URL } from 'url'
 import { ConfigService } from './config'
 import { isSessionIdLike } from '../../shared/wechatId'
 import { chatService, ChatSession, Message } from './chatService'
@@ -32,7 +39,6 @@ import { persistSummaryJudgment } from './salesSummaryJudgment'
 import { crmDbService } from './crmDbService'
 import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
-import { onNewMessage as actionStageClassifier } from './salesActionEngine'
 import { massSendDetector, scanMessagesForTrigger, classifyInsightMessage } from './insightNoiseFilter'
 import {
   insightRecordService,
@@ -42,15 +48,8 @@ import {
 } from './insightRecordService'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
+// （原 DB_CHANGE_DEBOUNCE_MS / SILENCE_SCAN_INITIAL_DELAY_MS 随自动链路一并删除，PRD §5.4/R）
 
-/**
- * DB 变更防抖延迟（毫秒）。
- * 设为 2s：微信写库通常是批量操作，500ms 过短会在开机/重连时产生大量连续触发。
- */
-const DB_CHANGE_DEBOUNCE_MS = 2000
-
-/** 首次沉默扫描延迟（毫秒），避免启动期间抢占资源 */
-const SILENCE_SCAN_INITIAL_DELAY_MS = 3 * 60 * 1000
 /** 触发扫描窗口：拉最新 N 条判断「新消息里是否有客户发言」（设计-AI见解重定位 §2.2） */
 const TRIGGER_SCAN_WINDOW = 10
 // 自动触发见解的重复分析去重窗口（内存冷却重启即丢，故用记录级去重兜底）
@@ -77,13 +76,10 @@ const DEFAULT_FOOTPRINT_SYSTEM_PROMPT = `你是“我的微信足迹”模块的
 6. 禁止出现“首先”“其次”“根据”“综上”“作为AI”“我认为”“以下是”等过程性表达。
 输出格式：直接输出两句自然中文。`
 
-/** 沉默天数阈值默认值 */
-const DEFAULT_SILENCE_DAYS = 3
 /** 高意向预警冷却（毫秒），同一客户在此窗口内不重复弹预警 */
 const ALERT_COOLDOWN_MS = 6 * 3600 * 1000
 const INSIGHT_CONFIG_KEYS = new Set([
   'aiInsightEnabled',
-  'aiInsightScanIntervalHours',
   'aiModelApiBaseUrl',
   'aiModelApiKey',
   'aiModelApiModel',
@@ -110,13 +106,6 @@ interface TodayTriggerRecord {
   timestamps: number[]
 }
 
-interface SharedAiModelConfig {
-  apiBaseUrl: string
-  apiKey: string
-  model: string
-  maxTokens: number
-}
-
 interface SessionInsightTriggerResult {
   success: boolean
   message: string
@@ -133,18 +122,6 @@ interface CallApiOptions {
   disableThinking?: boolean
   useMaxCompletionTokens?: boolean
   responseFormatJson?: boolean
-}
-
-class ApiRequestError extends Error {
-  statusCode?: number
-  responseBody?: string
-
-  constructor(message: string, statusCode?: number, responseBody?: string) {
-    super(message)
-    this.name = 'ApiRequestError'
-    this.statusCode = statusCode
-    this.responseBody = responseBody
-  }
 }
 
 // ─── 日志 ─────────────────────────────────────────────────────────────────────
@@ -174,47 +151,10 @@ function insightLog(level: InsightLogLevel, message: string): void {
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
-/**
- * 绝对拼接 baseUrl 与路径，避免 Node.js URL 相对路径陷阱。
- *
- * 例如：
- *   baseUrl = "https://api.ohmygpt.com/v1"
- *   path    = "/chat/completions"
- * 结果为  "https://api.ohmygpt.com/v1/chat/completions"
- *
- * 如果 baseUrl 末尾没有斜杠，直接用字符串拼接（而非 new URL(path, base)），
- * 因为 new URL("chat/completions", "https://api.example.com/v1") 会错误地
- * 丢弃 v1，变成 https://api.example.com/chat/completions。
- */
-function buildApiUrl(baseUrl: string, path: string): string {
-  const base = baseUrl.replace(/\/+$/, '') // 去掉末尾斜杠
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  return `${base}${suffix}`
-}
-
 function getStartOfDay(date: Date = new Date()): number {
   const d = new Date(date)
   d.setHours(0, 0, 0, 0)
   return d.getTime()
-}
-
-function formatTimestamp(ts: number): string {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatPromptCurrentTime(date: Date = new Date()): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  return `当前系统时间：${year}年${month}月${day}日 ${hours}:${minutes}`
-}
-
-function appendPromptCurrentTime(prompt: string): string {
-  const base = String(prompt || '').trimEnd()
-  if (!base) return formatPromptCurrentTime()
-  return `${base}\n\n${formatPromptCurrentTime()}`
 }
 
 function normalizeApiMaxTokens(value: unknown): number {
@@ -223,10 +163,8 @@ function normalizeApiMaxTokens(value: unknown): number {
   return Math.min(API_MAX_TOKENS_MAX, Math.max(API_MAX_TOKENS_MIN, Math.floor(numeric)))
 }
 
-export function normalizeSessionIdList(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)))
-}
+// 共享实现见 ai/promptUtils；本文件保留同名导出，scripts/insight-dedup-test.ts 仍从此处导入
+export { normalizeSessionIdList }
 
 function isMimoModel(apiBaseUrl: string, model: string): boolean {
   const target = `${apiBaseUrl} ${model}`.toLowerCase()
@@ -276,24 +214,6 @@ function normalizeFootprintInsight(text: string): string {
   return normalized
 }
 
-function clampText(value: unknown, maxLength: number): string {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, Math.max(0, maxLength - 1))}…`
-}
-
-function stripJsonFence(value: string): string {
-  const text = String(value || '').trim()
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
-  if (fenced) return fenced[1].trim()
-  const firstBrace = text.indexOf('{')
-  const lastBrace = text.lastIndexOf('}')
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return text.slice(firstBrace, lastBrace + 1).trim()
-  }
-  return text
-}
-
 function parseMessageInsightAnalysis(rawOutput: string): MessageInsightAnalysis {
   let parsed: unknown
   try {
@@ -315,16 +235,9 @@ function parseMessageInsightAnalysis(rawOutput: string): MessageInsightAnalysis 
   return { explicitText, emotion, intent, topic }
 }
 
-function shouldFallbackJsonMode(error: unknown): boolean {
-  const statusCode = Number((error as ApiRequestError)?.statusCode || 0)
-  if (statusCode === 400 || statusCode === 404 || statusCode === 422) return true
-  const text = `${(error as Error)?.message || ''}\n${(error as ApiRequestError)?.responseBody || ''}`.toLowerCase()
-  return text.includes('response_format') || text.includes('json_object') || text.includes('json mode')
-}
-
 /**
  * 调用 OpenAI 兼容 API（非流式），返回模型第一条消息内容。
- * 使用 Node 原生 https/http 模块，无需任何第三方 SDK。
+ * 统一走 ai/aiApiClient，账本记账与日上限闸门在该层生效。
  */
 function callApi(
   apiBaseUrl: string,
@@ -335,6 +248,8 @@ function callApi(
   maxTokens: number = API_MAX_TOKENS_DEFAULT,
   options: CallApiOptions = {}
 ): Promise<string> {
+  // 日上限由 aiBudget 的全局 provider 兜底（见 configureAiBudget），
+  // 因此这里手工拼的 AiModelConfig 不会绕开闸门（PRD §5.5）
   return callChatCompletion({ apiBaseUrl, apiKey, model, maxTokens }, messages as ChatMessage[], {
     ...options, timeoutMs, maxTokens, usageContext: { purpose: 'insight', promptVersion: 'legacy-v1' }
   })
@@ -344,16 +259,6 @@ function callApi(
 class InsightService {
   private readonly config: ConfigService
 
-  /** DB 变更防抖定时器 */
-  private dbDebounceTimer: NodeJS.Timeout | null = null
-
-  /** 沉默扫描定时器 */
-  private silenceScanTimer: NodeJS.Timeout | null = null
-  private silenceInitialDelayTimer: NodeJS.Timeout | null = null
-
-  /** 是否正在处理中（防重入） */
-  private processing = false
-
   /**
    * 当日触发记录：sessionId -> TodayTriggerRecord
    * 每天 00:00 之后自动重置（通过检查日期实现）
@@ -362,29 +267,8 @@ class InsightService {
   private todayDate = getStartOfDay()
 
   /**
-   * 活跃分析冷却记录：sessionId -> 上次分析时间戳（毫秒）
-   * 同一会话 2 小时内不重复触发活跃分析，防止 DB 频繁变更时爆量调用 API。
-   */
-  private lastActivityAnalysis: Map<string, number> = new Map()
-
-  /**
-   * 沉默扫描冷却记录：sessionId -> 上次沉默扫描时间戳（毫秒）
-   * 24h 滚动窗口内同一 session 不重复生成沉默洞察。
-   */
-  private lastSilenceScan: Map<string, number> = new Map()
-
-  /** 沉默扫描独立锁，与活跃分析共享的 this.processing 分离 */
-  private silenceScanning = false
-
-  /**
-   * 跟踪每个会话上次见到的最新消息时间戳，用于判断是否有真正的新消息。
-   * sessionId -> lastMessageTimestamp（秒，与微信 DB 保持一致）
-   */
-  private lastSeenTimestamp: Map<string, number> = new Map()
-
-  /**
-   * 本地会话快照缓存，避免 analyzeRecentActivity 在每次 DB 变更时都做全量读取。
-   * 首次调用时填充，此后只在沉默扫描里刷新（沉默扫描间隔更长，更合适做全量刷新）。
+   * 本地会话快照缓存，供人工触发的画像/见解路径读取会话列表。
+   * 首次调用时填充；TTL 内复用，避免重复 connect() + getSessions()。
    */
   private sessionCache: ChatSession[] | null = null
   /** sessionCache 最后刷新时间戳（ms），超过 15 分钟强制重新拉取 */
@@ -402,26 +286,28 @@ class InsightService {
 
   // ── 公开 API ────────────────────────────────────────────────────────────────
 
+  /**
+   * 生命周期入口。**不注册任何定时器**：本服务的 AI 调用一律由人触发
+   * （客户 360 的「AI 识别这个客户」、今日行动页的简报/重生成、设置页的测试与批量画像）。
+   *
+   * 定位修正（2026-09-12，PRD §5.4/R）：原先的「DB 变更 2s 防抖 → 分析最近活跃会话 →
+   * 自动写 archive 评论 + 自动通知」链路，以及「沉默联系人定时扫描（含 120min 每会话冷却）」
+   * 已整体删除。因此：
+   *  · 2s 防抖刹车与 120min 冷却刹车随链路一并消失，不再需要单独简化；
+   *  · 原 `handleDbMonitorChange` 里 `if (this.processing) return` 的静默丢弃缺陷随方法删除而消失
+   *    （改为「没有自动入口」而不是「自动入口静默丢弃」）；
+   *  · 内存 `lastSeenTimestamp` 由持久化的 `salesDb.ai_scan_cursor` 取代（PRD §5.1 W1b）。
+   */
   start(): void {
     if (this.started) return
     this.started = true
-    void this.refreshConfiguration('startup')
+    insightLog('INFO', 'AI 见解服务已启动（仅按需触发，无后台自动链路）')
   }
 
   stop(): void {
-    const hadActiveFlow =
-      this.dbDebounceTimer !== null ||
-      this.silenceScanTimer !== null ||
-      this.silenceInitialDelayTimer !== null ||
-      this.processing
     this.started = false
-    this.clearTimers()
     this.clearRuntimeCache()
-    this.processing = false
     insightProfileService.cancelActiveTask('AI 见解服务已停止，画像任务已取消')
-    if (hadActiveFlow) {
-      insightLog('INFO', '已停止')
-    }
   }
 
   async handleConfigChanged(key: string): Promise<void> {
@@ -437,85 +323,20 @@ class InsightService {
       insightProfileService.cancelActiveTask('数据库或账号配置已变化，画像任务已取消')
       this.clearRuntimeCache()
     }
-
-    await this.refreshConfiguration(`config:${normalizedKey}`)
   }
 
   handleConfigCleared(): void {
-    this.clearTimers()
     this.clearRuntimeCache()
     insightProfileService.cancelActiveTask('配置已清除，画像任务已取消')
-    this.processing = false
   }
-
-  private async refreshConfiguration(reason: string): Promise<void> {
-    if (!this.started) return
-    if (!this.isEnabled()) {
-      this.clearTimers()
-      this.clearRuntimeCache()
-      this.processing = false
-      return
-    }
-    // 仅初次启动、间隔值变化、或 enable 状态切换时才重调度
-    // 避免 prompt/notification 等无关配置变更重置扫描计时器
-    const prevInterval = this._lastScanIntervalHours
-    const newInterval = (this.config.get('aiInsightScanIntervalHours') as number) || 4
-    if (reason === 'startup' || newInterval !== prevInterval) {
-      this._lastScanIntervalHours = newInterval
-      if (this.silenceScanning) {
-        insightLog('INFO', '[Insight] 跳过重调度：扫描进行中，新间隔将在下次扫描结束后生效')
-        return
-      }
-      this.scheduleSilenceScan()
-    }
-  }
-  private _lastScanIntervalHours: number | undefined
 
   private clearRuntimeCache(): void {
     this.dbConnected = false
     this.sessionCache = null
     this.sessionCacheAt = 0
-    this.lastActivityAnalysis.clear()
-    this.lastSilenceScan.clear()
-    this.lastSeenTimestamp.clear()
     this.todayTriggers.clear()
     this.todayDate = getStartOfDay()
     weiboService.clearCache()
-  }
-
-  private clearTimers(): void {
-    if (this.dbDebounceTimer !== null) {
-      clearTimeout(this.dbDebounceTimer)
-      this.dbDebounceTimer = null
-    }
-    if (this.silenceScanTimer !== null) {
-      clearTimeout(this.silenceScanTimer)
-      this.silenceScanTimer = null
-    }
-    if (this.silenceInitialDelayTimer !== null) {
-      clearTimeout(this.silenceInitialDelayTimer)
-      this.silenceInitialDelayTimer = null
-    }
-  }
-
-  /**
-   * 由 main.ts 在 addDbMonitorListener 回调中调用。
-   * 加入 2s 防抖，防止开机/重连时大量事件并发阻塞主线程。
-   * 如果当前正在处理中，直接忽略此次事件（不创建新的 timer），避免 timer 堆积。
-   */
-  handleDbMonitorChange(_type: string, _json: string): void {
-    if (!this.started) return
-    if (!this.isEnabled()) return
-    // 正在处理时忽略新事件，避免 timer 堆积
-    if (this.processing) return
-
-    if (this.dbDebounceTimer !== null) {
-      clearTimeout(this.dbDebounceTimer)
-    }
-    this.dbDebounceTimer = setTimeout(() => {
-      this.dbDebounceTimer = null
-      void enqueueSalesTask(() => this.analyzeRecentActivity())
-    }, DB_CHANGE_DEBOUNCE_MS)
   }
 
   /**
@@ -566,7 +387,8 @@ class InsightService {
   }
 
   /**
-   * 强制立即对最近一个私聊会话触发一次见解（忽略冷却，用于测试）。
+   * 手动对最近一个允许的私聊会话触发一次见解（设置页调试按钮）。
+   * 属用户显式触发，非自动链路；冷却机制已随白天自动链路删除（PRD §5.4）。
    * 返回触发结果描述，供设置页展示。
    */
   async triggerTest(): Promise<{ success: boolean; message: string }> {
@@ -655,20 +477,6 @@ class InsightService {
     } catch (error) {
       return { success: false, message: `触发失败：${(error as Error).message}` }
     }
-  }
-
-  /** 获取今日触发统计（供设置页展示） */
-  getTodayStats(): { sessionId: string; count: number; times: string[] }[] {
-    this.resetIfNewDay()
-    const result: { sessionId: string; count: number; times: string[] }[] = []
-    for (const [sessionId, record] of this.todayTriggers.entries()) {
-      result.push({
-        sessionId,
-        count: record.timestamps.length,
-        times: record.timestamps.map(formatTimestamp)
-      })
-    }
-    return result
   }
 
   async generateFootprintInsight(params: {
@@ -995,7 +803,7 @@ ${afterText}
     return this.config.get('aiInsightEnabled') === true
   }
 
-  private getSharedAiModelConfig(): SharedAiModelConfig {
+  private getSharedAiModelConfig(): AiModelConfig {
     const apiBaseUrl = String(
       this.config.get('aiModelApiBaseUrl')
       || this.config.get('aiInsightApiBaseUrl')
@@ -1331,356 +1139,7 @@ ${afterText}
     }
   }
 
-  // ── 沉默联系人扫描 ──────────────────────────────────────────────────────────
 
-  private scheduleSilenceScan(): void {
-    this.clearTimers()
-    if (!this.started || !this.isEnabled()) return
-
-    // 等待扫描完成后再安排下一次，避免并发堆积
-    const scheduleNext = () => {
-      if (!this.started || !this.isEnabled()) return
-      const intervalHours = (this.config.get('aiInsightScanIntervalHours') as number) || 4
-      const intervalMs = Math.max(0.1, intervalHours) * 60 * 60 * 1000
-      insightLog('INFO', `下次沉默扫描将在 ${intervalHours} 小时后执行`)
-      this.silenceScanTimer = setTimeout(async () => {
-        this.silenceScanTimer = null
-        await enqueueSalesTask(() => this.runSilenceScan())
-        scheduleNext()
-      }, intervalMs)
-    }
-
-    this.silenceInitialDelayTimer = setTimeout(async () => {
-      this.silenceInitialDelayTimer = null
-      await enqueueSalesTask(() => this.runSilenceScan())
-      scheduleNext()
-    }, SILENCE_SCAN_INITIAL_DELAY_MS)
-  }
-
-  private async runSilenceScan(): Promise<void> {
-    if (!this.isEnabled()) {
-      return
-    }
-    if (this.processing || this.silenceScanning) {
-      insightLog('INFO', '沉默扫描：正在处理中，跳过本次')
-      return
-    }
-
-    this.processing = true
-    this.silenceScanning = true
-    insightLog('INFO', '开始沉默联系人扫描...')
-    try {
-      const silenceDays = (this.config.get('aiInsightSilenceDays') as number) || DEFAULT_SILENCE_DAYS
-      const silenceMaxDays = (this.config.get('aiInsightSilenceMaxDays') as number) || 30
-      const scanLimit = (this.config.get('aiInsightScanLimit') as number) || 50
-      const cooldownMinutes = (this.config.get('aiInsightCooldownMinutes') as number) ?? 120
-      const thresholdMs = silenceDays * 24 * 60 * 60 * 1000
-      const maxThresholdMs = silenceMaxDays * 24 * 60 * 60 * 1000
-      const now = Date.now()
-
-      insightLog('INFO', `沉默阈值：${silenceDays}-${silenceMaxDays} 天，每次上限 ${scanLimit} 条`)
-
-      // 沉默扫描间隔较长，强制刷新缓存以获取最新数据
-      const sessions = await this.getSessionsCached(true)
-      if (sessions.length === 0) {
-        insightLog('WARN', '获取会话列表失败，跳过沉默扫描')
-        return
-      }
-
-      insightLog('INFO', `共 ${sessions.length} 个会话，开始过滤...`)
-
-      // 第一阶段：收集所有符合条件的沉默联系人
-      interface SilentCandidate {
-        sessionId: string
-        displayName: string
-        silentDays: number
-        salesStage?: string
-        stageWeight: number
-      }
-      const candidates: SilentCandidate[] = []
-
-      for (const session of sessions) {
-        const sessionId = session.username?.trim() || ''
-        if (!sessionId || sessionId.endsWith('@chatroom')) continue
-        if (sessionId.toLowerCase().includes('placeholder')) continue
-        if (!this.isSessionAllowed(sessionId)) continue
-
-        const lastTimestamp = (session.lastTimestamp || 0) * 1000
-        if (!lastTimestamp || lastTimestamp <= 0) continue
-
-        const silentMs = now - lastTimestamp
-
-        // 查询客户画像阶段
-        let salesStage: string | undefined
-        let effectiveThresholdMs = thresholdMs
-        let stageWeight = 3  // 默认最低优先级
-        let profile: CustomerProfile | undefined
-        try {
-          profile = salesDbService.customerGetBySession(sessionId)
-          if (profile?.stage) {
-            salesStage = profile.stage
-            // 流失客户直接跳过
-            if (profile.stage === '流失') continue
-            // 动态阈值
-            if (profile.stage === '决策') { effectiveThresholdMs = 1 * 24 * 60 * 60 * 1000; stageWeight = 0 }
-            else if (profile.stage === '比价') { effectiveThresholdMs = 2 * 24 * 60 * 60 * 1000; stageWeight = 1 }
-            else if (profile.stage === '了解') { stageWeight = 2 }
-          }
-        } catch { /* salesDb 未初始化时忽略 */ }
-        // 无名 session（salesDb 无客户档案）跳过沉默扫描——见解链只服务已识别客户（观察期防污染）
-        if (!profile) continue
-
-        // 下限：未达到沉默阈值
-        if (silentMs < effectiveThresholdMs) continue
-        // 上限：超过最大沉默天数，不再提醒
-        if (silentMs > maxThresholdMs) continue
-
-        const silentDaysCalc = Math.floor(silentMs / (24 * 60 * 60 * 1000))
-        const displayName = typeof session.displayName === 'string' && session.displayName.length > 0
-          ? (session.displayName.trim() || session.displayName)
-          : sessionId
-
-        candidates.push({ sessionId, displayName, silentDays: silentDaysCalc, salesStage, stageWeight })
-      }
-
-      // 第二阶段：按优先级排序（阶段权重升序 → 沉默天数升序）
-      candidates.sort((a, b) => {
-        if (a.stageWeight !== b.stageWeight) return a.stageWeight - b.stageWeight
-        return a.silentDays - b.silentDays
-      })
-
-      insightLog('INFO', `符合条件 ${candidates.length} 个，取前 ${scanLimit} 个生成见解`)
-
-      // 第三阶段：按上限生成见解
-      const activityCooldownMs = (cooldownMinutes ?? 120) * 60 * 1000
-      const SILENCE_COOLDOWN_MS = 24 * 3600 * 1000
-      let generatedCount = 0
-      for (const candidate of candidates.slice(0, scanLimit)) {
-        if (!this.isEnabled()) return
-        const sid = candidate.sessionId
-
-        // Fix 1a: 活跃分析冷却检查 — 冷却期内有活跃分析则跳过
-        const lastActivity = this.lastActivityAnalysis.get(sid)
-        if (lastActivity && (now - lastActivity) < activityCooldownMs) continue
-
-        // Fix 1b: 沉默扫描自身冷却 — 24h 内已扫过则跳过
-        const lastSilence = this.lastSilenceScan.get(sid)
-        if (lastSilence && (now - lastSilence) < SILENCE_COOLDOWN_MS) continue
-
-        const stageLabel = candidate.salesStage ? `（${candidate.salesStage}阶段）` : ''
-        insightLog('INFO', `生成沉默见解：${candidate.displayName}${stageLabel}，已沉默 ${candidate.silentDays} 天`)
-
-        // 先标记，防止生成耗时期间被重复选中
-        this.lastSilenceScan.set(sid, now)
-        try {
-          await this.generateInsightForSession({
-            sessionId: sid,
-            displayName: candidate.displayName,
-            triggerReason: 'silence',
-            silentDays: candidate.silentDays,
-            salesStage: candidate.salesStage
-          })
-          generatedCount++
-        } catch (err) {
-          // 生成失败，撤销标记，允许下一轮重试
-          this.lastSilenceScan.delete(sid)
-          insightLog('WARN', `沉默洞察生成失败，已回滚冷却标记: ${candidate.displayName} — ${(err as Error)?.message || err}`)
-        }
-        // 高意向沉默预警：比价/决策阶段客户沉默时弹窗（受冷却控制）
-        if (candidate.salesStage === '比价' || candidate.salesStage === '决策') {
-          if (this.shouldAlert(candidate.sessionId, candidate.salesStage)) {
-            insightLog('INFO', `高意向沉默预警：${candidate.displayName}（${candidate.salesStage}）沉默 ${candidate.silentDays} 天`)
-            void showNotification({
-              sessionId: candidate.sessionId,
-              channel: 'sales-alert',
-              title: '🔥 高意向客户沉默',
-              content: `${candidate.displayName}（${candidate.salesStage}）已沉默 ${candidate.silentDays} 天，建议尽快跟进`,
-              avatarUrl: undefined
-            })
-          }
-        }
-      }
-      insightLog('INFO', `沉默扫描完成，共生成 ${generatedCount} 条见解（候选 ${candidates.length} 个）`)
-
-      // 自动回填：每次扫描额外处理 10 个从未分析过的老客户（调内核，不重入队列）
-      if (!this.batchRunning) {
-        try {
-          const backfillResult = await this.batchProfileCore(10, 12)
-          if (backfillResult.success && backfillResult.processed) {
-            insightLog('INFO', `自动回填：本次处理 ${backfillResult.processed} 个老客户画像`)
-          }
-        } catch { /* 回填失败不影响主流程 */ }
-      }
-
-      // 催办自动识别：我方发完消息客户没回 → 生成催办待办（零 AI 调用，不重入队列）
-      try {
-        const urgeCreated = await this.scanUrgeFollowUps()
-        if (urgeCreated > 0) insightLog('INFO', `催办扫描：本次生成 ${urgeCreated} 条催办待办`)
-      } catch { /* 催办失败不影响主流程 */ }
-    } catch (e) {
-      insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
-    } finally {
-      this.processing = false
-      this.silenceScanning = false
-      // Fix 3: 清理超过 7 天未更新的冷却 key
-      const MAX_AGE_MS = 7 * 24 * 3600 * 1000
-      const cleanNow = Date.now()
-      for (const [k, v] of this.lastSilenceScan) {
-        if (cleanNow - v > MAX_AGE_MS) this.lastSilenceScan.delete(k)
-      }
-      for (const [k, v] of this.lastActivityAnalysis) {
-        if (cleanNow - v > MAX_AGE_MS) this.lastActivityAnalysis.delete(k)
-      }
-    }
-  }
-
-  // ── 活跃会话分析 ────────────────────────────────────────────────────────────
-
-  /**
-   * 在 DB 变更防抖后执行，分析最近活跃的会话。
-   *
-   * 触发条件（必须同时满足）：
-   * 1. 会话有真正的新消息（lastTimestamp 比上次见到的更新）
-   * 2. 该会话距上次活跃分析已超过冷却期
-   *
-   * whitelist 模式：直接使用名单里的 sessionId，完全跳过 getSessions()。
-   * blacklist 模式：从缓存拉取会话后过滤名单。
-   */
-  private async analyzeRecentActivity(): Promise<void> {
-    if (!this.isEnabled()) return
-    if (this.processing) return
-
-    this.processing = true
-    try {
-      const now = Date.now()
-      const cooldownMinutes = (this.config.get('aiInsightCooldownMinutes') as number) ?? 120
-      const cooldownMs = cooldownMinutes * 60 * 1000
-      const { mode: filterMode, list: filterList } = this.getInsightFilterConfig()
-
-      // whitelist 模式且有勾选项时，直接用名单 sessionId，无需查数据库全量会话列表。
-      // 通过拉取该会话最新 1 条消息时间戳判断是否真正有新消息，开销极低。
-      if (filterMode === 'whitelist' && filterList.length > 0) {
-        // 确保数据库已连接（首次时连接，之后复用）
-        if (!this.dbConnected) {
-          const connectResult = await chatService.connect()
-          if (!connectResult.success) return
-          this.dbConnected = true
-        }
-
-        for (const sessionId of filterList) {
-          if (!sessionId || sessionId.toLowerCase().includes('placeholder')) continue
-
-          // 冷却期检查（先过滤，减少不必要的 DB 查询）
-          if (cooldownMs > 0) {
-            const lastAnalysis = this.lastActivityAnalysis.get(sessionId) ?? 0
-            if (cooldownMs - (now - lastAnalysis) > 0) continue
-          }
-
-          // 拉最新 10 条做触发扫描：只看最新 1 条会把自己群发/系统消息误判为客户活跃
-          // （群发风暴根除，设计-AI见解重定位 §2.2）
-          try {
-            const msgsResult = await chatService.getLatestMessages(sessionId, TRIGGER_SCAN_WINDOW)
-            if (!msgsResult.success || !msgsResult.messages || msgsResult.messages.length === 0) continue
-
-            const lastSeen = this.lastSeenTimestamp.get(sessionId) ?? 0
-            const scan = scanMessagesForTrigger(msgsResult.messages, lastSeen)
-            for (const hit of scan.ownTexts) {
-              massSendDetector.recordOwnText(sessionId, hit.content, hit.createTime)
-            }
-            this.lastSeenTimestamp.set(sessionId, scan.latestTs)
-            if (!scan.shouldTrigger) continue // 只有群发/系统消息更新，非客户行为，不触发
-          } catch {
-            continue
-          }
-
-          insightLog('INFO', `白名单会话 ${sessionId} 有新消息，准备生成见解...`)
-          this.lastActivityAnalysis.set(sessionId, now)
-
-          // displayName 使用白名单 sessionId，generateInsightForSession 内部会从上下文里获取真实名称
-          await this.generateInsightForSession({
-            sessionId,
-            displayName: sessionId,
-            triggerReason: 'activity'
-          })
-          break // 每次最多处理 1 个会话
-        }
-        return
-      }
-
-      if (filterMode === 'whitelist' && filterList.length === 0) {
-        insightLog('INFO', '白名单模式且名单为空，跳过活跃分析')
-        return
-      }
-
-      // blacklist 模式：拉取会话缓存后按过滤规则筛选
-      const sessions = await this.getSessionsCached()
-      if (sessions.length === 0) return
-
-      const candidateSessions = sessions.filter((s) => {
-        const id = s.username?.trim() || ''
-        if (!id || id.toLowerCase().includes('placeholder')) return false
-        return this.isSessionAllowed(id)
-      })
-
-      for (const session of candidateSessions.slice(0, 10)) {
-        const sessionId = session.username?.trim() || ''
-        if (!sessionId) continue
-        // 无名 session（salesDb 无客户档案）跳过见解链——只服务已识别客户（观察期防污染）
-        let hasProfile = false
-        try { hasProfile = !!salesDbService.customerGetBySession(sessionId) } catch { /* salesDb 未初始化视为无名 */ }
-        if (!hasProfile) continue
-
-        const currentTimestamp = session.lastTimestamp || 0
-        const lastSeen = this.lastSeenTimestamp.get(sessionId) ?? 0
-        if (currentTimestamp <= lastSeen) continue
-
-        if (cooldownMs > 0) {
-          const lastAnalysis = this.lastActivityAnalysis.get(sessionId) ?? 0
-          if (cooldownMs - (now - lastAnalysis) > 0) continue
-        }
-
-        // 拉最新 10 条确认新消息里确有客户发言（原先只看 session 时间戳，群发/系统消息
-        // 也会推进时间戳导致误触发，设计-AI见解重定位 §2.2）。冷却期内不消费时间戳：
-        // 冷却结束后仍能补扫到冷却期间到达的客户消息（避免客户回复被群发盖掉后丢失）。
-        let customerTriggered = true
-        try {
-          const msgsResult = await chatService.getLatestMessages(sessionId, TRIGGER_SCAN_WINDOW)
-          if (msgsResult.success && msgsResult.messages && msgsResult.messages.length > 0) {
-            const scan = scanMessagesForTrigger(msgsResult.messages, lastSeen)
-            for (const hit of scan.ownTexts) {
-              massSendDetector.recordOwnText(sessionId, hit.content, hit.createTime)
-            }
-            this.lastSeenTimestamp.set(sessionId, Math.max(scan.latestTs, currentTimestamp))
-            customerTriggered = scan.shouldTrigger
-          }
-        } catch {
-          customerTriggered = true // 拉取失败保守放行，维持原行为
-        }
-        if (!customerTriggered) continue // 只有群发/系统消息更新，非客户行为，不触发
-
-        const displayName = typeof session.displayName === 'string' && session.displayName.length > 0
-          ? (session.displayName.trim() || session.displayName)
-          : sessionId
-        insightLog('INFO', `${displayName} 有新消息，准备生成见解...`)
-        this.lastActivityAnalysis.set(sessionId, now)
-
-        // 接线 AI 阶段分类器（客户新消息到达 → 分类 → 更新 customer_profile.stage）
-        // 闸门之后才执行：群发/系统消息不进分类器，不浪费 API 也不误写 stage
-        void actionStageClassifier(sessionId, displayName)
-
-        await this.generateInsightForSession({
-          sessionId,
-          displayName,
-          triggerReason: 'activity'
-        })
-        break
-      }
-    } catch (e) {
-      insightLog('ERROR', `活跃分析出错: ${(e as Error).message}`)
-    } finally {
-      this.processing = false
-    }
-  }
 
   // ── 核心见解生成 ────────────────────────────────────────────────────────────
 
@@ -2070,70 +1529,6 @@ ${afterText}
   }
 
   /**
-   * 催办自动识别：检测"我方发完消息、客户超过 N 天没回"的会话，生成 urge_customer 待办。
-   * 零 AI 调用、零外部依赖；粗筛沉默区间 + 去重 + 取最新消息判 isSend。
-   * 仅在 runSilenceScan 的队列任务内被调用，不 enqueue，避免死锁。
-   */
-  private async scanUrgeFollowUps(): Promise<number> {
-    const URGE_MIN_MS = 2 * 86400000
-    const URGE_MAX_MS = 30 * 86400000
-    const URGE_LIMIT = 40
-    const now = Date.now()
-    let created = 0
-    try {
-      const sessions = await this.getSessionsCached(false)
-      const SYSTEM = new Set(['filehelper', 'newsapp', 'tnewsapp', 'fmessage', 'weixin', 'medianote', 'mphelper', 'weixinguanhaozhuli', 'notifymessage'])
-      const candidates = sessions.filter((s: any) => {
-        const sid = String(s.username || '').trim()
-        if (!sid || sid.endsWith('@chatroom') || sid.startsWith('gh_') || SYSTEM.has(sid)) return false
-        const silent = now - (s.lastTimestamp || 0) * 1000
-        return silent >= URGE_MIN_MS && silent <= URGE_MAX_MS
-      }).slice(0, URGE_LIMIT * 3)
-
-      for (const s of candidates) {
-        if (created >= URGE_LIMIT) break
-        const sid = String(s.username).trim()
-        // 去重：已有 pending/suspected 的催办待办则跳过
-        try {
-          const existing = salesDbService.todoList({ session_id: sid })
-          if (existing.some((t: any) => t.trigger_type === 'urge_customer' && (t.status === 'pending' || t.status === 'suspected'))) continue
-        } catch { continue }
-        // 取最新一条消息，判断是否我方发出
-        let lastIsSend = -1
-        try {
-          const r = await chatService.getLatestMessages(sid, 1)
-          if (!r.success || !r.messages || r.messages.length === 0) continue
-          const last = r.messages.reduce((a: any, b: any) => ((Number(b.createTime) || 0) > (Number(a.createTime) || 0) ? b : a), r.messages[0])
-          lastIsSend = Number(last.isSend)
-        } catch { continue }
-        if (lastIsSend !== 1) continue  // 最后一条非我方发出 → 非催办场景
-        const name = (typeof s.displayName === 'string' && s.displayName.trim()) ? s.displayName.trim() : sid
-        try {
-          salesDbService.todoCreate({
-            session_id: sid,
-            display_name: name,
-            trigger_type: 'urge_customer',
-            action_type: 'urge_customer',
-            title: `[${name}] 你发的消息还没收到回复，可考虑跟进一下`,
-            status: 'pending',
-            created_by: 'ai',
-            confidence: 0.6,
-            priority_score: 0.5,
-            due_at: null,
-            // P0-1 证据：最近一条我方未获回复消息的 messageKey（回查原话）
-            source_message_id: String(last.messageKey || '') || null
-          })
-          created++
-          insightLog('INFO', `催办待办生成：${name}`)
-        } catch { /* ignore */ }
-      }
-    } catch (e) {
-      insightLog('ERROR', `催办扫描出错: ${(e as Error).message}`)
-    }
-    return created
-  }
-
-  /**
    * 批量画像：遍历活跃客户，逐个调用 generateInsightForSession 提取阶段
    * @param limit 每次处理数量（默认 50）
    * @param monthsBack 回溯几个月内的活跃客户（默认 6）
@@ -2142,7 +1537,7 @@ ${afterText}
     return enqueueSalesTask(() => this.batchProfileCore(limit, monthsBack))
   }
 
-  /** 批量画像内核（不 enqueue，供 runSilenceScan 内部回填直接调用，避免队列内重入死锁） */
+  /** 批量画像内核（不 enqueue：外层 batchProfile 已排队，内部再 enqueue 会死锁） */
   private async batchProfileCore(limit: number = 50, monthsBack: number = 6): Promise<{ success: boolean; processed?: number; error?: string }> {
     if (!this.isEnabled()) return { success: false, error: '请先开启 AI 见解' }
 

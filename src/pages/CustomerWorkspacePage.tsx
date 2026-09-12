@@ -16,7 +16,7 @@
  *  - 行动信号：sales.actionGetUnified()（getUnifiedSignals，全量不截断，过滤 todo:/logi:/lead: 虚拟前缀）
  *  - 360 档案：crm.customerProfile(sessionId)
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, Bot } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
@@ -221,6 +221,58 @@ export default function CustomerWorkspacePage() {
   // P0-3.2 证据回查（AI 当前判断卡「有据可查」）：视图只带 messageKey 锚点，点击才走 P0-2B 拉原话
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
   const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
+
+  // ─── AI 识别这个客户（PRD §5.2 / §6.2）─────────────────────────────────────
+  // 单飞作用域全局（§4.7）：任一识别进行中，本按钮与今日行动页的「重新生成简报」同时禁用
+  const [identifyBusy, setIdentifyBusy] = useState(false)
+  /** 完成后展示「刚刚更新」；下一次点击前保留 */
+  const [identifyDoneAt, setIdentifyDoneAt] = useState<number | null>(null)
+  /** 六态中的「无新内容 / 失败 / 额度不足」分别用独立文案，绝不静默 */
+  const [identifyNotice, setIdentifyNotice] = useState<{ kind: 'ok' | 'no_new' | 'error' | 'quota'; text: string } | null>(null)
+
+  const runIdentify = useCallback(async () => {
+    const sessionId = String(selectedCustomer?.session_id || '').trim()
+    if (!sessionId || identifyBusy) return
+    setIdentifyBusy(true); setIdentifyNotice(null); setIdentifyDoneAt(null)
+    try {
+      const res = await (window as any).electronAPI.sales.identifyCustomer({
+        sessionId,
+        displayName: displayNameOf(selectedCustomer)
+      })
+      if (res?.success && res.noNewContent) {
+        // 调用前判定：未发起模型调用（账本无记录），界面直接说明
+        setIdentifyNotice({ kind: 'no_new', text: '距上次识别无新消息' })
+      } else if (res?.success) {
+        setIdentifyDoneAt(Date.now())
+        setIdentifyNotice({
+          kind: 'ok',
+          text: res.newTasks > 0 ? `刚刚更新，新增 ${res.newTasks} 条待跟进` : '刚刚更新，未发现新的跟进承诺'
+        })
+        // 识别会新增待办 → 重取信号与客户列表，让产出立刻可见
+        void fetchAll()
+      } else {
+        // 失败/额度不足：明确报错并给出提额入口，不静默
+        const text = String(res?.error || '识别失败')
+        setIdentifyNotice({ kind: /额度|上限|预算/.test(text) ? 'quota' : 'error', text })
+      }
+    } catch (e) {
+      setIdentifyNotice({ kind: 'error', text: String(e) })
+    } finally {
+      setIdentifyBusy(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCustomer, identifyBusy])
+
+  // 全局单飞订阅：别人（简报/别的页面）在识别时，本按钮同样要禁用
+  useEffect(() => {
+    let off: (() => void) | undefined
+    try {
+      const api = (window as any).electronAPI.sales
+      void api.identifyState?.().then((s: any) => setIdentifyBusy(!!s?.busy)).catch(() => undefined)
+      off = api.onIdentifyActivity?.((s: any) => setIdentifyBusy(!!s?.busy))
+    } catch { /* 订阅失败不阻断页面 */ }
+    return () => { if (off) off() }
+  }, [])
 
   const openCustomer = async (c: any) => {
     setSelectedCustomer(c)
@@ -527,9 +579,8 @@ export default function CustomerWorkspacePage() {
       ) : actionQueue.length === 0 ? (
         /* ── 屏 2：队列清零空态 ── */
         <div className="cws-done">
-          <div className="cws-done__emoji">🎉</div>
-          <div className="cws-done__title">都处理完了</div>
-          <div className="cws-done__sub">要找一个具体客户？用上面的搜索框。想看看今天还能干什么？去「今日行动」。</div>
+          <div className="cws-done__title">当前没有待处理客户</div>
+          <div className="cws-done__sub">这里为空只表示队列里没有事项，不代表客户都跟完了。要找一个具体客户？用上面的搜索框。想看看今天还能干什么？去「今日行动」。</div>
         </div>
       ) : (
         /* ── 屏 1：行动队列 ── */
@@ -597,7 +648,13 @@ export default function CustomerWorkspacePage() {
           <div className="crm-detail-head">
             <h3>{displayNameOf(selectedCustomer)} · 客户档案</h3>
             <div className="crm-detail-actions">
-              <button className="crm-btn primary" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
+              {/* AI 识别这个客户（PRD §5.2）：主按钮。单飞作用域全局——任一识别进行中，所有入口按钮全部禁用 */}
+              <button className="crm-btn primary" onClick={() => void runIdentify()}
+                disabled={identifyBusy || !selectedCustomer.session_id}
+                title={!selectedCustomer.session_id ? '未关联微信会话，无法识别' : identifyBusy ? '正在识别中，请稍候' : '读取该客户最近聊天，抽取跟进承诺'}>
+                <Sparkles size={14} /> {identifyBusy ? '识别中…' : 'AI 识别这个客户'}
+              </button>
+              <button className="crm-btn" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
               <button className="crm-btn" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
               <div className="cws-aitools">
                 <button className="crm-btn crm-btn--ghost" onClick={() => setShowAiTools((v) => !v)}>AI 工具 ▾</button>
@@ -613,6 +670,15 @@ export default function CustomerWorkspacePage() {
               <button className="crm-btn crm-btn--ghost cws-drawer__close" title="关闭档案（点击遮罩也可关闭）" onClick={() => setSelectedCustomer(null)}><X size={15} /></button>
             </div>
           </div>
+          {/* 识别结果提示（PRD §6.2 六态）：无新内容 / 成功 / 失败 / 额度不足都必须有明确文案 */}
+          {identifyNotice && (
+            <div className={`crm-insight cws-identify-notice cws-identify-notice--${identifyNotice.kind}`} role={identifyNotice.kind === 'error' || identifyNotice.kind === 'quota' ? 'alert' : 'status'}>
+              {identifyNotice.text}
+              {identifyNotice.kind === 'quota' && <button className="crm-btn" onClick={() => navigate('/settings')}>提高当日上限</button>}
+              {identifyNotice.kind === 'no_new' && <small>（未发起模型调用，不产生费用）</small>}
+              {identifyDoneAt && identifyNotice.kind === 'ok' && <small> · {new Date(identifyDoneAt).toLocaleTimeString()}</small>}
+            </div>
+          )}
           {profileLoading && <div className="crm-insight">加载档案…</div>}
           {!selectedCustomer.session_id && <div className="crm-insight">（未关联微信会话，无 AI 档案）</div>}
           {!profileLoading && selectedCustomer.session_id && customerProfile && (

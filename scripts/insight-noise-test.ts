@@ -4,7 +4,8 @@
  *  a. 消息三分类：customer / own / system（含拍一拍、isSend=null 边界）
  *  b. 群发检测：3 会话标记 / 2 会话不标 / 48h 过期 / 72h 窗口重置 / 归一化 / 短文本忽略
  *  c. 触发扫描：群发/系统消息不触发、埋在窗口内的客户回复仍触发、lastSeen 推进
- *  d. 静态护栏：insightService 两路径接线、分类器闸门顺序、上下文标注、prompt 护栏、原子写
+ *  d. 静态护栏：insightService 两路径接线、分类器闸门顺序、上下文标注、prompt 护栏、原子写，
+ *     以及「新消息 → AI 阶段分类」自动分派入口不得复活（d10-d12，2026-09-12 复核修复）
  * 运行：npx tsx scripts/insight-noise-test.ts
  */
 import { readFileSync } from 'fs'
@@ -131,16 +132,30 @@ import {
   const svc = readFileSync(join(__dirname, '../electron/services/insightService.ts'), 'utf-8')
   const rec = readFileSync(join(__dirname, '../electron/services/insightRecordService.ts'), 'utf-8')
 
-  ok('d1 白名单/黑名单两路径均接触发扫描', (svc.match(/scanMessagesForTrigger\(/g) || []).length >= 3)
+  // d1/d3 原断言绑在「沉默扫描 / 活跃会话分析」两条自动链路上；该链路已按 PRD §5.4（R）删除，
+  // 断言改为护栏的**当前**契约：采集点仍接线（被动采集不丢），且不得重新引入自动分派。
+  ok('d1 群发检测器的被动采集点仍接线（≥1，随自动链路删除后只剩上下文采集这一处）',
+    (svc.match(/scanMessagesForTrigger\(/g) || []).length >= 1)
   ok('d2 触发扫描窗口常量=10', svc.includes('TRIGGER_SCAN_WINDOW = 10'))
-  ok('d3 分类器在客户闸门之后（闸门声明先于分类器调用）',
-    svc.indexOf('if (!customerTriggered) continue') < svc.indexOf('void actionStageClassifier(sessionId, displayName)'))
+  ok('d3 不再把新消息事件自动分派给阶段分类器（PRD §5.4：无人触发不得调模型）',
+    !svc.includes('actionStageClassifier'))
   ok('d4 上下文标注含系统归因', svc.includes("[系统消息] ${content}") && svc.includes("senderName = '系统'"))
   ok('d5 群发标注接线', svc.includes('【疑似群发·批量触达】'))
   ok('d6 prompt 护栏接线且条件化', svc.includes('noiseGuardrail') && svc.includes('禁止将两者解读为对方的行为、意向或回复'))
   ok('d7 上下文构建返回 hasNoise', svc.includes('{ text: string; hasNoise: boolean }'))
   ok('d8 记录落盘换原子写', rec.includes('atomicWriteFileSync(filePath') && !rec.includes('fs.writeFileSync(filePath'))
   ok('d9 去重日志文案与 24h 常量一致', svc.includes('24h 内已生成过见解') && !svc.includes('12h 内已生成过见解'))
+
+  // d10-d12 复核修复（2026-09-12）：onNewMessage「拆线没拆弹」——
+  // 调用方已删净但函数体仍在（含 classifyStage → simpleCompletion），重新接线即复活白天自动 AI 链路。
+  // 现函数体、函数级 prompt/解析、salesStageClassifier 的 AI 调用一并移除；以下断言锁死不得复活。
+  const strip = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  const engine = strip(readFileSync(join(__dirname, '../electron/services/salesActionEngine.ts'), 'utf-8'))
+  ok('d10 salesActionEngine 无「新消息增量」入口（onNewMessage 已删除）', !/onNewMessage/.test(engine))
+  ok('d11 salesActionEngine 不再自动调用 AI 阶段分类（无人触发不得调模型）', !/classifyStage/.test(engine))
+  const classifier = strip(readFileSync(join(__dirname, '../electron/services/salesStageClassifier.ts'), 'utf-8'))
+  ok('d12 阶段分类器已无 AI 调用（classifyStage 与其 prompt/解析一并移除）',
+    !/simpleCompletion|callChatCompletion|isAiConfigured/.test(classifier))
 }
 
 console.log(`\n结果: ${pass} passed, ${fail} failed`)

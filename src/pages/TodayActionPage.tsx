@@ -44,6 +44,18 @@ function KpiStat({ icon, value, label }: { icon: React.ReactNode; value: number;
   );
 }
 
+/** 简报六态（PRD §6.1）——键必须覆盖 coverage.state 的全部取值，避免漏态回退到错误结论 */
+type DigestStateKey = 'empty_account' | 'crm_only' | 'pending_data' | 'all_covered_clear' | 'failed_or_blocked' | 'stale_snapshot'
+
+const DIGEST_STATE_HINT: Record<DigestStateKey, string> = {
+  empty_account: '本账号暂无沟通数据',
+  crm_only: '仅业务事实（无聊天依据）',
+  pending_data: '数据已覆盖，正在梳理会话',
+  all_covered_clear: '已覆盖核对完成',
+  failed_or_blocked: '分析未完成 —— 下方为空不代表无人需要跟进',
+  stale_snapshot: '仅旧快照 —— 非今日最新结论'
+}
+
 export default function TodayActionPage() {
   const { items, stats, loading, error, filter, fetchToday, setFilter, createTodo } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
@@ -63,18 +75,29 @@ export default function TodayActionPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<{ session_id: string; name?: string } | null>(null)
 
   // 晨间摘要（设计-AI见解重定位 §3.1）：每日一条「今天先跟谁」，取代高意向提示条
+  // 六态（PRD §6.1）由 coverage.state 驱动；首屏时间预算 300ms/2s/>2s/10s 见下方 timers
   const [digest, setDigest] = useState<any>(null)
   const [digestDismissed, setDigestDismissed] = useState(false)
   const [digestRegenerating, setDigestRegenerating] = useState(false)
   const [digestError, setDigestError] = useState('')
+  /** 业务库尚未就绪（启动早期/切账号重开库）：加载态的一种，不是错误、也不是空态 */
+  const [digestNotReady, setDigestNotReady] = useState(false)
   const [digestExpanded, setDigestExpanded] = useState(false)
+  /** 首屏阶段：frame(≤300ms 骨架) → local(≤2s 本地事项) → slow(>2s 明确加载态) → timeout(10s 报错+重试) */
+  const [digestPhase, setDigestPhase] = useState<'frame' | 'local' | 'slow' | 'timeout' | 'ready'>('frame')
+  /** 单飞（PRD §4.7 全局作用域）：任一识别进行中，识别与重生成两个入口同时禁用 */
+  const [identifyBusy, setIdentifyBusy] = useState(false)
   const digestEpoch = useRef(0)
   const fetchDigest = useCallback(async () => {
     const epoch = digestEpoch.current
     try {
       const res = await (window as any).electronAPI.sales.morningDigestGet()
       if (epoch !== digestEpoch.current) return
+      // 业务库尚未就绪（启动早期/切账号重开库）：保持加载态，交回时间预算状态机推进，不报错也不装作空
+      if (res?.notReady) { setDigestNotReady(true); setDigestError(''); return }
+      setDigestNotReady(false)
       setDigest(res?.ok ? res.data : null); setDigestError('')
+      if (res?.ok && res.data) setDigestPhase('ready')
     } catch (e) { if (epoch === digestEpoch.current) setDigestError(String(e)) }
   }, [])
   const regenerateDigest = useCallback(async () => {
@@ -126,14 +149,36 @@ export default function TodayActionPage() {
 
   useEffect(() => { fetchToday() }, [fetchToday])
   useEffect(() => {
+    // 首屏时间预算（PRD §5.1）：不阻塞、不伪装为空——超时明确报错并给重试
+    setDigestPhase('frame')
+    const t300 = setTimeout(() => setDigestPhase(p => (p === 'frame' ? 'local' : p)), 300)
+    const t2000 = setTimeout(() => setDigestPhase(p => (p === 'ready' ? p : 'slow')), 2_000)
+    const t10000 = setTimeout(() => setDigestPhase(p => (p === 'ready' ? p : 'timeout')), 10_000)
     void fetchDigest()
+    // 「每天第一次打开」是唯一自动触发点（PRD §4.1）；同日幂等由主进程保证
     void (window as any).electronAPI.sales.morningDigestGenerate()
     const timer = setInterval(() => { void fetchDigest() }, 5_000)
-    return () => { clearInterval(timer); digestEpoch.current++ }
+    // 单飞状态订阅：任一识别起止都同步（全局作用域）
+    let off: (() => void) | undefined
+    try {
+      const api = (window as any).electronAPI.sales
+      void api.identifyState?.().then((s: any) => setIdentifyBusy(!!s?.busy)).catch(() => undefined)
+      off = api.onIdentifyActivity?.((s: any) => {
+        setIdentifyBusy(!!s?.busy)
+        // 识别结束 → 简报可能刚被解锁，补一次生成与读取
+        if (!s?.busy) { void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }
+      })
+    } catch { /* 单飞订阅失败不阻断页面 */ }
+    return () => {
+      clearTimeout(t300); clearTimeout(t2000); clearTimeout(t10000)
+      clearInterval(timer); digestEpoch.current++; if (off) off()
+    }
   }, [fetchDigest])
+  // 首屏阶段到达 10s 且仍无简报 → 明确报错（不是空态）
+  const digestTimedOut = digestPhase === 'timeout' && !digest
   // 切微信号 = 换库（§2.40）：账号切换后重查
   useWxidRefresh(() => {
-    digestEpoch.current++; setDigest(null); setDigestError(''); setDigestDismissed(false); setDigestRegenerating(false)
+    digestEpoch.current++; setDigest(null); setDigestError(''); setDigestNotReady(false); setDigestDismissed(false); setDigestRegenerating(false)
     void fetchToday(); void fetchDigest(); void (window as any).electronAPI.sales.morningDigestGenerate()
   })
 
@@ -215,19 +260,54 @@ export default function TodayActionPage() {
         </div>
       )}
 
-      {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除） */}
+      {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除）
+          PRD §6.1 六态 + §6.2 单飞：任何失败/额度阻断都不得显示为「无风险/无需跟进/全部跟完」 */}
+      {/* 收起后的重开入口：把「不可当作已核对」的两态带在按钮上，收起不等于结论已成立 */}
+      {digestDismissed && (
+        <button className="crm-btn signal-notice--digest-reopen" onClick={() => setDigestDismissed(false)}>
+          展开开工简报{digest?.coverage?.state === 'failed_or_blocked' ? '（有未完成分析）'
+            : digest?.coverage?.state === 'stale_snapshot' ? '（仅旧快照）' : ''}
+        </button>
+      )}
       {!digestDismissed && <section className="signal-notice signal-notice--digest" aria-label="当前账号开工简报">
         <Sunrise size={14} />
         <div className="signal-notice__digest-body">
           <strong>开工简报 · 仅当前账号</strong>
-          <p>{digest?.coverage?.message || '正在读取本地事项；聊天分析覆盖尚未核验'}</p>
-          {digest && <small>生成于 {new Date(digest.createdAt).toLocaleString()} {digest.date !== new Date().toLocaleDateString('sv-SE') ? '（旧快照，等待更新）' : ''}</small>}
-          {digestError && <p role="alert">{digestError} <button onClick={() => void fetchDigest()}>重试</button></p>}
+          {/* 态一/二/三/四/五/六：coverage.state 决定展示口径；无 coverage 时按「未核验」处理 */}
+          {digest && <p>{DIGEST_STATE_HINT[digest.coverage?.state as DigestStateKey] || '聊天分析覆盖尚未核验，不代表已分析全部消息'}</p>}
+          {digest?.coverage?.message && <p className="signal-notice__digest-coverage">{digest.coverage.message}</p>}
+          {digest && <small>生成于 {new Date(digest.createdAt).toLocaleString()}
+            {digest.coverage?.state === 'stale_snapshot' ? '（旧快照，非今日结论）' : ''}</small>}
+          {/* 首屏时间预算：>2s 明确加载态，10s 明确报错 —— 都不伪装成空 */}
+          {!digest && !digestTimedOut && (
+            <p>{digestPhase === 'frame' ? '正在打开开工简报…'
+              : digestPhase === 'local' ? `本地事项 ${items.length} 条；正在梳理近期会话…`
+                : '本地事项已就绪，仍在梳理近期会话（分析进行中，可先处理下方事项）'}</p>
+          )}
+          {digestTimedOut && (
+            <p role="alert">{digestNotReady
+              ? '业务库尚未就绪（正在打开当前账号数据），暂无简报。'
+              : '简报生成超时（10s 未返回）。'}未完成的聊天分析不会被当作「无需跟进」。
+              <button className="crm-btn" onClick={() => { setDigestPhase('frame'); void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }}>重试</button>
+            </p>
+          )}
+          {digestError && <p role="alert">{digestError} <button className="crm-btn" onClick={() => void fetchDigest()}>重试</button></p>}
           {digest && (() => {
             const pending = digest.items.filter((it: any) => !it.status || it.status === 'pending')
             const visible = digestExpanded ? pending : pending.slice(0, 5)
+            const st = digest.coverage?.state as DigestStateKey | undefined
             return <>
-              {!pending.length && <p>当前暂无已记录的待办；未分析消息不计为“无需跟进”。</p>}
+              {/* 态四：全部覆盖且无有效待办；态一：新账号空态（提供建客户/建待办入口，不调 AI 凑摘要） */}
+              {!pending.length && st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
+              {!pending.length && st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
+                <button className="crm-btn" onClick={() => navigate('/customers')}>去绑定客户</button>
+                <button className="crm-btn" onClick={() => void openTodoModal()}>新建待办</button>
+              </p>}
+              {!pending.length && (st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
+                <p>暂无已记录的事项。注意：{digest.coverage?.reason || '聊天分析未完成'}，
+                  这不代表「无需跟进」。</p>
+              )}
+              {!pending.length && !st && <p>当前暂无已记录的待办；聊天分析覆盖尚未核验，不代表「无需跟进」。</p>}
               {visible.map((it: any, index: number) => <button key={it.itemKey || `${it.sessionId}:${index}`} className="signal-notice__digest-item" onClick={() => it.sessionId && !/^(todo|logi|lead):/.test(it.sessionId) ? navigate(`/customers?sid=${encodeURIComponent(it.sessionId)}`) : document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior:'smooth' })}>
                 <strong>{it.group === 'must' ? '今天必须处理' : '建议优先跟进'} · {it.displayName}</strong>——{it.reason}
                 {it.dueAt && <small> · 期限 {new Date(it.dueAt).toLocaleString()}</small>}
@@ -238,7 +318,12 @@ export default function TodayActionPage() {
           })()}
         </div>
         <button className="crm-btn" onClick={() => setDigestDismissed(true)}>收起</button>
-        <button className="crm-btn" disabled={digestRegenerating} onClick={() => void regenerateDigest()}>{digestRegenerating ? '正在整理…' : '更新简报'}</button>
+        {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
+        <button className="crm-btn" disabled={digestRegenerating || identifyBusy}
+          title={identifyBusy ? '正在识别中，请稍候' : undefined}
+          onClick={() => void regenerateDigest()}>
+          {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
+        </button>
       </section>}
 
       {/* 主两栏 */}
@@ -274,12 +359,16 @@ export default function TodayActionPage() {
             </div>
           )}
 
-          {/* 空状态 */}
+          {/* 空状态：不得宣称「全部跟完」——只有在覆盖已核对完成时才给出「无待跟进」结论 */}
           {!loading && filtered.length === 0 && !error && (
             <div className="signal-empty">
-              {items.length === 0
-                ? '🎉 今天全部跟完了！'
-                : '这个筛选下暂无信号，你已经跟上了所有客户'}
+              {items.length > 0
+                ? '这个筛选下暂无信号'
+                : digest?.coverage?.state === 'all_covered_clear'
+                  ? '已完成全量覆盖核对，当前没有待跟进事项'
+                  : digest?.coverage?.state === 'empty_account'
+                    ? '还没有客户沟通记录和待办'
+                    : '当前没有已记录的事项；聊天分析覆盖尚未核验完成，不代表已经跟完'}
             </div>
           )}
 

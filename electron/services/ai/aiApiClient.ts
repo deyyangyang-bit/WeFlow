@@ -1,4 +1,5 @@
-import { startUsage, type UsageContext } from './aiUsageLedger'
+import { startUsage, recordBlockedCall, readAiUsage, type UsageContext } from './aiUsageLedger'
+import { AiBudgetBlockedError, currentDailyCallLimit, dailyUsage, evaluateBudget } from './aiBudget'
 /**
  * aiApiClient.ts
  *
@@ -28,6 +29,8 @@ export interface AiModelConfig {
   apiKey: string
   model: string
   maxTokens: number
+  /** 每日调用上限（PRD §5.5）；<=0 或未传表示不限。由 getAiModelConfig 从配置读取。 */
+  dailyCallLimit?: number
 }
 
 export interface ChatMessage {
@@ -96,16 +99,41 @@ export function buildDisableThinkingPayload(config: Pick<AiModelConfig, 'apiBase
   return isBigModelHost || isGlmModel ? {} : { enable_thinking: false }
 }
 
+// ─── 额度闸门（PRD §5.5） ──────────────────────────────────────────────────────
+
+/**
+ * 请求发出前的额度判定。达到上限时写一条 status='blocked' 账本行并抛 AiBudgetBlockedError——
+ * 阻断发生在 HTTP 之前，绝不静默超支。
+ * 账本读取失败时不阻断（宁放行不漏拦）：额度是成本护栏，不是正确性前提。
+ */
+export function assertWithinBudget(config: Pick<AiModelConfig, 'model' | 'dailyCallLimit'>, context: UsageContext = {}): void {
+  // 显式传入优先（便于测试），否则取全局 provider——保证手工拼的 config 也受闸门约束
+  const limit = Math.floor(Number(config.dailyCallLimit) || 0) || currentDailyCallLimit()
+  if (limit <= 0) return
+  let used = 0
+  try {
+    const daily = dailyUsage(readAiUsage())
+    // 阻断行不计入已用次数，否则阻断本身会把计数推高，越拦越死
+    used = daily.calls - daily.blockedCalls
+  } catch { return }
+  const verdict = evaluateBudget(used, limit)
+  if (verdict.level !== 'blocked') return
+  recordBlockedCall(config.model, context, verdict.message)
+  throw new AiBudgetBlockedError(verdict)
+}
+
 // ─── 核心调用 ─────────────────────────────────────────────────────────────────
 
 /**
  * 调用 OpenAI 兼容的 /chat/completions 接口（非流式），返回模型回复文本。
+ * 所有 AI 调用都必须经过本函数：账本记账与日上限拦截只在这一层生效。
  */
 export function callChatCompletion(
   config: AiModelConfig,
   messages: ChatMessage[],
   options: CallOptions = {}
 ): Promise<string> {
+  assertWithinBudget(config, options.usageContext)
   const recordUsage = startUsage(config.model, options.usageContext)
   return new Promise<string>((resolve, reject) => {
     const { apiBaseUrl, apiKey, model } = config
@@ -268,7 +296,25 @@ export function getAiModelConfig(config: ConfigService): AiModelConfig {
 
   const maxTokens = normalizeMaxTokens(config.get('aiModelApiMaxTokens'))
 
-  return { apiBaseUrl, apiKey, model, maxTokens }
+  // 日上限：关闭开关视为不限（0），开关本身是「保留为常规配置项」的落点（PRD §5.5）
+  const limitEnabled = config.get('aiDailyCallLimitEnabled') !== false
+  const rawLimit = Number(config.get('aiDailyCallLimit'))
+  const dailyCallLimit = limitEnabled && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 0
+
+  return { apiBaseUrl, apiKey, model, maxTokens, dailyCallLimit }
+}
+
+/** 当日额度快照（设置页显示与 80% 预警用） */
+export function getAiBudgetSnapshot(config: ConfigService): ReturnType<typeof dailyUsage> & {
+  limit: number
+  level: string
+  message: string
+} {
+  const { dailyCallLimit } = getAiModelConfig(config)
+  let daily = dailyUsage([])
+  try { daily = dailyUsage(readAiUsage()) } catch { /* 账本不可读：按 0 用量显示，不假装有数据 */ }
+  const verdict = evaluateBudget(daily.calls - daily.blockedCalls, dailyCallLimit ?? 0)
+  return { ...daily, limit: verdict.limit, level: verdict.level, message: verdict.message }
 }
 
 /**

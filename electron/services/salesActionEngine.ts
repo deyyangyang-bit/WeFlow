@@ -16,7 +16,7 @@ import { salesDbService, type CustomerProfile, type FollowUpTask } from './sales
 import { salesLog } from './salesLogger'
 import { wcdbService } from './wcdbService'
 import { enqueueSalesTask } from './salesQueue'
-import { classifyStage, toMessageSnippets, persistClassification, extractEvidence, type CustomerStage } from './salesStageClassifier'
+import { type CustomerStage } from './salesStageClassifier'
 import { chatService } from './chatService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
@@ -25,11 +25,10 @@ import { scanLeadSla } from './crmLeadService'
 import { runAftersalesScan } from './crmAftersalesService'
 import { runDeliveryScan } from './crmDeliveryService'
 import { normalizeStage } from '../../shared/salesStage'
-import { persistActionAnalysisJudgments } from './salesActionAnalysisJudgment'
 import { computeActivityState } from '../../shared/canonicalState'
 import { getCustomerCurrentView, type CustomerCurrentView } from './customerCurrentView'
 import { insightRecordService } from './insightRecordService'
-import { trackProposalEvent, trackActionCardsViewed, currentActor } from './proposalEventTracking'
+import { trackProposalEvent, currentActor } from './proposalEventTracking'
 export { normalizeStage }
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -50,22 +49,6 @@ export interface ActionItem {
   status: string
   /** 预热生成的五字段分析（JSON 字符串，AIActionCard 直接渲染） */
   analysis?: string
-}
-
-export interface TodayActionResult {
-  items: ActionItem[]
-  archiveCandidates: ActionItem[]
-  stats: {
-    todayPending: number
-    overdue: number
-    newThisWeek: number
-    pipelineTotal: number
-    r6Count: number
-    highPriorityCount: number
-    riskCustomerCount: number
-    activeDeals: number
-  }
-  generatedAt: number
 }
 
 // ─── 统一信号流类型 ────────────────────────────────────────────────────────────
@@ -308,7 +291,8 @@ export function refreshActionSignals(): Promise<void> {
 }
 
 /**
- * 启动定时全量扫描（每天 08:00）
+ * 启动本地规则扫描定时器：每 60 秒一次 tick，**纯本地计算，不调用模型**。
+ * 当天首次 tick 走 `runFullScan()`（每日一次全量），之后走 `lazyScan()` 增量。
  */
 export function startActionEngineScheduler(): void {
   if (scanTimer) return
@@ -498,9 +482,9 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
 
   // Phase 3: 落库（R1-R5 主队列）
   let generated = 0
-  const preheat: Array<{ id: number; cand: Candidate }> = []
   for (const cand of sorted) {
-    const task = salesDbService.todoCreate({
+    // 只落待办、不做 AI 预热：预热属「无人触发也调模型」的自动链路，已在 R（PRD §5.4）删除
+    salesDbService.todoCreate({
       session_id: cand.sessionId,
       display_name: cand.displayName || null,
       trigger_type: cand.ruleId,
@@ -509,47 +493,7 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
       priority_score: cand.score,
       created_by: 'action_engine'
     })
-    // 收集 high/urgent 任务用于预热 AI 分析（前 8 条，避免批量扫描过慢）
-    if ((cand.priority === 'high' || cand.priority === 'urgent') && preheat.length < 8 && task.id) {
-      preheat.push({ id: task.id, cand })
-    }
     generated++
-  }
-  // 异步预热深度分析（走串行队列，不阻塞扫描返回）
-  if (preheat.length > 0 && configRef && isAiConfigured(configRef)) {
-    void enqueueSalesTask(async () => {
-      for (const { id, cand } of preheat) {
-        try {
-          const item: ActionItem = {
-            id,
-            sessionId: cand.sessionId,
-            displayName: cand.displayName ?? '未知',
-            stage: 'unknown',
-            triggerType: cand.ruleId,
-            title: cand.title,
-            reason: cand.title,
-            suggestion: '',
-            priority: cand.priority,
-            priorityScore: cand.score,
-            silentDays: 0,
-            createdAt: Date.now(),
-            status: 'pending'
-          }
-          const analysis = await generateActionAnalysis(item)
-          if (analysis && !analysis.notConfigured && !analysis.error) {
-            salesDbService.todoUpdate(id, { analysis: JSON.stringify(analysis) })
-            // P0-2C.3：预热路径三判断（机会/风险/下一步）统一落 customer_judgment，
-            // 与 follow_up_task.analysis 旧链路并存；失败不阻断预热循环。
-            await persistActionAnalysisJudgments({
-              item,
-              analysis,
-              channel: 'preheat',
-              model: configRef ? String(configRef.get('aiModelApiModel') || '').trim() || undefined : undefined
-            })
-          }
-        } catch { /* 预热失败不影响扫描 */ }
-      }
-    })
   }
 
   // Phase 4: 落库（R6 独立，不限名额）
@@ -590,61 +534,6 @@ export async function runFullScan(): Promise<{ generated: number; r6Generated: n
   } catch (e) { salesLog('WARN', `[ActionEngine] 交付售后扫描失败: ${e}`) }
   salesLog('INFO', `[ActionEngine] 全量扫描完成，候选 ${customerBest.size} 客户，生成 ${generated} 条任务，R6 ${r6Generated} 条`)
   return { generated, r6Generated }
-}
-
-/**
- * 增量检查：新消息到达后对单个客户重新评估。
- * 由 DB monitor 回调触发。
- */
-export async function onNewMessage(sessionId: string, displayName: string): Promise<void> {
-  if (!configRef) return
-
-  return enqueueSalesTask(async () => {
-    try {
-      // 1. 拉取最近消息（chatService 构造 messageKey，P0-1 证据可回查原话）
-      const msgResult = await chatService.getLatestMessages(sessionId, 10)
-      if (!msgResult?.success || !msgResult.messages?.length) return
-
-      // 2. AI 阶段分类
-      const snippets = toMessageSnippets(msgResult.messages)
-      if (snippets.length === 0) return
-      // P0-1 证据：客户最近一条消息 key（R3 卡 source_message_id 回查原话用）
-      const evidence = extractEvidence(snippets)
-
-      const classification = await classifyStage(configRef!, snippets, sessionId)
-      if (!classification) return
-
-      // 3. 持久化（阶段变化时写入）
-      persistClassification(sessionId, displayName, classification)
-
-      // 4. 增量规则检查（只检查紧急规则 R3）
-      const nowSec = Math.floor(Date.now() / 1000)
-      const nowMs = Date.now()
-      const profile = salesDbService.customerGetBySession(sessionId)
-      if (!profile) return
-
-      const r3 = RULES.find(r => r.id === 'rule_r3_new_no_reply')!
-      if (r3.match(profile, nowSec)) {
-        if (!salesDbService.hasRecentTask(sessionId, r3.id, nowMs - DEDUP_WINDOW_MS)) {
-          const lcR3 = lastContactSec(profile)
-          const silentDays = lcR3 > 0 ? (nowSec - lcR3) / DAY_SEC : 0
-          salesDbService.todoCreate({
-            session_id: sessionId,
-            display_name: displayName || null,
-            trigger_type: r3.id,
-            title: r3.title(profile, silentDays),
-            status: 'pending',
-            priority_score: PRIORITY_WEIGHT[r3.priority] + 10,
-            created_by: 'action_engine',
-            source_message_id: evidence.messageKey
-          })
-          salesLog('INFO', `[ActionEngine] 增量触发 R3: ${displayName}`)
-        }
-      }
-    } catch (e) {
-      salesLog('WARN', `[ActionEngine] onNewMessage 处理失败 ${sessionId}: ${e}`)
-    }
-  })
 }
 
 // ─── 懒扫描 ────────────────────────────────────────────────────────────────────
@@ -958,69 +847,6 @@ export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipp
   completeAction(id, action)
 }
 
-export async function getTodayActions(): Promise<TodayActionResult> {
-  // 容错：数据库尚未初始化时返回空结果（启动时序竞争）
-  if (!salesDbService.isInitialized()) {
-    return { items: [], archiveCandidates: [], stats: { todayPending: 0, overdue: 0, newThisWeek: 0, pipelineTotal: 0, r6Count: 0, highPriorityCount: 0, riskCustomerCount: 0, activeDeals: 0 }, generatedAt: Date.now() }
-  }
-
-  const nowMs = Date.now()
-  const todayStart = new Date()
-  todayStart.setHours(0, 0, 0, 0)
-  const todayStartMs = todayStart.getTime()
-
-  // 查询所有 pending 任务
-  const pendingTasks = salesDbService.todoList({ status: 'pending', limit: 100 })
-
-  // 分离 R6 与主队列（R6 不参与 DAILY_LIMIT 主队列竞争）
-  const mainPending = pendingTasks.filter(t => t.trigger_type !== 'rule_r6_consider_drop')
-  const r6Pending = pendingTasks.filter(t => t.trigger_type === 'rule_r6_consider_drop')
-
-  // 主队列：排序 + 截断 + 映射 + 过滤无效项
-  const actionItems: ActionItem[] = mainPending
-    .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
-    .slice(0, DAILY_LIMIT)
-    .map(task => mapTaskToActionItem(task, nowMs))
-    .filter(item => {
-      // 物流超期卡是事实驱动，不受阶段/沉默天数过滤（可能刚联系过客户但物流仍超期）
-      if (item.triggerType === 'rule_r8_logistics_overdue') return true
-      // 成交/流失客户不需要跟进
-      if (['won', 'lost'].includes(item.stage)) return false
-      // 0天沉默的不需要行动
-      if (item.silentDays <= 0) return false
-      return true
-    })
-
-  // 刀 2 埋点：卡流渲染点——本次实际渲染的主队列卡记 action/viewed（每卡只记一次，防轮询刷屏）
-  trackActionCardsViewed(actionItems.map(i => i.id))
-
-  // R6 清理候选：独立列表，不限名额
-  const archiveCandidates: ActionItem[] = r6Pending
-    .sort((a, b) => (b.priority_score ?? 0) - (a.priority_score ?? 0))
-    .map(task => mapTaskToActionItem(task, nowMs))
-
-  // 统计数字
-  const allCustomers = salesDbService.customerAll()
-  const weekStartMs = getWeekStartMs()
-  const nowSec = Math.floor(nowMs / 1000)
-  const activeStageCustomers = allCustomers.filter(c => ['quoted', 'negotiating', 'contacted'].includes(normalizeStage(c.stage)))
-  const stats = {
-    todayPending: actionItems.length,
-    overdue: pendingTasks.filter(t => t.due_at && t.due_at < nowMs).length,
-    newThisWeek: allCustomers.filter(c => (c.created_at ?? 0) >= weekStartMs).length,
-    pipelineTotal: allCustomers.filter(c => !['won', 'lost'].includes(normalizeStage(c.stage))).length,
-    r6Count: r6Pending.length,
-    highPriorityCount: actionItems.filter(i => i.priority === 'urgent' || i.priority === 'high').length,
-    riskCustomerCount: activeStageCustomers.filter(c => {
-      const lc = c.last_contact_at ?? 0
-      return lc > 0 && (nowSec - lc) / DAY_SEC >= 5
-    }).length,
-    activeDeals: allCustomers.filter(c => ['quoted', 'negotiating'].includes(normalizeStage(c.stage))).length
-  }
-
-  return { items: actionItems, archiveCandidates, stats, generatedAt: nowMs }
-}
-
 /**
  * 结构化深度分析结果（对齐 wechat-crm deep_analysis.py 框架）。
  */
@@ -1247,33 +1073,6 @@ export function recordUserActionEvent(
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────────
 
-function mapTaskToActionItem(task: FollowUpTask, nowMs: number): ActionItem {
-  const nowSec = Math.floor(nowMs / 1000)
-  const profile = task.session_id ? salesDbService.customerGetBySession(task.session_id) : undefined
-  const lastContact = profile?.last_contact_at || (profile?.created_at ? Math.floor((profile.created_at) / 1000) : 0)
-  const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / DAY_SEC)) : 0
-
-  return {
-    id: task.id ?? 0,
-    sessionId: task.session_id ?? '',
-    displayName: task.display_name ?? '未知客户',
-    stage: normalizeStage(profile?.stage),
-    triggerType: task.trigger_type,
-    title: task.title,
-    reason: buildReason(task.trigger_type, silentDays),
-    suggestion: '',
-    priority: (() => {
-      const rule = RULES.find(r => r.id === task.trigger_type)
-      return rule ? rule.priority : scoreToPriority(task.priority_score ?? 0)
-    })(),
-    priorityScore: task.priority_score ?? 0,
-    silentDays,
-    createdAt: task.created_at ?? 0,
-    status: task.status ?? 'pending',
-    analysis: task.analysis ?? ''
-  }
-}
-
 function buildReason(triggerType: string, silentDays: number): string {
   const reasons: Record<string, string> = {
     'rule_r3_new_no_reply': `新客户${silentDays}天未实质沟通`,
@@ -1292,14 +1091,6 @@ function buildReason(triggerType: string, silentDays: number): string {
     'rule_r12_dealer_reorder': '经销商超 60 天未拿货'
   }
   return reasons[triggerType] || `${silentDays}天未互动`
-}
-
-function scoreToPriority(score: number): 'urgent' | 'high' | 'medium' | 'low' | 'info' {
-  if (score >= 100) return 'urgent'
-  if (score >= 80) return 'high'
-  if (score >= 60) return 'medium'
-  if (score >= 40) return 'low'
-  return 'info'
 }
 
 function getWeekStartMs(): number {

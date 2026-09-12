@@ -1,16 +1,17 @@
 /**
  * salesStageClassifier.ts
  *
- * 轻量 AI 阶段分类器：从聊天消息自动判定客户所处销售阶段。
- * 设计原则：
- * - 单次调用 ≤500 token prompt + ≤100 token 响应（控制成本）
- * - 固定 system prompt（命中 API 缓存）
- * - 输出严格 JSON，容错解析
- * - 通过 salesQueue 串行执行，不并发调 WCDB/AI
+ * 阶段相关的事实落库与消息证据提取。
+ *
+ * **本文件当前不含任何 AI 调用。** 原 `classifyStage`（新消息 → AI 判定客户阶段 → 自动落库）
+ * 属无人触发的自动链路，已按 PRD《AI简报与按需识别》§5.4（R）删除——删除后该函数再无调用方，
+ * 留着等于「线拆了弹还在」，故连函数与 prompt/解析一并移除（2026-09-12 复核修复）。
+ * 保留的是**纯本地**能力：`persistClassification`（阶段写库，无 AI）、
+ * `extractEvidence` / `toMessageSnippets`（P0-1 证据锚点，供见解与意向链路复用）。
+ *
+ * 重新引入 AI 阶段分类前，请先对照 PRD §5.4：不得存在「无人触发也调模型」的入口。
  */
 
-import { ConfigService } from './config'
-import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesDbService } from './salesDbService'
 import { salesLog } from './salesLogger'
 
@@ -34,100 +35,6 @@ export interface MessageSnippet {
   time: number
   /** P0-1 证据：来源消息 messageKey（chatService 构造，可回查原话） */
   messageKey?: string
-}
-
-// ─── 常量 ────────────────────────────────────────────────────────────────────
-
-const VALID_STAGES: CustomerStage[] = ['new', 'contacted', 'quoted', 'negotiating', 'won', 'lost', 'dormant']
-
-const SYSTEM_PROMPT = `你是一个叉车/仓储设备销售场景的客户阶段分类器。
-根据聊天消息判断客户当前所处的销售阶段。
-
-阶段定义：
-- new: 刚开始接触，尚未实质沟通产品
-- contacted: 有实质问答（问过产品/价格/参数/型号）
-- quoted: 销售方已发出报价或方案
-- negotiating: 正在讨论付款方式/交期/定制/比价/优惠
-- won: 已确认下单/付款/发货/成交
-- lost: 明确拒绝/不需要/选了别家
-- dormant: 长期无互动（由系统判定，AI一般不输出此值）
-
-规则：
-1. 只根据消息内容判断，不要猜测
-2. 如果消息太少无法判断，输出 contacted
-3. confidence 为 0-1 之间的数字，表示判断确信度
-4. reason 用一句话说明判断依据（≤20字）
-
-严格输出 JSON，不要输出其他内容：
-{"stage":"...","confidence":0.8,"reason":"..."}`
-
-// ─── 核心分类 ─────────────────────────────────────────────────────────────────
-
-/**
- * 对单个会话进行阶段分类。
- * @param config ConfigService 实例
- * @param messages 最近的消息片段（建议 ≤10 条）
- * @returns 分类结果，失败返回 null
- */
-export async function classifyStage(
-  config: ConfigService,
-  messages: MessageSnippet[],
-  sessionId: string = ''
-): Promise<StageClassification | null> {
-  if (!isAiConfigured(config)) return null
-  if (!messages || messages.length === 0) return null
-
-  // 构建 user prompt：最近消息摘要
-  const lines = messages.slice(-10).map(m => {
-    const speaker = m.role === 'me' ? '【我】' : '【客】'
-    const text = m.text.length > 80 ? m.text.slice(0, 80) + '…' : m.text
-    return `${speaker}${text}`
-  })
-  const userPrompt = `以下是最近的聊天记录：\n${lines.join('\n')}\n\n请判断客户阶段。`
-
-  try {
-    const raw = await simpleCompletion(config, SYSTEM_PROMPT, userPrompt, {
-      usageContext: { purpose: 'stage' },
-      temperature: 0.1,
-      maxTokens: 300,
-      disableThinking: true,
-      responseFormatJson: true,
-      timeoutMs: 15_000
-    })
-
-    const result = parseClassification(raw)
-    if (!result) return null
-    // P0-1 证据：客户最近一条实质消息（原话，非 AI 结论），随分类一起透传
-    return { ...result, ...extractEvidence(messages) }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    salesLog('ERROR', `[StageClassifier] 分类失败 ${sessionId || '?'}: ${msg}`)
-    return null
-  }
-}
-
-/**
- * 解析 AI 返回的 JSON，容错处理。
- */
-function parseClassification(raw: string): StageClassification | null {
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*?\}/)
-    if (!jsonMatch) return null
-
-    const parsed = JSON.parse(jsonMatch[0])
-    const stage = String(parsed.stage || '').toLowerCase() as CustomerStage
-    if (!VALID_STAGES.includes(stage)) return null
-
-    const confidence = typeof parsed.confidence === 'number'
-      ? Math.max(0, Math.min(1, parsed.confidence))
-      : 0.5
-
-    const reason = String(parsed.reason || '').slice(0, 50)
-
-    return { stage, confidence, reason }
-  } catch {
-    return null
-  }
 }
 
 // ─── 持久化 ───────────────────────────────────────────────────────────────────
