@@ -1,0 +1,135 @@
+// 存量迁移报告（设置 · 安全 tab，紧邻审计流水）——颜色只消费 --color-* 族，双模式自动适配
+.migration-report {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &__head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    cursor: pointer;
+
+    h2 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--color-text-primary);
+      margin: 0;
+    }
+  }
+
+  &__hint {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  &__none {
+    font-size: 12px;
+    color: var(--color-text-tertiary);
+    padding: 8px 0;
+  }
+
+  &__module {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  &__module-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+
+    b {
+      font-size: 13px;
+      color: var(--color-text-primary);
+    }
+  }
+
+  &__time {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  &__counts {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+
+    .pill b {
+      font-variant-numeric: tabular-nums;
+      margin-left: 2px;
+    }
+  }
+
+  &__truncated {
+    font-size: 11px;
+    color: var(--color-warning);
+    background: var(--color-warning-bg);
+    border-radius: var(--radius-small);
+    padding: 4px 10px;
+  }
+
+  &__issues {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  &__issues-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+  }
+
+  &__none {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  &__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+
+    th {
+      text-align: left;
+      font-weight: 600;
+      color: var(--color-text-tertiary);
+      border-bottom: 1px solid var(--color-border);
+      padding: 4px 8px;
+      white-space: nowrap;
+    }
+
+    td {
+      border-bottom: 1px solid var(--color-divider);
+      padding: 5px 8px;
+      color: var(--color-text-primary);
+      vertical-align: top;
+    }
+
+    td.num {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      color: var(--color-text-secondary);
+    }
+  }
+
+  &__detail {
+    color: var(--color-text-secondary) !important;
+    word-break: break-all;
+  }
+
+  &__ops {
+    display: flex;
+    gap: 8px;
+  }
+}

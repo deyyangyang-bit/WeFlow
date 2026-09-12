@@ -1,29 +1,28 @@
 /**
  * crmMigrationService.ts —— Phase 1 存量数据迁移执行器（PRD §9 / 宪法 §1.1/§1.2/§2.4）
  *
- * 模块② account → customer 回填 + customer_id 挂接；模块③ lead → customer_identity 归并。
- * （模块① 决策B 群扫清理已于 Phase 0 以别的形式 live 执行完，不在此；模块④ 历史成交
- *   真实库 0 合同 0 报价，只核验不建执行器——见 scripts/migration/04。）
+ * 模块② account → customer 回填 + customer_id 挂接；模块③ lead → customer_identity 归并；
+ * 模块④ 历史成交 → opportunity（won）+ quotation 首版本链；模块⑤ salesDb customer_profile.customer_id 对齐。
+ * （模块① 决策B 群扫清理已于 Phase 0 以别的形式 live 执行完，不在此。）
  *
  * ⛔ 铁律：
- *   1. 迁移只走应用自身链路（本服务 → crmDbService.runTx 事务），由 main.ts 启动链路调用；
+ *   1. 迁移只走应用自身链路（本服务 → crmDbService.runTx / create / update 事务），由 main.ts 启动链路调用；
  *      禁止外部脚本直改库文件（sql.js 内存库 + 500ms 防抖落盘会覆盖，HANDOVER §2.40 前科）。
- *   2. 幂等双保险：scan_state 一次性标记（migration:02/03 键，同事务写入）+ 数据级判重
- *      （account.customer_id 已挂 / (identity_type, identity_value) 已存在即跳过），
- *      标记丢失重跑也零副作用（宪法 §2.2 迁移铁律：无版本表，全靠幂等）。
+ *   2. 幂等双保险：scan_state 只记录「最后扫描时间戳/游标」（宪法 §2.2 迁移铁律：不永久跳过候选扫描）
+ *      + 数据级判重（account.customer_id 已挂 / (identity_type, identity_value) 已存在即跳过），
+ *      每次启动都执行低成本增量扫描——新增可迁移数据在标记存在时也能被发现并迁移。
  *   3. 冲突不静默：无锚 account、多名/多归属归并组、跨客户身份冲突 → 进迁移报告冲突/失败
  *      清单，不动数据；合并处置走人工审批（宪法 §2.4，AI 永不执行合并）。
- *   4. 每模块单事务提交 + audit_event 留痕（actor='system:migration'，detail=报告摘要 JSON，
- *      与 crmAssignmentService 的 system:migration 先例一致）。
+ *   4. 每模块结果落 migration_report（幂等 upsert，最新快照 = 报告 SSOT）；
+ *      audit_event 只在实际写入（applied > 0）时追加（append-only 业务留痕，重跑不重复）。
  *
  * ⚠️ 有意不做：owner_sales 为空的 account 不回写「归销售本人」——归属变更是 C 档人工动作
  *    （宪法 §1.7），且单机库 188 个 anchored account 的 owner 全空属历史现状，迁移不静默改写；
  *    只在报告 notes 计数，归属补登走分配/认领流程或人工。
- *    salesDb 侧 customer_profile.customer_id 对齐 = 独立后续步骤（先 crmDb 后 salesDb 铁律），
- *    本服务只覆盖 crmDb。
  */
 
-import { crmDbService, type CrmRow } from './crmDbService'
+import { crmDbService } from './crmDbService'
+import { salesDbService } from './salesDbService'
 import { isSessionIdLike } from '../../shared/wechatId'
 
 // ─── 身份锚点归一化（宪法 §2.4；dry-run 骨架 scripts/migration/02·03 也从这里导入，口径唯一真源）───
@@ -47,22 +46,50 @@ export function accountAnchor(acc: { phone?: unknown; session_id?: unknown }): {
 // ─── 报告结构（与 scripts/migration/types.ts 口径对齐：总数/实绩/幂等跳过/失败/冲突）───
 export interface MigrationIssue { key: string; reason: string; detail?: string }
 
+/** 报告摘要（落 migration_report.summary JSON；核心五计数 + 各模块特有计数） */
+export interface MigrationReportSummary {
+  total: number
+  applied: number
+  alreadyDone: number
+  skipped: number
+  failed: number
+  conflicts: number
+  customersCreated?: number
+  identitiesCreated?: number
+  linkedToCustomer?: number
+  pooled?: number
+  wonOppCreated?: number
+  wonOppAlready?: number
+  amountBackfilled?: number
+  chainsNormalized?: number
+  noQuoteContracts?: number
+}
+
 export interface ModuleMigrationResult {
   module: string
-  /** true = scan_state 标记命中，本次整体跳过（重跑零副作用） */
-  skippedByMarker: boolean
+  title: string
   /** 扫描候选总数 */
   total: number
-  /** 本次实际写入主条数（02=挂接 account 数；03=新插 identity 数） */
+  /** 本次实际写入主条数（02=挂接 account 数；03=新插 identity 数；04=补建 won 商机数；05=对齐 profile 数） */
   applied: number
-  /** 02：新建 customer 数；03：恒 0 */
-  customersCreated: number
   /** 幂等跳过（数据级判重命中） */
   alreadyDone: number
+  /** 规则显式排除（无需处理） */
+  skipped: number
   failed: number
   conflicts: number
   failures: MigrationIssue[]
   conflictList: MigrationIssue[]
+  // 模块特有计数（未涉及模块为 0）
+  customersCreated: number
+  identitiesCreated: number
+  linkedToCustomer: number
+  pooled: number
+  wonOppCreated: number
+  wonOppAlready: number
+  amountBackfilled: number
+  chainsNormalized: number
+  noQuoteContracts: number
 }
 
 const ACTOR = 'system:migration'
@@ -71,20 +98,37 @@ const M03_MARKER = 'migration:03-lead-to-identity'
 /** audit detail 里失败/冲突清单上限（防极端脏库 detail 膨胀；超出截断并标记） */
 const AUDIT_LIST_CAP = 200
 
-function emptyResult(module: string, skippedByMarker: boolean): ModuleMigrationResult {
+function emptyResult(module: string, title: string): ModuleMigrationResult {
   return {
-    module, skippedByMarker, total: 0, applied: 0, customersCreated: 0,
-    alreadyDone: 0, failed: 0, conflicts: 0, failures: [], conflictList: []
+    module, title,
+    total: 0, applied: 0, alreadyDone: 0, skipped: 0, failed: 0, conflicts: 0,
+    failures: [], conflictList: [],
+    customersCreated: 0, identitiesCreated: 0, linkedToCustomer: 0, pooled: 0,
+    wonOppCreated: 0, wonOppAlready: 0, amountBackfilled: 0, chainsNormalized: 0, noQuoteContracts: 0
   }
+}
+
+function summaryOf(r: ModuleMigrationResult): MigrationReportSummary {
+  return {
+    total: r.total, applied: r.applied, alreadyDone: r.alreadyDone, skipped: r.skipped,
+    failed: r.failed, conflicts: r.conflicts,
+    customersCreated: r.customersCreated, identitiesCreated: r.identitiesCreated,
+    linkedToCustomer: r.linkedToCustomer, pooled: r.pooled,
+    wonOppCreated: r.wonOppCreated, wonOppAlready: r.wonOppAlready,
+    amountBackfilled: r.amountBackfilled, chainsNormalized: r.chainsNormalized,
+    noQuoteContracts: r.noQuoteContracts
+  }
+}
+
+/** 报告落 migration_report（幂等 upsert，最新快照）；每次扫描都刷新，失败/冲突不吞。 */
+function saveReport(r: ModuleMigrationResult, now: number): void {
+  crmDbService.saveMigrationReport(r.module, r.title, summaryOf(r), r.failures, r.conflictList, now)
 }
 
 function auditDetail(r: ModuleMigrationResult, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({
     module: r.module,
-    summary: {
-      total: r.total, applied: r.applied, customersCreated: r.customersCreated,
-      alreadyDone: r.alreadyDone, failed: r.failed, conflicts: r.conflicts
-    },
+    summary: summaryOf(r),
     failures: r.failures.slice(0, AUDIT_LIST_CAP),
     conflicts: r.conflictList.slice(0, AUDIT_LIST_CAP),
     truncated: r.failures.length > AUDIT_LIST_CAP || r.conflictList.length > AUDIT_LIST_CAP,
@@ -96,16 +140,13 @@ function auditDetail(r: ModuleMigrationResult, extra: Record<string, unknown> = 
 /**
  * 每个有效锚点组（手机号优先 / wxid 兜底，宪法 §2.4）建 1 个 customer + 1 行 customer_identity，
  * 组内 account 挂接 customer_id。多名/多归属组与「锚点已被其他 customer 占用」只进冲突清单不动数据。
+ * 每次启动全量增量扫描（数据级判重兜底幂等），scan_state 只记录最后扫描时间戳。
  */
 export function migrate02AccountToCustomer(): ModuleMigrationResult {
-  const r = emptyResult('02-account-to-customer', false)
-  if (crmDbService.getScanState(M02_MARKER) > 0) {
-    r.skippedByMarker = true
-    return r
-  }
+  const r = emptyResult('02-account-to-customer', 'account → customer 回填 + customer_id 挂接（§2.4：手机号优先 / wxid 兜底）')
   const now = Date.now()
 
-  return crmDbService.runTx((tx) => {
+  crmDbService.runTx((tx) => {
     const accounts = tx.all(
       'SELECT id, name, phone, session_id, owner_sales, customer_id, updated_at FROM account ORDER BY id')
     r.total = accounts.length
@@ -198,14 +239,20 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
 
     r.failed = r.failures.length
     r.conflicts = r.conflictList.length
-    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      [ACTOR, 'migration_02_account_to_customer', 'migration', null,
-        auditDetail(r, { identitiesCreated, identitiesLinked }), now])
-    // 一次性标记与数据同事务提交（双保险第一层；第二层 = 上面的数据级判重）
+    r.identitiesCreated = identitiesCreated
+    // audit_event 只在实际写入时追加（append-only 业务留痕；重跑零写入不重复）
+    if (r.applied > 0) {
+      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+        [ACTOR, 'migration_02_account_to_customer', 'migration', null,
+          auditDetail(r, { identitiesLinked }), now])
+    }
+    // scan_state 只记录最后扫描时间戳（不永久跳过候选扫描）
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
       [M02_MARKER, now])
-    return r
   })
+
+  saveReport(r, now)
+  return r
 }
 
 // ─── 模块③：lead → customer_identity 归并 ─────────────────────────────────
@@ -216,14 +263,10 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
  * 跨客户身份冲突 → 登记 NULL + 冲突清单，归属裁决留人工（不自动处置）。
  */
 export function migrate03LeadToIdentity(): ModuleMigrationResult {
-  const r = emptyResult('03-lead-to-identity', false)
-  if (crmDbService.getScanState(M03_MARKER) > 0) {
-    r.skippedByMarker = true
-    return r
-  }
+  const r = emptyResult('03-lead-to-identity', 'lead → customer_identity 归并（手机号/wxid 查重，唯一约束 (identity_type, identity_value)）')
   const now = Date.now()
 
-  return crmDbService.runTx((tx) => {
+  crmDbService.runTx((tx) => {
     const leads = tx.all(
       'SELECT id, contact_type, contact_normalized, wechat, source, status, account_id FROM lead ORDER BY id')
     r.total = leads.length
@@ -308,24 +351,165 @@ export function migrate03LeadToIdentity(): ModuleMigrationResult {
 
     r.failed = r.failures.length
     r.conflicts = r.conflictList.length
-    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      [ACTOR, 'migration_03_lead_to_identity', 'migration', null,
-        auditDetail(r, { linkedToCustomer, pooled }), now])
+    r.identitiesCreated = r.applied
+    r.linkedToCustomer = linkedToCustomer
+    r.pooled = pooled
+    if (r.applied > 0) {
+      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+        [ACTOR, 'migration_03_lead_to_identity', 'migration', null, auditDetail(r), now])
+    }
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
       [M03_MARKER, now])
-    return r
   })
+
+  saveReport(r, now)
+  return r
 }
 
-// ─── 启动入口（main.ts 启动链路调用一次；顺序即依赖顺序：②先于③）────────────
-export function runStockDataMigration(): { m02: ModuleMigrationResult; m03: ModuleMigrationResult } {
+// ─── 模块④：历史成交 → opportunity（won）+ quotation 首版本链 ─────────────
+/**
+ * 每张成交合同（status ∈ {signed, shipped}）确保存在 won 态 opportunity（缺则建 source='migration'），
+ * won 商机缺 amount_cny 回填 ← contract.amount；报价版本链复用 crmDbService.normalizeQuotationVersionChain
+ * 单点（version 递增 / effective 窗口 / 合同指针接管 / 同事务 audit），已归一化幂等跳过。
+ * 移自 scripts/migration/04-history-deal-opportunity.ts 的 apply()（宪法 §1.6 修订落地，不再「骨架只写不跑」）。
+ */
+export function migrate04HistoryDealToOpportunity(dbLabel = ''): ModuleMigrationResult {
+  const r = emptyResult('04-history-deal-opportunity', '历史成交 → opportunity 补列（won 态）+ quotation 首版本（version=1）')
+  const now = Date.now()
+  const contracts = crmDbService.all(
+    "SELECT id, account_id, name, amount, status, sign_date, created_at, quote_version_id FROM contract WHERE status IN ('signed','shipped')")
+  r.total = contracts.length
+
+  for (const c of contracts) {
+    const cid = Number(c.id)
+    const aid = Number(c.account_id || 0)
+    const amount = Number(c.amount || 0)
+    if (!aid) {
+      r.failures.push({
+        key: `contract:${cid}`,
+        reason: '成交合同缺 account_id——无法定位/建商机，进失败清单人工处理',
+        detail: `name='${String(c.name)}' status='${String(c.status)}'`
+      })
+      continue
+    }
+    const accOpps = crmDbService.all('SELECT id, status, amount_cny FROM opportunity WHERE account_id = ?', [aid])
+    const hasWon = accOpps.some((o) => String(o.status) === 'won')
+    if (!hasWon) {
+      const hasLost = accOpps.some((o) => String(o.status) === 'lost')
+      if (hasLost) {
+        r.conflictList.push({
+          key: `contract:${cid}`,
+          reason: `账户已有 lost 商机但合同已成交（account:${aid}）——won/lost 矛盾，需人工裁决建新商机还是复活的口径`,
+          detail: 'opportunity.status ∈ {active, won, lost}；宪法 §1.5 写入者含迁移回填，但矛盾数据不自动改判'
+        })
+      } else {
+        // 走 crmDbService 链路补建（source='migration'；main_model/order_qty/发运窗口不伪造，留人工补录）
+        const oid = crmDbService.create('opportunity', {
+          account_id: aid, name: `${String(c.name || '历史成交')}-成交`,
+          product: '', quantity: 0, amount, amount_cny: amount,
+          original_currency: 'CNY', original_amount: 0, rate_note: '',
+          stage: '成交', status: 'won', source: 'migration',
+          last_signal_at: Number(c.sign_date || c.created_at || Date.now()),
+          created_at: now, updated_at: now, intent_score: 0, custom_fields: '{}'
+        })
+        crmDbService.opportunityEventAdd(Number(oid), 'won', '迁移', '历史成交迁移回填（模块 04，合同 status=signed/shipped）')
+        crmDbService.auditAppend(ACTOR, 'opportunity_deal_migrate', 'opportunity', Number(oid), { contract_id: cid, amount_cny: amount })
+        r.wonOppCreated++
+      }
+    } else {
+      r.wonOppAlready++
+    }
+    // won 商机缺 amount_cny → 以合同金额回填（幂等：只补 0 值）
+    for (const o of accOpps.filter((x) => String(x.status) === 'won' && Number(x.amount_cny || 0) === 0 && amount > 0)) {
+      crmDbService.update('opportunity', Number(o.id), { amount_cny: amount, updated_at: now })
+      r.amountBackfilled++
+    }
+    // 报价版本链规范化：复用 crmDbService 单点（version 递增 / effective 窗口 / 指针接管 / 同事务 audit）；
+    // 已归一化（含应用内 createQuotation 新链路产出的合同）幂等跳过
+    if (crmDbService.all('SELECT 1 AS x FROM quotation WHERE contract_id = ? LIMIT 1', [cid]).length) {
+      if (crmDbService.quotationChainNormalized(cid)) continue
+      const chain = crmDbService.normalizeQuotationVersionChain(cid, { actor: ACTOR })
+      if (chain.ok) r.chainsNormalized++
+      else r.failures.push({ key: `contract:${cid}`, reason: `报价版本链规范化失败：${chain.reason}` })
+    } else {
+      r.noQuoteContracts++
+    }
+  }
+
+  r.applied = r.wonOppCreated
+  r.alreadyDone = r.wonOppAlready
+  r.skipped = r.noQuoteContracts
+  r.failed = r.failures.length
+  r.conflicts = r.conflictList.length
+  void dbLabel
+  saveReport(r, now)
+  return r
+}
+
+// ─── 模块⑤：salesDb customer_profile.customer_id 跨库对齐（先 crmDb 后 salesDb）───
+/**
+ * CRM 迁移完成后，把 salesDb.customer_profile.customer_id 对齐到 crmDb 侧真源：
+ * session_id(wxid) → customer_id 映射（customer_identity 的 wxid 行 + account.session_id 兜底）。
+ * 无法匹配的行进报告失败清单（留人工，不猜测）；中断后可安全重跑（幂等：只改不一致行）。
+ */
+export function alignCustomerProfileCustomerIds(): ModuleMigrationResult {
+  const r = emptyResult('05-customer-profile-align', 'salesDb customer_profile.customer_id 对齐（先 crmDb 后 salesDb）')
+  const now = Date.now()
+  if (salesDbService.getDbPath() == null) {
+    // salesDb 未初始化（如测试仅开 crmDb）：如实留空报告，不视为失败
+    saveReport(r, now)
+    return r
+  }
+
+  const mapping = new Map<string, number>()
+  for (const row of crmDbService.all("SELECT identity_value, customer_id FROM customer_identity WHERE identity_type = 'wxid' AND customer_id IS NOT NULL AND customer_id > 0")) {
+    const v = String(row.identity_value).trim()
+    if (v) mapping.set(v, Number(row.customer_id))
+  }
+  for (const row of crmDbService.all('SELECT session_id, customer_id FROM account WHERE session_id IS NOT NULL AND customer_id IS NOT NULL AND customer_id > 0')) {
+    const v = String(row.session_id).trim()
+    if (v && !mapping.has(v)) mapping.set(v, Number(row.customer_id))
+  }
+
+  const profiles = salesDbService.listCustomerProfileIds()
+  r.total = profiles.length
+  for (const p of profiles) {
+    const sid = String(p.session_id || '').trim()
+    const mapped = sid ? mapping.get(sid) : undefined
+    if (mapped == null) {
+      r.failures.push({
+        key: `customer_profile:${p.id}`,
+        reason: '无匹配 crmDb customer（session_id 未命中任何 wxid identity/account 锚点）——留人工，不猜测',
+        detail: `session_id='${sid}'`
+      })
+      continue
+    }
+    const want = String(mapped)
+    if (String(p.customer_id ?? '') === want) { r.alreadyDone++; continue }
+    salesDbService.setCustomerProfileCustomerId(Number(p.id), want)
+    r.applied++
+  }
+  r.failed = r.failures.length
+  r.conflicts = r.conflictList.length
+  saveReport(r, now)
+  return r
+}
+
+// ─── 启动入口（main.ts 启动链路调用一次；顺序即依赖顺序：②→③→④→⑤）────────────
+export function runStockDataMigration(): {
+  m02: ModuleMigrationResult
+  m03: ModuleMigrationResult
+  m04: ModuleMigrationResult
+  align: ModuleMigrationResult
+} {
   const m02 = migrate02AccountToCustomer()
   const m03 = migrate03LeadToIdentity()
-  for (const r of [m02, m03]) {
-    if (r.skippedByMarker) continue
-    console.log(`[CRM] 存量迁移 ${r.module}：applied=${r.applied} customers=${r.customersCreated} ` +
-      `alreadyDone=${r.alreadyDone} failed=${r.failed} conflicts=${r.conflicts}` +
-      (r.failed || r.conflicts ? '（失败/冲突清单见 audit_event detail）' : ''))
+  const m04 = migrate04HistoryDealToOpportunity()
+  const align = alignCustomerProfileCustomerIds()
+  for (const r of [m02, m03, m04, align]) {
+    console.log(`[CRM] 存量迁移 ${r.module}：applied=${r.applied} alreadyDone=${r.alreadyDone} ` +
+      `skipped=${r.skipped} failed=${r.failed} conflicts=${r.conflicts}` +
+      (r.failed || r.conflicts ? '（失败/冲突清单见 migration_report）' : ''))
   }
-  return { m02, m03 }
+  return { m02, m03, m04, align }
 }

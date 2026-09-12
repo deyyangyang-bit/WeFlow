@@ -1,15 +1,15 @@
 /**
- * migration-live-test.ts —— Phase 1 存量迁移执行器（crmMigrationService 模块②/③）副本验证
+ * migration-live-test.ts —— Phase 1 存量迁移执行器（crmMigrationService 模块②/③/④/⑤）副本验证
  *
  *   Part A（fresh 库 + 构造存量数据）：干净锚点 / 无锚失败 / 多名·多归属冲突组 / 已挂接幂等 /
  *     既有 NULL identity 后补挂接 / lead 归并（同 wxid 多线索合一）/ 非法身份失败 /
- *     审计留痕 / scan_state 一次性标记 / 重跑零副作用 / 标记丢失后数据级幂等兜底
- *   Part B（live 库 /tmp 副本，已迁移口径）：live 已由应用启动链路真实执行过迁移 02/03
- *     （scan_state markers 置位），核验已迁移事实（customer 188 / identity 4857 / 19 无锚未动）+
- *     标记命中重跑零副作用（计数/审计不增）+ dryRun 已迁移口径（alreadyDone 全量）+
- *     标记丢失后数据级幂等兜底（真实数据零写入）
+ *     审计留痕（只在有写入时）/ scan_state 最后扫描时间戳 / 重跑零副作用（数据级幂等兜底）/
+ *     marker 存在时新增候选仍被处理（增量迁移）/ 模块④版本链与合同指针闭合。
+ *   Part B（live 库 /tmp 副本，动态不变量）：不得写死 188/19/4680 等业务数量，改用动态不变量——
+ *     已挂接 + 未挂接 = account 总数；identity = 挂接 + 资源池；唯一约束成立；
+ *     收敛重跑零新增；注入新增候选（marker 仍在）仍被迁移；再次重跑零新增；报告 SSOT 落库。
  *
- * ⛔ 同 dry-run-all 铁律：live 源库复制到 /tmp 副本 → 应用链路 initialize → 绝不触碰 live 库。
+ * ⛔ 铁律：live 源库复制到 /tmp 副本 → 应用链路 initialize → 绝不触碰 live 库。
  * 用法：npx tsx scripts/migration-live-test.ts
  */
 import { copyFileSync, mkdtempSync } from 'fs'
@@ -17,9 +17,9 @@ import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
 import { findExistingBusinessDb } from '../electron/services/businessDbPath'
-import { runStockDataMigration } from '../electron/services/crmMigrationService'
-import { dryRun as dryRun02 } from './migration/02-account-to-customer'
-import { dryRun as dryRun03 } from './migration/03-lead-to-identity'
+import {
+  runStockDataMigration, migrate04HistoryDealToOpportunity, accountAnchor
+} from '../electron/services/crmMigrationService'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail = ''): void {
@@ -47,7 +47,7 @@ function seedLead(l: { contactType?: string; normalized: string; wechat?: string
 
 // ═══ Part A：fresh 库 + 构造存量数据 ═══════════════════════════════════════
 async function partA(): Promise<void> {
-  console.log('\n═══════ Part A：fresh 库构造存量数据 ═══════')
+  console.log('\n═══════ Part A：fresh 库构造存量数据 ═══')
   const dir = mkdtempSync(join(tmpdir(), 'mig-fresh-'))
   await crmDbService.initialize(dir)
 
@@ -113,23 +113,32 @@ async function partA(): Promise<void> {
   check('dupwx 双线索归并为一行 NULL identity',
     count("SELECT COUNT(*) AS c FROM customer_identity WHERE identity_type='wxid' AND identity_value='dupwx'") === 1)
 
-  console.log('\n── A3. 审计 + 标记 ──')
+  console.log('\n── A3. 审计 + 标记 + 报告 SSOT ──')
   check('audit_event 两行（02/03 各一，actor=system:migration）',
     count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === 2)
   const audit02 = crmDbService.all("SELECT detail FROM audit_event WHERE action = 'migration_02_account_to_customer'")[0]
   const d02 = JSON.parse(String(audit02?.detail || '{}'))
   check('02 审计 detail 含报告摘要+失败/冲突清单', d02.summary?.applied === 4 && d02.failures?.length === 1 && d02.conflicts?.length === 2)
-  check('scan_state 两标记已置位', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
+  check('scan_state 两标记已置位（最后扫描时间戳）', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
+  // 报告 SSOT：migration_report 落库（不依赖 audit_event）
+  const reports = crmDbService.listMigrationReports()
+  check('migration_report 落库（02/03 各一份快照）',
+    reports.some((r) => String(r.module) === '02-account-to-customer') &&
+    reports.some((r) => String(r.module) === '03-lead-to-identity'), JSON.stringify(reports.map((r) => r.module)))
+  const rep02 = reports.find((r) => String(r.module) === '02-account-to-customer')
+  const sum02 = JSON.parse(String(rep02?.summary || '{}'))
+  check('02 报告 summary 反映 applied=4/failed=1/conflicts=2', sum02.applied === 4 && sum02.failed === 1 && sum02.conflicts === 2, JSON.stringify(sum02))
 
-  console.log('\n── A4. 幂等重跑（标记命中）──')
+  console.log('\n── A4. 幂等重跑（数据级判重兜底）──')
   const again = runStockDataMigration()
-  check('重跑 02/03 标记跳过', again.m02.skippedByMarker && again.m03.skippedByMarker)
+  check('重跑 02/03 零写入（applied=0/customers=0）', again.m02.applied === 0 && again.m02.customersCreated === 0 && again.m03.applied === 0)
   check('重跑后 customer/identity/挂接数零变化',
     count('SELECT COUNT(*) AS c FROM customer') === 5 &&
     count('SELECT COUNT(*) AS c FROM customer_identity') === 7 &&
     count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0') === 5)
+  check('重跑不重复审计（仍 2 行）', count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === 2)
 
-  console.log('\n── A5. 标记丢失兜底（数据级幂等）──')
+  console.log('\n── A5. 标记丢失兜底（数据级幂等，与标记无关）──')
   crmDbService.runTx((tx) => { tx.run("DELETE FROM scan_state WHERE key IN (?,?)", [M02_MARKER, M03_MARKER]); return 0 })
   const lost = runStockDataMigration()
   check('02 重入：零新建零挂接（applied=0/customers=0/alreadyDone=5）',
@@ -144,15 +153,56 @@ async function partA(): Promise<void> {
     count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0') === 5 &&
     count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL') === 2)
   check('标记已重建', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
+  check('标记丢失重跑不重复审计（仍 2 行）', count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === 2)
+
+  console.log('\n── A6. 增量迁移：marker 存在时新增候选仍被处理 ──')
+  const incPhone = '19' + String(Date.now()).slice(-9)
+  const incLeadPhone = '18' + String(Date.now()).slice(-9)
+  seedAccount({ name: `增量壬${Date.now()}`, phone: incPhone })          // 新增干净手机号 account
+  seedLead({ normalized: incLeadPhone })                                  // 新增干净身份 lead
+  const inc = runStockDataMigration()
+  check('02 增量：新增 account 被迁移（applied=1）', inc.m02.applied === 1, `实 ${inc.m02.applied}`)
+  check('03 增量：新增 lead 被建档（applied=1）', inc.m03.applied === 1, `实 ${inc.m03.applied}`)
+  check('增量后 identity 唯一约束仍成立',
+    count('SELECT COUNT(*) AS c FROM (SELECT identity_type, identity_value FROM customer_identity GROUP BY 1,2 HAVING COUNT(*)>1)') === 0)
+  // 再次重跑 → 零新增（幂等闭环）
+  const inc2 = runStockDataMigration()
+  check('增量后再次重跑零新增（applied=0）', inc2.m02.applied === 0 && inc2.m03.applied === 0,
+    JSON.stringify({ m02: inc2.m02.applied, m03: inc2.m03.applied }))
+
+  console.log('\n── A7. 模块④：历史成交 → won 商机 + 报价版本链闭合 ──')
+  const accM = seedAccount({ name: '洛阳历史成交迁移公司' })
+  const cidM = crmDbService.create('contract', {
+    account_id: accM, name: '洛阳-历史成交合同', amount: 88000, status: 'signed',
+    sign_date: Date.now() - 10 * 86400000, created_at: Date.now() - 40 * 86400000, updated_at: Date.now() - 40 * 86400000
+  })
+  crmDbService.runTx((tx) => {
+    for (const [total, daysAgo] of [[1000, 40], [2000, 30], [88000, 20]] as Array<[number, number]>) {
+      tx.run('INSERT INTO quotation (contract_id, items, total, created_at, custom_fields) VALUES (?,?,?,?,?)',
+        [cidM, '[]', total, Date.now() - daysAgo * 86400000, '{}'])
+    }
+  })
+  const r04a = migrate04HistoryDealToOpportunity()
+  check('04 补建 won 商机（wonOppCreated=1）', r04a.wonOppCreated === 1, `实 ${r04a.wonOppCreated}`)
+  const mOpp = crmDbService.all('SELECT * FROM opportunity WHERE account_id = ? AND status = ?', [accM, 'won'])[0]
+  check('04 won 商机 source=migration + amount_cny=88000', !!mOpp && String(mOpp.source) === 'migration' && Number(mOpp.amount_cny) === 88000)
+  const chain = crmDbService.quotationHistoryForContract(cidM)
+  check('04 版本链闭合 version=1..3（按创建序）', chain.length === 3 && Number(chain[0].version) === 3 && Number(chain[2].version) === 1, JSON.stringify(chain.map((r) => r.version)))
+  check('04 effective_from 回填 ← created_at', chain.every((row) => Number(row.effective_from) > 0))
+  check('04 旧版本 effective_to 关闭、最新版本开放',
+    Number(chain[2].effective_to) > 0 && Number(chain[1].effective_to) > 0 && Number(chain[0].effective_to) === 0)
+  check('04 合同指针接管 → 最新版本', Number(crmDbService.getById('contract', cidM)?.quote_version_id) === Number(chain[0].id))
+  const r04b = migrate04HistoryDealToOpportunity()
+  const chainAfter = crmDbService.quotationHistoryForContract(cidM)
+  check('04 幂等（重跑零第二份数据、链不再改写）', r04b.wonOppCreated === 0 && r04b.chainsNormalized === 0 && JSON.stringify(chainAfter) === JSON.stringify(chain))
 }
 
-// ═══ Part B：live 库 /tmp 副本「已迁移」幂等重跑验证 ═══════════════════════
-// ⚠️ 口径说明（2026-09-04 修正）：live 库已由应用启动链路真实执行过迁移 02/03
-//    （scan_state markers 置位），「预迁移副本」口径永久失效。本 Part 改为核验
-//    已迁移副本的幂等性：标记命中零副作用 + 标记丢失后数据级幂等兜底 +
-//    dryRun 在已迁移库上的口径（alreadyDone 全量、wouldApply 归零）。
+// ═══ Part B：live 库 /tmp 副本「已迁移」动态不变量验证 ═══════════════════
+// ⚠️ 不得写死 188/19/4680 等业务数量——live 库数字随真实业务变化，改用动态不变量：
+//   已挂接 + 未挂接 = account 总数；identity = 挂接 + 资源池；唯一约束成立；
+//   收敛重跑零新增；注入新增候选（marker 仍在）仍被迁移；再次重跑零新增。
 async function partB(): Promise<void> {
-  console.log('\n═══════ Part B：live 库副本（已迁移）幂等重跑验证 ═══════')
+  console.log('\n═══════ Part B：live 库副本（已迁移）动态不变量验证 ═══')
   const userData = join(homedir(), 'Library', 'Application Support', 'weflow')
   const crmSrc = findExistingBusinessDb(userData, 'crm')
   if (!crmSrc) { console.error('未找到 live CRM 库'); fail++; return }
@@ -161,66 +211,74 @@ async function partB(): Promise<void> {
   await crmDbService.reopenForWxid(dir) // Part A 库落盘卸载 → 副本接管（应用链路）
   console.log(`副本试跑：crm ← ${crmSrc.replace(homedir(), '~')}`)
 
-  console.log('\n── B0. 已迁移状态核验（live 已真实执行过 02/03 的事实核验）──')
-  const customers = count('SELECT COUNT(*) AS c FROM customer')
-  const attached = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0')
-  const unlinked = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NULL')
-  const identities = count('SELECT COUNT(*) AS c FROM customer_identity')
-  const linked = count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NOT NULL AND customer_id > 0')
-  const pooled = count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL')
+  const totalAccounts = count('SELECT COUNT(*) AS c FROM account')
+  const attachedBefore = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0')
+  const unlinkedBefore = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NULL')
+  const customersBefore = count('SELECT COUNT(*) AS c FROM customer')
+  const identitiesBefore = count('SELECT COUNT(*) AS c FROM customer_identity')
+  const linkedBefore = count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NOT NULL AND customer_id > 0')
+  const pooledBefore = count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL')
   const auditBefore = count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'")
-  console.log(`  customer=${customers} account挂接=${attached} 未挂接=${unlinked} identity=${identities}（挂 ${linked} / NULL ${pooled}）audit=${auditBefore}`)
-  check('scan_state 两标记已置位（live 已执行）', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
-  check('customer=188 / account 挂接=188（与首迁报告一致）', customers === 188 && attached === 188, `${customers}/${attached}`)
-  check('未挂接=19（无锚 account 保持未动）', unlinked === 19, `实 ${unlinked}`)
-  check('identity=4857（挂 188 / 资源池 NULL 4669）', identities === 4857 && linked === 188 && pooled === 4669, `${identities}/${linked}/${pooled}`)
-  check('identity 唯一约束无重复', count('SELECT COUNT(*) AS c FROM (SELECT identity_type, identity_value FROM customer_identity GROUP BY 1,2 HAVING COUNT(*)>1)') === 0)
-  check('首迁审计两行（02/03 各一）', auditBefore === 2 &&
-    count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'migration_02_account_to_customer'") === 1 &&
-    count("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'migration_03_lead_to_identity'") === 1)
-  // 19 个无锚 account 逐条列名（人工处理窗口用，与首迁失败清单同口径）
-  for (const a of crmDbService.all('SELECT id, name FROM account WHERE customer_id IS NULL ORDER BY id')) {
-    console.log(`  ✗ account:${a.id} 未挂接（无锚，留人工）name='${String(a.name)}'`)
-  }
 
-  console.log('\n── B1. 幂等重跑（标记命中 → 零副作用）──')
-  const again = runStockDataMigration()
-  check('02/03 均标记跳过', again.m02.skippedByMarker && again.m03.skippedByMarker)
-  check('业务计数零变化（customer/identity/挂接/NULL）',
-    count('SELECT COUNT(*) AS c FROM customer') === customers &&
-    count('SELECT COUNT(*) AS c FROM customer_identity') === identities &&
-    count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0') === attached &&
-    count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL') === pooled)
-  check('审计不重复（仍 2 行）', count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === auditBefore)
+  console.log('\n── B0. 静态不变量（结构一致，与具体数量无关）──')
+  check('已挂接 + 未挂接 = account 总数', attachedBefore + unlinkedBefore === totalAccounts, `${attachedBefore}+${unlinkedBefore}=${totalAccounts}`)
+  check('identity = 挂接 + 资源池 NULL', linkedBefore + pooledBefore === identitiesBefore, `${linkedBefore}+${pooledBefore}=${identitiesBefore}`)
+  check('identity 唯一约束无重复',
+    count('SELECT COUNT(*) AS c FROM (SELECT identity_type, identity_value FROM customer_identity GROUP BY 1,2 HAVING COUNT(*)>1)') === 0)
+  check('scan_state 两标记已置位（最后扫描时间戳）', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
 
-  console.log('\n── B2. dryRun 已迁移口径对账 ──')
-  const post02 = dryRun02('live-copy-migrated')
-  const post03 = dryRun03('live-copy-migrated')
-  console.log(`  dryRun（已迁移）：02 ${JSON.stringify(post02.summary)}`)
-  console.log(`  dryRun（已迁移）：03 ${JSON.stringify(post03.summary)}`)
-  check('dryRun02：alreadyDone=188 / wouldApply=0 / failed=19（无锚仍逐条列出）',
-    post02.summary.alreadyDone === 188 && post02.summary.wouldApply === 0 && post02.summary.failed === 19 && post02.summary.conflicts === 0,
-    JSON.stringify(post02.summary))
-  check('dryRun03：alreadyDone=4680 / wouldApply=0（全部身份键已登记）',
-    post03.summary.alreadyDone === 4680 && post03.summary.wouldApply === 0 && post03.summary.failed === 0,
-    JSON.stringify(post03.summary))
+  console.log('\n── B1. 收敛重跑（live 可能仍有未迁候选 → applied 可 >0，总数守恒）──')
+  const first = runStockDataMigration()
+  const attachedAfter = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0')
+  const unlinkedAfter = count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NULL')
+  // 动态不变量：本轮挂接增量 = applied（若 live 仍有未迁候选则 >0，否则 0），总数守恒
+  check('挂接增量 = 02.applied（已挂接总数守恒）', attachedAfter - attachedBefore === first.m02.applied, `${attachedAfter}-${attachedBefore}=${first.m02.applied}`)
+  check('未挂接减量 = 02.applied', unlinkedBefore - unlinkedAfter === first.m02.applied)
+  // 动态不变量：失败数 = 无锚且未挂接的 account 数（独立用 accountAnchor 复算，不写死）
+  const anchorless = crmDbService.all('SELECT id, phone, session_id, customer_id FROM account')
+    .filter((a) => !(a.customer_id != null && Number(a.customer_id) > 0) && accountAnchor(a) === null).length
+  check('02.failed = 无锚未挂接 account 数（独立复算）', first.m02.failed === anchorless, `${first.m02.failed}=${anchorless}`)
+  check('03 收敛零新插（applied=0）', first.m03.applied === 0, `实 ${first.m03.applied}`)
+  // 收敛后快照（供 B2 零变化对账）
+  const customersAfter = count('SELECT COUNT(*) AS c FROM customer')
+  const identitiesAfter = count('SELECT COUNT(*) AS c FROM customer_identity')
+  const pooledAfter = count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL')
+  const auditAfter = count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'")
+  // 报告 SSOT 落库（不依赖 audit_event）
+  const repRows = crmDbService.listMigrationReports()
+  check('migration_report 落库 02/03 快照',
+    repRows.some((r) => String(r.module) === '02-account-to-customer') && repRows.some((r) => String(r.module) === '03-lead-to-identity'))
 
-  console.log('\n── B3. 标记丢失兜底（数据级幂等，真实数据）──')
-  crmDbService.runTx((tx) => { tx.run("DELETE FROM scan_state WHERE key IN (?,?)", [M02_MARKER, M03_MARKER]); return 0 })
-  const lost = runStockDataMigration()
-  console.log(`  02 重入：${JSON.stringify({ applied: lost.m02.applied, customers: lost.m02.customersCreated, alreadyDone: lost.m02.alreadyDone, failed: lost.m02.failed, conflicts: lost.m02.conflicts })}`)
-  console.log(`  03 重入：${JSON.stringify({ applied: lost.m03.applied, alreadyDone: lost.m03.alreadyDone, failed: lost.m03.failed, conflicts: lost.m03.conflicts })}`)
-  check('02 重入零写入（applied=0/customers=0/alreadyDone=188/failed=19/conflicts=0）',
-    lost.m02.applied === 0 && lost.m02.customersCreated === 0 && lost.m02.alreadyDone === 188 && lost.m02.failed === 19 && lost.m02.conflicts === 0)
-  check('03 重入零新插（applied=0/alreadyDone=4680/failed=0）',
-    lost.m03.applied === 0 && lost.m03.alreadyDone === 4680 && lost.m03.failed === 0)
-  check('业务计数仍零变化',
-    count('SELECT COUNT(*) AS c FROM customer') === customers &&
-    count('SELECT COUNT(*) AS c FROM customer_identity') === identities &&
-    count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0') === attached)
-  check('标记已重建', crmDbService.getScanState(M02_MARKER) > 0 && crmDbService.getScanState(M03_MARKER) > 0)
-  check('审计 +2 = 重入评估报告（重跑只留报告不写业务数据，by design）',
-    count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === auditBefore + 2)
+  console.log('\n── B2. 再次重跑：零新增、零副作用（幂等闭环）──')
+  const second = runStockDataMigration()
+  check('再次重跑 02/03 零新增（applied=0）', second.m02.applied === 0 && second.m03.applied === 0,
+    JSON.stringify({ m02: second.m02.applied, m03: second.m03.applied }))
+  check('再次重跑后业务计数零变化（对收敛后快照）',
+    count('SELECT COUNT(*) AS c FROM customer') === customersAfter &&
+    count('SELECT COUNT(*) AS c FROM customer_identity') === identitiesAfter &&
+    count('SELECT COUNT(*) AS c FROM account WHERE customer_id IS NOT NULL AND customer_id > 0') === attachedAfter &&
+    count('SELECT COUNT(*) AS c FROM customer_identity WHERE customer_id IS NULL') === pooledAfter)
+  check('再次重跑不重复审计（audit 与收敛后一致）', count("SELECT COUNT(*) AS c FROM audit_event WHERE actor = 'system:migration' AND action LIKE 'migration_%'") === auditAfter)
+
+  console.log('\n── B3. 注入新增候选（marker 仍在）仍被迁移 → 再次重跑零新增 ──')
+  const incPhone = '19' + String(Date.now()).slice(-9)
+  const incLeadPhone = '18' + String(Date.now()).slice(-9)
+  crmDbService.runTx((tx) => {
+    tx.run("INSERT INTO account (name, industry, province, city, phone, owner_sales, custom_fields, session_id, customer_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      [`增量迁移测试-${Date.now()}`, '', '', '', incPhone, '', '{}', null, null, 1700000000000, 1700000000000])
+    tx.run("INSERT INTO lead (contact_type, contact_normalized, contact_raw, wechat, source, name, status, first_contact_deadline, created_at, updated_at, account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      ['phone', incLeadPhone, incLeadPhone, '', '测试', '', 'NEW', 4102444800000, 1700000000000, 1700000000000, null])
+  })
+  const third = runStockDataMigration()
+  check('marker 存在时新增 account 仍被迁移（02.applied=1）', third.m02.applied === 1, `实 ${third.m02.applied}`)
+  check('marker 存在时新增 lead 仍被建档（03.applied=1）', third.m03.applied === 1, `实 ${third.m03.applied}`)
+  check('新增 account 已挂接（customer_id>0）',
+    count('SELECT COUNT(*) AS c FROM account WHERE phone = ? AND customer_id > 0', [incPhone]) === 1)
+  check('新增 lead 已建档（identity 存在且唯一约束成立）',
+    count("SELECT COUNT(*) AS c FROM customer_identity WHERE identity_type='phone' AND identity_value=?", [incLeadPhone]) === 1)
+  const fourth = runStockDataMigration()
+  check('再次重跑零新增（02/03 applied=0）', fourth.m02.applied === 0 && fourth.m03.applied === 0,
+    JSON.stringify({ m02: fourth.m02.applied, m03: fourth.m03.applied }))
 }
 
 async function main(): Promise<void> {

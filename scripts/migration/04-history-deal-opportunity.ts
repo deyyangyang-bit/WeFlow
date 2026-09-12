@@ -1,5 +1,8 @@
 /**
- * 04-history-deal-opportunity.ts —— Phase 0 D4 模块④：历史成交 → opportunity 补列（won 态）+ quotation 首版本（骨架，只写不跑）
+ * 04-history-deal-opportunity.ts —— Phase 0 D4 模块④：历史成交 → opportunity 补列（won 态）+ quotation 首版本
+ *
+ * 执行器已上收至 crmMigrationService.migrate04HistoryDealToOpportunity（启动链路直接跑）；
+ * 本文件保留 dryRun() 只读预演，apply()/Apply04Result 为 re-export 兼容既有 import 路径。
  *
  * ⛔ 铁律：迁移执行必须走应用自身链路（crmDbService 的 create/update），禁止直接改库文件
  *    （sql.js 内存库 + 500ms 防抖落盘会覆盖外部直改，HANDOVER §2.40 前科）。
@@ -16,6 +19,14 @@
  *     既有反向链 quotation.contract_id 过渡期双写保留，Phase 2 读路径切换后退役）。
  *
  * dryRun：只读统计——会补建多少 won 商机 / 回填多少列值 / quote 版本核验与回填量。
+ *
+ * 执行器（2026-09-09 本刀落地，宪法 §1.6 修订）：apply() 走应用自身链路（铁律 1）——
+ *   - won 商机补建 / amount_cny 回填走 crmDbService.create/update/opportunityEventAdd/auditAppend；
+ *   - quote 版本链规范化复用 crmDbService.normalizeQuotationVersionChain 单点
+ *     （与应用内 createQuotation → createQuotationVersionTx 同一套不变量：version 递增 /
+ *      effective 窗口 / 合同指针接管 / 同事务 audit_event），不复制 SQL；
+ *   - 幂等：已归一化合同（quotationChainNormalized）跳过，不重复写审计；重复执行零第二份数据。
+ *   （该执行逻辑现位于 crmMigrationService.migrate04HistoryDealToOpportunity，此处仅 re-export。）
  */
 
 import { crmDbService } from '../../electron/services/crmDbService'
@@ -162,3 +173,9 @@ export function dryRun(dbLabel: string): MigrationReport {
     failures, conflicts, samples, notes
   }
 }
+
+// ─── 执行器（宪法 §1.6 修订 2026-09-09 落地；铁律：只走 crmDbService 链路，幂等可重入）───
+// 执行逻辑已上收至 crmMigrationService.migrate04HistoryDealToOpportunity（启动链路直接跑，
+// 不再「骨架只写不跑」）。此处 re-export 仅为兼容既有 import 路径（crm-opportunity-test 等）。
+export { migrate04HistoryDealToOpportunity as apply } from '../../electron/services/crmMigrationService'
+export type { ModuleMigrationResult as Apply04Result } from '../../electron/services/crmMigrationService'
