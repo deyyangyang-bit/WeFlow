@@ -85,9 +85,9 @@ async function main(): Promise<void> {
   {
     const acc = mkAccount('杭州临安实业')
     mkContract(acc)
-    crmDbService.saveShippingInfo({ account_id: acc, receiver: '宋群雄', phone: '', address: '', city: '杭州市', source_msg_id: 's1', created_at: Date.now() })
+    crmDbService.saveShippingInfo({ account_id: acc, receiver: '宋示例', phone: '', address: '', city: '杭州市', source_msg_id: 's1', created_at: Date.now() })
     const pid = mkPayment('W')
-    const aid = mkAllocation(pid, '宋群雄')
+    const aid = mkAllocation(pid, '宋示例')
     const d = evaluateAllocation(get(aid), {})
     ok('A5 收货人唯一 → auto', d.decision === 'auto_confirm' && d.confidence === 0.85)
   }

@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   audit('杨青（销售）', 'identity_bind', 'lead', 2, JSON.stringify({ wxid: 'wxid_8f3abc12de', manual: true }), now - 2000)
   audit('system:sla', 'lead_recycle', 'lead', 1, JSON.stringify({ reason: '3次超时未加' }), now - 3000)
   audit('主管', 'lead_transfer', 'lead', 1, JSON.stringify({ fromSales: '李林辉', toSales: '许丽娟' }), now - 4000)
-  audit('主管', 'lead_assign', 'lead', 3, '手机号 15213855273 命中', now - 5000)
+  audit('主管', 'lead_assign', 'lead', 3, '手机号 15200000007 命中', now - 5000)
   audit('李林辉（销售）', 'assignment_weight_change', 'config', null,
     JSON.stringify({ configKey: 'crmAssignWeights', diff: [{ key: '王五', from: 1, to: 3 }] }), now - 6000)
   const hist = (entityType: string, entityId: number, oldOwner: string, newOwner: string, reason: string, actor: string, at: number) =>
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
   ok('a6 keyword 搜操作人', kwActor.data.total === 2)
   const kwDetail = queryAuditEvents({ keyword: '许丽娟' })
   ok('a7 keyword 搜细节（JSON 内文名）', kwDetail.data.total === 1)
-  const kwEntity = queryAuditEvents({ keyword: '15213855273' })
+  const kwEntity = queryAuditEvents({ keyword: '15200000007' })
   ok('a8 keyword 搜对象（detail 里手机号可检索）', kwEntity.data.total === 1)
 
   const paged = queryAuditEvents({ page: 2, pageSize: 2 })

@@ -23,13 +23,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // ─── a. buildActionQueue 行为 ────────────────────────────────────────────────
 {
   const customers = [
-    { id: 1, session_id: 'wxid_wang', name: '王靖', profile_display_name: '王靖 · 春发采购', company: '春发采购' },
+    { id: 1, session_id: 'wxid_wang', name: '王静', profile_display_name: '王静 · 示例采购', company: '示例采购' },
     { id: 2, session_id: 'wxid_zhang', name: '张开国' },
     { id: 3, session_id: 'wxid_liu', name: '小小刘' },
     { id: 4, session_id: 'wxid_quiet', name: '无信号客户' }
   ]
   const signals = [
-    // 王靖：task 信号（值得跟进）
+    // 王静：task 信号（值得跟进）
     { sessionId: 'wxid_wang', priorityScore: 90, sources: [{ type: 'task', label: '报价跟进', reason: '报价发出 3 天没回复——再不跟就凉了' }] },
     // 小小刘：无 task 源（AI 新发现）
     { sessionId: 'wxid_liu', priorityScore: 60, sources: [{ type: 'alert', label: '重要提醒', reason: '聊天里提到竞品「合力」——可能在比价' }] },
@@ -68,7 +68,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
     { sessionId: 'wxid_zhang', priorityScore: 70, sources: [{ type: 'task', label: '新客响应', reason: 'b' }] },
     { sessionId: 'wxid_wang', priorityScore: 90, sources: [{ type: 'task', label: '报价跟进', reason: 'a' }] }
   ], [])
-  ok('a11 follow 多卡按 priorityScore 降序', multi[0].displayName.includes('王靖') && multi[1].displayName.includes('张开国'))
+  ok('a11 follow 多卡按 priorityScore 降序', multi[0].displayName.includes('王静') && multi[1].displayName.includes('张开国'))
 
   // 空输入
   ok('a12 空输入 → 空队列（空态由页面渲染）', buildActionQueue([], [], []).length === 0)
