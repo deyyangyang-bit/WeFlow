@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { isPriceOverride, type PriceOverride } from '../../shared/priceOverride'
+import { parseJsonObject } from '../../shared/safeJson'
 /**
  * crmDbService.ts
  * CRM 模块数据层：独立 weflow-crm.db（sql.js/WASM），模式复用 salesDbService。
@@ -12,16 +13,9 @@ import { basename, dirname, join } from 'path'
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { salesLog } from './salesLogger'
 import { archivedDbName, businessDbPath } from './businessDbPath'
-import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
+import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
 import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLifecycleHooks'
-
-/** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
-function dbGuardLog(level: GuardLogLevel, msg: string): void {
-  salesLog(level, msg)
-  if (level === 'ERROR') console.error(msg)
-  else console.warn(msg)
-}
 
 // ─── 建表 SQL ────────────────────────────────────────────────────────────────
 const SCHEMA_SQL = `
@@ -375,7 +369,6 @@ export const ENRICH_FIELDS = [
   'company', 'position', 'phone', 'industry', 'province', 'city',
   'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive'
 ] as const
-export type EnrichField = (typeof ENRICH_FIELDS)[number]
 export const ENRICH_FORMAL_COLUMNS: ReadonlySet<string> = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
 
 export type EnrichFieldSource = 'ai' | 'manual'
@@ -1065,7 +1058,7 @@ class CrmDbService {
     if (!acc) return { ok: false, reason: '客户不存在' }
     const patch: CrmRow = { updated_at: Date.now() }
     let customFields: Record<string, unknown> = {}
-    try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+    customFields = parseJsonObject(acc.custom_fields)
     const meta = parseEnrichMeta(String(acc.enrich_meta || ''))
     const fields = { ...(meta.fields || {}) }
     const labels: string[] = []
@@ -1117,7 +1110,7 @@ class CrmDbService {
     if (action === 'accept') {
       const patch: CrmRow = { updated_at: Date.now() }
       let customFields: Record<string, unknown> = {}
-      try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+      customFields = parseJsonObject(acc.custom_fields)
       if (ENRICH_FORMAL_COLUMNS.has(field)) patch[field] = p.value
       else customFields[field] = p.value
       patch.custom_fields = JSON.stringify(customFields)
@@ -1148,7 +1141,7 @@ class CrmDbService {
     if (!(ENRICH_FIELDS as readonly string[]).includes(field)) return { ok: false, reason: '未知字段' }
     const patchRow: CrmRow = { updated_at: Date.now() }
     let customFields: Record<string, unknown> = {}
-    try { customFields = JSON.parse(String(acc.custom_fields || '{}')) } catch { customFields = {} }
+    customFields = parseJsonObject(acc.custom_fields)
     const v = String(value ?? '').trim()
     if (ENRICH_FORMAL_COLUMNS.has(field)) patchRow[field] = v || null
     else { if (v) customFields[field] = v; else delete customFields[field] }
@@ -1347,7 +1340,7 @@ class CrmDbService {
           }
         }
         let customFields: Record<string, unknown> = {}
-        try { customFields = JSON.parse(String(opp.custom_fields || '{}')) } catch { customFields = {} }
+        customFields = parseJsonObject(opp.custom_fields)
         if (deal.model_extra != null) customFields.supplementary_models = String(deal.model_extra).trim()
         // ① 成交字段落库 + status='won'（amount 同步 = 漏斗/统计口径，与商机页登记一致）
         tx.run(
@@ -1482,7 +1475,7 @@ class CrmDbService {
     const coreFields = ['company', 'phone', 'needs', 'budget', 'intent_model']
     return rows.filter((r) => {
       let customFields: Record<string, unknown> = {}
-      try { customFields = JSON.parse(String(r.custom_fields || '{}')) } catch { customFields = {} }
+      customFields = parseJsonObject(r.custom_fields)
       const missing = coreFields.filter((f) => {
         const v = ENRICH_FORMAL_COLUMNS.has(f) ? r[f] : customFields[f]
         return v == null || String(v).trim() === ''
@@ -2032,7 +2025,7 @@ class CrmDbService {
           const subtotal = Math.round(unit * qty * 100) / 100
           total = Math.round((total + subtotal) * 100) / 100
           let specsObj: Record<string, string> = {}
-          try { specsObj = JSON.parse(String(p.specs || '{}')) } catch { specsObj = {} }
+          specsObj = parseJsonObject<Record<string, string>>(p.specs)
           const specSummary = [p.material, ...Object.entries(specsObj).map(([k, v2]) => `${k}:${v2}`)].filter(Boolean).join('；')
           rows.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', spec_summary: specSummary, qty, unit_price: unit, subtotal })
         }
@@ -2244,7 +2237,7 @@ class CrmDbService {
     `)
     return rows.map((r) => {
       let customFields: Record<string, unknown> = {}
-      try { customFields = JSON.parse(String(r.custom_fields || '{}')) } catch { customFields = {} }
+      customFields = parseJsonObject(r.custom_fields)
       let filled = 0
       for (const f of ENRICH_FIELDS) {
         const v = ENRICH_FORMAL_COLUMNS.has(f) ? r[f] : customFields[f]

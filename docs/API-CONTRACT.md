@@ -103,7 +103,7 @@
 | `crm:lead:slaSkip` | `taskId: number` | 跳过 | S |
 | `crm:lead:deadReasons` | — | `DEFAULT_DEAD_REASONS` | R |
 
-### 1.6 合同 / 报价 / 文档（6 通道）
+### 1.6 合同 / 报价 / 文档（10 通道）
 
 | 通道 | 请求参数 | 响应 | 幂等/备注 |
 |---|---|---|---|
@@ -112,7 +112,11 @@
 | `crm:contract:delete` | `id: number` | `boolean` | N。级联 + 备份 |
 | `crm:quotation:create` | `data: object` | 新报价 id | N。⚠️ Phase 1 版本链上线起改走 `crm:quote:createVersion`（§1.14），本通道保留兼容 |
 | `crm:quotation:ai` | `sessionId, displayName: string` | AI 报价草稿 | N（现场调 LLM） |
-| `crm:doc:generate` | `type: string, recordId: number` | 文档生成结果（docx/xlsx 落盘路径） | N。模板 docxtemplater / exceljs |
+| `crm:doc:generate` | `type: string, recordId: number, options?: { reuseExisting?: boolean, scope?: { accountKey, generation } }` | `{ ok, path?, reason? }` | N。模板 docxtemplater / exceljs；`reuseExisting=true` 且合同已有产物、文件仍在 → 直接返回该路径不重复生成 |
+| `crm:contract:entryScope` | — | `{ accountKey: string, generation: number }` | R。录入链作用域指纹：下列三个通道必须回传同一 `scope`，账号切换后旧 scope 被 `assertContractEntryScope` 拒绝 |
+| `crm:contract:beginEntry` | `input: { requestId, accountId?, name, amount, header, updateHeaderKeys? }, scope` | 合同行 | S。**按 `requestId` 幂等**（落 `contract.custom_fields.creation_request_id`）：同标识重复调用返回同一合同，不重复建客户/合同；`accountId=0` 建新客户，档案抬头五项全空直接写入，已有非空档案只写 `updateHeaderKeys` 勾选项 |
+| `crm:contract:entryQuotation` | `data: { contract_id, items, creation_request_id }, scope` | `{ ok, id?, reason? }` | S。同合同同标识已存在报价版本则跳过创建；成功后 `persistNowStrict` 立即落盘 |
+| `crm:contract:byCreationRequest` | `requestId: string, scope` | 合同 \| null | R。标识格式非法（非 `^[a-zA-Z0-9-]{16,80}$`）直接返回 null；页面刷新后按库恢复未完成流程，**防重复的权威防线是这次查询而非本地草稿** |
 
 ### 1.7 到款认领（allocation / payment，5 通道）
 
@@ -166,7 +170,9 @@
 | `crm:file:saveImage` | `dataUrl, fileName: string` | 落盘路径 | N |
 | `crm:quotation:ai` | （见 §1.6） | | |
 
-### 1.12 sales 域（42 通道，注册于 main.ts）
+### 1.12 sales 域（47 通道，注册于 main.ts）
+
+> 通道数 = 本节各分组之和（41 + 本刀新增 6）；旧记「42」与分组相加不符，此处按可核对口径重算。
 
 **知识库 kb（10）**
 
@@ -223,14 +229,15 @@
 | `sales:evidence:getByKey` | `{ session_id, message_key, evidence_text? }` | 证据解析结果；找不到 `status:'unavailable'` 不伪造 | R |
 | `sales:reply:suggest` | `{ session_id, context_messages? }` | 话术建议 | N（LLM） |
 
-**待办（4）**
+**待办（3）**
 
 | 通道 | 请求参数 | 响应 | 幂等 |
 |---|---|---|---|
 | `sales:todo:list` | `filters?` | `{ success, tasks }` | R |
 | `sales:todo:create` | `payload: object` | `{ success, task }` | N |
 | `sales:todo:update` | `id: number, updates: object` | `{ success, task \| error }` | N |
-| `sales:todo:scan` | `period?: string`（默认 week） | 扫描结果 | U |
+
+> `sales:todo:scan` 已于 2026-09-12 删除：桥接、类型签名与主进程 handler 一并移除。它原样转调 `morningDigestService.regenerateToday()`，与 `sales:morningDigest:regenerate`（简报「重新生成」按钮）重复，且**全仓无调用方**（旧返回形状 `{newTasks, verifiedTasks}` 早已与实现不符）。
 
 **画像批量（2）**
 
@@ -249,6 +256,17 @@
 | `sales:action:completeUnified` | `sessionId: string, action: 'done' \| 'skipped'` | `{ ok }` | S |
 | `sales:action:recordEvent` | `{ sessionId?, eventType?, messageKey?, taskId? }` | `{ ok }` | U。白名单事件类型；follow_up_done 不经此通道（completeAction 自动触发） |
 | `sales:action:suggest` | `item: object` | AI 三判断建议 | N（LLM；判断落 customer_judgment，source=manual） |
+
+**AI 简报与按需识别（6）**
+
+| 通道 | 请求参数 | 响应 | 幂等 |
+|---|---|---|---|
+| `sales:morningDigest:get` | — | `{ ok: true, data: MorningDigestPayload \| null, notReady?: true }` | R。**未就绪是可区分响应而非错误**：业务库尚未打开时返 `notReady: true` 且 `data: null`——调用方须展示加载态，**不得当作「没有简报」的空态**（六态纪律） |
+| `sales:morningDigest:generate` | — | `{ ok: true }` | S。即发即返（不等待生成结果）；同日已有快照时服务层幂等返回、不重复调模型 |
+| `sales:morningDigest:regenerate` | — | `{ ok: true, data: MorningDigest }` | S。显式覆盖同日快照（唯一会重写当天简报的入口） |
+| `sales:identify:customer` | `params?: { sessionId: string, displayName?: string }` | `{ success: true, noNewContent?, newTasks? }` \| `{ success: false, error?, busy? }` | N。无新内容即 `noNewContent: true` 且**零模型调用**；全局单飞，被占用时返 `busy: true` + 明确提示，**无静默路径**。前端把 `error` 文案命中「额度/上限/预算」时渲染为提额入口（quota 态由文案判定，不是返回字段） |
+| `sales:identify:state` | — | `{ busy, kind, label, startedAt }` | R。单飞状态，两个入口按钮共用同一把锁 |
+| `sales:identify:activity` | （主进程 → 渲染广播） | 同上单飞状态 | R |
 
 ### 1.13 已下线通道（防复活清单）
 

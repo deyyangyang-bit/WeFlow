@@ -1,5 +1,6 @@
 import { isPriceOverride, quoteRowError } from '../../shared/priceOverride'
 import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/GeneratedFileResult'
+import { parseBuyerHeader, buyerHeaderOutcome, BUYER_HEADER_FIELD_LABELS, type ComboHit } from '../../shared/buyerHeader'
 /**
  * CrmWorkbenchPage.tsx —— 合同工作台：合同列表+全款进度+四子资源+发货卡点+文档生成
  * （客户工作台已拆分到 CustomerWorkspacePage /customers，本页专注合同闭环）
@@ -15,9 +16,13 @@ import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTab
 import DeliveryAftersales from '../components/crm/DeliveryAftersales'
 // 阶段分布/管道图色板单一真源（红线 3）：Apple 蓝渐变族
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
+import { parseJsonObject } from '../../shared/safeJson'
 import './CrmWorkbenchPage.scss'
 
 interface QuoRow { productId: number; name: string; model?: string; price: number; unitPrice: string; qty: string }
+
+/** 抬头粘贴解析提示（§7.2.5）：ok=浅蓝成功，warn=浅黄待人工处理，fail=浅红未识别 */
+interface HeaderNote { tone: 'ok' | 'warn' | 'fail'; text: string; combos: ComboHit[] }
 
 export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
@@ -87,6 +92,7 @@ export default function CrmWorkbenchPage() {
     createdRef.current = {}; setCreateStage('editing'); setCreateError(''); setShowNew(false)
     setNewAccountId(0); setNewName(''); setNewAmount(''); setNewQuoItems([])
     setNewBuyerAddr(''); setNewBuyerBank(''); setNewBuyerAccount(''); setNewBuyerTax(''); setNewBuyerPhone('')
+    setNewHeaderText(''); setNewHeaderNote(null)
   }
   const [newAccountId, setNewAccountId] = useState(0) // 选中的已有客户（零操作建合同：不再重复建 account）
   const [newName, setNewName] = useState('')
@@ -97,6 +103,9 @@ export default function CrmWorkbenchPage() {
   const [newBuyerAccount, setNewBuyerAccount] = useState('')
   const [newBuyerTax, setNewBuyerTax] = useState('')
   const [newBuyerPhone, setNewBuyerPhone] = useState('')
+  // 甲方抬头粘贴原文与解析提示（§7.2.5：粘贴即解析，可重新识别/清空原文）
+  const [newHeaderText, setNewHeaderText] = useState('')
+  const [newHeaderNote, setNewHeaderNote] = useState<HeaderNote | null>(null)
   // 甲方开票信息（已建合同：详情编辑）
   const [showEditInvoice, setShowEditInvoice] = useState(false)
   const [editAddr, setEditAddr] = useState('')
@@ -104,6 +113,8 @@ export default function CrmWorkbenchPage() {
   const [editAccount, setEditAccount] = useState('')
   const [editTax, setEditTax] = useState('')
   const [editPhone, setEditPhone] = useState('')
+  const [editHeaderText, setEditHeaderText] = useState('')
+  const [editHeaderNote, setEditHeaderNote] = useState<HeaderNote | null>(null)
   const [showQuo, setShowQuo] = useState(false)
   const [quoRows, setQuoRows] = useState<QuoRow[]>([])
   const [quoSearch, setQuoSearch] = useState('')
@@ -259,12 +270,15 @@ export default function CrmWorkbenchPage() {
     const allocs = await window.electronAPI.crm.list('allocation', { contract_id: c.id })
     setAllocations(allocs)
     // 甲方开票信息回填到编辑表单
-    const cf = (() => { try { return JSON.parse(c.custom_fields || '{}') } catch { return {} } })()
+    const cf = parseJsonObject<Record<string, string>>(c.custom_fields)
     setEditAddr(cf.buyer_addr ?? '')
     setEditBank(cf.buyer_bank ?? '')
     setEditAccount(cf.buyer_account ?? '')
     setEditTax(cf.tax_no ?? '')
     setEditPhone(cf.buyer_phone ?? '')
+    // 换合同后清掉上一份的粘贴原文与解析提示，避免把旧提示当成本合同的识别结果
+    setEditHeaderText('')
+    setEditHeaderNote(null)
   }
 
   const ship = async (c: any) => {
@@ -382,13 +396,78 @@ export default function CrmWorkbenchPage() {
   // 已建合同：保存/更新甲方开票信息（覆盖式写入 custom_fields）
   const saveInvoiceInfo = async () => {
     if (!selected) return
-    const old = (() => { try { return JSON.parse(selected.custom_fields || '{}') } catch { return {} } })()
+    const old = parseJsonObject(selected.custom_fields)
     const cf = { ...old, buyer_addr: editAddr.trim(), buyer_bank: editBank.trim(), buyer_account: editAccount.trim(), tax_no: editTax.trim(), buyer_phone: editPhone.trim() }
     await window.electronAPI.crm.update('contract', selected.id, { custom_fields: JSON.stringify(cf) })
     setNotice('甲方开票信息已保存，生成合同/开票申请单将使用新信息')
     setShowEditInvoice(false)
     await fetchWorkbench()
   }
+
+  // 新建合同：粘贴抬头 → 确定性解析 → 立即回填五项（§7.2.5）。不锁定字段，回填结果可继续编辑。
+  const applyNewHeader = (text: string) => {
+    setNewHeaderText(text)
+    if (!text.trim()) { setNewHeaderNote(null); return }
+    const result = parseBuyerHeader(text)
+    // 失败判定与提示文案由共享层给出（§7.2.4 第 14 条 / §10.1），本页不自行约定
+    const outcome = buyerHeaderOutcome(result)
+    if (!outcome.ok) { setNewHeaderNote({ tone: 'fail', combos: result.comboHits, text: outcome.message }); return }
+    const f = result.fields
+    const applied: string[] = []
+    if (f.addr) { setNewBuyerAddr(f.addr); applied.push(BUYER_HEADER_FIELD_LABELS.addr) }
+    if (f.bank) { setNewBuyerBank(f.bank); applied.push(BUYER_HEADER_FIELD_LABELS.bank) }
+    if (f.account) { setNewBuyerAccount(f.account); applied.push(BUYER_HEADER_FIELD_LABELS.account) }
+    if (f.taxNo) { setNewBuyerTax(f.taxNo); applied.push(BUYER_HEADER_FIELD_LABELS.taxNo) }
+    if (f.phone) { setNewBuyerPhone(f.phone); applied.push(BUYER_HEADER_FIELD_LABELS.phone) }
+    // 新建客户时单位名称可回填；已选客户时以档案为准，不覆盖（§7.1.2 / §7.2.5）
+    const nameIgnored = newAccountId > 0 && !!f.buyerName
+    if (!nameIgnored && f.buyerName) { setNewName(f.buyerName); applied.unshift(BUYER_HEADER_FIELD_LABELS.buyerName) }
+    const prefix = nameIgnored ? '已选客户，单位名称以客户档案为准；' : ''
+    setNewHeaderNote({ tone: applied.length ? 'ok' : 'warn', combos: result.comboHits,
+      text: applied.length
+        ? `${prefix}已自动填写 ${applied.join('、')}，请核对后保存。`
+        : `${prefix}未解析到其他抬头字段，请手动填写。` })
+  }
+
+  // 已建合同：同样粘贴即解析，但只回填合同字段，不触碰客户档案（§7.1.4 / §7.2.5）
+  const applyEditHeader = (text: string) => {
+    setEditHeaderText(text)
+    if (!text.trim()) { setEditHeaderNote(null); return }
+    const result = parseBuyerHeader(text)
+    const outcome = buyerHeaderOutcome(result)
+    if (!outcome.ok) { setEditHeaderNote({ tone: 'fail', combos: result.comboHits, text: outcome.message }); return }
+    const f = result.fields
+    const applied: string[] = []
+    if (f.addr) { setEditAddr(f.addr); applied.push(BUYER_HEADER_FIELD_LABELS.addr) }
+    if (f.bank) { setEditBank(f.bank); applied.push(BUYER_HEADER_FIELD_LABELS.bank) }
+    if (f.account) { setEditAccount(f.account); applied.push(BUYER_HEADER_FIELD_LABELS.account) }
+    if (f.taxNo) { setEditTax(f.taxNo); applied.push(BUYER_HEADER_FIELD_LABELS.taxNo) }
+    if (f.phone) { setEditPhone(f.phone); applied.push(BUYER_HEADER_FIELD_LABELS.phone) }
+    const prefix = f.buyerName ? '单位名称未修改，仍以客户档案为准。' : ''
+    setEditHeaderNote({ tone: applied.length ? 'ok' : 'warn', combos: result.comboHits,
+      text: applied.length ? `${prefix}已回填 ${applied.join('、')}，请核对后保存。` : `${prefix}未解析到其他抬头字段，请手动填写。` })
+  }
+
+  // 粘贴区（两处共用）：粘贴即解析；“重新识别”对当前原文重跑；“清空原文”只清文本与提示，不动已回填字段
+  const headerPaste = (text: string, note: HeaderNote | null, onText: (t: string) => void) => (
+    <div className="header-paste">
+      <textarea aria-label="粘贴甲方抬头" value={text} onChange={(e) => onText(e.target.value)}
+        onPaste={(e) => { const t = e.clipboardData.getData('text'); if (t.trim()) { e.preventDefault(); onText(t) } }}
+        placeholder="粘贴甲方开票资料（单位名称／税号／地址／电话／开户银行／银行账号），粘贴后自动识别回填" />
+      <div className="header-paste__actions">
+        <button type="button" className="crm-btn" disabled={!text.trim()} onClick={() => onText(text)}>重新识别</button>
+        <button type="button" className="crm-btn" disabled={!text} onClick={() => onText('')}>清空原文</button>
+      </div>
+      {note && (
+        <div className={`header-paste__hint header-paste__hint--${note.tone}`} role={note.tone === 'fail' ? 'alert' : 'status'}>{note.text}</div>
+      )}
+      {note?.combos.map((hit) => (
+        <div key={hit.raw} className="header-paste__combo">
+          检测到合并字段，请手工拆分后确认：{hit.raw}（覆盖 {hit.covers.map((k) => BUYER_HEADER_FIELD_LABELS[k]).join('、')}）
+        </div>
+      ))}
+    </div>
+  )
 
   // 一行小字摘要（设计稿屏 3）：待签/预警取销售视角名单（filterByOwner 后的 myWorkbench），
   // 本月到账沿用 statsOverview 的 monthPaid 口径（不新造口径）
@@ -478,6 +557,8 @@ export default function CrmWorkbenchPage() {
           <select value={newAccountId} onChange={(e) => {
             const id = Number(e.target.value)
             setHeaderConfirmed(false); setHeaderChoices(null)
+            // 换客户/切新建客户时连粘贴原文与提示一起清掉：抬头字段已被重置，旧提示会撒谎
+            setNewHeaderText(''); setNewHeaderNote(null)
             setNewAccountId(id)
             const c = customers.find((x) => Number(x.id) === id)
             if (c) {
@@ -536,6 +617,7 @@ export default function CrmWorkbenchPage() {
             )}
           </div>
           <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
+          {headerPaste(newHeaderText, newHeaderNote, applyNewHeader)}
           <input placeholder="单位地址" value={newBuyerAddr} onChange={(e) => setNewBuyerAddr(e.target.value)} />
           <input placeholder="开户银行" value={newBuyerBank} onChange={(e) => setNewBuyerBank(e.target.value)} />
           <input placeholder="银行账号" value={newBuyerAccount} onChange={(e) => setNewBuyerAccount(e.target.value)} />
@@ -612,6 +694,7 @@ export default function CrmWorkbenchPage() {
             </button>
             {showEditInvoice && (
               <div className="crm-invoice-edit__grid">
+                {headerPaste(editHeaderText, editHeaderNote, applyEditHeader)}
                 <input placeholder="单位地址" value={editAddr} onChange={(e) => setEditAddr(e.target.value)} />
                 <input placeholder="开户银行" value={editBank} onChange={(e) => setEditBank(e.target.value)} />
                 <input placeholder="银行账号" value={editAccount} onChange={(e) => setEditAccount(e.target.value)} />

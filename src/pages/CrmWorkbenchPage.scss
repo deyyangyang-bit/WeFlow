@@ -217,6 +217,18 @@
 
 .crm-workbench-page {
  .crm-new-form fieldset { display: contents; border:0; padding:0; }
+ /* 甲方抬头粘贴区（§7.2.5）：粘贴即解析，提示按 §8 语义配色——浅蓝成功/浅黄待处理/浅红未识别 */
+ .header-paste { display:flex; flex-direction:column; gap:6px; width:100%; }
+ .header-paste textarea { width:100%; min-height:62px; resize:vertical; font-family:inherit; font-size:12.5px; line-height:1.5;
+   padding:7px 9px; border:1px solid var(--color-border); border-radius:var(--radius-control);
+   background:var(--color-bg-surface); color:var(--color-text-primary);
+   &:focus-visible { outline:2px solid var(--color-accent); outline-offset:1px; } }
+ .header-paste__actions { display:flex; gap:8px; }
+ .header-paste__hint { width:100%; font-size:12px; padding:6px 10px; border-radius:var(--radius-small); border:1px solid transparent; }
+ .header-paste__hint--ok { background:var(--color-accent-bg); border-color:var(--color-accent-border); color:var(--color-text-secondary); }
+ .header-paste__hint--warn { background:var(--color-warning-bg); border-color:var(--color-warning-border); color:var(--color-warning); }
+ .header-paste__hint--fail { background:var(--color-danger-bg); border-color:var(--color-danger-border); color:var(--color-danger); }
+ .header-paste__combo { width:100%; font-size:12px; color:var(--color-warning); word-break:break-all; }
  .entry-error { color:var(--color-danger, #b42318); width:100%; font-size:12px; }
  .price-override { color:#9a6700; }
  .entry-actions { display:flex; flex-wrap:wrap; gap:8px; grid-column:1 / -1; }

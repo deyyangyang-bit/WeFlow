@@ -17,6 +17,8 @@
  *     7  新样式零硬编码 hex（SettingsNavShell.scss 全 --token）+ 导航状态机纯函数零依赖
  *     8  审计流水入口指向 security tab 且 AuditTrailSection 原样保留（不按角色显隐）
  *     9  角色选项 = SettingsPage「身份档案」内联枚举（''/销售/主管/分配员）
+ *    10  AI 每日调用上限变更审计（AI 简报 PRD §4.4/§7.4-3）：纯函数裁决 + config:set 拦截写点
+ *        + 审计单点 + 流水展示登记（提额与降额同记，值未变不留痕）
  *   B 导航状态机纯函数断言（src/utils/settingsNav.ts，抽可测位置）：
  *     默认进常用页 / 深链直达 / 逐级返回链 / 幂等
  *
@@ -25,6 +27,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { navBack, navInitial, navOpenAdvanced, navOpenTab, type SettingsNavLocation } from '../src/utils/settingsNav'
+import { aiDailyLimitAuditDetail, normalizeAiDailyLimit } from '../electron/services/ai/aiDailyLimitAudit'
 
 let pass = 0
 let fail = 0
@@ -46,6 +49,11 @@ const sidebarSrc = readFileSync(join(ROOT, 'src/components/Sidebar.tsx'), 'utf8'
 const configSrc = readFileSync(join(ROOT, 'src/services/config.ts'), 'utf8')
 const themeStoreSrc = readFileSync(join(ROOT, 'src/stores/themeStore.ts'), 'utf8')
 const navUtilSrc = readFileSync(join(ROOT, 'src/utils/settingsNav.ts'), 'utf8')
+// AI 每日调用上限变更审计（AI 简报 PRD §4.4 / §7.4-3）：写点在 electron/main.ts 的 config:set 拦截，
+// 记录本体在 crmDbService 既有审计单点，展示在设置页「审计流水」——三处都要钉住
+const mainSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
+const auditTrailSrc = readFileSync(join(ROOT, 'src/components/settings/AuditTrailSection.tsx'), 'utf8')
+const crmDbSrc = readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')
 
 const between = (src: string, startMarker: string, endMarker: string): string => {
   const i = src.indexOf(startMarker)
@@ -149,6 +157,45 @@ async function main(): Promise<void> {
   const spIdentityBlock = between(settingsSrc, "{ value: '', label: '暂不选择' }", 'onClick={() => {\n                      setIdentityRole')
   const spRoles = ['', ...( [...spIdentityBlock.matchAll(/value: '([^']+)'/g)].map((m) => m[1]) )]
   eq('A9 切换身份角色选项与 SettingsPage「身份档案」一致', shellRoles, spRoles)
+
+  // ── A10. AI 每日调用上限变更审计（PRD §4.4 / §7.4-3）─────────
+  // A10a-e 纯函数：要不要记、记什么（提额与降额同记；值未变不留痕）
+  eq('A10a 未设置（undefined）→ 按读取口径默认 60，提额判 increase',
+    aiDailyLimitAuditDetail(undefined, 200),
+    { configKey: 'aiDailyCallLimit', old_limit: 60, new_limit: 200, direction: 'increase' })
+  eq('A10b 降额记 decrease（收紧门禁同样敏感，不得只记提额）',
+    aiDailyLimitAuditDetail(200, 60),
+    { configKey: 'aiDailyCallLimit', old_limit: 200, new_limit: 60, direction: 'decrease' })
+  ok('A10c 值未变 → 不留痕（字符串 60 与数字 60 等价）', aiDailyLimitAuditDetail(60, '60') === null)
+  ok('A10d 非法值回落默认 60 → 与默认相同则不留痕', aiDailyLimitAuditDetail(60, 'abc') === null)
+  eq('A10e 钳制口径与写入侧一致（0 → 下限 1；超限 → 上限 100000）',
+    [normalizeAiDailyLimit(0), normalizeAiDailyLimit(1e9), normalizeAiDailyLimit('120.9')], [60, 100000, 120])
+
+  // A10f-j 写点：config:set 拦截 → 取改前值 → 写库 → 落审计单点（零新端点、零前端改动）
+  const aiLimitBlock = between(mainSrc, 'const isAiLimitKey', "if (key === 'myWxid'")
+  ok('A10f 拦截点先取改前值（configService.get，原样带入由纯函数折算）',
+    aiLimitBlock.includes("const prevAiLimit: unknown = isAiLimitKey ? configService?.get('aiDailyCallLimit') : undefined"))
+  ok('A10g 审计写在配置落库之后（旧值先取、新值已写）',
+    mainSrc.indexOf("result = configService?.set(key as any, value)") <
+    mainSrc.indexOf('aiDailyLimitAuditDetail(prevAiLimit, value)'))
+  // 审计单点自身仍落 created_at（时间戳来自既有机制，不另造一套）
+  const auditPointAt = crmDbSrc.indexOf('auditAppend(actor: string')
+  const auditSqlAt = crmDbSrc.indexOf('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at)', auditPointAt)
+  const auditTimeAt = crmDbSrc.indexOf('Date.now()]', auditSqlAt)
+  ok('A10h 走既有审计单点 auditAppend，操作人取当前身份（时间由单点落 created_at）',
+    auditPointAt >= 0 && auditSqlAt > auditPointAt && auditTimeAt > auditSqlAt &&
+    aiLimitBlock.includes("crmDbService.auditAppend(getIdentity()?.name || '操作员', 'ai_daily_limit_change', 'config', null, detail)"))
+  ok('A10i 值未变不写库，且 crmDb 未就绪（引导期）静默跳过',
+    aiLimitBlock.includes('if (detail && crmDbService.currentDbPath())'))
+  ok('A10j 审计失败不阻塞配置保存（catch + warn 且不 rethrow）',
+    /catch \(e\) \{\s*\n\s*console\.warn\('\[Sales\] AI 调用上限变更审计写入失败（配置已保存）:', e\)\s*\n\s*\}/.test(aiLimitBlock))
+  ok('A10k 只审计数值上限本身（开关 aiDailyCallLimitEnabled 不在拦截范围，口径已声明）',
+    !aiLimitBlock.includes('aiDailyCallLimitEnabled'))
+
+  // A10l-m 展示侧：审计流水能认这个动作（否则写了也看不见）
+  ok('A10l 审计流水登记动作标签（AI 调用上限）', auditTrailSrc.includes("ai_daily_limit_change: 'AI 调用上限'"))
+  ok('A10m 语义档位与该动作的敏感度一致（warning，与权重调整同档）',
+    /ai_daily_limit_change: 'warning'/.test(auditTrailSrc))
 
   // ── B. 导航状态机纯函数（src/utils/settingsNav.ts）─────────────
   const isTab = (l: SettingsNavLocation, tab: string, from: string): boolean =>

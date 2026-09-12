@@ -30,6 +30,15 @@ export function sha256Hex(buf: Buffer): string {
 export function quotationHashPatch(ext: string, sha256: string): Record<string, string> {
   return ext === 'pdf' ? { pdf_hash: sha256 } : { artifact_hash: sha256 }
 }
+
+/**
+ * 续跑时的复用判定（PRD §10.4 第 13 条，[P2]）：合同已生成过且文件仍在 → 直接复用该路径，
+ * 不重复生成。判定与文件系统探测分离，便于单测穷举；探测结果由调用方传入。
+ */
+export function reuseExistingDocPath(attachmentPath: unknown, fileExists: boolean): string | null {
+  const path = String(attachmentPath || '')
+  return path && fileExists ? path : null
+}
 function parseItems(json?: string | null): CrmRow[] {
   try { return JSON.parse(String(json || '[]')) as CrmRow[] } catch { return [] }
 }

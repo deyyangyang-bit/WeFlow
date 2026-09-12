@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
+import { isPriceOverride } from '../shared/priceOverride'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -276,6 +277,120 @@ async function main(): Promise<void> {
     ok('12d 合同列表 + 子资源四块不动（SearchTable/全款进度列/报价单/发票/回款归属/物流）',
       /<SearchTable/.test(src) && /全款进度/.test(src) && /报价单/.test(src) &&
       /发票/.test(src) && /回款归属/.test(src) && /物流/.test(src))
+  }
+
+  // ── 13 合同录入加速（PRD v1.4）：改价留痕 / 创建标识幂等 / 客户档案边界 ──────
+  {
+    const auditDetailOf = (quotationId: number): any => {
+      const row = crmDbService.all(
+        "SELECT detail FROM audit_event WHERE action = 'quote_version_create' AND entity_id = ?", [quotationId])[0]
+      return JSON.parse(String(row?.detail || '{}'))
+    }
+    // 13a isPriceOverride 边界：只有「提供了有限非负单价且与目录价不同」才算改价
+    ok('13a isPriceOverride 边界（空/同价/0 元/非有限/目录价为 0）',
+      !isPriceOverride(3800, '') && !isPriceOverride(3800, undefined) && !isPriceOverride(3800, 3800) &&
+      !isPriceOverride(3800, '3800.00') && isPriceOverride(3800, 0) && isPriceOverride(0, 5) &&
+      !isPriceOverride(0, 0) && !isPriceOverride(3800, -1) && !isPriceOverride(3800, 'abc'))
+
+    const entryContractId = crmDbService.create('contract', {
+      account_id: accountId, name: '改价留痕测试合同', amount: 0, status: 'pending_sign',
+      created_at: Date.now(), updated_at: Date.now()
+    })
+    // 13b 未传 unit_price：审计 detail 不出现 price_overrides（保持存量口径）
+    const qDefault = crmDbService.createQuotation({ contract_id: entryContractId, items: [{ product_id: productId, qty: 1 }] })
+    ok('13b 未改价时审计 detail 不出现 price_overrides',
+      qDefault.ok && auditDetailOf(Number(qDefault.id)).price_overrides === undefined)
+    // 13c 显式同价：与目录价一致，同样不算改价
+    const qSame = crmDbService.createQuotation({ contract_id: entryContractId, items: [{ product_id: productId, qty: 1, unit_price: 3800 }] })
+    ok('13c 显式同价不产生 price_overrides', qSame.ok && auditDetailOf(Number(qSame.id)).price_overrides === undefined)
+    // 13d 显式改价：审计包含准确的产品、目录价与报价价
+    const qChanged = crmDbService.createQuotation({ contract_id: entryContractId, items: [{ product_id: productId, qty: 1, unit_price: 3000 }] })
+    const changedDetail = auditDetailOf(Number(qChanged.id))
+    ok('13d 改价审计含准确的产品/目录价/报价价',
+      qChanged.ok && Array.isArray(changedDetail.price_overrides) && changedDetail.price_overrides.length === 1 &&
+      changedDetail.price_overrides[0].product_id === productId && changedDetail.price_overrides[0].model === 'CDD12' &&
+      changedDetail.price_overrides[0].catalog_unit_price === 3800 && changedDetail.price_overrides[0].quoted_unit_price === 3000)
+    // 13e 同一份行项：页面「已改价」条数（共享函数算出）必须等于审计 price_overrides 条数
+    const productId2 = crmDbService.create('product', {
+      model: 'CDD12-B', name: '电动堆高车B', unit_price: 1000, specs: '{}', variants: '[]', created_at: Date.now()
+    })
+    const mixedRows = [{ productId: productId, price: 3800, unitPrice: '3000' }, { productId: productId2, price: 1000, unitPrice: '1000' }]
+    const qMixed = crmDbService.createQuotation({
+      contract_id: entryContractId,
+      items: mixedRows.map((r) => ({ product_id: r.productId, qty: 1, unit_price: Number(r.unitPrice) }))
+    })
+    const pageOverrideCount = mixedRows.filter((r) => isPriceOverride(r.price, r.unitPrice)).length
+    ok('13e 页面改价条数与审计 price_overrides 条数同源一致',
+      /import \{ isPriceOverride, quoteRowError \} from '\.\.\/\.\.\/shared\/priceOverride'/.test(pageSrc) &&
+      /isPriceOverride\(r\.price, r\.unitPrice\)/.test(pageSrc) &&
+      pageOverrideCount === 1 && Array.isArray(auditDetailOf(Number(qMixed.id)).price_overrides) &&
+      auditDetailOf(Number(qMixed.id)).price_overrides.length === pageOverrideCount)
+
+    // 13f/13g 创建标识幂等：同标识重试复用同一报价版本，不新建第二份
+    const reqId = 'test-entry-request-0001'
+    const entryAccount = crmDbService.ensureAccount('幂等建档测试客户')
+    const entry = crmDbService.beginContractEntry({
+      requestId: reqId, accountId: entryAccount, name: '幂等建档测试客户', amount: 3800,
+      header: { buyer_addr: '浙江省杭州市西湖区 1 号', buyer_bank: '中国银行杭州分行', buyer_account: '1234 5678', tax_no: '9133 0106 MA2X XXXX', buyer_phone: '0571-8888 0000' }
+    })
+    ok('13f 按标识可查回合同（跨刷新恢复依据）',
+      !!crmDbService.contractByCreationRequest(reqId) && Number(crmDbService.contractByCreationRequest(reqId)?.id) === Number(entry.id))
+    ok('13f2 未命中标识返回 null / 非法标识抛错',
+      crmDbService.contractByCreationRequest('test-entry-request-9999') === null &&
+      (() => { try { crmDbService.contractByCreationRequest('short'); return false } catch { return true } })())
+    const quoRetry1 = crmDbService.createQuotation({ contract_id: Number(entry.id), items: [{ product_id: productId, qty: 1 }], creation_request_id: reqId })
+    const quoRetry2 = crmDbService.createQuotation({ contract_id: Number(entry.id), items: [{ product_id: productId, qty: 1 }], creation_request_id: reqId })
+    ok('13g 同标识重试跳过报价创建（不产生第二版本）',
+      quoRetry1.ok && quoRetry2.ok && Number(quoRetry1.id) === Number(quoRetry2.id) &&
+      Number(crmDbService.all('SELECT COUNT(*) AS c FROM quotation WHERE contract_id = ?', [Number(entry.id)])[0]?.c) === 1)
+    const dupEntry = crmDbService.beginContractEntry({ requestId: reqId, accountId: entryAccount, name: '幂等建档测试客户', amount: 9999, header: {} })
+    ok('13g2 同标识重放不重复建客户/合同', Number(dupEntry.id) === Number(entry.id) &&
+      Number(crmDbService.all('SELECT COUNT(*) AS c FROM contract WHERE name = ?', ['幂等建档测试客户-合同'])[0]?.c) === 1)
+
+    // 13h~13j 客户档案边界（§7.1.2 / §10.2）
+    const blankAccount = crmDbService.ensureAccount('空档案客户')
+    const filled = crmDbService.beginContractEntry({
+      requestId: 'test-entry-request-0002', accountId: blankAccount, name: '空档案客户', amount: 100,
+      header: { buyer_addr: '江苏省苏州市工业园区 2 号', buyer_bank: '工商银行', buyer_account: '222', tax_no: '333', buyer_phone: '444' }
+    })
+    const blankFields = JSON.parse(String(crmDbService.getById('account', blankAccount)?.custom_fields || '{}'))
+    ok('13h 档案抬头全空时直接写入档案，无需差异确认',
+      filled && blankFields.buyer_addr === '江苏省苏州市工业园区 2 号' && blankFields.buyer_bank === '工商银行' &&
+      blankFields.buyer_account === '222' && blankFields.tax_no === '333' && blankFields.buyer_phone === '444')
+
+    const keptAccount = crmDbService.ensureAccount('已有档案客户')
+    crmDbService.update('account', keptAccount, { custom_fields: JSON.stringify({ buyer_addr: '档案旧地址', tax_no: '档案旧税号', buyer_bank: '档案旧开户行' }) })
+    crmDbService.beginContractEntry({
+      requestId: 'test-entry-request-0003', accountId: keptAccount, name: '已有档案客户', amount: 200,
+      header: { buyer_addr: '本次新地址', buyer_bank: '本次新开户行', tax_no: '本次新税号', buyer_phone: '本次新电话' },
+      updateHeaderKeys: ['buyer_addr']
+    })
+    const keptFields = JSON.parse(String(crmDbService.getById('account', keptAccount)?.custom_fields || '{}'))
+    ok('13i 只写入勾选字段，未勾选项保持档案原值',
+      keptFields.buyer_addr === '本次新地址' && keptFields.tax_no === '档案旧税号' && keptFields.buyer_bank === '档案旧开户行' &&
+      keptFields.buyer_phone === undefined)
+    const snapFields = JSON.parse(String(crmDbService.getById('contract', Number(
+      crmDbService.contractByCreationRequest('test-entry-request-0003')?.id))?.custom_fields || '{}'))
+    ok('13i2 未勾选项仍写入本合同快照（客户档案与合同字段解耦）',
+      snapFields.buyer_addr === '本次新地址' && snapFields.buyer_bank === '本次新开户行' && snapFields.buyer_phone === '本次新电话')
+
+    crmDbService.beginContractEntry({
+      requestId: 'test-entry-request-0004', accountId: keptAccount, name: '已有档案客户', amount: 300,
+      header: { buyer_addr: '不更新地址' }, updateHeaderKeys: []
+    })
+    const untouched = JSON.parse(String(crmDbService.getById('account', keptAccount)?.custom_fields || '{}'))
+    ok('13j 全部取消勾选等同于不更新，客户档案保持原值', untouched.buyer_addr === '本次新地址' && untouched.tax_no === '档案旧税号')
+
+    // 13k 草稿恢复分流（§10.4）：指向已完成合同 → 重新生成标识；指向未完成 → 恢复且不重复创建
+    ok('13k 残留草稿按合同完成度分流（前端静态断言）',
+      /const complete = contract && \(draft\.items\.length === 0 \|\| Number\(contract\.quote_version_id\) > 0\)/.test(pageSrc) &&
+      /if \(!complete\) \{/.test(pageSrc) &&
+      /requestRef\.current = draft\.creation_request_id; setNewQuoItems\(draft\.items\)/.test(pageSrc))
+
+    // 13l 前端预校验失败不调用后端创建接口（§10.4）
+    ok('13l 报价行校验失败即中止提交（不调用创建接口）',
+      /const error = newQuoItems\.map\(rowError\)\.find\(Boolean\)/.test(pageSrc) &&
+      pageSrc.indexOf('newQuoItems.map(rowError).find(Boolean)') < pageSrc.indexOf('contractBeginEntry'))
   }
 
   console.log(`\nWORKBENCH RESULT: pass=${pass} fail=${fail}`)

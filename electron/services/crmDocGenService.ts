@@ -10,7 +10,7 @@ import { join } from 'path'
 import { app } from 'electron'
 import { crmDbService } from './crmDbService'
 import { salesLog } from './salesLogger'
-import { DOC_TYPES, generateDocBuffer, quotationHashPatch, type DocType } from './crmDocGenCore'
+import { DOC_TYPES, generateDocBuffer, quotationHashPatch, reuseExistingDocPath, type DocType } from './crmDocGenCore'
 
 export { DOC_TYPES }
 export type { DocType }
@@ -33,9 +33,10 @@ export async function generateDoc(type: string, recordId: number, options?: { re
     const scope = options?.scope || crmDbService.contractEntryScope()
     crmDbService.assertContractEntryScope(scope)
     if (options?.reuseExisting && type === 'contract') {
-      const existing = crmDbService.getById('contract', recordId)
-      const file = String(existing?.attachment_path || '')
-      if (file && existsSync(file)) return { ok: true, path: file }
+      // 判定逻辑收在纯函数里（crmDocGenCore.reuseExistingDocPath）：已有产物且文件仍在才复用
+      const candidate = String(crmDbService.getById('contract', recordId)?.attachment_path || '')
+      const file = reuseExistingDocPath(candidate, candidate ? existsSync(candidate) : false)
+      if (file) return { ok: true, path: file }
     }
     const t = type as DocType
     const tplBuf = t === 'invoice-app' ? undefined : readFileSync(templatePath(t))

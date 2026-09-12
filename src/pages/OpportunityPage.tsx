@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { buildNextStep, RISK_TYPE_LABEL, RISK_SEVERITY_LABEL } from '../utils/oppNextStep'
+import { fmtDate, fmtQty, toDateInput, fromDateInput } from '../utils/formatBiz'
 import { useCrmStore } from '../stores/crmStore'
 import type { OpportunityDealRegistration, OpportunityRecord, QuotationRecord } from '../types/electron'
 import { RefreshCw, X, CheckCircle2, XCircle, Target, FileText, Lock } from 'lucide-react'
@@ -63,17 +64,6 @@ function fmtTime(ms: number): string {
   const mi = String(d.getMinutes()).padStart(2, '0')
   return `${mm}-${dd} ${hh}:${mi}`
 }
-// 日期（YYYY-MM-DD）；0/空 = 未登记（旧数据空字段统一口径）
-function fmtDate(ms: number | undefined): string {
-  const n = Number(ms || 0)
-  if (!n) return '未登记'
-  const d = new Date(n)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-// 数量：0 = 未登记
-function fmtQty(n: number | undefined): string {
-  return Number(n) > 0 ? `${Number(n)} 台` : '未登记'
-}
 // 发运区间：双 0 = 未登记；单边 = 起/至
 function fmtRange(a: number | undefined, b: number | undefined): string {
   const s = Number(a || 0); const e = Number(b || 0)
@@ -81,18 +71,6 @@ function fmtRange(a: number | undefined, b: number | undefined): string {
   if (s && !e) return `${fmtDate(s)} 起`
   if (!s && e) return `至 ${fmtDate(e)}`
   return `${fmtDate(s)} ~ ${fmtDate(e)}`
-}
-// 日期输入（type=date）值 ↔ epoch ms
-function toDateInput(ms: number | undefined): string {
-  const n = Number(ms || 0)
-  if (!n) return ''
-  const d = new Date(n)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-function fromDateInput(v: string): number {
-  if (!v) return 0
-  const t = new Date(`${v}T00:00:00`).getTime()
-  return Number.isFinite(t) ? t : 0
 }
 // 补充型号：custom_fields.supplementary_models（PRD「扩展属性：自由文本」）
 function supplementaryModels(o: OppRow | null): string {

@@ -13,7 +13,7 @@ import PizZip from 'pizzip'
 import ExcelJS from 'exceljs'
 import { crmDbService } from '../electron/services/crmDbService'
 import { amountToChinese } from '../electron/services/moneyCn'
-import { renderDocx, generateDocBuffer, buildPlaceholderTemplate, quotationHashPatch } from '../electron/services/crmDocGenCore'
+import { renderDocx, generateDocBuffer, buildPlaceholderTemplate, quotationHashPatch, reuseExistingDocPath } from '../electron/services/crmDocGenCore'
 
 let pass = 0, fail = 0
 const ok = (name: string, cond: boolean): void => { if (cond) pass++; else { fail++; console.error('FAIL:', name) } }
@@ -220,6 +220,12 @@ async function main(): Promise<void> {
     const r = await generateDocBuffer('bogus', 1)
     ok('未知类型拒绝', !r.ok)
   }
+
+  // ─── 续跑复用判定（PRD §10.4 [P2]：文件已在则直接展示，不重复生成）───────
+  // 判定与 fs 探测分离，探测结果作为入参传入，这里穷举三种组合
+  ok('reuse1 已有产物且文件仍在 → 复用该路径', reuseExistingDocPath('/tmp/crm-docs/contract-1.docx', true) === '/tmp/crm-docs/contract-1.docx')
+  ok('reuse2 产物被移动/删除 → 不复用（走重新生成）', reuseExistingDocPath('/tmp/crm-docs/contract-1.docx', false) === null)
+  ok('reuse3 从未生成过（空路径）→ 不复用，即使探测结果为真', reuseExistingDocPath('', true) === null && reuseExistingDocPath(null, true) === null)
 
   console.log(`\nPASS ${pass} / ${fail} FAILED`)
   process.exit(fail ? 1 : 0)

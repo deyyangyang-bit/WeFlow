@@ -329,7 +329,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:doc:generate', async (_, type: string, recordId: number, options?) => generateDoc(type, recordId, options))
   ipcMain.handle('crm:alias:learn', async (_, alias: string, accountId: number) => crmDbService.aliasLearn(alias, accountId))
   ipcMain.handle('crm:product:aiDesc', async (_, payload) => {
-    return simpleCompletion(config, '你是产品文案。根据产品信息生成一段简洁的中文描述，只输出描述文本。', JSON.stringify(payload), { maxTokens: 512 })
+    return simpleCompletion(config, '你是产品文案。根据产品信息生成一段简洁的中文描述，只输出描述文本。', JSON.stringify(payload), { maxTokens: 512, usageContext: { purpose: 'crm_copy' } })
   })
   ipcMain.handle('crm:product:aiExtract', async (_, template: string[], dataUrl: string) => {
     const raw = String(dataUrl || '')
@@ -337,7 +337,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     const out = await callChatCompletion(getAiModelConfig(config), [
       { role: 'system', content: '你是产品参数提取器。按给定字段清单从宣传图提取参数，只输出JSON，键为字段名，提取不到为""。' },
       { role: 'user', content: `字段清单：${JSON.stringify(template)}` }
-    ], { responseFormatJson: true, imagesBase64: [{ data: b64, mime: 'image/jpeg' }], maxTokens: 800 })
+    ], { responseFormatJson: true, imagesBase64: [{ data: b64, mime: 'image/jpeg' }], maxTokens: 800, usageContext: { purpose: 'crm_meta' } })
     const m = out.match(/\{[\s\S]*\}/)
     return m ? JSON.parse(m[0]) : {}
   })
