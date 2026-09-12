@@ -7,7 +7,7 @@
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
-import { classifyLead, dedupeRows, maskContact, type RawLeadRow } from './crmLeadImportCore'
+import { classifyLead, dedupeRows, maskContact, identityKeysOf, type ParsedLead, type RawLeadRow } from './crmLeadImportCore'
 import { recordOutboxTx } from './crmOutboxService'
 import { getActorLabel, getIdentity } from './identityService'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
@@ -17,11 +17,6 @@ export interface LeadConfigRef { get: (key: string) => unknown }
 let configRef: LeadConfigRef | null = null
 export function setLeadConfig(ref: LeadConfigRef): void { configRef = ref }
 
-function slaHours(): number {
-  const n = Number(configRef?.get('crmLeadSlaHours') ?? 24)
-  return Number.isFinite(n) && n > 0 && n <= 72 ? n : 24
-}
-
 export const DEFAULT_DEAD_REASONS = ['号码无效', '重复留资', '明确不要', '同行', '非目标客户', '已购车', '联系不上', '其他']
 
 // ─── 导入 ───────────────────────────────────────────────────────────────────
@@ -29,53 +24,179 @@ export interface ImportResult {
   batchId: number
   total: number
   valid: number
+  /** 查重拦截总数（同批 + 线索池已有 + 正式客户已有 + 冲突，兼容旧字段口径） */
   duplicate: number
   invalid: number
   /** 无效行的原始行号（0 基） */
   invalidIndexes: number[]
+  /** 分类计数（2026-09-08 查重完善） */
+  dupSameBatch: number
+  dupExistingLead: number
+  dupExistingCustomer: number
+  /** 双标识冲突（手机号命中甲、微信号命中乙）：标冲突待人工确认，不自动合并 */
+  conflicts: number
 }
 
-/** 批量导入：清洗 → 同批去重 → 事务落库（跨批重复靠唯一索引捕获）→ import_batch 统计 */
+/** 导入查重明细行（脱敏后落审计、可导出 CSV 复核） */
+export interface ImportDedupeDetailRow {
+  /** 原始行号（0 基） */
+  line: number
+  verdict: 'inserted' | 'duplicate' | 'existing_lead' | 'existing_customer' | 'conflict' | 'invalid'
+  reason: string
+  phoneMasked: string
+  wechatMasked: string
+  name: string
+  matchedLeadId?: number
+  matchedAccountId?: number
+}
+
+/** 读取某批次的查重明细（来源 = lead_import_dedupe 审计行，脱敏后入库，可直接展示/导出） */
+export function getImportDedupeDetail(batchId: number): { ok: boolean; rows: ImportDedupeDetailRow[] } {
+  const id = Number(batchId)
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, rows: [] }
+  const hit = crmDbService.all(
+    "SELECT detail FROM audit_event WHERE action = 'lead_import_dedupe' AND entity_type = 'import_batch' AND entity_id = ? ORDER BY id DESC LIMIT 1",
+    [id]
+  )[0]
+  if (!hit) return { ok: false, rows: [] }
+  try {
+    const j = JSON.parse(String(hit.detail || '{}'))
+    return { ok: true, rows: Array.isArray(j.rows) ? j.rows as ImportDedupeDetailRow[] : [] }
+  } catch {
+    return { ok: false, rows: [] }
+  }
+}
+
+/** 联系方式脱敏（导入查重明细/通知均用）：手机号 138****5678 / 微信号 ab***c */
+function maskLeadContact(contactType: string, contactNormalized: string): string {
+  return maskContact({ contactType: (contactType === 'wechat' ? 'wechat' : contactType === 'both' ? 'both' : 'phone') as 'phone' | 'wechat' | 'both', contactNormalized: String(contactNormalized || '') })
+}
+
+/**
+ * 批量导入（2026-09-08 查重完善 + SLA 哨兵修正）：
+ *   清洗 → 同批跨 contactType 查重 → 库内查重（手机号/微信号双标识分别跨类型查重：
+ *   线索池已有 / 正式客户已有 / 双标识分属不同联系人 = 冲突待人工，不自动合并）→ 事务落库。
+ *   新导入且尚未分配的线索 first_contact_deadline 写 LEAD_SLA_UNASSIGNED_SENTINEL（待分配不起计时，
+ *   与 shared/leadSla.ts 哨兵约定一致；分配（assignLeads）后才写真实 SLA1 期限）。
+ *   查重明细（脱敏）落 lead_import_dedupe 审计行，供结果展示与 CSV 导出复核。
+ */
 export function importLeads(source: string, fileName: string, rows: RawLeadRow[]): ImportResult {
   const src = String(source || '').trim() || '自定义'
   const parsed = rows.map((r) => classifyLead({ ...r, source: src }))
   const dedupe = dedupeRows(parsed)
   const now = Date.now()
-  const deadline = now + slaHours() * 3600_000
   let valid = 0
-  let duplicate = dedupe.duplicateCount
+  let dupSameBatch = dedupe.duplicateCount
+  let dupExistingLead = 0
+  let dupExistingCustomer = 0
+  let conflicts = 0
+  const invalidSet = new Set(dedupe.invalidIndexes)
+  for (const d of dedupe.duplicates) invalidSet.add(d.index)
+  const detailRows: ImportDedupeDetailRow[] = []
+  const maskOf = (p: ParsedLead): { phoneMasked: string; wechatMasked: string } => {
+    const keys = identityKeysOf(p)
+    return {
+      phoneMasked: keys.phone ? maskLeadContact('phone', keys.phone) : '',
+      wechatMasked: keys.wechat ? maskLeadContact('wechat', keys.wechat) : ''
+    }
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    const p = parsed[i]
+    if (!p) { detailRows.push({ line: i, verdict: 'invalid', reason: '无法识别手机号/微信号', phoneMasked: '', wechatMasked: '', name: String((rows[i] || {}).name || '') }); continue }
+    const m = maskOf(p)
+    if (dedupe.duplicates.some((d) => d.index === i)) {
+      const reason = dedupe.duplicates.find((d) => d.index === i)!.reason
+      detailRows.push({ line: i, verdict: 'duplicate', reason, ...m, name: p.name })
+      continue
+    }
+    detailRows.push({ line: i, verdict: 'inserted', reason: '', ...m, name: p.name })
+  }
 
   const batchId = crmDbService.runTx((tx) => {
     // 先建批次行拿 id——lead.import_batch_id 逐行回填用（宪法 §3 登记列，写者=importLeads 单点）；
     // 批次计数在插入完成后一次性 UPDATE（同事务，外部只见最终值）
     const batchId = tx.run(
       'INSERT INTO import_batch (source, file_name, total, valid, duplicate, invalid, created_at) VALUES (?,?,?,?,?,?,?)',
-      [src, String(fileName || '粘贴文本'), rows.length, 0, duplicate, dedupe.invalidCount, now]
+      [src, String(fileName || '粘贴文本'), rows.length, 0, dupSameBatch, dedupe.invalidCount, now]
     )
-    for (const p of dedupe.valid) {
+    for (let i = 0; i < parsed.length; i++) {
+      const p = parsed[i]
+      const row = detailRows[i]
+      if (!p || !row) continue
+      if (row.verdict !== 'inserted') continue
+      const keys = identityKeysOf(p)
+      // 库内查重（双标识分别跨 contactType）：先正式客户（已有客户不能再次进入线索池），
+      // 再线索池；手机号与微信号命中不同联系人 = 冲突待人工，不自动合并、不插入
+      let phoneLeadId = 0
+      let wechatLeadId = 0
+      let accountId = 0
+      if (keys.phone) {
+        phoneLeadId = Number(tx.all("SELECT id FROM lead WHERE contact_type IN ('phone','both') AND contact_normalized = ? ORDER BY id DESC LIMIT 1", [keys.phone])[0]?.id || 0)
+        accountId = Number(tx.all('SELECT id FROM account WHERE phone = ? ORDER BY id DESC LIMIT 1', [keys.phone])[0]?.id || 0)
+      }
+      if (keys.wechat) {
+        wechatLeadId = Number(tx.all("SELECT id FROM lead WHERE (contact_type = 'wechat' AND contact_normalized = ?) OR (contact_type = 'both' AND wechat = ?) ORDER BY id DESC LIMIT 1", [keys.wechat, keys.wechat])[0]?.id || 0)
+        if (!accountId) {
+          accountId = Number(tx.all("SELECT id FROM account WHERE custom_fields LIKE ? ORDER BY id DESC LIMIT 1", [`%\"wxid\":\"${keys.wechat}\"%`])[0]?.id || 0)
+        }
+      }
+      if (phoneLeadId && wechatLeadId && phoneLeadId !== wechatLeadId) {
+        row.verdict = 'conflict'
+        row.reason = `双标识冲突：手机号命中线索 #${phoneLeadId}，微信号命中线索 #${wechatLeadId}，待人工确认`
+        row.matchedLeadId = phoneLeadId
+        conflicts++
+        continue
+      }
+      if (accountId) {
+        row.verdict = 'existing_customer'
+        row.reason = `正式客户已有（account #${accountId}），不再次进入线索池`
+        row.matchedAccountId = accountId
+        dupExistingCustomer++
+        continue
+      }
+      const hitLeadId = phoneLeadId || wechatLeadId
+      if (hitLeadId) {
+        row.verdict = 'existing_lead'
+        row.reason = `线索池已有（lead #${hitLeadId}，${keys.phone && phoneLeadId ? '手机号命中' : '微信号命中'}）`
+        row.matchedLeadId = hitLeadId
+        dupExistingLead++
+        continue
+      }
       try {
         const id = tx.run(
           `INSERT INTO lead (contact_type, contact_normalized, contact_raw, wechat, source, name, tag, note,
            status, first_contact_deadline, created_at, updated_at, import_batch_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [p.contactType, p.contactNormalized, p.contactRaw, p.wechat, src, p.name, p.tag, p.note, 'NEW', deadline, now, now, batchId]
+          [p.contactType, p.contactNormalized, p.contactRaw, p.wechat, src, p.name, p.tag, p.note, 'NEW', LEAD_SLA_UNASSIGNED_SENTINEL, now, now, batchId]
         )
         tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'IMPORTED', `来源：${src}`, now])
         valid++
       } catch {
-        duplicate++ // UNIQUE 冲突 = 跨批重复
+        // UNIQUE (contact_type, contact_normalized) 兜底（理论上库内查重已拦截）= 线索池已有
+        row.verdict = 'existing_lead'
+        row.reason = '线索池已有（唯一索引拦截）'
+        dupExistingLead++
       }
     }
+    const duplicate = dupSameBatch + dupExistingLead + dupExistingCustomer + conflicts
     tx.run('UPDATE import_batch SET valid = ?, duplicate = ? WHERE id = ?', [valid, duplicate, batchId])
     // 资源导入审计（设计稿屏 2 蓝色横幅数据源；宪法 §1.12 统一流水；append-only）
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [getIdentity()?.name || '分配员', 'lead_import', 'lead', null,
-       JSON.stringify({ batchId: Number(batchId), source: src, fileName: String(fileName || '粘贴文本'), total: rows.length, valid, duplicate, invalid: dedupe.invalidCount }), now])
+       JSON.stringify({ batchId: Number(batchId), source: src, fileName: String(fileName || '粘贴文本'), total: rows.length, valid, duplicate, invalid: dedupe.invalidCount, dupSameBatch, dupExistingLead, dupExistingCustomer, conflicts }), now])
+    // 查重明细审计（脱敏后入库，供结果展示与 CSV 导出复核；同事务保证批次可追溯）
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [getIdentity()?.name || '分配员', 'lead_import_dedupe', 'import_batch', Number(batchId),
+       JSON.stringify({ batchId: Number(batchId), rows: detailRows }), now])
     return batchId
   })
 
   scanLeadSla()
-  return { batchId, total: rows.length, valid, duplicate, invalid: dedupe.invalidCount, invalidIndexes: dedupe.invalidIndexes }
+  const duplicate = dupSameBatch + dupExistingLead + dupExistingCustomer + conflicts
+  return {
+    batchId, total: rows.length, valid, duplicate, invalid: dedupe.invalidCount, invalidIndexes: dedupe.invalidIndexes,
+    dupSameBatch, dupExistingLead, dupExistingCustomer, conflicts
+  }
 }
 
 // ─── 列表 / 详情 ────────────────────────────────────────────────────────────
@@ -253,10 +374,14 @@ export function toAccount(leadId: number): ToAccountResult {
 }
 
 // ─── 首触 SLA 扫描 + 闭环 ───────────────────────────────────────────────────
-/** 扫描超时 NEW 线索 → 建 SLA 卡（应用层幂等 + partial unique index 双兜底）；随后自愈脏卡 */
+/**
+ * 扫描超时 NEW 线索 → 建 SLA 卡（应用层幂等 + partial unique index 双兜底）；随后自愈脏卡。
+ * 未分配线索（first_contact_deadline = LEAD_SLA_UNASSIGNED_SENTINEL，2100 哨兵）天然不满足
+ * `first_contact_deadline < now`，不会产生 SLA 超时任务——SLA1 只从分配（assignment）起算（宪法 §1.3）。
+ */
 export function scanLeadSla(): number {
   const now = Date.now()
-  const overdue = crmDbService.all("SELECT * FROM lead WHERE status = 'NEW' AND first_contact_deadline < ?", [now])
+  const overdue = crmDbService.all("SELECT * FROM lead WHERE status = 'NEW' AND first_contact_deadline < ? AND first_contact_deadline < ?", [now, LEAD_SLA_UNASSIGNED_SENTINEL])
   let created = 0
   for (const lead of overdue) {
     const leadId = Number(lead.id)

@@ -9,12 +9,14 @@
  *   （claim 归属没变不写 ownership_history，只写 assignment + audit_event）。
  * 响应信封：{ ok: true, data } / { ok: false, code, message }；错误码 E1xx 参数 / E2xx 状态冲突 / E3xx 不存在。
  * SLA1 三次提醒回收器（PRD 1.4 + 设计稿屏 4/屏 6，2026-09-05）：assigned/claimed 且 sla1_deadline 过期
- *   且未停表 → 第 1/2 次只提醒（sla1_remind_count+1+审计），满第 3 次才自动回收 + outbox 抄送主管；
+ *   且未停表 → 第 1/2 次只提醒（sla1_remind_count+1+审计），满第 3 次才自动回收 + 主管通知事件；
  *   A 档引擎动作（规则驱动非 LLM，宪法 §1.3），审计照写（actor='system:sla'）。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getIdentity, getActorLabel } from './identityService'
 import { recordOutboxTx } from './crmOutboxService'
+import { recordSupervisorNotificationTx } from './crmNotifyService'
+import { getLanSyncConfig } from './lanSyncService'
 import { ConfigService } from './config'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
@@ -119,6 +121,8 @@ export interface AssignActionResult { ok: boolean; data?: { assignmentId: number
  * 认领：assigned → claimed（契约 S：重复 claim 被状态机拒）。
  * E301 无分配行；E201 非 assigned 态 / 非本人（actor 或身份档案姓名 ≠ sales_name）。
  * 归属没变 → 不写 ownership_history，只写 assignment 状态 + audit_event（action=lead_claim）。
+ * 同事务写 claimed_at=now（宪法 §1.3 修订 2026-09-10：认领计时唯一基准，PRD 2.4 首次分类触发轴；
+ * 禁止用 updated_at 反推——提醒/回收等动作会刷新 updated_at）。
  */
 export function claimLead(leadId: number, actor: string): AssignActionResult {
   const id = Number(leadId)
@@ -134,11 +138,12 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
   }
   const now = Date.now()
   crmDbService.runTx((tx) => {
-    tx.run("UPDATE assignment SET status = 'claimed', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [by, now, row.id])
+    tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [now, by, now, row.id])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_claim', 'lead', id, JSON.stringify({ assignmentId: Number(row.id), salesName: String(row.sales_name) }), now])
-    // outbox 登记（上行 claim 认领回执，同步设计 §3）
-    recordOutboxTx(tx, 'claim', `claim:${Number(row.id)}`, { leadId: id, assignmentId: Number(row.id), salesName: String(row.sales_name), actor: by }, now)
+    // outbox 登记（上行 claim 认领回执，同步设计 §3；claimedAt 与本地 assignment.claimed_at 同一 now，
+    // 中枢回放落 claimed_at——PRD 2.4 首次分类 24h 触发轴跨机一致）
+    recordOutboxTx(tx, 'claim', `claim:${Number(row.id)}`, { leadId: id, assignmentId: Number(row.id), salesName: String(row.sales_name), actor: by, claimedAt: now }, now)
   })
   return { ok: true, data: { assignmentId: Number(row.id) } }
 }
@@ -150,11 +155,22 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
  * 同事务：assignment 状态 + ownership_history（reason=回收类）+ audit_event（lead_recycle）
  *   + lead.first_contact_deadline 重置回 2100 哨兵（回资源池 = 待分配、不起计时）。
  */
-export function recycleAssignment(assignmentId: number, reason: string, actor: string): AssignActionResult {
+/**
+ * 回收核心（可在调用方事务内执行）：状态校验 + Q2 converted_skip 拦截 + 三表写
+ * （assignment + ownership_history + audit_event）+ lead 期限回哨兵 + recycle outbox 登记。
+ * 业务规则唯一真源；recycleAssignment（独立事务）与 runSla1Recycle 的「回收+主管通知原子事务」
+ * 都复用本核心，避免复制规则导致口径漂移（2026-09-09 原子化提取）。
+ */
+export function recycleAssignmentTx(
+  tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+  assignmentId: number,
+  reason: string,
+  actor: string
+): AssignActionResult {
   const id = Number(assignmentId)
   if (!Number.isInteger(id) || id <= 0) return { ok: false, code: 'E101', message: 'assignmentId 必填' }
   const by = String(actor || '').trim() || getActorLabel() || '分配员'
-  const rows = crmDbService.all('SELECT * FROM assignment WHERE id = ? AND deleted = 0', [id])
+  const rows = tx.all('SELECT * FROM assignment WHERE id = ? AND deleted = 0', [id])
   if (!rows.length) return { ok: false, code: 'E301', message: '分配行不存在' }
   const row = rows[0]
   if (String(row.status) === 'recycled') return { ok: false, code: 'E202', message: '该分配已回收' }
@@ -162,32 +178,35 @@ export function recycleAssignment(assignmentId: number, reason: string, actor: s
   // Q2 拦截（内网同步设计 §4）：lead 已转客户（已挂 account）→ 跳过回收、不下发 recycle 事件，
   // 写审计（detail.reason='converted_skip'）。回收器每轮会再命中同一行 → 用 scan_state 标记
   // `convertedSkip:<assignmentId>` 保证一行只留一条拦截审计，不每 30 分钟刷屏。
-  const leadRow = crmDbService.all('SELECT account_id FROM lead WHERE id = ?', [Number(row.lead_id)])[0]
+  const leadRow = tx.all('SELECT account_id FROM lead WHERE id = ?', [Number(row.lead_id)])[0]
   if (leadRow && Number(leadRow.account_id || 0) > 0) {
     const marker = `convertedSkip:${id}`
-    if (crmDbService.getScanState(marker) <= 0) {
+    if (Number(tx.all('SELECT last_scan FROM scan_state WHERE key = ?', [marker])[0]?.last_scan || 0) <= 0) {
       const markedAt = Date.now()
-      crmDbService.runTx((tx) => {
-        tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-          [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: 'converted_skip', requestedReason: String(reason || '') }), markedAt])
-        tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [marker, markedAt])
-      })
+      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+        [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: 'converted_skip', requestedReason: String(reason || '') }), markedAt])
+      tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [marker, markedAt])
     }
     return { ok: false, code: 'E205', message: '该线索已转客户，跳过回收（converted_skip）' }
   }
   const why = String(reason || '').trim() || '回收'
   const now = Date.now()
-  crmDbService.runTx((tx) => {
-    tx.run("UPDATE assignment SET status = 'recycled', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
-    tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
-      ['lead', Number(row.lead_id), String(row.sales_name), '', why, by, now])
-    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: why }), now])
-    tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [LEAD_SLA_UNASSIGNED_SENTINEL, now, Number(row.lead_id)])
-    // outbox 登记（下行 recycle 事件，同步设计 §3）
-    recordOutboxTx(tx, 'recycle', `recycle:${id}`, { leadId: Number(row.lead_id), assignmentId: id, salesName: String(row.sales_name), reason: why, actor: by }, now)
-  })
+  tx.run("UPDATE assignment SET status = 'recycled', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
+  tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
+    ['lead', Number(row.lead_id), String(row.sales_name), '', why, by, now])
+  tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+    [by, 'lead_recycle', 'lead', Number(row.lead_id), JSON.stringify({ assignmentId: id, salesName: String(row.sales_name), reason: why }), now])
+  tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [LEAD_SLA_UNASSIGNED_SENTINEL, now, Number(row.lead_id)])
+  // outbox 登记（下行 recycle 事件，同步设计 §3）
+  recordOutboxTx(tx, 'recycle', `recycle:${id}`, { leadId: Number(row.lead_id), assignmentId: id, salesName: String(row.sales_name), reason: why, actor: by }, now)
   return { ok: true, data: { assignmentId: id } }
+}
+
+/** 回收（crm:assignment:recycle，契约 267 行）：recycleAssignmentTx 独立事务包装（信封语义不变）。 */
+export function recycleAssignment(assignmentId: number, reason: string, actor: string): AssignActionResult {
+  const id = Number(assignmentId)
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, code: 'E101', message: 'assignmentId 必填' }
+  return crmDbService.runTx((tx) => recycleAssignmentTx(tx, id, reason, actor))
 }
 
 // ─── 移交（crm:assignment:transfer，契约 268 行）─────────────────────────────
@@ -246,8 +265,10 @@ const SLA1_REMIND_MIN_GAP_MS = 20 * 3600_000
  *     + assignment 状态/归属零变更（ownership_history 不写、lead 不动）；已提醒过（count≥1）的行
  *     距上次动作（updated_at）≥20h 才允许下一次提醒——§2.54 教训延伸：回收器不凭「行存在即处置」，
  *     须尊重计数与间隔状态，防 30 分钟轮巡把 3 次一次刷完。
- *   count ≥ 2（第 3 次超时）→ 才 recycleAssignment(reason='SLA三次超时回收'，actor='system:sla'，
- *     三表同事务照写）+ outbox_event type='sla1_escalate_supervisor' 抄送主管占位（§1.11 只记录不发送）。
+ *   count ≥ 2（第 3 次超时）→ 回收与主管通知「同一事务」原子落地（2026-09-09，
+ *     recycleAssignmentTx 核心复用）：LAN 同步启用时同事务登记 sla1_escalate_supervisor outbox
+ *     走中枢投递；单机模式同事务直接写 notify_inbox。通知/outbox 写失败整体回滚、下轮重试，
+ *     幂等键保证恢复后最终只产生一条通知。
  * 已停表行（绑定微信/自动检测命中）不在扫描范围，自然跳过；逐条独立事务，单条失败不阻塞其余。
  */
 export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: number } {
@@ -277,20 +298,35 @@ export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: 
         console.warn(`[CRM] SLA1 提醒失败 assignment=${id}：${e}`)
       }
     } else {
-      // 满第 3 次：才回收（三表同事务）+ 抄送主管占位
-      const res = recycleAssignment(id, 'SLA三次超时回收', 'system:sla')
-      if (res.ok) {
-        recycled++
-        try {
-          crmDbService.runTx((tx) => {
-            recordOutboxTx(tx, 'sla1_escalate_supervisor', `sla1Escalate:${id}`,
-              { leadId: Number(r.lead_id), assignmentId: id, salesName: String(r.sales_name), remindCount: 3 }, now)
-          })
-        } catch (e) {
-          console.warn(`[CRM] SLA1 抄送主管登记失败 assignment=${id}：${e}`)
+      // 满第 3 次：「回收 + 主管通知」同一事务原子落地（2026-09-09）——
+      //   LAN 同步启用：recycleAssignmentTx 三表写 + sla1_escalate_supervisor outbox 登记同事务；
+      //   单机：recycleAssignmentTx + recordSupervisorNotificationTx（notify_inbox）同事务。
+      // 通知/outbox 写失败 → 整体回滚 → assignment 仍 assigned/claimed，下轮扫描自然重试；
+      // 幂等：recycleAssignmentTx 状态机拒重复回收，outbox/notify_inbox 幂等键拒重复登记——
+      // 绝不出现「已回收但既无 notify_inbox 又无待发送 outbox」的脱节状态。
+      try {
+        const notification = {
+          idempotencyKey: `sla1Escalate:${id}`,
+          leadId: Number(r.lead_id),
+          salesName: String(r.sales_name),
+          remindCount: 3,
+          reason: 'SLA三次超时回收',
+          recycledAt: now
         }
-      } else {
-        console.warn(`[CRM] SLA1 回收失败 assignment=${id}：${res.code} ${res.message}`)
+        const res = crmDbService.runTx((tx) => {
+          const rec = recycleAssignmentTx(tx, id, 'SLA三次超时回收', 'system:sla')
+          if (!rec.ok) return rec
+          if (getLanSyncConfig().enabled) {
+            recordOutboxTx(tx, 'sla1_escalate_supervisor', notification.idempotencyKey, { leadId: notification.leadId, assignmentId: id, salesName: notification.salesName, remindCount: 3, reason: notification.reason, recycledAt: notification.recycledAt }, now)
+          } else {
+            recordSupervisorNotificationTx(tx, notification, 'local:sla')
+          }
+          return rec
+        })
+        if (res.ok) recycled++
+        else console.warn(`[CRM] SLA1 回收失败 assignment=${id}：${res.code} ${res.message}`)
+      } catch (e) {
+        console.warn(`[CRM] SLA1 回收+主管通知原子事务失败（已回滚，待下轮重试）assignment=${id}：${e}`)
       }
     }
   }
@@ -315,7 +351,7 @@ export function startSlaRecycleScheduler(): void {
   const tick = (): void => {
     try {
       const { recycled, reminded } = runSla1Recycle()
-      if (recycled > 0) console.log(`[CRM] SLA1 三次超时回收 ${recycled} 条（actor=system:sla，已抄送主管）`)
+      if (recycled > 0) console.log(`[CRM] SLA1 三次超时回收 ${recycled} 条（actor=system:sla，主管通知已登记投递）`)
       if (reminded > 0) console.log(`[CRM] SLA1 超时提醒 ${reminded} 条（三次提醒制）`)
     } catch (e) {
       console.warn('[CRM] SLA1 回收扫描失败:', e)
@@ -621,6 +657,8 @@ export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
   const plan = buildDistribution(mode, pool.length, sales, weights, loads)
 
   // 逐组分配：每组一个销售，组内逐条走 assignLeads（单条事务失败不阻塞其余，E201/E301 落 skipped）
+  // 计数口径（2026-09-08 修复）：按实际新增 assignments 行数计，跳过/冲突（res.ok 但 assignments 空）
+  // 不算入 assigned/perSales，落 skipped 可查
   const perSales: Record<string, number> = {}
   const skipped: Array<{ leadId: number; code: string; reason: string }> = []
   let assigned = 0
@@ -633,8 +671,13 @@ export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
     let got = 0
     for (const leadId of chunk) {
       const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
-      if (res.ok) got++
-      else skipped.push({ leadId, code: res.code || 'E999', reason: res.message || '分配失败' })
+      const gotN = res.ok && res.data ? res.data.assignments.length : 0
+      if (gotN > 0) {
+        got += gotN
+      } else {
+        const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
+        skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
+      }
     }
     perSales[s] = got
     assigned += got
@@ -644,8 +687,12 @@ export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
     const s = [...sales].sort((a, b) => (loads[a] + (perSales[a] || 0)) - (loads[b] + (perSales[b] || 0)))[0]
     const leadId = pool[cursor++]
     const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
-    if (res.ok) { perSales[s] = (perSales[s] || 0) + 1; assigned++ }
-    else skipped.push({ leadId, code: res.code || 'E999', reason: res.message || '分配失败' })
+    const gotN = res.ok && res.data ? res.data.assignments.length : 0
+    if (gotN > 0) { perSales[s] = (perSales[s] || 0) + gotN; assigned += gotN }
+    else {
+      const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
+      skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
+    }
   }
 
   // 批次审计一行（设计稿屏 3「最近分配记录」，批次号 = '#A'+行号，可追溯到操作人）

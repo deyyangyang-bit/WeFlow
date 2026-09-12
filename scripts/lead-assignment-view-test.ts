@@ -13,7 +13,7 @@
 import {
   buildOwnerMap, isSalesView, canClaimLead, canManageAssignment,
   filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview,
-  suggestReassignOwner, sla1Countdown, sla2StatusView, type LeadOwnerInfo
+  suggestReassignOwner, sla1Countdown, sla2StatusView, buildMyCards, type LeadOwnerInfo
 } from '../src/utils/leadAssignmentView'
 
 let pass = 0, fail = 0
@@ -147,6 +147,49 @@ function main(): void {
   check('H7 空串/空/undefined → null（尚无结论）', sla2StatusView('') === null && sla2StatusView(null) === null && sla2StatusView(undefined) === null)
   check('H8 脏数据：非 JSON/未知 verdict/非对象 → null（宁缺毋滥）',
     sla2StatusView('not-json') === null && sla2StatusView(JSON.stringify({ verdict: 'weird', at: 1 })) === null && sla2StatusView(42) === null)
+
+  // ── I. buildMyCards 销售资源卡三分段（2026-09-08 修复「已回收」永远为空）──────
+  console.log('\n═══ I. buildMyCards 三分段（待跟进/跟进中按有效权属；已回收按最新分配行）═══')
+  const NOW_T = 1_800_000_000_000
+  const mkLead = (id: number, status: string) => ({ id, status })
+  const mkLatest = (id: number, status: string, sales: string, extra: Record<string, unknown> = {}) => ({
+    id: 1000 + id, lead_id: id, status, sales_name: sales, sla1_deadline: NOW_T + 3600_000,
+    sla1_met_at: 0, sla1_remind_count: 0, sla2_scan_ref: '', created_at: NOW_T - 1000, updated_at: NOW_T - 1000, ...extra
+  })
+  const leadsI = [mkLead(1, 'NEW'), mkLead(2, 'WX_ADDED'), mkLead(3, 'NEW'), mkLead(4, 'NEW'), mkLead(5, 'NEW'), mkLead(6, 'NEW')]
+  const latestAsgI: Record<number, Record<string, unknown>> = {
+    1: mkLatest(1, 'assigned', '张三'),                          // 有效权属张三 + NEW → 待跟进
+    2: mkLatest(2, 'claimed', '张三', { sla1_met_at: NOW_T }),   // 已停表 → 跟进中
+    3: mkLatest(3, 'recycled', '张三'),                          // 最新行 recycled 归张三 → 已回收（旧实现看不到）
+    4: mkLatest(4, 'recycled', '李四'),                          // 回收但原归属是李四 → 张三不可见
+    5: mkLatest(5, 'transferred', '张三'),                       // 张三曾持有、已转出 → 不出现在张三任何分段
+    6: mkLatest(6, 'assigned', '李四')                           // 他人线索 → 不可见
+  }
+  const ownerI = buildOwnerMap([
+    { id: 1001, lead_id: 1, sales_name: '张三', status: 'assigned', sla1_met_at: 0 },
+    { id: 1002, lead_id: 2, sales_name: '张三', status: 'claimed', sla1_met_at: NOW_T },
+    { id: 1006, lead_id: 6, sales_name: '李四', status: 'assigned', sla1_met_at: 0 }
+  ] as never)
+  const cardsI = buildMyCards(leadsI, latestAsgI, ownerI, SALES, NOW_T)
+  check('I1 待跟进 = 当前有效权属本人且 NEW（lead1）', cardsI.wait.length === 1 && cardsI.wait[0].lead.id === 1, JSON.stringify(cardsI.wait.map((c) => c.lead.id)))
+  check('I2 跟进中 = 已停表/非 NEW（lead2）', cardsI.active.length === 1 && cardsI.active[0].lead.id === 2, JSON.stringify(cardsI.active.map((c) => c.lead.id)))
+  check('I3 已回收 = 最新分配行 recycled 且 sales_name 本人（lead3；旧实现恒空已修复）',
+    cardsI.recycled.length === 1 && cardsI.recycled[0].lead.id === 3 && cardsI.recycled[0].recycled === true,
+    JSON.stringify(cardsI.recycled.map((c) => c.lead.id)))
+  check('I4 他人名下的回收线索不进我的已回收（lead4 排除）', !cardsI.recycled.some((c) => c.lead.id === 4))
+  check('I5 转派给他人的线索不出现在原销售当前资源（lead5 三段全排除）',
+    !cardsI.wait.concat(cardsI.active, cardsI.recycled).some((c) => c.lead.id === 5))
+  check('I6 他人有效权属线索不可见（lead6 排除）', !cardsI.wait.concat(cardsI.active, cardsI.recycled).some((c) => c.lead.id === 6))
+  check('I7 三分段互斥且并集=本人可见集', cardsI.wait.length + cardsI.active.length + cardsI.recycled.length === 3)
+  const cardsYi = buildMyCards(leadsI, latestAsgI, buildOwnerMap([
+    { id: 1004, lead_id: 4, sales_name: '李四', status: 'assigned', sla1_met_at: 0 }
+  ] as never), { name: '李四', role: '销售' }, NOW_T)
+  check('I8 换身份视角：回收行归属谁，谁的销售才在自己的已回收分段看到它', (() => {
+    // 李四视角（无任何有效权属）：把 lead4 的回收行归属改为李四 → 只出现在李四的已回收分段
+    const l4 = { ...latestAsgI[4], sales_name: '李四' }
+    const yi = buildMyCards(leadsI, { ...latestAsgI, 4: l4 }, {}, { name: '李四', role: '销售' }, NOW_T)
+    return yi.recycled.map((c) => c.lead.id).includes(4) && yi.wait.length === 0 && yi.active.length === 0
+  })())
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

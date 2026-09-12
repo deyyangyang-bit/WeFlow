@@ -20,6 +20,7 @@ import {
   importLeads, listLeads, leadDetail, updateLeadStatus, toAccount,
   scanLeadSla, completeLeadFirstContact, setLeadConfig
 } from '../electron/services/crmLeadService'
+import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../shared/leadSla'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
   ok('5b lead 表 3 条', leads.length === 3)
   const li1 = leads.find((x) => x.contact_normalized === '13800138000')
   ok('5c both 落库（主手机号+wechat 并存）', li1 && li1.contact_type === 'both' && li1.wechat === 'kevin_x' && li1.status === 'NEW')
-  ok('5d deadline 已锁定', li1 && Number(li1.first_contact_deadline) === Number(li1.created_at) + 24 * 3600_000)
+  ok('5d 未分配线索写 SLA 哨兵（待分配不起计时，分配后才起算）', li1 && Number(li1.first_contact_deadline) === LEAD_SLA_UNASSIGNED_SENTINEL)
   const act = crmDbService.all('SELECT * FROM lead_activity WHERE lead_id = ?', [li1!.id])
   ok('5e IMPORTED 流水', act.length === 1 && act[0].action === 'IMPORTED')
 

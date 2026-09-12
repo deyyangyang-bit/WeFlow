@@ -96,22 +96,46 @@ export interface DedupeResult {
   invalidCount: number
   /** 无效行的原始行号（0 基） */
   invalidIndexes: number[]
+  /** 同批重复行明细（2026-09-08 查重完善：跨 contactType，记录行号与命中原因） */
+  duplicates: Array<{ index: number; reason: string }>
 }
 
-/** 同批去重：同 (contactType, 归一化) 只取首条；无效行单独计数。 */
+/** 提取一行的双标识键（跨 contactType 查重用）：手机号键（phone/both 有值）+ 微信号键（wechat/both 有值） */
+export function identityKeysOf(p: Pick<ParsedLead, 'contactType' | 'contactNormalized' | 'wechat'>): { phone: string; wechat: string } {
+  const phone = p.contactType === 'phone' || p.contactType === 'both' ? String(p.contactNormalized || '') : ''
+  const wechat = p.contactType === 'wechat' ? String(p.contactNormalized || '') : String(p.wechat || '')
+  return { phone, wechat }
+}
+
+/**
+ * 同批去重（2026-09-08 完善为跨 contactType）：
+ *   - 手机号按归一化手机号查重（phone/both 都参与手机号键）；
+ *   - 微信号按归一化微信号查重（wechat/both 都参与微信号键）；
+ *   - 旧口径 `contactType:contactNormalized` 会放过「同号不同类型」的重复（如 phone:138… 与
+ *     both:138…），本实现按双标识集合拦截；无效行单独计数。
+ */
 export function dedupeRows(parsed: Array<ParsedLead | null>): DedupeResult {
-  const seen = new Set<string>()
+  const seenPhones = new Set<string>()
+  const seenWechats = new Set<string>()
   const valid: ParsedLead[] = []
   const invalidIndexes: number[] = []
-  let duplicateCount = 0
+  const duplicates: Array<{ index: number; reason: string }> = []
   parsed.forEach((p, i) => {
     if (!p) { invalidIndexes.push(i); return }
-    const key = `${p.contactType}:${p.contactNormalized}`
-    if (seen.has(key)) { duplicateCount++; return }
-    seen.add(key)
+    const keys = identityKeysOf(p)
+    if (keys.phone && seenPhones.has(keys.phone)) {
+      duplicates.push({ index: i, reason: '同批手机号重复' })
+      return
+    }
+    if (keys.wechat && seenWechats.has(keys.wechat)) {
+      duplicates.push({ index: i, reason: '同批微信号重复' })
+      return
+    }
+    if (keys.phone) seenPhones.add(keys.phone)
+    if (keys.wechat) seenWechats.add(keys.wechat)
     valid.push(p)
   })
-  return { valid, duplicateCount, invalidCount: invalidIndexes.length, invalidIndexes }
+  return { valid, duplicateCount: duplicates.length, invalidCount: invalidIndexes.length, invalidIndexes, duplicates }
 }
 
 /** 脱敏展示：手机号 138****8000；微信号 保留首尾（供今日行动卡/列表用） */

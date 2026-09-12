@@ -11,12 +11,12 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2 } from 'lucide-react'
+import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2, Sparkles } from 'lucide-react'
 import * as XLSX from 'exceljs'
-import type { LeadRow } from '../types/electron'
+import type { LeadRow, FirstClassifyRoundRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
-import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, sla1Countdown, sla2StatusView, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
+import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
@@ -31,7 +31,14 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 }
 const CHANNELS = ['PHONE', 'WECHAT', 'SMS']
 const CHANNEL_META: Record<string, string> = { PHONE: '电话', WECHAT: '微信', SMS: '短信' }
+/** AI 首次分类提案展示用标签（PRD 2.4） */
+const FC_STAGE_LABEL: Record<string, string> = { new: '新建', contacted: '已接触', quoted: '已报价', negotiating: '议价中', won: '已成交', lost: '已流失', unknown: '未知（证据不足）' }
+const FC_TYPE_LABEL: Record<string, string> = { dealer: '疑似经销商', end_user: '疑似终端自用', unknown: '未知（证据不足）' }
+const FC_FIELD_LABEL: Record<string, string> = { company: '公司', industry: '行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间', needs: '需求' }
+const FC_GAP_LABEL: Record<string, string> = { customer_type: '客户类型', company_industry: '公司/行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间' }
 const PAGE_SIZE = 50
+/** SLA2「查看依据」出口状态（主进程 crmSla2EvidenceService 已脱敏/裁剪，前端只展示） */
+type Sla2EvidenceResult = Awaited<ReturnType<typeof window.electronAPI.crm.sla2Evidence>>
 
 interface RawRow { text?: string; phone?: string; wechat?: string; name?: string; tag?: string; note?: string }
 
@@ -164,6 +171,11 @@ export default function CrmLeadPage() {
   const [bindSel, setBindSel] = useState<ContactInfo | null>(null)
   const [bindBusy, setBindBusy] = useState(false)
   const [bindAvatars, setBindAvatars] = useState<Record<string, string>>({})
+  // ── AI 首次分类弹窗（PRD 2.4，认领满 24h 触发 + 手动立即分析；B 档 proposed→人工确认/拒绝）──
+  const [classifyTarget, setClassifyTarget] = useState<LeadRow | null>(null)
+  const [classifyRound, setClassifyRound] = useState<FirstClassifyRoundRow | null>(null)
+  const [classifyBusy, setClassifyBusy] = useState(false)
+  const [classifyRejectReason, setClassifyRejectReason] = useState('')
   // ── 三视角改版（设计稿屏 2/3/4/6）：管理三页签 + 池分段 + 控制台状态 + 留痕数据 ──
   const view = leadPageView(identity)
   const [managerTab, setManagerTab] = useState<ManagerTab>('pool')
@@ -182,6 +194,14 @@ export default function CrmLeadPage() {
   const [batchBusy, setBatchBusy] = useState(false)
   // 屏 6 左确认改派
   const [reassignBusy, setReassignBusy] = useState<number | null>(null)
+  // ── 主管升级提醒（SLA1 三次超时通知闭环，2026-09-08）：资源分配管理页「回收改派」页签展示 ──
+  const [notifies, setNotifies] = useState<Array<Record<string, unknown>>>([])
+  const [notifyUnread, setNotifyUnread] = useState(0)
+  // ── SLA2「查看依据」（屏 5 右证据回查出口）：详情弹窗内查看脱敏消息摘要 ──
+  const [sla2Ev, setSla2Ev] = useState<{ loading: boolean; view: Sla2EvidenceResult | null }>({ loading: false, view: null })
+  // ── 导入查重明细（2026-09-08 查重完善）：导入后可复核 + CSV 导出 ──
+  const [dedupeDetail, setDedupeDetail] = useState<Array<{ line: number; verdict: string; reason: string; phoneMasked: string; wechatMasked: string; name: string; matchedLeadId?: number; matchedAccountId?: number }> | null>(null)
+  const [dedupeBatchId, setDedupeBatchId] = useState(0)
 
   const fetchAudit = async () => {
     try {
@@ -204,6 +224,18 @@ export default function CrmLeadPage() {
     } catch { /* 审计查询失败不阻塞列表 */ }
   }
 
+  // 升级提醒（notify_inbox）：随 fetchAll 刷新；只读+已读标记，写者唯一=同步层通知消费
+  const fetchNotifies = async () => {
+    try {
+      const r = await window.electronAPI.crm.notifyList({ limit: 20 })
+      setNotifies((r?.data?.rows || []) as Array<Record<string, unknown>>)
+      setNotifyUnread(Number(r?.data?.unread || 0))
+    } catch { /* 通知查询失败不阻塞列表 */ }
+  }
+  const markNotifyRead = async (id: number) => {
+    try { await window.electronAPI.crm.notifyMarkRead([id]); await fetchNotifies() } catch { /* 已读失败静默 */ }
+  }
+
   const fetchAll = async () => {
     const [ls, ov, sales, asg, idt] = await Promise.all([
       window.electronAPI.crm.leadList({ limit: 10000 }),
@@ -221,6 +253,7 @@ export default function CrmLeadPage() {
     setAsgRows((asg?.data?.rows || []) as unknown as Array<Record<string, unknown>>)
     void getCrmAssignWeights().then(setAssignW).catch(() => undefined)
     void fetchAudit()
+    void fetchNotifies()
   }
   useEffect(() => { void fetchAll() }, [])
   // 切微信号 = 换库（§2.40）：账号切换后重查
@@ -363,34 +396,12 @@ export default function CrmLeadPage() {
   const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable])
   // 屏 6 左 待改派列表：最新分配行 recycled 的线索
   const reassignLeads = useMemo(() => leads.filter((l) => String(latestAsg[l.id]?.status || '') === 'recycled'), [leads, latestAsg])
-  // 屏 4 销售资源卡：我的最新分配行 + lead 资料
-  const myLeadIdSet = useMemo(() => {
-    const name = identity.name.trim()
-    const s = new Set<number>()
-    for (const [lid, o] of Object.entries(ownerByLead)) if (o.salesName === name) s.add(Number(lid))
-    return s
-  }, [ownerByLead, identity])
-  const myCards = useMemo(() => {
-    const name = identity.name.trim()
-    return leads
-      .filter((l) => myLeadIdSet.has(l.id))
-      .map((l) => {
-        const latest = latestAsg[l.id]
-        const own = ownerByLead[l.id]
-        const cd = sla1Countdown({
-          status: String(own?.status || latest?.status || ''),
-          sla1Deadline: Number(latest?.sla1_deadline || 0),
-          sla1MetAt: Number(latest?.sla1_met_at || 0),
-          sla1RemindCount: Number(latest?.sla1_remind_count || 0)
-        }, Date.now())
-        const recycled = String(latest?.status || '') === 'recycled'
-        const sla2 = sla2StatusView(latest?.sla2_scan_ref)
-        return { lead: l, cd, recycled, sla2, assignedAt: Number(latest?.updated_at || latest?.created_at || 0) }
-      })
-  }, [leads, myLeadIdSet, latestAsg, ownerByLead, identity])
-  const myWait = myCards.filter((c) => !c.recycled && c.cd.tier !== 'done' && c.lead.status === 'NEW')
-  const myActive = myCards.filter((c) => !c.recycled && (c.cd.tier === 'done' || c.lead.status !== 'NEW'))
-  const myRecycled = myCards.filter((c) => c.recycled)
+  // 屏 4 销售资源卡三分段（buildMyCards 纯函数）：待跟进/跟进中按当前有效权属，已回收按最新分配行判——
+  // 旧实现集合只来自有效 owner，回收行不在其中 → 「已回收」永远为空（2026-09-08 修复）
+  const my = useMemo(() => buildMyCards(leads, latestAsg, ownerByLead, identity, Date.now()), [leads, latestAsg, ownerByLead, identity])
+  const myWait = my.wait
+  const myActive = my.active
+  const myRecycled = my.recycled
   // 屏 3 执行分配
   const doAssignBatch = async () => {
     if (batchBusy || batchCount <= 0) return
@@ -445,8 +456,30 @@ export default function CrmLeadPage() {
     const src = customSource.trim() || importSource
     const res = await window.electronAPI.crm.leadImport(src, fileName || '文本粘贴', rows)
     setShowImport(false); setRows([]); setFileName('')
-    setNotice(`导入完成：新增 ${res.valid} 条，重复 ${res.duplicate} 条${res.invalid ? `，无效 ${res.invalid} 条（已跳过）` : ''}`)
+    setNotice(`导入完成：新增 ${res.valid} 条，同批重复 ${res.dupSameBatch ?? 0} 条、线索池已有 ${res.dupExistingLead ?? 0} 条、正式客户已有 ${res.dupExistingCustomer ?? 0} 条、冲突待人工 ${res.conflicts ?? 0} 条${res.invalid ? `，无效 ${res.invalid} 条（已跳过）` : ''}`)
+    // 查重明细（脱敏）拉取展示 + 可导出 CSV 复核
+    try {
+      const d = await window.electronAPI.crm.importDedupeDetail(res.batchId)
+      setDedupeBatchId(res.batchId)
+      setDedupeDetail(d?.rows || [])
+    } catch { setDedupeDetail(null) }
     await fetchAll()
+  }
+  // 查重明细导出 CSV（BOM 头保证 Excel 中文不乱码；明细源端已脱敏，导出不出敏感原文）
+  const exportDedupeCsv = () => {
+    if (!dedupeDetail?.length) return
+    const VERDICT: Record<string, string> = { inserted: '新增', duplicate: '同批重复', existing_lead: '线索池已有', existing_customer: '正式客户已有', conflict: '冲突待人工', invalid: '无效' }
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const lines = [
+      '行号,结果,原因,手机号(脱敏),微信号(脱敏),姓名,命中线索ID,命中客户ID',
+      ...dedupeDetail.map((r) => [r.line, VERDICT[r.verdict] || r.verdict, esc(r.reason), r.phoneMasked, r.wechatMasked, esc(r.name), r.matchedLeadId ?? '', r.matchedAccountId ?? ''].join(','))
+    ]
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `导入查重明细-批次${dedupeBatchId}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
 
   const act = async (id: number, action: 'contacted' | 'wx_added' | 'dead' | 'reopen', opts?: { channel?: string; reason?: string; note?: string; wechat?: string }) => {
@@ -456,6 +489,7 @@ export default function CrmLeadPage() {
     if (detail?.lead.id === id) await openDetail(id)
   }
   const openDetail = async (id: number) => {
+    setSla2Ev({ loading: false, view: null }) // 换线索时清掉上一条的证据面板
     const d = await window.electronAPI.crm.leadDetail(id)
     // 屏 5 右：第二段 SLA 跟进状态（assignment.sla2_scan_ref 投影，随详情弹窗展示）
     const sla2 = sla2StatusView(latestAsg[id]?.sla2_scan_ref)
@@ -471,6 +505,16 @@ export default function CrmLeadPage() {
     const r = await window.electronAPI.crm.leadToAccount(id)
     setNotice(r.ok ? (r.existed ? '已关联到已有客户' : `已转为客户 #${r.accountId}`) : r.error || '转客户失败')
     await fetchAll()
+  }
+  // SLA2「查看依据」：调统一证据读取接口（主进程脱敏出口，见 crmSla2EvidenceService）；失败显示明确状态
+  const loadSla2Evidence = async (leadId: number) => {
+    setSla2Ev({ loading: true, view: null })
+    try {
+      const v = await window.electronAPI.crm.sla2Evidence(leadId)
+      setSla2Ev({ loading: false, view: v })
+    } catch {
+      setSla2Ev({ loading: false, view: { status: 'error', message: '证据读取失败（读取层故障），请稍后重试' } })
+    }
   }
   const confirmDead = async () => {
     if (!deadLead || !deadReason) return
@@ -561,6 +605,46 @@ export default function CrmLeadPage() {
       setClaimTarget(null); setClaimWechat(''); setClaimNick('')
       await fetchAll() // 刷新列表 + 归属 chips 计数
     } finally { setClaimBusy(false) }
+  }
+
+  // ── AI 首次分类（PRD 2.4）：认领满 24h 自动触发；本入口 = 手动「立即分析」。
+  //    B 档纪律：结果只进 proposed 提案，确认后才落正式字段；失败可重试（failed 态）──
+  const refreshClassifyRound = async (leadId: number) => {
+    const r = await window.electronAPI.crm.firstClassifyList({ leadId, pageSize: 1 })
+    setClassifyRound(r.ok && r.data.rows.length ? r.data.rows[0] : null)
+  }
+  const openClassify = async (l: LeadRow) => {
+    setClassifyTarget(l); setClassifyRound(null); setClassifyRejectReason('')
+    await refreshClassifyRound(l.id)
+  }
+  const doClassifyRun = async () => {
+    if (!classifyTarget || classifyBusy) return
+    setClassifyBusy(true)
+    try {
+      const r = await window.electronAPI.crm.firstClassifyRun({ leadId: classifyTarget.id })
+      if (!r.ok) { setNotice(r.message || '首次分类失败（可稍后重试）') }
+      else if (r.data?.reused) setNotice(`该轮已有结果（${r.data.status}），未重复调用模型`)
+      else setNotice('首次分类提案已生成，请核对证据后确认或拒绝')
+      await refreshClassifyRound(classifyTarget.id)
+    } finally { setClassifyBusy(false) }
+  }
+  const doClassifyConfirm = async () => {
+    if (!classifyRound || classifyBusy) return
+    setClassifyBusy(true)
+    try {
+      const r = await window.electronAPI.crm.firstClassifyConfirm({ roundId: classifyRound.id })
+      setNotice(r.ok ? '已确认：提案字段已落正式档案（写审计）' : (r.message || '确认失败'))
+      if (classifyTarget) await refreshClassifyRound(classifyTarget.id)
+    } finally { setClassifyBusy(false) }
+  }
+  const doClassifyReject = async () => {
+    if (!classifyRound || classifyBusy) return
+    setClassifyBusy(true)
+    try {
+      const r = await window.electronAPI.crm.firstClassifyReject({ roundId: classifyRound.id, reason: classifyRejectReason })
+      setNotice(r.ok ? '已拒绝：提案不落入档案（拒绝记录已保留）' : (r.message || '拒绝失败'))
+      if (classifyTarget) await refreshClassifyRound(classifyTarget.id)
+    } finally { setClassifyBusy(false) }
   }
 
   // ── 绑定微信（PRD 1.4a 手动路）：选中本机联系人 → identityBind（写 username 内部 id，昵称仅显示用）──
@@ -688,6 +772,9 @@ export default function CrmLeadPage() {
               {!recycled && (cd.tier === 'ok' || cd.tier === 'warn' || cd.tier === 'over') && (
                 <button className="crm-btn" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
               )}
+              {!recycled && cd.tier !== 'wait_claim' && (
+                <button className="crm-btn" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
+              )}
               {!recycled && cd.tier === 'done' && (
                 <button className="crm-btn ghost" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
               )}
@@ -714,7 +801,7 @@ export default function CrmLeadPage() {
           <div className="lp-tabs">
             <button className={`lp-tab ${managerTab === 'pool' ? 'on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
             <button className={`lp-tab ${managerTab === 'console' ? 'on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
-            <button className={`lp-tab ${managerTab === 'reassign' ? 'on' : ''}`} onClick={() => setManagerTab('reassign')}>回收改派{poolCounts.recycledN > 0 ? ` (${poolCounts.recycledN})` : ''}</button>
+            <button className={`lp-tab ${managerTab === 'reassign' ? 'on' : ''}`} onClick={() => setManagerTab('reassign')}>回收改派{poolCounts.recycledN > 0 ? ` (${poolCounts.recycledN})` : ''}{notifyUnread > 0 ? ` · 升级提醒 ${notifyUnread}` : ''}</button>
           </div>
 
           {managerTab === 'pool' && (
@@ -873,6 +960,28 @@ export default function CrmLeadPage() {
           )}
 
           {managerTab === 'reassign' && (
+            <>
+          {notifies.length > 0 && (
+            <div className="lp-cardbox" style={{ marginBottom: 14 }}>
+              <div className="lp-cardbox__title">升级提醒 <span className="pill pill--danger num">{notifyUnread}</span> <span className="lp-hint">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
+              <div className="lead-timeline">
+                {notifies.map((n) => {
+                  let d: Record<string, unknown> = {}
+                  try { d = JSON.parse(String(n.detail || '{}')) } catch { /* 非 JSON detail 跳过 */ }
+                  const unread = String(n.status) === 'unread'
+                  return (
+                    <div key={String(n.id)} className="lt-item" style={unread ? { fontWeight: 600 } : undefined}>
+                      <span className="lt-time">{fmtTime(Number(n.created_at))}</span>
+                      <span className="lt-act">{unread ? '未读' : '已读'}</span>
+                      <span className="lt-note">{String(n.title || '')} — {String(n.body || '')}</span>
+                      {unread && <button className="crm-btn" style={{ marginLeft: 8 }} onClick={() => void markNotifyRead(Number(n.id))}>标记已读</button>}
+                      {Number(d.hubLeadId || 0) > 0 && <button className="crm-btn ghost" style={{ marginLeft: 8 }} onClick={() => { void openDetail(Number(d.hubLeadId)) }}>看线索</button>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
             <div className="lp-cardbox">
               <div className="lp-cardbox__title">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="lp-hint">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
               <table className="crm-table">
@@ -905,6 +1014,7 @@ export default function CrmLeadPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </>
       )}
@@ -958,7 +1068,7 @@ export default function CrmLeadPage() {
               <div><label>状态</label><div>{(STATUS_META[detail.lead.status] || { label: detail.lead.status }).label}{detail.lead.status === 'DEAD' && detail.lead.dead_reason ? `（${detail.lead.dead_reason}）` : ''}</div></div>
               <div><label>归属</label><div>{ownerByLead[detail.lead.id]?.salesName || '未分配'}</div></div>
               <div><label>导入时间</label><div>{fmtTime(detail.lead.created_at)}</div></div>
-              <div><label>首触期限</label><div>{Number(detail.lead.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL ? (ownerByLead[detail.lead.id] ? '待首触（分配后开始计时，待 SLA 起算规则上线）' : '待分配') : fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${CHANNEL_META[detail.lead.first_contact_channel ?? ''] || detail.lead.first_contact_channel || '电话'}）` : ''}</div></div>
+              <div><label>首触期限</label><div>{Number(detail.lead.first_contact_deadline) >= LEAD_SLA_UNASSIGNED_SENTINEL ? (ownerByLead[detail.lead.id] ? '待首触（分配后开始计时）' : '待分配（分配后开始计时）') : fmtTime(Number(detail.lead.first_contact_deadline))}{detail.lead.first_contacted_at ? `，已首触 ${fmtTime(Number(detail.lead.first_contacted_at))}（${CHANNEL_META[detail.lead.first_contact_channel ?? ''] || detail.lead.first_contact_channel || '电话'}）` : ''}</div></div>
               <div className="ld-note"><label>备注</label><div>{detail.lead.note || '-'}</div></div>
             </div>
             {detail.lead.status === 'NEW' && (
@@ -981,7 +1091,29 @@ export default function CrmLeadPage() {
                   <span className={`pill pill--${detail.sla2.pill}`}>{detail.sla2.label}</span>
                   <div className="lp-sla2__text">
                     {detail.sla2.note}
-                    <div className="lp-sla2__hint">结论时间 {fmtTime(detail.sla2.at)}{detail.sla2.evidenceKey ? ' · 依据可回查（证据锚点已留）' : ''}</div>
+                    <div className="lp-sla2__hint">
+                      结论时间 {fmtTime(detail.sla2.at)}
+                      {detail.sla2.evidenceKey && (
+                        <>
+                          {' · '}
+                          <button className="crm-btn" onClick={(e) => { e.stopPropagation(); void loadSla2Evidence(detail.lead.id) }} disabled={sla2Ev.loading}>
+                            {sla2Ev.loading ? '读取中…' : '查看依据'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {sla2Ev.view && (
+                      <div className="lp-sla2__hint" style={{ marginTop: 6 }}>
+                        {sla2Ev.view.status === 'found' ? (
+                          <>
+                            <div>依据（{sla2Ev.view.source === 'llm' ? 'LLM 判定' : sla2Ev.view.source === 'manual' ? '人工结论' : '规则命中'} · {sla2Ev.view.isSend ? '销售发出' : '客户发出'} · {fmtTime(Number(sla2Ev.view.createTimeMs || 0))}）：</div>
+                            <div style={{ marginTop: 4 }}>{sla2Ev.view.text}</div>
+                          </>
+                        ) : (
+                          <div>依据状态：{sla2Ev.view.message}</div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </>
@@ -1092,8 +1224,7 @@ export default function CrmLeadPage() {
       {claimTarget && (
         <div className="crm-modal" onClick={() => { if (!claimBusy) setClaimTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>认领线索 <button className="crm-btn" onClick={() => setClaimTarget(null)}><X size={14} /></button></h3>
-            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空；填了微信号会同时「绑定微信」停 SLA1 表）。</p>
+            <h3>认领线索 <button className="crm-btn" onClick={() => setClaimTarget(null)}><X size={14} /></button></h3>            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空；填了微信号会同时「绑定微信」停 SLA1 表）。</p>
             <label>客户微信号（可选）
               <input autoFocus value={claimWechat} onChange={(e) => setClaimWechat(e.target.value)} placeholder="如：wxid_xxx" />
             </label>
@@ -1102,6 +1233,60 @@ export default function CrmLeadPage() {
             </label>
             <div className="form-actions">
               <button className="crm-btn primary" disabled={claimBusy} onClick={() => void doClaim()}><Hand size={14} /> {claimBusy ? '认领中…' : '确认认领'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {classifyTarget && (
+        <div className="crm-modal" onClick={() => { if (!classifyBusy) setClassifyTarget(null) }}>
+          <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
+            <h3>AI 首次分类（PRD 2.4） <button className="crm-btn" onClick={() => setClassifyTarget(null)}><X size={14} /></button></h3>
+            <p className="ld-tip">线索 {maskLead(classifyTarget)}。认领满 24 小时自动触发一次；也可手动立即分析。结果是 AI 提案（B 档），确认后才写入客户档案，拒绝则保留记录不落档案。</p>
+            {!classifyRound && <div className="empty">暂无分类轮次。认领满 24h 会自动生成，或点下方「立即分析」。</div>}
+            {classifyRound && (() => {
+              let res: Record<string, any> = {}
+              let ev: Record<string, any> = {}
+              try { res = JSON.parse(classifyRound.result_json || '{}') } catch { res = {} }
+              try { ev = JSON.parse(classifyRound.evidence_json || '{}') } catch { ev = {} }
+              const gaps: string[] = (() => { try { return JSON.parse(classifyRound.gaps_json || '[]') } catch { return [] } })()
+              const fields = (res.fields && typeof res.fields === 'object') ? Object.entries(res.fields) as Array<[string, any]> : []
+              return (
+                <div>
+                  <p className="ld-tip">轮次 #{classifyRound.id} · 状态 {classifyRound.status} · 触发 {classifyRound.trigger_source === 'scan' ? '24h 扫描' : '手动'} · {fmtTime(classifyRound.created_at)}{classifyRound.decided_by ? ` · 裁决人 ${classifyRound.decided_by}` : ''}</p>
+                  {classifyRound.status === 'failed' && <p className="ld-tip">上次分析失败（可重试）：{classifyRound.error || '未知原因'}</p>}
+                  {(classifyRound.status === 'proposed' || classifyRound.status === 'confirmed' || classifyRound.status === 'rejected') && (
+                    <div className="ld-tip">
+                      <div>阶段初判：{FC_STAGE_LABEL[String(res.stage || 'unknown')] || res.stage}（置信 {Math.round(Number(res.stageConfidence || 0) * 100)}%）</div>
+                      <div>客户类型：{FC_TYPE_LABEL[String(res.customerType || 'unknown')] || res.customerType}（置信 {Math.round(Number(res.customerTypeConfidence || 0) * 100)}%）</div>
+                      <div>意向评分：{res.intentScore == null ? '证据不足' : res.intentScore}</div>
+                      {fields.length > 0 && (
+                        <div style={{ marginTop: 6 }}>
+                          {fields.map(([k, v]) => (
+                            <div key={k}>· {FC_FIELD_LABEL[k] || k}：{String(v?.value || '')}（来源 {String(v?.source || '?')}{v?.evidenceKey ? ' · 证据可回查' : v?.evidenceText ? ` · ${String(v.evidenceText).slice(0, 40)}` : ''}）</div>
+                          ))}
+                        </div>
+                      )}
+                      {Array.isArray(ev.droppedNoEvidence) && ev.droppedNoEvidence.length > 0 && (
+                        <div className="psub">缺证据已丢弃：{ev.droppedNoEvidence.map((f: string) => FC_FIELD_LABEL[f] || f).join('、')}</div>
+                      )}
+                      {gaps.length > 0 && <div style={{ marginTop: 6 }}>信息缺口（已生成反问卡，建议下次聊天自然询问）：{gaps.map((g) => FC_GAP_LABEL[g] || g).join('、')}</div>}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+            <div className="form-actions">
+              {(!classifyRound || classifyRound.status === 'failed') && (
+                <button className="crm-btn primary" disabled={classifyBusy} onClick={() => void doClassifyRun()}><Sparkles size={14} /> {classifyBusy ? '分析中…' : '立即分析'}</button>
+              )}
+              {classifyRound?.status === 'proposed' && (
+                <>
+                  <input value={classifyRejectReason} onChange={(e) => setClassifyRejectReason(e.target.value)} placeholder="拒绝原因（拒绝时建议填写）" style={{ flex: 1 }} />
+                  <button className="crm-btn primary" disabled={classifyBusy} onClick={() => void doClassifyConfirm()}>确认写入档案</button>
+                  <button className="crm-btn danger" disabled={classifyBusy} onClick={() => void doClassifyReject()}>拒绝</button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1196,6 +1381,32 @@ export default function CrmLeadPage() {
             <div className="form-actions">
               <button className="crm-btn danger" disabled={!departFrom || !departTo || departBusy} onClick={() => void doDeparture()}><UserX size={14} /> {departBusy ? '移交中…' : `确认移交${departFrom && departTo ? `（${departFrom} → ${departTo}）` : ''}`}</button>
             </div>
+          </div>
+        </div>
+      )}
+      {dedupeDetail !== null && (
+        <div className="crm-modal" onClick={() => setDedupeDetail(null)}>
+          <div className="crm-modal-body lead-detail" onClick={(e) => e.stopPropagation()}>
+            <h3>导入查重明细（批次 #A{dedupeBatchId}） <button className="crm-btn" onClick={() => setDedupeDetail(null)}><X size={14} /></button></h3>
+            <p className="ld-tip">手机号/微信号跨类型分别查重；双标识命中不同联系人 = 冲突待人工确认。明细中的联系方式已脱敏，可安全导出复核。</p>
+            <div className="form-actions" style={{ justifyContent: 'flex-start' }}>
+              <button className="crm-btn primary" disabled={!dedupeDetail.length} onClick={exportDedupeCsv}><FileSpreadsheet size={13} /> 导出明细 CSV</button>
+            </div>
+            <table className="crm-table">
+              <thead><tr><th className="num">行号</th><th>结果</th><th>原因</th><th>联系方式（脱敏）</th><th>姓名</th></tr></thead>
+              <tbody>
+                {dedupeDetail.map((r) => (
+                  <tr key={r.line}>
+                    <td className="num">{r.line}</td>
+                    <td><span className={`pill ${r.verdict === 'inserted' ? 'pill--success' : r.verdict === 'conflict' ? 'pill--danger' : 'pill--neutral'}`}>{({ inserted: '新增', duplicate: '同批重复', existing_lead: '线索池已有', existing_customer: '正式客户已有', conflict: '冲突待人工', invalid: '无效' } as Record<string, string>)[r.verdict] || r.verdict}</span></td>
+                    <td>{r.reason || '-'}</td>
+                    <td className="num">{[r.phoneMasked, r.wechatMasked].filter(Boolean).join(' / ') || '-'}</td>
+                    <td>{r.name || '-'}</td>
+                  </tr>
+                ))}
+                {dedupeDetail.length === 0 && <tr><td colSpan={5} className="empty">无明细记录</td></tr>}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

@@ -225,9 +225,14 @@ async function main(): Promise<void> {
     eAudits.length === 1 && eAudits[0].actor === 'system:sla' && JSON.parse(String(eAudits[0].detail)).reason === 'SLA三次超时回收')
   ok('E13 回收后 lead 回哨兵', leadDeadline(e1) === LEAD_SLA_UNASSIGNED_SENTINEL)
   ok('E14 全程恰 2 条提醒审计（第 3 次直接回收不重复提醒）', auditRows(e1, 'sla1_remind').length === 2)
+  // 2026-09-09 原子化：同步关闭（单机模式）→ 第三次回收与主管通知同一事务直接落 notify_inbox；
+  // LAN 启用时才走 sla1_escalate_supervisor outbox（见 sla1-supervisor-notify-test B 组）
   const outboxRow = crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key = ?", [`sla1Escalate:${e1id}`])[0]
-  ok('E15 outbox 抄送主管占位 type=sla1_escalate_supervisor（§1.11 只记录不发送）',
-    !!outboxRow && JSON.parse(String(outboxRow.payload)).type === 'sla1_escalate_supervisor' && String(outboxRow.status) === 'pending')
+  const notifyRow = crmDbService.all("SELECT * FROM notify_inbox WHERE idempotency_key = ?", [`sla1Escalate:${e1id}`])[0]
+  ok('E15 第三次回收同事务落地主管通知（单机=notify_inbox；LAN=escalate outbox）',
+    !outboxRow && !!notifyRow && String(notifyRow.status) === 'unread' &&
+    JSON.parse(String(notifyRow.detail)).remindCount === 3 && JSON.parse(String(notifyRow.detail)).reason === 'SLA三次超时回收',
+    JSON.stringify({ outbox: outboxRow, notify: notifyRow && { status: notifyRow.status, detail: notifyRow.detail } }))
 
   // 第 5 轮：重跑幂等（回收行 status=recycled 出扫描范围；e3 已提醒 1 次但间隔不足）
   const rec5 = runSla1Recycle()

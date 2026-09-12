@@ -274,6 +274,63 @@ export function sla2StatusView(raw: unknown): Sla2StatusView | null {
   }
 }
 
+// ─── 屏 4 销售资源卡三分段（2026-09-08 修复「已回收」永远为空）─────────────────
+/** 单张资源卡（与 CrmLeadPage 渲染字段对齐；T = LeadRow 等任意 lead 行） */
+export interface MyLeadCard<T> {
+  lead: T
+  cd: Sla1Countdown
+  recycled: boolean
+  sla2: Sla2StatusView | null
+  assignedAt: number
+}
+export interface MyCardsResult<T> { wait: Array<MyLeadCard<T>>; active: Array<MyLeadCard<T>>; recycled: Array<MyLeadCard<T>> }
+
+/**
+ * 销售资源卡三分段（纯函数，now 注入便于测试）：
+ *   - 待跟进 / 跟进中：按**当前有效权属**（ownerByLead，宪法 §1.3 最新有效分配行）过滤，
+ *     归属本人且最新分配行不是 recycled——转派给他人的线索（latest=transferred、有效权属已易主）
+ *     自然不再出现在原销售的当前资源中；
+ *   - 已回收：按**最新分配行**（含 recycled/transferred）的 sales_name + recycled 状态过滤——
+ *     回收行的 status 已不在 ownerByLead（有效权属）集合里，旧实现只用 ownerByLead 构建集合，
+ *     导致「已回收」分段永远为空（2026-09-08 修复根因）；只显示本人曾持有且最新记录属于自己的回收线索。
+ */
+export function buildMyCards<T extends { id: number; status: string }>(
+  leads: T[],
+  latestAsg: Record<number, Record<string, unknown>>,
+  ownerByLead: Record<number, LeadOwnerInfo>,
+  identity: IdentityLike,
+  now: number
+): MyCardsResult<T> {
+  const name = identity.name.trim()
+  const wait: Array<MyLeadCard<T>> = []
+  const active: Array<MyLeadCard<T>> = []
+  const recycled: Array<MyLeadCard<T>> = []
+  for (const l of leads) {
+    const latest = latestAsg[l.id]
+    const own = ownerByLead[l.id]
+    const latestStatus = String(latest?.status || '')
+    const latestSales = String(latest?.sales_name || '')
+    const isRecycled = latestStatus === 'recycled'
+    const mine = isRecycled ? latestSales === name : own?.salesName === name
+    if (!mine) continue
+    const cd = sla1Countdown({
+      status: String(own?.status || latestStatus || ''),
+      sla1Deadline: Number(latest?.sla1_deadline || 0),
+      sla1MetAt: Number(latest?.sla1_met_at || 0),
+      sla1RemindCount: Number(latest?.sla1_remind_count || 0)
+    }, now)
+    const card: MyLeadCard<T> = {
+      lead: l, cd, recycled: isRecycled,
+      sla2: sla2StatusView(latest?.sla2_scan_ref),
+      assignedAt: Number(latest?.updated_at || latest?.created_at || 0)
+    }
+    if (isRecycled) { recycled.push(card); continue }
+    if (card.cd.tier !== 'done' && l.status === 'NEW') wait.push(card)
+    else active.push(card)
+  }
+  return { wait, active, recycled }
+}
+
 /**
  * 页面过滤档 filterByOwner / isSalesView：语义源已迁 shared/ownerFilter.ts（本文件 re-export，上方）。
  * 契约不变：销售视角 = owner_sales 本人或空；管理视角原样；展示层便利过滤非安全边界（宪法 §1.12）。
