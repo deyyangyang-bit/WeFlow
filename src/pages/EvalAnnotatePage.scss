@@ -25,6 +25,48 @@
 }
 .ea-tip { flex: 1; min-width: 220px; font-size: 12px; color: var(--color-text-tertiary); align-self: center; line-height: 1.6; }
 
+/* 评测门槛横幅（PRD ≥100 样本 + ≥100 人工确认）：未达标红显，绝不把未达标输出成已达标 */
+.ea-gate-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-radius: var(--radius-card); padding: 10px 14px; margin-bottom: 14px;
+  font-size: 13px; font-weight: 600; line-height: 1.5;
+  &.fail { background: var(--color-danger-bg); color: var(--color-danger); border: 1px solid var(--color-danger-border, var(--color-border)); }
+  &.pass { background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--color-success-border, var(--color-border)); }
+}
+.ea-report-bar {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  margin: -4px 0 14px; font-size: 12px; color: var(--color-text-tertiary);
+  span { margin-right: auto; }
+}
+
+/* 人工分档三格（has/none/uncertain 计数） */
+.ea-split { display: flex; gap: 12px; justify-content: flex-start;
+  .lb-has { color: var(--color-success); }
+  .lb-none { color: var(--color-text-tertiary); }
+  .lb-uncertain { color: var(--color-warning); }
+}
+
+/* 基线指标区（门槛达标后展示）：分档 P/R/F1 卡 + 混淆矩阵表 */
+.ea-metrics {
+  background: var(--color-bg-surface); border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  padding: 14px 18px; margin-bottom: 14px;
+}
+.ea-metrics-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;
+  .ea-metrics-title { font-size: 13px; font-weight: 700; margin-right: auto; } }
+.ea-class-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.ea-class {
+  flex: 1; min-width: 160px; background: var(--color-bg-inset); border-radius: var(--radius-small); padding: 10px 12px;
+  .ea-class-name { font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+  .ea-class-prf { display: flex; gap: 10px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+  .ea-class-cm { font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+}
+.ea-confusion-title { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 8px; }
+.ea-confusion table { border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  th, td { border: 1px solid var(--color-border); padding: 4px 12px; text-align: center; }
+  th { background: var(--color-bg-inset); font-weight: 600; color: var(--color-text-secondary); }
+  td.diag { background: var(--color-success-bg); color: var(--color-success); font-weight: 700; }
+}
+
 /* 标注卡 */
 .eval-card {
   background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card);
@@ -88,6 +130,13 @@
 /* 证据可回查标识：有 anchor_key 即显示（回查交互后续刀；hover 提示完整锚点） */
 .ec-anchor { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 500;
   color: var(--color-accent); background: var(--color-accent-bg); border-radius: 999px; padding: 2px 9px;
+  svg { flex-shrink: 0; }
+}
+
+/* 无锚点样本：明确标「待补证据」，与「证据可回查」区分开——不得让标注员以为有编号可查 */
+.ec-anchor-missing { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 500;
+  color: var(--color-warning); background: var(--color-warning-bg);
+  border-radius: 999px; padding: 2px 9px;
   svg { flex-shrink: 0; }
 }
 
