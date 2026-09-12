@@ -36,7 +36,7 @@
 | 来源 | 输入 | 输出 | 落点 | 触发 |
 |---|---|---|---|---|
 | `crmParseService`（crmParseService.ts:180-195）`parseBuySignal` | 单条消息文本（**正则**） | 采购信号 {product, quantity, amount, detail} | `opportunity`（opportunityUpsertBySignal，crmDbService.ts:806 起） | 消息入库时 |
-| `insightService`（insightService.ts:1738）`syncOpportunityStageByAccount` | AI 见解解析出的阶段 | 顺推 了解→比价→决策 / 成交→won / 流失→lost | `opportunity.stage` + `opportunity_event` | 见解生成后 |
+| `insightService`（insightService.ts:1738）`syncOpportunityStageByAccount` | AI 见解解析出的阶段 | 顺推 了解→比价→决策 / 成交→待登记提醒（deal_pending）/ 流失→lost | `opportunity.stage` + `opportunity_event` | 见解生成后 |
 | `generateActionAnalysis`（salesActionEngine.ts:1084）`opportunity` 字段 | actionItem + 知识库 + 聊天摘要 | AI 判断的机会描述（1-2 句） | **预热路径** → `follow_up_task.analysis` JSON；客户 360 / `sales:action:suggest` → **不落库** | 全量扫描预热 / on-demand |
 
 ### 1.3 risk（风险）

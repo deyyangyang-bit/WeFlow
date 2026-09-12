@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow · 客户工作台简化 · UI 设计稿</title>
+<style>
+  :root{
+    --bg-page:#F5F5F7; --bg-surface:#FFFFFF; --bg-surface-muted:#FAFAFC; --bg-inset:#F0F0F3;
+    --text-primary:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --border:#E5E5EA; --divider:#EEEEF2;
+    --accent:#0071E3; --accent-bg:#E8F1FC; --accent-border:#B8D4F5;
+    --success:#34C759; --success-bg:#E9F9EE;
+    --warning:#FF9500; --warning-bg:#FFF4E5;
+    --danger:#FF3B30; --danger-bg:#FFEDEC;
+    --radius-card:16px; --radius-control:10px; --radius-small:8px;
+    --shadow-card:0 4px 16px rgba(0,0,0,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;background:var(--bg-page);color:var(--text-primary);font-size:13px;line-height:1.5}
+  .page{max-width:1080px;margin:0 auto;padding:24px}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ===== 设计稿框架（非产品 UI） ===== */
+  .doc-header{padding:32px 0 8px}
+  .doc-header h1{font-size:22px;font-weight:700}
+  .doc-header p{color:var(--text-secondary);margin-top:6px}
+  .screen{margin:36px 0}
+  .screen-title{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .screen-title .idx{font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:2px 8px}
+  .screen-title h2{font-size:16px;font-weight:700}
+  .screen-note{color:var(--text-secondary);font-size:12px;margin-bottom:14px;max-width:900px}
+  .frame{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card);overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface-muted)}
+  .frame-bar .dot{width:10px;height:10px;border-radius:50%}
+  .frame-bar .path{font-size:11px;color:var(--text-tertiary);margin-left:8px}
+  .frame-body{padding:20px 24px;background:var(--bg-page);min-height:120px}
+
+  /* ===== 产品 UI 元件 ===== */
+  .card{background:var(--bg-surface);border-radius:var(--radius-card);padding:16px 18px}
+  .card + .card{margin-top:14px}
+  .card-title{font-size:13px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .hint{font-size:11px;color:var(--text-tertiary);font-weight:400}
+  .btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:7px 14px;border-radius:var(--radius-control);border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);cursor:default}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--text-secondary)}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px}
+  .pill.blue{background:var(--accent-bg);color:var(--accent)}
+  .pill.green{background:var(--success-bg);color:var(--success)}
+  .pill.amber{background:var(--warning-bg);color:var(--warning)}
+  .pill.gray{background:var(--bg-inset);color:var(--text-secondary)}
+  .input{border:1px solid var(--border);border-radius:var(--radius-control);padding:8px 12px;font-size:12px;background:var(--bg-surface);color:var(--text-tertiary)}
+  .avatar{width:32px;height:32px;border-radius:50%;background:var(--accent-bg);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:none}
+
+  /* ===== 行动队列卡 ===== */
+  .action-card{background:var(--bg-surface);border-radius:var(--radius-card);padding:14px 18px;display:flex;gap:14px;align-items:flex-start}
+  .action-card + .action-card{margin-top:12px}
+  .action-card .body{flex:1;min-width:0}
+  .action-card .head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .action-card .name{font-size:14px;font-weight:700}
+  .action-card .reason{font-size:13px;color:var(--text-primary);margin:2px 0}
+  .action-card .suggest{font-size:12px;color:var(--text-secondary)}
+  .action-card .ops{display:flex;flex-direction:column;gap:8px;flex:none;padding-top:2px}
+  .strike{opacity:.45;text-decoration:line-through}
+
+  /* ===== 档案抽屉 ===== */
+  .drawer{max-width:720px;margin:0 auto;background:var(--bg-surface);border-radius:var(--radius-card);border:1px solid var(--border);overflow:hidden}
+  .drawer-head{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--divider)}
+  .drawer-head h3{font-size:15px;font-weight:700;flex:1}
+  .drawer-body{padding:16px 20px}
+  .verdict{background:var(--accent-bg);border-radius:var(--radius-control);padding:14px 16px}
+  .verdict .v-title{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:4px}
+  .verdict .v-text{font-size:14px;font-weight:600}
+  .verdict .v-next{font-size:12px;color:#0B4FA0;margin-top:6px}
+  .sec{margin-top:16px}
+  .sec h4{font-size:13px;font-weight:600;margin-bottom:8px}
+  .fold{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg-surface-muted);border-radius:var(--radius-control);color:var(--text-secondary);font-size:12px;font-weight:600}
+  .fold + .fold{margin-top:8px}
+  .kv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .kv div{background:var(--bg-surface-muted);border-radius:var(--radius-small);padding:8px 10px;font-size:12px}
+  .kv .k{font-size:11px;color:var(--text-tertiary)}
+  .todo-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--divider);font-size:12px}
+  .todo-row:last-child{border-bottom:none}
+
+  /* ===== 对照表 ===== */
+  .chg{width:100%;border-collapse:collapse;margin-top:10px}
+  .chg th{font-size:11px;font-weight:600;color:var(--text-tertiary);text-align:left;padding:8px 10px;border-bottom:1px solid var(--divider)}
+  .chg td{font-size:12px;padding:10px;border-bottom:1px solid var(--divider);vertical-align:top}
+  .chg tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px;margin-right:6px}
+  .tag.merge{background:var(--accent-bg);color:var(--accent)}
+  .tag.hide{background:var(--bg-inset);color:var(--text-secondary)}
+  .tag.fold{background:var(--warning-bg);color:var(--warning)}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>客户工作台简化 · UI 设计稿</h1>
+    <p>目标：销售打开这页只需要回答一个问题——<strong>现在该找谁、说什么</strong>。三页签合并为一个行动队列；全部客户降级为搜索；管理员工具收编；档案抽屉按「先看什么」重排。处理完即消失，页面越用越干净。</p>
+  </div>
+
+  <!-- ================= 屏 1 ================= -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 1</span><h2>默认页 · 行动队列（销售视角）</h2></div>
+    <div class="screen-note">原「值得跟进 / AI 新发现 / 信息待确认」三处合并为一列行动卡。每张卡 = 一个客户 + 一句话「为什么找 TA」+ 一句「建议做什么」+ 一个主按钮。处理（完成/采纳/放弃）后卡片从队列消失。顶部只保留搜索框和「更多」（管理员工具入口）。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">CRM → 客户</span></div>
+      <div class="frame-body">
+
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+          <span style="font-size:17px;font-weight:700">客户</span>
+          <span class="input" style="flex:1;max-width:320px">🔍 搜客户名 / 公司，找全部客户…</span>
+          <span style="flex:1"></span>
+          <span class="btn">⟳ 刷新</span>
+          <span class="btn ghost">⋯ 更多</span>
+        </div>
+
+        <div class="hint" style="margin-bottom:10px">今天有 <strong style="color:var(--text-primary)">3</strong> 个客户需要你处理 · 处理完即消失</div>
+
+        <!-- 行动卡 1：跟进 -->
+        <div class="action-card">
+          <span class="avatar">王</span>
+          <div class="body">
+            <div class="head"><span class="name">王靖 · 春发采购</span><span class="pill amber">待跟进</span></div>
+            <div class="reason">报价发出 3 天没回复——再不跟就凉了</div>
+            <div class="suggest">建议：今天发条消息问「上次报的价格还合适吗」</div>
+          </div>
+          <div class="ops">
+            <span class="btn primary">💬 去聊天</span>
+            <span class="btn">✓ 已处理</span>
+          </div>
+        </div>
+
+        <!-- 行动卡 2：信息待确认（原独立队列并入） -->
+        <div class="action-card">
+          <span class="avatar">张</span>
+          <div class="body">
+            <div class="head"><span class="name">张开国</span><span class="pill blue">AI 发现</span></div>
+            <div class="reason">AI 从聊天里发现他的公司名：「南通开国机械」（置信 82%）</div>
+            <div class="suggest">证据：「我们开国机械在南通这边……」· 采纳就写进档案</div>
+          </div>
+          <div class="ops">
+            <span class="btn primary">✓ 采纳</span>
+            <span class="btn">放弃</span>
+          </div>
+        </div>
+
+        <!-- 行动卡 3：AI 新发现（原页签并入） -->
+        <div class="action-card">
+          <span class="avatar">刘</span>
+          <div class="body">
+            <div class="head"><span class="name">浙J丶叉车.洗地车.小小刘</span><span class="pill blue">AI 发现</span></div>
+            <div class="reason">聊天里提到竞品「合力」——可能在比价</div>
+            <div class="suggest">建议：打开聊天看看原话，决定要不要给个反报价</div>
+          </div>
+          <div class="ops">
+            <span class="btn primary">💬 看原话</span>
+            <span class="btn">✓ 已处理</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 屏 2 ================= -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 2</span><h2>空态 · 队列清零</h2></div>
+    <div class="screen-note">行动队列是这页的灵魂——清零时明确告诉销售「没事了」，并引导去搜索或今日行动页。不再默认铺几百张客户卡。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">CRM → 客户</span></div>
+      <div class="frame-body" style="text-align:center;padding:56px 24px">
+        <div style="font-size:32px">🎉</div>
+        <div style="font-size:15px;font-weight:700;margin-top:8px">都处理完了</div>
+        <div style="color:var(--text-secondary);font-size:12px;margin-top:6px">要找一个具体客户？用上面的搜索框。想看看今天还能干什么？去「今日行动」。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 屏 3 ================= -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 3</span><h2>搜索态 · 全部客户在这里</h2></div>
+    <div class="screen-note">输入关键词才出现结果列表（名字 / 公司 / 阶段徽标 / 沉默天数）。点行打开档案抽屉。没有搜索词时不渲染全量列表。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">CRM → 客户 · 搜索「叉车」</span></div>
+      <div class="frame-body">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+          <span style="font-size:17px;font-weight:700">客户</span>
+          <span class="input" style="flex:1;max-width:320px;color:var(--text-primary)">🔍 叉车</span>
+          <span style="flex:1"></span>
+          <span class="btn">⟳ 刷新</span>
+          <span class="btn ghost">⋯ 更多</span>
+        </div>
+        <div class="card" style="padding:0 18px">
+          <table style="width:100%;border-collapse:collapse">
+            <tr style="border-bottom:1px solid var(--divider)"><td style="padding:12px 10px 12px 0;width:36px"><span class="avatar">浙</span></td><td style="padding:12px 10px"><strong>浙J丶叉车.洗地车.小小刘</strong><div class="hint">未填公司</div></td><td><span class="pill blue">了解</span></td><td class="hint" style="text-align:right">7 天未互动</td></tr>
+            <tr style="border-bottom:1px solid var(--divider)"><td style="padding:12px 10px 12px 0"><span class="avatar">鑫</span></td><td style="padding:12px 10px"><strong>鑫康源生物</strong><div class="hint">疫苗配送</div></td><td><span class="pill blue">了解</span></td><td class="hint" style="text-align:right">今天有互动</td></tr>
+            <tr><td style="padding:12px 10px 12px 0"><span class="avatar">张</span></td><td style="padding:12px 10px"><strong>张开国</strong><div class="hint">2 吨叉车意向</div></td><td><span class="pill amber">比价</span></td><td class="hint" style="text-align:right">3 天未互动</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 屏 4 ================= -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 4</span><h2>档案抽屉 · 按「先看什么」重排</h2></div>
+    <div class="screen-note">头部按钮从 5 个减到 2 个（打开聊天 / 建合同），AI 补全、深度分析、AI 报价收进「AI 工具 ▾」下拉。内容区第一屏就是「AI 当前判断 + 下一步建议」一句话——销售只看这个也够。时间线、AI 画像默认折叠；客户信息保持点击可编辑。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">客户档案抽屉</span></div>
+      <div class="frame-body">
+        <div class="drawer">
+          <div class="drawer-head">
+            <span class="avatar">王</span>
+            <h3>王靖 · 春发采购</h3>
+            <span class="btn primary">💬 打开聊天</span>
+            <span class="btn">＋ 建合同</span>
+            <span class="btn ghost">AI 工具 ▾</span>
+            <span class="btn ghost">✕</span>
+          </div>
+          <div class="drawer-body">
+
+            <div class="verdict">
+              <div class="v-title">AI 当前判断</div>
+              <div class="v-text">比价阶段，报价 3 天未回——流失风险上升</div>
+              <div class="v-next">下一步：今天主动问一句价格是否合适 · 依据：09-02 报价后无回复</div>
+            </div>
+
+            <div class="sec">
+              <h4>跟进待办 <span class="pill red num">2</span></h4>
+              <div class="todo-row"><span>⏰</span><span style="flex:1">报价后 3 天未回，主动跟进</span><span class="pill amber">逾期 1 天</span></div>
+              <div class="todo-row"><span>📋</span><span style="flex:1">确认采购数量（上次说 2 台）</span><span class="pill gray">待办</span></div>
+            </div>
+
+            <div class="sec">
+              <h4>客户信息 <span class="hint">点击可改，手改后 AI 不覆盖</span></h4>
+              <div class="kv">
+                <div><div class="k">公司</div>春发采购</div>
+                <div><div class="k">电话</div>152****5273</div>
+                <div><div class="k">阶段</div>比价</div>
+                <div><div class="k">需求</div>电动叉车</div>
+                <div><div class="k">预算</div>未填</div>
+                <div><div class="k">类型</div>终端客户</div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="fold">📈 动态时间线（23 条）<span>展开 ▼</span></div>
+              <div class="fold">✨ AI 画像<span>展开 ▼</span></div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 改动对照 ================= -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附录</span><h2>改动对照清单</h2></div>
+    <div class="frame"><div class="frame-body">
+      <table class="chg">
+        <tr><th style="width:220px">现有元素</th><th style="width:110px">处置</th><th>去向 / 理由</th></tr>
+        <tr><td>页签「值得跟进」</td><td><span class="tag merge">合并</span></td><td>并入行动队列（卡 = 为什么找 TA + 建议动作）</td></tr>
+        <tr><td>页签「AI 新发现」</td><td><span class="tag merge">合并</span></td><td>并入行动队列，与待跟进同列（都是「AI 有件事要你处理」）</td></tr>
+        <tr><td>「信息待确认」队列条</td><td><span class="tag merge">合并</span></td><td>并入行动队列，采纳/放弃按钮直接在卡上</td></tr>
+        <tr><td>页签「全部客户」</td><td><span class="tag fold">降级</span></td><td>改为搜索触发，不默认铺全量卡片</td></tr>
+        <tr><td>AI 准确率面板（9 指标）</td><td><span class="tag hide">收编</span></td><td>挪「更多」菜单，管理员向；销售默认不见</td></tr>
+        <tr><td>批量 AI 补全 / 导出 Excel</td><td><span class="tag hide">收编</span></td><td>留「更多」菜单（现状已是），保持</td></tr>
+        <tr><td>卡片上的「AI 深度分析」按钮</td><td><span class="tag hide">收编</span></td><td>撤到档案抽屉「AI 工具」下拉，卡面只留主按钮</td></tr>
+        <tr><td>档案头部 5 按钮</td><td><span class="tag fold">减到 2</span></td><td>打开聊天 + 建合同；AI 补全/深度分析/AI 报价 → AI 工具下拉</td></tr>
+        <tr><td>档案 6 区块顺序</td><td><span class="tag fold">重排</span></td><td>AI 当前判断置顶 → 待办 → 客户信息 → 时间线/画像折叠</td></tr>
+        <tr><td>漏斗下钻深链 / 完成行动回写</td><td>保留</td><td>?stage= / ?id= / ?sid= 协议与信号完成闭环不动</td></tr>
+      </table>
+    </div></div>
+  </div>
+
+</div>
+</body>
+</html>

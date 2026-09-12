@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow · 侧边栏收编 + 重要提醒瘦身 · UI 设计稿</title>
+<style>
+  :root{
+    --bg-page:#F5F5F7; --bg-surface:#FFFFFF; --bg-surface-muted:#FAFAFC; --bg-inset:#F0F0F3;
+    --text-primary:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --border:#E5E5EA; --divider:#EEEEF2;
+    --accent:#0071E3; --accent-bg:#E8F1FC; --accent-border:#B8D4F5;
+    --success:#34C759; --success-bg:#E9F9EE;
+    --warning:#FF9500; --warning-bg:#FFF4E5;
+    --danger:#FF3B30; --danger-bg:#FFEDEC;
+    --radius-card:16px; --radius-control:10px; --radius-small:8px;
+    --shadow-card:0 4px 16px rgba(0,0,0,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;background:var(--bg-page);color:var(--text-primary);font-size:13px;line-height:1.5}
+  .page{max-width:1080px;margin:0 auto;padding:24px}
+  .doc-header{padding:32px 0 8px}
+  .doc-header h1{font-size:22px;font-weight:700}
+  .doc-header p{color:var(--text-secondary);margin-top:6px}
+  .screen{margin:36px 0}
+  .screen-title{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .screen-title .idx{font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:2px 8px}
+  .screen-title h2{font-size:16px;font-weight:700}
+  .screen-note{color:var(--text-secondary);font-size:12px;margin-bottom:14px;max-width:900px}
+  .frame{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card);overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface-muted)}
+  .frame-bar .dot{width:10px;height:10px;border-radius:50%}
+  .frame-bar .path{font-size:11px;color:var(--text-tertiary);margin-left:8px}
+  .frame-body{padding:20px 24px;background:var(--bg-page)}
+
+  .hint{font-size:11px;color:var(--text-tertiary);font-weight:400}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px}
+  .pill.red{background:var(--danger-bg);color:var(--danger)}
+  .pill.gray{background:var(--bg-inset);color:var(--text-secondary)}
+
+  /* 侧边栏模拟 */
+  .sidebyside{display:grid;grid-template-columns:200px 200px 1fr;gap:20px;align-items:start}
+  .snav{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);padding:10px 8px;font-size:12px}
+  .snav .cap{font-size:11px;font-weight:700;color:var(--text-tertiary);padding:4px 8px 8px}
+  .snav .it{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;color:var(--text-primary);font-weight:500}
+  .snav .it.on{background:var(--accent-bg);color:var(--accent);font-weight:700}
+  .snav .grp{font-size:10px;font-weight:700;color:var(--text-tertiary);padding:8px 10px 3px}
+  .snav .more{color:var(--text-tertiary)}
+  .snav .dim{opacity:.45}
+
+  /* 重要提醒 */
+  .alert-card{background:var(--bg-surface);border-radius:var(--radius-card);padding:14px 18px;display:flex;gap:12px;align-items:flex-start}
+  .alert-card + .alert-card{margin-top:10px}
+  .alert-card .body{flex:1}
+  .alert-card .t{font-size:13px;font-weight:600;margin-bottom:2px}
+  .alert-card .d{font-size:12px;color:var(--text-secondary)}
+  .alert-card .evi{font-size:11px;color:var(--text-tertiary);margin-top:4px}
+  .fold{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg-surface-muted);border-radius:var(--radius-control);color:var(--text-secondary);font-size:12px;font-weight:600;margin-top:12px}
+
+  .chg{width:100%;border-collapse:collapse;margin-top:10px}
+  .chg th{font-size:11px;font-weight:600;color:var(--text-tertiary);text-align:left;padding:8px 10px;border-bottom:1px solid var(--divider)}
+  .chg td{font-size:12px;padding:10px;border-bottom:1px solid var(--divider);vertical-align:top}
+  .chg tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px;margin-right:6px}
+  .tag.keep{background:var(--success-bg);color:var(--success)}
+  .tag.move{background:var(--warning-bg);color:var(--warning)}
+  .tag.ren{background:var(--accent-bg);color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>侧边栏收编 + 重要提醒瘦身 · UI 设计稿</h1>
+    <p>原则不变：<strong>身份只决定看什么，不决定能干什么</strong>（宪法 §1.12 不破）。销售侧栏只摆日常 6 项，其余收进「更多」；主管/你照旧全量。纯展示层，路由全部保留可直接访问。</p>
+  </div>
+
+  <!-- ============ 屏 1 侧边栏 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 1</span><h2>侧边栏 · 销售视角 vs 管理视角</h2></div>
+    <div class="screen-note">销售：今日行动 / 聊天 / CRM 四项（线索·客户·商机·合同）/ 跟单中心 / 重要提醒，加底部「更多」（漏斗、复盘、行动漏斗、洞察、知识库、评测标注、产品库、通讯录——点开照常能用，只是不天天在眼前）。「洞察」改名「重要提醒」（页面早改了，侧栏名是旧的）。管理视角（主管/分配员/空身份）：现在的 7 组原样。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">侧边栏两种视角</span></div>
+      <div class="frame-body">
+        <div class="sidebyside">
+
+          <div class="snav">
+            <div class="cap">销售视角（杨青）</div>
+            <div class="it on">🏠 今日行动</div>
+            <div class="it">💬 聊天</div>
+            <div class="grp">CRM</div>
+            <div class="it">📥 线索</div>
+            <div class="it">👥 客户</div>
+            <div class="it">🎯 商机</div>
+            <div class="it">💼 合同</div>
+            <div class="it">✅ 跟单中心</div>
+            <div class="it">🔔 重要提醒 <span class="pill red num">2</span></div>
+            <div class="it more">⋯ 更多（8 项）▸</div>
+            <div class="it">🔒 开启应用锁</div>
+            <div class="it dim">⚙️ 设置</div>
+          </div>
+
+          <div class="snav">
+            <div class="cap">管理视角（主管/你）</div>
+            <div class="it">🏠 今日行动</div>
+            <div class="it">💬 聊天</div>
+            <div class="grp">CRM</div>
+            <div class="it">📥 线索</div>
+            <div class="it">👥 客户</div>
+            <div class="it">🎯 商机</div>
+            <div class="it">📉 漏斗</div>
+            <div class="it">💼 合同</div>
+            <div class="it">✅ 跟单中心</div>
+            <div class="grp">AI / 知识</div>
+            <div class="it">🔔 重要提醒</div>
+            <div class="it">📖 知识库</div>
+            <div class="it">📋 评测标注</div>
+            <div class="grp">报表</div>
+            <div class="it">📊 复盘</div>
+            <div class="it">🧪 行动漏斗</div>
+            <div class="grp">系统</div>
+            <div class="it">📦 产品库</div>
+            <div class="it">👤 通讯录</div>
+            <div class="it dim">⚙️ 设置</div>
+          </div>
+
+          <div>
+            <div class="hint" style="font-size:12px;line-height:1.8">
+              <b>判定规则</b>（复用现有 isSalesView）：<br>
+              · 角色=销售 且 已建档 → 左图<br>
+              · 主管 / 分配员 / 空身份 → 右图（现状）<br><br>
+              <b>「更多」展开内容</b>：漏斗 / 复盘 / 行动漏斗 / 知识库 / 评测标注 / 产品库 / 通讯录<br><br>
+              <b>改名</b>：「洞察」→「重要提醒」（页面内容早就是重要提醒了，侧栏名滞后）<br><br>
+              <b>不做什么</b>：路由不删、URL 直达不受影响；不是权限，销售手动输网址照样能打开复盘页——防误点不防小人，与页面过滤档同哲学
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 屏 2 重要提醒 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">屏 2</span><h2>重要提醒页 · 打开就是一列告警</h2></div>
+    <div class="screen-note">现状 599 行里混着「筛选条件」「请求日志」等调试区块。改法：默认视图 = 纯告警列表（每条 = 类型 pill + 客户 + 一句话 + 原话证据 + 时间）；筛选收成一行小字；「请求日志」整区折叠默认收起（排查问题时展开）。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">AI/知识 → 重要提醒</span></div>
+      <div class="frame-body">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="font-size:17px;font-weight:700">重要提醒</span>
+          <span class="hint">筛选：全部类型 · 全部时间 ▾</span>
+          <span style="flex:1"></span>
+          <span class="hint">⟳ 刷新</span>
+        </div>
+
+        <div class="alert-card">
+          <div class="body">
+            <div class="t"><span class="pill red">竞品提及</span>　浙J丶叉车.洗地车.小小刘</div>
+            <div class="d">聊天里提到「合力」，可能在比价</div>
+            <div class="evi">原话：「合力那边报的价比你们低两千」 · 今天 14:22 · 证据可回查</div>
+          </div>
+          <span class="pill gray">知道了</span>
+        </div>
+
+        <div class="alert-card">
+          <div class="body">
+            <div class="t"><span class="pill red">承诺打款过期</span>　王靖 · 春发采购</div>
+            <div class="d">说了「月底前打款」，今天 9/6 款还没到</div>
+            <div class="evi">原话：「月底之前款给你打过去」 · 08-28 · 证据可回查</div>
+          </div>
+          <span class="pill gray">知道了</span>
+        </div>
+
+        <div class="fold">🔧 请求日志（调试用，平时不用看）<span>展开 ▼</span></div>
+
+        <div class="hint" style="margin-top:12px">空态：「暂时没有需要你处理的事」——告警的价值在稀缺，空就是好状态。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 附录 ============ -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附录</span><h2>改动对照清单</h2></div>
+    <div class="frame"><div class="frame-body">
+      <table class="chg">
+        <tr><th style="width:220px">元素</th><th style="width:100px">处置</th><th>说明</th></tr>
+        <tr><td>侧栏 7 组（销售视角）</td><td><span class="tag move">收编</span></td><td>日常 6 项 + 「更多」折叠 8 项；管理视角原样</td></tr>
+        <tr><td>侧栏「洞察」标签</td><td><span class="tag ren">改名</span></td><td>→「重要提醒」，与页面实际内容一致</td></tr>
+        <tr><td>重要提醒 · 筛选条件区</td><td><span class="tag move">收编</span></td><td>收成一行小字下拉</td></tr>
+        <tr><td>重要提醒 · 请求日志区</td><td><span class="tag move">折叠</span></td><td>默认收起，排查用</td></tr>
+        <tr><td>重要提醒 · 告警列表</td><td><span class="tag keep">保留</span></td><td>每条带原话证据（宪法 §1.10），「知道了」= 已读闭环不动</td></tr>
+        <tr><td colspan="3" class="hint">铁律：零路由删除、零权限语义（角色只过滤展示）、零后端改动；新样式零硬编码 hex。</td></tr>
+      </table>
+    </div></div>
+  </div>
+
+</div>
+</body>
+</html>

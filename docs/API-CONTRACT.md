@@ -8,10 +8,10 @@
 > |---|---|---|
 > | IPC 层（主进程 ↔ 渲染层） | **端点级完整** | 现有 113 通道（crm:71 + sales:42）从实际代码梳理 + Phase 0/1 新增端点规范 |
 > | 本机 HTTP 只读层 | 端点级 | 延续 `docs/HTTP-API.md` 现状梳理，本篇做契约摘要与差距标注 |
-> | NAS 内网 API | **只写规范** | 认证/版本/幂等/错误码结构 + Phase 3a 端点占位清单（空表头） |
+> | 中央主机内网 API | **只写规范** | 认证/版本/幂等/错误码结构 + Phase 3a 端点占位清单（空表头） |
 > | MCP 工具面 | **只写规范** | 工具命名/输入输出/错误/审计规范 + Phase 2 工具占位（空表头） |
 >
-> ⚠️ **NAS 与 MCP 两层为占位规范**——端点级契约分别到 **Phase 3a / Phase 2** 落地时再补（9/2 拍板：
+> ⚠️ **中央主机与 MCP 两层为占位规范**——端点级契约分别到 **Phase 3a / Phase 2** 落地时再补（9/2 拍板：
 > 现在写细节 = 猜需求）。本篇中 Phase 0/1 新增 IPC 端点为规范级（参数/响应/错误码/幂等完整，
 > 实现属 Phase 1）。
 
@@ -44,8 +44,8 @@
 |---|---|---|---|
 | `crm:entity:list` | `entity: string, opts?: { filter?, page?, pageSize?, … }` | `CrmRow[]` | R。entity 须在 ENTITIES 白名单（crmDbService） |
 | `crm:entity:get` | `entity: string, id: number` | `CrmRow \| null` | R |
-| `crm:entity:create` | `entity: string, payload: object` | `number`（新 id） | U（唯一约束兜底）。白名单外 entity 抛错 |
-| `crm:entity:update` | `entity: string, id: number, patch: object` | `boolean` | N（局部字段覆写） |
+| `crm:entity:create` | `entity: string, payload: object` | `number`（新 id） | U（唯一约束兜底）。白名单外 entity 抛错；`entity === 'opportunity'` 抛错（商机禁止通用散写） |
+| `crm:entity:update` | `entity: string, id: number, patch: object` | `boolean` | N（局部字段覆写）。`entity === 'opportunity'` 仅允许 `shipped_qty` / `delivery_date`，其余字段抛错 |
 | `crm:form:get` | `entity: string` | 表单定义（含 crm_field_meta 自定义字段） | R |
 | `crm:fieldmeta:save` | `meta: object` | `boolean` | N。自定义字段元数据落库 |
 | `crm:review:queues` | — | 跟单四队列聚合 | R |
@@ -68,7 +68,7 @@
 | `crm:enrich:backfill` | — | enqueue 句柄 | U（限额存量回填） |
 | `crm:infoQueue:apply` | `accountId: number, field: string, action: 'accept' \| 'reject'` | `boolean` | S。信息待确认队列人工裁决 |
 
-### 1.3 商机（opportunity，7 通道）
+### 1.3 商机（opportunity，8 通道）
 
 | 通道 | 请求参数 | 响应 | 幂等/备注 |
 |---|---|---|---|
@@ -77,7 +77,8 @@
 | `crm:opportunity:events` | `id: number` | `opportunity_event[]` | R |
 | `crm:opportunity:stats` | — | 商机统计 | R |
 | `crm:opportunity:stage` | `id: number, stage: string` | `boolean` | S。写者='manual'（宪法 §1.9 四写者） |
-| `crm:opportunity:close` | `id: number, status: 'won' \| 'lost', reason: string` | `boolean` | S。关单 + 事件留痕 |
+| `crm:opportunity:close` | `id: number, status: 'lost', reason: string` | `boolean` | S。仅丢单；status≠lost 或 reason 空 → false；已关闭（won/lost）商机再次关单 → false |
+| `crm:opportunity:registerDeal` | `id: number, payload: OpportunityDealPayload` | `{ ok: boolean, reason?: string }` | S。正式成交单点：成交字段 + status='won' + opportunity_event + audit_event 同事务，校验失败整体回滚 |
 | `crm:opportunity:intentScore` | `accountId: number` | 意向分 0-100 \| null | R。跨库装配（salesDb 意向事件 + crmDb 商机），无 session → null |
 
 ### 1.4 风险（crm_risk，2 通道）
@@ -272,9 +273,28 @@
 | `crm:audit:query` | `{ entityType?: string, entityId?: number, actor?: string, action?: string, beginAt?, endAt?, page?, pageSize? }` | `{ rows, total }` | — | R。audit_event 只读；activity_log / auto_confirm_log 封存只读同口径（宪法 §1.12） |
 | `crm:ownership:history` | `{ entityType: string, entityId: number, page?, pageSize? }` | `{ rows, total }` | — | R。ownership_history 只读 |
 
-> 已有端点不重复建：归属回写 `owner_sales` 复用 `crm:entity:update`（account/opportunity/logistics
-> 三处同口径，宪法术语表）；报价版本链 Phase 1 落地时增补 `crm:quote:createVersion`（版本行
+> 已有端点不重复建：归属回写 `owner_sales` 由专用 `crmOwnershipService` 走直连 SQL（account/opportunity/logistics
+> 三处同口径，宪法术语表），不经 `crm:entity:update`——后者对 opportunity 已限为 `shipped_qty`/`delivery_date`；
+> 报价版本链 Phase 1 落地时增补 `crm:quote:createVersion`（版本行
 > append-only：旧行置 effective_to，新行 version+1，同事务双写 contract.quote_version_id）。
+
+### 1.15 交付售后（crm:delivery:*，8 通道；专用后端 = crmDeliveryService）
+
+> 统一响应信封同 §1.14。交付售后六区（交付登记/数量差异任务/设备档案/改装质保/以旧换新/复购等级）
+> 全部落在后端事实（opportunity/customer/audit_event + follow_up_task + proposal_event），页面只读后端事实与任务，
+> **禁止前端本地计算提醒/任务**，也**不再经 `crm:entity:update` 散写 shipped_qty/delivery_date**（后者对 opportunity 的
+> 白名单保留为只读兼容，写入单点 = 本组端点）。
+
+| 通道 | 请求参数 | 响应 data | 错误码 | 幂等 |
+|---|---|---|---|---|
+| `crm:delivery:register` | `oppId: number, payload: { shipped_qty?, delivery_date?, over_ship_reason?, actor? }` | `{ oppId, shipped_qty, delivery_date, diffTaskCreated, diffTaskClosed }` | E101 oppId 空；E301 商机不存在/非 won；E102 实发量非负整数；E103 超发缺原因；E104 日期非法 | S：仅成交单可登记；同事务写 opportunity + audit_event（记新旧值+操作者+来源） |
+| `crm:delivery:saveEquipment` | `customerId: number, fields: object` | `{ customerId, changedFields: string[] }` | E101 customerId 空；E301 客户不存在；E102 车龄/期限非负整数；E104 日期非法 | U：仅变更字段写（未变更零写入）+ audit_event（customer_equipment_set） |
+| `crm:delivery:proposeTradeIn` | `customerId: number, basis: { kind, evidenceKey, reason, at? }` | `{ taskId }` | E101 缺 evidenceKey/reason；E301 客户不存在 | U：同客户只留一张 pending；`code='DUP'` 幂等返回 |
+| `crm:delivery:decideTradeIn` | `customerId: number, decision: 'accept' \| 'reject'` | `{ taskId? }` | E101 裁决非法 | S：写 proposal_event(accepted/rejected) + audit_event + 关闭提案卡；**不改客户事实** |
+| `crm:delivery:scan` | — | `{ diffCreated, diffClosed, warrantyNear, warrantyExpired, tradeIn }` | — | U：幂等同步四类 follow_up_task（pending 去重） |
+| `crm:delivery:tasks` | — | `{ diff, warrantyNear, warrantyExpired, tradeIn }`（各为 FollowUpTask[]） | — | R：页面提醒唯一来源（读后端事实，非前端推导） |
+| `crm:delivery:suggestDate` | `oppId: number` | `{ date, source } \| null` | — | R：签收日期建议（只读 Suggestion；真实写入必须经 register 人工确认） |
+| `crm:delivery:recomputeRepeat` | — | `number`（等级变化客户数） | — | U：全量重算复购等级，等级变化写 audit_event（customer_repeat_level_change） |
 
 ---
 
@@ -306,17 +326,18 @@
 
 ---
 
-## 3. NAS 内网 API（占位规范——端点级契约 Phase 3a 再补）
+## 3. 中央主机内网 API（占位规范——端点级契约 Phase 3a 再补）
 
 > ⚠️ 本节为**规范占位**（9/2 拍板）：Phase 3a「同步通道与客户档案库」开工时按此规范落端点级契约。
+> 承载节点当前形态为独立主机（PRD §13.1）；未来升级 NAS 时本节契约不变，只换部署形态。
 
-- **认证方式**：NAS 服务端绑定认证（账号白名单 + 长期 Token + 内网 TLS）；无传统登录界面
+- **认证方式**：中央主机服务端绑定认证（账号白名单 + 长期 Token + 内网 TLS）；无传统登录界面
   （PRD 3.1 身份认证分层）。Phase 3a 评审时定 Token 轮换策略。
 - **版本策略**：URL 路径版本 `/api/v1/*` 起步；不兼容变更升 v2 并保留 v1 只读窗口 ≥1 个 Phase。
 - **幂等约定**：所有上行写请求携带 `Idempotency-Key`（对应 outbox_event.idempotency_key，
   宪法 §1.11）；服务端按 key 去重，重放返回首次结果。
 - **错误码结构**：`{ ok: false, code: 'E1xx/E2xx/E3xx/E4xx/E5xx', message, requestId }`（与 IPC 层
-  §1.14 同一套码表；`requestId` 供 NAS 日志追踪）。
+  §1.14 同一套码表；`requestId` 供中央主机日志追踪）。
 - **上行字段脱敏**：PIPL 约束——聊天原文不出本机；上行字段清单（成本/手机号打码范围）随
   Phase 3a 评审定（PRD §10-R4）。
 
@@ -352,4 +373,4 @@
 
 - 本文档与代码同步：新增/下线 IPC 通道须同步本篇（收尾检查项，DEVELOPMENT.md）。
 - 端点级契约变更（参数/响应/错误码破坏性变化）→ 先答 Feature Gate 七问（宪法 §2.3）。
-- NAS/MCP 两层在 Phase 3a / Phase 2 开工前**不得**在本篇展开端点细节（9/2 拍板约束）。
+- 中央主机 / MCP 两层在 Phase 3a / Phase 2 开工前**不得**在本篇展开端点细节（9/2 拍板约束）。

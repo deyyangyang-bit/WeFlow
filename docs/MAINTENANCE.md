@@ -70,6 +70,7 @@ DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──►
 
 - **打包后必查 asar 含新接口**（吸取过 preload 漏打包的亏）：
   `grep -a -o "<新ipc或方法名>" release/*/WeFlow.app/Contents/Resources/app.asar`
+- **Hermes Utility 打包资源（2026-09-08 起）**：`vite build` 产物 `dist-electron/hermesUtility.js` 经全局 `build.extraResources`（from `dist-electron/hermesUtility.js` → to `hermes/hermesUtility.js`）落到 `.app/Contents/Resources/hermes/`；`build.files` 以 `!dist-electron/hermesUtility.js` 负模式保证 asar 内无重复副本。打包后必查两点：Resources/hermes/hermesUtility.js 存在 + `npx asar list` 无该文件（或直接跑 `WEFLOW_WORKER=1 npx tsx scripts/hermes-package-test.ts`，产物红线与安装目录结构一并验证）。产物缺失时主程序不崩，Hermes 报「暂时不可用，请重新安装或升级」。
 
 ## 4. 已知坑（血泪清单）
 1. **闪退真凶曾是误加 `app.disableHardwareAcceleration()`**：原版 GPU 渲染正常，禁用反而触发 SharedImage 崩溃。**不要加任何 GPU 禁用开关**。

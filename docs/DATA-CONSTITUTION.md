@@ -2,7 +2,7 @@
 
 > 状态：**D1 + D2 定稿**（2026-09-02）。依据：`docs/规划/weflow-hermes-PRD-v3.4.md` §5（11 对象）/ §11（ADR-001）。
 > 本文档优先级高于各模块设计文档；凡冲突，以本文档为准，修订须经评审。
-> 范围说明：§1 对象契约（D1）+ §2 四项 Policy（D2：SSOT / Soft Delete / Feature Gate 七问 / Identity Resolution / Stage Transition）已定稿；§2.5 Stage 矩阵 🔶 格待 D8 主管签字生效。
+> 范围说明：§1 对象契约（D1）+ §2 四项 Policy（D2：SSOT / Soft Delete / Feature Gate 七问 / Identity Resolution / Stage Transition）已定稿；§2.5 Stage 矩阵 🔶 格待 D8 主管签字生效；**§2.7 知识治理 Policy（2026-09-09 增补，PRD 2.3/2.7/2.8/2.9 收口：AI 有效读取唯一原语 / logical_id 版本链 / TTL 巡检 / 价格对账 / 删除纪律 / 引用回流）已定稿**。
 
 ---
 
@@ -30,7 +30,7 @@
 
 ### 1.1 customer（新建）
 - **定义**：人/公司锚点，跨微信号的客户主体。
-- **字段**：主键 id；`name`；`type`（dealer / end_user，PRD 1.5）；客户设备档案（品牌 / 车龄 / 是否已改装——§5.1 改装信号来源）+ 通用五列。
+- **字段**：主键 id；`name`；`type`（dealer / end_user，PRD 1.5）；客户设备档案（品牌 / 型号 / 车龄 / 购置日期 / 是否已改装 / 改装日期 / 电池类型 / 最近保养日期 / 质保起算日 / 质保期限 / 复购等级——见 §3 登记行）+ 通用五列。
 - **写入者**：迁移回填（Phase 1）、确认后的 AI 提案、人工建档。
 - **AI 档位**：type 与设备档案 = **B**（proposed→confirm）；建档本身 = **C**。
 - **映射**：新建表（crmDb）。`account.customer_id` 可空列挂接（Phase 1 迁移回填）；`customer_profile.customer_id`（salesDb 既有列）为逻辑外键同步对齐。
@@ -48,7 +48,8 @@
 - **写入者**：分配服务（三模式引擎）、分配员手工改派、SLA 回收器。
 - **AI 档位**：分配引擎执行 = **A**（规则驱动，非 LLM）；回收改派 = **A**；引擎参数（比例权重）调整 = **C**。
 - **映射**：lead ↔ assignment **1:N**；当前分配 = 该 lead 最新有效行。**lead 状态机不动，分配状态永不入 lead 表**；lead 四死列永久禁用（术语表）。
-- **修订（2026-09-05，三次提醒制，UI设计稿屏 4/屏 6）**：补列 `sla1_remind_count INTEGER DEFAULT 0`（0=未提醒过）——第一段 SLA 从「超时一次即回收」升级为三次提醒制：超时未停表（`sla1_met_at IS NULL`）第 1/2 次只提醒（计数 +1 + audit_event action='sla1_remind'，状态与归属零变更），满第 3 次才自动回收（reason='SLA三次超时回收'）+ outbox_event type='sla1_escalate_supervisor' 抄送主管占位（§1.11 只记录不发送）。**扫描范围含 claimed**（已认领未加好友同样在 24h 计时内；认领不重置 sla1_deadline，沿用分配时起点）；已停表行回收器自然跳过。提醒间隔护栏：已提醒行距上次动作（updated_at）≥20h 才允许下一次提醒，防短轮巡一轮刷满 3 次（§2.54 事故教训的时间纪律延伸：回收器绝不凭「行存在即过期」直接处置，须尊重计数与间隔状态）。append-only 不受影响：提醒只 UPDATE 本行计数列 + 追加 audit，ownership_history 零写入。
+- **修订（2026-09-05，三次提醒制，UI设计稿屏 4/屏 6）**：补列 `sla1_remind_count INTEGER DEFAULT 0`（0=未提醒过）——第一段 SLA 从「超时一次即回收」升级为三次提醒制：超时未停表（`sla1_met_at IS NULL`）第 1/2 次只提醒（计数 +1 + audit_event action='sla1_remind'，状态与归属零变更），满第 3 次才自动回收（reason='SLA三次超时回收'）+ outbox_event type='sla1_escalate_supervisor' 主管通知（2026-09-08 闭环：经内网同步定向投递落地 crmDb **notify_inbox**，写者唯一=lanSyncService.consumeSupervisorNotifications）。**扫描范围含 claimed**（已认领未加好友同样在 24h 计时内；认领不重置 sla1_deadline，沿用分配时起点）；已停表行回收器自然跳过。提醒间隔护栏：已提醒行距上次动作（updated_at）≥20h 才允许下一次提醒，防短轮巡一轮刷满 3 次（§2.54 事故教训的时间纪律延伸：回收器绝不凭「行存在即过期」直接处置，须尊重计数与间隔状态）。append-only 不受影响：提醒只 UPDATE 本行计数列 + 追加 audit，ownership_history 零写入。
+- **修订（2026-09-10，PRD 2.4「认领满 24h AI 首次分类」触发轴）**：补列 `claimed_at INTEGER`（认领时刻，毫秒；0/NULL=未认领）——认领计时的唯一基准，**禁止用 `updated_at` 反推认领时间**（updated_at 会被提醒计数/回收等任意动作刷新）。**写入者**：`claimLead` 是本机业务写入口（assigned→claimed 同事务写入），`lanSyncService.applyUpEventTx` 是中枢复制落点（上行 claim 回放，取事件携带的 claimedAt，非新的人工业务入口）；转派新建的 assigned 行 `claimed_at=NULL`（新归属重新计时）；回收/提醒不改写（历史行留档）。**存量 = NULL**（上线前已认领行不回填、不触发首次分类扫描——§2.54 时间纪律：不拿过去时刻当触发基点）。
 
 ### 1.4 lead（现有表转正）
 - **定义**：线索池条目；状态机 NEW→CONTACTED→WX_ADDED→ACCOUNT + DEAD/REOPEN（`crmLeadService.ts:157`，健康不动）。
@@ -59,18 +60,25 @@
 
 ### 1.5 opportunity（现有表转正 + 补列）
 - **定义**：商机。
-- **补列**（幂等 ALTER）：`source`（AI 发现 vs 手动——HANDOVER 已列为前置项）、`type`（整车/改装）、`amount_cny` / `original_currency` / `original_amount` / `rate_note`、`main_model`、`order_qty` / `shipped_qty`、`expected_ship_start` / `expected_ship_end`、`delivery_date`、`quote_version_id`、`customer_id`（与既有 `account_id` 并存，逻辑外键）。
+- **补列**（幂等 ALTER）：`source`（AI 发现 vs 手动——HANDOVER 已列为前置项）、`type`（整车/改装）、`amount_cny` / `original_currency` / `original_amount` / `rate_note`、`main_model`、`order_qty` / `shipped_qty`、`expected_ship_start` / `expected_ship_end`、`delivery_date`、`quote_version_id`、`customer_id`（与既有 `account_id` 并存，逻辑外键）、`over_ship_reason`（超发原因，见 §3 登记行）。
 - **写入者**：信号扫描（parseBuySignal 链路）、人工、迁移回填。
 - **AI 档位**：信号建/推商机 = **B**；金额/币种字段 = **B**（真实库曾出现手机号落金额的前科，规则校验必备）。
 - **映射**：现有表补列；`owner_sales` 列语义化口径与 account 一致（术语表）。
+- **修订（2026-09-09，正式成交登记收口）**：人工正式成交走单点 `crmDbService.registerOpportunityDeal`（IPC `crm:opportunity:registerDeal`）——成交字段（amount_cny / original_currency / original_amount / rate_note / main_model / model_extra（落 custom_fields.supplementary_models）/ order_qty / expected_ship_start / expected_ship_end / delivery_date / type / quote_version_id）+ `status='won'` + opportunity_event + audit_event(action='opportunity_deal_register') **同一事务**，任一步失败整体回滚。硬校验（事务内执行）：amount_cny > 0；order_qty 正整数；expected_ship_end 不早于 expected_ship_start；非 CNY 必填 original_amount + rate_note；main_model 必填且必须命中 product（model/name）；type 只能是「整车」或「改装」（空值/任意字符串一律拒绝）；quote_version_id 必须属于该商机客户的合同且为**现行有效版本**（effective_to=0——历史版本只读，不可绑定，见 §1.6）。**lost 保持轻量**：`opportunityClose('lost')` 只写丢单状态和原因（opportunity_event.detail 留痕），不写任何成交字段；客户阶段自动联动到「成交」**不直接置 won**（`syncOpportunityStageByAccount` 只生成待人工成交登记提醒，opportunity_event 事件 type=`deal_pending`，幂等：同商机只保留一条），人工正式登记一律走 registerOpportunityDeal。
 
 ### 1.6 quote（quotation 转正 + 版本模型）
 - **定义**：报价单；**append-only 版本链**，历史版本只读。
-- **补列**：`version`、`effective_from` / `effective_to`、`pdf_hash`；合同绑定走 `contract.quote_version_id`（contract 侧补列）。
+- **补列**：`version`、`effective_from` / `effective_to`、`pdf_hash`、`artifact_hash`（2026-09-09 本刀补列：DOCX 产物 SHA-256 存证）；合同绑定走 `contract.quote_version_id`（contract 侧补列）。
 - **裁决（既有反向链）**：现状 `quotation.contract_id → contract`。新权威方向 = `contract.quote_version_id → quote 版本`；`quotation.contract_id` 过渡期保留双写只读兼容，后续 Phase 退役，D3 写清双写起止。
 - **写入者**：docgen 链路、人工新建版本。
 - **AI 档位**：AI 起草报价 = **B**；版本生效（effective）= 人工动作。
 - **映射**：现有 `quotation` 表补列；版本行 append-only（同主键组新版本行，旧行置 effective_to）。
+- **修订（2026-09-09，版本链写路径上线）**：
+  1. **写入单点** = `crmDbService.createQuotation` → `createQuotationVersionTx`：同事务完成 ① INSERT 新版本行（version 按合同递增 = MAX(version)+1；effective_from=now；quotation.contract_id 过渡期双写）② 关闭上一有效版本（effective_to=切换时刻）③ contract.quote_version_id ← 新版本 ④ audit_event(action='quote_version_create')。任一步失败整体回滚，旧行永不覆盖。
+  2. **散写禁令**：`create('quotation')` 直接 INSERT 抛错；`update('quotation')` 守卫——历史版本（effective_to>0）只读一律拒绝；现行版本仅允许 `attachment_path` / `artifact_hash` / `pdf_hash` / `custom_fields` / `valid_until` 回写，价格与行项变更必须新建版本。行项必须来自 product（createQuotation 内校验）。
+  3. **产物存证哈希**：报价文件生成完成后对最终产物算 SHA-256（crmDocGenCore.sha256Hex）；**DOCX（及一切真实生成的非 PDF 产物）写 `artifact_hash`，只有真实 PDF（转换链路产出）才写 `pdf_hash`**。历史版本（含只读守卫）不写哈希。
+  4. **读口**：`currentQuotationForContract`（当前有效报价，contract.quote_version_id 指针优先，缺省回退 effective_to=0 最新行）/ `quotationHistoryForContract`（版本链全量，历史只读）；IPC `crm:quotation:current` / `crm:quotation:history`。
+  5. **模块 04 迁移复用同一版本链逻辑**：存量行规范化走 `normalizeQuotationVersionChain` 单点（version 重排 1..N / effective_from 缺省回填 ← created_at / 旧行 effective_to ← 后继生效点 / 指针接管 / 同事务 audit_event(action='quote_version_backfill')），幂等跳过已归一化合同（`quotationChainNormalized`），不复制 SQL。
 
 ### 1.7 ownership（不建表，列语义化）
 - **定义**：「当前谁在跟进」= `account.owner_sales` 语义化转正。
@@ -106,7 +114,7 @@
 ### 1.12 audit_event（新建）
 - **定义**：统一审计流水；append-only，无删除、无更新。
 - **字段**：`actor`（1.2a 姓名+角色）/ `action` / `entity_type` / `entity_id` / `detail` + 通用五列中的时间列（审计行本身不需要 version/删除标记，写死规则见 §2.2 例外）。
-- **⚠️ 身份与权限分离**：actor 的角色字段**仅署名用途，不作访问控制依据**（PRD 1.2a 明文）。Phase 1 本机功能入口的门禁靠机器部署形态 + 现有应用锁；Phase 3a 起以 NAS 服务端绑定认证为准。
+- **⚠️ 身份与权限分离**：actor 的角色字段**仅署名用途，不作访问控制依据**（PRD 1.2a 明文）。Phase 1 本机功能入口的门禁靠机器部署形态 + 现有应用锁；Phase 3a 起以中央主机服务端绑定认证为准。
 - **写入者**：一切新审计写点一律走 audit_event；`activity_log` / `auto_confirm_log` **封存只读留档**（历史可查，新写禁止）。
 - **AI 档位**：**C**（AI 行为被审计，不产生审计写权限）。
 
@@ -178,6 +186,17 @@
 - **跨账号最小化**：仅允许查重 / 合并提案所需的**最小身份字段**（手机号 / wxid），**不得读取他账号的聊天原文与商机金额**。
 - **云推理脱敏（同日拍板）**：聊天扫描等云 API 推理保留，但发送前自动脱敏——手机号 / 微信号 / 身份证号等私密字段打码为 `***`；**聊天原文不出本机**指未脱敏原文，脱敏片段可出。
 
+### 2.7 知识治理 Policy（2026-09-09 本刀入宪，PRD 2.3/2.7/2.8/2.9 收口）
+
+- **AI 有效知识读取唯一原语**：`salesDbService.kbValidEntries`（SQL 级三重过滤，唯一合法出口）——① `status = 'published'`；② `ttl_date` 为空 / `'0'` / 未过期（本地时区当日比较）；③ 每个 `logical_id` 只出当前有效版本（version/updated_at/id 三级稳定排序）。Hermes 工具（knowledge.search）、问一问（hermesAskService）、聊天回复建议（salesReplyService）、话术建议与行动建议（salesActionEngine.generateActionAnalysis）**全部只经该原语取数**；`kbList`/`kbSearch` 为人工管理界面读口，**AI 消费路径禁止直连**（knowledge-governance-test m 节全仓静态绕过检查看门）。
+- **版本链（logical_id）**：稳定逻辑 ID，同一条知识的全部版本行（跨 staging/published/closed）共享，与标题改名解耦。新建条目自成一链（`kb-<rowid>`），**即使标题与已有知识完全相同也独立成链**（2026-09-10 修订：标题相同 ≠ 同一条知识，PRD 明确不得仅靠标题识别同一知识）。**TRIM(title) 分组归链仅限旧库首次升级回填**（`kb-<组内最小 id>`，幂等可重入，回填后为持久值），**运行时禁止按标题归并/识别版本链**：staging 发布使用自身已有的 logical_id（不搜索同标题 published 并链），同链新版本仅能经「基于已发布版本创建新版本」的 fork 入口（kbUpdate published 分支）继承 logical_id。
+- **版本状态机**：staging → published（kbReview 唯一写点）；新版本发布成功后，链内其余 published 行自动置 **closed**（被接替关闭的历史版本，只读沉底留档，不删、不伪造 rejected）。closed / rejected 一律拒绝编辑。
+- **编辑语义**：staging 原地编辑；**编辑 published = fork 同链 version+1 的 staging 新版本**（继承 logical_id/source/evidence_key，published 原行零改动），发布后接替闭环；零变更不 fork。
+- **TTL 巡检（2.9）**：到期 published 条目**不删除、不下架**，由巡检（挂今日行动全量/懒扫描与卡流刷新）生成待处理提醒卡（`follow_up_task`，trigger_type=`knowledge_ttl`，source_id=条目 id，幂等：pending 查重 + partial unique 兜底）；负责人经 `kbRenewTtl` 就地顺延（published 唯一允许的就地更新，仅 ttl_date 治理元数据）；到期知识即从 AI 原语消失。
+- **价格对账（2.7）**：价格类条目发布前与 crmDb `product` 主数据核对（万/¥/元三口径归一为元，±1% 容差）；**冲突禁止 official 发布**并返回具体冲突字段（product_id/model/product_price/knowledge_prices）；**产品主数据价格为最终权威**；community 发布不作硬门但回带冲突提示；无主数据可对（未提及产品/无权威价/crmDb 不可用）诚实放行，人工审核兜底。
+- **删除纪律**：物理删除仅限**从未审核的 staging**，且**先写 audit_event**（crmDb，action=`knowledge_delete`，跨库铁律「先 crmDb 后 salesDb」，审计失败删除中止）；published / rejected / closed 一律禁止物理删除（published 修正走 fork 接替，rejected 拒因留档反哺，closed 历史留档）。
+- **引用回流（2.9）**：AI 消费知识逐条落 `knowledge_usage` 台账（§3 登记行）；统计口径 = 引用次数 / 最近引用时间 / 引用会话关联客户当前阶段分布（customer_profile.stage 归一化投影）；小库全量注入无法归因到单条，不计引用。
+
 ---
 
 ## 3. 扩展对象占位（防过度设计）
@@ -189,9 +208,18 @@
 - **payment_promise**（2026-09-05 本刀入宪，告警 D「承诺打款日过期」/ alert type=`payment_overdue` 配套，设计-AI见解重定位 §4.2 D）：客户明确承诺付款时间的登记表，落 **crmDb**（须注册 ENTITIES 白名单——历史坑：漏注册曾静默失败）。字段：`account_id`（客户档案，NOT NULL）/ `session_id`（承诺原话所在会话——createAlert 四道闸证据回查契约必填，故与 evidence_key 同为必登记项）/ `lead_id` 可空 / `promise_text`（客户原话快照 ≤200 字，§1.10：只存快照不复制全文）/ `due_date`（解析出的承诺日，存当日 0 点毫秒）/ `evidence_key`（承诺依据的客户原话 messageKey，§1.10 锚点强制：验不出原话整条丢弃）/ `status` CHECK('pending','kept','overdue','cancelled') / `source`（识别来源，默认 'llm'）/ 通用五列。幂等：**UNIQUE(account_id, evidence_key)**——同一条客户原话只登记一次。**写入者**：① 识别链（crmParseService 私聊扫描 → 窄口径候选正则命中才调 LLM，置信 <0.6 或日期解不出不登记，宁缺毋滥；我方消息 isSend=1 不识别；actor=`system:payment-promise`）② 到期扫描器（status 流转 pending→kept（登记后该账户有到款）/ pending→overdue（到期无到款），actor=`system:payment-scan`，流转写 audit_event 留痕）③ 人工 cancelled（预留，须留 audit_event）。**删除规则**：软删（通用五列 deleted 标记），不物理删；PIPL 删除权通道沿用 §2.2。告警出口：到期无款经 `alertService.createAlert({type:'payment_overdue'})` 四道闸，`ALERT_PUSH_APPROVED.payment_overdue` 默认 false——评测 ≥85% 前只置 overdue 状态不推送。
 - **lead.import_batch_id**（2026-09-06 本刀入宪，§2.72 遗留「入池方式精确化」）：lead 表加列，**列语义 = 导入批次回溯**——该线索由哪一次分配员导入产生（逻辑外键 → import_batch.id，不建 FK 约束，跨表铁律）。**写入者**：`importLeads` 单点（同事务先建 import_batch 行拿 id，逐行回填；组内 UPDATE 计数）。**存量 = NULL**（该列上线前的历史导入线索不回填，展示层 NULL 回退「时间近似判定」，不炸存量）；**删除规则**：随 lead 行生命周期（级联删线索时同删，无独立删除路径）；禁止改语义（非分配归属、非审计——审计走 audit_event.lead_import）。
 - **assignment_weight_change 审计动作**（2026-09-06 本刀入宪，§2.72 遗留「权重调整独立审计」）：`crmAssignWeights` 配置被修改时写一条 audit_event（action=`assignment_weight_change`，entity_type=`config`，detail=前后权重 JSON diff + actor=当前身份档案姓名）。**写点单点 = main.ts `config:set` IPC 拦截**（前端 config set 原无审计；不新增端点、前端零改动），写库失败不阻塞配置保存（审计尽力而为，配置写入是主语义）。屏 7 审计流水「权重调整」段从 `LIKE '%weight%'` 预留改为精确匹配本 action。
-- **knowledge_base 治理列**（2026-09-06 本刀入宪，设计-Hermes-MVP 刀 1）：现有表加列（幂等 ALTER，迁移铁律「只能加列」），**不建新表**。`status`（staging/published/rejected，默认 staging——一切新增条目（人工/CSV/话术提炼/知识提案）一律先落 staging，AI 永不发布）/ `authority`（official/community，默认 community——official=主管审定权威口径）/ `version`（INT 默认 1，引用展示 `（vN）`，本批不设自增规则）/ `ttl_date`（到期日，可空，Phase 3b 向量检索前不做自动过期处置）/ `reviewed_by`、`reviewed_at`（审核署名+时间）/ `reject_reason`（拒因，拒绝必填）。**写入者**：status/reviewed_*/reject_reason 唯一写点 = `kbReview` 状态机（staging→published｜staging→rejected，跨态拒绝，服务层+CHECK 双守卫），actor=当前身份档案姓名；authority 仅发布动作可置。**删除规则**：rejected 沉底留档**不删**（拒因反哺），物理删除仅保留既有 kbDelete 人工通道；存量迁移一次性置 `status=staging, authority=community`（幂等可重入，只补 NULL/空，已审定行不动）——**治理版上线后存量默认不可被问答引用**（刀 3 检索只查 published）。
-- **knowledge_base 提案列**（2026-09-06 本刀入宪，设计-Hermes-MVP 刀 4）：现有表再加两列（幂等 ALTER，迁移铁律「只能加列」），不建新表。`source`（TEXT NOT NULL DEFAULT 'manual'：manual=人工新增/CSV/话术提炼及存量背填；proposal=知识提案——问答无命中「生成知识提案」/ 知识页「补充知识」两入口共用唯一写点 `salesKnowledgeService.propose`）/ `evidence_key`（TEXT 可空：提案来源锚点——问答路径 = 问题摘要哈希 askKey（可回查 proposal_event knowledge_ask 台账行），手动路径 = 客户原话 messageKey 或出处摘要；**硬门：source=proposal 的行 evidence_key 必填，服务层拦截，空锚提案不进审核队列**，§1.10 沿用；非提案行 NULL 合法）。**写入者**：source/evidence_key 仅创建时落（kbCreate 透传），kbReview 状态机不动这两列；存量行 ALTER DEFAULT 背填 'manual'。**删除规则**：随条目生命周期（rejected 沉底留档同款）。
+- **knowledge_base 治理列**（2026-09-06 本刀入宪，设计-Hermes-MVP 刀 1；**2026-09-09 修订：PRD 2.3 版本链收口**）：现有表加列（幂等 ALTER，迁移铁律「只能加列」），**不建新表**。`status`（**staging/published/rejected/closed**，默认 staging——一切新增条目（人工/CSV/话术提炼/知识提案）一律先落 staging，AI 永不发布；closed = 同链新版本发布后被接替关闭的历史版本，§2.7）/ `authority`（official/community，默认 community——official=主管审定权威口径，价格冲突时发布被禁，§2.7）/ `version`（INT 默认 1；同链新版本 = 链内最大 version + 1，引用展示 `（vN）`）/ **`logical_id`（2026-09-09 增列：稳定知识逻辑 ID，PRD 2.3 版本链锚点——同链所有版本共享、与标题解耦；存量按 TRIM(title) 分组回填，见 §2.7）** / `ttl_date`（到期日，可空；2026-09-09 起**到期不出 AI 原语并生成待处理提醒，不删除知识**，废除「Phase 3b 前不做自动过期处置」的旧口径）/ `reviewed_by`、`reviewed_at`（审核署名+时间）/ `reject_reason`（拒因，拒绝必填）。**写入者**：status/reviewed_*/reject_reason/logical_id/version 接替唯一点 = `kbReview` 状态机（staging→published｜staging→rejected，跨态拒绝；发布成功自动关闭链内其余 published 行），actor=当前身份档案姓名；authority 仅发布动作可置（official 受价格对账门约束）；ttl_date 就地更新唯一点 = `kbRenewTtl`（仅 published 当前版本）。**编辑规则**：staging 原地编辑（kbUpdate）；published 编辑 = fork 同链 version+1 staging 新版本；rejected/closed 只读。**删除规则**：物理删除仅限从未审核的 staging 且**先写 audit_event（crmDb，action=knowledge_delete，审计失败删除中止）**；published/rejected/closed 禁止物理删除（2026-09-09 收紧：原「物理删除仅保留既有 kbDelete 人工通道」口径作废）。存量迁移一次性置 `status=staging, authority=community`（幂等可重入，只补 NULL/空，已审定行不动）——治理版上线后存量默认不可被问答引用。
+- **knowledge_base 提案列**（2026-09-06 本刀入宪，设计-Hermes-MVP 刀 4）：现有表再加两列（幂等 ALTER，迁移铁律「只能加列」），不建新表。`source`（TEXT NOT NULL DEFAULT 'manual'：manual=人工新增/CSV/话术提炼及存量背填；proposal=知识提案——问答无命中「生成知识提案」/ 知识页「补充知识」两入口共用唯一写点 `salesKnowledgeService.propose`）/ `evidence_key`（TEXT 可空：提案来源锚点——问答路径 = 问题摘要哈希 askKey（可回查 proposal_event knowledge_ask 台账行），手动路径 = 客户原话 messageKey 或出处摘要；**硬门：source=proposal 的行 evidence_key 必填，服务层拦截，空锚提案不进审核队列**，§1.10 沿用；非提案行 NULL 合法）。**写入者**：source/evidence_key 仅创建时落（kbCreate 透传），kbReview 状态机不动这两列；存量行 ALTER DEFAULT 背填 'manual'。**删除规则**：随条目生命周期（rejected 沉底留档同款）。**证据回查契约（2026-09-09 收口）**：evidence_key 的回查一律经 `sales:evidence:getByKey` 统一入口（evidenceResolver，P0-2B），解析不了或查不到**返回 unavailable（reason 明示）**，绝不伪造回查成功（KnowledgeBasePage「查看依据」＝依据不可用话术）。
+- **knowledge_usage**（2026-09-09 本刀入宪，PRD 2.9 效果回流「知识使用 × 阶段结果归因」配套）：知识引用台账，落 **salesDb**（与 knowledge_base 同库闭环，无需注册白名单，同 opportunity_eval_case 理由）。字段：`knowledge_id`（NOT NULL）/ `logical_id` + `version` + `title`（引用时点的版本链快照）/ `session_id` 可空（引用所在会话，ask 全局问不携带）/ `ask_key` 可空（ask 轨道的问题哈希）/ `source`（ask=问答引用 / reply=聊天回复建议检索命中 / action=行动建议检索命中）/ `cited_at` + id 主键（时间列单列，§1.12 同例）。**append-only**（§2.2 例外同款：无删除标记、无 UPDATE/DELETE 方法，永不删改）。**写入者**：① hermesAskService 出答案时逐引用条目落账（ask 轨道，同 (knowledge_id, ask_key) 幂等去重）；② salesReplyService / salesActionEngine 检索路径选中条目落账（reply/action 轨道，每次注入各记一行）；**小库全量注入无法归因到单条，不计引用**。**消费**：只读聚合 `knowledgeUsageStats`（引用次数 / 最近引用时间 / 引用会话关联客户当前阶段分布——customer_profile.stage 归一化投影，无会话/无档案不计入）；AI 永不直写（由 AI 链路代码落账，非模型输出）。
 - **proposal_event**（2026-09-06 本刀入宪，设计-Hermes-MVP 刀 2 采用率埋点）：「AI 提案 → 人处理」全程埋点，落 **salesDb**（与 knowledge_base 同库：三写点中知识审核/行动卡完成在 salesDb，聚合读在复盘页；crmDb 侧事件经服务层跨库写入，跨库逻辑外键铁律）。字段：`event_type` CHECK(proposal/knowledge/action 三类)/ `stage` CHECK(generated/viewed/accepted/modified/rejected/expired 六态)/ `entity_type` + `entity_id`（指向提案对象：account_info=`<accountId>:<field>`、knowledge=`<id>`、follow_up_task=`<id>`；刀 3 增补 `knowledge_ask`=`<问题摘要哈希>`——问答埋点 generated（出答案）/viewed（展开），非提案对象归属，同一 append-only 台账复用）/ `actor` / `created_at` + id 主键，通用五列即此六列（时间列 created_at 单列，§1.12 同例）。**append-only**（§2.2 例外同款：无删除标记、无 UPDATE/DELETE 方法，永不删改）。**写入者**：① applyInfo accept/reject → proposal/accepted|rejected；② 知识审核发布/拒绝 → knowledge/accepted|rejected；③ completeSignal → action/accepted；④ generated/viewed 挂既有提案生成点（enrich pending 生成、任务创建 todoCreate）与卡流渲染点（今日行动卡流，viewed 每实体只记一次防刷屏）；⑤ 刀 3 问答（设计-Hermes-MVP 刀 3.5）：hermes-ask 出答案 → knowledge/generated（entity=knowledge_ask），用户展开答案 → knowledge/viewed（同 askKey 只记一次）；无命中/未配置模型不记 generated（漏斗诚实，不出答案不入账）；⑥ 刀 4 知识提案（设计-Hermes-MVP 刀 4）：问答无命中/手动补充知识生成提案 → proposal/generated（entity_type=knowledge，entity_id=knowledge_base.id，actor=身份档案）；提案裁决沿用写点② knowledge/accepted|rejected（**不双记 proposal/accepted**——采纳率聚合按 stage 跨 proposal+knowledge 求和，双记会让分母 processed 虚增）；⑦ 刀 5 问数据（设计-Hermes-MVP 刀 5）：问一问数据类出答案 → knowledge/generated（entity=`data_ask`=`<问题摘要哈希>`，event_type 沿用 knowledge——event_type 三类 CHECK 不动，问一问属问答族），用户展开答案 → knowledge/viewed（同 askKey 只记一次）；模板不覆盖（unsupported）/缺客户名不记 generated。AI 永不直写裁决态（accepted/rejected/modified 只能由人工动作触发写入）。**消费**：只读聚合（复盘页「近 7 天提案 N 条 · 采纳率 X%」，采纳率 = (accepted+modified)/已处理总数，分母 0 显示「—」不伪造），PRD DoD 只看这两个数。
+
+- **notify_inbox**（2026-09-08 本刀入宪，SLA1 三次超时主管通知闭环配套）：主管/分配员升级提醒收件箱，落 **crmDb**（ENTITIES 白名单已注册）。字段：`notify_type`（TEXT NOT NULL DEFAULT 'sla1_escalate'）/ `idempotency_key`（TEXT NOT NULL，**UNIQUE 幂等**：同一通知事件只落地一次）/ `title` / `body`（脱敏摘要：联系方式过 maskContact，不出原文）/ `lead_id` 可空 / `detail`（JSON：原归属销售/remindCount/recycledAt/reason/contactMasked）/ `status` CHECK('unread','read')（UI 已读两态，只允许 unread→read 单向）/ 通用五列。**写入者唯一**：lanSyncService.consumeSupervisorNotifications（中枢本机消费 sla1_escalate_supervisor 下行通知，同事务写 notify_inbox + audit_event(action='sla1_supervisor_notify') + outbox 标 sent）；UI（crmIpcHandlers crm:notify:list / crm:notify:markRead）只读与已读，不产生、不删除。**删除规则**：不提供删除（append 精神），软删列保留仅作未来通道。
+
+- **first_classification**（2026-09-10 本刀入宪，PRD 2.4「认领满 24h AI 首次分类」配套）：认领轮次级的首次分类提案事实表，落 **crmDb**（须注册 ENTITIES 白名单；与 assignment 同库——触发轴与轮次幂等键都在 assignment）。字段：`assignment_id`（NOT NULL + **UNIQUE** = 认领轮次幂等键，同一认领只执行一次；转派新建 assignment 行即新轮次，旧轮次行永不改写）/ `lead_id`（NOT NULL）/ `status` CHECK('pending','proposed','confirmed','rejected','failed')（pending=已触发待模型；proposed=B 档提案待人工；confirmed/rejected=人工裁决终态；failed=模型失败可重试，**不写假结果**）/ `result_json`（分类结果：stage / customer_type / intent_score + 画像字段；证据不足字段 = `'unknown'` 合法态，§2.5）/ `evidence_json`（逐字段证据：source ∈ chat/nickname/remark/moments/address/profile + evidence_key（messageKey）或结构化来源 id；**无证据字段不得出现在 result**（§1.10 锚点强制），昵称/模糊关键词等间接信号只形成疑似提案）/ `gaps_json`（信息缺口六字段检测快照）/ `error`（失败原因）/ `trigger_source`（scan=24h 扫描 / manual=立即分析按钮）/ `model` / `decided_by`、`decided_at`（人工裁决署名+时刻）/ 通用五列 + created_at。**写入者唯一 = crmFirstClassifyService**：扫描器（status=claimed 且 claimed_at 满 24h 且无轮次行才创建）与手动「立即分析」双触发同走同一执行函数；proposed/confirmed/rejected 行存在时不重复调模型；confirm/reject 只从 proposed 流转，裁决写 audit_event + proposal_event（proposal/accepted|rejected，entity_type=`first_classification`，entity_id=轮次行 id）。**confirmed 落正式事实的边界**：customer_type → `customer.type`（仅已关联 customer 时，经 setCustomerType 人工写入口径与审计）；stage → `customer_profile.stage` **仅当前 unknown/空才落**（不覆盖新消息阶段分类 A 档的更新结果，intent_tag_log source='first_classification_confirmed'）；intent_score 无正式字段登记，只留在本表 confirmed 行（不伪造落点）；画像字段 → account enrich 字段集（不覆盖 manual/locked 字段）。**删除规则**：软删 deleted 列；confirmed/rejected/failed 历史行保留（轮次复盘与采纳率分母）。
+- **follow_up_task 反问卡触发枚举 `info_gap_ask`**（2026-09-10 本刀入宪，PRD 2.4 信息缺口反问卡配套）：行动卡新 trigger_type（稳定枚举，沿用 follow_up_task 载体不建新表）。**source_id 编码 = `assignment_id * 10 + gapIndex`**（gapIndex 1-6 = 客户类型/公司行业/需求型号/数量/预算/采购时间）——同一客户同一认领轮次同一缺口天然幂等，配合 `idx_ft_sla_once` partial unique（(trigger_type, source_id) WHERE status='pending'）双保险。**创建者 = crmFirstClassifyService**（首次分类完成后按六字段缺口检测出卡；卡片内容 = 建议销售下次聊天自然提问的静态话术模板，**不自动给客户发消息**；analysis 记缺口判定依据供「查看触发依据」）。**关闭者 = 字段确认钩子**（applyInfoField accept / setAccountFieldManual / setCustomerType / registerOpportunityDeal / 首次分类 confirm → `reevaluateInfoGapCards` 重评：已满足字段的 pending 卡置 done + analysis 记关闭依据 + audit_event action='info_gap_autoclose'）；done/rejected 历史保留，新认领轮次按新 source_id 重新出卡，不覆盖历史。
+- **customer 设备档案 7 字段补列**（2026-09-10 本刀入宪，交付售后配套）：customer 表加列（幂等 ALTER，迁移铁律「只能加列」）。`model`（设备型号 TEXT）/ `purchase_date`（购置日期，epoch ms；与 `vehicle_age` 二选一，二者同时有则 `vehicle_age` 为真值）/ `modified_date`（改装日期 epoch ms）/ `battery_type`（电池类型 TEXT）/ `last_maintenance_date`（最近保养日期 epoch ms）/ `warranty_start_date`（质保起算日 epoch ms）/ `warranty_days`（质保期限天 INTEGER）/ `repeat_level`（复购等级 TEXT：首购/复购老客/高频复购·升A，服务端 recompute 单点写）。**写入者**：人工经 `crmDeliveryService.saveEquipment`（B 档，proposed→人工确认后写）；AI 提取只出提案（enrich 待确认链路），不直接落；日期列 0/NULL = 未登记合法态，**不得拿缺失日期猜周期**。**审计**：字段变化经 audit_event(action=`customer_equipment_set`)，detail 记新旧值；`repeat_level` 变化经 audit_event(action=`customer_repeat_level_change`)。
+- **opportunity 补列 `over_ship_reason`**（2026-09-10 本刀入宪，交付售后配套）：opportunity 表加列（幂等 ALTER）。超发（shipped_qty > order_qty）时必须填写的超发原因快照（≤200 字）。**写入者**：`crmDeliveryService.registerDelivery`（人工交付登记，同事务写 opportunity + audit_event）；`shipped_qty` 硬校验 = 非负整数、> order_qty 必须带 over_ship_reason。
+- **follow_up_task 触发枚举 `diff_shipped_shortage` / `warranty_mod_near` / `warranty_mod_expired` / `trade_in_proposal`**（2026-09-10 本刀入宪，交付售后配套）：行动卡新 trigger_type（稳定枚举，沿用 follow_up_task 载体不建新表）。`diff_shipped_shortage` source_id=opportunity.id，**同一商机只保留一张 pending**（idx_ft_sla_once 双保险），实发量补齐时自动关闭（todoUpdate done + analysis.closedReason + audit_event action=`diff_task_autoclose`），差异再现按规则重新出卡不覆盖历史 done；`warranty_mod_near`（临期）与 `warranty_mod_expired`（已到期）source_id=customer.id，同一质保周期幂等（pending 去重 + 一次性出卡），无真实起算日（warranty_start_date 且 warranty_days 缺一）不出假提醒；`trade_in_proposal` source_id=customer.id，提案必须携带 evidence_key（真实设备日期或聊天证据）+ reason + 时间，confirm/reject 写 proposal_event + audit_event，**不自动改客户事实**。**创建者 = crmDeliveryService**；页面提醒一律读后端 follow_up_task 事实，禁止前端本地计算。
 
 ---
 
@@ -219,4 +247,13 @@
 | `lead.owner_id/pool_id/assigned_at/private_deadline` | 永久禁用死列，不删不启用 |
 | `lead.tag` | 归属语义退役，仅需求标签 |
 | `quotation.contract_id` | 过渡期双写只读兼容，权威方向为 `contract.quote_version_id` |
+| `quotation.artifact_hash`（新列，2026-09-09） | DOCX 产物 SHA-256 存证；`pdf_hash` 仅真实 PDF 才写（§1.6 修订） |
+| `quotation 历史版本` | append-only 只读（effective_to>0 一律拒绝 UPDATE），价格/行项变更必须新建版本（§1.6 修订 2026-09-09） |
 | `activity_log` / `auto_confirm_log` | 封存只读；新审计一律 `audit_event` |
+
+### 2026-09-12 开工简报与录入运行数据登记
+
+- `contract.custom_fields.creation_request_id`：人工录入流程稳定标识，随合同长期保留；同账号按标识查库恢复，完成/取消只删除浏览器最小草稿。客户与合同起始创建在同一事务；报价、文档各自重试，非跨文件全局事务。客户抬头五项复用既有键，更新须合并，已有非空档案仅写用户勾选项。
+- `quote_version_create.detail.price_overrides`：可选改价明细，产品/目录价/报价价由后端读取并按分比较，和版本同事务。没有改价不写此键。
+- `report_snapshot(period_type=morning_digest).stats`：派生快照增加事项键、taskId、期限、分组及覆盖状态；现行完成状态从 follow_up_task 投影，不把历史快照当当前事实。仅当前微信账号。
+- `userData/ai-usage/<account-hash>.json`：独立运行用量账本（非客户事实），原子写；记录调用 ID、目的、模型、提示词版本、时间、耗时、结束原因及 token 用量，缺失为 null。禁止保存密钥、完整 prompt、聊天正文；按请求开始时账号写入原账号账本，切号不重定向。当前仅观测，不代表硬预算已启用。
