@@ -1,14 +1,16 @@
 /**
  * hermesAskService.ts —— 刀 3 带引用知识问答（设计-Hermes-MVP 刀 3，PRD 2.1 第一件）
  *
- * 流程：问题 → 关键词 2/3-gram 提取 → kbSearchPublished（SQL 级只查 published，铁律：
- * LLM 只读 published 条目，staging/rejected 永不出检索口）→ n-gram 命中打分取 top3 →
+ * 流程：问题 → 关键词 2/3-gram 提取 → kbValidEntries（AI 有效知识读取唯一原语，SQL 级三重过滤：
+ * 只查 published + TTL 未过期 + 每个 logical_id 只出当前有效版本——staging/rejected/closed/过期
+ * 条目永不出检索口）→ n-gram 命中打分取 top3 →
  * 条目正文过 maskPrivateText（宪法 §2.6 脱敏前置，未脱敏原文不出本机）→
  * callChatCompletion（temperature 0.2，单一固定 system prompt，差异放 user prompt）→
- * 答案 + 结构化引用（《title》（vN），前端渲染可点击跳知识库条目）。
+ * 答案 + 结构化引用（《title》（vN），保留 id/logical_id/version/title，前端渲染可点击跳知识库条目）
+ * + 引用台账（knowledge_usage/ask，PRD 2.9 效果回流：同问同条目去重计 1）。
  *
  * 铁律：
- *  - 检索只读 published（kbSearchPublished SQL 级过滤，hermes-ask-test 静态断言锚点）
+ *  - 检索只经 AI 有效读取原语 kbValidEntries（published/TTL/版本三重 SQL 级过滤，hermes-ask-test 静态断言锚点）
  *  - 送 LLM 的条目正文先过 maskPrivateText（buildAskUserPrompt 是唯一 prompt 出口）
  *  - 无命中 / 未配置模型 / 模型空返回不记 generated 埋点（漏斗诚实，不出答案不入账）
  *  - 不自动发送给客户：本服务只产答案文本，无任何发送通道（AI 碰不到发送键）
@@ -32,9 +34,11 @@ export const ASK_SYSTEM_PROMPT =
   '参考内容里没有的信息必须回答「知识库里暂时没有这条信息」，绝不编造参数、价格与数字。' +
   '回答用中文，简洁直接，不超过 200 字。'
 
-/** 引用条目（结构化下发，前端渲染「引用自：《title》（vN）」可点击跳知识库） */
+/** 引用条目（结构化下发，前端渲染「引用自：《title》（vN）」可点击跳知识库；
+ *  引用四要素 id/logical_id/version/title 齐备——logical_id 是跨版本稳定锚点，供回查版本链） */
 export interface AskCitation {
   id: number
+  logical_id: string
   title: string
   version: number
 }
@@ -156,12 +160,17 @@ export async function askKnowledge(
     return { status: 'not_configured', question, askKey, entries: [] }
   }
 
-  const top = rankEntries(question, salesDbService.kbSearchPublished(extractKeywords(question)))
+  const top = rankEntries(question, salesDbService.kbValidEntries({ keywords: extractKeywords(question) }))
   if (top.length === 0) {
     return { status: 'no_hit', question, askKey, entries: [] }
   }
 
-  const citations: AskCitation[] = top.map((e) => ({ id: Number(e.id), title: e.title, version: e.version ?? 1 }))
+  const citations: AskCitation[] = top.map((e) => ({
+    id: Number(e.id),
+    logical_id: String(e.logical_id || ''),
+    title: e.title,
+    version: e.version ?? 1
+  }))
   try {
     // 脱敏前置（宪法 §2.6）：送 LLM 的条目正文强制过 maskPrivateText（未脱敏原文不出本机）
     const masked = top.map((e) => ({ title: e.title, content: maskPrivateText(String(e.content || '')), version: e.version ?? 1 }))
@@ -172,6 +181,20 @@ export async function askKnowledge(
     }
     // 埋点 generated（出答案，刀 3.5 复用刀 2 表）：无命中/未配置/空返回不记
     trackProposalEvent({ event_type: 'knowledge', stage: 'generated', entity_type: 'knowledge_ask', entity_id: askKey, actor: 'system:hermes-ask' })
+    // 引用台账（PRD 2.9 效果回流）：引用次数/引用时间/关联客户阶段统计的数据源；
+    // 同 (条目, askKey) 幂等去重，尽力而为不阻断答案
+    for (const e of top) {
+      try {
+        salesDbService.knowledgeUsageAdd({
+          knowledge_id: Number(e.id),
+          logical_id: e.logical_id ?? null,
+          version: e.version ?? 1,
+          title: String(e.title || ''),
+          ask_key: askKey,
+          source: 'ask'
+        })
+      } catch { /* 台账尽力而为 */ }
+    }
     return { status: 'answer', question, askKey, entries: citations, answer, citations }
   } catch (e) {
     salesLog('WARN', `[HermesAsk] 组答案失败: ${(e as Error).message}`)

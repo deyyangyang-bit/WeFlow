@@ -842,6 +842,7 @@ async function main(): Promise<void> {
 
   // ─── d. UI 静态护栏 ───────────────────────────────────────────────────────
   const panelSrc = readFileSync(join(ROOT, 'src/components/hermes/HermesPanel.tsx'), 'utf8')
+  const hermesErrorMessagesSrc = readFileSync(join(ROOT, 'shared/hermesErrorMessages.ts'), 'utf8')
   const panelScss = readFileSync(join(ROOT, 'src/components/hermes/HermesPanel.scss'), 'utf8')
   const agentSrc = readFileSync(join(ROOT, 'electron/services/hermesAgent.ts'), 'utf8')
   const coreSrc = readFileSync(join(ROOT, 'electron/services/hermesAgentCore.ts'), 'utf8')
@@ -861,7 +862,8 @@ async function main(): Promise<void> {
   // d2 五态文案（空闲/运行/完成/失败/追问）+ 失败人话
   ok('d2 五态文案在位：空闲目标输入/运行真实步骤/完成结论/失败人话/追问',
     panelSrc.includes('说出你的销售目标') && panelSrc.includes('正在规划查询步骤') &&
-    panelSrc.includes('结论') && panelSrc.includes('暂时无法查询，请重试') &&
+    panelSrc.includes('结论') && panelSrc.includes('getHermesErrorMessage') &&
+    hermesErrorMessagesSrc.includes('暂时无法查询，请重试') &&
     panelSrc.includes('继续追问') && panelSrc.includes('AI 结论仅供参考'))
 
   // d3 scss 零硬编码 hex（token 化 --color-* 族）

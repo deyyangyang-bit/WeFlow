@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Bot, X, Sparkles, CheckCircle2, CircleDot, AlertCircle, Loader2, Undo2 } from 'lucide-react'
 import { useHermesStore, canSettleTaskView, contextKeyOf, type HermesContext } from '../../stores/hermesStore'
 import type { HermesTaskSnapshot } from '../../types/electron'
+import { getHermesErrorMessage } from '../../../shared/hermesErrorMessages'
 import './HermesPanel.scss'
 
 /** 任务收尾状态（completed/failed/cancelled） */
@@ -76,6 +77,7 @@ export default function HermesPanel() {
   const [followUp, setFollowUp] = useState('')
   const [continuing, setContinuing] = useState(false)
   const [startError, setStartError] = useState('')
+  const [continueError, setContinueError] = useState('')
   const taskRef = useRef<HermesTaskSnapshot | null>(null)
   taskRef.current = task
 
@@ -113,6 +115,7 @@ export default function HermesPanel() {
     const startedKey = contextKeyOf(context) // 发起时上下文（await 期间用户可能切走）
     setStarting(true)
     setStartError('')
+    setContinueError('')
     setTask(null)
     try {
       const payload = {
@@ -133,14 +136,11 @@ export default function HermesPanel() {
         setTask(r.task)
         setGoal('')
       } else if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
-        // 发起失败也只给人话（not_configured 是唯一可行动的错误，其余统一重试话术）
-        setStartError(r.errorCode === 'not_configured'
-          ? '还没有配置 AI 模型：请到 设置 → AI 设置 完成配置后再试。'
-          : '暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。')
+        setStartError(getHermesErrorMessage(r.errorCode))
       }
     } catch {
       if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
-        setStartError('暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。')
+        setStartError(getHermesErrorMessage('internal'))
       }
     } finally {
       setStarting(false)
@@ -153,6 +153,7 @@ export default function HermesPanel() {
     if (!q || !tid || continuing) return
     const startedKey = contextKeyOf(context)
     setContinuing(true)
+    setContinueError('')
     try {
       const r = await window.electronAPI.hermes.continueTask({ taskId: tid, question: q })
       if (r.ok && r.task) {
@@ -160,9 +161,14 @@ export default function HermesPanel() {
         if (contextKeyOf(useHermesStore.getState().context) !== startedKey) return
         setTask(r.task)
         setFollowUp('')
+      } else if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
+        // 追问失败保留上一轮结论，但必须显示同一套人话错误文案。
+        setContinueError(getHermesErrorMessage(r.errorCode))
       }
     } catch {
-      // 续问失败保留当前结论（任务快照未被改动），提示条由下一轮进度/结果自然覆盖
+      if (contextKeyOf(useHermesStore.getState().context) === startedKey) {
+        setContinueError(getHermesErrorMessage('internal'))
+      }
     } finally {
       setContinuing(false)
     }
@@ -288,7 +294,7 @@ export default function HermesPanel() {
           {task && (task.status === 'failed' || task.status === 'cancelled') && (
             <div className="hermes-panel__failed">
               <AlertCircle size={22} />
-              <p>{task.errorMessage || '暂时无法查询，请重试。若问题持续，请重启 WeFlow 或联系管理员。'}</p>
+              <p>{getHermesErrorMessage(task.errorCode) || task.errorMessage}</p>
             </div>
           )}
 
@@ -303,6 +309,12 @@ export default function HermesPanel() {
           {/* 追问（多轮继续；completed 后可用） */}
           {task && task.status === 'completed' && (
             <div className="hermes-panel__followup">
+              {continueError && (
+                <div className="hermes-panel__failed hermes-panel__failed--inline">
+                  <AlertCircle size={16} />
+                  <p>{continueError}</p>
+                </div>
+              )}
               <div className="hermes-panel__input-row">
                 <input
                   type="text"
@@ -342,7 +354,7 @@ export default function HermesPanel() {
         {/* completed 态底部：新目标入口（带摘要窗口续问在上方追问框；这里开新任务） */}
         {task && task.status === 'completed' && (
           <div className="hermes-panel__footer">
-            <button className="hermes-panel__new" onClick={() => { setTask(null); setStartError('') }}>
+              <button className="hermes-panel__new" onClick={() => { setTask(null); setStartError(''); setContinueError('') }}>
               <Undo2 size={13} />换个目标
             </button>
           </div>

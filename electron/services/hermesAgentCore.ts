@@ -81,6 +81,8 @@ export interface HermesTask {
   errorCode?: string
   /** 人话错误文案（绝不出现 SQL/IPC/堆栈/路径） */
   errorMessage?: string
+  /** 本轮因模型输出不符合 findings v2/证据协议而被回喂纠偏的次数。 */
+  protocolCorrectionCount?: number
   createdAt: number
 }
 
@@ -371,6 +373,7 @@ export class HermesAgentCore {
         if (!decision) {
           if (invalidRetries >= MAX_INVALID_RETRIES) { this.failTask(rt, 'ai_invalid_output'); return }
           invalidRetries++
+          rt.task.protocolCorrectionCount = (rt.task.protocolCorrectionCount ?? 0) + 1
           this.pushConversation(rt, [
             { role: 'assistant', content: String(said || '').slice(0, 500) },
             { role: 'user', content: '输出不符合协议：只输出一个 JSON 对象，type 必须是 tool_call 或 complete。请重新输出。' }
@@ -385,6 +388,7 @@ export class HermesAgentCore {
           if (rejectReason) {
             if (rt.dataRetries >= MAX_DATA_RETRIES) { this.failTask(rt, 'ai_invalid_output'); return }
             rt.dataRetries++
+            rt.task.protocolCorrectionCount = (rt.task.protocolCorrectionCount ?? 0) + 1
             this.pushConversation(rt, [
               { role: 'assistant', content: String(said || '').slice(0, 500) },
               { role: 'user', content: rejectReason }

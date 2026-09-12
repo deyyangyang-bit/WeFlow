@@ -202,6 +202,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         contextLabel: context.label,
         steps: [],
         evidence: [],
+        protocolCorrectionCount: 0,
         createdAt: now
       },
       runId,
@@ -250,6 +251,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         : undefined,
       errorCode: rt.task.errorCode,
       errorMessage: rt.task.errorMessage,
+      protocolCorrectionCount: rt.task.protocolCorrectionCount,
       createdAt: rt.task.createdAt
     }
   }
@@ -383,6 +385,7 @@ export function runHermesUtility(port: HermesUtilityPort): void {
         contextLabel: cp.context.label,
         steps: [],
         evidence,
+        protocolCorrectionCount: 0,
         createdAt: cp.savedAt
       },
       conversation: cp.conversation.map((m) => ({ ...m })),
@@ -429,12 +432,15 @@ export function runHermesUtility(port: HermesUtilityPort): void {
       return
     }
     if (rt.cancelRequested) { sendTaskResponse(taskId, 'continue', false, runId, undefined, 'cancelled'); return }
-    // 新一轮：清上轮步骤/错误；对话窗口与证据表保留（与 in-process 服务语义一致）
+    // 新一轮：清上轮步骤/错误；对话窗口与证据表保留（与 in-process 服务语义一致）。
+    // 纠偏计数是「本轮」语义：start/restore/continue 开新轮次一律从 0 起，与旧 runId
+    // 的迟到快照互不影响
     rt.runId = runId
     rt.task.steps = []
     rt.task.result = undefined
     rt.task.errorCode = undefined
     rt.task.errorMessage = undefined
+    rt.task.protocolCorrectionCount = 0
     rt.task.status = 'running'
     rt.lastCallKey = ''
     rt.unresolvedToolFailure = false

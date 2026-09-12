@@ -423,16 +423,17 @@ const actionPending: HermesToolDef = {
   }
 }
 
-/** knowledge.search：知识库检索（复用刀 3 extractKeywords + kbSearchPublished，SQL 级只查 published） */
+/** knowledge.search：知识库检索（复用刀 3 extractKeywords + AI 有效读取唯一原语 kbValidEntries：
+ *  SQL 级 published + TTL 未过期 + 每 logical_id 当前版本三重过滤，staging/rejected/closed/过期不出口） */
 const knowledgeSearch: HermesToolDef = {
   name: 'knowledge.search',
   publicLabel: '知识库检索',
-  description: '在知识库（已发布条目）里按问题检索，返回条目标题/类目/摘句与条目 id。',
+  description: '在知识库（已发布且未过期的当前版本条目）里按问题检索，返回条目标题/类目/摘句与条目 id。',
   argsHint: '{"query": "要检索的问题或关键词（必填）"}',
   run: async (args) => {
     const query = strArg(args.query)
     if (!query) return { ok: false, publicSummary: '请提供要检索的问题。', errorCode: 'bad_arguments' }
-    const entries = salesDbService.kbSearchPublished(extractKeywords(query), 5)
+    const entries = salesDbService.kbValidEntries({ keywords: extractKeywords(query), limit: 5 })
     if (entries.length === 0) {
       return { ok: true, data: { entries: [], total: 0 }, publicSummary: '知识库里没有检索到相关内容。' }
     }
@@ -441,6 +442,7 @@ const knowledgeSearch: HermesToolDef = {
       data: {
         entries: entries.map((e) => ({
           id: Number(e.id),
+          logical_id: String(e.logical_id || ''),
           title: String(e.title || ''),
           category: String(e.category || ''),
           version: Number(e.version || 1),

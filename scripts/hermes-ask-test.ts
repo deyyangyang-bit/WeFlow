@@ -1,9 +1,11 @@
 /**
  * hermes-ask-test.ts —— 刀 3 带引用知识问答单测（设计-Hermes-MVP 刀 3）
  * 覆盖：
- *  a. published 过滤（铁律：LLM 只读 published 条目）——检索 SQL 静态断言 + staging/rejected 不出检索口动态断言
+ *  a. AI 有效读取原语过滤（铁律：LLM 只读「published + TTL 未过期 + 每链当前版本」）——
+ *     kbValidEntries SQL 静态断言（status/ttl/logical_id 三重过滤）+ staging/rejected 不出检索口动态断言
  *  b. 无命中分支：status=no_hit、不调模型、不记 generated 埋点
- *  c. 引用格式：《title》（vN）结构化 citations + 面板固定格式 + 引用只含 published 命中
+ *  c. 引用格式：《title》（vN）结构化 citations（保留 id/logical_id/version/title 四要素）
+ *     + 面板固定格式 + 引用只含有效命中
  *  d. 脱敏前置（宪法 §2.6）：送 LLM 的 user prompt 不含原始手机号/wxid，含 ***
  *  e. 未配置模型静默：status=not_configured 不抛错不调用不埋点（isAiConfigured 真实判定）
  *  f. 埋点落行：answer → knowledge/generated（entity=knowledge_ask）；viewed（展开）同 askKey 只记一次
@@ -35,10 +37,12 @@ async function main(): Promise<void> {
   const dbDir = mkdtempSync(join(tmpdir(), 'hermes-ask-db-'))
   await salesDbService.initialize(dbDir)
 
-  // ─── a. published 过滤（检索 SQL 静态 + 动态）──────────────────────────────
+  // ─── a. AI 有效读取原语过滤（kbValidEntries SQL 静态 + 动态）────────────────
   const dbSrc = readFileSync(join(ROOT, 'electron/services/salesDbService.ts'), 'utf8')
-  ok('a1 静态断言：问答检索 SQL 必带 status = \'published\' 过滤（铁律锚点）',
-    /kbSearchPublished[\s\S]{0,600}status = 'published'/.test(dbSrc))
+  ok('a1 静态断言：AI 有效读取原语 SQL 必带 status = \'published\' + TTL 未过期 + logical_id 当前版本三重过滤（铁律锚点）',
+    /kbValidEntries[\s\S]{0,900}kb\.status = 'published'[\s\S]{0,300}ttl_date >= \?[\s\S]{0,700}k2\.logical_id = kb\.logical_id/.test(dbSrc))
+  ok('a1b 静态断言：无过滤 kbSearchPublished 已退役（AI 消费唯一原语收口）',
+    !dbSrc.includes('kbSearchPublished'))
 
   const stagingHit = salesDbService.kbCreate({ category: 'product', title: '待审续航条目', content: 'staging 续航内容不该被检索' })
   const pubA = salesDbService.kbCreate({ category: 'product', title: 'X系列电动叉车续航说明', content: 'X系列 3 吨电动叉车满电续航约 8 小时，支持快充' })
@@ -48,8 +52,9 @@ async function main(): Promise<void> {
   salesDbService.kbReview(pubA.id!, 'publish', { reviewer: '主管甲' })
   salesDbService.run('UPDATE knowledge_base SET version = 2 WHERE id = ?', [pubA.id!]) // 引用格式用 v2 断言
 
-  const hits = salesDbService.kbSearchPublished(['续航', '叉车'])
-  ok('a2 动态断言：staging/rejected 命中也不出检索口，只回 published', hits.length === 1 && hits[0].id === pubA.id && hits[0].status === 'published')
+  const hits = salesDbService.kbValidEntries({ keywords: ['续航', '叉车'] })
+  ok('a2 动态断言：staging/rejected 命中也不出检索口，只回 published+TTL 有效+当前版本',
+    hits.length === 1 && hits[0].id === pubA.id && hits[0].status === 'published' && !!hits[0].logical_id)
 
   // ─── b. 无命中分支 ────────────────────────────────────────────────────────
   const genBefore = salesDbService.proposalEventCount({ event_type: 'knowledge', stage: 'generated' })
@@ -65,9 +70,11 @@ async function main(): Promise<void> {
     return 'X 系列 3 吨电动叉车满电续航约 8 小时，支持快充补电。'
   }
   const r = await askKnowledge({ question: 'X系列叉车续航多少' }, { configured: true, completion: fake })
-  ok('c1 status=answer 且引用只含 published 命中（staging/rejected 不入引用）',
+  ok('c1 status=answer 且引用只含有效命中（staging/rejected 不入引用）',
     r.status === 'answer' && r.citations?.length === 1 && r.citations[0].id === pubA.id)
-  ok('c2 引用带条目版本号（vN 落 citations）', r.citations?.[0].version === 2 && r.citations[0].title === 'X系列电动叉车续航说明')
+  ok('c2 引用四要素 id/logical_id/version/title 齐备（vN 落 citations，logical_id 稳定锚点）',
+    r.citations?.[0].version === 2 && r.citations[0].title === 'X系列电动叉车续航说明' &&
+    r.citations[0].logical_id === salesDbService.kbGet(pubA.id!)?.logical_id && !!r.citations[0].logical_id)
   ok('c3 答案来自查询结果链路（LLM 正文透传，不编造）', r.answer === 'X 系列 3 吨电动叉车满电续航约 8 小时，支持快充补电。')
   ok('c4 单一固定 system prompt + temperature 0.2 出口',
     captured.length === 1 && captured[0].system === ASK_SYSTEM_PROMPT && ASK_TEMPERATURE === 0.2)
@@ -75,6 +82,11 @@ async function main(): Promise<void> {
     captured[0].user.includes('《X系列电动叉车续航说明》（v2）'))
   ok('c6 generated 埋点落行（entity=knowledge_ask，askKey 哈希）',
     salesDbService.proposalEventEntityIds('knowledge', 'generated', 'knowledge_ask').has(r.askKey) && r.askKey === askKeyOf('X系列叉车续航多少'))
+  ok('c6b 引用台账落行（knowledge_usage/ask：引用次数/时间/logical_id/version/askKey）', (() => {
+    const stats = salesDbService.knowledgeUsageStats(pubA.id!)
+    return stats.length === 1 && stats[0].citations === 1 && !!stats[0].last_cited_at &&
+      stats[0].logical_id === r.citations![0].logical_id
+  })())
   ok('c7 面板固定引用格式「引用自：《title》（vN）」静态断言', (() => {
     const panel = readFileSync(join(ROOT, 'src/components/sales/KnowledgeAskPanel.tsx'), 'utf8')
     return panel.includes('引用自：《') && panel.includes('》（v') && panel.includes("navigate('/knowledge-base'")

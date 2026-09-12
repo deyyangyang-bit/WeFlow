@@ -50,6 +50,15 @@
  *  - t28 cancel/get 回显合法 runId；旧轮次不取消/读取当前任务
  *  - t29 identity:set 回调主动失效 capability（并保留兼容的可选回调接口）
  *  - t31 failed/cancelled 每个 runId 仅发出一次终态 checkpoint
+ *  - t32 打包资源缺失 fail-closed（任务4）：不 fork、不崩主程序、agent_missing 拒绝新任务
+ *        （entryExists 缺省 existsSync 与注入式双路径验证）
+ *  - t33 fail-closed 状态机：协议不一致后旧 child 迟到的合法 v2 ready 被丢弃（保持
+ *        unavailable/protocol_mismatch），随后 exit 不自动重启、不消耗重启预算，
+ *        新任务仍被拒 protocol_mismatch
+ *  - t34 在途任务保留稳定失败原因：协议不一致发生时运行中任务终止为
+ *        failed/protocol_mismatch + 共享人话文案（普通崩溃仍 agent_unavailable 由 t10/t11 覆盖）
+ *  - t35 protocolCorrectionCount 按轮次重置：第一轮纠偏计数 1；continue 开第二轮无纠偏
+ *        计数必须为 0；旧 runId 迟到快照不得污染新轮次
  *
  * 运行：npx tsx scripts/hermes-utility-test.ts
  */
@@ -66,6 +75,7 @@ import type { HermesToolDef, HermesToolResult } from '../electron/services/herme
 import { registerIdentityIpcHandlers } from '../electron/services/identityIpcHandlers'
 import { ConfigService } from '../electron/services/config'
 import { HERMES_PROTOCOL_VERSION, type MainToUtilityMessage } from '../shared/hermesProtocol'
+import { HERMES_ERROR_MESSAGES } from '../shared/hermesErrorMessages'
 
 // ─── 断言计数 ────────────────────────────────────────────────────────────────
 
@@ -295,7 +305,7 @@ async function startReady(mgr: Manager): Promise<void> {
   await waitFor('manager ready', () => mgr.getState() === 'ready')
 }
 
-// ─── 32 个动态场景 ────────────────────────────────────────────────────────────
+// ─── 36 个动态场景 ────────────────────────────────────────────────────────────
 
 const tests: Array<{ name: string; fn: () => Promise<void> }> = [
   {
@@ -486,7 +496,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       eq(harness.children.length, 1, '版本不一致不触发重启（重试无用）')
       const r = await mgr.startTask({ goal: '版本不一致后的任务' })
       eq(r.ok, false, 'fail closed 后 startTask 拒绝')
-      eq(r.errorCode, 'agent_unavailable', 'errorCode agent_unavailable')
+      eq(r.errorCode, 'protocol_mismatch', 'errorCode protocol_mismatch')
     }
   },
   {
@@ -683,7 +693,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       // main.ts 生产接线
       const mainSrc = readFileSync(MAIN_TS, 'utf8')
       ok(mainSrc.includes('createHermesUtilityManager'), 'main.ts 构造 Utility Manager')
-      ok(mainSrc.includes('hermesUtilityEntry.js'), 'main.ts 指向 Utility 构建产物')
+      ok(mainSrc.includes('resolveHermesUtilityPath'), 'main.ts 指向 Utility 构建产物（单点路径解析）')
       ok(mainSrc.includes('utilityProcess.fork'), 'main.ts 用 Electron utilityProcess.fork')
       ok(mainSrc.includes("await hermesUtilityManager.shutdown()"), '退出流程先结束 Utility')
       ok(!mainSrc.includes("from './services/hermesAgent'"), 'main.ts 不再 import 旧进程内 Agent 服务')
@@ -766,12 +776,20 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const mgr = makeManager({ forkProcess }, { tools: [tool] })
       mgr.start()
       eq(fakes.length, 1, 'fork 了一次')
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-t16-initial-ready', type: 'ready' })
+      await waitFor('首个 child ready', () => mgr.getState() === 'ready')
+      const started = await mgr.startTask({ goal: '协议版本不一致后的错误码测试' })
+      ok(started.ok && !!started.task, '正常协议 child 下任务已创建')
       // 旧版本 child 发 ready：版本检查先于严格校验，立即 fail closed
       fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 'hm-old-ready', type: 'ready' })
       await waitFor('立即 unavailable', () => mgr.getState() === 'unavailable')
       eq(fakes[0].killed, true, '旧版本 child 被 kill')
       await new Promise((res) => setTimeout(res, 300))
       eq(fakes.length, 1, '版本不一致不自动重启（重启预算不消耗）')
+      const startAfterMismatch = await mgr.startTask({ goal: '协议不一致后 start' })
+      eq(startAfterMismatch.errorCode, 'protocol_mismatch', '协议不一致后 start 保持 protocol_mismatch')
+      const continueAfterMismatch = await mgr.continueTask(started.task!.taskId, '协议不一致后 continue')
+      eq(continueAfterMismatch.errorCode, 'protocol_mismatch', '协议不一致后 continue 保持 protocol_mismatch')
       // unavailable 状态拒绝一切宿主请求执行
       fakes[0].emitMessage({
         protocolVersion: HERMES_PROTOCOL_VERSION, id: 'hm-t16-req', type: 'host.request',
@@ -781,7 +799,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       eq(toolCalls.length, 0, 'unavailable 下宿主工具从不执行')
       const resp = fakes[0].inbox.find((m) => (m as MainToUtilityMessage).type === 'host.response') as
         MainToUtilityMessage & { ok: boolean; error?: { code: string } } | undefined
-      ok(!!resp && resp.ok === false && resp.error?.code === 'agent_unavailable', '在途请求收到 agent_unavailable 拒绝响应（可收尾不悬挂）')
+      ok(!!resp && resp.ok === false && resp.error?.code === 'protocol_mismatch', '版本不一致时宿主请求收到 protocol_mismatch 拒绝响应')
     }
   },
   {
@@ -1424,6 +1442,136 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       }) as Array<MainToUtilityMessage & { type: 'task.checkpoint'; checkpoint: { taskId: string; runId: number } }>
       eq(cancelledCheckpoints.length, 1, 'cancelled runId=1 终态 checkpoint 只发出一次')
       eq(cancelledCheckpoints[0]?.checkpoint.runId, 1, 'cancelled checkpoint 携带当前 runId=1')
+    }
+  },
+  {
+    name: 't32 打包资源缺失 fail-closed（任务4）：不 fork、不崩主程序、agent_missing 拒绝新任务',
+    fn: async () => {
+      let forkCalls = 0
+      const neverFork = (): never => {
+        forkCalls++
+        throw new Error('产物缺失时绝不应 fork')
+      }
+      // 缺省 entryExists = existsSync(entryPath)：指向不存在的产物 → 直接 fail closed
+      const missingEntry = join(ROOT, 'dist-electron', 'does-not-exist-hermesUtility.js')
+      const missingMgr = createHermesUtilityManager({
+        entryPath: missingEntry,
+        forkProcess: neverFork,
+        configured: () => true,
+        identity: () => ({ name: '王销售', role: 'sales' }),
+        contextFingerprint: () => 'test-fingerprint',
+        log: () => {}
+      })
+      openManagers.push(missingMgr)
+      missingMgr.start()
+      eq(missingMgr.getState(), 'unavailable', '产物缺失 → 直接 unavailable（不消耗重启预算）')
+      const r = await missingMgr.startTask({ goal: '缺失产物下发起任务' })
+      eq(r.ok, false, 'startTask 被拒绝')
+      eq(r.errorCode, 'agent_missing', 'errorCode = agent_missing（重装指引）')
+      eq(forkCalls, 0, '绝不 fork（主程序不崩、不回退旧进程内 Agent）')
+
+      // 注入式 entryExists：存在性检查可注入覆盖（同样的缺失结论）
+      let injectedCalls = 0
+      const injectedMgr = createHermesUtilityManager({
+        entryPath: missingEntry,
+        entryExists: () => { injectedCalls++; return false },
+        forkProcess: neverFork,
+        configured: () => true,
+        identity: () => ({ name: '王销售', role: 'sales' }),
+        log: () => {}
+      })
+      openManagers.push(injectedMgr)
+      injectedMgr.start()
+      ok(injectedCalls >= 1, '注入式 entryExists 被调用')
+      eq(injectedMgr.getState(), 'unavailable', '注入式检查 false → 同样 fail closed')
+    }
+  },
+  {
+    name: 't33 fail-closed 状态机：协议不一致后迟到合法 ready 不恢复、exit 不重启不耗预算',
+    fn: async () => {
+      const { forkProcess, fakes } = makeFakeFork()
+      const mgr = makeManager({ forkProcess })
+      mgr.start()
+      eq(fakes.length, 1, 'fork 了一次')
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't33-ready', type: 'ready' })
+      await waitFor('首个 child ready', () => mgr.getState() === 'ready')
+      // 旧版本 child 上线：立即 fail closed（unavailable/protocol_mismatch + kill）
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 't33-old-ready', type: 'ready' })
+      await waitFor('立即 unavailable', () => mgr.getState() === 'unavailable')
+      eq(fakes[0].killed, true, '旧版本 child 被 kill')
+      // 旧 child 在真正退出前补发合法 v2 ready：必须被丢弃，服务不得恢复
+      fakes[0].emitMessage({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't33-late-valid-ready', type: 'ready' })
+      await new Promise((res) => setTimeout(res, 100))
+      eq(mgr.getState(), 'unavailable', '迟到合法 ready 未恢复服务（保持 unavailable）')
+      // 随后旧 child 真正退出：不得自动重启、不得消耗普通崩溃重启预算
+      fakes[0].emitExit(1)
+      await new Promise((res) => setTimeout(res, 300)) // 超过 restartDelayMs=200，若误重启此处必然出现第二个 fake
+      eq(fakes.length, 1, 'exit 后无自动重启（fork 数量仍为 1）')
+      eq(mgr.getState(), 'unavailable', 'exit 后仍保持 unavailable')
+      const r = await mgr.startTask({ goal: 'fail-closed 后新任务' })
+      eq(r.ok, false, '新任务被拒绝')
+      eq(r.errorCode, 'protocol_mismatch', '新任务返回 protocol_mismatch（原因未被覆盖）')
+    }
+  },
+  {
+    name: 't34 在途任务保留 protocol_mismatch：协议不一致时运行中任务终止为 failed + 共享文案',
+    fn: async () => {
+      const harness = makeHarness()
+      const gated = makeGatedModel(completeWith(['e1']))
+      const mgr = makeManager(harness, { modelComplete: gated.fn, tools: [makeSearchTool().tool] })
+      await startReady(mgr)
+      const started = await mgr.startTask({ goal: '协议不一致时在途任务' })
+      ok(started.ok && !!started.task, '任务已创建')
+      const taskId = started.task!.taskId
+      await waitFor('模型在途（任务 running）', () => gated.calls.length === 1)
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      // 协议版本不一致 fail closed：在途任务必须终止为 failed/protocol_mismatch + 共享人话文案
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION + 1, id: 't34-old-ready', type: 'ready' })
+      await waitFor('任务终止', () => mgr.getTask(taskId)?.status === 'failed')
+      const snap = mgr.getTask(taskId)!
+      eq(snap.errorCode, 'protocol_mismatch', '在途任务 errorCode = protocol_mismatch（非 agent_unavailable）')
+      eq(snap.errorMessage, HERMES_ERROR_MESSAGES.protocol_mismatch, 'errorMessage 使用共享错误文案')
+      eq(mgr.getState(), 'unavailable', '服务 fail closed')
+      // 旧 child 补发合法 v2 ready 必须被丢弃；其真正退出后不得自动重启、终态原因不被改写
+      inject({ protocolVersion: HERMES_PROTOCOL_VERSION, id: 't34-late-ready', type: 'ready' })
+      await waitFor('旧 child 真正退出', () => harness.children[0].exited)
+      await new Promise((res) => setTimeout(res, 300)) // 超过 restartDelayMs=200，若误重启此处必然出现第二个 child
+      eq(harness.children.length, 1, '无自动重启（fork 数量仍为 1）')
+      eq(mgr.getState(), 'unavailable', '迟到 ready 未恢复服务')
+      const after = mgr.getTask(taskId)!
+      eq(after.errorCode, 'protocol_mismatch', '终态原因未被 exit/迟到消息改写')
+      eq(after.errorMessage, HERMES_ERROR_MESSAGES.protocol_mismatch, '共享文案保持')
+    }
+  },
+  {
+    name: 't35 protocolCorrectionCount 按轮次重置：第一轮纠偏=1、第二轮无纠偏=0、旧轮次迟到快照不污染',
+    fn: async () => {
+      const harness = makeHarness()
+      const { tool } = makeSearchTool()
+      // 第一轮：首条输出非法 → 纠偏 1 次 → 工具 → 合法 complete
+      const first = makeScriptedModel(['这不是协议输出', toolCall('customer.search'), completeWith(['e1'])])
+      // 第二轮：无任何纠偏
+      const second = makeScriptedModel([toolCall('customer.search'), completeWith(['e1'], '第二轮结论')])
+      let currentModel: HermesCompletion = first.fn
+      const mgr = makeManager(harness, { modelComplete: (...args) => currentModel(...args), tools: [tool] })
+      await startReady(mgr)
+      const r = await mgr.startTask({ goal: '纠偏计数轮次测试' })
+      ok(r.ok && !!r.task, '任务创建')
+      const taskId = r.task!.taskId
+      await waitFor('第一轮 completed', () => mgr.getTask(taskId)?.status === 'completed')
+      eq(mgr.getTask(taskId)!.protocolCorrectionCount, 1, '第一轮发生 1 次纠偏，计数 = 1')
+      currentModel = second.fn
+      const c = await mgr.continueTask(taskId, '继续查')
+      ok(c.ok, 'continue 开启第二轮（新 runId）')
+      await waitFor('第二轮 completed', () => mgr.getTask(taskId)?.status === 'completed' && mgr.getTask(taskId)?.result?.summary === '第二轮结论')
+      eq(mgr.getTask(taskId)!.protocolCorrectionCount, 0, '第二轮无纠偏，计数重置为 0（不携带上一轮）')
+      // 旧 runId 迟到快照（伪造计数 1）不得污染新轮次
+      const inject = (msg: unknown): void => (mgr as unknown as { onChildMessage: (raw: unknown) => void }).onChildMessage(msg)
+      inject({
+        protocolVersion: HERMES_PROTOCOL_VERSION, id: 't35-stale', type: 'task.progress', taskId, runId: 1,
+        snapshot: { taskId, status: 'completed', goal: '旧轮次', contextLabel: '全局', steps: [], evidence: [], protocolCorrectionCount: 7, createdAt: 1 }
+      })
+      eq(mgr.getTask(taskId)!.protocolCorrectionCount, 0, '旧 runId 迟到快照被轮次门禁丢弃，新轮次计数不变')
     }
   }
 ]

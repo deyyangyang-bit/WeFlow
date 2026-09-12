@@ -18,10 +18,14 @@
  *    Utility 不可用 = 拒绝（agent_starting / agent_unavailable），绝不降级回进程内实现
  *  - 失败策略：ready 超时 5s；心跳 15s 一次、35s 无回应判定异常；首次异常退出 500ms 后
  *    重启一次；第二次失败（或协议版本不一致）→ unavailable；关闭先通知 Utility、
- *    至多等 2s 再 kill，且必须在数据库服务关闭之前完成
+ *    至多等 2s 再 kill，且必须在数据库服务关闭之前完成；入口产物缺失（打包资源不完整）
+ *    → 不 fork 直接 unavailable/agent_missing，人话文案指引重装，绝不回退旧进程内 Agent
  *  - checkpoint：每次成功的工具结果与任务终态后由 Utility 上行；Main 最多保存 50 份；
  *    已收尾（completed/failed/cancelled）任务在 Utility 重启后 restore；运行中任务随崩溃
- *    置 failed/agent_unavailable（崩溃时在途结果一律丢弃）
+ *    置 failed/agent_unavailable（协议不一致 fail-closed 则保留 failed/protocol_mismatch；
+ *    崩溃时在途结果一律丢弃）
+ *  - ready 门禁：ready 只能完成 starting → ready 握手；unavailable/stopped/shutdown 中
+ *    的迟到或重复 ready 一律丢弃，服务恢复只有 start() 一条路
  *  - 入口校验：Main ↔ Utility 双向消息先过协议运行时校验，不过 = 丢弃（畸形不致命）
  *  - 出口扫描（v2）：Main → Utility 唯一出口 sendToUtility 执行协议校验 +
  *    findHermesBoundaryIssues 双检；拒发返回 false，调用方让任务立即落定
@@ -33,6 +37,7 @@
  *    failed/context_expired；config:set myWxid 切库后主动 invalidateCapabilities
  *  - 日志走 salesLog，只记 taskId/状态/工具名，不记密钥/完整 prompt/聊天内容
  */
+import { existsSync } from 'node:fs'
 import { callChatCompletion, getAiModelConfig, isAiConfigured } from '../services/ai/aiApiClient'
 import { ConfigService } from '../services/config'
 import { getIdentity } from '../services/identityService'
@@ -69,6 +74,7 @@ import {
   type MainToUtilityMessage,
   type UtilityToMainMessage
 } from '../../shared/hermesProtocol'
+import { HERMES_ERROR_MESSAGES } from '../../shared/hermesErrorMessages'
 import type { IdentityLike } from '../../shared/ownerFilter'
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -120,18 +126,19 @@ const DEFAULT_TIMINGS: HermesUtilityTimings = {
 
 /** Manager 级人话错误文案（Utility 生命周期错误；与 Core.FRIENDLY_ERROR 分层） */
 export const MANAGER_ERROR: Record<string, string> = {
-  agent_starting: 'Hermes 正在启动，请稍后再试。',
-  agent_unavailable: 'Hermes 暂时不可用，请重启应用后再试。',
-  protocol_mismatch: 'Hermes 组件版本不一致，请重新安装或升级应用。',
-  timeout: '本次分析超时，请稍后重试。',
-  context_expired: '当前账号或身份已经变化，请重新发起 Hermes 任务。',
-  boundary_violation: '本次查询未能安全处理，请重新发起任务。'
+  ...HERMES_ERROR_MESSAGES
 }
+
+type HermesUnavailableReason = 'agent_missing' | 'protocol_mismatch' | 'agent_unavailable'
 
 export interface HermesUtilityManagerDeps {
   forkProcess: HermesUtilityFork
-  /** Utility 入口构建产物绝对路径（生产 join(__dirname, 'hermesUtilityEntry.js')） */
+  /** Utility 入口构建产物绝对路径（经 hermesUtilityPath.resolveHermesUtilityPath 解析：
+   *  开发态 dist-electron/hermesUtility.js，打包态 resources/hermes/hermesUtility.js） */
   entryPath: string
+  /** 入口产物存在性检查（缺省 existsSync(entryPath)；fork 前检查，缺失 = agent_missing
+   *  fail-closed，不 fork、不崩主程序、绝不回退旧进程内 Agent） */
+  entryExists?: () => boolean
   configured?: () => boolean
   identity?: () => IdentityLike
   /** 当前上下文指纹（账号/身份组合的本地摘要，只存 Main 绝不下发 Utility；
@@ -177,6 +184,7 @@ function defaultContextLabel(ctx: HermesTaskContext): string {
 export class HermesUtilityManager {
   private readonly forkProcess: HermesUtilityFork
   private readonly entryPath: string
+  private readonly entryExistsFn: () => boolean
   private readonly timings: HermesUtilityTimings
   private readonly configuredFn: () => boolean
   private readonly identityFn: () => IdentityLike
@@ -212,6 +220,8 @@ export class HermesUtilityManager {
   }>()
   private readonly listeners = new Set<ProgressListener>()
   private restartedOnce = false
+  /** unavailable 的稳定原因：缺产物、协议不一致、普通崩溃耗尽预算三者不串用。 */
+  private unavailableReason: HermesUnavailableReason | null = null
   private shuttingDown = false
   private shutdownPromise: Promise<void> | null = null
   private readyTimer: ReturnType<typeof setTimeout> | null = null
@@ -230,6 +240,7 @@ export class HermesUtilityManager {
   constructor(deps: HermesUtilityManagerDeps) {
     this.forkProcess = deps.forkProcess
     this.entryPath = deps.entryPath
+    this.entryExistsFn = deps.entryExists ?? (() => existsSync(this.entryPath))
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings }
     this.configuredFn = deps.configured ?? (() => isAiConfigured(ConfigService.getInstance()))
     this.identityFn = deps.identity ?? (() => getIdentity() ?? { name: '', role: '' })
@@ -263,7 +274,16 @@ export class HermesUtilityManager {
 
   /** fork 并发起握手（start 与异常退出重启共用；调用方负责状态守卫） */
   private beginFork(): void {
+    // 入口产物存在性检查（打包资源缺失 = 安装包不完整）：不 fork、不崩主程序、
+    // 不消耗重启预算，直接 fail-closed 拒绝新任务（agent_missing）
+    if (!this.entryExistsFn()) {
+      this.state = 'unavailable'
+      this.unavailableReason = 'agent_missing'
+      this.log('ERROR', 'Hermes Utility 打包资源缺失，服务不可用（请重新安装或升级应用）')
+      return
+    }
     this.state = 'starting'
+    this.unavailableReason = null
     const gen = ++this.generation
     try {
       const child = this.forkProcess(this.entryPath)
@@ -271,8 +291,8 @@ export class HermesUtilityManager {
       child.on('message', (msg) => {
         // 世代绑定：只有当前 child 的消息进处理（旧进程/已替换 child 的迟到消息一律忽略）
         if (this.generation !== gen || this.child !== child) return
-        try { this.onChildMessage(msg) } catch (e) {
-          this.log('WARN', `Utility 消息处理异常: ${(e as Error)?.message || e}`)
+        try { this.onChildMessage(msg) } catch {
+          this.log('WARN', 'Utility 消息处理异常 errorCode=internal')
         }
       })
       child.on('exit', (code) => {
@@ -291,9 +311,9 @@ export class HermesUtilityManager {
         this.killChild()
       }, this.timings.readyTimeoutMs)
     } catch (e) {
-      this.log('WARN', `Utility fork 失败: ${(e as Error)?.message || e}`)
+      this.log('WARN', 'Utility fork 失败 errorCode=agent_unavailable')
       this.child = null
-      this.enterUnavailable()
+      this.enterUnavailable('agent_unavailable')
     }
   }
 
@@ -318,7 +338,9 @@ export class HermesUtilityManager {
     if (!goal) return { ok: false, errorCode: 'bad_request' }
     if (!this.configuredFn()) return { ok: false, errorCode: 'not_configured' }
     if (this.state === 'starting') return { ok: false, errorCode: 'agent_starting' }
-    if (this.state !== 'ready') return { ok: false, errorCode: 'agent_unavailable' }
+    if (this.state !== 'ready') {
+      return { ok: false, errorCode: this.unavailableReason ?? 'agent_unavailable' }
+    }
     const now = Date.now()
     const taskId = `hermes-${now}-${++this.seq}`
     const capId = `hctx-${now}-${this.seq}`
@@ -400,7 +422,9 @@ export class HermesUtilityManager {
     }
     if (!this.configuredFn()) return { ok: false, errorCode: 'not_configured' }
     if (this.state === 'starting') return { ok: false, errorCode: 'agent_starting' }
-    if (this.state !== 'ready') return { ok: false, errorCode: 'agent_unavailable' }
+    if (this.state !== 'ready') {
+      return { ok: false, errorCode: this.unavailableReason ?? 'agent_unavailable' }
+    }
     const running: HermesTask = {
       ...snap,
       status: 'running',
@@ -532,7 +556,7 @@ export class HermesUtilityManager {
       : undefined
     if (typeof v === 'number' && v !== HERMES_PROTOCOL_VERSION) {
       this.log('ERROR', `Utility 协议版本不一致（${String(v)} ≠ ${HERMES_PROTOCOL_VERSION}），fail closed`)
-      this.enterUnavailable()
+      this.enterUnavailable('protocol_mismatch')
       this.killChild()
       return
     }
@@ -552,8 +576,8 @@ export class HermesUtilityManager {
         // 宿主请求绑定发起时的 child：响应只回给它（child 崩溃重启后，旧请求的延迟结果
         // 绝不发给新 child）；操作进入 hostOps 跟踪（shutdown 等全部收尾）
         const childAtRequest = this.child
-        const op = this.onHostRequest(msg.request, childAtRequest).catch((e) => {
-          this.log('WARN', `${msg.request.taskId} host.request 处理异常: ${(e as Error)?.message || e}`)
+        const op = this.onHostRequest(msg.request, childAtRequest).catch(() => {
+          this.log('WARN', `${msg.request.taskId} host.request 处理异常 errorCode=internal`)
         })
         this.hostOps.add(op)
         void op.finally(() => { this.hostOps.delete(op) })
@@ -564,8 +588,14 @@ export class HermesUtilityManager {
   }
 
   private onReady(): void {
+    // fail-closed 门禁：ready 只能完成 starting → ready 的握手。重复 ready、shutdown 中、
+    // stopped、以及协议不一致等 unavailable 场景下旧 child 迟到/补发的合法 ready 一律
+    // 丢弃——服务恢复只有 start() 一条路，绝不由此消息把 fail-closed 状态拉回 ready
+    if (this.state !== 'starting') {
+      this.log('WARN', `非 starting 状态收到 ready（state=${this.state}），已丢弃`)
+      return
+    }
     this.clearReadyTimer()
-    if (this.state === 'ready') return
     this.state = 'ready'
     this.lastPongAt = Date.now()
     this.startHeartbeat()
@@ -627,19 +657,23 @@ export class HermesUtilityManager {
         if (!this.shuttingDown && this.state === 'starting') this.beginFork()
       }, this.timings.restartDelayMs)
     } else {
-      this.enterUnavailable()
+      this.enterUnavailable('agent_unavailable')
     }
   }
 
-  /** 运行中任务随 Utility 异常退出统一置 failed（严禁回退旧进程内 Agent） */
-  private failRunningTasks(): void {
+  /** 运行中任务随 Utility 异常退出统一置 failed（严禁回退旧进程内 Agent）。
+   *  errorCode 缺省 agent_unavailable（普通首次/二次崩溃语义不变）；协议不一致 fail-closed
+   *  时由 enterUnavailable 传入 protocol_mismatch——在途任务保留真实稳定失败原因与
+   *  共享人话文案（MANAGER_ERROR = HERMES_ERROR_MESSAGES 唯一真源），三者不串用 */
+  private failRunningTasks(errorCode: HermesUnavailableReason = 'agent_unavailable'): void {
+    const errorMessage = MANAGER_ERROR[errorCode] ?? MANAGER_ERROR.agent_unavailable
     for (const [taskId, snap] of this.snapshots) {
       if (snap.status !== 'planning' && snap.status !== 'running') continue
       const failed: HermesTask = {
         ...snap,
         status: 'failed',
-        errorCode: 'agent_unavailable',
-        errorMessage: MANAGER_ERROR.agent_unavailable,
+        errorCode,
+        errorMessage,
         steps: []
       }
       this.snapshots.set(taskId, failed)
@@ -648,12 +682,15 @@ export class HermesUtilityManager {
     }
   }
 
-  private enterUnavailable(): void {
+  private enterUnavailable(reason: HermesUnavailableReason = 'agent_unavailable'): void {
     this.stopHeartbeat()
     this.clearReadyTimer()
     this.state = 'unavailable'
-    this.failRunningTasks()
-    this.log('ERROR', 'Utility 不可用（重启预算已用尽或协议不匹配），已拒绝新任务')
+    this.unavailableReason = reason
+    this.failRunningTasks(reason)
+    this.log('ERROR', reason === 'protocol_mismatch'
+      ? 'Utility 协议版本不一致，已关闭且不会自动重启'
+      : 'Utility 不可用（重启预算已用尽），已拒绝新任务')
   }
 
   /** Utility 进度快照门禁（防乱序/防复活）：任务存在、capability 仍有效、轮次一致、
@@ -766,11 +803,11 @@ export class HermesUtilityManager {
     }
   }
 
-  private onFatal(code: string, message: string): void {
-    this.log('WARN', `Utility fatal: ${code} ${message}`)
+  private onFatal(code: string, _message: string): void {
+    this.log('WARN', `Utility fatal errorCode=${code}`)
     if (code === 'protocol_mismatch') {
       // 版本不一致重试无用：直接 fail closed（不消耗重启预算），并停掉对端
-      this.enterUnavailable()
+      this.enterUnavailable('protocol_mismatch')
       this.killChild()
     }
   }
@@ -847,9 +884,14 @@ export class HermesUtilityManager {
     // shutdown 已开始 / 非 ready 状态（含版本 fail closed 后的 unavailable）：拒绝一切宿主
     // 请求执行（不跑模型、不跑工具，立即回错误让 Utility 侧收尾）
     if (this.shuttingDown || this.state !== 'ready') {
+      const errorCode = this.shuttingDown
+        ? 'agent_unavailable'
+        : this.state === 'starting'
+          ? 'agent_starting'
+          : this.unavailableReason ?? 'agent_unavailable'
       this.respondHost(req.requestId, req.taskId, child, {
         ok: false,
-        error: { code: 'agent_unavailable', message: MANAGER_ERROR.agent_unavailable }
+        error: { code: errorCode, message: MANAGER_ERROR[errorCode] ?? MANAGER_ERROR.agent_unavailable }
       })
       return
     }
@@ -901,6 +943,7 @@ export class HermesUtilityManager {
       role: m.role,
       content: maskOutboundTextForBridge(m.content, exact, this.maskTextFn)
     }))
+    this.logModelEgressDiagnostic(req.taskId, safeMessages, cap.sessionId)
     const ac = new AbortController()
     this.modelAborts.get(req.taskId)?.add(ac)
     try {
@@ -926,11 +969,35 @@ export class HermesUtilityManager {
             ? { code: 'cancelled', message: FRIENDLY_ERROR.cancelled }
             : { code: 'ai_error', message: FRIENDLY_ERROR.ai_error }
         })
-        if (!cancelled) this.log('WARN', `${req.taskId} 模型调用失败: ${(e as Error)?.message || e}`)
+        if (!cancelled) this.log('WARN', `${req.taskId} 模型调用失败 errorCode=ai_error`)
       }
     } finally {
       this.modelAborts.get(req.taskId)?.delete(ac)
     }
+  }
+
+  /** 开发诊断观测（七-隐私）：Main 模型出口脱敏形态计数。默认完全静默，仅当
+   *  WEFLOW_HERMES_PRIVACY_DIAG=1（开发诊断自选开启）时输出计数字段——taskId / 条数 /
+   *  边界问题数 / 已知会话残留 / 手机号 / 身份证号形态布尔。绝不输出 prompt/响应全文、
+   *  API Key、真实 sessionId/wxid/姓名/聊天文本；不落任何持久化存储（仅运行日志一行） */
+  private logModelEgressDiagnostic(
+    taskId: string,
+    safeMessages: Array<{ role: string; content: string }>,
+    knownSessionId: string | undefined
+  ): void {
+    if (process.env.WEFLOW_HERMES_PRIVACY_DIAG !== '1') return
+    const texts = safeMessages.map((m) => String(m?.content ?? ''))
+    const joined = texts.join('\n')
+    const issueCount = findHermesBoundaryIssues({ messages: texts }).length
+    this.log('INFO', [
+      '[隐私诊断] 模型出口',
+      `taskId=${taskId}`,
+      `messageCount=${texts.length}`,
+      `boundaryIssueCount=${issueCount}`,
+      `containsKnownSessionId=${knownSessionId ? texts.some((t) => t.includes(knownSessionId)) : false}`,
+      `containsPhone=${/(?<!\d)1[3-9]\d{9}(?!\d)/.test(joined)}`,
+      `containsIdCard=${/(?<!\d)\d{17}[\dXx](?!\d)/.test(joined)}`
+    ].join(' '))
   }
 
   /** 工具执行宿主：白名单 + capabilityContextId 重校验 → 真实上下文映射 → 只把具体数据库
@@ -966,8 +1033,8 @@ export class HermesUtilityManager {
     let result: HermesToolResult
     try {
       result = await enqueueSalesTask(() => tool.run(req.arguments, ctx))
-    } catch (e) {
-      this.log('WARN', `${req.taskId} 工具 ${req.tool} 执行异常: ${(e as Error)?.message || e}`)
+    } catch {
+      this.log('WARN', `${req.taskId} 工具 ${req.tool} 执行异常 errorCode=internal`)
       result = { ok: false, publicSummary: '查询失败', errorCode: 'internal' }
     }
     // 工具 await 返回后统一复验：在此之前不做脱敏、evidenceHandle 分配或 evidence anchor 登记。
@@ -1111,7 +1178,7 @@ export class HermesUtilityManager {
     }
     const issues = findHermesBoundaryIssues(msg)
     if (issues.length > 0) {
-      this.log('WARN', `拒绝发送边界违规出站消息 type=${type} 违规: ${issues.join('; ')}`)
+      this.log('WARN', `拒绝发送边界违规出站消息 type=${type} errorCode=boundary_violation`)
       return false
     }
 

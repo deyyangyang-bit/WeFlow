@@ -142,6 +142,8 @@ export interface HermesProtocolTaskSnapshot {
   errorCode?: string
   /** 人话错误文案（绝不出现 SQL/IPC/堆栈/路径） */
   errorMessage?: string
+  /** 模型输出违反 findings v2/证据约束后被回喂纠偏的次数。 */
+  protocolCorrectionCount?: number
   createdAt: number
 }
 
@@ -372,7 +374,7 @@ const STEP_STATUSES: readonly string[] = ['running', 'done', 'error']
 // 嵌套协议对象严格键集（未声明字段 = 边界违规，校验器自身直接拒绝）
 const SNAPSHOT_KEYS: readonly string[] = [
   'taskId', 'status', 'goal', 'contextLabel', 'steps', 'evidence',
-  'result', 'errorCode', 'errorMessage', 'createdAt'
+  'result', 'errorCode', 'errorMessage', 'protocolCorrectionCount', 'createdAt'
 ]
 const STEP_KEYS: readonly string[] = ['label', 'status', 'tool', 'publicSummary']
 const RESULT_KEYS: readonly string[] = ['summary', 'findings', 'nextSteps']
@@ -411,6 +413,7 @@ export function isHermesProtocolTaskSnapshot(v: unknown): v is HermesProtocolTas
   }
   if (v.errorCode !== undefined && typeof v.errorCode !== 'string') return false
   if (v.errorMessage !== undefined && typeof v.errorMessage !== 'string') return false
+  if (v.protocolCorrectionCount !== undefined && !isNonNegSafeInt(v.protocolCorrectionCount)) return false
   return true
 }
 
