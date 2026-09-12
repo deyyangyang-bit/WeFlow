@@ -99,3 +99,7 @@ weflow-web-offical
 opportunity-eval-*.jsonl
 opportunity-eval-*.xlsx
 reports/
+
+# 运行期产物：洞察记录落盘文件（含 sessionId、displayName 等客户标识），由应用在 userData 生成，
+# 出现在仓库根目录说明是本地跑测试漏下的，永不入库
+weflow-insight-records.json
