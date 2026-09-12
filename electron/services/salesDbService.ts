@@ -10,7 +10,7 @@ import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { join, basename, dirname } from 'path'
 import { existsSync, mkdirSync, renameSync } from 'fs'
 import { computeIntentScore, ACTIVE_WINDOW_MS, type IntentScore } from './intentScore'
-import { stageToFunnel, FUNNEL_ORDER, type FunnelStage } from '../../shared/salesStage'
+import { stageToFunnel, FUNNEL_ORDER, normalizeStage, type FunnelStage } from '../../shared/salesStage'
 import { computeCanonicalState, type CanonicalState } from '../../shared/canonicalState'
 import { isCustomerJudgmentType, type CustomerJudgmentRecord, type CustomerJudgmentType } from '../../shared/customerJudgment'
 import { isCustomerEventType, type CustomerEventRecord, type CustomerEventType } from '../../shared/customerEvent'
@@ -34,6 +34,11 @@ function isDuplicateColumnError(e: unknown): boolean {
   return String((e as Error)?.message || e).includes('duplicate column name')
 }
 
+/** 本地时区今日日期键 YYYY-MM-DD（TTL 比较口径，与 KnowledgeBasePage.todayIso / dayKey 一致） */
+export function todayIsoDate(at: Date = new Date()): string {
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`
+}
+
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
 export interface KnowledgeEntry {
@@ -44,12 +49,16 @@ export interface KnowledgeEntry {
   content: string
   tags?: string
   scene?: string | null
-  /** 刀 1 治理列（宪法 §3 登记行）：staging/published/rejected，默认 staging */
+  /** 刀 1 治理列（宪法 §3 登记行）：staging/published/rejected/closed，默认 staging。
+   *  closed = 同链新版本发布后被接替关闭的历史版本（PRD 2.3 版本链，只读沉底留档） */
   status?: string
   /** official/community，默认 community */
   authority?: string
-  /** 引用展示版号（vN），默认 1 */
+  /** 引用展示版号（vN），默认 1；同 logical_id 链内新版本 = 链内最大 version + 1 */
   version?: number
+  /** 稳定知识逻辑 ID（PRD 2.3 版本链锚点）：同一条知识的所有版本（跨 staging/published/closed 行）共享，
+   *  与标题改名解耦；AI 有效读取原语按 logical_id 取「每链当前有效版本」。存量按 TRIM(title) 分组回填 */
+  logical_id?: string | null
   /** 到期日（YYYY-MM-DD），可空 */
   ttl_date?: string | null
   reviewed_by?: string | null
@@ -64,8 +73,8 @@ export interface KnowledgeEntry {
   updated_at?: number
 }
 
-/** 知识治理状态（kbReview 状态机唯一合法值） */
-export type KnowledgeStatus = 'staging' | 'published' | 'rejected'
+/** 知识治理状态（kbReview 状态机唯一合法值）。closed = 被同链新版本接替关闭的历史 published（只读留档） */
+export type KnowledgeStatus = 'staging' | 'published' | 'rejected' | 'closed'
 /** 权威口径：official=主管审定，community=默认 */
 export type KnowledgeAuthority = 'official' | 'community'
 
@@ -126,6 +135,8 @@ export interface FollowUpTask {
   created_by?: string
   confidence?: number | null
   feedback_log?: string
+  /** AI 建议分析/卡片依据（JSON；反问卡记缺口判定依据与自动关闭原因） */
+  analysis?: string | null
   created_at?: number
   completed_at?: number | null
 }
@@ -199,6 +210,8 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
   status TEXT NOT NULL DEFAULT 'staging',
   authority TEXT NOT NULL DEFAULT 'community',
   version INTEGER NOT NULL DEFAULT 1,
+  -- 稳定知识逻辑 ID（PRD 2.3 版本链锚点）：同链所有版本共享，与标题解耦；存量由 migrateKnowledgeLogicalId 回填
+  logical_id TEXT,
   ttl_date TEXT,
   reviewed_by TEXT,
   reviewed_at INTEGER,
@@ -379,6 +392,23 @@ CREATE TABLE IF NOT EXISTS proposal_event (
 );
 CREATE INDEX IF NOT EXISTS idx_proposal_event_type ON proposal_event(event_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_proposal_event_entity ON proposal_event(entity_type, entity_id, stage);
+
+-- 知识引用台账（PRD 2.9 效果回流，宪法 §3 登记行）：AI 消费知识的「引用次数/引用时间/关联客户阶段」统计源。
+-- append-only（§2.2 例外同款）：无删除标记、无 UPDATE/DELETE 方法，永不删改。
+-- 幂等：ask 路径同 (knowledge_id, ask_key) 只记一次（服务层去重）；reply/action 每次注入各记一行（source 区分）。
+CREATE TABLE IF NOT EXISTS knowledge_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  knowledge_id INTEGER NOT NULL,
+  logical_id TEXT,
+  version INTEGER,
+  title TEXT DEFAULT '',
+  session_id TEXT,
+  ask_key TEXT,
+  source TEXT NOT NULL DEFAULT 'ask',
+  cited_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ku_knowledge ON knowledge_usage(knowledge_id, cited_at);
+CREATE INDEX IF NOT EXISTS idx_ku_session ON knowledge_usage(session_id);
 `
 
 // ─── 服务类 ──────────────────────────────────────────────────────────────────
@@ -386,6 +416,8 @@ CREATE INDEX IF NOT EXISTS idx_proposal_event_entity ON proposal_event(entity_ty
 class SalesDbService {
   private db: SqlJsDatabase | null = null
   private dbPath: string | null = null
+  private scopeGeneration = 0
+  captureScope(): string { return `${this.dbPath || "unavailable"}:${this.scopeGeneration}` }
   private saveTimer: NodeJS.Timeout | null = null
   // 并发护栏：多个入口会同时 initialize，分库后两次加载的是不同账号库，必须去重为同一次加载
   private initPromise: Promise<void> | null = null
@@ -411,6 +443,7 @@ class SalesDbService {
       mkdirSync(userDataPath, { recursive: true })
     }
 
+    this.scopeGeneration++
     this.dbPath = businessDbPath(userDataPath, wxid, 'sales')
 
     // sql.js 需要定位 WASM 二进制文件。打包态在 electron/node_modules；dev/测试态在项目根 node_modules
@@ -470,6 +503,8 @@ class SalesDbService {
       ['status', "TEXT NOT NULL DEFAULT 'staging'"],
       ['authority', "TEXT NOT NULL DEFAULT 'community'"],
       ['version', 'INTEGER NOT NULL DEFAULT 1'],
+      // 稳定知识逻辑 ID（PRD 2.3 版本链锚点）：同链所有版本共享；存量按 TRIM(title) 分组回填
+      ['logical_id', 'TEXT'],
       ['ttl_date', 'TEXT'],
       ['reviewed_by', 'TEXT'],
       ['reviewed_at', 'INTEGER'],
@@ -498,10 +533,13 @@ class SalesDbService {
       salesLog('ERROR', msg)
       throw new Error(msg)
     }
-    // 所有治理字段 ALTER 完成后再建 status 索引（IF NOT EXISTS 幂等；此处失败即真实错误，不静默吞）
+    // 所有治理字段 ALTER 完成后再建 status/logical_id 索引（IF NOT EXISTS 幂等；此处失败即真实错误，不静默吞）
     this.db.run('CREATE INDEX IF NOT EXISTS idx_kb_status ON knowledge_base(status, updated_at)')
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_kb_logical ON knowledge_base(logical_id)')
     // 存量迁移（幂等、可重入）：治理前置的旧行一次性置 staging/community——治理版上线后默认不可被问答引用
     this.migrateKnowledgeGovernance()
+    // 版本链回填（幂等、可重入）：logical_id 缺失的存量行按 TRIM(title) 分组归链（PRD 2.3）
+    this.migrateKnowledgeLogicalId()
     // 迁移完成后立即持久化（不依赖 500ms 防抖窗口——迁移结果必须落盘）
     this.persistNow()
   }
@@ -528,6 +566,9 @@ class SalesDbService {
   /** 公开落盘入口（备份前强制刷盘用） */
   flushNow(): void { this.persistNow() }
 
+  /** 备份前强制刷盘（严格版）：失败抛出，备份调用方必须终止本轮备份（不允许吞错继续） */
+  flushNowStrict(): void { this.persistNowStrict() }
+
   private persistNow(): void {
     if (!this.db || !this.dbPath) return
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
@@ -537,6 +578,13 @@ class SalesDbService {
     } catch (e) {
       console.error('[SalesDb] persistNow error:', e)
     }
+  }
+
+  private persistNowStrict(): void {
+    if (!this.db || !this.dbPath) return
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
+    const data = this.db.export()
+    atomicWriteFileSync(this.dbPath, Buffer.from(data))
   }
 
   /** 当前业务库文件绝对路径（未初始化为 null；归档 IPC / 备份用） */
@@ -576,6 +624,7 @@ class SalesDbService {
   private detach(): void {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     this.db = null
+    this.scopeGeneration++
     this.dbPath = null
     this.initPromise = null
   }
@@ -677,6 +726,31 @@ class SalesDbService {
     return { staged: legacy.length }
   }
 
+  /**
+   * 版本链回填（幂等、可重入，PRD 2.3 稳定 logical_id）：治理前置的旧行 logical_id 缺失时，
+   * 按 TRIM(title) 分组归链——同标题存量行共享 `kb-<组内最小 id>`（确定性，重跑零副作用）。
+   * 这与历史「同名标题 = 同一条知识」的接替语义（UI 冲突检测 / 旧版同名归并读取）一致；
+   * 回填后 logical_id 为持久值，此后标题改名不再影响链归属。
+   * ⚠️ TRIM(title) 口径仅限本回填（旧库首次升级兼容）：运行时发布/读取一律以 logical_id 为准，
+   * 禁止仅靠标题判断两条知识属于同一版本链（PRD 2.3）。
+   */
+  migrateKnowledgeLogicalId(): { linked: number } {
+    const orphans = this.all<{ id: number }>(
+      "SELECT id FROM knowledge_base WHERE logical_id IS NULL OR logical_id = ''", []
+    )
+    for (const r of orphans) {
+      this.run(
+        `UPDATE knowledge_base SET logical_id = 'kb-' || (
+           SELECT MIN(k2.id) FROM knowledge_base k2 WHERE TRIM(k2.title) = TRIM(
+             (SELECT k3.title FROM knowledge_base k3 WHERE k3.id = ?)
+           )
+         ) WHERE id = ?`,
+        [r.id, r.id]
+      )
+    }
+    return { linked: orphans.length }
+  }
+
   kbList(filters?: { category?: string; product_line?: string; scene?: string; status?: string }): KnowledgeEntry[] {
     let sql = 'SELECT * FROM knowledge_base'
     const conditions: string[] = []
@@ -702,12 +776,17 @@ class SalesDbService {
     // 治理铁律（宪法 §3）：一切新增条目（人工/CSV/话术提炼/知识提案）一律先落 staging + community
     // 刀 4：source 透传（默认 manual；proposal 行走 salesKnowledgeService.propose，evidence_key 服务层硬门）
     this.run(
-      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, source, evidence_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', 1, ?, ?, ?, ?)`,
+      `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, logical_id, ttl_date, source, evidence_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', 1, ?, ?, ?, ?, ?, ?)`,
       [entry.category, entry.product_line ?? null, entry.title, entry.content, entry.tags ?? '[]', entry.scene ?? null,
-       entry.source ?? 'manual', entry.evidence_key ?? null, now, now]
+       entry.logical_id ?? null, entry.ttl_date ?? null, entry.source ?? 'manual', entry.evidence_key ?? null, now, now]
     )
     const id = this.lastInsertRowId()
+    // 版本链锚点（PRD 2.3）：新条目一律自成一链（kb-<rowid>）——即使标题与已有知识完全相同也独立成链，
+    // 发布时不按标题归并。显式传入 logical_id 仅为「基于已发布版本创建新版本」的 fork 写点
+    // （kbUpdate published 分支）预留；TRIM(title) 归链仅限旧库升级回填（migrateKnowledgeLogicalId）。
+    const logicalId = String(entry.logical_id || '').trim() || `kb-${id}`
+    this.run('UPDATE knowledge_base SET logical_id = ? WHERE id = ? AND (logical_id IS NULL OR logical_id = \'\')', [logicalId, id])
     return this.kbGet(id)!
   }
 
@@ -715,6 +794,12 @@ class SalesDbService {
    * 刀 1 审核状态机（唯一治理写点）：staging → published｜staging → rejected，跨态一律拒绝。
    * 拒绝必填拒因（写 reject_reason 沉底留档不删）；发布/拒绝都写 reviewed_by/reviewed_at。
    * 成功处置同步落埋点 knowledge/accepted|rejected（刀 2 写点②，append-only）。
+   * PRD 2.3 版本链发布语义：staging 发布使用自身已有的 logical_id（kbCreate 即锚定 kb-<rowid>，
+   * 「基于已发布版本创建新版本」的 fork 继承原链）——禁止按 TRIM(title) 搜索同标题 published
+   * 归并他链（标题相同 ≠ 同一条知识，运行时不得仅靠标题识别版本链；TRIM(title) 仅限旧库
+   * 升级回填 migrateKnowledgeLogicalId）。version = 同链（logical_id 相同）其余行最大 version + 1；
+   * 发布成功后关闭链内其余 published 行（status=closed，历史版本只读沉底留档，永不物理删）——
+   * 接替只作用于本链，同标题但 logical_id 不同的其他知识不受影响。
    */
   kbReview(
     id: number,
@@ -743,11 +828,32 @@ class SalesDbService {
 
     // publish
     if (entry.status !== 'staging') return { ok: false, error: `状态机不允许 ${entry.status || 'staging'} → published` }
+    // 版本链（PRD 2.3）：发布只使用 staging 行自身已有的 logical_id，绝不按 TRIM(title) 搜索
+    // 同标题 published 并链——标题相同但业务上不同的知识必须保持独立版本链。
+    const myLogical = String(entry.logical_id || '').trim()
+    const chainLogical = myLogical || `kb-${id}`
+    // 版号以发布时的整条链为准，不能沿用 fork 时的快照。否则多个 staging 乱序审核时，
+    // 后发布的旧草稿会把当前版本从 v3 回退到 v2。
+    const chainMax = myLogical
+      ? this.get<{ max_version: number | null }>(
+          'SELECT MAX(version) AS max_version FROM knowledge_base WHERE logical_id = ? AND id != ?',
+          [chainLogical, id]
+        )?.max_version
+      : null
+    const nextVersion = chainMax == null ? 1 : Number(chainMax) + 1
     const authority: KnowledgeAuthority = opts.authority === 'official' ? 'official' : 'community'
+    const now = Date.now()
     this.run(
-      "UPDATE knowledge_base SET status = 'published', authority = ?, reject_reason = NULL, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
-      [authority, reviewer, Date.now(), Date.now(), id]
+      "UPDATE knowledge_base SET status = 'published', authority = ?, reject_reason = NULL, reviewed_by = ?, reviewed_at = ?, logical_id = ?, version = ?, updated_at = ? WHERE id = ?",
+      [authority, reviewer, now, chainLogical, nextVersion, now, id]
     )
+    // 关闭链内其余 published（接替）：历史版本只读沉底，不删不伪造 rejected
+    if (chainLogical) {
+      this.run(
+        "UPDATE knowledge_base SET status = 'closed', updated_at = ? WHERE logical_id = ? AND status = 'published' AND id != ?",
+        [now, chainLogical, id]
+      )
+    }
     this.proposalEventAdd({
       event_type: 'knowledge', stage: 'accepted',
       entity_type: 'knowledge', entity_id: String(id), actor: reviewer
@@ -755,10 +861,51 @@ class SalesDbService {
     return { ok: true, entry: this.kbGet(id) }
   }
 
+  /**
+   * 编辑入口（PRD 2.3 版本链编辑语义，唯一写点）：
+   *  - staging（未审核）：原地编辑（title/content/category/tags/scene/product_line/ttl_date）
+   *  - published：内容冻结 → 创建同链 version+1 的 staging 新版本（fork），继承 logical_id/source/
+   *    evidence_key 与未显式覆盖的字段，返回新 staging 行；原 published 行原样保留，待新版本发布接替
+   *  - rejected / closed：只读沉底留档，拒绝编辑（拒因反哺 / 历史审计，永不翻案）
+   */
   kbUpdate(id: number, updates: Partial<Omit<KnowledgeEntry, 'id' | 'created_at'>>): KnowledgeEntry | undefined {
     const existing = this.kbGet(id)
     if (!existing) return undefined
+    const status = existing.status || 'staging'
 
+    if (status === 'rejected' || status === 'closed') return undefined
+
+    if (status === 'published') {
+      // fork：同链 v+1 staging 新版本（published 行本体零改动）
+      const maxVersion = this.get<{ v: number }>(
+        'SELECT MAX(version) AS v FROM knowledge_base WHERE logical_id = ?',
+        [String(existing.logical_id || '')]
+      )?.v ?? Number(existing.version || 1)
+      const nextVersion = Math.max(Number(maxVersion), Number(existing.version || 1)) + 1
+      const now = Date.now()
+      const title = updates.title !== undefined ? updates.title : existing.title
+      const content = updates.content !== undefined ? updates.content : existing.content
+      const category = updates.category !== undefined ? updates.category : existing.category
+      const productLine = updates.product_line !== undefined ? updates.product_line : existing.product_line
+      const tags = updates.tags !== undefined ? updates.tags : existing.tags
+      const scene = updates.scene !== undefined ? updates.scene : existing.scene
+      const ttlDate = updates.ttl_date !== undefined ? updates.ttl_date : existing.ttl_date
+      if (title === existing.title && content === existing.content && category === existing.category &&
+          (productLine ?? null) === (existing.product_line ?? null) && (tags ?? '[]') === (existing.tags ?? '[]') &&
+          (scene ?? null) === (existing.scene ?? null) && (ttlDate ?? null) === (existing.ttl_date ?? null)) {
+        return existing // 零变更不 fork（防误触产生空版本噪音）
+      }
+      this.run(
+        `INSERT INTO knowledge_base (category, product_line, title, content, tags, scene, status, authority, version, logical_id, ttl_date, source, evidence_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'staging', 'community', ?, ?, ?, ?, ?, ?, ?)`,
+        [category, productLine ?? null, title, content, tags ?? '[]', scene ?? null,
+         nextVersion, String(existing.logical_id || '') || null, ttlDate ?? null,
+         existing.source ?? 'manual', existing.evidence_key ?? null, now, now]
+      )
+      return this.kbGet(this.lastInsertRowId())!
+    }
+
+    // staging：原地编辑
     const fields: string[] = []
     const params: unknown[] = []
 
@@ -768,6 +915,7 @@ class SalesDbService {
     if (updates.content !== undefined) { fields.push('content = ?'); params.push(updates.content) }
     if (updates.tags !== undefined) { fields.push('tags = ?'); params.push(updates.tags) }
     if (updates.scene !== undefined) { fields.push('scene = ?'); params.push(updates.scene) }
+    if (updates.ttl_date !== undefined) { fields.push('ttl_date = ?'); params.push(updates.ttl_date) }
 
     if (fields.length === 0) return existing
 
@@ -779,11 +927,36 @@ class SalesDbService {
     return this.kbGet(id)
   }
 
-  kbDelete(id: number): boolean {
+  /**
+   * TTL 续期（PRD 2.9 TTL 巡检的负责人续期通道）：published 当前版本就地顺延 ttl_date（治理元数据
+   * 更新，非内容编辑——不 fork 新版本）；staging 行请走 kbUpdate；rejected/closed 只读拒绝。
+   */
+  kbRenewTtl(id: number, ttlDate: string): { ok: boolean; entry?: KnowledgeEntry; error?: string } {
     const existing = this.kbGet(id)
-    if (!existing) return false
+    if (!existing) return { ok: false, error: '条目不存在' }
+    if ((existing.status || 'staging') !== 'published') {
+      return { ok: false, error: `仅 published 当前版本可续期 TTL（当前 ${existing.status || 'staging'}；staging 请直接编辑）` }
+    }
+    this.run('UPDATE knowledge_base SET ttl_date = ?, updated_at = ? WHERE id = ?',
+      [String(ttlDate || '').trim() || null, Date.now(), id])
+    return { ok: true, entry: this.kbGet(id) }
+  }
+
+  /**
+   * 物理删除（守卫写点，PRD 2.3 删除纪律）：仅 status=staging 且从未审核（reviewed_by 空）可删；
+   * published 当前有效版本 / rejected 拒因留档 / closed 历史版本一律禁止物理删除。
+   * audit_event（crmDb）由 salesKnowledgeService.delete 编排（先审计后删除，跨库铁律「先 crmDb 后 salesDb」）。
+   */
+  kbDelete(id: number): { ok: boolean; error?: string } {
+    const existing = this.kbGet(id)
+    if (!existing) return { ok: false, error: '条目不存在' }
+    const status = existing.status || 'staging'
+    if (status === 'published') return { ok: false, error: 'published 条目不允许物理删除（如需修正请 fork 新版本发布接替，或等待 TTL 到期处置）' }
+    if (status === 'rejected') return { ok: false, error: 'rejected 条目不允许重新发布或物理删除（拒因沉底留档反哺优化）' }
+    if (status === 'closed') return { ok: false, error: 'closed 历史版本只读留档，不允许物理删除' }
+    if (existing.reviewed_by) return { ok: false, error: '仅从未审核的 staging 条目可以删除' }
     this.run('DELETE FROM knowledge_base WHERE id = ?', [id])
-    return true
+    return { ok: true }
   }
 
   kbSearch(keyword: string, filters?: { category?: string; product_line?: string }): KnowledgeEntry[] {
@@ -798,22 +971,158 @@ class SalesDbService {
   }
 
   /**
-   * 刀 3 问答检索（设计-Hermes-MVP 刀 3.2，关键词 LIKE 匹配起步；向量检索是 Phase 3b）。
-   * 铁律：LLM 只读 published 条目——SQL 级 `status = 'published'` 过滤（hermes-ask-test 静态断言锚点），
-   * staging/rejected 条目无论命中与否都不出本方法。
+   * ⭐ AI 有效知识读取唯一原语（PRD 2.3/2.9 收口，宪法 §2.7 AI Read Boundary 配套）。
+   * Hermes / 问一问 / 回复建议 / 话术建议 / 行动建议全部只经本方法读知识库，返回行同时满足：
+   *  ① status = 'published'（SQL 级过滤，staging/rejected/closed 永不出口——AI 永不消费未审定/历史知识）；
+   *  ② ttl_date 为空 / '0' / 未过期（已过期知识不下发，PRD 2.9：到期只提醒不删除、更不继续喂 AI）；
+   *  ③ 每个 logical_id 只出当前有效版本（同链高版本存在时低版本不重复下发，版本接替读取闭合）。
+   * keywords 缺省 = 全量有效集（小知识库全量注入）；keywords 非空 = LIKE 关键词检索（大知识库兜底）。
+   * 今日日期（本地时区 YYYY-MM-DD）由调用方链路统一以参数注入，SQL 级字符串比较。
    */
-  kbSearchPublished(keywords: string[], limit: number = 30): KnowledgeEntry[] {
-    const kws = [...new Set(keywords.map((k) => String(k || '').trim()).filter(Boolean))].slice(0, 12)
-    if (kws.length === 0) return []
-    const likeGroups: string[] = []
-    const params: unknown[] = []
-    for (const kw of kws) {
-      likeGroups.push('(title LIKE ? OR content LIKE ? OR tags LIKE ?)')
-      const p = `%${kw}%`
-      params.push(p, p, p)
+  kbValidEntries(opts?: { keywords?: string[]; limit?: number; today?: string }): KnowledgeEntry[] {
+    const today = opts?.today || todayIsoDate()
+    const kws = [...new Set((opts?.keywords ?? []).map((k) => String(k || '').trim()).filter(Boolean))].slice(0, 12)
+    const params: unknown[] = [today, today]
+    let kwSql = ''
+    if (kws.length > 0) {
+      const likeGroups: string[] = []
+      for (const kw of kws) {
+        likeGroups.push('(kb.title LIKE ? OR kb.content LIKE ? OR kb.tags LIKE ?)')
+        const p = `%${kw}%`
+        params.push(p, p, p)
+      }
+      kwSql = ` AND (${likeGroups.join(' OR ')})`
     }
-    const sql = `SELECT * FROM knowledge_base WHERE status = 'published' AND (${likeGroups.join(' OR ')}) ORDER BY updated_at DESC LIMIT ?`
-    return this.all<KnowledgeEntry>(sql, [...params, limit])
+    // 版本接替读取闭合：同 logical_id 链内只出「published 且 TTL 有效」中 version 最大的一行
+    // （version/updated_at/id 三级稳定排序）；LIMIT 在去重之后生效。
+    const sql = `SELECT kb.* FROM knowledge_base kb
+WHERE kb.status = 'published'
+  AND (kb.ttl_date IS NULL OR kb.ttl_date = '' OR kb.ttl_date = '0' OR kb.ttl_date >= ?)
+  AND kb.id = (
+    SELECT k2.id FROM knowledge_base k2
+    WHERE k2.status = 'published'
+      AND (k2.ttl_date IS NULL OR k2.ttl_date = '' OR k2.ttl_date = '0' OR k2.ttl_date >= ?)
+      AND k2.logical_id IS NOT NULL AND k2.logical_id = kb.logical_id
+    ORDER BY k2.version DESC, k2.updated_at DESC, k2.id DESC LIMIT 1
+  )${kwSql}
+ORDER BY kb.updated_at DESC LIMIT ?`
+    params.push(opts?.limit ?? 30)
+    return this.all<KnowledgeEntry>(sql, params)
+  }
+
+  /** 已过期的 published 条目（TTL 巡检数据源；kbValidEntries 的补集读口，仅供提醒链路，不喂 AI） */
+  kbExpiredEntries(today?: string): KnowledgeEntry[] {
+    const d = today || todayIsoDate()
+    return this.all<KnowledgeEntry>(
+      `SELECT * FROM knowledge_base
+       WHERE status = 'published' AND ttl_date IS NOT NULL AND ttl_date != '' AND ttl_date != '0' AND ttl_date < ?
+       ORDER BY ttl_date ASC, updated_at DESC`,
+      [d]
+    )
+  }
+
+  // ─── 知识引用台账（PRD 2.9 效果回流，宪法 §3 登记行：append-only，永不删改）───
+
+  /**
+   * 记一笔知识引用（AI 消费埋点）：ask 路径同 (knowledge_id, ask_key) 只记一次（幂等）；
+   * reply/action 注入路径每次各记一行（source 区分，sessionId 用于关联客户阶段结果归因）。
+   */
+  knowledgeUsageAdd(input: {
+    knowledge_id: number
+    logical_id?: string | null
+    version?: number | null
+    title?: string
+    session_id?: string | null
+    ask_key?: string | null
+    source: 'ask' | 'reply' | 'action'
+    createdAt?: number
+  }): void {
+    if (input.source === 'ask' && input.ask_key) {
+      const dup = this.get<{ c: number }>(
+        'SELECT COUNT(*) AS c FROM knowledge_usage WHERE knowledge_id = ? AND ask_key = ? AND source = \'ask\'',
+        [input.knowledge_id, input.ask_key]
+      )
+      if ((dup?.c ?? 0) > 0) return
+    }
+    this.run(
+      'INSERT INTO knowledge_usage (knowledge_id, logical_id, version, title, session_id, ask_key, source, cited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [input.knowledge_id, input.logical_id ?? null, input.version ?? null, input.title ?? '',
+       input.session_id ?? null, input.ask_key ?? null, input.source, input.createdAt ?? Date.now()]
+    )
+  }
+
+  /**
+   * 知识引用统计（PRD 2.9 效果回流只读聚合）：
+   *  - citations：引用次数（台账行数，ask 同问去重后计 1）
+   *  - last_cited_at：最近引用时间
+   *  - stages：引用会话关联客户的当前阶段分布（customer_profile.stage 归一化投影；无会话/无档案计 unknown）
+   * knowledgeId 缺省 = 全量按条目聚合；title 取该条目当前行标题（published 条目不物理删，可安全 JOIN）。
+   */
+  knowledgeUsageStats(knowledgeId?: number): Array<{
+    knowledge_id: number
+    title: string
+    logical_id: string | null
+    version: number | null
+    citations: number
+    last_cited_at: number | null
+    stages: Record<string, number>
+  }> {
+    const rows = this.all<{ knowledge_id: number; c: number; last: number }>(
+      `SELECT knowledge_id, COUNT(*) AS c, MAX(cited_at) AS last FROM knowledge_usage
+       ${knowledgeId !== undefined ? 'WHERE knowledge_id = ?' : ''}
+       GROUP BY knowledge_id ORDER BY c DESC, last DESC`,
+      knowledgeId !== undefined ? [knowledgeId] : []
+    )
+    const out: Array<{ knowledge_id: number; title: string; logical_id: string | null; version: number | null; citations: number; last_cited_at: number | null; stages: Record<string, number> }> = []
+    for (const r of rows) {
+      const entry = this.kbGet(Number(r.knowledge_id))
+      const sessions = this.all<{ session_id: string | null }>(
+        'SELECT DISTINCT session_id FROM knowledge_usage WHERE knowledge_id = ?',
+        [Number(r.knowledge_id)]
+      )
+      const stages: Record<string, number> = {}
+      for (const s of sessions) {
+        if (!s.session_id) continue
+        const profile = this.customerGetBySession(s.session_id)
+        const stage = normalizeStage(profile?.stage)
+        stages[stage] = (stages[stage] ?? 0) + 1
+      }
+      out.push({
+        knowledge_id: Number(r.knowledge_id),
+        title: String(entry?.title || ''),
+        logical_id: entry?.logical_id ?? null,
+        version: entry?.version ?? null,
+        citations: Number(r.c),
+        last_cited_at: Number(r.last) || null,
+        stages
+      })
+    }
+    return out
+  }
+
+  /**
+   * 引用台账原始行只读读口（append-only 台账直读，审计/测试用）：返回 knowledge_usage 行内保存的
+   * 引用时点快照（logical_id/version/title/cited_at）。knowledgeUsageStats 的 logical_id/version
+   * 回读自当前 knowledge_base 行（展示口径），不能证明台账落账正确；快照核验必须直读本表。
+   * 纯 SELECT，无写入口，不改变引用统计业务语义。
+   */
+  knowledgeUsageRows(knowledgeId?: number): Array<{
+    id: number
+    knowledge_id: number
+    logical_id: string | null
+    version: number | null
+    title: string
+    session_id: string | null
+    ask_key: string | null
+    source: string
+    cited_at: number
+  }> {
+    return this.all(
+      `SELECT id, knowledge_id, logical_id, version, title, session_id, ask_key, source, cited_at
+       FROM knowledge_usage${knowledgeId !== undefined ? ' WHERE knowledge_id = ?' : ''}
+       ORDER BY id ASC`,
+      knowledgeId !== undefined ? [knowledgeId] : []
+    )
   }
 
   // ─── 提案埋点（刀 2，宪法 §3 proposal_event 登记行：append-only，永不删改）───
@@ -999,6 +1308,16 @@ class SalesDbService {
     return this.all<CustomerProfile>(sql, params)
   }
 
+  /** 迁移用：列出全部 customer_profile 的 (id, session_id, customer_id) 供跨库对齐（只读） */
+  listCustomerProfileIds(): Array<{ id: number; session_id: string; customer_id: string | null }> {
+    return this.all<{ id: number; session_id: string; customer_id: string | null }>(
+      'SELECT id, session_id, customer_id FROM customer_profile ORDER BY id', [])
+  }
+  /** 迁移用：回写 customer_profile.customer_id（跨库对齐，幂等——只写目标值） */
+  setCustomerProfileCustomerId(id: number, customerId: string): void {
+    this.run('UPDATE customer_profile SET customer_id = ?, updated_at = ? WHERE id = ?', [customerId, Date.now(), id])
+  }
+
   /**
    * 仪表盘聚合统计（纯本地 COUNT/GROUP BY，无 WCDB/AI 调用）
    */
@@ -1089,6 +1408,21 @@ class SalesDbService {
   intentWithEvidence(limit: number = 500): IntentTagLog[] {
     return this.all<IntentTagLog>(
       "SELECT * FROM intent_tag_log WHERE message_key IS NOT NULL AND message_key != '' ORDER BY created_at DESC LIMIT ?",
+      [limit]
+    )
+  }
+
+  /**
+   * 每会话最新一条打标（评测候选③「意向信号会话」扩样路，2026-09-09）：
+   * intentWithEvidence 只回带 message_key 的行（live 库 1152 条打标里几乎全空，评测池吃不饱），
+   * 本方法不设 message_key 条件——无 key 的行由调用方回退「会话最新消息 key」锚点，绝不伪造。
+   */
+  intentLatestPerSession(limit: number = 1000): IntentTagLog[] {
+    return this.all<IntentTagLog>(
+      `SELECT t.* FROM intent_tag_log t
+       JOIN (SELECT session_id, MAX(id) AS max_id FROM intent_tag_log GROUP BY session_id) g
+         ON t.session_id = g.session_id AND t.id = g.max_id
+       ORDER BY t.created_at DESC LIMIT ?`,
       [limit]
     )
   }
@@ -1457,6 +1791,8 @@ class SalesDbService {
     if (updates.due_at !== undefined) { fields.push('due_at = ?'); params.push(updates.due_at) }
     // priority_score 本就在签名里但此前未落库（售后 R9 deadline 升级提分首次用到；其余字段维持既有行为不动）
     if (updates.priority_score !== undefined) { fields.push('priority_score = ?'); params.push(updates.priority_score) }
+    // analysis（反问卡触发依据/自动关闭原因等，2026-09-10 PRD 2.4 启用）
+    if (updates.analysis !== undefined) { fields.push('analysis = ?'); params.push(updates.analysis) }
 
     if (fields.length === 0) return undefined
 
@@ -1631,6 +1967,14 @@ class SalesDbService {
   pendingTaskBySource(triggerType: string, sourceId: number): FollowUpTask | undefined {
     return this.get<FollowUpTask>(
       "SELECT * FROM follow_up_task WHERE trigger_type = ? AND source_id = ? AND status = 'pending'",
+      [triggerType, sourceId]
+    )
+  }
+
+  /** 某触发源最新一张任务卡（不限状态，按 id 倒序；裁决终态/周期判重用） */
+  latestTaskBySource(triggerType: string, sourceId: number): FollowUpTask | undefined {
+    return this.get<FollowUpTask>(
+      'SELECT * FROM follow_up_task WHERE trigger_type = ? AND source_id = ? ORDER BY id DESC LIMIT 1',
       [triggerType, sourceId]
     )
   }

@@ -3,9 +3,11 @@
  *
  * ① 手动路：销售在线索行「绑定微信」（搜本机联系人 → 选 → 确认）→ bindLeadWxid(source='manual')；
  *    认领弹窗可选填的微信号也走同一链路。
- * ② 自动路（保守版）：startFriendDetectScheduler 定时扫 assigned/claimed 且未停表的分配行，
- *    拿 lead 的 wxid/手机号与本机 WCDB 联系人**精确等值**匹配（username/alias；remark/nickName
- *    仅展示用，宪法 §2.4：昵称永不作匹配依据），命中即视同绑定（source='auto'，宁缺毋滥不模糊猜）。
+ * ② 自动路（保守版，2026-09-08 多分库覆盖）：startFriendDetectScheduler 定时扫 assigned/claimed
+ *    且未停表的分配行，拿 lead 的 wxid/手机号与本机**全部已配置微信账号分库**的联系人逐库
+ *    **精确等值**匹配（username/alias；remark/nickName 仅展示用，宪法 §2.4：昵称永不作匹配依据，
+ *    绝不因昵称模糊匹配自动判定已加好友），任一账号命中即视同绑定（source='auto'，宁缺毋滥）。
+ *    命中的微信账号标识随审计留痕（过既有脱敏规范 maskContact）；单个账号库不可用只跳过该账号。
  *
  * 命中/绑定的四件套（单事务）：
  *   1. customer_identity 登记（identity_type='wxid'，source=manual/auto，confidence=1.0；
@@ -15,13 +17,15 @@
  *   3. lead.status 推进 WX_ADDED（仅 NEW/CONTACTED，DEAD/ACCOUNT 不动）+ lead.wechat 空则回填；
  *   4. audit_event action='identity_bind' 全程留痕（手动 actor=getActorLabel()，自动 actor='system:friend-detect'）。
  *
- * 幂等：同一 (lead, wxid) 重复绑定 → 四件套均已落则 alreadyBound=true 直接返回，零重复写（无新审计行）。
+ * 幂等：同一 (lead, wxid) 重复绑定 → 四件套均已落则 alreadyBound=true 直接返回，零重复写（无新审计行）；
+ * 多分库重复联系人 → 标识表先到先得，跨账号重复命中归一为同一次绑定，零重复写。
  * ⚠️ 内部一律绑 contact.username（微信内部 id，改名不失效）；alias 命中的也归一到 username 入库。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getActorLabel } from './identityService'
 import { recordOutboxTx } from './crmOutboxService'
 import { ConfigService } from './config'
+import { maskContact } from './crmLeadImportCore'
 import { normalizePhone, normalizeWxid } from './crmMigrationService'
 
 /** 本机联系人的最小匹配/展示字段（chatService.getContacts({lite:true}) 的映射子集） */
@@ -66,7 +70,7 @@ function resolveLeadCustomer(lead: CrmRow, wxid: string): { customerId: number |
 export function bindLeadWxid(
   leadId: number,
   wxid: string,
-  opts: { actor?: string; source?: 'manual' | 'auto'; displayName?: string; matchField?: string } = {}
+  opts: { actor?: string; source?: 'manual' | 'auto'; displayName?: string; matchField?: string; account?: string } = {}
 ): BindResult {
   const id = Number(leadId)
   const value = normalizeWxid(wxid)
@@ -133,13 +137,16 @@ export function bindLeadWxid(
     } else if (needWechatBackfill) {
       tx.run('UPDATE lead SET wechat = ?, updated_at = ? WHERE id = ?', [value, now, id])
     }
-    // ④ 审计留痕（宪法 §1.12；冲突注记一并入 detail）
+    // ④ 审计留痕（宪法 §1.12；冲突注记 + 命中账号标识（脱敏）一并入 detail）
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'identity_bind', 'lead', id, JSON.stringify({
         wxid: value, source, confidence: 1.0, identityId: finalIdentityId, customerId,
         assignmentIds: unstopped.map((r) => Number(r.id)), slaStopped,
         statusAdvanced: needStatusAdvance, displayName: String(opts.displayName || ''),
-        matchField: String(opts.matchField || ''), ...(conflictNote ? { conflictNote } : {})
+        matchField: String(opts.matchField || ''),
+        // 命中的微信账号标识只留脱敏形态（既有 maskContact 规范：微信号 ab***c）
+        ...(opts.account ? { friendAccount: maskContact({ contactType: 'wechat', contactNormalized: String(opts.account) }) } : {}),
+        ...(conflictNote ? { conflictNote } : {})
       }), now])
     // outbox 登记（PRD §1.10 只记录不发送；上行 bind_wx 绑定回执，同步设计 §3）
     recordOutboxTx(tx, 'bind_wx', `bind_wx:${id}:${value}`, {
@@ -149,25 +156,35 @@ export function bindLeadWxid(
   return { ok: true, data: { identityId: finalIdentityId, customerId, alreadyBound: false, slaStopped } }
 }
 
-// ─── 自动检测（保守版：只精确等值匹配，宁缺毋滥）──────────────────────────────
+// ─── 自动检测（保守版：只精确等值匹配，宁缺毋滥；多账号分库覆盖）────────────────
 export interface FriendDetectScanResult { scanned: number; matched: number; bound: number; alreadyBound: number; conflicts: number }
 
+/** 单账号联系人快照（生产 = 逐账号只读读取；contacts=null 表示该账号库不可用，扫描时跳过） */
+export interface FriendDetectAccountSnapshot { account: string; contacts: ContactLite[] | null; error?: string }
+
 /**
- * 扫一轮：assigned/claimed 且未停表的分配行 → lead 的 wxid/手机号 × 联系人标识（username/alias）
- * 精确等值匹配。命中即走 bindLeadWxid(source='auto') 四件套；逐条独立事务，单条失败不阻塞其余。
+ * 扫一轮（2026-09-08 多账号版）：assigned/claimed 且未停表的分配行 → lead 的 wxid/手机号 ×
+ * 各账号分库联系人标识（username/alias）精确等值匹配，任一账号命中即绑定。
+ *   - 多分库合并：同标识在多个账号重复出现 → 先到先得归一为一条（跨账号重复命中幂等）；
+ *   - contacts=null（单库不可用）只跳过该账号，不中止其他账号；全部不可用 → 本轮零副作用；
+ * 命中即走 bindLeadWxid(source='auto') 四件套（审计记脱敏后的命中账号）；逐条独立事务。
  * ⚠️ remark/nickName 永不参与匹配（宪法 §2.4 昵称仅显示用）；联系人无可靠手机号字段，
  *    手机号命中仅发生在 username/alias 恰为同一个 11 位号码时（仍是精确等值）。
  */
-export function runFriendDetectScan(contacts: ContactLite[]): FriendDetectScanResult {
+export function runFriendDetectScan(accounts: FriendDetectAccountSnapshot[]): FriendDetectScanResult {
   const r: FriendDetectScanResult = { scanned: 0, matched: 0, bound: 0, alreadyBound: 0, conflicts: 0 }
-  // 标识 → 联系人（username 与 alias 都是标识级字段；同名标识指不同联系人是脏数据，先到先得不动）
-  const byIdent = new Map<string, { contact: ContactLite; field: 'username' | 'alias' }>()
-  for (const c of Array.isArray(contacts) ? contacts : []) {
-    const username = normalizeWxid(c?.username)
-    if (!username || username.endsWith('@chatroom') || username.startsWith('gh_')) continue
-    if (!byIdent.has(username)) byIdent.set(username, { contact: c, field: 'username' })
-    const alias = normalizeWxid(c?.alias)
-    if (alias && !byIdent.has(alias)) byIdent.set(alias, { contact: c, field: 'alias' })
+  // 标识 → 联系人（username 与 alias 都是标识级字段；同名标识指不同联系人是脏数据，先到先得不动；
+  // 多账号重复联系人 → 标识先到先得，归一为同一次绑定）
+  const byIdent = new Map<string, { contact: ContactLite; field: 'username' | 'alias'; account: string }>()
+  for (const snap of Array.isArray(accounts) ? accounts : []) {
+    if (!snap || !Array.isArray(snap.contacts) || !snap.contacts.length) continue // 单库不可用/空 → 跳过
+    for (const c of snap.contacts) {
+      const username = normalizeWxid(c?.username)
+      if (!username || username.endsWith('@chatroom') || username.startsWith('gh_')) continue
+      if (!byIdent.has(username)) byIdent.set(username, { contact: c, field: 'username', account: String(snap.account || '') })
+      const alias = normalizeWxid(c?.alias)
+      if (alias && !byIdent.has(alias)) byIdent.set(alias, { contact: c, field: 'alias', account: String(snap.account || '') })
+    }
   }
   if (!byIdent.size) return r
 
@@ -195,7 +212,7 @@ export function runFriendDetectScan(contacts: ContactLite[]): FriendDetectScanRe
     r.matched++
     const displayName = String(hit.contact.remark || hit.contact.nickname || hit.contact.alias || hit.contact.username)
     const res = bindLeadWxid(lid, hit.contact.username, {
-      actor: 'system:friend-detect', source: 'auto', displayName, matchField: hit.field
+      actor: 'system:friend-detect', source: 'auto', displayName, matchField: hit.field, account: hit.account
     })
     if (res.ok) {
       if (res.data?.alreadyBound) r.alreadyBound++
@@ -219,17 +236,18 @@ let friendDetectTimer: ReturnType<typeof setInterval> | null = null
 
 /**
  * 启动加好友自动检测调度器（main.ts 启动链路调用，挂在 SLA1 回收器旁）。
- * fetchContacts 由调用方注入（生产 = chatService.getContacts({lite:true}) 应用读取层，WCDB 只读；
- * 未连接/空联系人 → 空数组 → 本轮零匹配零副作用）。幂等：重复调用直接返回。
- * 启动延迟 90s 首扫（让迁移/补写/回收器先收尾），之后按间隔轮巡。
+ * fetchAccounts 由调用方注入（生产 = 枚举本机全部已配置微信账号，逐账号只读读联系人；
+ * 单账号库不可用 → 该快照 contacts=null 跳过；全部不可用 → 本轮零匹配零副作用）。
+ * 幂等：重复调用直接返回。启动延迟 90s 首扫（让迁移/补写/回收器先收尾），之后按间隔轮巡。
  */
-export function startFriendDetectScheduler(fetchContacts: () => Promise<ContactLite[]>): void {
+export function startFriendDetectScheduler(fetchAccounts: () => Promise<FriendDetectAccountSnapshot[]>): void {
   if (friendDetectTimer) return
   const tick = async (): Promise<void> => {
     try {
-      const contacts = await fetchContacts()
-      if (!Array.isArray(contacts) || !contacts.length) return
-      const r = runFriendDetectScan(contacts)
+      const accounts = await fetchAccounts()
+      const usable = Array.isArray(accounts) ? accounts.filter((a) => a && Array.isArray(a.contacts) && a.contacts.length) : []
+      if (!usable.length) return
+      const r = runFriendDetectScan(accounts)
       if (r.bound > 0 || r.conflicts > 0) {
         console.log(`[CRM] 加好友自动检测：扫 ${r.scanned} 行，命中 ${r.matched}，新绑定 ${r.bound}（冲突 ${r.conflicts}，actor=system:friend-detect）`)
       }

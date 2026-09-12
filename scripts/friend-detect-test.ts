@@ -173,7 +173,7 @@ async function main(): Promise<void> {
   for (const lid of [le1, le2, le3, le4, le5, le6]) assignLeads([lid], S_A, '')
   claimLead(le5, '') // le5 → claimed（身份档案姓名 = sales_name，判本人合法）
 
-  const scan1 = runFriendDetectScan(contacts)
+  const scan1 = runFriendDetectScan([{ account: 'wxid_test_main', contacts }])
   // 命中 4：le1(alias)、le2(手机号=alias 精确)、le5(username)、le6(DEAD 也停表)；le3 未命中、le4 昵称不匹配；
   // 扫描范围还含 C 组冲突线索 lc（assigned 未停表）= 7 行
   ok('E1 扫描覆盖全部未停表行', scan1.scanned === 7, JSON.stringify(scan1))
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   ok('E8 claimed 行同样停表 + 推状态', Number(activeAssignment(le5).sla1_met_at || 0) > 0 && leadRow(le5).status === 'WX_ADDED')
   ok('E9 DEAD 线索：停表+登记 identity 但状态不复活', Number(activeAssignment(le6).sla1_met_at || 0) > 0 && leadRow(le6).status === 'DEAD')
   const auditTotal1 = Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'identity_bind'")[0]?.c || 0)
-  const scan2 = runFriendDetectScan(contacts)
+  const scan2 = runFriendDetectScan([{ account: 'wxid_test_main', contacts }])
   ok('E10 重扫零重复写（已停表行不再扫，未命中行仍安全）',
     scan2.scanned === 3 && scan2.matched === 0 && Number(crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action = 'identity_bind'")[0]?.c || 0) === auditTotal1,
     JSON.stringify(scan2))

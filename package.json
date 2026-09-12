@@ -1,6 +1,6 @@
 {
   "name": "weflow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WeFlow",
   "main": "dist-electron/main.js",
   "author": {
@@ -15,11 +15,11 @@
   "scripts": {
     "postinstall": "electron-builder install-app-deps && node scripts/prepare-electron-runtime.cjs",
     "rebuild": "electron-rebuild",
-    "dev": "node scripts/prepare-electron-runtime.cjs && vite",
+    "dev": "node scripts/clean-dist-electron.cjs && node scripts/prepare-electron-runtime.cjs && vite",
     "typecheck": "tsc --noEmit",
-    "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && electron-builder",
+    "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && node scripts/verify-electron-bundle.cjs && electron-builder",
     "preview": "vite preview",
-    "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",
+    "electron:dev": "node scripts/clean-dist-electron.cjs && node scripts/prepare-electron-runtime.cjs && vite --mode electron",
     "electron:build": "npm run build",
     "test:autoconfirm": "npx tsx scripts/crm-autoconfirm-test.ts",
     "test:docgen": "npx tsx scripts/crm-docgen-test.ts"
@@ -252,11 +252,16 @@
       {
         "from": "electron/assets/wasm/",
         "to": "assets/wasm/"
+      },
+      {
+        "from": "dist-electron/hermesUtility.js",
+        "to": "hermes/hermesUtility.js"
       }
     ],
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "!dist-electron/hermesUtility.js"
     ],
     "afterPack": "scripts/after-pack.cjs",
     "asarUnpack": [

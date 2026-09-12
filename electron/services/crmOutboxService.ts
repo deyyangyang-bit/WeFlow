@@ -26,7 +26,8 @@ export interface OutboxTx {
 /** 业务写点事件类型（与同步设计 §3 事件清单一一对应；audit 走游标路径不经本表，故不在列） */
 export type OutboxEventType =
   | 'assign' | 'transfer' | 'recycle' | 'claim' | 'bind_wx' | 'first_touch'
-  // 三次提醒制第 3 次超时抄送主管占位（2026-09-05，宪法 §1.11 只记录不发送；同步设计 §3 事件清单后续刀对齐）
+  // 三次提醒制第 3 次超时的主管通知事件（2026-09-05 登记；2026-09-08 起实际闭环：
+  // lanSyncService 定向投递到中枢队列 → consumeSupervisorNotifications 落地 notify_inbox）
   | 'sla1_escalate_supervisor'
 
 /**

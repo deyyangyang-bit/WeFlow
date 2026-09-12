@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Shell
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+    showItemInFolder: (path: string) => ipcRenderer.invoke('shell:showItemInFolder', path),
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url)
   },
 
@@ -201,9 +202,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('backup:progress', listener)
       return () => ipcRenderer.removeListener('backup:progress', listener)
     },
-    // 自动备份（PRD 1.1 双保险定时备份）：手动立即备份 / 状态查询
+    // 自动备份（PRD 1.1 双保险定时备份）：手动立即备份 / 状态查询 / 恢复（本机或网络层）/ 恢复密钥导出导入
     autoRunNow: () => ipcRenderer.invoke('backup:auto:runNow'),
-    autoStatus: () => ipcRenderer.invoke('backup:auto:status')
+    autoStatus: () => ipcRenderer.invoke('backup:auto:status'),
+    autoRestore: (payload?: { backupId?: string; source?: 'local' | 'network' }) => ipcRenderer.invoke('backup:auto:restore', payload),
+    recoveryKeyExport: (payload: { passphrase: string; filePath?: string }) => ipcRenderer.invoke('backup:auto:recoveryKey:export', payload),
+    /** adopt=true（仅新机首次恢复门禁开放时由 UI 显式确认）：采用恢复密钥并隔离本机旧密钥与旧备份 */
+    recoveryKeyImport: (payload: { passphrase: string; filePath?: string; adopt?: boolean }) => ipcRenderer.invoke('backup:auto:recoveryKey:import', payload)
   },
 
   // 密钥获取
@@ -730,7 +735,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     opportunityEvents: (id: number) => ipcRenderer.invoke('crm:opportunity:events', id),
     opportunityStats: () => ipcRenderer.invoke('crm:opportunity:stats'),
     opportunityStage: (id: number, stage: string) => ipcRenderer.invoke('crm:opportunity:stage', id, stage),
-    opportunityClose: (id: number, status: 'won' | 'lost', reason: string) => ipcRenderer.invoke('crm:opportunity:close', id, status, reason),
+    opportunityClose: (id: number, status: 'lost', reason: string) => ipcRenderer.invoke('crm:opportunity:close', id, status, reason),
+    opportunityRegisterDeal: (id: number, payload: unknown) => ipcRenderer.invoke('crm:opportunity:registerDeal', id, payload),
     opportunityIntentScore: (accountId: number) => ipcRenderer.invoke('crm:opportunity:intentScore', accountId),
     riskList: (opts?: unknown) => ipcRenderer.invoke('crm:risk:list', opts),
     riskResolve: (id: number) => ipcRenderer.invoke('crm:risk:resolve', id),
@@ -760,13 +766,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     logisticsList: (opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => ipcRenderer.invoke('crm:logistics:list', opts),
     logisticsSigned: (id: number) => ipcRenderer.invoke('crm:logistics:signed', id),
     productImport: (rows: unknown[]) => ipcRenderer.invoke('crm:product:import', rows),
+    contractEntryScope: () => ipcRenderer.invoke('crm:contract:entryScope'),
+    contractByCreationRequest: (id: string, scope: unknown) => ipcRenderer.invoke('crm:contract:byCreationRequest', id, scope),
+    contractBeginEntry: (input: unknown, scope: unknown) => ipcRenderer.invoke('crm:contract:beginEntry', input, scope),
+    contractEntryQuotation: (data: unknown, scope: unknown) => ipcRenderer.invoke('crm:contract:entryQuotation', data, scope),
     quotationCreate: (data: unknown) => ipcRenderer.invoke('crm:quotation:create', data),
+    quotationCurrent: (contractId: number) => ipcRenderer.invoke('crm:quotation:current', contractId),
+    quotationHistory: (contractId: number) => ipcRenderer.invoke('crm:quotation:history', contractId),
     quotationAi: (sessionId: string, displayName: string) => ipcRenderer.invoke('crm:quotation:ai', sessionId, displayName),
     groupsList: () => ipcRenderer.invoke('crm:groups:list'),
     groupsSave: (g: unknown) => ipcRenderer.invoke('crm:groups:save', g),
     groupsUpdate: (id: number, patch: unknown) => ipcRenderer.invoke('crm:groups:update', id, patch),
     parseScanNow: () => ipcRenderer.invoke('crm:parse:scanNow'),
-    docGenerate: (type: string, recordId: number) => ipcRenderer.invoke('crm:doc:generate', type, recordId),
+    docGenerate: (type: string, recordId: number, options?: unknown) => ipcRenderer.invoke('crm:doc:generate', type, recordId, options),
     aliasLearn: (alias: string, accountId: number) => ipcRenderer.invoke('crm:alias:learn', alias, accountId),
     aiDesc: (payload: unknown) => ipcRenderer.invoke('crm:product:aiDesc', payload),
     aiExtract: (template: string[], dataUrl: string) => ipcRenderer.invoke('crm:product:aiExtract', template, dataUrl),
@@ -802,22 +814,46 @@ contextBridge.exposeInMainWorld('electronAPI', {
     sla2Mark: (req: { leadId: number; verdict: string; confidence: number; scanRef: string; source?: string; note?: string; actor?: string }) => ipcRenderer.invoke('crm:sla2:mark', req),
     // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
     customerSetType: (req: { customerId: number; type: string; actor?: string }) => ipcRenderer.invoke('crm:customer:setType', req),
+    // 交付售后（2026-09-10）：交付登记 / 设备档案 / 以旧换新 / 复购等级后端单点写入，页面只读后端事实与任务
+    deliveryRegister: (oppId: number, payload: { shipped_qty?: number; delivery_date?: number; over_ship_reason?: string; actor?: string }) => ipcRenderer.invoke('crm:delivery:register', oppId, payload),
+    deliverySaveEquipment: (customerId: number, fields: Record<string, unknown>) => ipcRenderer.invoke('crm:delivery:saveEquipment', customerId, fields),
+    deliveryProposeTradeIn: (customerId: number, basis: { kind: string; evidenceKey: string; reason: string; at?: number }) => ipcRenderer.invoke('crm:delivery:proposeTradeIn', customerId, basis),
+    deliveryDecideTradeIn: (customerId: number, decision: 'accept' | 'reject') => ipcRenderer.invoke('crm:delivery:decideTradeIn', customerId, decision),
+    deliveryScan: () => ipcRenderer.invoke('crm:delivery:scan'),
+    deliveryTasks: () => ipcRenderer.invoke('crm:delivery:tasks'),
+    deliverySuggestDate: (oppId: number) => ipcRenderer.invoke('crm:delivery:suggestDate', oppId),
+    deliveryRecomputeRepeat: () => ipcRenderer.invoke('crm:delivery:recomputeRepeat'),
+    // 认领满 24h AI 首次分类（PRD 2.4，B 档 proposed→人工裁决）：run=手动立即分析（不受 24h 限制）
+    firstClassifyRun: (req: { leadId?: number; assignmentId?: number; actor?: string }) => ipcRenderer.invoke('crm:firstClassify:run', req),
+    firstClassifyList: (opts?: { status?: string; leadId?: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:firstClassify:list', opts),
+    firstClassifyConfirm: (req: { roundId: number; actor?: string }) => ipcRenderer.invoke('crm:firstClassify:confirm', req),
+    firstClassifyReject: (req: { roundId: number; actor?: string; reason?: string }) => ipcRenderer.invoke('crm:firstClassify:reject', req),
     // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + 流水/审计
     ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => ipcRenderer.invoke('crm:ownership:departure', req),
     // 审计流水（宪法 §1.12 / API-CONTRACT §1.14，R 只读）：keyword 扩展一把搜 actor/detail/entity
     auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:audit:query', opts),
     // 归属留痕时间线（宪法 §1.8，R 只读，append-only）
-    ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:ownership:history', opts)
+    ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:ownership:history', opts),
+    // 存量迁移报告（migration_report SSOT，R 只读）：每模块最新快照，与 audit_event 解耦
+    migrationReports: () => ipcRenderer.invoke('crm:migration:report:list'),
+    // 主管升级提醒（SLA1 三次超时通知闭环，2026-09-08）：列表（含未读数）+ 已读
+    notifyList: (opts?: { status?: string; limit?: number; offset?: number }) => ipcRenderer.invoke('crm:notify:list', opts),
+    notifyMarkRead: (ids: number[]) => ipcRenderer.invoke('crm:notify:markRead', { ids }),
+    // SLA2「查看依据」（屏 5 右证据回查出口；主进程脱敏 + 字段裁剪，绝不返回 messageKey/wxid/绝对路径）
+    sla2Evidence: (leadId: number) => ipcRenderer.invoke('crm:sla2:evidence', leadId),
+    // 导入查重明细（2026-09-08 查重完善）：按批次取脱敏明细行，供结果展示与 CSV 导出
+    importDedupeDetail: (batchId: number) => ipcRenderer.invoke('crm:import:dedupeDetail', batchId)
   },
   sales: {
-    // 知识库
-    kbList: (filters?: { category?: string; product_line?: string; scene?: string }) =>
+    // 知识库（status 过滤后端 kbList 原生支持）
+    kbList: (filters?: { category?: string; product_line?: string; scene?: string; status?: string }) =>
       ipcRenderer.invoke('sales:kb:list', filters),
     kbGet: (id: number) => ipcRenderer.invoke('sales:kb:get', id),
-    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) =>
+    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string; ttl_date?: string | null }) =>
       ipcRenderer.invoke('sales:kb:create', payload),
-    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) =>
+    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string; ttl_date?: string | null }) =>
       ipcRenderer.invoke('sales:kb:update', id, payload),
+    kbRenewTtl: (id: number, ttlDate: string) => ipcRenderer.invoke('sales:kb:renewTtl', id, ttlDate),
     kbDelete: (id: number) => ipcRenderer.invoke('sales:kb:delete', id),
     kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) =>
       ipcRenderer.invoke('sales:kb:search', payload),
@@ -889,7 +925,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('sales:action:complete', taskId, action),
     actionSuggest: (item: any) => ipcRenderer.invoke('sales:action:suggest', item),
     actionGetUnified: () => ipcRenderer.invoke('sales:action:getUnified'),
-    actionCompleteUnified: (sessionId: string, action: 'done' | 'skipped') => ipcRenderer.invoke('sales:action:completeUnified', sessionId, action),
+    actionRefresh: () => ipcRenderer.invoke('sales:action:refresh'),
+    actionCompleteUnified: (sessionId: string, action: 'done' | 'skipped', taskId?: number) => ipcRenderer.invoke('sales:action:completeUnified', sessionId, action, taskId),
     // P0-3 E3.3：销售行动事件上报（script_copied/chat_opened；follow_up_done 由主进程状态转换触发）
     // P0-4.2.1：taskId 为 correlation key（卡片 sources[].rawTaskId），无任务上下文 NULL
     actionRecordEvent: (p: { sessionId: string; eventType: string; messageKey?: string | null; taskId?: number | null }) =>
@@ -899,6 +936,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reviewGenerate: () => ipcRenderer.invoke('sales:review:generate'),
 
     // 晨间摘要（设计-AI见解重定位 §3.1）
+    morningDigestGenerate: () => ipcRenderer.invoke('sales:morningDigest:generate'),
+    aiUsageGet: () => ipcRenderer.invoke('sales:aiUsage:get'),
     morningDigestGet: () => ipcRenderer.invoke('sales:morningDigest:get'),
     morningDigestRegenerate: () => ipcRenderer.invoke('sales:morningDigest:regenerate'),
 
@@ -921,12 +960,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // D7 评测集标注（eval:*；写库端点主进程内已 enqueueSalesTask 串行化）
   eval: {
-    candidatesGenerate: (opts?: { sample?: number }) =>
+    candidatesGenerate: (opts?: { sample?: number; target?: number }) =>
       ipcRenderer.invoke('eval:candidates:generate', opts),
     list: () => ipcRenderer.invoke('eval:list'),
     label: (payload: { id: number; label: string; annotatedBy: string }) =>
       ipcRenderer.invoke('eval:label', payload),
     stats: () => ipcRenderer.invoke('eval:stats'),
+    report: () => ipcRenderer.invoke('eval:report'),
     // 告警样本（alert_eval_case，宪法 §3；候选由 alert-eval.ts import 通道产出）
     alertList: () => ipcRenderer.invoke('eval:alert:list'),
     alertLabel: (payload: { id: number; label: string; annotatedBy: string }) =>

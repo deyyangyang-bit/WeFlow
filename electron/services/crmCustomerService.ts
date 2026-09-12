@@ -9,6 +9,7 @@
  */
 import { crmDbService } from './crmDbService'
 import { getActorLabel } from './identityService'
+import { emitCustomerTypeSet } from './crmLifecycleHooks'
 
 export const CUSTOMER_TYPES = ['dealer', 'end_user'] as const
 export type CustomerType = (typeof CUSTOMER_TYPES)[number]
@@ -38,6 +39,8 @@ export function setCustomerType(customerId: number, type: string, actor?: string
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'customer_type_set', 'customer', id, JSON.stringify({ name: String(row.name || ''), oldType, newType: value }), now])
   })
+  // 生命周期钩子（PRD 2.4 反问卡「客户类型」缺口自动关闭等派生消费；尽力而为，失败不影响主语义）
+  emitCustomerTypeSet(id, value)
   return { ok: true, data: { customerId: id, type: value, unchanged: false } }
 }
 

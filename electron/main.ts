@@ -1,3 +1,4 @@
+import { configureAiUsageLedger, readAiUsage } from './services/ai/aiUsageLedger'
 import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, utilityProcess } from 'electron'
 import { Worker } from 'worker_threads'
@@ -36,13 +37,14 @@ import { createEvidenceResolver } from './services/evidenceResolver'
 import { salesKnowledgeService } from './services/salesKnowledgeService'
 import { hermesAskService } from './services/hermesAskService'
 import { createHermesUtilityManager, type HermesTaskContext } from './hermes/hermesUtilityManager'
+import { resolveHermesUtilityPath, describeHermesUtilityPath } from './hermes/hermesUtilityPath'
 import { classifyAskIntent, askData, markDataAskViewed } from './services/hermesAskDataService'
 import { salesReportService } from './services/salesReportService'
 import { salesIntentService } from './services/salesIntentService'
 import { salesReplyService } from './services/salesReplyService'
 import { salesFollowUpService } from './services/salesFollowUpService'
 import { salesLog } from './services/salesLogger'
-import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, completeUnifiedSignal, recordUserActionEvent } from './services/salesActionEngine'
+import { setActionEngineConfig, startActionEngineScheduler, getTodayActions, completeAction, generateSuggestion, generateActionAnalysis, onNewMessage as actionOnNewMessage, getUnifiedSignals, refreshActionSignals, completeUnifiedSignal, recordUserActionEvent } from './services/salesActionEngine'
 import { persistActionAnalysisJudgments } from './services/salesActionAnalysisJudgment'
 import { getCustomerCurrentView } from './services/customerCurrentView'
 import { registerCrmIpcHandlers } from './services/crmIpcHandlers'
@@ -65,15 +67,18 @@ import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs } from './services/businessDbPath'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
+import { startFirstClassifyScheduler } from './services/crmFirstClassifyService'
 import { getIdentity } from './services/identityService'
 import { startFriendDetectScheduler, type ContactLite } from './services/crmFriendDetectService'
 import { startSla2ScanScheduler, type Sla2MessageLite } from './services/crmSla2Service'
 import { startSla2LlmScanScheduler, setSla2LlmScanDeps } from './services/crmSla2LlmScanService'
+import { setSla2EvidenceResolver } from './services/crmSla2EvidenceService'
 import { startPaymentPromiseScanScheduler } from './services/crmPaymentPromiseService'
 import { getAiModelConfig, callChatCompletion, isAiConfigured } from './services/ai/aiApiClient'
 import { runStockDataMigration } from './services/crmMigrationService'
 import { registerAutoBackupIpcHandlers } from './services/autoBackupIpcHandlers'
 import { startAutoBackupScheduler } from './services/autoBackupService'
+import { electronSecretBox } from './services/autoBackupSecretBox'
 import { groupSummaryService } from './services/groupSummaryService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
@@ -82,12 +87,14 @@ import { imageDownloadService } from './services/imageDownloadService'
 import { initAlertService } from './services/alertService'
 
 // P0-2B：证据链统一读入口。注入真实 chatService（其已具备 getMessageById /
-// getMessageByServerId / getMessagesAround 三个公开原语），仅由 sales:evidence:getByKey 调用。
+// getMessageByServerId / getMessagesAround 三个公开原语），由 sales:evidence:getByKey 与
+// SLA2「查看依据」（crm:sla2:evidence，脱敏出口见 crmSla2EvidenceService）共用。
 const evidenceResolver = createEvidenceResolver({
   getMessageById: (sessionId, localId) => chatService.getMessageById(sessionId, localId),
   getMessageByServerId: (sessionId, svrid) => chatService.getMessageByServerId(sessionId, svrid),
   getMessagesAround: (sessionId, target, count) => chatService.getMessagesAround(sessionId, target, count)
 })
+setSla2EvidenceResolver(evidenceResolver)
 
 // 阶段三例外告警（设计-AI见解重定位 §4.1）：注入真实依赖（证据回查复用 evidenceResolver；
 // 幂等/落库走 insightRecordService），crmParseService 竞品命中点经 getAlertService() 取用
@@ -103,8 +110,16 @@ initAlertService({
 // Main；capabilityContextId 是不透明 ID，Main 按 ID 映射真实上下文；模型出网前做最终隐私
 // 检查，工具结果回传 Utility 前再脱敏。旧进程内 hermesAgent 仅保留作测试 adapter，生产严禁
 // 回退。forkProcess 适配 Electron UtilityProcess（Manager 自身零 electron 依赖，动态测试可注入）。
+// 入口路径经 resolveHermesUtilityPath 单点解析：开发态 dist-electron/hermesUtility.js，
+// 打包态 resources/hermes/hermesUtility.js（extraResources）；产物缺失由 Manager
+// entryExists 检查 fail-closed（agent_missing），绝不回退。
+const hermesUtilityEntryPath = resolveHermesUtilityPath({
+  isPackaged: app.isPackaged,
+  dirname: __dirname,
+  resourcesPath: process.resourcesPath
+})
 const hermesUtilityManager = createHermesUtilityManager({
-  entryPath: join(__dirname, 'hermesUtilityEntry.js'),
+  entryPath: hermesUtilityEntryPath,
   forkProcess: (modulePath) => {
     const child = utilityProcess.fork(modulePath, [], { serviceName: 'hermes-utility' })
     return {
@@ -2365,6 +2380,15 @@ function registerIpcHandlers() {
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     const { shell } = await import('electron')
     return shell.openPath(path)
+  })
+
+  ipcMain.handle('shell:showItemInFolder', async (_, filePath: string) => {
+    if (typeof filePath !== 'string' || !filePath.trim()) return { ok: false, reason: '文件路径为空' }
+    const { existsSync } = await import('fs')
+    if (!existsSync(filePath)) return { ok: false, reason: '文件不存在或已被移动，请重新生成' }
+    const { shell } = await import('electron')
+    try { shell.showItemInFolder(filePath); return { ok: true } }
+    catch (e) { return { ok: false, reason: String(e) } }
   })
 
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
@@ -4699,6 +4723,10 @@ function registerIpcHandlers() {
     return salesKnowledgeService.update(id, payload)
   })
 
+  ipcMain.handle('sales:kb:renewTtl', async (_, id: number, ttlDate: string) => {
+    return enqueueSalesTask(() => Promise.resolve(salesKnowledgeService.renewTtl(Number(id), String(ttlDate || ''))))
+  })
+
   ipcMain.handle('sales:kb:delete', async (_, id: number) => {
     return salesKnowledgeService.delete(id)
   })
@@ -5155,12 +5183,13 @@ function registerIpcHandlers() {
     return { success: true }
   })
 
+  ipcMain.handle('sales:action:refresh', async () => { void refreshActionSignals().catch(e => salesLog('WARN', String(e))); return { ok: true } })
   ipcMain.handle('sales:action:getUnified', async () => {
     return getUnifiedSignals()
   })
 
-  ipcMain.handle('sales:action:completeUnified', async (_, sessionId: string, action: 'done' | 'skipped') => {
-    completeUnifiedSignal(sessionId, action)
+  ipcMain.handle('sales:action:completeUnified', async (_, sessionId: string, action: 'done' | 'skipped', taskId?: number) => {
+    completeUnifiedSignal(sessionId, action, taskId)
     return { ok: true }
   })
 
@@ -5198,11 +5227,13 @@ function registerIpcHandlers() {
   })
 
   // ─── 晨间摘要 IPC（设计-AI见解重定位 §3.1）─────────────────────────────────
+  ipcMain.handle('sales:morningDigest:generate', async () => { void morningDigestService.generateTodayDigest().catch(e => salesLog('WARN', `[Digest] ${e}`)); return { ok: true } })
+  ipcMain.handle('sales:aiUsage:get', () => ({ ok: true, rows: readAiUsage(), budgetStatus: 'observation_only' }))
   ipcMain.handle('sales:morningDigest:get', async () => {
     return { ok: true, data: morningDigestService.getLatestDigest() }
   })
   ipcMain.handle('sales:morningDigest:regenerate', async () => {
-    const data = await enqueueSalesTask(() => morningDigestService.regenerateToday())
+    const data = await morningDigestService.regenerateToday()
     return { ok: true, data }
   })
 
@@ -5472,6 +5503,7 @@ function checkForUpdatesOnStartup() {
 app.whenReady().then(async () => {
   // 先初始化配置，以便在启动早期判定是否需要静默启动
   configService = new ConfigService()
+  configureAiUsageLedger(app.getPath('userData'), () => String(configService?.get('myWxid') || ''))
   applyAutoUpdateChannel('startup')
   syncLaunchAtStartupPreference()
   const onboardingDone = configService.get('onboardingDone') === true
@@ -5739,24 +5771,20 @@ app.whenReady().then(async () => {
       console.warn('[Sales] lead 首触期限对齐失败:', e)
     }
     // Phase 1 存量迁移（PRD §9 / 宪法 §2.4）：② account→customer 挂接 + ③ lead→customer_identity 归并
-    // 幂等双保险（scan_state 一次性标记 + 数据级判重）；冲突不静默（进迁移报告+audit_event，不动数据）
+    // + ④ 历史成交→won 商机/报价首版本链 + ⑤ salesDb customer_profile.customer_id 对齐。
+    // 幂等双保险（scan_state 最后扫描时间戳 + 数据级判重）；每次启动增量扫描，新增候选在标记存在时也会迁移；
+    // 冲突不静默（进 migration_report + 有写入时的 audit_event，不动数据）。
     // ⛔ 前置条件：live 生效前先确认自动备份有一次成功记录（autoBackupService）
     try {
-      const mig = runStockDataMigration()
-      const m02 = mig.m02, m03 = mig.m03
-      if (!m02.skippedByMarker && (m02.applied > 0 || m02.failed > 0 || m02.conflicts > 0)) {
-        console.log(`[Sales] 存量迁移②完成：挂接 ${m02.applied} account → 新建 customer ${m02.customersCreated}，失败 ${m02.failed}，冲突 ${m02.conflicts}`)
-      }
-      if (!m03.skippedByMarker && (m03.applied > 0 || m03.failed > 0 || m03.conflicts > 0)) {
-        console.log(`[Sales] 存量迁移③完成：登记 identity ${m03.applied}，失败 ${m03.failed}，冲突 ${m03.conflicts}`)
-      }
+      runStockDataMigration()
     } catch (e) {
       console.warn('[Sales] 存量迁移失败:', e)
     }
     // 自动备份（PRD 1.1 双保险定时备份）：本机 userData/backups/auto/ + 网络共享层
     // （autoBackupNetworkPath，空/不可达跳过不惊扰）；启动补跑（距上次成功 >20h 且工作时段）
     registerAutoBackupIpcHandlers(ipcMain)
-    startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion() })
+    // 密钥封装：优先系统安全设施（Windows DPAPI / macOS 钥匙串）；不可用回退 local-wrap（状态页如实展示）
+    startAutoBackupScheduler({ config: configService, userData: app.getPath('userData'), appVersion: app.getVersion(), secretBox: electronSecretBox() ?? undefined })
     startActionEngineScheduler()
     // 晨间摘要（设计-AI见解重定位 §3.1）：每日 08:05-08:35 窗口生成一条「今天先跟谁」，
     // 错开 08:00 全量扫描；「今日已生成」以 report_snapshot 落库行为准，重启不重复
@@ -5767,20 +5795,47 @@ app.whenReady().then(async () => {
     // 其分配生命周期由中枢下行 recycle 事件驱动。
     if (getLanSyncConfig().role !== 'terminal') {
       startSlaRecycleScheduler()
+      // 认领满 24h 首次分类扫描器（PRD 2.4）：claimed 且 claimed_at 满 24h 且无轮次行 → 触发 B 档提案
+      // （terminal 角色不跑：分类提案是中枢侧 AI 动作，与回收器同纪律）
+      startFirstClassifyScheduler()
     } else {
       console.log('[Sales] 内网同步角色=终端：SLA1 回收器不启动（回收由中枢下行事件驱动）')
     }
-    // 加好友自动检测（PRD 1.4a 自动路，保守版）：扫 assigned/claimed 未停表行，lead 的 wxid/手机号
-    // 与本机 WCDB 联系人（应用读取层 chatService.getContacts，只读）精确等值匹配，命中即停表+推状态+审计；
-    // WCDB 未连接/空联系人 → 本轮零副作用；间隔 crmFriendDetectIntervalMin 分钟，默认 30
-    startFriendDetectScheduler(async (): Promise<ContactLite[]> => {
-      const r = await chatService.getContacts({ lite: true })
-      if (!r.success || !Array.isArray(r.contacts)) return []
-      return r.contacts.map((c) => ({ username: String(c.username || ''), alias: c.alias, remark: c.remark, nickname: c.nickname }))
+    // 加好友自动检测（PRD 1.4a 自动路，保守版，2026-09-08 多分库覆盖）：扫 assigned/claimed 未停表行，
+    // lead 的 wxid/手机号与本机全部已配置微信账号分库的联系人（只读）精确等值匹配，任一账号命中即停表；
+    // 单个账号库不可用只跳过该账号，不中止其他账号；无精确命中 → 零副作用。
+    // 账号集合 = 当前账号(myWxid) ∪ 设置里已配置的全部账号(wxidConfigs)；间隔 crmFriendDetectIntervalMin 分钟，默认 30
+    startFriendDetectScheduler(async () => {
+      const accountSet = new Set<string>()
+      const myWxid = String(configService.get('myWxid') || '').trim()
+      if (myWxid) accountSet.add(myWxid)
+      const wxidConfigs = (configService.get('wxidConfigs') || {}) as Record<string, unknown>
+      for (const wxid of Object.keys(wxidConfigs || {})) {
+        const w = String(wxid || '').trim()
+        if (w) accountSet.add(w)
+      }
+      const snapshots: Array<{ account: string; contacts: ContactLite[] | null; error?: string }> = []
+      for (const account of accountSet) {
+        try {
+          const r = await chatService.getContactsForAccount(account, { lite: true })
+          snapshots.push({
+            account,
+            contacts: r.success && Array.isArray(r.contacts)
+              ? r.contacts.map((c) => ({ username: String(c.username || ''), alias: c.alias, remark: c.remark, nickname: c.nickname }))
+              : null,
+            error: r.success ? undefined : r.error
+          })
+          if (!r.success && r.error) console.warn(`[CRM] 加好友检测：${r.error}`)
+        } catch (e) {
+          snapshots.push({ account, contacts: null, error: String(e) })
+          console.warn(`[CRM] 加好友检测：账号 ${account} 联系人读取异常（跳过该分库）:`, e)
+        }
+      }
+      return snapshots
     })
-    // SLA2 规则骨架扫描（PRD 1.4 第二段「聊了没有」，规则占位版）：已停表（已加好友）且 sla2_scan_ref 为空的
+    // SLA2 规则扫描（PRD 1.4 第二段「聊了没有」，事实判定路）：已停表（已加好友）且 sla2_scan_ref 为空的
     // 分配行，绑定的会话在停表后若有客户回复 → 写 sla2_scan_ref（verdict='contacted'，事实判定 confidence=1.0）；
-    // 真实 LLM 跟进状态判定是后续刀（结论统一走 markSla2ScanResult，出机内容先过 maskPrivateText，宪法 §2.6）。
+    // 规则覆盖不到的行由下方 SLA2 LLM 扫描补全（结论统一走 markSla2ScanResult，出机内容先过 maskPrivateText）。
     // 间隔 crmSla2ScanIntervalMin 分钟，默认 30；WCDB 未连接 → 该条跳过零副作用
     startSla2ScanScheduler(async (sessionId, sinceMs): Promise<Sla2MessageLite[]> => {
       // getMessages 的 startTime 自动兼容毫秒（内部 >1e10 转秒）；返回会被升序重排，规则扫描自行排序
@@ -5844,7 +5899,9 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
 
-  // 启动 Hermes Utility 子进程（fork → init → ready 握手；非阻塞，未就绪期任务报 agent_starting）
+  // 启动 Hermes Utility 子进程（fork → init → ready 握手；非阻塞，未就绪期任务报 agent_starting）。
+  // 路径日志只记「开发态/打包态」+ 存在性，不记录完整敏感路径
+  salesLog('INFO', `[HermesUtility] 入口 ${describeHermesUtilityPath(app.isPackaged, existsSync(hermesUtilityEntryPath))}`)
   hermesUtilityManager.start()
 
   app.on('activate', () => {

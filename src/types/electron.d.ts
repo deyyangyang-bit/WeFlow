@@ -303,6 +303,8 @@ export interface BackupOptions {
 export interface AutoBackupStatus {
   configuredTime: string
   networkPath: string
+  /** 本机备份密钥封装方式（electron-safeStorage=系统安全设施 / local-wrap-v1=降级封装） */
+  keyProtection: string
   last: {
     at: string
     trigger: string
@@ -313,6 +315,35 @@ export interface AutoBackupStatus {
     durationMs: number
   } | null
   nextPlannedAt: string | null
+  /** 新机恢复门禁（跨机器恢复的显式采用流程所需） */
+  recovery: AutoBackupRecoveryGate
+}
+
+/** 新机首次恢复门禁状态（backup:auto:status 内） */
+export interface AutoBackupRecoveryGate {
+  /** 门禁开放：本机密钥为首次启动自动生成，允许显式采用恢复密钥（旧密钥与旧备份将被隔离而非删除） */
+  canAdoptRecoveryKey: boolean
+  /** 本机主密钥来源；null = 无封装件或来源不明（视为门禁关闭） */
+  keyOrigin: 'generated' | 'legacy-migrated' | 'imported' | null
+  /** 等待从网络备份恢复中（自动备份已暂停） */
+  pending: boolean
+  /** 本机现有备份目录数（采用恢复密钥时会被整体移入隔离目录） */
+  localBackupDirs: number
+}
+
+/** 恢复密钥导出/导入结果（backup:auto:recoveryKey:export|import 返回） */
+export interface RecoveryKeyOutcome {
+  success: boolean
+  filePath?: string
+  /** 主密钥指纹（SHA-256 前 16 hex），用于人工核对两机是否同一密钥 */
+  fingerprint?: string
+  /** installed=新装为当前密钥 / matched=与本机现有密钥一致 / adopted=采用（本机旧密钥与旧备份已整体隔离） */
+  status?: 'installed' | 'matched' | 'adopted'
+  /** status='adopted' 时：本机旧密钥与本地备份链移入的隔离目录（可人工恢复） */
+  quarantineDir?: string
+  /** status='adopted' 时：移入隔离目录的本机备份目录数 */
+  quarantinedBackups?: number
+  error?: string
 }
 
 /** 内网同步状态（lansync:status 返回；Phase 1 最小版，设计 §5 刀3） */
@@ -402,6 +433,162 @@ export type CloseConfirmPayload = {
   restoreMethod?: 'tray' | 'dock'
 }
 
+// ─── CRM 记录行结构（Phase 0 D3 成交/交付登记字段，宪法 §1.5/§1.6）────────────
+// 时间戳统一 epoch ms；数值缺省 0、文本缺省 '' —— 前端展示层统一「未登记」。
+
+/** 商机行（crm:opportunity:list/get，SELECT o.* JOIN account 带出 account_name/session_id） */
+export interface OpportunityRecord {
+  id: number
+  account_id: number
+  account_name?: string
+  session_id?: string
+  name: string
+  product: string
+  quantity: number
+  amount: number
+  stage: string
+  status: string
+  intent_score?: number
+  last_signal_at: number
+  expected_close_at?: number
+  main_resistance?: string
+  competitor?: string
+  /** Phase 0 D3 成交登记列（宪法 §1.5） */
+  source?: string
+  type?: string                  // 整车 / 改装（'' = 未登记）
+  amount_cny?: number            // RMB 结算额（业绩/报表统一口径）
+  original_currency?: string     // 币种（'' 视同 CNY）
+  original_amount?: number       // 原币金额（非 CNY 单）
+  rate_note?: string             // 汇率说明/凭证（微信支付订单号、回单截图哈希等）
+  main_model?: string            // 主型号（产品库口径）
+  order_qty?: number             // 订单量
+  shipped_qty?: number           // 实发量（售后补录）
+  over_ship_reason?: string      // 超发原因（shipped_qty > order_qty 时必填）
+  expected_ship_start?: number   // 预计发运区间起
+  expected_ship_end?: number     // 预计发运区间止
+  delivery_date?: number         // 交付日期（售后设备提醒起算基准）
+  quote_version_id?: number | null // 绑定报价版本（逻辑外键 quotation.id）
+  customer_id?: number | null    // 逻辑外键 customer.id
+  custom_fields?: string         // JSON（补充型号 supplementary_models 等扩展属性）
+  created_at: number
+  updated_at: number
+}
+
+export interface OpportunityDealRegistration {
+  amount_cny: number
+  original_currency?: string
+  original_amount?: number
+  rate_note?: string
+  main_model: string
+  model_extra?: string
+  order_qty: number
+  expected_ship_start?: number
+  expected_ship_end?: number
+  delivery_date?: number
+  type?: string
+  quote_version_id?: number | null
+  note?: string
+  actor?: string
+}
+
+/** 报价单行（crm:entity:list 'quotation'；版本链 append-only，宪法 §1.6） */
+export interface QuotationRecord {
+  id: number
+  contract_id: number
+  total: number
+  valid_until: number
+  status: string
+  items: string                  // JSON 行项 [{ product_id, model, name, qty, unit_price, subtotal }]
+  attachment_path?: string       // 报价文件（未生成为空）
+  custom_fields?: string
+  version?: number               // 版本号（未走版本链时恒 1）
+  effective_from?: number        // 生效期起（0 = 未登记）
+  effective_to?: number          // 生效期止（0 = 未登记）
+  artifact_hash?: string         // 非 PDF 报价产物 SHA-256
+  pdf_hash?: string              // 文件哈希（未存证为空）
+  created_at: number
+}
+
+/** 客户设备档案行（crm:entity:get 'customer'；设备档案 7 字段 + 质保 + 复购等级，宪法 §1.1/§3） */
+export interface CustomerEquipmentRecord {
+  id: number
+  account_id?: number
+  name?: string
+  brand?: string                 // 设备品牌
+  model?: string                 // 设备型号
+  vehicle_age?: number           // 车龄（年）
+  purchase_date?: number         // 购置日期（epoch ms，与 vehicle_age 二选一为真值）
+  modified?: number              // 0/1 是否改装
+  modified_date?: number         // 改装日期（epoch ms）
+  battery_type?: string          // 电池类型
+  last_maintenance_date?: number // 最近保养日期（epoch ms）
+  warranty_start_date?: number   // 质保起算日（epoch ms）
+  warranty_days?: number         // 质保期限（天）
+  repeat_level?: string          // 复购等级（首购/复购老客/高频复购·升A）
+  type?: string                  // dealer / end_user
+  custom_fields?: string
+  deleted?: number
+}
+
+/** 存量迁移逐条问题（crmMigrationService.MigrationIssue） */
+export interface MigrationReportIssue {
+  key: string
+  reason: string
+  detail?: string
+}
+
+/** 存量迁移报告汇总（migration_report.summary JSON，SSOT 快照，latest-wins 幂等 upsert） */
+export interface MigrationReportSummary {
+  total: number
+  applied: number              // 本次实际写入（成功）
+  alreadyDone: number          // 幂等跳过（已有/已挂接）
+  skipped: number              // 无动作跳过（如成交无报价合同）
+  failed: number
+  conflicts: number
+  customersCreated?: number    // m02 新建 customer 数
+  identitiesCreated?: number   // m03 新建 identity 数
+  linkedToCustomer?: number    // m03 挂接 customer 数
+  pooled?: number              // m03 进线索池数
+  wonOppCreated?: number       // m04 新建 won 商机数
+  wonOppAlready?: number       // m04 已有 won 商机数（幂等）
+  amountBackfilled?: number    // m04 amount_cny 回填数
+  chainsNormalized?: number    // m04 版本链规范化数
+  noQuoteContracts?: number    // m04 成交但无报价合同数
+}
+
+/** 存量迁移报告行（crm:migration:report:list，R 只读，migration_report SSOT） */
+export interface MigrationReportRow {
+  module: string
+  title: string
+  summary: MigrationReportSummary
+  failures: MigrationReportIssue[]
+  conflicts: MigrationReportIssue[]
+  ranAt: number
+}
+
+/** 知识库条目（knowledge_base 表全列；治理列见宪法 §3 登记行） */
+export interface KbEntryRecord {
+  id: number
+  category: string
+  product_line?: string
+  title: string
+  content: string
+  tags: string                   // JSON 数组字符串
+  scene?: string
+  status?: 'staging' | 'published' | 'rejected' | 'closed'
+  authority?: 'official' | 'community'
+  version?: number               // 引用展示版号 vN
+  logical_id?: string | null      // 跨版本稳定链标识
+  ttl_date?: string | null       // 到期日 YYYY-MM-DD（空 = 未设置）
+  reviewed_by?: string | null
+  reviewed_at?: number | null
+  reject_reason?: string | null  // 拒绝必填，沉底留档
+  source?: 'manual' | 'proposal' | string
+  evidence_key?: string | null   // askKey 哈希 或 messageKey/出处摘要
+  created_at: number
+  updated_at: number
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -456,6 +643,7 @@ export interface ElectronAPI {
   }
   shell: {
     openPath: (path: string) => Promise<string>
+    showItemInFolder: (path: string) => Promise<{ ok: boolean; reason?: string }>
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>
   }
   app: {
@@ -653,10 +841,18 @@ export interface ElectronAPI {
       error?: string
     }>
     onProgress: (callback: (progress: BackupProgress) => void) => () => void
-    /** 自动备份（PRD 1.1）：手动立即备份 */
+    /** 自动备份（PRD 1.1）：手动立即备份（失败 error 含具体失败阶段） */
     autoRunNow: () => Promise<{ success: boolean; result?: unknown; error?: string }>
-    /** 自动备份状态：上次时间 / 两层状态 / 下次计划 */
+    /** 自动备份状态：上次时间 / 两层状态 / 下次计划 / 密钥封装方式 */
     autoStatus: () => Promise<{ success: boolean; status?: AutoBackupStatus; error?: string }>
+    /** 自动备份恢复：省略 backupId=最新链；source='network' 从配置的网络备份路径恢复（新机器先导入恢复密钥） */
+    autoRestore: (payload?: { backupId?: string; source?: 'local' | 'network' }) => Promise<{ success: boolean; result?: unknown; error?: string }>
+    /** 导出恢复密钥（口令加密；未带 filePath 弹保存对话框） */
+    recoveryKeyExport: (payload: { passphrase: string; filePath?: string }) => Promise<RecoveryKeyOutcome>
+    /** 导入恢复密钥（错误口令明确失败不动本机密钥；已有不同密钥默认拒绝覆盖；
+     *  adopt=true 仅在新机首次恢复门禁开放且用户显式确认时使用：采用并隔离本机旧密钥与旧备份；
+     *  未带 filePath 弹选择对话框） */
+    recoveryKeyImport: (payload: { passphrase: string; filePath?: string; adopt?: boolean }) => Promise<RecoveryKeyOutcome>
   }
   key: {
     autoGetDbKey: () => Promise<{ success: boolean; key?: string; error?: string; logs?: string[] }>
@@ -1843,7 +2039,8 @@ export interface ElectronAPI {
     opportunityEvents: (id: number) => Promise<any[]>
     opportunityStats: () => Promise<{ stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number }>
     opportunityStage: (id: number, stage: string) => Promise<boolean>
-    opportunityClose: (id: number, status: 'won' | 'lost', reason: string) => Promise<boolean>
+    opportunityClose: (id: number, status: 'lost', reason: string) => Promise<boolean>
+    opportunityRegisterDeal: (id: number, payload: OpportunityDealRegistration) => Promise<{ ok: boolean; reason?: string }>
     opportunityIntentScore: (accountId: number) => Promise<{ score: number; level: string; factors: Array<{ label: string; delta: number; reason: string }> } | null>
     riskList: (opts?: { accountId?: number; status?: string }) => Promise<any[]>
     riskResolve: (id: number) => Promise<boolean>
@@ -1873,7 +2070,13 @@ export interface ElectronAPI {
     logisticsList: (opts?: { filter?: 'unlinked' | 'pending' | 'signed' }) => Promise<any[]>
     logisticsSigned: (id: number) => Promise<{ ok: boolean; reason?: string }>
     productImport: (rows: unknown[]) => Promise<{ imported: number }>
-    quotationCreate: (data: unknown) => Promise<{ ok: boolean; id?: number; reason?: string }>
+    contractEntryScope: () => Promise<{ accountKey: string; generation: number }>
+    contractByCreationRequest: (id: string, scope: { accountKey: string; generation: number }) => Promise<any>
+    contractBeginEntry: (input: unknown, scope: { accountKey: string; generation: number }) => Promise<any>
+    contractEntryQuotation: (data: unknown, scope: { accountKey: string; generation: number }) => Promise<{ ok: boolean; id?: number; reason?: string }>
+    quotationCreate: (data: unknown) => Promise<{ ok: boolean; id?: number; version?: number; reason?: string }>
+    quotationCurrent: (contractId: number) => Promise<QuotationRecord | null>
+    quotationHistory: (contractId: number) => Promise<QuotationRecord[]>
     quotationAi: (sessionId: string, displayName: string) => Promise<{ ok: boolean; quotationId?: number; contractId?: number; reason?: string; matched?: Array<{ keyword: string; productName: string }> }>
     groupsList: () => Promise<any[]>
     groupsSave: (g: unknown) => Promise<number>
@@ -1882,7 +2085,7 @@ export interface ElectronAPI {
     autoConfirmRun: () => Promise<{ auto: number; reviewed: number; byEntity: Record<string, { auto: number; reviewed: number }> }>
     autoConfirmHistory: (limit?: number) => Promise<Array<{ id: number; entity: string; entity_id: number; decision: string; confidence: number; reason: string; action: string; created_at: number }>>
     autoConfirmUndo: (entity: string, id: number) => Promise<{ ok: boolean; reason?: string }>
-    docGenerate: (type: string, recordId: number) => Promise<{ ok: boolean; path?: string; reason?: string }>
+    docGenerate: (type: string, recordId: number, options?: { reuseExisting?: boolean; scope?: { accountKey: string; generation: number } }) => Promise<{ ok: boolean; path?: string; reason?: string }>
     aliasLearn: (alias: string, accountId: number) => Promise<void>
     aiDesc: (payload: unknown) => Promise<string>
     aiExtract: (template: string[], dataUrl: string) => Promise<Record<string, string>>
@@ -1890,7 +2093,7 @@ export interface ElectronAPI {
     readImage: (filePath: string) => Promise<string>
 
     // 单机线索流转
-    leadImport: (source: string, fileName: string, rows: unknown[]) => Promise<{ batchId: number; total: number; valid: number; duplicate: number; invalid: number; invalidIndexes: number[] }>
+    leadImport: (source: string, fileName: string, rows: unknown[]) => Promise<{ batchId: number; total: number; valid: number; duplicate: number; invalid: number; invalidIndexes: number[]; dupSameBatch: number; dupExistingLead: number; dupExistingCustomer: number; conflicts: number }>
     leadList: (opts?: { status?: string; source?: string; overdueOnly?: boolean; q?: string; limit?: number; offset?: number }) => Promise<LeadRow[]>
     leadDetail: (id: number) => Promise<{ lead: LeadRow | null; activities: Array<{ id: number; lead_id: number; action: string; note?: string; created_at: number }> }>
     leadOverview: () => Promise<{ total: number; byStatus: Record<string, number>; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; sources: Array<{ source: string; count: number }> }>
@@ -1915,23 +2118,47 @@ export interface ElectronAPI {
     sla2Mark: (req: { leadId: number; verdict: string; confidence: number; scanRef: string; source?: string; note?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number; alreadyMarked: boolean }; code?: string; message?: string }>
     // 客户类型（PRD 1.5，dealer/end_user，'' 清除）：UPDATE customer + 审计
     customerSetType: (req: { customerId: number; type: string; actor?: string }) => Promise<{ ok: boolean; data?: { customerId: number; type: string; unchanged: boolean }; code?: string; message?: string }>
+    // 交付售后（2026-09-10）：交付登记 / 设备档案 / 以旧换新 / 复购等级后端单点写入，页面只读后端事实与任务
+    deliveryRegister: (oppId: number, payload: { shipped_qty?: number; delivery_date?: number; over_ship_reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { oppId: number; shipped_qty: number; delivery_date: number; diffTaskCreated: number; diffTaskClosed: number; diffTaskUpdated: number }; code?: string; message?: string }>
+    deliverySaveEquipment: (customerId: number, fields: Record<string, unknown>) => Promise<{ ok: boolean; data?: { customerId: number; changedFields: string[] }; code?: string; message?: string }>
+    deliveryProposeTradeIn: (customerId: number, basis: { kind: string; evidenceKey: string; reason: string; at?: number }) => Promise<{ ok: boolean; taskId?: number; code?: string; message?: string }>
+    deliveryDecideTradeIn: (customerId: number, decision: 'accept' | 'reject') => Promise<{ ok: boolean; taskId?: number; code?: string; message?: string }>
+    deliveryScan: () => Promise<{ diffCreated: number; diffClosed: number; diffUpdated: number; warrantyNear: number; warrantyExpired: number; warrantyClosed: number; tradeIn: number }>
+    deliveryTasks: () => Promise<{ diff: any[]; warrantyNear: any[]; warrantyExpired: any[]; tradeIn: any[] }>
+    deliverySuggestDate: (oppId: number) => Promise<{ date: number; source: string } | null>
+    deliveryRecomputeRepeat: () => Promise<number>
+    // 认领满 24h AI 首次分类（PRD 2.4，B 档）：run=手动立即分析；list=轮次列表；confirm/reject=人工裁决
+    firstClassifyRun: (req: { leadId?: number; assignmentId?: number; actor?: string }) => Promise<{ ok: boolean; data?: { roundId: number; status: string; reused?: boolean; gapsCreated?: number }; code?: string; message?: string }>
+    firstClassifyList: (opts?: { status?: string; leadId?: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: FirstClassifyRoundRow[]; total: number } }>
+    firstClassifyConfirm: (req: { roundId: number; actor?: string }) => Promise<{ ok: boolean; data?: { roundId: number; status: string }; code?: string; message?: string }>
+    firstClassifyReject: (req: { roundId: number; actor?: string; reason?: string }) => Promise<{ ok: boolean; data?: { roundId: number; status: string }; code?: string; message?: string }>
     // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + ownership_history/audit_event
     ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => Promise<{ ok: boolean; data?: { fromSales: string; toSales: string; leadsTransferred: number; leadFailed: Array<{ assignmentId: number; code: string; message: string }>; accounts: number; opportunities: number; logistics: number }; code?: string; message?: string }>
     // 审计流水（宪法 §1.12，R 只读）：keyword 扩展一把搜 actor/detail/entity_type/entity_id
     auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; actor: string; action: string; entity_type: string; entity_id: number | null; detail: string; created_at: number }>; total: number } }>
     // 归属留痕时间线（宪法 §1.8，R 只读，append-only）
     ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; entity_type: string; entity_id: number; old_owner: string; new_owner: string; reason: string; actor: string; created_at: number }>; total: number } }>
+    // 存量迁移报告（migration_report SSOT，R 只读）：每模块最新快照，与 audit_event 解耦
+    migrationReports: () => Promise<{ ok: boolean; data: MigrationReportRow[]; error?: string }>
+    /** 主管升级提醒（SLA1 三次超时通知闭环，2026-09-08）：列表（含未读数）+ 已读 */
+    notifyList: (opts?: { status?: string; limit?: number; offset?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; notify_type: string; idempotency_key: string; title: string; body: string; lead_id: number | null; detail: string; status: string; created_at: number }>; unread: number } }>
+    notifyMarkRead: (ids: number[]) => Promise<{ ok: boolean; updated: number }>
+    /** SLA2「查看依据」（屏 5 右证据回查出口；主进程已脱敏，绝不返回 messageKey/wxid/绝对路径） */
+    sla2Evidence: (leadId: number) => Promise<{ status: 'found' | 'no_anchor' | 'cleaned' | 'error' | 'no_evidence'; message: string; text?: string; createTimeMs?: number; isSend?: boolean; source?: string; concludedAt?: number }>
+    /** 导入查重明细（2026-09-08 查重完善）：按批次取脱敏明细行 */
+    importDedupeDetail: (batchId: number) => Promise<{ ok: boolean; rows: Array<{ line: number; verdict: string; reason: string; phoneMasked: string; wechatMasked: string; name: string; matchedLeadId?: number; matchedAccountId?: number }> }>
   }
   sales: {
-    // 知识库
-    kbList: (filters?: { category?: string; product_line?: string; scene?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>
-    kbGet: (id: number) => Promise<{ success: boolean; entry?: any; error?: string }>
-    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
-    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    // 知识库（status 过滤后端 salesDbService.kbList 原生支持；全量拉取后前端做治理分区）
+    kbList: (filters?: { category?: string; product_line?: string; scene?: string; status?: string }) => Promise<{ success: boolean; entries: KbEntryRecord[]; total: number }>
+    kbGet: (id: number) => Promise<{ success: boolean; entry?: KbEntryRecord; error?: string }>
+    kbCreate: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string; ttl_date?: string | null }) => Promise<{ success: boolean; entry?: KbEntryRecord; error?: string }>
+    kbUpdate: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string; ttl_date?: string | null }) => Promise<{ success: boolean; entry?: KbEntryRecord; forked?: boolean; error?: string }>
+    kbRenewTtl: (id: number, ttlDate: string) => Promise<{ success: boolean; entry?: KbEntryRecord; error?: string }>
     kbDelete: (id: number) => Promise<{ success: boolean; error?: string }>
-    kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) => Promise<{ success: boolean; entries: any[]; total: number }>
+    kbSearch: (payload: { keyword: string; category?: string; product_line?: string }) => Promise<{ success: boolean; entries: KbEntryRecord[]; total: number }>
     // 刀 1 知识审核（待审核区 发布/拒绝；拒绝必填拒因）+ 刀 2 采纳率只读聚合
-    kbReview: (id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    kbReview: (id: number, action: 'publish' | 'reject', payload?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; entry?: KbEntryRecord; error?: string }>
     proposalStats: () => Promise<{ success: boolean; stats?: { generated: number; processed: number; accepted: number; rejected: number; modified: number; rate: number | null }; error?: string }>
     // 刀 3 带引用知识问答（问知识库）+ viewed 埋点
     kbAsk: (payload: { question: string }) => Promise<
@@ -1940,7 +2167,9 @@ export interface ElectronAPI {
     >
     kbAskViewed: (payload: { question?: string; askKey?: string; kind?: 'knowledge' | 'data' }) => Promise<{ ok: boolean }>
     // 刀 4 知识提案写入路（staging 行 source=proposal；evidence_key 硬门必填）
-    kbPropose: (payload: { title: string; content: string; category?: string; scene?: string; tags?: string[]; evidence_key: string }) => Promise<{ success: boolean; entry?: any; error?: string }>
+    kbPropose: (payload: { title: string; content: string; category?: string; scene?: string; tags?: string[]; evidence_key: string }) => Promise<{ success: boolean; entry?: KbEntryRecord; error?: string }>
+    // 知识库批量导入（CSV；逐行落 staging）
+    kbImportCsv: (csvContent: string) => Promise<{ success: boolean; imported: number; skipped: number; error?: string }>
 
     // 报表
     reportGenerate: (payload: { period_type: string; period_start?: number; period_end?: number }) => Promise<{ success: boolean; report?: any; error?: string }>
@@ -2027,10 +2256,11 @@ export interface ElectronAPI {
 
   // D7 评测集标注（eval:*）
   eval: {
-    candidatesGenerate: (opts?: { sample?: number }) => Promise<{ success: boolean; result?: EvalGenerateResult; error?: string }>
+    candidatesGenerate: (opts?: { sample?: number; target?: number }) => Promise<{ success: boolean; result?: EvalGenerateResult; error?: string }>
     list: () => Promise<{ success: boolean; cases: EvalCaseRow[]; error?: string }>
     label: (payload: { id: number; label: string; annotatedBy: string }) => Promise<{ success: boolean; case?: EvalCaseRow; error?: string }>
     stats: () => Promise<{ success: boolean; stats?: EvalStats; error?: string }>
+    report: () => Promise<{ success: boolean; report?: EvalBaselineReport; markdown?: string; error?: string }>
     // 告警样本（alert_eval_case，宪法 §3）
     alertList: () => Promise<{ success: boolean; cases: AlertEvalCaseRow[]; error?: string }>
     alertLabel: (payload: { id: number; label: string; annotatedBy: string }) => Promise<{ success: boolean; case?: AlertEvalCaseRow; error?: string }>
@@ -2106,17 +2336,77 @@ export interface EvalGenerateResult {
   aiMatched: number
   chatroomFiltered: number
   quoteSkipped: boolean
-  bySource: { intent: number; quote: number; sample: number }
+  bySource: { intent: number; quote: number; intent_signal: number; sample: number }
+  /** ③④路因拿不到可回查锚点未入库的会话数（锚点诚实，绝不伪造 evidence_key） */
+  anchorMissing: number
+  /** 本次扩量目标池规模（默认 = 评测门槛样本数 100） */
+  target: number
   total: number
 }
 
-/** 标注进度 + 人机一致率（eval:stats） */
+/** 评测门槛判定（PRD：候选 ≥100 且人工确认 ≥100） */
+export interface EvalGateStatus {
+  minTotal: number
+  minConfirmed: number
+  total: number
+  confirmed: number
+  met: boolean
+  /** 未达标原因（中文；达标时空数组） */
+  shortfalls: string[]
+}
+
+/** 单档 one-vs-rest 指标（只统计人工确认样本） */
+export interface EvalClassMetric {
+  label: 'has' | 'none' | 'uncertain'
+  tp: number
+  fp: number
+  fn: number
+  support: number
+  precision: number | null
+  recall: number | null
+  f1: number | null
+}
+
+/** 基线指标（eval:report；门槛未达时不产出） */
+export interface EvalMetrics {
+  compared: number
+  accuracy: number | null
+  macroF1: number | null
+  classes: Record<'has' | 'none' | 'uncertain', EvalClassMetric>
+  /** 混淆矩阵：行=人工 label，列=AI label */
+  confusion: { labels: Array<'has' | 'none' | 'uncertain'>; matrix: number[][] }
+}
+
+/** 商机判定评测基线报告（可导出；未达到评测门槛时 metrics=null） */
+export interface EvalBaselineReport {
+  schema: 'weflow-opportunity-eval-baseline/1'
+  generatedAt: string
+  gate: EvalGateStatus
+  candidates: {
+    total: number
+    bySource: Record<string, number>
+    withAnchor: number
+    withoutAnchor: number
+  }
+  labelDistribution: {
+    human: { has: number; none: number; uncertain: number; unlabeled: number }
+    ai: { has: number; none: number; uncertain: number; absent: number }
+  }
+  metrics: EvalMetrics | null
+  agreement: { compared: number; agree: number; agreeRate: number | null }
+  notes: string[]
+}
+
+/** 标注进度 + 人机一致率 + 分档计数 + 门槛判定（eval:stats） */
 export interface EvalStats {
   total: number
   confirmed: number
   compared: number
   agree: number
   agreeRate: number | null
+  /** 人工确认分档计数 */
+  byLabel: { has: number; none: number; uncertain: number }
+  gate: EvalGateStatus
 }
 
 export interface DashboardStats {
@@ -2218,11 +2508,31 @@ export interface AssignmentRow {
   sla1_remind_count?: number
   sla2_scan_ref?: string
   status: 'assigned' | 'claimed' | 'recycled' | 'transferred'
+  /** 认领时刻（毫秒，宪法 §1.3 修订 2026-09-10）：NULL/0=未认领；认领满 24h 首次分类的计时基准 */
+  claimed_at?: number | null
   source: string
   updated_by: string
   updated_at?: number
   version: number
   deleted: number
+}
+
+/** PRD 2.4 认领满 24h 首次分类轮次行（first_classification 表投影） */
+export interface FirstClassifyRoundRow {
+  id: number
+  assignment_id: number
+  lead_id: number
+  status: 'pending' | 'proposed' | 'confirmed' | 'rejected' | 'failed'
+  result_json: string
+  evidence_json: string
+  gaps_json: string
+  error: string
+  trigger_source: 'scan' | 'manual'
+  model: string
+  decided_by: string
+  decided_at?: number | null
+  created_at: number
+  updated_at?: number
 }
 
 declare global {

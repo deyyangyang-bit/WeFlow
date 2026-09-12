@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
-import { resolve } from 'path'
+import { existsSync, readdirSync, rmSync } from 'fs'
+import { dirname, resolve, sep } from 'path'
 
 // ⛔ 环境变量坑：ELECTRON_RUN_AS_NODE=1 会让 Electron 以 Node 模式启动（GUI 不出现，
 //   --version 输出内嵌 Node 版本 v24.17.0 而非 Electron 43.0.0）。
@@ -28,6 +29,43 @@ const handleElectronOnStart = (options: { reload: () => void }) => {
     options.reload()
   } catch { /* 同步抛错路径；异步 'error' 事件由上方 uncaughtException 护栏兜住 */ }
 }
+
+/** electron 目录下的同名 .js 是可再生 tsc 中间产物；扩展名省略时始终以 TS 源码为准。 */
+function preferElectronTypeScriptPlugin() {
+  const electronRoot = resolve(__dirname, 'electron')
+  return {
+    name: 'weflow-prefer-electron-typescript',
+    enforce: 'pre' as const,
+    resolveId(source: string, importer?: string) {
+      if (!importer || !source.startsWith('.') || /\.[A-Za-z0-9]+$/.test(source)) return null
+      const candidate = resolve(dirname(importer.split('?')[0]), source)
+      if (candidate !== electronRoot && !candidate.startsWith(`${electronRoot}${sep}`)) return null
+      for (const ext of ['.ts', '.tsx']) {
+        const typed = `${candidate}${ext}`
+        if (existsSync(typed)) return typed
+      }
+      return null
+    }
+  }
+}
+
+/** 移除 tsc 原位生成的可再生文件，防止 Electron 子构建把旧 .js 当成源码。 */
+function removeGeneratedTypeScriptSiblings(root: string): void {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = resolve(root, entry.name)
+    if (entry.isDirectory()) {
+      removeGeneratedTypeScriptSiblings(path)
+      continue
+    }
+    const match = entry.name.match(/^(.*)\.(?:ts|tsx)$/)
+    if (!match || entry.name.endsWith('.d.ts')) continue
+    const target = resolve(root, `${match[1]}.js`)
+    if (existsSync(target)) rmSync(target)
+  }
+}
+
+removeGeneratedTypeScriptSiblings(resolve(__dirname, 'electron'))
+removeGeneratedTypeScriptSiblings(resolve(__dirname, 'shared'))
 
 const exportWorkerElectronShimPlugin = () => {
   const virtualId = 'virtual:weflow-export-worker-electron'
@@ -122,6 +160,7 @@ export default defineConfig({
     exclude: []
   },
   plugins: [
+    preferElectronTypeScriptPlugin(),
     react(),
     electron([
       {
@@ -300,7 +339,7 @@ export default defineConfig({
             outDir: 'dist-electron',
             rollupOptions: {
               output: {
-                entryFileNames: 'hermesUtilityEntry.js',
+                entryFileNames: 'hermesUtility.js',
                 codeSplitting: false
               }
             }

@@ -1,3 +1,5 @@
+import { createHash } from 'crypto'
+import { isPriceOverride, type PriceOverride } from '../../shared/priceOverride'
 /**
  * crmDbService.ts
  * CRM 模块数据层：独立 weflow-crm.db（sql.js/WASM），模式复用 salesDbService。
@@ -12,6 +14,7 @@ import { salesLog } from './salesLogger'
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, type GuardLogLevel } from './atomicPersist'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
+import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLifecycleHooks'
 
 /** §2.52 启动守卫日志桥：落盘 salesLog（打包可见）+ console（dev 可见） */
 function dbGuardLog(level: GuardLogLevel, msg: string): void {
@@ -164,6 +167,11 @@ CREATE TABLE IF NOT EXISTS shipping_info (
 CREATE TABLE IF NOT EXISTS scan_state (
   key TEXT PRIMARY KEY, last_scan INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS migration_report (
+  module TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '{}', failures TEXT NOT NULL DEFAULT '[]',
+  conflicts TEXT NOT NULL DEFAULT '[]', ran_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS contract_status_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, from_status TEXT,
   to_status TEXT, operator TEXT, created_at INTEGER
@@ -226,6 +234,7 @@ CREATE TABLE IF NOT EXISTS assignment (
   mode TEXT DEFAULT '',
   sla1_deadline INTEGER,
   sla1_met_at INTEGER,
+  claimed_at INTEGER,
   sla2_scan_ref TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'claimed', 'recycled', 'transferred')),
   source TEXT DEFAULT '',
@@ -235,6 +244,31 @@ CREATE TABLE IF NOT EXISTS assignment (
   deleted INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_assignment_lead ON assignment(lead_id);
+-- ── first_classification（宪法 §3，2026-09-10 本刀登记后建表；PRD 2.4 认领满 24h AI 首次分类配套）──
+-- 认领轮次级提案事实表：assignment_id UNIQUE = 轮次幂等键（转派新建 assignment 行 = 新轮次）。
+-- status 有穷枚举 CHECK 硬门禁；failed 可重试不写假结果；confirmed/rejected 历史行保留。
+CREATE TABLE IF NOT EXISTS first_classification (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL,
+  lead_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'proposed', 'confirmed', 'rejected', 'failed')),
+  result_json TEXT DEFAULT '{}',
+  evidence_json TEXT DEFAULT '{}',
+  gaps_json TEXT DEFAULT '[]',
+  error TEXT DEFAULT '',
+  trigger_source TEXT DEFAULT 'scan',
+  model TEXT DEFAULT '',
+  decided_by TEXT DEFAULT '',
+  decided_at INTEGER,
+  source TEXT DEFAULT '',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_first_classify_round ON first_classification(assignment_id);
+CREATE INDEX IF NOT EXISTS idx_first_classify_lead ON first_classification(lead_id, status);
 CREATE TABLE IF NOT EXISTS ownership_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   entity_type TEXT NOT NULL,
@@ -290,6 +324,28 @@ CREATE TABLE IF NOT EXISTS payment_promise (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_promise_evidence ON payment_promise(account_id, evidence_key);
 CREATE INDEX IF NOT EXISTS idx_payment_promise_scan ON payment_promise(status, due_date);
+-- ── notify_inbox（主管升级提醒收件箱，2026-09-08 SLA1 三次超时主管通知闭环）────
+-- sla1_escalate_supervisor 下行通知在中枢的落地终点（lanSyncService.consumeSupervisorNotifications
+-- 单写者）：idempotency_key 唯一幂等；status unread/read 两态供 UI 列表与已读；detail 存脱敏摘要
+-- （原归属/三次超时/回收时间/原因，宪法 §1.12 配套；联系方式过 maskContact 脱敏）。
+CREATE TABLE IF NOT EXISTS notify_inbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  notify_type TEXT NOT NULL DEFAULT 'sla1_escalate',
+  idempotency_key TEXT NOT NULL,
+  title TEXT DEFAULT '',
+  body TEXT DEFAULT '',
+  lead_id INTEGER,
+  detail TEXT DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'read')),
+  source TEXT DEFAULT 'sync',
+  updated_by TEXT DEFAULT '',
+  updated_at INTEGER,
+  version INTEGER DEFAULT 1,
+  deleted INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notify_inbox_key ON notify_inbox(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_notify_inbox_status ON notify_inbox(status, created_at);
 `
 
 // lead 索引独立于 SCHEMA_SQL：旧空壳 lead 表无 contact_type 列，若在 SCHEMA_SQL 中建索引
@@ -309,7 +365,7 @@ const ENTITIES = [
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
   'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk',
   'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event',
-  'payment_promise'
+  'payment_promise', 'notify_inbox', 'first_classification'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -404,9 +460,40 @@ export function mergeEnrichFields(
   return result
 }
 
+/** 正式成交登记 payload（PRD 5.1 字段级规格；宪法 §1.5 修订 2026-09-09） */
+export interface OpportunityDealPayload {
+  /** CNY 结算额（业绩/报表统一口径），必须 > 0 */
+  amount_cny: number
+  /** 原币币种（ISO 代码，缺省 CNY）；非 CNY 时 original_amount / rate_note 必填 */
+  original_currency?: string
+  original_amount?: number
+  /** 汇率折算口径/凭证说明（支付订单号、回单截图哈希等） */
+  rate_note?: string
+  /** 主型号：必须来自 product（model 或 name 精确命中） */
+  main_model: string
+  /** 补充型号（自由文本；落 custom_fields.supplementary_models，与商机页展示同键） */
+  model_extra?: string
+  /** 订单量（台），正整数 */
+  order_qty: number
+  /** 预计发运窗口（epoch ms；end 不得早于 start） */
+  expected_ship_start?: number
+  expected_ship_end?: number
+  /** 交付日期（售后设备提醒起算基准） */
+  delivery_date?: number
+  /** 整车 / 改装 */
+  type?: string
+  /** 绑定报价版本：必须属于该商机客户的合同且为现行有效版本（历史版本只读不可绑定） */
+  quote_version_id?: number | null
+  /** 成交备注（写入 opportunity_event 留痕） */
+  note?: string
+  /** 操作者署名（缺省取本机身份档案，宪法 §1.12） */
+  actor?: string
+}
+
 class CrmDbService {
   private db: SqlJsDatabase | null = null
   private dbPath: string | null = null
+  private entryGeneration = 0
   private saveTimer: NodeJS.Timeout | null = null
   // 并发护栏：main.ts 启动 await 与 crmIpcHandlers void 双路径会同时 initialize，
   // 分库后两次加载的是不同账号库，必须去重为同一次加载
@@ -427,6 +514,7 @@ class CrmDbService {
   private async doInitialize(userDataPath: string, wxid?: string): Promise<void> {
     if (!existsSync(userDataPath)) mkdirSync(userDataPath, { recursive: true })
     // §2.40 微信号分库：wxid 空（未完成引导）回退 legacy 名
+    this.entryGeneration++
     this.dbPath = businessDbPath(userDataPath, wxid, 'crm')
     // 打包态 wasm 在 electron/node_modules；dev/测试态在项目根 node_modules
     const wasmCandidates = [
@@ -500,6 +588,9 @@ class CrmDbService {
     // ①'' assignment.sla1_remind_count（三次提醒制，宪法 §1.3 修订 2026-09-05，UI设计稿屏 4/屏 6）：
     //     0=未提醒过；超时未停表第 1/2 次只提醒（+1+审计，状态零变更），满第 3 次才回收
     try { this.db.run('ALTER TABLE assignment ADD COLUMN sla1_remind_count INTEGER DEFAULT 0') } catch { /* 列已存在 */ }
+    // ①''' assignment.claimed_at（PRD 2.4 认领满 24h 首次分类触发轴，宪法 §1.3 修订 2026-09-10）：
+    //     认领时刻毫秒，NULL=未认领；claimLead 单点写入；存量 NULL 不回填（不拿过去时刻当触发基点）
+    try { this.db.run('ALTER TABLE assignment ADD COLUMN claimed_at INTEGER') } catch { /* 列已存在 */ }
     // ② opportunity 补列（宪法 §1.5：发现来源 / 整车改装类型 / 多币种金额 / 主车型 / 订单与发货量 /
     //    预期发货窗口 / 报价版本与 customer 挂接；逻辑外键，不建 FK 约束——跨库与既有表铁律）
     const oppPhase0Cols: Array<[string, string]> = [
@@ -514,13 +605,28 @@ class CrmDbService {
     for (const [col, type] of oppPhase0Cols) {
       try { this.db.run(`ALTER TABLE opportunity ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
+    // ②″ opportunity.over_ship_reason（交付售后超发原因，宪法 §3 登记 2026-09-10）：快照文本，0 字 = 未超发
+    try { this.db.run("ALTER TABLE opportunity ADD COLUMN over_ship_reason TEXT DEFAULT ''") } catch { /* 列已存在 */ }
+    // ②‴ customer 设备档案 7 字段 + 质保 + 复购等级补列（宪法 §1.1/§3 登记 2026-09-10）：
+    //     日期/期限列 0/NULL = 未登记合法态，服务端不得拿缺失日期猜周期；AI 只出提案，人工确认后写
+    const customerDeliveryCols: Array<[string, string]> = [
+      ['model', "TEXT DEFAULT ''"], ['purchase_date', 'INTEGER DEFAULT 0'],
+      ['modified_date', 'INTEGER DEFAULT 0'], ['battery_type', "TEXT DEFAULT ''"],
+      ['last_maintenance_date', 'INTEGER DEFAULT 0'], ['warranty_start_date', 'INTEGER DEFAULT 0'],
+      ['warranty_days', 'INTEGER DEFAULT 0'], ['repeat_level', "TEXT DEFAULT ''"]
+    ]
+    for (const [col, type] of customerDeliveryCols) {
+      try { this.db.run(`ALTER TABLE customer ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
     // ②' quotation 版本模型补列 + contract.quote_version_id（宪法 §1.6）。
     // 权威方向 = contract.quote_version_id → quotation 版本行；既有反向链 quotation.contract_id 过渡期
     // 双写只读兼容。双写起止（D3 拍板）：Phase 1 版本链写入路径上线起，同一事务双写两侧；
     // Phase 2 读路径全部切换到新方向后，quotation.contract_id 退役（只读留档）。
     const quotePhase0Cols: Array<[string, string]> = [
       ['version', 'INTEGER DEFAULT 1'], ['effective_from', 'INTEGER DEFAULT 0'],
-      ['effective_to', 'INTEGER DEFAULT 0'], ['pdf_hash', "TEXT DEFAULT ''"]
+      ['effective_to', 'INTEGER DEFAULT 0'], ['pdf_hash', "TEXT DEFAULT ''"],
+      // 宪法 §1.6 修订（2026-09-09）：DOCX 产物 SHA-256 存证列；pdf_hash 仅真实 PDF 才写（见 crmDocGenService）
+      ['artifact_hash', "TEXT DEFAULT ''"]
     ]
     for (const [col, type] of quotePhase0Cols) {
       try { this.db.run(`ALTER TABLE quotation ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
@@ -641,6 +747,16 @@ class CrmDbService {
     try { atomicWriteFileSync(this.dbPath, Buffer.from(this.db.export())) } catch (e) { console.error('[CrmDb] persistNow error:', e) }
   }
 
+  /**
+   * 备份前强制刷盘（严格版）：失败抛出，调用方（autoBackupService）必须终止本轮备份，
+   * 不允许吞错继续备份——否则会把 500ms 防抖窗口前的旧文件当成功备份写入 manifest。
+   */
+  persistNowStrict(): void {
+    if (!this.db || !this.dbPath) return
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
+    atomicWriteFileSync(this.dbPath, Buffer.from(this.db.export()))
+  }
+
   /** 当前业务库文件绝对路径（未初始化为 null；归档 IPC / 备份用） */
   currentDbPath(): string | null { return this.dbPath }
 
@@ -678,6 +794,7 @@ class CrmDbService {
   private detach(): void {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     this.db = null
+    this.entryGeneration++
     this.dbPath = null
     this.initPromise = null
   }
@@ -722,17 +839,99 @@ class CrmDbService {
     return r.length ? r[0] : null
   }
 
+  contractEntryScope(): { accountKey: string; generation: number } {
+    if (!this.db || !this.dbPath) throw new Error('业务库未就绪')
+    return { accountKey: createHash('sha256').update(this.dbPath).digest('hex'), generation: this.entryGeneration }
+  }
+
+  assertContractEntryScope(scope: { accountKey: string; generation: number }): void {
+    const current = this.contractEntryScope()
+    if (!scope || scope.accountKey !== current.accountKey || scope.generation !== current.generation) throw new Error('账号已切换，请重新打开合同')
+  }
+
+  contractByCreationRequest(requestId: string): CrmRow | null {
+    if (!/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) throw new Error('创建标识无效')
+    const candidates = this.all("SELECT * FROM contract WHERE custom_fields LIKE ? ORDER BY id", [`%${requestId}%`])
+    return candidates.find(row => { try { return JSON.parse(String(row.custom_fields || '{}')).creation_request_id === requestId } catch { return false } }) || null
+  }
+
+  /** 客户与合同在同一同步事务内创建；报价/文件仍各自独立，失败按标识恢复。 */
+  beginContractEntry(input: { requestId: string; accountId?: number; name: string; amount: number; header: Record<string, string>; updateHeaderKeys?: string[] }): CrmRow {
+    const existing = this.contractByCreationRequest(input.requestId)
+    if (existing) return existing
+    if (!input.name?.trim() || !Number.isFinite(input.amount) || input.amount < 0) throw new Error('客户名称或合同金额无效')
+    const headerKeys = ['buyer_addr', 'buyer_bank', 'buyer_account', 'tax_no', 'buyer_phone']
+    const header = Object.fromEntries(headerKeys.map(key => [key, String(input.header?.[key] || '').trim()]))
+    const contractId = this.runTx(tx => {
+      const now = Date.now()
+      let accountId = Number(input.accountId || 0)
+      let name = input.name.trim()
+      if (accountId) {
+        const account = tx.all('SELECT * FROM account WHERE id = ?', [accountId])[0]
+        if (!account) throw new Error('客户不存在')
+        name = String(account.name)
+        let fields: Record<string, unknown> = {}
+        try { fields = JSON.parse(String(account.custom_fields || '{}')) } catch { /* retain empty */ }
+        const empty = headerKeys.every(key => !String(fields[key] || '').trim())
+        const selected = empty ? headerKeys : (input.updateHeaderKeys || []).filter(key => headerKeys.includes(key))
+        if (selected.length) {
+          for (const key of selected) fields[key] = header[key]
+          tx.run('UPDATE account SET custom_fields = ?, updated_at = ? WHERE id = ?', [JSON.stringify(fields), now, accountId])
+        }
+      } else {
+        accountId = tx.run('INSERT INTO account (name, custom_fields, created_at, updated_at) VALUES (?,?,?,?)', [name, JSON.stringify(header), now, now])
+      }
+      const id = tx.run('INSERT INTO contract (account_id, name, amount, status, custom_fields, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', [accountId, `${name}-合同`, input.amount, 'pending_sign', JSON.stringify({ ...header, creation_request_id: input.requestId }), now, now])
+      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)', [currentActor(), 'contract_entry_create', 'contract', id, JSON.stringify({ account_id: accountId, creation_request_id: input.requestId }), now])
+      return id
+    })
+    this.persistNowStrict()
+    return this.getById('contract', contractId)!
+  }
+
   create(entity: string, data: CrmRow): number {
     if (!this.isEntity(entity)) return 0
+    // 宪法 §1.6（2026-09-09 修订）：报价 = append-only 版本链，写入单点是 createQuotation；
+    // 散写 quotation 行会绕过 version/effective 语义污染版本链，响亮失败。
+    if (entity === 'quotation') throw new Error('报价单禁止散写：请走 createQuotation 版本链（宪法 §1.6 append-only）')
     const keys = Object.keys(data)
     const sql = `INSERT INTO ${entity} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`
     return this.run(sql, keys.map((k) => data[k]))
   }
 
+  /** 报价版本现行态允许回写的字段（文件/存证哈希/备注/有效期）；价格与行项变更必须新建版本 */
+  private static readonly QUOTATION_MUTABLE_FIELDS: ReadonlySet<string> = new Set([
+    'attachment_path', 'artifact_hash', 'pdf_hash', 'custom_fields', 'valid_until'
+  ])
+
   update(entity: string, id: number, patch: CrmRow): void {
     if (!this.isEntity(entity)) return
+    if (entity === 'contract' && patch.custom_fields != null) {
+      const existing = this.getById(entity, id)
+      const oldFields = JSON.parse(String(existing?.custom_fields || '{}'))
+      const newFields = JSON.parse(String(patch.custom_fields))
+      patch = { ...patch, custom_fields: JSON.stringify({ ...oldFields, ...newFields, ...(oldFields.creation_request_id ? { creation_request_id: oldFields.creation_request_id } : {}) }) }
+    }
     const keys = Object.keys(patch)
     if (!keys.length) return
+    if (entity === 'quotation') {
+      // 宪法 §1.6（2026-09-09 修订）：历史版本（effective_to>0，已被新版本替代）只读，一律拒绝；
+      // 现行版本仅允许文件/哈希/备注类回写，价格与行项改动必须走 createQuotation 新版本。
+      const row = this.getById('quotation', id)
+      if (!row) return
+      const contract = Number(row.contract_id || 0) > 0
+        ? this.getById('contract', Number(row.contract_id))
+        : null
+      if (Number(row.effective_to || 0) > 0 || Number(contract?.quote_version_id || 0) !== id) {
+        throw new Error(`报价版本 #${id} 已被新版本替代（历史版本只读，宪法 §1.6 append-only）`)
+      }
+      const illegal = keys.filter((k) => !CrmDbService.QUOTATION_MUTABLE_FIELDS.has(k))
+      if (illegal.length) {
+        throw new Error(`报价单字段不可直改（${illegal.join(',')}）：价格/行项变更请新建报价版本（宪法 §1.6）`)
+      }
+      this.run(`UPDATE quotation SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
+      return
+    }
     this.run(`UPDATE ${entity} SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
   }
 
@@ -930,6 +1129,8 @@ class CrmDbService {
       this.logAutoConfirm('account', accountId, 'info_accept', p.confidence, `采纳 ${field}=${p.value}`, 'applyInfoField')
       // 刀 2 埋点写点①（设计-Hermes-MVP）：信息待确认人工采纳 → proposal/accepted
       trackProposalEvent({ event_type: 'proposal', stage: 'accepted', entity_type: 'account_info', entity_id: `${accountId}:${field}`, actor: currentActor() })
+      // 生命周期钩子（PRD 2.4 反问卡自动关闭等派生消费；尽力而为，失败不影响主语义）
+      emitInfoFieldConfirmed(accountId, field)
       return { ok: true }
     }
     this.update('account', accountId, { enrich_meta: JSON.stringify({ fields: meta.fields || {}, pending }), updated_at: Date.now() })
@@ -960,6 +1161,8 @@ class CrmDbService {
     patchRow.enrich_meta = JSON.stringify({ fields, pending })
     this.update('account', accountId, patchRow)
     this.logActivity('account', accountId, 'field_edited', `手动编辑「${field}」${v ? `= ${v.slice(0, 60)}` : '（清空）'}`)
+    // 生命周期钩子（PRD 2.4 反问卡自动关闭等派生消费；尽力而为）
+    emitInfoFieldConfirmed(accountId, field)
     return { ok: true }
   }
 
@@ -1076,16 +1279,116 @@ class CrmDbService {
     this.opportunityEventAdd(oppId, 'stage_change', stage, `${source}：${fromStage} → ${stage}`)
     return true
   }
-  /** 关闭商机（成交/丢单）。status: won | lost */
-  opportunityClose(oppId: number, status: 'won' | 'lost', reason: string): boolean {
+  /** 关闭商机（仅丢单）。成交一律走 registerOpportunityDeal；此处只接受 lost，原因必填，不写成交字段。 */
+  opportunityClose(oppId: number, status: 'lost', reason: string): boolean {
+    if (status !== 'lost') return false // 成交只走 registerOpportunityDeal；won 一律拒绝
+    const reasonText = String(reason || '').trim()
+    if (!reasonText) return false // 丢单原因必填
     const opp = this.all('SELECT * FROM opportunity WHERE id = ?', [oppId])[0]
     if (!opp) return false
-    this.update('opportunity', oppId, { status, updated_at: Date.now() })
-    this.opportunityEventAdd(oppId, status === 'won' ? 'won' : 'lost', String(opp.stage || ''), reason)
+    if (String(opp.status || '') !== 'active') return false // 已关闭（won/lost）商机禁止再次丢单/覆盖成交
+    this.update('opportunity', oppId, { status: 'lost', updated_at: Date.now() })
+    this.opportunityEventAdd(oppId, 'lost', String(opp.stage || ''), reasonText)
     return true
   }
+
+  // ─── 正式成交登记（宪法 §1.5 修订 2026-09-09：字段/won/事件/审计同一事务）───
+  /**
+   * 人工正式成交登记（单点）：成交字段 + opportunity.status='won' + opportunity_event + audit_event
+   * 同一事务（runTx），任一步失败整体回滚。
+   * 硬校验（事务内执行，失败即抛错回滚）：
+   *   ① amount_cny > 0；② order_qty 正整数；③ expected_ship_end 不早于 expected_ship_start；
+   *   ④ 非 CNY 必填 original_amount + rate_note；⑤ main_model 必填且必须命中 product（model/name）；
+   *   ⑥ type 只能是「整车」或「改装」（空值/任意字符串一律拒绝）；
+   *   ⑦ quote_version_id（如绑定）必须属于该商机客户的合同，且为现行有效版本（effective_to=0，历史只读）。
+   * 丢单（lost）不走本方法：opportunityClose('lost') 只写丢单状态和原因，不写成交字段。
+   */
+  registerOpportunityDeal(oppId: number, deal: OpportunityDealPayload): { ok: boolean; reason?: string } {
+    const id = Number(oppId || 0)
+    try {
+      this.runTx((tx) => {
+        const opp = id ? tx.all('SELECT * FROM opportunity WHERE id = ?', [id])[0] : null
+        if (!opp) throw new Error('商机不存在')
+        if (String(opp.status) !== 'active') throw new Error(`商机已关闭（${opp.status}），不可重复登记`)
+        const now = Date.now()
+        const amountCny = Number(deal.amount_cny)
+        if (!Number.isFinite(amountCny) || amountCny <= 0) throw new Error('成交金额（CNY）必须大于 0')
+        const orderQty = Number(deal.order_qty)
+        if (!Number.isInteger(orderQty) || orderQty <= 0) throw new Error('订单量必须是正整数')
+        const shipStart = Number(deal.expected_ship_start || 0)
+        const shipEnd = Number(deal.expected_ship_end || 0)
+        if (shipStart > 0 && shipEnd > 0 && shipEnd < shipStart) throw new Error('预计发货结束不得早于预计发货开始')
+        const currency = (String(deal.original_currency || '').trim().toUpperCase() || 'CNY')
+        const originalAmount = Number(deal.original_amount || 0)
+        const rateNote = String(deal.rate_note || '').trim()
+        if (currency !== 'CNY' && (originalAmount <= 0 || !rateNote)) {
+          throw new Error(`非 CNY 成交必须填写原币金额与汇率说明（${currency}）`)
+        }
+        const mainModel = String(deal.main_model || '').trim()
+        if (!mainModel) throw new Error('主型号必填（必须来自产品库）')
+        if (!tx.all('SELECT id FROM product WHERE model = ? OR name = ? LIMIT 1', [mainModel, mainModel]).length) {
+          throw new Error(`主型号必须来自产品库：${mainModel}`)
+        }
+        const dealType = String(deal.type || '').trim()
+        if (dealType !== '整车' && dealType !== '改装') throw new Error('成交类型必须为「整车」或「改装」')
+        const quoteVersionId = Number(deal.quote_version_id || 0)
+        if (quoteVersionId > 0) {
+          const q = tx.all(
+            `SELECT q.id, q.contract_id, q.effective_to, c.account_id, c.quote_version_id
+             FROM quotation q JOIN contract c ON c.id = q.contract_id WHERE q.id = ?`,
+            [quoteVersionId]
+          )[0]
+          if (!q) throw new Error(`报价版本不存在：#${quoteVersionId}`)
+          if (Number(q.effective_to || 0) > 0 || Number(q.quote_version_id || 0) !== quoteVersionId) {
+            throw new Error(`报价版本 #${quoteVersionId} 已被新版本替代（历史版本只读），请绑定当前有效版本`)
+          }
+          if (Number(q.account_id || 0) !== Number(opp.account_id || 0)) {
+            throw new Error(`报价版本 #${quoteVersionId} 不属于该商机客户的合同`)
+          }
+        }
+        let customFields: Record<string, unknown> = {}
+        try { customFields = JSON.parse(String(opp.custom_fields || '{}')) } catch { customFields = {} }
+        if (deal.model_extra != null) customFields.supplementary_models = String(deal.model_extra).trim()
+        // ① 成交字段落库 + status='won'（amount 同步 = 漏斗/统计口径，与商机页登记一致）
+        tx.run(
+          `UPDATE opportunity SET amount_cny = ?, amount = ?, original_currency = ?, original_amount = ?, rate_note = ?,
+           main_model = ?, order_qty = ?, expected_ship_start = ?, expected_ship_end = ?, delivery_date = ?, type = ?,
+           quote_version_id = ?, custom_fields = ?, status = 'won', updated_at = ? WHERE id = ?`,
+          [amountCny, amountCny, currency, currency !== 'CNY' ? originalAmount : 0, currency !== 'CNY' ? rateNote : '',
+            mainModel, orderQty, shipStart, shipEnd, Number(deal.delivery_date || 0), dealType,
+            quoteVersionId > 0 ? quoteVersionId : null, JSON.stringify(customFields), now, id]
+        )
+        // ② 商机事件留痕
+        tx.run(
+          'INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
+          [id, 'won', String(opp.stage || ''),
+            `${String(deal.note || '').trim() || '人工登记成交'}（¥${amountCny} · ${mainModel} ×${orderQty}${quoteVersionId > 0 ? ` · 报价 #${quoteVersionId}` : ''}）`.slice(0, 200), now]
+        )
+        // ③ 审计（宪法 §1.12：append-only，与写操作同事务）
+        tx.run(
+          'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+          [String(deal.actor || '').trim() || currentActor(), 'opportunity_deal_register', 'opportunity', id,
+            JSON.stringify({
+              amount_cny: amountCny, original_currency: currency,
+              original_amount: currency !== 'CNY' ? originalAmount : 0,
+              main_model: mainModel, order_qty: orderQty, type: dealType,
+              quote_version_id: quoteVersionId > 0 ? quoteVersionId : null
+            }), now]
+        )
+        return true
+      })
+      // 生命周期钩子（PRD 2.4 反问卡「数量/型号」缺口自动关闭等派生消费；事务外尽力而为）
+      try {
+        const acc = this.getById('opportunity', id)
+        if (acc && Number(acc.account_id || 0) > 0) emitOpportunityDealRegistered(Number(acc.account_id), id)
+      } catch { /* 钩子失败不影响主语义 */ }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  }
   /** 客户阶段 AI 判定后联动：客户 active 商机同步推进。
-   *  了解→比价→决策 顺推；成交→商机 won；流失→商机 lost。 */
+   *  了解→比价→决策 顺推；成交→生成待人工成交登记提醒（不直接置 won）；流失→商机 lost。 */
   syncOpportunityStageByAccount(accountId: number, customerStage: string): number {
     if (!accountId) return 0
     const opps = this.activeOpportunitiesByAccount(accountId)
@@ -1094,7 +1397,7 @@ class CrmDbService {
     let changed = 0
     for (const o of opps) {
       const cur = String(o.stage || '了解')
-      if (customerStage === '成交') { if (this.opportunityClose(Number(o.id), 'won', '客户阶段判定成交，自动关单')) changed++; continue }
+      if (customerStage === '成交') { if (this.dealPendingReminder(Number(o.id))) changed++; continue }
       if (customerStage === '流失') { if (this.opportunityClose(Number(o.id), 'lost', '客户阶段判定流失，自动关单')) changed++; continue }
       if (!ORDER.includes(customerStage as (typeof ORDER)[number])) continue
       const curIdx = ORDER.indexOf(cur as (typeof ORDER)[number])
@@ -1102,6 +1405,20 @@ class CrmDbService {
       if (newIdx > curIdx && this.opportunityUpdateStage(Number(o.id), customerStage, 'customer_sync')) changed++
     }
     return changed
+  }
+
+  /** 客户阶段联动成交 → 生成待人工成交登记提醒（幂等：同商机只保留一条 deal_pending 事件）。
+   *  不直接置 won——成交必须人工走 registerOpportunityDeal 补齐字段。返回是否新生成。 */
+  private dealPendingReminder(oppId: number): boolean {
+    const opp = this.all('SELECT * FROM opportunity WHERE id = ?', [oppId])[0]
+    if (!opp) return false
+    const exists = this.all(
+      "SELECT 1 AS x FROM opportunity_event WHERE opportunity_id = ? AND event_type = 'deal_pending' LIMIT 1",
+      [oppId]
+    ).length > 0
+    if (exists) return false
+    this.opportunityEventAdd(oppId, 'deal_pending', String(opp.stage || ''), '客户阶段判定成交，请登记成交表单')
+    return true
   }
 
   // ─── 风险预警（P0：竞品/价格/服务消息信号 → crm_risk，PRD §18）────────────
@@ -1339,6 +1656,13 @@ class CrmDbService {
   logActivity(entity: string, entityId: number, action: string, detail = '', operator = ''): void {
     this.create('activity_log', { entity, entity_id: entityId, action, detail, operator, created_at: Date.now() })
   }
+  /** 审计单点（宪法 §1.12 append-only）：非事务路径的 audit_event 写入；事务内请直接 tx.run 保持原子性 */
+  auditAppend(actor: string, action: string, entityType: string, entityId: number | null, detail: unknown): void {
+    this.run(
+      'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [actor, action, entityType, entityId, typeof detail === 'string' ? detail : JSON.stringify(detail), Date.now()]
+    )
+  }
   contractStatusHistory(contractId: number): CrmRow[] {
     return this.all('SELECT * FROM contract_status_history WHERE contract_id = ? ORDER BY id', [contractId])
   }
@@ -1561,6 +1885,19 @@ class CrmDbService {
     this.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [key, ms])
   }
   /**
+   * 迁移报告落库（幂等 upsert：每个模块只保留最新一份快照）——设置页「存量迁移报告」的 SSOT。
+   * 与 audit_event（append-only 业务留痕）解耦：audit 只在有实际写入时追加，报告每次扫描都刷新。
+   */
+  saveMigrationReport(module: string, title: string, summary: Record<string, number>, failures: unknown[], conflicts: unknown[], ranAt: number): void {
+    this.run(
+      'INSERT INTO migration_report (module, title, summary, failures, conflicts, ran_at) VALUES (?,?,?,?,?,?) ON CONFLICT(module) DO UPDATE SET title = excluded.title, summary = excluded.summary, failures = excluded.failures, conflicts = excluded.conflicts, ran_at = excluded.ran_at',
+      [module, title, JSON.stringify(summary), JSON.stringify(failures), JSON.stringify(conflicts), ranAt]
+    )
+  }
+  listMigrationReports(): CrmRow[] {
+    return this.all('SELECT module, title, summary, failures, conflicts, ran_at FROM migration_report ORDER BY module')
+  }
+  /**
    * 按收件人自动认领：收件人命中客户（shipping_info/私聊地址）即认领到该客户，
    * 有 signed/shipped 合同则同时关联合同（发货主体）；无合同只挂客户。写 auto_linked_by 供撤销。
    */
@@ -1599,23 +1936,186 @@ class CrmDbService {
       .map((r) => ({ ...r, cand_kind: 'contract', cand_tier: 'fallback' }))
   }
 
-  // ─── 报价单（行项型号必须来自 product）─────────────────────────────────────
-  createQuotation(data: { contract_id: number; items: Array<{ product_id: number; qty: number; unit_price?: number }>; valid_until?: number }): { ok: boolean; id?: number; reason?: string } {
-    const items: CrmRow[] = []
-    let total = 0
-    for (const it of data.items) {
-      const p = this.getById('product', it.product_id)
-      if (!p) return { ok: false, reason: `型号不存在: ${it.product_id}` }
-      const unit = it.unit_price ?? Number(p.unit_price ?? 0)
-      const subtotal = Math.round(unit * it.qty * 100) / 100
-      total = Math.round((total + subtotal) * 100) / 100
-      const specsObj = JSON.parse(String(p.specs || '{}')) as Record<string, string>
-      const specSummary = [p.material, ...Object.entries(specsObj).map(([k, v]) => `${k}:${v}`)].filter(Boolean).join('；')
-      items.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', spec_summary: specSummary, qty: it.qty, unit_price: unit, subtotal })
+  // ─── 报价单（append-only 版本链：行项必须来自 product，宪法 §1.6）───────────
+  /**
+   * 版本链核心（事务内调用，写入单点）：INSERT 新版本行 + 关闭上一有效版本 + 合同指针 + 审计。
+   * createQuotation 与模块 04 迁移共用（宪法 §1.6 修订 2026-09-09：迁移复用相同版本创建逻辑）。
+   * version 按合同递增（MAX(version)+1）；quotation.contract_id 过渡期双写（§4.3 只读兼容）。
+   * @returns { id, version, supersededId } supersededId = 被本版本关闭的上一有效版本（0 = 无）
+   */
+  createQuotationVersionTx(
+    tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+    p: { contractId: number; itemsJson: string; total: number; validUntil?: number | null; actor?: string; source?: string; priceOverrides?: PriceOverride[] }
+  ): { id: number; version: number; supersededId: number } {
+    const now = Date.now()
+    const cid = Number(p.contractId)
+    const version = Number(tx.all('SELECT COALESCE(MAX(version),0) + 1 AS v FROM quotation WHERE contract_id = ?', [cid])[0]?.v || 1)
+    const id = tx.run(
+      'INSERT INTO quotation (contract_id, items, total, valid_until, custom_fields, status, version, effective_from, effective_to, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [cid, p.itemsJson, p.total, p.validUntil ?? null, '{}', 'effective', version, now, 0, now]
+    )
+    const supersededId = this.linkQuotationVersionTx(tx, {
+      contractId: cid, quotationId: id, total: p.total, actor: p.actor, action: 'quote_version_create', source: p.source || 'app', priceOverrides: p.priceOverrides
+    })
+    return { id, version, supersededId }
+  }
+
+  /**
+   * 合同指针接管 + 关闭上一有效版本（事务内调用；createQuotationVersionTx 与存量链规范化共用）。
+   * 关闭语义 = 「新版本生效即关闭上一有效版本」：同合同 effective_to=0 的其他行 → effective_to=切换时刻
+   * （effective_from 缺省的存量行顺手回填 ← created_at，保证每个关闭版本都有生效窗口）；
+   * 指针：contract.quote_version_id ← 新版本（宪法 §1.6 权威方向）；同事务写 audit_event（§1.12）。
+   * @returns 被关闭的上一有效版本 id（0 = 本版本即首版本）
+   */
+  private linkQuotationVersionTx(
+    tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+    p: { contractId: number; quotationId: number; total?: number; actor?: string; action: string; source?: string; priceOverrides?: PriceOverride[] }
+  ): number {
+    const now = Date.now()
+    const previous = tx.all(
+      'SELECT id FROM quotation WHERE contract_id = ? AND COALESCE(effective_to,0) = 0 AND id != ? ORDER BY id DESC',
+      [Number(p.contractId), Number(p.quotationId)]
+    )
+    const supersededIds = previous.map((row) => Number(row.id)).filter((id) => id > 0)
+    const supersededId = supersededIds[0] || 0
+    if (supersededIds.length) {
+      tx.run(
+        `UPDATE quotation SET effective_to = ?,
+         effective_from = CASE WHEN COALESCE(effective_from,0) = 0 THEN COALESCE(NULLIF(created_at,0), ?) ELSE effective_from END
+         WHERE contract_id = ? AND COALESCE(effective_to,0) = 0 AND id != ?`,
+        [now, now, Number(p.contractId), Number(p.quotationId)]
+      )
     }
-    const id = this.create('quotation', { contract_id: data.contract_id, items: JSON.stringify(items), total, valid_until: data.valid_until ?? null, created_at: Date.now() })
-    if (id) this.logActivity('quotation', id, 'created', `合同 ${data.contract_id}，${items.length} 行，合计 ${total}`)
-    return { ok: true, id }
+    tx.run('UPDATE contract SET quote_version_id = ?, updated_at = ? WHERE id = ?', [Number(p.quotationId), now, Number(p.contractId)])
+    tx.run(
+      'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [p.actor || currentActor(), p.action, 'quotation', Number(p.quotationId),
+        JSON.stringify({ contract_id: Number(p.contractId), version_switch: true, superseded_id: supersededId, superseded_ids: supersededIds, total: p.total ?? null, source: p.source || 'app', ...(p.priceOverrides?.length ? { price_overrides: p.priceOverrides } : {}) }), now]
+    )
+    return supersededId
+  }
+
+  /**
+   * 创建报价（= 新版本）：合同校验 → 行项必须来自 product → 版本链事务
+   * （INSERT 新版本 + 关闭上一有效版本 + contract.quote_version_id + audit_event 同一事务，§1.6 修订）。
+   * 行项校验：qty 正整数；unit_price（如提供）≥ 0；product_id 必须命中 product 主数据。
+   * 任一步失败整体回滚，不覆盖旧行。
+   */
+  createQuotation(data: { contract_id: number; items: Array<{ product_id: number; qty: number; unit_price?: number }>; valid_until?: number; creation_request_id?: string }): { ok: boolean; id?: number; version?: number; reason?: string } {
+    const contractId = Number(data.contract_id || 0)
+    if (!contractId) return { ok: false, reason: '合同不能为空' }
+    const items = Array.isArray(data.items) ? data.items : []
+    if (!items.length) return { ok: false, reason: '报价至少一行产品' }
+    try {
+      const v = this.runTx((tx) => {
+        if (!tx.all('SELECT id FROM contract WHERE id = ?', [contractId]).length) throw new Error('合同不存在')
+        if (data.creation_request_id) {
+          const contract = this.contractByCreationRequest(data.creation_request_id)
+          if (Number(contract?.id) !== contractId) throw new Error('创建标识与合同不匹配')
+          const existing = tx.all('SELECT id, version FROM quotation WHERE contract_id = ? ORDER BY version LIMIT 1', [contractId])[0]
+          if (existing) return { id: Number(existing.id), version: Number(existing.version), supersededId: 0 }
+        }
+        const rows: CrmRow[] = []
+        const priceOverrides: PriceOverride[] = []
+        let total = 0
+        for (const it of items) {
+          const qty = Number(it.qty)
+          if (!Number.isInteger(qty) || qty <= 0) throw new Error(`报价数量必须是正整数：${it.qty}`)
+          if (it.unit_price != null) {
+            const unitPrice = Number(it.unit_price)
+            if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`报价单价不可为负：${it.unit_price}`)
+          }
+          const p = tx.all('SELECT * FROM product WHERE id = ?', [Number(it.product_id)])[0]
+          if (!p) throw new Error(`型号不存在: ${it.product_id}`)
+          const unit = it.unit_price ?? Number(p.unit_price ?? 0)
+          if (isPriceOverride(p.unit_price, it.unit_price)) priceOverrides.push({ product_id: Number(p.id), model: String(p.model || ''), catalog_unit_price: Number(p.unit_price || 0), quoted_unit_price: Number(unit) })
+          const subtotal = Math.round(unit * qty * 100) / 100
+          total = Math.round((total + subtotal) * 100) / 100
+          let specsObj: Record<string, string> = {}
+          try { specsObj = JSON.parse(String(p.specs || '{}')) } catch { specsObj = {} }
+          const specSummary = [p.material, ...Object.entries(specsObj).map(([k, v2]) => `${k}:${v2}`)].filter(Boolean).join('；')
+          rows.push({ product_id: p.id, model: p.model, name: p.name, spec: p.spec, material: p.material ?? '', spec_summary: specSummary, qty, unit_price: unit, subtotal })
+        }
+        const ver = this.createQuotationVersionTx(tx, { contractId, itemsJson: JSON.stringify(rows), total, validUntil: data.valid_until ?? null, priceOverrides })
+        // 时间线留痕（Customer 360 消费 activity_log；审计真源 = 同事务 audit_event，§1.12）
+        tx.run('INSERT INTO activity_log (entity, entity_id, action, detail, operator, created_at) VALUES (?,?,?,?,?,?)',
+          ['quotation', ver.id, 'created', `合同 ${contractId} v${ver.version}，${rows.length} 行，合计 ${total}`, '', Date.now()])
+        return ver
+      })
+      return { ok: true, id: v.id, version: v.version }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  /** 当前有效报价（§1.6 权威方向：contract.quote_version_id → quotation；指针缺失时回退 effective_to=0 最新行） */
+  currentQuotationForContract(contractId: number): CrmRow | null {
+    const cid = Number(contractId || 0)
+    if (!cid) return null
+    const c = this.getById('contract', cid)
+    const ptr = c && c.quote_version_id != null ? this.getById('quotation', Number(c.quote_version_id)) : null
+    if (ptr && Number(ptr.effective_to || 0) === 0 && Number(ptr.contract_id || 0) === cid) return ptr
+    return this.all('SELECT * FROM quotation WHERE contract_id = ? AND COALESCE(effective_to,0) = 0 ORDER BY id DESC LIMIT 1', [cid])[0] ?? null
+  }
+
+  /** 报价历史（版本链全量，新版本在前；历史版本只读——update() 守卫拒绝改写） */
+  quotationHistoryForContract(contractId: number): CrmRow[] {
+    const cid = Number(contractId || 0)
+    if (!cid) return []
+    return this.all('SELECT * FROM quotation WHERE contract_id = ? ORDER BY version DESC, id DESC', [cid])
+  }
+
+  /**
+   * 存量报价行版本链规范化（模块 04 迁移复用点，宪法 §1.6 修订 2026-09-09）：
+   * 同合同内按创建序重排 version=1..N；effective_from 缺省回填 ← created_at；
+   * 旧行 effective_to ← 后继版本生效点（与 createQuotation「新版本生效即关闭上一版本」同一不变量）；
+   * 最新版本保持 effective_to=0 并接管 contract.quote_version_id；同事务 audit_event(action='quote_version_backfill')。
+   * 幂等：重复执行收敛到同一终态（迁移执行器据此判 alreadyDone，不重复写审计）。
+   */
+  quotationChainNormalized(contractId: number): boolean {
+    const qs = this.all(
+      'SELECT id, version, effective_from, effective_to, created_at FROM quotation WHERE contract_id = ? ORDER BY COALESCE(NULLIF(created_at,0), id), id',
+      [Number(contractId)]
+    )
+    if (!qs.length) return false
+    const last = qs[qs.length - 1]
+    return qs.every((q, i) => Number(q.version || 0) === i + 1 && Number(q.effective_from || 0) > 0)
+      && qs.slice(0, -1).every((q) => Number(q.effective_to || 0) > 0)
+      && Number(last.effective_to || 0) === 0
+      && Number(this.getById('contract', Number(contractId))?.quote_version_id || 0) === Number(last.id)
+  }
+
+  normalizeQuotationVersionChain(contractId: number, opts: { actor?: string } = {}): { ok: boolean; versions?: number; linkedId?: number; reason?: string } {
+    try {
+      const r = this.runTx((tx) => {
+        const rows = tx.all(
+          'SELECT id, effective_from, created_at FROM quotation WHERE contract_id = ? ORDER BY COALESCE(NULLIF(created_at,0), id), id',
+          [Number(contractId)]
+        )
+        if (!rows.length) throw new Error('合同无报价行')
+        const effFrom = rows.map((row) => {
+          if (Number(row.effective_from || 0) > 0) return Number(row.effective_from)
+          if (Number(row.created_at || 0) > 0) return Number(row.created_at)
+          return Date.now()
+        })
+        const lastIdx = rows.length - 1
+        rows.forEach((row, i) => {
+          tx.run('UPDATE quotation SET version = ?, effective_from = ?, effective_to = ? WHERE id = ?',
+            [i + 1, effFrom[i], i < lastIdx ? effFrom[i + 1] : 0, Number(row.id)])
+        })
+        const linkedId = Number(rows[lastIdx].id)
+        tx.run('UPDATE contract SET quote_version_id = ?, updated_at = ? WHERE id = ?', [linkedId, Date.now(), Number(contractId)])
+        tx.run(
+          'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+          [opts.actor || 'system:migration', 'quote_version_backfill', 'quotation', linkedId,
+            JSON.stringify({ contract_id: Number(contractId), versions: rows.length, source: 'migration:04' }), Date.now()]
+        )
+        return { versions: rows.length, linkedId }
+      })
+      return { ok: true, versions: r.versions, linkedId: r.linkedId }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
   }
 
   // ─── 元数据表单（借 Twenty 增量元数据 / Cordys module/form 形态）──────────

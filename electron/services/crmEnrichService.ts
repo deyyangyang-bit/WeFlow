@@ -128,7 +128,7 @@ export async function enrichCustomer(sessionId: string, displayName: string, opt
       cfg,
       ENRICH_PROMPT,
       `客户：${displayName || acc.name}\n\n${g.material}`,
-      { responseFormatJson: true, temperature: 0.2, maxTokens: 1200 }
+      { usageContext: { purpose: 'enrich' }, responseFormatJson: true, temperature: 0.2, maxTokens: 1200 }
     )
   } catch (e) {
     salesLog('WARN', `[CrmEnrich] AI 提取失败 ${displayName || acc.name}: ${e instanceof Error ? e.message : String(e)}`)
