@@ -423,7 +423,7 @@
 
 ### 3. P0 路线（按序）
 
-- **P0-1 E4 证据链 UI**：数据层已备（§2.18 `sourceId/messageKey` 溯源）。做：点击 AI 判断 → 展开客户原话。**读取路径（2026-08-23 实证 + 用户定标）**：微信消息读取统一走**应用读取层 `chatService`**（主进程内 `decryptKey` 解密 WCDB，只读 + 游标分页；本产品核心能力，所有功能共用）；项目自身 HTTP API `/api/v1/messages`（返回 `localId/serverId/createTime/parsedContent`）**是同一读取层的 HTTP 封装**（`127.0.0.1` + `access_token` 鉴权），**不是独立数据源**——不存在"走 API = 不碰微信库"的路径。证据回查 = `messageKey → 应用读取层 → 原消息/上下文`。**第一刀（2026-08-23 已实现并提交，P0-1）**：AI 记录侧持久化 `messageKey` + `evidenceText`（`intent_tag_log` 加 2 列，幂等 ALTER，历史数据不动）；透传链路 = `onNewMessage → chatService.getLatestMessages → toMessageSnippets（保留 messageKey）→ salesStageClassifier → intent_tag_log`、`salesIntentService.analyzeIntent → chatService.getMessages → intent_tag_log`、`follow_up_task.source_message_id`（R3 / urge_customer）。证据约束：`evidence_text` 只存判断依据关键句（客户原话/转述，≤200 字），**不存 AI reason/结论、不存聊天摘要**。保持不动：insightService 聚合扫描 / crmLeadService / message_analysis。运行时验证三件事已通过（① 新日志带 message_key ✓ ② message_key 回查命中原消息 ✓ ③ evidence_text 为原话非 AI 结论 ✓）→ 进入 P0-2
+- **P0-1 E4 证据链 UI**：数据层已备（§2.18 `sourceId/messageKey` 溯源）。做：点击 AI 判断 → 展开客户原话。**读取路径（2026-08-23 实证 + 用户定标）**：微信消息读取统一走**应用读取层 `chatService`**（主进程内 `decryptKey` 解密 WCDB，只读 + 游标分页；本产品核心能力，所有功能共用）；项目自身 HTTP API `/api/v1/messages`（返回 `localId/serverId/createTime/parsedContent`）**是同一读取层的 HTTP 封装**（`127.0.0.1` + `access_token` 鉴权），**不是独立数据源**——不存在"走 API = 不碰微信库"的路径。证据回查 = `messageKey → 应用读取层 → 原消息/上下文`。**第一刀（2026-08-23 已实现并提交，P0-1）**：AI 记录侧持久化 `messageKey` + `evidenceText`（`intent_tag_log` 加 2 列，幂等 ALTER，历史数据不动）；透传链路 = `onNewMessage → chatService.getLatestMessages → toMessageSnippets（保留 messageKey）→ salesStageClassifier → intent_tag_log`、`salesIntentService.analyzeIntent → chatService.getMessages → intent_tag_log`、`follow_up_task.source_message_id`（R3 / urge_customer）。**⚠️ 其中第一条链路已于 2026-09-12 失效**：`salesActionEngine.onNewMessage` 与 `salesStageClassifier.classifyStage` 已按 PRD《AI简报与按需识别》§5.4（R）整体删除（拆线没拆弹，复核补刀），新消息不再触发任何 AI 阶段判定；`intent_tag_log` 的 `message_key`/`evidence_text` 列与其写入方法 `salesDbService.intentCreate` 均保留；当前**带证据锚点的实际写入者只剩 `salesIntentService.analyzeIntent`（采购意向分析，手动触发）**；原写入者 `salesStageClassifier.persistClassification` 能力保留但已**无调用方**（无 AI 调用，见 §2.98）。证据约束：`evidence_text` 只存判断依据关键句（客户原话/转述，≤200 字），**不存 AI reason/结论、不存聊天摘要**。保持不动：insightService 聚合扫描 / crmLeadService / message_analysis。运行时验证三件事已通过（① 新日志带 message_key ✓ ② message_key 回查命中原消息 ✓ ③ evidence_text 为原话非 AI 结论 ✓）→ 进入 P0-2
 - **P0-2 客户「AI 当前判断」**：把已有字段 + 意向评分 + 时间线聚合成「AI 对客户当前状态的解释」卡（高意向/决策期 + 最近变化 + 当前机会 + 当前风险 + 下一步 + 查看证据）。重点是**理解层**，不是加字段。**2026-08-23 数据契约盘点完成**（`docs/P0-2-数据契约盘点.md`，纯只读）：现有数据能稳定生成约 60%，三处硬伤——① Stage 无单一真源（6 写者中英混存、customer_profile/account.sales_stage/opportunity.stage 三口径零同步）② 证据链断点（insight 扫描路径不带 messageKey、source_message_id 双格式、无统一 resolver）③ AI 结论不持久化（summary/opportunity/risk/nextMove 现场生成不落库）。**据此 P0-2 拆为三刀 + UI**：P0-2A Canonical State（**设计已定稿**，`docs/P0-2A-Canonical-State-设计.md`：canonical stage 6 值 new/contacted/quoted/negotiating/won/lost + activityState active/dormant 拆 dormant + unknown 异常位；写者资格定稿 classifier/salesIntentService/manual/deal rule ✅ 保留、insightService ❌ 禁写 stage 降 signal（**暂不引入"高置信+阶段推进→覆盖"规则**，避免重新引入 stage 仲裁）、generic upsert ❌ 移除 stage 资格、dormant rule ❌ 不写 stage 改写 activityState；intentScore 定位综合意向分不重做算法，只修两 bug——`STAGE_BASE` 改 canonical 键 + 输入过 `normalizeStage()`、lastContactAt 秒→毫秒；**六刀已全部提交**：`6bf1ff6` intentScore 两 bug / `a3f3479` canonical read model / `308d5d9` action rules 阶段口径归一 / `53ee94b` insightService 禁写 stage 降 signal / `2933a2d` generic upsert 移除 stage 资格（IPC 运行时剥离 + 类型层删除双保险，tags/notes 仍更新、stage 保持原值） / `3ff3f1f` manual/deal rule 写者元数据收口（manual 校验值合法性 + changedAt；deal rule 补写 intent_tag_log + changedAt；写路径抽 legalStageWriters 不依赖 Electron）；P0-2B Evidence Resolver **已提交**（两刀 `04dbaec` + `21fd148`，见 §2.27）→ P0-2C AI Judgment Persistence（summary/opportunity/risk/nextAction 改为 事件→AI 判断→结构化结果→持久化→证据；不再打开档案现场调 LLM。**三刀已全部提交**：`07241f4` P0-2C.1 基础设施 + `fc654b2` P0-2C.2 summary 落库 + `057f8aa` P0-2C.3 action analysis 统一落库，见 §2.28；**P0-2 已收口 CLOSED**（见 §2.29）→ P0-3 Current Judgment Consumer Layer（`getCustomerCurrentView()` 组装三真源，UI 只消费该视图）→ P0-2 UI（最后一层呈现）。**边界**：P0-4 行动埋点（chat_opened/script_copied）不混入 P0-2；不建 AI Current Judgment schema、不动 UI；P0-2A 不膨胀成 CRM 状态机重构
 - **P0-3 E3 CustomerEvent**：**扩展 `intent_tag_log`，不是重写**。最小模型 `{event_type, summary, messageKey, source, created_at}`。动手前先评估 **4 个现有消费者**：漏斗 / 意向评分 / 周报 / 今日行动
 - **P0-4 Action 埋点**：**新增 3 个**——`script_copied`（采纳代理）/ `chat_opened`（执行准备）/ `customer_replied`（行动结果）。已有：`intent_tag_log` / `follow_up_task.created_at` / `follow_up_task.status`。最终形成：发现 → 行动生成 → 销售执行 → 客户响应
@@ -1658,13 +1658,37 @@
 - **测试**：`scripts/claimed-24h-classification-test.ts` **75/75**（A 未认领不触发 / B 不足 24h / C 满 24h+幂等 / D 转派重计时 / E 手动 / F 只进 proposed / G 确认落事实+关卡 / H 拒绝留痕 / I 证据硬门 / J unknown 合法 / K 六缺口卡 / L 去重 / M 钩子自动关闭 / N 失败重试 / O AI 未配置）。AI 经 `setFirstClassifyAiRunner` 注入（仅替换 HTTP 层，状态机/落库/审计全真）。回归：assignment-full 91/91、crm-enrich 61/61、action-funnel 25/25、tsc 零错误、vite build 通过。
 - **配置**：`crmFirstClassifyEnabled`(true) / `crmFirstClassifyDelayHours`(24) / `crmFirstClassifyScanIntervalMin`(30)。
 
+## 2.98 AI 简报六态 + 按需识别 + 关闭白天自动链路 + 日调用上限（PRD《AI简报与按需识别》，2026-09-12，工作区未提交）
+
+> **依据**：`docs/规划/AI简报与按需识别-PRD-v1.0.md`（实施契约）。三批一次落地：§5.1 简报六态与持久化游标、§5.2「AI 识别这个客户」按钮 + §5.4 关闭白天自动链路（不可拆）、§5.3 全局重新生成 + §5.5 用量打标/价格表/上限预警。**产品纪律**：AI 只做"提取与建议"，合并/归属变更/发布永不自动执行。
+
+- **§5.1 简报六态**（`morningDigestService.decideState`）：`pending_data` / `crm_only` / `all_covered_clear` / `empty_account` / `failed_or_blocked`，裁决**顺序即优先级**——扫描失败与额度阻断永远压过"看起来没事"。硬约束：任何失败/阻断不得渲染成「无风险/无需跟进/全部跟完」（`scripts/morning-digest-test.ts` e 组按禁用词表穷举守）；新账号空态**不调 AI 凑摘要**，正文直接说「尚未核验」。事实版降级保留**全部信号**（不再 top3），正文只报条数不报结论。
+- **持久化游标 `ai_scan_cursor`**（salesDb 直建，宪法 §3 已登记）：`(scope, session_id)` 联合主键，`last_processed_at` 单位**秒**（WCDB 口径，与 JS 毫秒的换算收敛在服务层）。scope 现为 `'digest'` / `'manual'` 两个；`cursorSet` **单调只进不退**（非正数、回退值直接忽略，不写假进度）。取代了原 `lastSeenTimestamp` 内存游标（重启即失忆 → 重复付费）。
+- **§5.2 按需识别**：`salesFollowUpService.identifyCustomer` 是唯一入口。流程 `trim sessionId → isAiConfigured → wcdbService.isConnected → cursorGet('manual') → nowSec - 7天 兜底 → getMessages(30)`；**无新消息即 `noNewContent` 且零模型调用**（可重复点击不重复付费）。有产出时落 `trigger_type='ai_detected'` + `created_by` 记当前销售，账本 `purpose='manual_identify'` / `trigger='manual_button'`。
+- **全局单飞 `identifyCoordinator`**：识别/简报**共用一把锁**，任一进行中所有入口按钮全禁用（`sales:identify:activity` 广播 + 订阅）。这不是"每个按钮各锁各的"——是全局互斥。
+- **§5.4（R）删除白天自动链路**（"抽取逻辑原样保留，只换扳机"）：沉默扫描 `runSilenceScan`、活跃会话分析 `analyzeRecentActivity`、催办识别 `scanUrgeFollowUps`、DB 变更监听 + 2s debounce、4h 沉默扫描定时器、启动预热、`salesFollowUpService.scan()` 及其 120min 冷却全部移除。**保留** `startActionEngineScheduler()`：`runFullScan` 是纯本地规则计算、零 AI 调用，删掉会连带毁掉今日行动清单。
+  - **顺带修掉的既有缺陷**：`if (this.processing) return` 会在扫描进行中**静默丢弃**新触发（无日志无补偿）；随链路删除一并消失，当前设计不存在"丢弃"路径。
+- **§5.5 用量打标 + 价格表 + 日上限**：
+  - **唯一采集层** `electron/services/ai/aiApiClient.ts`，三职责 = 记帐 / 额度闸门 / 统一错误语义。调用点清单与 `purpose` 对照表见 `docs/规划/AI调用入口与消费清单.md`（**新增 purpose 必须同步登记**；`grep -rn "callChatCompletion(\|simpleCompletion(" electron | grep -v usageContext` 可查漏标）。
+  - **价格表** `electron/services/ai/aiBudget.ts`（`PRICE_TABLE_AS_OF` / `PRICE_TABLE_SOURCE` 随表落库）。未收录模型 `priceFor` 返回 **null**，`estimateCost` 也记 **null 而非 0**（"算不出"与"没花钱"必须可区分），另有 `unpricedCalls` 计数上界面。
+  - **硬拦截按调用次数、不按金额**：刊例价对未收录模型为 null，按金额拦截会把"算不出"读成"没花钱"→ 静默超支。`aiDailyCallLimit`(默认 60) 是硬闸门，80% 预警（`WARN_RATIO`），阻断发生在 HTTP 之前并落一行 `status='blocked'` 账本（`used = calls - blockedCalls`，避免阻断自我累加锁死）。阻断错误 `AiBudgetBlockedError` 的文案含「额度/上限」，界面据此判定额度类错误。
+  - **闸门全局注入**（`configureAiBudget`）：`main.ts` 启动时注入上限 provider，手工拼的 config 也受约束——不依赖各调用点自觉传参。
+  - **偏差记录**：PRD §5.5 按「⌈活跃会话数/20⌉ 次调用」估，但抽取是**逐会话**的，一轮 ≤20 会话实际可达 20 次调用，公式**低估最多 20 倍**。已按"抽取逻辑原样保留"实现轮次（`ROUND_SESSION_LIMIT = 20`），默认上限 60 并把算式写进配置注释；未改抽取语义。
+- **§5.3 全局「重新生成简报」**：`regenerateToday()` 覆盖同日行（同日**仅一行**、`generateTodayDigest` 命中既有快照即幂等返回）。
+- **清理 R 产生的死旋钮**：设置页原有 5 个控制项（活跃触发冷却期 / 沉默联系人扫描间隔 / 沉默阈值 / 沉默上限 / 每次扫描上限）在链路删除后**已无任何消费者**，但仍在界面上承诺"有新消息时触发活跃分析""超过此天数触发沉默类见解"——属误导，已随本刀移除；对应的 4 个配置键（`aiInsightSilenceDays` / `aiInsightSilenceMaxDays` / `aiInsightScanLimit` / `aiInsightCooldownMinutes` / `aiInsightScanIntervalHours`）同步从主进程 schema 与渲染侧 `CONFIG_KEYS`/getter/setter 删除。**「立即触发测试见解」按钮保留**（用户显式触发，非自动链路）。
+- **新增文件**：`electron/services/ai/aiBudget.ts`、`docs/规划/AI调用入口与消费清单.md`、`scripts/ai-identify-test.ts`。
+- **测试**：`scripts/morning-digest-test.ts` **40/0**（六态穷举 + 禁用词表 + `crm_only` 文案分流 3 条）、`scripts/ai-identify-test.ts` **48/0**（中立默认 / 游标单调与 scope 隔离 / 零调用短路 / 调用点契约 / 单飞 / 价格表与闸门 / 阻断记账）。改写：`insight-noise-test.ts` **35/0**（d1/d3 由"旧链路接线"改为"不得重新引入自动分派"）、`insight-unnamed-session-test.ts` **9/0**（锁定删除结果 + 保留 `isSessionIdLike` 调用形式护栏；若将来重新引入扫描类入口，必须同时带回客户档案门控）。
+- **未实测项（如实标注）**：Windows 打包态、真机点击穿透、真实模型调用端到端 —— 本刀未验证。
+- **复核修复（2026-09-12，同一工作区）**：① `insightProfileService.callProfileApi` 原直连 `/chat/completions`，**不过日上限闸门、不入用量账本**，已改走 `callChatCompletion`（`purpose: 'profile'`）；② 设置页「工作原理」仍在承诺已删除的自动链路（2s 防抖分析 / 每 4 小时沉默扫描 / 冷却期），已改写为「AI 只做三件事」；③ `salesActionEngine.onNewMessage` 拆线没拆弹（调用方已删、函数体含 AI 调用仍在），已连 `salesStageClassifier.classifyStage` 及其 prompt/解析一并删除并加静态护栏（`insight-noise-test` d10-d12）；④ `crm_only` 文案在「有聊天」时说「暂无聊天数据」，已按 `activeSessions` 分流；⑤ 死桥接 `sales:todo:scan`（preload + 类型 + 主进程 handler）已删；⑥ 客户工作台空队列态去掉 🎉 与「都处理完了」。逐项改动与实测输出见 `docs/规划/AI简报与按需识别-实施记录-claude-20260912.md` §6。
+
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
 |---|------|------|----------|------|
 | 1 | **今日行动清单** | 首页 `/` `/home` | `salesActionEngine.ts` + `TodayActionPage.tsx` | ✅ |
-| 2 | **自动阶段分类** | 后台自动（新消息触发） | `salesStageClassifier.ts` | ✅ |
-| 3 | **触发规则引擎** | 每天08:00全量+增量 | `salesActionEngine.ts`（6条规则） | ✅ |
+| 2 | ~~自动阶段分类~~ **已移除**（2026-09-12 复核） | — | `salesStageClassifier.ts`（现为纯本地：阶段写库 + 证据提取，**无 AI 调用**） | ❌ |
+| 3 | **触发规则引擎** | 每 60 秒 tick（当天首次 `runFullScan` 全量，其后 `lazyScan` 增量），**纯本地零 AI** | `salesActionEngine.ts`（6条规则） | ✅ |
 | 4 | **周复盘** | 每周日20:00自动 | `salesReportService.generateWeeklyReview()` | ✅ |
 | 5 | **知识库 CRUD + CSV导入** | 侧边栏「知识库」 | `salesKnowledgeService.ts` + `KnowledgeBasePage.tsx` | ✅ |
 | 6 | **AI 话术建议（引用知识库）** | 行动卡片 + 聊天页 | `salesReplyService.ts` + `SalesContextStrip.tsx` | ✅ |
@@ -1723,19 +1747,18 @@
     │
     ├─ DB Monitor (新消息检测)
     │       │
-    │       ▼
-    │   salesStageClassifier ──AI──► customer_profile.stage 自动更新
+    │       └─► messagePushService（消息推送）+ 渲染进程 wcdb-change 广播
+    │           ⚠️ 新消息**不再**触发任何 AI 调用、阶段判定或增量规则检查（PRD §5.4 / R）
     │
     │   （阶段语义层 shared/salesStage.ts：normalizeStage 中英→canonical 幂等，
-    │     funnelBucket/stageToFunnel 归桶；DB 存原值，UI/统计统一归桶）
-    │       │
-    │       ▼
-    │   salesActionEngine.onNewMessage() ──► 增量规则检查 ──► follow_up_task
+    │     funnelBucket/stageToFunnel 归桶；DB 存原值，UI/统计统一归桶。
+    │     salesStageClassifier 现为**纯本地**：persistClassification 写库 + extractEvidence 取证据，无 AI 调用）
     │
-    ├─ 每天 08:00 全量扫描
+    ├─ 每 60 秒本地规则扫描（startActionEngineScheduler）
     │       │
     │       ▼
-    │   salesActionEngine.runFullScan() ──► 6条规则 ──► 今日行动（≤15条）
+    │   salesActionEngine.runFullScan()（当天首次）/ lazyScan()（其后） ──► 6条规则 ──► 今日行动（≤15条）
+    │       （纯本地计算，零 AI 调用）
     │
     ├─ 每周日 20:00
     │       │
@@ -1747,7 +1770,9 @@
             ▼
         TodayActionPage ──► 行动卡片（谁/为什么/说什么/打勾）
             │
-            └─ "AI话术" 按钮 ──► generateSuggestion() ──► 引用知识库 ──AI──► 话术
+            ├─ "AI话术" 按钮 ──► generateSuggestion() ──► 引用知识库 ──AI──► 话术
+            └─ 早间简报（每天首次打开自动 1 轮；同日可手动「重新生成」）──AI──► report_snapshot
+                （AI 只做三件事：早间简报 / 「AI 识别这个客户」按钮 / 客户画像按钮，见 §2.98）
 
 销售自有数据 (weflow-sales.db, sql.js/WASM, 读写)
     ├─ knowledge_base    知识库
@@ -1913,7 +1938,7 @@
 | `salesQueue.ts` | 串行队列（防WCDB段错误） |
 | `salesLogger.ts` | 落盘日志 |
 | `ai/aiApiClient.ts` | 统一AI调用层 |
-| `insightService.ts`（改） | 销售prompt + 沉默扫描 + 高意向预警（P0-2A.4 起 stage 解析仅写 signal 不覆盖 stage） |
+| `insightService.ts`（改） | 销售prompt + 高意向预警（P0-2A.4 起 stage 解析仅写 signal 不覆盖 stage）。**沉默扫描/活跃分析/催办识别已按 PRD §5.4（R）删除**，见 §2.98 |
 | `salesInsightWrite.ts`（P0-2A.4 新建） | insightService 阶段 signal 写路径（不依赖 Electron，可单测）：`applyParsedStageSignal` = customerUpsert 建档 + intentCreate(source=ai)，**不写 stage** |
 | `customerUpsertPolicy.ts`（P0-2A.5 新建） | 通用 upsert 阶段剥离（不依赖 Electron，可单测）：`stripStageFromUpsert` —— IPC 入口运行时剥离 stage，tags/notes/display_name 等其余字段原样保留 |
 | `legalStageWriters.ts`（P0-2A.6 新建） | **合法 stage 写者元数据收口**（不依赖 Electron，可单测）：`applyManualStageCorrection`（校验值合法性拒绝非枚举值+dormant + intent_tag_log(source=manual) + 阶段变更写 last_stage_change_at）；`applyDealStageWon`（stage=won + intent_tag_log(source=deal_rule) + 阶段变更写 changedAt） |
@@ -2059,10 +2084,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | aiModelApiBaseUrl | — | DeepSeek API 地址 |
 | aiModelApiKey | — | API Key |
 | aiModelApiModel | deepseek-chat | 模型名 |
-| aiInsightSilenceDays | 3 | 沉默扫描下限 |
-| aiInsightSilenceMaxDays | 30 | 上限 |
-| aiInsightScanLimit | 50 | 每次扫描上限 |
-| aiInsightCooldownMinutes | 10080 | 冷却（建议7天） |
+| aiDailyCallLimitEnabled | true | 每日 AI 调用上限总开关 |
+| aiDailyCallLimit | 60 | 每日 AI 调用**次数**硬上限（按次数不按金额，见 §2.98）；80% 预警 |
 | crmAutoConfirmEnabled | true | 跟单中心自动确认总开关 |
 | crmAutoConfirmThreshold | 0.8 | 自动确认置信阈值 0.5-1.0（低于留人工） |
 | crmAutoConfirmInvoiceDocgen | false | 发票自动关联后自动生成开票信息单（需合同含 tax_no） |
@@ -2102,7 +2125,13 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 
 1. **读本文档** → 读 `MAINTENANCE.md` → 读 AGENTS.md
 2. **跑起来**：`npm install && npm run dev`（开发模式）。⚠️ 若 `--version` 报 v24.17.0 且无 GUI，先 `unset ELECTRON_RUN_AS_NODE`（见 MAINTENANCE §4.8，vite 已自动防御）
-3. **跑单测确认基线**：`npx tsx scripts/crm-workbench-test.ts`（48/48）、`npx tsx scripts/crm-golden-test.ts`（31/31）、`npx tsx scripts/crm-claim-test.ts`（17/17）、`npx tsx scripts/crm-autoconfirm-test.ts`（56/56）、`npx tsx scripts/crm-lead-test.ts`（53/53）
+3. **跑单测确认基线**（2026-09-13 实测计数，旧文档的 48/31/17/56/53 与 09-12 的 74/40/161 已过期）：
+   `npx tsx scripts/crm-workbench-test.ts`（89/0）、`npx tsx scripts/crm-golden-test.ts`（47/0）、`npx tsx scripts/crm-claim-test.ts`（17/0）、`npx tsx scripts/crm-autoconfirm-test.ts`（58/0）、`npx tsx scripts/crm-lead-test.ts`（59/0）；
+   合同与报价录入相关：`npx tsx scripts/buyer-header-test.ts`（76/0，抬头粘贴解析）、`npx tsx scripts/crm-docgen-test.ts`（81/0，含续跑复用判定）；
+   AI 简报/按需识别改动相关：`npx tsx scripts/morning-digest-test.ts`（47/0）、`npx tsx scripts/ai-identify-test.ts`（48/0）、`npx tsx scripts/insight-noise-test.ts`（35/0）、`npx tsx scripts/insight-unnamed-session-test.ts`（9/0）、`npx tsx scripts/settings-nav-test.ts`（73/0）
+   （计数含 2026-09-12/13 两轮新增断言：六态 `crm_only` 文案 3 条、`salesActionEngine`/`salesStageClassifier` 自动分派护栏 3 条、AI 上限变更审计 13 条、抬头解析与页面接线 76 条、工作台改价审计与创建链幂等 15 条、docgen 续跑复用 3 条）
+   ⚠️ **已知恒定失败（非回归，勿当成本次改动引入）**：`crm-sla-action`（8/3）、`customer-event-producer`（14/1）、`customer-event-closed-gate`（15/1）；`todo-followup` 与 `crm-logistics` 启动即死于 `salesActionEngine`「请选择具体待办；不能按客户批量完成」
+   ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`；该工程在 HEAD 上已有 **156** 个存量错误（2026-09-13 实测，旧记的 161 系不同命令口径，已按实测校正），**不能以"零错误"为门禁**，只能比对"不新增"。详见 §2.98。
 4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
 6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户
@@ -2116,6 +2145,10 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 |------|------|
 | `docs/HANDOVER.md` | 本文件（全局交接） |
 | `docs/规划/weflow-hermes-PRD-v3.4.md` | **当前需求文档（开发执行依据）** |
+| `docs/规划/AI简报与按需识别-PRD-v1.0.md` | AI 简报/按需识别的实施契约（§2.98 的依据） |
+| `docs/规划/AI调用入口与消费清单.md` | **AI 调用点与 purpose 对照表**（唯一采集层、价格表与上限规则；新增 AI 调用点必读） |
+| `docs/规划/AI简报与按需识别-实施记录-claude-20260912.md` | §2.98 的实施记录（验收逐条自查 / 真实输出 / 遗留项） |
+| `docs/规划/合同与报价录入加速-实施记录-claude-20260912.md` | 合同/报价录入加速（PRD v1.4）的实施记录（改动清单 / §10 逐条自查 / 真实输出 / 未实测项） |
 | `docs/MAINTENANCE.md` | 操作手册（打包/坑/安全） |
 | `docs/归档/prd旧版/PRD-v2-销售行动驱动器.md` | v2 产品规划（已被 v3 取代） |
 | `docs/归档/prd旧版/PRD-v0.2-AI销售助手.md` | 历史需求（已取代） |

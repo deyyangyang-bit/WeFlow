@@ -33,7 +33,9 @@
 WCDB(只读) ──► 各 service 读聊天/会话/统计
 weflow-sales.db ──► 知识库/报表/客户画像/意向日志/待办
 aiApiClient ──► DeepSeek（统一 system prompt 以命中缓存）
-DB变更/定时器 ──► insightService(沉默扫描+活跃分析) ──► 见解+预警+回填+催办
+DB变更 ──► messagePushService(消息推送) + 渲染进程广播；**不再触发任何 AI 调用**
+定时器 ──► salesActionEngine(每60秒本地规则扫描，零 AI) / 周复盘 / 各 CRM 扫描服务
+AI 调用一律按需触发：早间简报(每天首次打开)/「AI 识别这个客户」/客户画像/各页面按钮
 所有"调WCDB+AI"的重操作 ──► salesQueue 串行（排队不拒绝）
 ```
 
@@ -129,5 +131,5 @@ P1 话术自动提炼 · P2 知识库向量化（仅当知识量超过全量塞�
 
 ## 12. 日志与配置文件
 - **配置文件**：`userData/WeFlow-config.json`（ConfigService 持久化，设置页可改，**不进 git**）。销售相关配置项复用其机制：`aiInsightSilenceMaxDays`/`aiInsightScanLimit`/`aiInsightCooldownMinutes` 等（详见 §5）。配置已写好，无需新增存储。
-- **销售日志**：`userData/logs/weflow-sales.log`（`salesLogger.ts`），**2MB 单备份轮转**（超限翻成 `.old`）。`insightLog` 双写 console+文件，故销售 AI 调用、沉默扫描、高意向预警、自动回填、催办识别的 INFO/WARN/ERROR 均落盘，打包版可查。日志**不记录密钥与聊天原文全文**，仅记操作摘要。
+- **销售日志**：`userData/logs/weflow-sales.log`（`salesLogger.ts`），**2MB 单备份轮转**（超限翻成 `.old`）。`insightLog` 双写 console+文件，故销售 AI 调用（早间简报 / 按需识别 / 画像等）、高意向预警、自动回填的 INFO/WARN/ERROR 均落盘，打包版可查。日志**不记录密钥与聊天原文全文**，仅记操作摘要。
 - WeFlow 主流程日志在 `userData/logs/wcdb.log`（`log:getPath`，设置页可查看/清空）。
