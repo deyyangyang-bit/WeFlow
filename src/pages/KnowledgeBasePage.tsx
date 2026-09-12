@@ -1,13 +1,27 @@
 /**
  * KnowledgeBasePage.tsx
  * 话术/产品知识库管理页面
+ *
+ * 知识治理规则（与 salesKnowledgeService 状态机一致，前端只做入口收敛）：
+ *   - staging：可编辑、可删除（kbUpdate / kbDelete）
+ *   - published：只读、不可删除，内容修改通过 kbUpdate fork 同 logical_id 新版本
+ *   - rejected/closed：只读、不可删除，拒因/历史版本沉底留档
+ *   - 条目展示：logical_id 版本链、当前版本、TTL、拒绝原因
+ *   - evidence_key → 「查看依据」按钮：sales:evidence:getByKey 回查原话；查不到显示「依据不可用」
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle, GitCompare, FilePlus2 } from 'lucide-react'
+import { BookOpen, Plus, Search, Pencil, Trash2, X, Tag, Package, MessageSquareText, HelpCircle, Upload, Sparkles, Clock, CheckCircle2, XCircle, ShieldCheck, Shield, AlertTriangle, GitCompare, FilePlus2, FileSearch, GitBranch } from 'lucide-react'
 import { useKnowledgeStore, type KnowledgeEntry } from '../stores/knowledgeStore'
 import ExtractScriptDialog from '../components/sales/ExtractScriptDialog'
+// 版本接替读取语义（单一真源）：当前版本 = 同一 logical_id 链中最高版号 published
+import {
+  knowledgeChainKey,
+  currentPublishedEntries,
+  currentPublishedOfChain,
+  visibleCurrentPublishedEntries
+} from '../utils/knowledgeVersion'
 import './KnowledgeBasePage.scss'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
@@ -59,20 +73,146 @@ function parseTags(tagsJson: string): string[] {
   }
 }
 
+/** 今天的 YYYY-MM-DD（本地时区），TTL 过期判定用（字符串比较对 ISO 日期安全） */
+function todayIso(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// ─── 价格冲突字段（纯前端投影：价格类字段两侧取值不同才算冲突，冲突以产品库为准）───
+
+/** 价格类字段抽取：`字段：数值` 与 `¥数值` 两种形态（带字段名的取值覆盖泛化「金额」；同名字段取首次出现） */
+function extractPriceFields(content: string): Map<string, number> {
+  const map = new Map<string, number>()
+  const text = String(content || '')
+  const symbol = /[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]+)?)/g
+  for (const m of text.matchAll(symbol)) {
+    const num = Number(m[1].replace(/,/g, ''))
+    if (Number.isFinite(num) && !map.has('金额')) map.set('金额', num)
+  }
+  const labeled = /(价格|单价|租金|售价|优惠价|活动价|报价|运费|定金|首付|月租)\s*[：:]?\s*[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/g
+  for (const m of text.matchAll(labeled)) {
+    const num = Number(m[2].replace(/,/g, ''))
+    if (Number.isFinite(num)) map.set(m[1], num)
+  }
+  return map
+}
+
+function priceConflicts(stagingContent: string, publishedContent: string): Array<{ label: string; stagingValue: number; publishedValue: number }> {
+  const a = extractPriceFields(stagingContent)
+  const b = extractPriceFields(publishedContent)
+  const out: Array<{ label: string; stagingValue: number; publishedValue: number }> = []
+  for (const [label, v] of a) {
+    const pv = b.get(label)
+    if (pv !== undefined && pv !== v) out.push({ label, stagingValue: v, publishedValue: pv })
+  }
+  return out
+}
+
+// ─── 「查看依据」：evidence_key → sales:evidence:getByKey 回查（查不到 = 依据不可用）───
+
+const EVIDENCE_UNAVAILABLE_REASON: Record<string, string> = {
+  unparseable: '锚点不是可回查的消息Key（askKey 摘要或出处摘要）',
+  message_not_found: '会话中未找到锚点对应的原话',
+  reader_error: '聊天记录读取失败',
+  no_message_key: '证据锚点为空'
+}
+
+function EvidenceViewer({ entry, onClose }: { entry: KnowledgeEntry; onClose: () => void }) {
+  const [loading, setLoading] = useState(true)
+  const [result, setResult] = useState<
+    | { status: 'found'; message: any; before: any[]; after: any[] }
+    | { status: 'unavailable'; reason: string; evidenceText?: string }
+    | null
+  >(null)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        // 知识条目只存 evidence_key（消息Key / askKey / 出处摘要），不存会话——
+        // 交给统一回查入口解析定位；解析不了或查不到 → unavailable（前端显示「依据不可用」）
+        const r = await window.electronAPI.sales.evidenceGetByKey({
+          session_id: '',
+          message_key: String(entry.evidence_key || ''),
+          evidence_text: entry.content
+        })
+        if (alive) setResult(r)
+      } catch (e) {
+        if (alive) setResult({ status: 'unavailable', reason: 'reader_error' })
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => { alive = false }
+  }, [entry.evidence_key, entry.content])
+
+  const msgText = (m: any): string => String(m?.parsedContent || m?.content || m?.rawContent || '')
+  const msgTime = (m: any): string => {
+    const t = Number(m?.createTime || 0)
+    return t ? new Date(t).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''
+  }
+
+  return (
+    <div className="kb-form-overlay" onClick={onClose}>
+      <div className="kb-form-dialog kb-evidence-dialog" onClick={e => e.stopPropagation()}>
+        <div className="kb-form-header">
+          <h3>查看依据</h3>
+          <button className="kb-form-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="kb-form-body">
+          <div className="kb-evidence-key" title={entry.evidence_key || ''}>锚点：{entry.evidence_key || '（空）'}</div>
+          {loading && <div className="kb-evidence-loading">正在回查原话…</div>}
+          {!loading && result?.status === 'found' && (
+            <div className="kb-evidence-found">
+              <div className="kb-evidence-msg">
+                <span className="kb-evidence-msg__time">{msgTime(result.message)}</span>
+                <p>{msgText(result.message) || '（空消息）'}</p>
+              </div>
+              {(result.before.length > 0 || result.after.length > 0) && (
+                <div className="kb-evidence-context">
+                  <span className="kb-evidence-context__label">上下文</span>
+                  {[...result.before, ...result.after].slice(0, 12).map((m: any, i: number) => (
+                    <div key={i} className="kb-evidence-context__line">
+                      <span>{msgTime(m)}</span>
+                      <p>{msgText(m)}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {!loading && result?.status === 'unavailable' && (
+            <div className="kb-evidence-unavailable">
+              <AlertTriangle size={16} />
+              <b>依据不可用</b>
+              <span>{EVIDENCE_UNAVAILABLE_REASON[result.reason] || '无法回查原话'}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── 知识条目表单 ─────────────────────────────────────────────────────────────
 
-function KnowledgeForm({ onClose }: { onClose: () => void }) {
+function KnowledgeForm({ onClose, versionBase }: { onClose: () => void; versionBase?: KnowledgeEntry | null }) {
   const { editingEntry, createEntry, updateEntry } = useKnowledgeStore()
-  const isEditing = !!editingEntry
+  const base = versionBase ?? null
+  const isEditing = !base && !!editingEntry
+  const isVersion = !!base
+  const source = base ?? editingEntry
 
-  const [category, setCategory] = useState(editingEntry?.category ?? 'product')
-  const [productLine, setProductLine] = useState(editingEntry?.product_line ?? '')
-  const [title, setTitle] = useState(editingEntry?.title ?? '')
-  const [content, setContent] = useState(editingEntry?.content ?? '')
+  const [category, setCategory] = useState(source?.category ?? 'product')
+  const [productLine, setProductLine] = useState(source?.product_line ?? '')
+  const [title, setTitle] = useState(source?.title ?? '')
+  const [content, setContent] = useState(source?.content ?? '')
   const [tagsInput, setTagsInput] = useState(
-    editingEntry ? parseTags(editingEntry.tags).join(', ') : ''
+    source ? parseTags(source.tags).join(', ') : ''
   )
-  const [scene, setScene] = useState(editingEntry?.scene ?? '')
+  const [scene, setScene] = useState(source?.scene ?? '')
+  const [ttlDate, setTtlDate] = useState(source?.ttl_date ?? '')
   const [saving, setSaving] = useState(false)
 
   const handleSubmit = async () => {
@@ -90,12 +230,13 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
       title: title.trim(),
       content: content.trim(),
       tags,
-      scene: scene || undefined
+      scene: scene || undefined,
+      ttl_date: ttlDate || null
     }
 
     let success: boolean
-    if (isEditing) {
-      success = await updateEntry(editingEntry!.id, payload)
+    if (isEditing || isVersion) {
+      success = await updateEntry((base ?? editingEntry)!.id, payload)
     } else {
       success = await createEntry(payload)
     }
@@ -108,9 +249,15 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
     <div className="kb-form-overlay" onClick={onClose}>
       <div className="kb-form-dialog" onClick={e => e.stopPropagation()}>
         <div className="kb-form-header">
-          <h3>{isEditing ? '编辑知识条目' : '新增知识条目'}</h3>
+          <h3>{isVersion ? '创建新版本' : isEditing ? '编辑知识条目' : '新增知识条目'}</h3>
           <button className="kb-form-close" onClick={onClose}><X size={18} /></button>
         </div>
+
+        {isVersion && (
+          <div className="kb-version-hint">
+            已发布条目不可直接修改。新版本将继承原版本链与依据，以<b>待审核</b>状态进入审核区。
+          </div>
+        )}
 
         <div className="kb-form-body">
           <div className="kb-form-row">
@@ -170,6 +317,11 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
               placeholder="用逗号分隔，如：3吨, 电动, 续航"
             />
           </div>
+
+          <div className="kb-form-row">
+            <label>TTL 到期日</label>
+            <input type="date" value={ttlDate} onChange={e => setTtlDate(e.target.value)} />
+          </div>
         </div>
 
         <div className="kb-form-footer">
@@ -179,7 +331,7 @@ function KnowledgeForm({ onClose }: { onClose: () => void }) {
             onClick={handleSubmit}
             disabled={saving || !title.trim() || !content.trim()}
           >
-            {saving ? '保存中...' : isEditing ? '保存修改' : '添加条目'}
+            {saving ? '保存中...' : isVersion ? '提交新版本（进待审核）' : isEditing ? '保存修改' : '添加条目'}
           </button>
         </div>
       </div>
@@ -272,13 +424,36 @@ function AuthorityBadge({ authority }: { authority?: string }) {
   return <span className="kb-badge kb-badge-community"><Shield size={11} />社区</span>
 }
 
-function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highlighted?: boolean }) {
-  const { openForm, deleteEntry } = useKnowledgeStore()
+/** 状态徽标（版本链节点/卡片通用） */
+function statusLabel(e: Pick<KnowledgeEntry, 'status'>): string {
+  if (e.status === 'published') return '已发布'
+  if (e.status === 'rejected') return '已拒绝'
+  if (e.status === 'closed') return '历史版本'
+  return '待审核'
+}
+
+function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence }: {
+  entry: KnowledgeEntry
+  highlighted?: boolean
+  /** 版本链：同名标题的全部条目（含自身），created_at 升序 */
+  chain: KnowledgeEntry[]
+  onNewVersion: (e: KnowledgeEntry) => void
+  onShowEvidence: (e: KnowledgeEntry) => void
+}) {
+  const { openForm, deleteEntry, renewTtl } = useKnowledgeStore()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const tags = parseTags(entry.tags)
   const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
   const isRejected = entry.status === 'rejected'
   const isPublished = entry.status === 'published'
+  const isStaging = (entry.status ?? 'staging') === 'staging'
+  // 治理规则：published/rejected 只读且不能删除；staging 可编辑删除
+  const canEdit = isStaging
+  const canDelete = isStaging
+  // 版本链当前版本：最新 published（updated_at DESC、id DESC，与 kbSearchPublished 读取语义一致）
+  const currentPublished = currentPublishedOfChain(chain)
+  // TTL：YYYY-MM-DD，空 = 未设置；过期红标
+  const ttlExpired = Boolean(entry.ttl_date && entry.ttl_date < todayIso())
 
   const handleDelete = async () => {
     if (confirmDelete) {
@@ -290,6 +465,14 @@ function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highligh
     }
   }
 
+  const handleRenewTtl = async () => {
+    const nextYear = new Date()
+    nextYear.setFullYear(nextYear.getFullYear() + 1)
+    const suggested = `${nextYear.getFullYear()}-${String(nextYear.getMonth() + 1).padStart(2, '0')}-${String(nextYear.getDate()).padStart(2, '0')}`
+    const value = window.prompt('TTL 续期至（YYYY-MM-DD）', entry.ttl_date && entry.ttl_date >= todayIso() ? entry.ttl_date : suggested)
+    if (value && !(await renewTtl(entry.id, value.trim()))) window.alert('TTL 续期失败，请输入今天或之后的日期')
+  }
+
   return (
     <div className={`kb-card ${isRejected ? 'kb-card-rejected' : ''} ${highlighted ? 'kb-card-highlight' : ''}`} data-kb-entry={entry.id}>
       <div className="kb-card-header">
@@ -298,21 +481,52 @@ function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highligh
         {entry.product_line && <span className="kb-card-product-line">{entry.product_line}</span>}
         {entry.scene && <span className="kb-card-scene">{entry.scene}</span>}
         <div className="kb-card-actions">
-          <button className="kb-card-action" onClick={() => openForm(entry)} title="编辑">
-            <Pencil size={14} />
-          </button>
-          <button
-            className={`kb-card-action ${confirmDelete ? 'danger' : ''}`}
-            onClick={handleDelete}
-            title={confirmDelete ? '再次点击确认删除' : '删除'}
-          >
-            <Trash2 size={14} />
-          </button>
+          {canEdit && (
+            <button className="kb-card-action" onClick={() => openForm(entry)} title="编辑（待审核条目可改）">
+              <Pencil size={14} />
+            </button>
+          )}
+          {canDelete && (
+            <button
+              className={`kb-card-action ${confirmDelete ? 'danger' : ''}`}
+              onClick={handleDelete}
+              title={confirmDelete ? '再次点击确认删除' : '删除（仅待审核条目可删）'}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+          {isPublished && (
+            <>
+              <button className="kb-card-action" onClick={handleRenewTtl} title="续期 TTL（不产生新内容版本）">
+                <Clock size={14} />
+              </button>
+              <button className="kb-card-action" onClick={() => onNewVersion(entry)} title="创建新版本（生成待审核条目，发布后接替当前版本）">
+                <FilePlus2 size={14} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      <h4 className="kb-card-title">{entry.title}</h4>
+      <h4 className="kb-card-title">
+        {entry.title}
+        <span className="kb-card-version" title={`版本 v${entry.version ?? 1} · ${statusLabel(entry)}`}>v{entry.version ?? 1}</span>
+      </h4>
       <p className="kb-card-content">{entry.content}</p>
+
+      {chain.length > 1 && (
+        <div className="kb-chain" title="同一 logical_id 的知识条目构成版本链；发布新版本后旧版被接替">
+          <span className="kb-chain__label"><GitBranch size={11} />版本链</span>
+          {chain.map(c => (
+            <span
+              key={c.id}
+              className={`kb-chain__node is-${c.status ?? 'staging'} ${c.id === entry.id ? 'is-self' : ''}`}
+            >
+              v{c.version ?? 1} {statusLabel(c)}{c.id === currentPublished?.id ? '（当前）' : ''}
+            </span>
+          ))}
+        </div>
+      )}
 
       {tags.length > 0 && (
         <div className="kb-card-tags">
@@ -329,6 +543,19 @@ function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highligh
           <span className="kb-badge kb-badge-rejected"><XCircle size={11} />已拒绝</span>
         )}
       </div>
+
+      <div className="kb-card-meta">
+        <span className={`kb-ttl ${ttlExpired ? 'kb-ttl--expired' : entry.ttl_date ? '' : 'kb-ttl--none'}`}>
+          <Clock size={10} />
+          {entry.ttl_date ? `TTL 至 ${entry.ttl_date}${ttlExpired ? '（已过期）' : ''}` : 'TTL 未设置'}
+        </span>
+        {entry.evidence_key && (
+          <button className="kb-evidence-btn" onClick={() => onShowEvidence(entry)}>
+            <FileSearch size={11} />查看依据
+          </button>
+        )}
+      </div>
+
       {isRejected && entry.reject_reason && (
         <div className="kb-card-reject-reason" title={entry.reject_reason}>
           <AlertTriangle size={11} />拒因：{entry.reject_reason}
@@ -339,6 +566,7 @@ function KnowledgeCard({ entry, highlighted }: { entry: KnowledgeEntry; highligh
 }
 
 // ─── 待审核区（刀 1：staging 列表 + 逐条发布/拒绝，拒绝必填拒因；刀 4：批量通过 + 只看 diff）────────────────
+// 治理补齐：staging 行可编辑（kbUpdate）/ 可删除（kbDelete）；published 只能创建新版本 → 不在审核区出现
 
 /** 刀 4 行级对照（只看 diff）：右（提案）行不在左（已发布）行集里 → 新增高亮；反向 → 被改/删高亮。纯展示辅助，不裁决 */
 function diffLines(oldText: string, newText: string): { left: Array<{ text: string; changed: boolean }>; right: Array<{ text: string; changed: boolean }> } {
@@ -352,7 +580,7 @@ function diffLines(oldText: string, newText: string): { left: Array<{ text: stri
   }
 }
 
-function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
+function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen, onShowEvidence }: {
   entry: KnowledgeEntry
   /** 刀 4 冲突条目：同标题已发布行（存在才显示「只看 diff」） */
   conflict?: KnowledgeEntry
@@ -360,15 +588,21 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
   onToggle: (id: number, checked: boolean) => void
   /** 区级「只看 diff」开启时强制展开并排对照 */
   forceDiffOpen?: boolean
+  onShowEvidence: (e: KnowledgeEntry) => void
 }) {
-  const { reviewEntry } = useKnowledgeStore()
+  const { reviewEntry, openForm, deleteEntry } = useKnowledgeStore()
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
   const [official, setOfficial] = useState(false)
   const [busy, setBusy] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const diffOpen = showDiff || Boolean(forceDiffOpen)
   const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
+  const priceConflictsOf = useMemo(
+    () => (conflict ? priceConflicts(entry.content, conflict.content) : []),
+    [conflict, entry.content]
+  )
 
   const handlePublish = async () => {
     setBusy(true)
@@ -390,6 +624,16 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
     }
   }
 
+  const handleDelete = async () => {
+    if (confirmDelete) {
+      await deleteEntry(entry.id)
+      setConfirmDelete(false)
+    } else {
+      setConfirmDelete(true)
+      setTimeout(() => setConfirmDelete(false), 3000)
+    }
+  }
+
   return (
     <div className="kb-review-item">
       <label className="kb-review-check" title="勾选后可批量发布">
@@ -399,20 +643,40 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
         <div className="kb-review-item-head">
           <span className="kb-card-icon"><IconComp size={14} /></span>
           <span className="kb-review-item-title">{entry.title}</span>
+          <span className="kb-card-version" title="版本 vN（发布新版本时接替旧版）">v{entry.version ?? 1}</span>
           <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
           {entry.product_line && <span className="kb-card-product-line">{entry.product_line}</span>}
           {entry.scene && <span className="kb-card-scene">{entry.scene}</span>}
           {entry.source === 'proposal' && <span className="kb-badge kb-badge-proposal">提案</span>}
+          {entry.ttl_date && (
+            <span className={`kb-ttl ${entry.ttl_date < todayIso() ? 'kb-ttl--expired' : ''}`}><Clock size={10} />TTL 至 {entry.ttl_date}</span>
+          )}
           <span className="kb-review-item-time">更新于 {formatTime(entry.updated_at)}</span>
         </div>
         <p className="kb-review-item-content">{entry.content}</p>
         {entry.source === 'proposal' && entry.evidence_key && (
-          <div className="kb-review-evidence" title={entry.evidence_key}>证据锚点:{entry.evidence_key}</div>
+          <div className="kb-review-evidence">
+            <span className="kb-review-evidence__key" title={entry.evidence_key}>证据锚点：{entry.evidence_key}</span>
+            <button className="kb-evidence-btn" onClick={() => onShowEvidence(entry)} title="回查客户原话（sales:evidence:getByKey）">
+              <FileSearch size={11} />查看依据
+            </button>
+          </div>
         )}
         {conflict && (
           <button className="kb-diff-toggle" onClick={() => setShowDiff(v => !v)} title="与同标题已发布条目并排对照差异">
             <GitCompare size={13} />{diffOpen ? '收起 diff' : '只看 diff（与已发布条目冲突）'}
           </button>
+        )}
+        {conflict && priceConflictsOf.length > 0 && (
+          <div className="kb-price-conflict" title="价格类字段两侧取值不一致（冲突以产品库为准，人工裁决）">
+            <AlertTriangle size={12} />
+            <b>价格冲突字段</b>
+            {priceConflictsOf.map(c => (
+              <span key={c.label} className="kb-price-conflict__item">
+                {c.label}：提案 ¥{c.stagingValue.toLocaleString()} ↔ 已发布 ¥{c.publishedValue.toLocaleString()}
+              </span>
+            ))}
+          </div>
         )}
         {conflict && diffOpen && (() => {
           const d = diffLines(conflict.content, entry.content)
@@ -421,13 +685,13 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
               <div className="kb-diff-col">
                 <div className="kb-diff-col-head">已发布：《{conflict.title}》（v{conflict.version ?? 1}）</div>
                 {d.left.map((l, i) => (
-                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--old' : ''}`}>{l.text || ' '}</div>
+                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--old' : ''}`}>{l.text || ' '}</div>
                 ))}
               </div>
               <div className="kb-diff-col">
                 <div className="kb-diff-col-head">提案（待审核）</div>
                 {d.right.map((l, i) => (
-                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--new' : ''}`}>{l.text || ' '}</div>
+                  <div key={i} className={`kb-diff-line ${l.changed ? 'kb-diff-line--new' : ''}`}>{l.text || ' '}</div>
                 ))}
               </div>
             </div>
@@ -463,13 +727,27 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen }: {
           <button className="kb-btn kb-btn-secondary" onClick={() => setRejecting(true)} disabled={busy}>
             <XCircle size={14} />拒绝
           </button>
+          <button className="kb-btn kb-btn-secondary" onClick={() => openForm(entry)} title="编辑（待审核条目可改）">
+            <Pencil size={13} />编辑
+          </button>
+          <button
+            className={`kb-btn kb-btn-secondary ${confirmDelete ? 'kb-btn-danger' : ''}`}
+            onClick={handleDelete}
+            title={confirmDelete ? '再次点击确认删除（物理删除，仅限待审核）' : '删除（仅限待审核条目）'}
+          >
+            <Trash2 size={13} />{confirmDelete ? '确认删除' : '删除'}
+          </button>
         </div>
       )}
     </div>
   )
 }
 
-function ReviewSection({ entries, publishedEntries }: { entries: KnowledgeEntry[]; publishedEntries: KnowledgeEntry[] }) {
+function ReviewSection({ entries, publishedEntries, onShowEvidence }: {
+  entries: KnowledgeEntry[]
+  publishedEntries: KnowledgeEntry[]
+  onShowEvidence: (e: KnowledgeEntry) => void
+}) {
   const { reviewEntries } = useKnowledgeStore()
   // 刀 4 批量通过（确认队列升级，防确认疲劳）：勾选多条一次发布
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -528,7 +806,7 @@ function ReviewSection({ entries, publishedEntries }: { entries: KnowledgeEntry[
         >
           <GitCompare size={14} />只看 diff{conflictEntries.length > 0 ? `（${conflictEntries.length}）` : ''}
         </button>
-        <span className="kb-review-hint">发布后才会被知识问答引用 · 价格类条目请与产品库对账，冲突以产品库为准</span>
+        <span className="kb-review-hint">待审核条目可编辑/删除 · 发布后成为当前版本 · 价格类条目请与产品库对账，冲突以产品库为准</span>
       </div>
       <div className="kb-review-list">
         {visible.length === 0 ? (
@@ -541,6 +819,7 @@ function ReviewSection({ entries, publishedEntries }: { entries: KnowledgeEntry[
             selected={selected.has(entry.id)}
             onToggle={toggleOne}
             forceDiffOpen={onlyDiff}
+            onShowEvidence={onShowEvidence}
           />
         ))}
       </div>
@@ -564,15 +843,45 @@ export default function KnowledgeBasePage() {
   const [extractOpen, setExtractOpen] = useState(false)
   const [batchExtractOpen, setBatchExtractOpen] = useState(false)
   const [proposalOpen, setProposalOpen] = useState(false) // 刀 4「补充知识」提案表单
+  // 治理补齐：published「创建新版本」（预填表单 → 新 staging 行）+「查看依据」弹窗
+  const [versionBase, setVersionBase] = useState<KnowledgeEntry | null>(null)
+  const [evidenceEntry, setEvidenceEntry] = useState<KnowledgeEntry | null>(null)
 
-  // 刀 1 治理分区：staging 进待审核区；主列表 published 在前、rejected 沉底留档
+  // 搜索/分类结果不是版本事实源；过滤态额外读取全量条目，避免只命中旧正文或旧分类时把历史版误判为当前。
+  const [versionEntries, setVersionEntries] = useState<KnowledgeEntry[]>([])
+  useEffect(() => {
+    if (!searchKeyword && !filterCategory) {
+      setVersionEntries(entries)
+      return
+    }
+    void window.electronAPI.sales.kbList().then((result) => {
+      if (result.success) setVersionEntries(result.entries)
+    })
+  }, [entries, searchKeyword, filterCategory])
+
+  // 刀 1 治理分区：staging 进待审核区
   // （status 缺失的行视为 staging，防迁移前旧快照漏审）
   const stagingEntries = useMemo(() => entries.filter(e => (e.status ?? 'staging') === 'staging'), [entries])
+  // 版本接替读取闭合：主列表每条版本链只出当前 published（最新 published；历史 published 不进卡片网格，
+  // 但仍在卡片的「版本链」行可见）；rejected 沉底留档
+  const currentPublished = useMemo(() => currentPublishedEntries(versionEntries), [versionEntries])
   const gridEntries = useMemo(() => {
-    const published = entries.filter(e => e.status === 'published')
+    const published = visibleCurrentPublishedEntries(entries, versionEntries)
     const rejected = entries.filter(e => e.status === 'rejected')
     return [...published, ...rejected]
-  }, [entries])
+  }, [entries, versionEntries])
+
+  // 版本链：logical_id 归并（created_at 升序）；标题可随版本修改而不断链。
+  const chainMap = useMemo(() => {
+    const map = new Map<string, KnowledgeEntry[]>()
+    for (const e of versionEntries) {
+      const key = knowledgeChainKey(e)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(e)
+    }
+    for (const list of map.values()) list.sort((a, b) => a.created_at - b.created_at)
+    return map
+  }, [versionEntries])
 
   // 刀 3 引用跳转深链：/knowledge-base state.focusEntryId → 滚动定位 + 短暂高亮
   const location = useLocation()
@@ -640,7 +949,7 @@ export default function KnowledgeBasePage() {
 
       setImporting(true)
       setImportResult(null)
-      const res = await (window as any).electronAPI.sales.kbImportCsv(csvContent)
+      const res = await window.electronAPI.sales.kbImportCsv(csvContent)
       if (res?.success) {
         setImportResult({ imported: res.imported, skipped: res.skipped })
         fetchList({ category: filterCategory || undefined })
@@ -742,7 +1051,7 @@ export default function KnowledgeBasePage() {
       )}
 
       <div className="kb-page-body">
-        <ReviewSection entries={stagingEntries} publishedEntries={entries.filter(e => e.status === 'published')} />
+        <ReviewSection entries={stagingEntries} publishedEntries={currentPublished} onShowEvidence={setEvidenceEntry} />
         {loading ? (
           <div className="kb-loading">加载中...</div>
         ) : gridEntries.length === 0 ? (
@@ -753,14 +1062,28 @@ export default function KnowledgeBasePage() {
         ) : (
           <div className="kb-card-grid">
             {gridEntries.map(entry => (
-              <KnowledgeCard key={entry.id} entry={entry} highlighted={highlightId === entry.id} />
+              <KnowledgeCard
+                key={entry.id}
+                entry={entry}
+                highlighted={highlightId === entry.id}
+                chain={chainMap.get(knowledgeChainKey(entry)) ?? [entry]}
+                onNewVersion={setVersionBase}
+                onShowEvidence={setEvidenceEntry}
+              />
             ))}
           </div>
         )}
       </div>
 
       {showForm && <KnowledgeForm onClose={closeForm} />}
+      {versionBase && (
+        <KnowledgeForm
+          versionBase={versionBase}
+          onClose={() => setVersionBase(null)}
+        />
+      )}
       {proposalOpen && <ProposalForm onClose={() => setProposalOpen(false)} />}
+      {evidenceEntry && <EvidenceViewer entry={evidenceEntry} onClose={() => setEvidenceEntry(null)} />}
     </div>
   )
 }

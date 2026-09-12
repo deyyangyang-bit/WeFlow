@@ -1,6 +1,7 @@
 /**
- * knowledge-governance-test.ts —— 刀 1 知识治理底座 + 刀 2 采用率埋点单测（设计-Hermes-MVP 刀 1/刀 2）
- * 覆盖（PRD 铁律：埋点与 Hermes 同天上，不许后补）：
+ * knowledge-governance-test.ts —— 知识治理底座 + 采用率埋点 + 版本链/TTL/价格对账/引用回流 单测
+ * （设计-Hermes-MVP 刀 1/刀 2 + PRD 2.3/2.7/2.8/2.9 知识治理收口）
+ * 覆盖：
  *  a. 状态机流转：kbCreate 默认 staging/community；publish/reject 合法迁移 + reviewed_by/at 落库；
  *     跨态迁移拒绝（published→rejected / 重复 publish / rejected 上再处置）
  *  b. 存量迁移幂等可重入：治理前置旧行（status NULL）→ staging/community，已审定行不动，重跑零副作用
@@ -10,9 +11,21 @@
  *     附 generated/viewed（todoCreate 任务创建点 / 卡流 viewed 只记一次）+ enrich 生成点静态断言
  *  e. 采纳率口径：采纳率 = (accepted+modified)/已处理总数（proposal+knowledge 两类），
  *     分母 0 → rate=null（UI 显示「—」不伪造）；窗口外事件不入；generated 不入比率；action 不入分母
+ *  f. 刀 4 知识提案写入路 + 批量通过 + 只看 diff
+ *  h. 版本链（PRD 2.3）：稳定 logical_id 锚点；同标题独立发布不归并（各成一链，发布不改写
+ *     logical_id）；同链 fork 版本接替（旧 published 转 closed 历史保留，不波及同标题他链）；
+ *     标题修改不断链；编辑 published = fork version+1 staging（staging 原地编辑）；
+ *     AI 原语每链只出当前有效版本；published/rejected/closed 物理删除拒绝
+ *  i. TTL 巡检（PRD 2.9）：到期不出 AI 原语、只生成待处理提醒（幂等）不删除知识、续期重新生效
+ *  j. 删除纪律：仅未审核 staging 可删，先写 audit_event（crmDb，跨库铁律先 crmDb 后 salesDb）
+ *  k. 价格对账（PRD 2.7）：万/¥/元三口径归一；冲突禁止 official 并返回具体冲突字段；
+ *     产品主数据价格为最终权威；一致放行 official；community 放行带提示
+ *  l. 引用统计（PRD 2.9 效果回流）：引用次数/引用时间/关联客户阶段结果；ask 同问幂等去重；
+ *     台账快照直读（knowledge_usage 行内引用时点 logical_id/version，防聚合口回读当前行的假覆盖）
+ *  m. 全仓静态绕过检查：AI 消费路径零直连 kbList/kbSearch；上下文构建只经 kbValidEntries 原语
  *  g. 旧库升级（§2.84）：真实构造治理前置旧版 sales DB 文件（knowledge_base 只有旧字段）→
- *     当前 SalesDbService.initialize 打开升级 → 九治理列齐 + 存量保留 + 默认 staging/community +
- *     idx_kb_status 存在 + flush/reopen 幂等 + published 不被迁移踩回
+ *     当前 SalesDbService.initialize 打开升级 → 十治理列齐 + 存量保留 + 默认 staging/community +
+ *     同标题归链回填 + idx_kb_status 存在 + flush/reopen 幂等 + published 不被迁移踩回
  * 运行：npx tsx scripts/knowledge-governance-test.ts
  */
 import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
@@ -32,9 +45,10 @@ process.env.WEFLOW_CONFIG_CWD = isoDir
 
 import { salesDbService } from '../electron/services/salesDbService'
 import { crmDbService } from '../electron/services/crmDbService'
-import { salesKnowledgeService } from '../electron/services/salesKnowledgeService'
+import { salesKnowledgeService, extractMentionedPrices, checkPriceConflicts } from '../electron/services/salesKnowledgeService'
 import { completeAction } from '../electron/services/salesActionEngine'
 import { trackActionCardsViewed } from '../electron/services/proposalEventTracking'
+import { currentPublishedEntries, currentPublishedOfChain, visibleCurrentPublishedEntries } from '../src/utils/knowledgeVersion'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -280,6 +294,289 @@ async function main(): Promise<void> {
     kbSrc.includes("kb-diff-col-head\">已发布：《") && kbSrc.includes('提案（待审核）') &&
     /function diffLines\(/.test(kbSrc))
 
+  // ─── h. 版本链（logical_id）与发布接替（PRD 2.3：稳定逻辑 ID + 同链版本 +1 fork + 旧版本关闭只读）───
+  // 置于 d/e 采纳率计数段之后：本段发布动作会追加 knowledge/accepted 埋点，不得污染前面的计数断言
+  // 版本链修复口径（2026-09-10）：标题相同 ≠ 同一条知识。新建条目一律自成一链；staging 发布使用
+  // 自身 logical_id；TRIM(title) 仅限旧库升级回填，运行时禁止按标题归并/识别版本链。
+  const chainA = salesDbService.kbCreate({ category: 'product', title: 'X 系列续航参数', content: 'v1：续航 8 小时' })
+  salesDbService.kbReview(chainA.id!, 'publish', { reviewer: '主管甲' })
+  const chainARow = salesDbService.kbGet(chainA.id!)
+  ok('h1 发布落版本链锚点：logical_id 稳定生成（kb- 前缀）+ version 1',
+    !!chainARow?.logical_id && chainARow.logical_id.startsWith('kb-') && chainARow.version === 1)
+
+  // 同标题独立新建（标题与 chainA 完全相同）：独立成链，发布不归并、不改写 logical_id
+  const chainB = salesDbService.kbCreate({ category: 'product', title: 'X 系列续航参数', content: 'v2：续航 10 小时' })
+  const chainBStaging = salesDbService.kbGet(chainB.id!)
+  const pubB = salesDbService.kbReview(chainB.id!, 'publish', { reviewer: '主管甲' })
+  ok('h2 同标题独立发布不归并：staging 自带独立 logical_id，发布前后一致（不因标题相同改写为他链）',
+    !!chainBStaging?.logical_id && chainBStaging.logical_id !== chainARow?.logical_id &&
+    pubB.ok && pubB.entry?.logical_id === chainBStaging.logical_id && pubB.entry?.version === 1)
+  ok('h3 同标题发布不影响他链：chainA 仍为当前 published（不被关闭/接替）',
+    salesDbService.kbGet(chainA.id!)?.status === 'published')
+  const twoChains = salesDbService.kbValidEntries({ keywords: ['续航参数'] })
+  ok('h4 两条同标题独立链同时有效（AI 原语每链各出当前版本，互不吞并）',
+    twoChains.length === 2 && new Set(twoChains.map((e) => e.logical_id)).size === 2)
+
+  // 同链接替：基于 published fork 新版本发布 → 只关闭本链旧版本，同标题他链不受影响
+  const chainA2 = salesDbService.kbUpdate(chainA.id!, { content: 'v2：续航 9 小时' })!
+  ok('h5 基于 published 创建新 staging 正确继承 logical_id（fork 链内 version+1）',
+    chainA2.status === 'staging' && chainA2.id !== chainA.id &&
+    chainA2.logical_id === chainARow?.logical_id && chainA2.version === 2)
+  const pubA2 = salesDbService.kbReview(chainA2.id!, 'publish', { reviewer: '主管甲' })
+  ok('h6 同链新版本发布：旧 published 转 closed 历史保留，新版本成为当前有效 published',
+    pubA2.ok && salesDbService.kbGet(chainA.id!)?.status === 'closed' &&
+    salesDbService.kbGet(chainA.id!)?.version === 1 &&
+    salesDbService.kbGet(chainA2.id!)?.status === 'published' && salesDbService.kbGet(chainA2.id!)?.version === 2)
+  ok('h7 同链接替不波及同标题他链：chainB 仍 published 且 logical_id/version 不变',
+    salesDbService.kbGet(chainB.id!)?.status === 'published' &&
+    salesDbService.kbGet(chainB.id!)?.logical_id === chainBStaging?.logical_id &&
+    salesDbService.kbGet(chainB.id!)?.version === 1)
+  ok('h8 closed 历史版本只读：编辑拒绝 / 审核拒绝 / 物理删除拒绝',
+    salesDbService.kbUpdate(chainA.id!, { content: '翻案' }) === undefined &&
+    !salesDbService.kbReview(chainA.id!, 'publish', { reviewer: '主管甲' }).ok &&
+    !salesDbService.kbDelete(chainA.id!).ok)
+
+  // 编辑 published → fork 同链 version+1 的 staging 新版本（原版本发布中不动）
+  const fork = salesKnowledgeService.update(chainB.id!, { content: 'v3：续航 12 小时（含快充）' })
+  ok('h9 编辑 published 创建 version+1 staging 新版本（同链继承 logical_id/source，published 原行不动）',
+    fork.success && fork.forked === true && fork.entry?.status === 'staging' && fork.entry?.version === 2 &&
+    fork.entry?.logical_id === chainBStaging?.logical_id && fork.entry?.id !== chainB.id &&
+    fork.entry?.source === chainBStaging?.source &&
+    salesDbService.kbGet(chainB.id!)?.status === 'published' &&
+    salesDbService.kbGet(chainB.id!)?.content === 'v2：续航 10 小时')
+  // staging 原地编辑（不 fork，同 id）
+  const inPlace = salesKnowledgeService.update(fork.entry!.id!, { content: 'v3：续航 12 小时' })
+  ok('h10 staging 原地编辑（同 id 原地生效，不产生新行）',
+    inPlace.success && inPlace.forked === false && inPlace.entry?.id === fork.entry?.id &&
+    inPlace.entry?.content === 'v3：续航 12 小时')
+  // 零变更不 fork（防误触空版本噪音）
+  const noChange = salesKnowledgeService.update(chainB.id!, { content: salesDbService.kbGet(chainB.id!)!.content })
+  ok('h11 零变更编辑 published 不产生空版本', noChange.success && noChange.entry?.id === chainB.id)
+  // 发布 fork → 接替闭环
+  salesDbService.kbReview(fork.entry!.id!, 'publish', { reviewer: '主管甲' })
+  ok('h12 新版本发布后成为当前有效版本，上一版本关闭',
+    salesDbService.kbGet(chainB.id!)?.status === 'closed' &&
+    salesDbService.kbGet(fork.entry!.id!)?.status === 'published' &&
+    salesDbService.kbGet(fork.entry!.id!)?.version === 2)
+
+  // 标题修改不影响版本链（PRD 2.3：logical_id 与标题解耦）
+  const renameFork = salesKnowledgeService.update(chainA2.id!, { title: 'X 系列续航参数（2026 修订）', content: 'v3：续航 9.5 小时' })
+  ok('h13 fork 改标题仍继承原链 logical_id（标题改名不断链）',
+    renameFork.success && renameFork.forked === true && renameFork.entry?.status === 'staging' &&
+    renameFork.entry?.logical_id === chainARow?.logical_id && renameFork.entry?.version === 3)
+  const renameInPlace = salesKnowledgeService.update(renameFork.entry!.id!, { title: 'X 系列续航参数（2026 修订二稿）' })
+  ok('h14 staging 原地改标题 logical_id 不变',
+    renameInPlace.success && renameInPlace.forked === false &&
+    renameInPlace.entry?.logical_id === chainARow?.logical_id)
+  const pubRename = salesDbService.kbReview(renameFork.entry!.id!, 'publish', { reviewer: '主管甲' })
+  ok('h15 改标题发布不断链：同链 version+1，旧版本关闭，他链不受影响',
+    pubRename.ok && pubRename.entry?.logical_id === chainARow?.logical_id && pubRename.entry?.version === 3 &&
+    salesDbService.kbGet(chainA2.id!)?.status === 'closed')
+  ok('h16 读取原语每链只出当前有效版本（两条链各 1 条，历史 closed 不重复下发）',
+    (() => {
+      const cur = salesDbService.kbValidEntries({ keywords: ['续航参数'] })
+      return cur.length === 2 && cur.some((e) => e.id === fork.entry!.id) &&
+        cur.some((e) => e.id === renameFork.entry!.id) && new Set(cur.map((e) => e.logical_id)).size === 2
+    })())
+
+  // rejected 沉底：不允许重新发布（a5 已断言跨态）且不允许物理删除；published 不允许物理删除
+  const rejEntry = salesDbService.kbGet(entry.id!)!
+  ok('h17 published/rejected/closed 物理删除拒绝（published 下架走修正版本接替，rejected 拒因留档反哺）',
+    !salesDbService.kbDelete(chainB.id!).ok && !salesDbService.kbDelete(rejEntry.id!).ok &&
+    salesDbService.kbGet(rejEntry.id!) !== undefined)
+
+  // UI 侧当前版本选择（src/utils/knowledgeVersion 纯函数，页面主列表同语义；与后端 closed 收口互补）
+  const synth = [
+    { id: 1, title: ' T ', status: 'published', updated_at: 100 },
+    { id: 2, title: 'T', status: 'published', updated_at: 300 },
+    { id: 3, title: 'T', status: 'published', updated_at: 300 },
+    { id: 4, title: 'T', status: 'rejected', updated_at: 999 },
+    { id: 5, title: 'U', status: 'published', updated_at: 50 }
+  ]
+  const cur = currentPublishedEntries(synth)
+  ok('h18 UI 当前版本选择稳定（无 logical_id 的旧数据按 TRIM(title) 兼容归并）',
+    cur.length === 2 && cur.some((e) => e.id === 3) && cur.some((e) => e.id === 5) && !cur.some((e) => e.id === 1))
+  ok('h19 链内当前 published 单选（历史 published/rejected 不冒充当前版本）',
+    currentPublishedOfChain(synth.filter((e) => e.title === 'T' || e.title === ' T '))?.id === 3)
+  ok('h20 搜索只命中旧版正文时，历史 published 不会被候选子集误判为当前',
+    visibleCurrentPublishedEntries([synth[0]], synth).length === 0)
+
+  const renamedChain = [
+    { id: 10, logical_id: 'kb-renamed', title: '旧标题', version: 1, status: 'published', updated_at: 100 },
+    { id: 11, logical_id: 'kb-renamed', title: '新标题', version: 2, status: 'published', updated_at: 200 }
+  ]
+  ok('h21 UI 按 logical_id 归链，改标题不断链且取最高版号',
+    currentPublishedEntries(renamedChain).length === 1 && currentPublishedEntries(renamedChain)[0].id === 11)
+
+  const raceBase = salesDbService.kbCreate({ category: 'faq', title: '乱序审核链', content: 'v1' })
+  salesDbService.kbReview(raceBase.id!, 'publish', { reviewer: '主管甲' })
+  const raceV2 = salesDbService.kbUpdate(raceBase.id!, { content: 'v2 草稿' })!
+  const raceV3 = salesDbService.kbUpdate(raceBase.id!, { content: 'v3 草稿' })!
+  const publishV3 = salesDbService.kbReview(raceV3.id!, 'publish', { reviewer: '主管甲' })
+  const publishV2Later = salesDbService.kbReview(raceV2.id!, 'publish', { reviewer: '主管甲' })
+  const raceCurrent = salesDbService.kbValidEntries({ keywords: ['乱序审核链'] })
+  ok('h22 多草稿乱序审核时版号仍单调递增，后审核行不能把 v3 回退为 v2',
+    publishV3.entry?.version === 3 && publishV2Later.entry?.version === 4 &&
+    raceCurrent.length === 1 && raceCurrent[0].id === raceV2.id && raceCurrent[0].version === 4)
+
+  // ─── i. TTL 巡检（PRD 2.9：到期只提醒不删除，提醒幂等，续期重新生效）────────
+  const dayMs = 86400_000
+  const isoOf = (offsetDays: number) => {
+    const d = new Date(Date.now() + offsetDays * dayMs)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const ttlEntry = salesKnowledgeService.create({ category: 'faq', title: 'TTL 到期条目', content: '有效期口径测试', ttl_date: isoOf(-1) })
+  salesKnowledgeService.review(ttlEntry.entry!.id!, 'publish', {})
+  ok('i1 已过期条目不出 AI 原语（published + TTL 未过期双重过滤）',
+    salesDbService.kbValidEntries({ keywords: ['TTL 到期条目'] }).length === 0 &&
+    salesDbService.kbExpiredEntries().some((e) => e.id === ttlEntry.entry!.id))
+  const ttlScan1 = salesKnowledgeService.scanTtlReminders()
+  ok('i2 TTL 到期生成待处理提醒（follow_up_task/knowledge_ttl，散任务待办）',
+    ttlScan1.scanned >= 1 && ttlScan1.reminded === 1 &&
+    salesDbService.pendingTaskBySource('knowledge_ttl', ttlEntry.entry!.id!) !== undefined)
+  const ttlScan2 = salesKnowledgeService.scanTtlReminders()
+  ok('i3 TTL 提醒幂等（重复巡检零新增）',
+    ttlScan2.reminded === 0 &&
+    salesDbService.todoList({ status: 'pending' }).filter((t) => t.trigger_type === 'knowledge_ttl').length === 1)
+  ok('i4 到期不删除知识（published 行与正文原样保留）',
+    salesDbService.kbGet(ttlEntry.entry!.id!) !== undefined &&
+    salesDbService.kbGet(ttlEntry.entry!.id!)?.status === 'published')
+  const renew = salesKnowledgeService.renewTtl(ttlEntry.entry!.id!, isoOf(365))
+  ok('i5 负责人续期后重新进 AI 原语（published 当前版本 TTL 就地顺延，不 fork）',
+    renew.success && renew.entry?.ttl_date === isoOf(365) &&
+    salesDbService.kbValidEntries({ keywords: ['TTL 到期条目'] }).length === 1 &&
+    salesDbService.pendingTaskBySource('knowledge_ttl', ttlEntry.entry!.id!) === undefined)
+  const ttlFuture = salesKnowledgeService.create({ category: 'faq', title: 'TTL 未到期条目', content: '还在有效期', ttl_date: isoOf(30) })
+  salesKnowledgeService.review(ttlFuture.entry!.id!, 'publish', {})
+  ok('i6 未过期 / 空 / 0 TTL 均为有效',
+    salesDbService.kbValidEntries({ keywords: ['TTL 未到期条目'] }).length === 1 &&
+    (() => {
+      salesDbService.run('UPDATE knowledge_base SET ttl_date = \'0\' WHERE id = ?', [ttlFuture.entry!.id!])
+      const zero = salesDbService.kbValidEntries({ keywords: ['TTL 未到期条目'] }).length
+      salesDbService.run('UPDATE knowledge_base SET ttl_date = \'\' WHERE id = ?', [ttlFuture.entry!.id!])
+      const empty = salesDbService.kbValidEntries({ keywords: ['TTL 未到期条目'] }).length
+      return zero === 1 && empty === 1
+    })())
+  ok('i7 closed/rejected 拒绝 TTL 续期（只读沉底）',
+    !salesDbService.kbRenewTtl(chainB.id!, isoOf(365)).ok &&
+    !salesDbService.kbRenewTtl(rejEntry.id!, isoOf(365)).ok)
+
+  // ─── j. 删除纪律 + audit_event（PRD 2.3：仅未审核 staging 可删，且先审计后删除）───
+  const delEntry = salesKnowledgeService.create({ category: 'faq', title: '待删未审核条目', content: '写错了想删掉' })
+  const auditCount = () => crmDbService.list('audit_event', { limit: 2000 }).filter((r) => r.action === 'knowledge_delete').length
+  const auditBeforeDel = auditCount()
+  const del = salesKnowledgeService.delete(delEntry.entry!.id!)
+  const auditRows = crmDbService.list('audit_event', { limit: 2000 }).filter((r) => r.action === 'knowledge_delete')
+  ok('j1 未审核 staging 可物理删除且写 audit_event（actor/action/entity 齐备）',
+    del.success && salesDbService.kbGet(delEntry.entry!.id!) === undefined && auditCount() === auditBeforeDel + 1 &&
+    Number(auditRows[0]?.entity_id) === delEntry.entry!.id && String(auditRows[0]?.actor || '').length > 0)
+  ok('j2 删除审计留条目快照（detail JSON 含 title/logical_id，留证可查）',
+    String(auditRows[0]?.detail || '').includes('待删未审核条目') && String(auditRows[0]?.detail || '').includes('logical_id'))
+  ok('j3 published/rejected/closed 服务层删除拒绝（防误删守卫话术）',
+    !salesKnowledgeService.delete(chainB.id!).success &&
+    !salesKnowledgeService.delete(rejEntry.id!).success &&
+    !salesKnowledgeService.delete(chainA.id!).success)
+
+  // ─── k. 价格对账（PRD 2.7：价格类条目与 product 主数据核对，冲突禁止 official，产品库最终权威）───
+  const masterId = crmDbService.create('product', { model: 'CPD15', name: '15 吨锂电搬运车', unit_price: 105000, created_at: Date.now() })
+  const masterId2 = crmDbService.create('product', { model: 'CPD20', name: '20 吨锂电搬运车', unit_price: 98000, created_at: Date.now() })
+  ok('k1 extractMentionedPrices 三口径归一为元（万/¥/元）',
+    extractMentionedPrices('CPD15 报价 9.8万').includes(98000) &&
+    extractMentionedPrices('到手价 ¥105,000').includes(105000) &&
+    extractMentionedPrices('优惠后 100000 元').includes(100000))
+  const kConflicts = checkPriceConflicts('CPD15 现价 9.8万', [
+    { id: masterId, model: 'CPD15', name: '15 吨锂电搬运车', unit_price: 105000 },
+    { id: masterId2, model: 'CPD20', name: '20 吨锂电搬运车', unit_price: 98000 }
+  ])
+  ok('k2 主数据冲突识别（容差 ±1% 内不冲突；未提及产品不对账）',
+    kConflicts.length === 1 && kConflicts[0].product_price === 105000 &&
+    kConflicts[0].knowledge_prices.includes(98000) && kConflicts[0].model === 'CPD15')
+  ok('k3 无价格声明 / 无权威价 → 不判冲突（无据可对诚实放行）',
+    checkPriceConflicts('CPD15 续航很长', [{ id: masterId, model: 'CPD15', name: 'x', unit_price: 105000 }]).length === 0 &&
+    checkPriceConflicts('CPD15 卖 9.8万', [{ id: masterId, model: 'CPD15', name: 'x', unit_price: 0 }]).length === 0)
+  const priceEntry = salesKnowledgeService.create({ category: 'price', title: 'CPD15 价格说明', content: 'CPD15 裸车价 9.8万' })
+  const officialBlock = salesKnowledgeService.review(priceEntry.entry!.id!, 'publish', { official: true })
+  ok('k4 价格冲突禁止 official 发布并返回具体冲突字段（产品库为准）',
+    !officialBlock.success && officialBlock.error?.includes('CPD15') && officialBlock.error?.includes('105000') &&
+    officialBlock.conflictFields?.length === 1 && officialBlock.conflictFields[0].field === 'unit_price')
+  ok('k5 冲突时条目保持 staging（未发布、未入 AI 原语）',
+    salesDbService.kbGet(priceEntry.entry!.id!)?.status === 'staging' &&
+    salesDbService.kbValidEntries({ keywords: ['CPD15 价格说明'] }).length === 0)
+  const communityPub = salesKnowledgeService.review(priceEntry.entry!.id!, 'publish', {})
+  ok('k6 冲突只挡 official 不挡 community（社区发布放行并回带冲突提示）',
+    communityPub.success && (communityPub.conflictFields?.length ?? 0) === 1)
+  const priceOk = salesKnowledgeService.create({ category: 'price', title: 'CPD20 价格说明', content: 'CPD20 到手价 ¥98,000' })
+  const officialOk = salesKnowledgeService.review(priceOk.entry!.id!, 'publish', { official: true })
+  ok('k7 与主数据一致 → official 放行（价格口径对齐产品库权威）',
+    officialOk.success && officialOk.entry?.authority === 'official' && (officialOk.conflictFields?.length ?? 0) === 0)
+
+  // ─── l. 引用统计（PRD 2.9 效果回流：引用次数 / 引用时间 / 关联客户阶段结果）────
+  salesDbService.customerUpsert({ session_id: 'wxid_usage_a', display_name: '引用统计客户A', stage: '比价' })
+  salesDbService.customerUpsert({ session_id: 'wxid_usage_b', display_name: '引用统计客户B', stage: '决策' })
+  const replyTxt = salesKnowledgeService.retrieveForPrompt('X 系列续航参数', 3, { source: 'reply', sessionId: 'wxid_usage_a' })
+  ok('l1 回复建议检索路径命中当前版本并注入', replyTxt.includes('X 系列续航参数') && replyTxt.includes('v3'))
+  // 补充（2026-09-10 版本链修复）：同标题 staging 不进任何 AI 消费路径——Hermes/回复建议只读有效 published
+  const stagingLeak = salesDbService.kbCreate({ category: 'faq', title: 'X 系列续航参数', content: 'STAGING-ONLY-LEAK-MARKER 未审内容' })
+  ok('l1b 回复建议只读有效 published：同标题 staging 不入检索上下文与有效集',
+    salesDbService.kbGet(stagingLeak.id!)?.status === 'staging' &&
+    !salesKnowledgeService.retrieveForPrompt('X 系列续航参数', 5).includes('STAGING-ONLY-LEAK-MARKER') &&
+    !salesDbService.kbValidEntries().some((e) => e.id === stagingLeak.id))
+  const lStats = salesKnowledgeService.usageStats(fork.entry!.id!)
+  ok('l2 引用次数 + 最近引用时间落账（聚合口：citations/last_cited_at）',
+    lStats.length === 1 && lStats[0].citations === 1 && !!lStats[0].last_cited_at)
+  // 台账快照直读（防假覆盖）：usageStats 的 logical_id/version 回读自 knowledge_base 当前行，
+  // 台账行即使漏写也会「碰巧」通过——落账正确性必须直查 knowledge_usage 行内引用时点快照。
+  const forkLedger = salesDbService.knowledgeUsageRows(fork.entry!.id!)
+  ok('l2b 引用台账行内快照：logical_id/version 为引用时点值，属 fork 自身链而非同标题他链',
+    forkLedger.length === 1 &&
+    forkLedger[0].logical_id === fork.entry?.logical_id &&
+    forkLedger[0].logical_id !== chainARow?.logical_id &&
+    forkLedger[0].version === fork.entry?.version && forkLedger[0].version !== null &&
+    forkLedger[0].source === 'reply')
+  ok('l3 关联客户阶段结果归因（引用会话客户当前阶段：比价→quoted）',
+    lStats[0].stages['quoted'] === 1)
+  salesKnowledgeService.retrieveForPrompt('X 系列续航参数', 3, { source: 'action', sessionId: 'wxid_usage_b' })
+  const lStats2 = salesKnowledgeService.usageStats(fork.entry!.id!)
+  ok('l4 行动建议轨道独立记账（source 区分，阶段分布累加）',
+    lStats2[0].citations === 2 && lStats2[0].stages['quoted'] === 1 && lStats2[0].stages['negotiating'] === 1)
+  // ask 轨道幂等（同问同条目只计 1）；reply/action 每次注入各记一行
+  const dupEntry = salesDbService.kbCreate({ category: 'faq', title: '引用去重条目', content: '问答引用幂等' })
+  salesDbService.kbReview(dupEntry.id!, 'publish', { reviewer: '主管甲' })
+  salesDbService.knowledgeUsageAdd({ knowledge_id: dupEntry.id!, ask_key: 'askDup1', source: 'ask', title: '引用去重条目' })
+  salesDbService.knowledgeUsageAdd({ knowledge_id: dupEntry.id!, ask_key: 'askDup1', source: 'ask', title: '引用去重条目' })
+  ok('l5 ask 轨道同 (条目, askKey) 幂等去重计 1', salesKnowledgeService.usageStats(dupEntry.id!)[0].citations === 1)
+
+  // ─── m. 全仓静态绕过检查（AI 消费路径禁止直连无过滤 kbList/kbSearch；原语唯一）────
+  const consumerFiles = [
+    'electron/services/hermesAskService.ts',
+    'electron/services/hermesToolRegistry.ts',
+    'electron/services/salesReplyService.ts',
+    'electron/services/salesActionEngine.ts'
+  ]
+  for (const f of consumerFiles) {
+    const src = readFileSync(join(ROOT, f), 'utf8')
+    ok(`m1 ${f} 零直连 kbList/kbSearch/kbSearchPublished（AI 消费只经有效原语）`,
+      !/kbList\(|kbSearch\(|kbSearchPublished/.test(src))
+  }
+  const askSrc = readFileSync(join(ROOT, 'electron/services/hermesAskService.ts'), 'utf8')
+  const toolSrc = readFileSync(join(ROOT, 'electron/services/hermesToolRegistry.ts'), 'utf8')
+  const replySrc = readFileSync(join(ROOT, 'electron/services/salesReplyService.ts'), 'utf8')
+  const engineSrcM = readFileSync(join(ROOT, 'electron/services/salesActionEngine.ts'), 'utf8')
+  ok('m2 Hermes 问答 / 工具检索 / 回复建议 / 行动建议全部接入 kbValidEntries 原语',
+    askSrc.includes('kbValidEntries(') && toolSrc.includes('kbValidEntries(') &&
+    /buildKnowledgeContext\([\s\S]{0,200}\{ source: 'reply'/.test(replySrc) &&
+    /buildKnowledgeContext\([\s\S]{0,300}\{ source: 'action'/.test(engineSrcM))
+  const ksSrc = readFileSync(join(ROOT, 'electron/services/salesKnowledgeService.ts'), 'utf8')
+  const retrieveBody = ksSrc.slice(ksSrc.indexOf('retrieveForPrompt('), ksSrc.indexOf('buildKnowledgeContext('))
+  const buildBody = ksSrc.slice(ksSrc.indexOf('buildKnowledgeContext('), ksSrc.indexOf('extractScriptsFromChat('))
+  ok('m3 上下文构建只经 kbValidEntries（retrieveForPrompt/buildKnowledgeContext 函数体内零 kbList/kbSearch）',
+    retrieveBody.includes('kbValidEntries()') && !retrieveBody.includes('kbList(') && !retrieveBody.includes('kbSearch(') &&
+    buildBody.includes('kbValidEntries()') && !buildBody.includes('kbList(') && !buildBody.includes('kbSearch('))
+  const listUses = [...ksSrc.matchAll(/kbList\(/g)].map((m) => m.index ?? 0)
+  const dedupStart = ksSrc.indexOf('extractScriptsFromChat(')
+  ok('m4 kbList 残留仅限人工管理读口与写侧去重（提炼/导入），不回流 AI 路径',
+    listUses.length === 3 && listUses.every((i) => i < ksSrc.indexOf('retrieveForPrompt(') || i > dedupStart))
+
   // ─── g. 旧库升级（§2.84）：真实构造治理前置旧版 sales DB 文件 → 当前 initialize 打开升级 ───
   // 不用当前 initialize() 新建的新库测——必须验证「磁盘上的旧文件 → 当前代码打开升级」真实路径。
   // 旧库 = 治理前置 schema：knowledge_base 只有 9 旧字段（无 status/authority/version/…），
@@ -346,6 +643,11 @@ async function main(): Promise<void> {
     'INSERT INTO knowledge_base (category, product_line, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ['script', null, '旧库话术条目', '先谈价值再谈价格', '[]', legacyTs, legacyTs]
   )
+  // 同标题重复行：验证 TRIM(title) 分组归链（同一逻辑知识的历史行共享 logical_id）
+  rawOld.run(
+    'INSERT INTO knowledge_base (category, product_line, title, content, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ['product', 'X系列', '旧库产品条目', 'X 系列续航（重复标题旧行）', '[]', legacyTs, legacyTs]
+  )
   writeFileSync(legacyDbFile, Buffer.from(rawOld.export()))
   rawOld.close()
 
@@ -353,23 +655,36 @@ async function main(): Promise<void> {
   await salesDbService.reopenForWxid(legacyDir)
 
   const upRows = salesDbService.kbList()
-  const up1 = upRows.find((e) => e.title === '旧库产品条目')
+  const up1 = upRows.find((e) => e.title === '旧库产品条目' && e.content === 'X 系列续航 8 小时')
+  const up1Dup = upRows.find((e) => e.title === '旧库产品条目' && e.content !== 'X 系列续航 8 小时')
   const up2 = upRows.find((e) => e.title === '旧库话术条目')
-  ok('g1 存量两行经旧文件升级后仍在且内容一致',
-    upRows.length === 2 && !!up1 && !!up2 &&
+  ok('g1 存量三行经旧文件升级后仍在且内容一致',
+    upRows.length === 3 && !!up1 && !!up2 && !!up1Dup &&
     up1.content === 'X 系列续航 8 小时' && up1.category === 'product' && up2.content === '先谈价值再谈价格')
-  ok('g2 九个治理字段全部存在（ALTER 补列生效；可空列以 null 存在而非 undefined）',
-    !!up1 && [up1.status, up1.authority, up1.version, up1.ttl_date, up1.reviewed_by, up1.reviewed_at,
-      up1.reject_reason, up1.source, up1.evidence_key].every((f) => f !== undefined))
+  ok('g2 十个治理字段全部存在（ALTER 补列生效；可空列以 null 存在而非 undefined）',
+    !!up1 && [up1.status, up1.authority, up1.version, up1.logical_id, up1.ttl_date, up1.reviewed_by,
+      up1.reviewed_at, up1.reject_reason, up1.source, up1.evidence_key].every((f) => f !== undefined))
   ok('g3 存量默认状态符合设计（staging/community/version 1/source=manual——治理版上线后默认不可被问答引用）',
     up1?.status === 'staging' && up1?.authority === 'community' && up1?.version === 1 && up1?.source === 'manual')
+  ok('g3b 版本链回填：同 TRIM(title) 存量行共享 logical_id，不同标题各成一链（确定性 kb-<组内最小 id>）',
+    !!up1Dup && up1.logical_id === up1Dup.logical_id &&
+    !!up2.logical_id && up2.logical_id !== up1.logical_id)
+  // 旧库 logical_id 回填幂等（补充）：清空后重跑回填结果与首次逐行一致（确定性），再次重跑零副作用
+  const firstPassLogical = upRows.map((e) => ({ id: e.id, lid: e.logical_id }))
+  salesDbService.run("UPDATE knowledge_base SET logical_id = ''", [])
+  const rerunLinked = salesDbService.migrateKnowledgeLogicalId().linked
+  const afterRerun = salesDbService.kbList()
+  ok('g3c 旧库 logical_id 回填幂等：清空重跑逐行一致 + 再次重跑 linked=0 零副作用',
+    rerunLinked === 3 && afterRerun.length === 3 &&
+    firstPassLogical.every((s) => afterRerun.find((e) => e.id === s.id)?.logical_id === s.lid) &&
+    salesDbService.migrateKnowledgeLogicalId().linked === 0)
 
-  // 落盘后从磁盘文件校验：九列真实存在于表结构 + idx_kb_status 索引存在
+  // 落盘后从磁盘文件校验：十列真实存在于表结构 + idx_kb_status 索引存在
   salesDbService.flushNow()
   const rawUp = new SQL.Database(readFileSync(legacyDbFile))
   const colNames = (rawUp.exec('PRAGMA table_info(knowledge_base)')[0]?.values ?? []).map((r) => String(r[1]))
-  const govCols = ['status', 'authority', 'version', 'ttl_date', 'reviewed_by', 'reviewed_at', 'reject_reason', 'source', 'evidence_key']
-  ok('g4 磁盘文件 PRAGMA 校验九个治理列真实存在', govCols.every((c) => colNames.includes(c)))
+  const govCols = ['status', 'authority', 'version', 'logical_id', 'ttl_date', 'reviewed_by', 'reviewed_at', 'reject_reason', 'source', 'evidence_key']
+  ok('g4 磁盘文件 PRAGMA 校验十个治理列真实存在', govCols.every((c) => colNames.includes(c)))
   const idxRows = rawUp.exec("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_kb_status'")
   ok('g5 idx_kb_status 索引已建（补列后创建，非 SCHEMA_SQL 提前建）', (idxRows[0]?.values ?? []).length === 1)
   rawUp.close()
@@ -381,11 +696,14 @@ async function main(): Promise<void> {
   salesDbService.flushNow()
   await salesDbService.reopenForWxid(legacyDir)
   const afterReopen = salesDbService.kbGet(pubRow.id!)
-  const stagingRow = salesDbService.kbList().find((e) => e.title === '旧库产品条目')
+  const stagingRow = salesDbService.kbList().find((e) => e.title === '旧库产品条目' && e.content === 'X 系列续航 8 小时')
   ok('g7 第二次 initialize/reopen 幂等：published 不被迁移踩回 staging（reviewed_by 保留）+ 行数不增',
     afterReopen?.status === 'published' && afterReopen?.reviewed_by === '主管甲' &&
-    salesDbService.kbList().length === 2 && stagingRow?.status === 'staging')
-  ok('g8 存量清扫可重入（reopen 后显式重跑 staged=0，零副作用）', salesDbService.migrateKnowledgeGovernance().staged === 0)
+    salesDbService.kbList().length === 3 && stagingRow?.status === 'staging' &&
+    afterReopen?.logical_id === pubRow.logical_id)
+  ok('g8 存量清扫可重入（reopen 后显式重跑 staged=0/linked=0，零副作用）',
+    salesDbService.migrateKnowledgeGovernance().staged === 0 &&
+    salesDbService.migrateKnowledgeLogicalId().linked === 0)
 
   // 修复本身防回归：SCHEMA_SQL 不再提前建 idx_kb_status；索引创建位于治理列 ALTER 之后
   const salesDbSrc = readFileSync(join(ROOT, 'electron/services/salesDbService.ts'), 'utf8')

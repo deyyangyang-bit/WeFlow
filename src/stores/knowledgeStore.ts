@@ -16,9 +16,10 @@ export interface KnowledgeEntry {
   tags: string        // JSON 数组字符串
   scene?: string
   // 刀 1 治理列（宪法 §3 登记行）
-  status?: 'staging' | 'published' | 'rejected'
+  status?: 'staging' | 'published' | 'rejected' | 'closed'
   authority?: 'official' | 'community'
   version?: number
+  logical_id?: string | null
   ttl_date?: string | null
   reviewed_by?: string | null
   reviewed_at?: number | null
@@ -43,8 +44,9 @@ interface KnowledgeState {
   // Actions
   fetchList: (filters?: { category?: string; product_line?: string }) => Promise<void>
   search: (keyword: string) => Promise<void>
-  createEntry: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string }) => Promise<boolean>
-  updateEntry: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string }) => Promise<boolean>
+  createEntry: (payload: { category: string; product_line?: string; title: string; content: string; tags?: string[]; scene?: string; ttl_date?: string | null }) => Promise<boolean>
+  updateEntry: (id: number, payload: { category?: string; product_line?: string; title?: string; content?: string; tags?: string[]; scene?: string; ttl_date?: string | null }) => Promise<boolean>
+  renewTtl: (id: number, ttlDate: string) => Promise<boolean>
   deleteEntry: (id: number) => Promise<boolean>
   /** 刀 1 知识审核：发布 / 拒绝（拒绝必填拒因；official=标记官方） */
   reviewEntry: (id: number, action: 'publish' | 'reject', opts?: { reason?: string; official?: boolean }) => Promise<{ success: boolean; error?: string }>
@@ -144,6 +146,18 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     } catch {
       return false
     }
+  },
+
+  renewTtl: async (id, ttlDate) => {
+    const result = await window.electronAPI.sales.kbRenewTtl(id, ttlDate)
+    if (!result.success) return false
+    const { searchKeyword, filterCategory, filterProductLine } = get()
+    if (searchKeyword) await get().search(searchKeyword)
+    else await get().fetchList({
+      category: filterCategory || undefined,
+      product_line: filterProductLine || undefined
+    })
+    return true
   },
 
   deleteEntry: async (id) => {
