@@ -20,17 +20,19 @@
  *   §1.7b R12 经销商拿货周期预警（简单版）：经销商 60 天未拿货 → 主动联系提醒卡。
  *
  * ⚠️ 缺口注记（不新造数据，后续刀）：
- *   1. opportunity.delivery_date 尚无录入入口（D3 只建了列）——设备提醒与「已交付」判定暂靠
- *      物流签收（logistics.signed_at）推断；录入入口上线后自动生效。
- *   2. 改装件质保到期：无质保到期字段，未实现；以旧换新信号：依赖 customer 设备档案
- *      （brand/vehicle_age/modified）实数据，未实现。
- *   3. 「升 A 级」：现无客户分级字段，复购识别只用于 R10 加频，不写任何分级。
+ *   1. opportunity.delivery_date 录入入口已由交付售后专用服务 crmDeliveryService.registerDelivery 承接
+ *      （2026-09-10）；本服务设备提醒/「已交付」判定仍以 delivery_date 优先、物流签收推断兜底。
+ *   2. 改装件质保到期（warranty_start_date + warranty_days）与以旧换新提案已由 crmDeliveryService 承接
+ *      （真实日期硬门、只出提案不改事实），本服务不再重复实现。
+ *   3. 「升 A 级」复购等级已由 crmDeliveryService.recomputeRepeatLevel 承接（customer.repeat_level +
+ *      单一原语 shared/crmRepeat.computeRepeatLevel）；本服务复购识别仍只用于 R10 加频，不写分级。
  *   4. R12 学习版（按历史拿货间隔个性化阈值）= Phase 4，本刀固定 60 天。
  *   5. 阈值全部为常量（PRD 定格 10/15/15-30-90/14/21/60），未做配置项。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { salesDbService } from './salesDbService'
 import { normalizeStage } from '../../shared/salesStage'
+import { crmCustomerKey } from '../../shared/crmRepeat'
 
 const DAY_MS = 86400_000
 
@@ -102,14 +104,14 @@ function wonDeals(): WonDeal[] {
       deliveredAt: 0, repeat: false
     } as WonDeal
   })
-  // 复购判定：同 customer（无挂接退同 account）≥2 笔成交
+  // 复购判定：同 customer（无挂接退同 account）≥2 笔成交——单一原语 shared/crmRepeat
   const countByKey = new Map<string, number>()
   for (const d of deals) {
-    const key = d.customer_id > 0 ? `c:${d.customer_id}` : `a:${d.account_id}`
+    const key = crmCustomerKey(d.customer_id, d.account_id)
     countByKey.set(key, (countByKey.get(key) || 0) + 1)
   }
   for (const d of deals) {
-    const key = d.customer_id > 0 ? `c:${d.customer_id}` : `a:${d.account_id}`
+    const key = crmCustomerKey(d.customer_id, d.account_id)
     d.repeat = (countByKey.get(key) || 0) >= 2
     // 交付时间：delivery_date 优先，缺省用该 account 最近签收物流推断（缺口注记 1）
     if (d.delivery_date > 0) d.deliveredAt = d.delivery_date

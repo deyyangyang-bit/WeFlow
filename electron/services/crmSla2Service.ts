@@ -15,11 +15,11 @@
  *   - 回收器尊重标记：SLA1 回收器只扫 sla1_met_at IS NULL 的行，已停表（=进入第二段）的
  *     分配天然不在其扫描范围，本服务不改回收器。
  *
- * ⚠️ 缺口（HANDOVER §2.57 注明）：真实 LLM 对话扫描判定未实现——现有代码无可复用的
- *    「对话跟进状态」LLM 扫描服务，本刀只做接口挂接 + 规则骨架。未来 LLM 扫描接入时：
- *    ① 结论一律经 markSla2ScanResult 写入（source='llm'）；② 发给云端的对话内容必须先过
- *    maskPrivateText 脱敏（宪法 §2.6：手机号/微信号/身份证号打码 ***，未脱敏原文不出本机）；
- *    ③ 低置信结论写 verdict='uncertain'（= 转人工的持久化标记）。
+ * ⚠️ LLM 扫描已接入（crmSla2LlmScanService，HANDOVER §2.57 缺口已闭合）：规则覆盖不到的行由
+ *    LLM 扫描补全，三铁律不变：① 结论一律经 markSla2ScanResult 写入（source='llm'）；
+ *    ② 发给云端的对话内容必须先过 maskPrivateText 脱敏（宪法 §2.6：手机号/微信号/身份证号
+ *    打码 ***，未脱敏原文不出本机）；③ 低置信结论写 verdict='uncertain'（= 转人工的持久化标记）。
+ *    「查看依据」UI 出口 = crmSla2EvidenceService（脱敏回查，绝不返回 messageKey/wxid/绝对路径）。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getActorLabel } from './identityService'

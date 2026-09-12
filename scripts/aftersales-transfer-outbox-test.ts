@@ -17,7 +17,7 @@
  * 隔离：WEFLOW_WORKER='1' + /tmp 落盘；crmDb/salesDb 均 fresh 空库，绝不碰 live 库。
  * 运行：npx tsx scripts/aftersales-transfer-outbox-test.ts
  */
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -44,6 +44,7 @@ import {
 } from '../electron/services/crmAftersalesService'
 import { getActionRule } from '../electron/services/salesActionEngine'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../shared/leadSla'
+import { crmCustomerKey, crmCustomerKeyForOpportunity, crmRepeatLevel } from '../src/utils/crmDealKey'
 
 const S_A = '测试销售甲'
 const S_B = '测试销售乙'
@@ -294,6 +295,36 @@ async function main(): Promise<void> {
   ok('H5 生命周期：交付 5 天 → 已交付', dealAftersalesStage({ wonAt: NOW - 20 * DAY, deliveredAt: NOW - 5 * DAY, repeat: false }) === '已交付')
   ok('H6 生命周期：交付 20 天 → 待回访', dealAftersalesStage({ wonAt: NOW - 40 * DAY, deliveredAt: NOW - 20 * DAY, repeat: false }) === '待回访')
   ok('H7 生命周期：复购客户 → 复购老客（叠加客户级维护）', dealAftersalesStage({ wonAt: NOW - DAY, deliveredAt: 0, repeat: true }) === '复购老客')
+
+  console.log('\n═══ I. 复购归并键（DeliveryAftersales 同口径单一真源 src/utils/crmDealKey）═══')
+  // 场景：两个不同 account 挂同一 customer、各有一笔 won；第三笔（再一个 account）同 customer；
+  // 另有未挂接 customer 的 account 独立统计——口径必须与 crmAftersalesService.wonDeals() 一致
+  const keyA1 = crmCustomerKey(7, 101)
+  const keyA2 = crmCustomerKey(7, 102)
+  const keyA3 = crmCustomerKey(7, 103)
+  const keySolo = crmCustomerKey(0, 201)
+  const wonCounts = new Map<string, number>()
+  for (const key of [keyA1, keyA2]) wonCounts.set(key, (wonCounts.get(key) || 0) + 1)
+  ok('I1 归并键：不同 account 挂同一 customer → 同键 c:7（不误判为多个首购客户）',
+    keyA1 === 'c:7' && keyA2 === 'c:7' && keyA3 === 'c:7' && keyA1 === keyA2)
+  ok('I2 两笔 won（两 account 同 customer）→ 两笔均显示复购老客',
+    crmRepeatLevel(wonCounts.get(keyA1) || 1) === '复购老客' && crmRepeatLevel(wonCounts.get(keyA2) || 1) === '复购老客')
+  wonCounts.set(keyA3, (wonCounts.get(keyA3) || 0) + 1)
+  ok('I3 第三笔 won（同 customer）→ 高频复购·升A', wonCounts.get(keyA3) === 3 && crmRepeatLevel(wonCounts.get(keyA3) || 1) === '高频复购·升A')
+  wonCounts.set(keySolo, (wonCounts.get(keySolo) || 0) + 1)
+  ok('I4 未挂 customer 的 account 按 account_id 独立统计（首购，不并入 c:7）',
+    keySolo === 'a:201' && keySolo !== keyA1 && crmRepeatLevel(wonCounts.get(keySolo) || 1) === '首购')
+  ok('I5 未挂接形态键（customer_id 0/空/null → a:<accountId>，与 wonDeals COALESCE 口径一致）',
+    crmCustomerKey(0, 9) === 'a:9' && crmCustomerKey('', 9) === 'a:9' && crmCustomerKey(null, 9) === 'a:9')
+  const accountLinks = new Map<number, { customer_id: number }>([[101, { customer_id: 7 }], [102, { customer_id: 7 }]])
+  ok('I6 组件归并入口按 opportunity.account_id 读取 account.customer_id',
+    crmCustomerKeyForOpportunity(accountLinks, { account_id: 101 }) === 'c:7' &&
+    crmCustomerKeyForOpportunity(accountLinks, { account_id: 102 }) === 'c:7' &&
+    crmCustomerKeyForOpportunity(accountLinks, { account_id: 201 }) === 'a:201')
+  const deliverySource = readFileSync(new URL('../src/components/crm/DeliveryAftersales.tsx', import.meta.url), 'utf8')
+  ok('I7 DeliveryAftersales 的唯一归并入口调用 account 映射 helper，不回退读取 opportunity.customer_id',
+    /const customerKeyOf = \(o: OppRow\): string =>\s*crmCustomerKeyForOpportunity\(accountsById, o\)/.test(deliverySource) &&
+    !/Number\([do]\.customer_id\)/.test(deliverySource))
 
   console.log(`\n═══ 结果：${pass} 通过 / ${fail} 失败 ═══`)
   process.exit(fail ? 1 : 0)

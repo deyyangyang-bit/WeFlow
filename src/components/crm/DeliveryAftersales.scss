@@ -1,0 +1,240 @@
+// 交付售后视图（合同工作台第二视图）——颜色只消费 --color-* 族，双模式自动适配
+.da-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.da-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  h3 {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--color-text-primary);
+    margin: 0;
+  }
+
+  &__sub {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    margin-right: auto;
+  }
+}
+
+.da-notice {
+  font-size: 12px;
+  color: var(--color-accent);
+  background: var(--color-accent-bg);
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-small);
+  padding: 4px 10px;
+}
+
+.da-empty {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  padding: 8px 0;
+}
+
+.da-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+
+  &--ok { background: var(--color-success-bg); color: var(--color-success); }
+  &--acc { background: var(--color-accent-bg); color: var(--color-accent); }
+  &--bad { background: var(--color-danger-bg); color: var(--color-danger); font-weight: 600; }
+  &--neu { background: var(--color-bg-inset); color: var(--color-text-secondary); }
+}
+
+// 数量差异任务
+.da-diff {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+
+  h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--color-text-primary);
+    margin: 0 0 8px;
+  }
+
+  &__count {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+    border-radius: 999px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__list { display: flex; flex-direction: column; gap: 6px; }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 1px solid var(--color-divider);
+    border-radius: var(--radius-small);
+    flex-wrap: wrap;
+  }
+
+  &__who { font-weight: 600; color: var(--color-text-primary); }
+  &__model { color: var(--color-text-secondary); }
+  &__nums { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; margin-right: auto; }
+}
+
+// 成交单卡片
+.da-card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  &__who { font-size: 13px; color: var(--color-text-primary); }
+  &__model { font-size: 12px; color: var(--color-text-secondary); margin-right: auto; }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+
+    label { color: var(--color-text-tertiary); flex: none; }
+
+    input[type='number'],
+    input[type='date'],
+    input[type='text'] {
+      background: var(--color-bg-inset);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      color: var(--color-text-primary);
+      font-size: 12px;
+      padding: 4px 8px;
+      width: 110px;
+      outline: none;
+
+      &:focus { border-color: var(--color-accent-border); }
+    }
+
+    input[type='number'] { width: 80px; }
+
+    .da-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      color: var(--color-text-secondary);
+    }
+  }
+
+  &__row--equip {
+    border-top: 1px dashed var(--color-divider);
+    padding-top: 10px;
+  }
+
+  &__hint {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    padding-left: 21px;
+
+    b { color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+
+    &--warn { color: var(--color-warning); }
+  }
+}
+
+// 改装质保提醒（后端任务，顶层卡片）
+.da-warranty {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+
+  &__label {
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+}
+
+// 以旧换新提案（后端任务，顶层卡片）
+.da-tradein {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+
+  &__label {
+    color: var(--color-accent);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  &__item {
+    color: var(--color-text-secondary);
+    background: var(--color-accent-bg);
+    border-radius: var(--radius-small);
+    padding: 3px 9px;
+    margin-right: auto;
+  }
+}
+
+// 设备档案字段（label + input 并排）
+.da-equip-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  label { color: var(--color-text-tertiary); flex: none; }
+}
