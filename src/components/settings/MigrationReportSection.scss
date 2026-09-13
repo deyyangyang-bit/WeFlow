@@ -1,4 +1,6 @@
 // 存量迁移报告（设置 · 安全 tab，紧邻审计流水）——颜色只消费 --color-* 族，双模式自动适配
+// 注：`.pill`（五语义）与 `.tech`（技术细节折叠）定义在 AuditTrailSection.scss，两者同挂安全 tab
+// （SettingsPage.tsx 内相邻渲染），此处不重复定义，避免同一视觉两套实现。
 .migration-report {
   display: flex;
   flex-direction: column;
@@ -95,37 +97,27 @@
     color: var(--color-text-tertiary);
   }
 
-  &__table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-
-    th {
-      text-align: left;
-      font-weight: 600;
-      color: var(--color-text-tertiary);
-      border-bottom: 1px solid var(--color-border);
-      padding: 4px 8px;
-      white-space: nowrap;
-    }
-
-    td {
-      border-bottom: 1px solid var(--color-divider);
-      padding: 5px 8px;
-      color: var(--color-text-primary);
-      vertical-align: top;
-    }
-
-    td.num {
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-      color: var(--color-text-secondary);
-    }
+  // 单条失败/冲突：人话对象名 + 人话原因 + 技术细节折叠（原表格改为块，可容纳折叠）
+  &__issue {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--color-divider);
   }
 
-  &__detail {
-    color: var(--color-text-secondary) !important;
-    word-break: break-all;
+  &__issue-key {
+    font-size: 12px;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    word-break: break-word;
+  }
+
+  &__issue-reason {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+    word-break: break-word;
   }
 
   &__ops {

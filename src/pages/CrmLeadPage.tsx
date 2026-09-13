@@ -10,6 +10,7 @@
  * ⚠️ 销售视角过滤只是展示层便利（宪法 §1.12：角色仅署名，不作访问控制；门禁靠部署形态+应用锁）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2, Sparkles } from 'lucide-react'
 import * as XLSX from 'exceljs'
@@ -110,6 +111,8 @@ function parsePasteText(text: string): RawRow[] {
 }
 
 export default function CrmLeadPage() {
+  // 深链 /leads?leadId=<id>：审计流水「线索名」点击跳转用（见下方 useEffect）
+  const [searchParams] = useSearchParams()
   const [leads, setLeads] = useState<LeadRow[]>([])
   const [overview, setOverview] = useState<{ total: number; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; byStatus: Record<string, number>; sources: Array<{ source: string; count: number }> } | null>(null)
   const [search, setSearch] = useState('')
@@ -502,6 +505,16 @@ export default function CrmLeadPage() {
     } catch { /* 留痕查询失败仅不显示时间线 */ }
     if (d.lead) setDetail({ lead: d.lead, activities: (d.activities || []) as any, ownHist, sla2 })
   }
+  // 深链 /leads?leadId=<id>：从审计流水点「线索名」跳过来时自动打开详情。
+  // deepLinkRef 记住已消费的 id，避免 searchParams 引用变化导致重复拉取。
+  const deepLinkRef = useRef(0)
+  useEffect(() => {
+    const id = Number(searchParams.get('leadId') || 0)
+    if (id <= 0 || deepLinkRef.current === id) return
+    deepLinkRef.current = id
+    void openDetail(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
   const toAccount = async (id: number) => {
     const r = await window.electronAPI.crm.leadToAccount(id)
     setNotice(r.ok ? (r.existed ? '已关联到已有客户' : `已转为客户 #${r.accountId}`) : r.error || '转客户失败')

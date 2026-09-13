@@ -77,6 +77,22 @@ async function main(): Promise<void> {
   const byTime = queryAuditEvents({ beginAt: now - 2500, endAt: now - 1500 })
   ok('a12 时间窗过滤', byTime.data.total === 1)
 
+  // a13-a15 实体显示名（人话化设计稿 §04「对象解析」）：labels 随行返回，供渲染层把
+  // `lead #id` 换成人话名字；解析不到由渲染层回落原名（契约：不留空白）
+  crmDbService.run('INSERT INTO lead (contact_type, contact_normalized, name, first_contact_deadline, created_at) VALUES (?,?,?,?,?)',
+    ['phone', '15212345678', '临沂诺力机械', now, now])
+  const leadId = Number(crmDbService.all('SELECT id FROM lead ORDER BY id DESC LIMIT 1')[0]?.id || 0)
+  audit('系统', 'lead_assign', 'lead', leadId, JSON.stringify({ salesName: '杨青' }), now - 500)
+  const withLabel = queryAuditEvents({ action: 'assign', pageSize: 100 })
+  ok('a13 labels 随响应返回（对象 key = `<entity_type>:<entity_id>`）',
+    typeof withLabel.data.labels === 'object' && withLabel.data.labels !== null)
+  ok('a14 lead 名解析为实体名（供渲染层替换 `lead #id`）',
+    withLabel.data.labels[`lead:${leadId}`] === '临沂诺力机械')
+  ok('a15 解析不到的实体不进 labels（渲染层回落原名，不留空白）',
+    withLabel.data.labels['lead:999999'] === undefined)
+  ok('a16 只读回归：labels 查询零写（lead 行数不变）',
+    Number(crmDbService.all('SELECT COUNT(*) AS c FROM lead')[0]?.c) === 1)
+
   // ─── b. ownership:history ─────────────────────────────────────────────────
   const h1 = listOwnershipHistory({ entityType: 'lead', entityId: 1 })
   ok('b1 统一信封 + lead#1 时间线 3 条', h1.ok === true && h1.data.total === 3 && h1.data.rows.length === 3)
@@ -110,8 +126,13 @@ async function main(): Promise<void> {
   ok('d3 electron.d.ts 类型同步', dtsSrc.includes('auditQuery') && dtsSrc.includes('ownershipHistory'))
   const settingsSrc = readFileSync(join(ROOT, 'src/pages/SettingsPage.tsx'), 'utf-8')
   ok('d4 SettingsPage 挂载审计流水区块', settingsSrc.includes('AuditTrailSection'))
+  // 2026-09-13 人话化：脱敏实现从组件内联迁到共享词典（渲染层调用），源码定位标记随形态更新，
+  // **断言口径不变**（审计展示层必须对联系方式打码，且零硬编码 hex）。
+  const auditDictSrc = readFileSync(join(ROOT, 'shared/auditDict.ts'), 'utf-8')
   const auditSectionSrc = readFileSync(join(ROOT, 'src/components/settings/AuditTrailSection.tsx'), 'utf-8')
-  ok('d5 审计区块脱敏（152****5273 形态）+ 无硬编码 hex', auditSectionSrc.includes('****') && !/#[0-9a-fA-F]{6}\b/.test(auditSectionSrc.replace(/wxid_/g, '')))
+  ok('d5 审计展示层脱敏（152****5273 形态，实现=shared/auditDict）+ 无硬编码 hex',
+    auditDictSrc.includes('****') && auditSectionSrc.includes('maskContact') &&
+    !/#[0-9a-fA-F]{6}\b/.test(auditSectionSrc.replace(/wxid_/g, '')))
   const auditSectionScss = readFileSync(join(ROOT, 'src/components/settings/AuditTrailSection.scss'), 'utf-8')
   ok('d6 颜色只消费 --color-* 族（tsx+scss 零硬编码 hex）',
     auditSectionScss.includes('var(--color-') && !/#[0-9a-fA-F]{3,8}\b/.test(auditSectionScss) && !/#[0-9a-fA-F]{6}\b/.test(auditSectionSrc))

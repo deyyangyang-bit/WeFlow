@@ -538,19 +538,77 @@ export function restoreLegacyGroupScanAssignments(): { restored: Record<string, 
 export interface AuditQueryOpts { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }
 
 /**
- * action 类别过滤（设计稿屏 7 分段控件 全部/分配/绑定/回收/权重调整）→ action 值清单。
- * 前缀匹配：lead_assign/lead_transfer/lead_claim = 分配；identity_bind = 绑定；lead_recycle = 回收；
- * 权重调整 = 精确匹配 assignment_weight_change（§2.75 遗留补齐：写点 = main.ts config:set 拦截，宪法 §3 登记）
+ * action 类别过滤（人话化设计稿 §01 筛选 chips）→ action 值清单。
+ * assign  = lead_assign/lead_transfer/lead_claim/departure_handoff；
+ * bind    = identity_bind；recycle = lead_recycle；
+ * weight  = 精确匹配 assignment_weight_change（§2.75 遗留补齐：写点 = main.ts config:set 拦截，宪法 §3 登记）；
+ * remind  = SLA1 三段提醒 + 主管上报（设计稿 §01 新增）；
+ * config  = 改变系统行为口径的操作：分配权重 / AI 额度 / SLA 存量清零 / 归属残留清理 / SLA 回填 / 误回收纠正
+ *           （设计稿 §01 新增；`weight` 保留为精确子集，供既有调用方与测试沿用）。
+ * 导出供 scripts/audit-dict-test.ts 守卫「chips 的每个 id 都有对应类别」。
  */
-const AUDIT_ACTION_CATEGORY: Record<string, string[]> = {
+export const AUDIT_ACTION_CATEGORY: Record<string, string[]> = {
   assign: ['lead_assign', 'lead_transfer', 'lead_claim', 'departure_handoff'],
   bind: ['identity_bind'],
   recycle: ['lead_recycle'],
-  weight: ['assignment_weight_change']
+  weight: ['assignment_weight_change'],
+  remind: ['sla1_remind', 'sla1_supervisor_notify'],
+  config: [
+    'assignment_weight_change',
+    'ai_daily_limit_change',
+    'lead_sla_stock_reset',
+    'lead_tag_owner_cleanup',
+    'assignment_sla1_backfill',
+    'sla1_misrecycle_correction'
+  ]
+}
+
+/** 单次标签解析的 id 上限（整页最多 100 行，正常远达不到；防御异常入参撑爆 IN 列表） */
+const LABEL_LOOKUP_MAX = 500
+
+/**
+ * 实体显示名解析（纯读，不写库）：把整页行的 entity_type/entity_id 批量换成可读名。
+ * 仅覆盖有稳定名称列的实体（lead/account/customer）——其余类型不编造名字，
+ * 由渲染层回落到 `#id`（契约：解析不到显示原名，不留空白）。
+ * 一次查询覆盖整页，不做 N+1。返回 key = `<entity_type>:<entity_id>`。
+ */
+function resolveEntityLabels(rows: CrmRow[]): Record<string, string> {
+  const txt = (v: unknown): string => String(v ?? '').trim()
+  const idsOf = (type: string): number[] => Array.from(new Set(
+    rows.filter((r) => r.entity_type === type && Number(r.entity_id) > 0).map((r) => Number(r.entity_id))
+  )).slice(0, LABEL_LOOKUP_MAX)
+  const out: Record<string, string> = {}
+  const put = (type: string, id: unknown, label: string): void => {
+    const name = label.trim()
+    if (name) out[`${type}:${Number(id)}`] = name
+  }
+  const leadIds = idsOf('lead')
+  if (leadIds.length) {
+    const ph = leadIds.map(() => '?').join(',')
+    const rowsL = crmDbService.all(
+      `SELECT id, name, contact_raw, contact_normalized, wechat FROM lead WHERE id IN (${ph})`, leadIds
+    )
+    for (const r of rowsL) {
+      // 线索名常为空（实测库中约 48%）：回落到联系方式——仍远比 `lead #4680` 可读
+      put('lead', r.id, txt(r.name) || txt(r.contact_raw) || txt(r.contact_normalized) || txt(r.wechat))
+    }
+  }
+  for (const type of ['account', 'customer'] as const) {
+    const ids = idsOf(type)
+    if (!ids.length) continue
+    const ph = ids.map(() => '?').join(',')
+    for (const r of crmDbService.all(`SELECT id, name FROM ${type} WHERE id IN (${ph})`, ids)) {
+      put(type, r.id, txt(r.name))
+    }
+  }
+  return out
 }
 
 /** 审计流水查询（R，只读，append-only 表无软删列）：契约参数 + keyword 扩展（actor/detail/entity 一把搜） */
-export function queryAuditEvents(opts: AuditQueryOpts = {}): { ok: boolean; data: { rows: CrmRow[]; total: number } } {
+export function queryAuditEvents(opts: AuditQueryOpts = {}): {
+  ok: boolean
+  data: { rows: CrmRow[]; total: number; labels: Record<string, string> }
+} {
   const where: string[] = ['1=1']
   const params: unknown[] = []
   const entityType = String(opts.entityType || '').trim()
@@ -580,7 +638,7 @@ export function queryAuditEvents(opts: AuditQueryOpts = {}): { ok: boolean; data
   const w = ' WHERE ' + where.join(' AND ')
   const total = Number(crmDbService.all(`SELECT COUNT(*) AS c FROM audit_event${w}`, params)[0]?.c || 0)
   const rows = crmDbService.all(`SELECT * FROM audit_event${w} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize])
-  return { ok: true, data: { rows, total } }
+  return { ok: true, data: { rows, total, labels: resolveEntityLabels(rows) } }
 }
 
 // ─── 归属留痕时间线（crm:ownership:history，API-CONTRACT §1.14 契约端点）──────

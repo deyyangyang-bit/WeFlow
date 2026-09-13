@@ -1,4 +1,4 @@
-// 审计流水（设置 · 安全 tab，设计稿屏 7）——颜色只消费 --color-* 族，双模式自动适配
+// 审计流水（设置 · 安全 tab，人话化设计稿 §01）——颜色只消费 --color-* 族，双模式自动适配
 .audit-trail {
   display: flex;
   flex-direction: column;
@@ -7,7 +7,7 @@
   &__head {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 6px;
     cursor: pointer;
 
     h2 {
@@ -16,6 +16,15 @@
       color: var(--color-text-primary);
       margin: 0;
     }
+  }
+
+  // 折叠指示箭头：展开时转 90°
+  &__caret {
+    color: var(--color-text-tertiary);
+    align-self: center;
+    transition: transform 0.15s ease;
+
+    &.on { transform: rotate(90deg); }
   }
 
   &__hint {
@@ -64,6 +73,11 @@
     box-shadow: var(--shadow-control);
 
     &:disabled { opacity: 0.5; cursor: default; }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
   }
 
   // 分段控件：灰底 + 选中浮起 + accent 文字（设计稿控件惯例）
@@ -90,47 +104,24 @@
       box-shadow: var(--shadow-control);
       font-weight: 600;
     }
-  }
 
-  &__table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-
-    th {
-      text-align: left;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--color-text-tertiary);
-      padding: 6px 8px;
-      border-bottom: 1px solid var(--color-divider);
-    }
-
-    td {
-      padding: 7px 8px;
-      color: var(--color-text-primary);
-      border-bottom: 1px solid var(--color-divider);
-      vertical-align: top;
-    }
-
-    td.num, th.num {
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-      color: var(--color-text-secondary);
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
     }
   }
 
-  &__detail {
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    word-break: break-all;
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
   &__empty {
     text-align: center;
     color: var(--color-text-tertiary);
     font-size: 12px;
-    padding: 18px 0 !important;
+    padding: 18px 0;
   }
 
   &__pager {
@@ -144,6 +135,168 @@
     font-size: 11px;
     color: var(--color-text-tertiary);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+// 合并组：同 action + 同 actor + 同一分钟的连续行 —— 左侧竖线示意「这些是一条」
+.agroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  &--merged {
+    border-left: 2px solid var(--color-divider);
+    padding-left: 8px;
+    margin: 2px 0;
+  }
+
+  &__items {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  &__rest {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    padding: 2px 0 2px 2px;
+  }
+}
+
+// 单行人话视图：时间 · 操作人 · 动作 pill · 整句（+ 技术细节折到下一行）
+.arow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--color-divider);
+
+  &--head { background: var(--color-bg-inset); border-radius: var(--radius-small); }
+
+  &__time {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  &__actor {
+    font-size: 12px;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 0 auto;
+
+    &--sys { color: var(--color-text-tertiary); }
+  }
+
+  &__text {
+    font-size: 13px;
+    color: var(--color-text-primary);
+    line-height: 1.5;
+    flex: 1 1 320px;
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  &__muted {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
+
+  // 未收录动作的灰标（词典未命中时降级展示原文并标记，不允许静默乱码）
+  &__raw {
+    font-size: 10px;
+    color: var(--color-text-tertiary);
+    background: var(--color-bg-inset);
+    border-radius: 999px;
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  // 对象名：可点击跳转；解析不到时是普通灰字（显示原名，不留空白）
+  &__ent {
+    color: var(--color-accent);
+    text-decoration: none;
+    cursor: pointer;
+
+    &:hover { text-decoration: underline; }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+      border-radius: 2px;
+    }
+
+    &--plain {
+      color: var(--color-text-secondary);
+      cursor: default;
+
+      &:hover { text-decoration: none; }
+    }
+  }
+
+  &__expand {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    border: none;
+    background: transparent;
+    color: var(--color-accent);
+    font-size: 11px;
+    padding: 2px 4px;
+    cursor: pointer;
+    flex: 0 0 auto;
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+      border-radius: 2px;
+    }
+  }
+
+  &__caret {
+    transition: transform 0.15s ease;
+
+    &.on { transform: rotate(90deg); }
+  }
+}
+
+// 「技术细节」折叠：人话视图之下的原始 action/entity/detail，供开发者排查
+.tech {
+  flex: 0 0 100%;
+  font-size: 11px;
+
+  summary {
+    color: var(--color-text-tertiary);
+    cursor: pointer;
+    list-style: none;
+
+    &::-webkit-details-marker { display: none; }
+
+    &:hover { color: var(--color-text-secondary); }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+      border-radius: 2px;
+    }
+  }
+
+  &__body {
+    margin-top: 4px;
+    padding: 6px 8px;
+    background: var(--color-bg-inset);
+    border-radius: var(--radius-small);
+    color: var(--color-text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-all;
   }
 }
 
