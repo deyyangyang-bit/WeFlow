@@ -43,7 +43,6 @@ const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const EvalAnnotatePage = lazy(() => import('./pages/EvalAnnotatePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
-const SalesFunnelPage = lazy(() => import('./pages/SalesFunnelPage'))
 const ActionFunnelPage = lazy(() => import('./pages/ActionFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
 const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
@@ -757,7 +756,8 @@ function App() {
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                 <Route path="/eval-annotate" element={<EvalAnnotatePage />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
-                <Route path="/sales-funnel" element={<SalesFunnelPage />} />
+                {/* 「漏斗」已并入商机「阶段分析」视图（2026-09-13）；旧链接/书签不失效 */}
+                <Route path="/sales-funnel" element={<RouteStateRedirect to="/opportunities?view=analysis" />} />
                 <Route path="/action-funnel" element={<ActionFunnelPage />} />
                 <Route path="/opportunities" element={<OpportunityPage />} />
                 <Route path="/customers" element={<CustomerWorkspacePage />} />

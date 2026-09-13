@@ -713,6 +713,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     opportunityGet: (id: number) => ipcRenderer.invoke('crm:opportunity:get', id),
     opportunityEvents: (id: number) => ipcRenderer.invoke('crm:opportunity:events', id),
     opportunityStats: () => ipcRenderer.invoke('crm:opportunity:stats'),
+    opportunityAnalysis: () => ipcRenderer.invoke('crm:opportunity:analysis'),
     opportunityStage: (id: number, stage: string) => ipcRenderer.invoke('crm:opportunity:stage', id, stage),
     opportunityClose: (id: number, status: 'lost', reason: string) => ipcRenderer.invoke('crm:opportunity:close', id, status, reason),
     opportunityRegisterDeal: (id: number, payload: unknown) => ipcRenderer.invoke('crm:opportunity:registerDeal', id, payload),
@@ -866,7 +867,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) =>
       ipcRenderer.invoke('sales:customer:list', filters),
     customerDetail: (sessionId: string) => ipcRenderer.invoke('sales:customer:detail', sessionId),
-    funnelStats: (days?: number) => ipcRenderer.invoke('sales:funnel:stats', days),
     // P0-4.2.2/4.3：Action Funnel（Task-level 六段聚合 + 下钻；纯只读）
     actionFunnelGet: (days?: number | null) => ipcRenderer.invoke('sales:actionFunnel:get', days),
     actionFunnelBreakdown: (days?: number | null) => ipcRenderer.invoke('sales:actionFunnel:breakdown', days),

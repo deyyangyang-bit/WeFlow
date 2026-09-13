@@ -7,6 +7,7 @@ import { app } from 'electron'
 import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
+import { buildOpportunityAnalysis } from './opportunityAnalysisService'
 import { setCrmParseConfig, startCrmParseScheduler, scanNow } from './crmParseService'
 import { generateDoc } from './crmDocGenService'
 import { enqueueSalesTask } from './salesQueue'
@@ -153,6 +154,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:opportunity:get', async (_, id: number) => crmDbService.opportunityById(Number(id)))
   ipcMain.handle('crm:opportunity:events', async (_, id: number) => crmDbService.opportunityEvents(Number(id)))
   ipcMain.handle('crm:opportunity:stats', async () => crmDbService.opportunityStats())
+  // 阶段分析（只读）：管道总览 + 分段（仅 active）+ 各段优先处理名单。
+  // 零模型调用、零落库；事实源是 shared/opportunitySignals.ts，排序也由纯函数给出。
+  ipcMain.handle('crm:opportunity:analysis', async () => buildOpportunityAnalysis())
   ipcMain.handle('crm:opportunity:stage', async (_, id: number, stage: string) => crmDbService.opportunityUpdateStage(Number(id), String(stage || ''), 'manual'))
   ipcMain.handle('crm:opportunity:close', async (_, id: number, status: 'lost', reason: string) => crmDbService.opportunityClose(Number(id), status, String(reason || '')))
   // 正式成交登记（宪法 §1.5 修订 2026-09-09）：成交字段 + status=won + opportunity_event + audit_event

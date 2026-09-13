@@ -192,7 +192,9 @@ export default function TodayActionPage() {
   // 筛选
   const filtered = useMemo(() => {
     if (filter === 'all') return items
-    if (filter === 'task') return items.filter(i => i.sources.every(s => s.type === 'task'))
+    // 「该联系」= 含待办来源的卡。用 some 而非 every：商机信号会并入同客户卡，
+    // 若按 every 判定，被并入了报价/风险理由的卡会从本筛选中静默消失（与 customerActionQueue 的 withTask 同口径）
+    if (filter === 'task') return items.filter(i => i.sources.some(s => s.type === 'task'))
     if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
     return items
   }, [items, filter])
@@ -211,7 +213,7 @@ export default function TodayActionPage() {
   // chips 计数
   const chipCounts = useMemo(() => ({
     all: items.length,
-    task: items.filter(i => i.sources.every(s => s.type === 'task')).length,
+    task: items.filter(i => i.sources.some(s => s.type === 'task')).length,
     urgent: items.filter(i => i.urgencyTier === 'urgent').length,
   }), [items])
 

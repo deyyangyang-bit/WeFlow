@@ -52,9 +52,15 @@ function RingGauge({ score }: { score: number }) {
 }
 
 function SourceTag({ source }: { source: SignalSource }) {
-  // 阶段三例外告警：专属红色徽章（复用 source-tag 结构）；task 石墨蓝；其余（历史）走 insight 黄
-  const cls = source.type === 'task' ? 'source-tag--task' : source.type === 'alert' ? 'source-tag--alert' : 'source-tag--insight'
-  const code = source.type === 'task' ? (source as any).ruleCode : source.type === 'alert' ? '!' : 'AI'
+  // 阶段三例外告警：专属红色徽章（复用 source-tag 结构）；task 石墨蓝；
+  // 商机确定性信号（已落库字段投影，非 AI 产物）用「商机」而非「AI」标注，避免误导为模型输出；
+  // 其余（历史）走 insight 黄
+  const cls = source.type === 'task' ? 'source-tag--task'
+    : source.type === 'alert' ? 'source-tag--alert'
+      : source.type === 'opportunity' ? 'source-tag--opportunity' : 'source-tag--insight'
+  const code = source.type === 'task' ? (source as any).ruleCode
+    : source.type === 'alert' ? '!'
+      : source.type === 'opportunity' ? '商机' : 'AI'
   return (
     <span className={`source-tag ${cls}`}>
       <span className="source-tag__code">{code}</span>

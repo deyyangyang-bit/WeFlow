@@ -4551,14 +4551,6 @@ function registerIpcHandlers() {
     }
   })
 
-  // 销售漏斗（历史累计流转；days=0 全部历史，默认 30 天）
-  ipcMain.handle('sales:funnel:stats', async (_e, days?: number) => {
-    try {
-      return { success: true, data: salesDbService.funnelStats(Number(days) || 0) }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
 
   // P0-4.2.2 Action Funnel 聚合视图（Task-level 六段；days=null 全量；纯只读不调 LLM）
   ipcMain.handle('sales:actionFunnel:get', async (_e, days?: number | null) => {

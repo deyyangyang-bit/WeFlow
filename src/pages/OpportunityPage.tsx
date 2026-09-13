@@ -11,14 +11,18 @@ import GeneratedFileResult from '../components/crm/GeneratedFileResult'
  *   - 丢单保持原因表单（预设原因 + 补充说明，必填）。
  *   - 报价历史只读展示（版本/生效期/总额/文件/哈希状态，宪法 §1.6 append-only）。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { buildNextStep, RISK_TYPE_LABEL, RISK_SEVERITY_LABEL } from '../utils/oppNextStep'
 import { fmtDate, fmtQty, toDateInput, fromDateInput } from '../utils/formatBiz'
+import { isSessionIdLike } from '../../shared/wechatId'
 import { useCrmStore } from '../stores/crmStore'
 import type { OpportunityDealRegistration, OpportunityRecord, QuotationRecord } from '../types/electron'
-import { RefreshCw, X, CheckCircle2, XCircle, Target, FileText, Lock } from 'lucide-react'
+import type { OpportunityAnalysisResult, OppAssessment } from '../../shared/opportunitySignals'
+import OpportunityStageAnalysis from '../components/crm/OpportunityStageAnalysis'
+import { RefreshCw, X, CheckCircle2, XCircle, Target, FileText, Lock, BarChart3, List } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
 import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT } from '../../shared/funnelPalette'
 import './OpportunityPage.scss'
@@ -346,6 +350,73 @@ function QuoteHistory({ quotations, boundVersionId }: { quotations: QuotationRec
   )
 }
 
+// ─── 「建待办」表单（候选行没有待办时出现；复用既有 sales.todoCreate，不另开待办写入口）──
+
+function TodoForm({ assessment, onClose, onDone }: {
+  assessment: OppAssessment
+  onClose: () => void
+  onDone: (msg: string) => void
+}) {
+  const [title, setTitle] = useState(`跟进 ${assessment.displayName}`)
+  const [dueDate, setDueDate] = useState(toDateInput(Date.now() + 86400000))
+  const [saving, setSaving] = useState(false)
+
+  const submit = async () => {
+    const t = title.trim()
+    if (!t) return
+    setSaving(true)
+    try {
+      const r = await window.electronAPI.sales.todoCreate({
+        trigger_type: 'manual',
+        title: t,
+        session_id: assessment.sessionId || undefined,
+        due_at: fromDateInput(dueDate) || undefined
+      })
+      onDone(r?.success ? '已创建待办' : `创建待办失败：${r?.error || '未知原因'}`)
+    } catch (e) {
+      onDone(`创建待办失败：${String(e)}`)
+    }
+  }
+
+  return (
+    <div className="opp-modal" onClick={onClose}>
+      <div className="opp-modal__body opp-form" onClick={e => e.stopPropagation()}>
+        <h3>
+          建待办 · {assessment.displayName}
+          <button className="opp-btn" onClick={onClose}><X size={14} /></button>
+        </h3>
+        <div className="opp-form__grid">
+          <label className="opp-form__label">待办标题 *</label>
+          <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="要交付给客户的下一步动作" />
+          <label className="opp-form__label">截止日期</label>
+          <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+            title="你自己承诺的截止时间（不是客户承诺）" />
+        </div>
+        <div className="opp-form__actions">
+          <span className="opp-form__hint">截止日期 = 你自己承诺的时间；到期后该商机会进入优先处理名单</span>
+          <button className="opp-btn" onClick={onClose} disabled={saving}>取消</button>
+          <button className="opp-btn opp-btn--primary" onClick={() => void submit()} disabled={saving || !title.trim()}>
+            {saving ? '创建中…' : '创建待办'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** 最近的纵向可滚动祖先：滚动容器是 App shell 的 .content，不由本页拥有 */
+function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
+  let node: HTMLElement | null = el?.parentElement ?? null
+  while (node) {
+    const oy = getComputedStyle(node).overflowY
+    if (oy === 'auto' || oy === 'scroll') return node
+    node = node.parentElement
+  }
+  return null
+}
+
+type OppView = 'list' | 'analysis'
+
 export default function OpportunityPage() {
   const [opps, setOpps] = useState<OppRow[]>([])
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
@@ -363,6 +434,57 @@ export default function OpportunityPage() {
   const [lostFormOpp, setLostFormOpp] = useState<OppRow | null>(null)
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
+  // 阶段分析（只读载荷）：只在切到该视图时才拉，避免每次进列表页都多一次 IPC
+  const [analysis, setAnalysis] = useState<OpportunityAnalysisResult | null>(null)
+  const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [todoFormOpp, setTodoFormOpp] = useState<OppAssessment | null>(null)
+  const [toast, setToast] = useState('')
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 视图由 URL 承载（`/sales-funnel` 旧链接重定向到 `?view=analysis`），刷新/回退保持同一视图
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view: OppView = searchParams.get('view') === 'analysis' ? 'analysis' : 'list'
+  const pageRef = useRef<HTMLDivElement>(null)
+  // 两视图各自的筛选是各自的 state；滚动位置在这里按视图记忆，切换时互不覆盖
+  const scrollMem = useRef<Record<OppView, number>>({ list: 0, analysis: 0 })
+  const viewMounted = useRef(false)
+
+  const showToast = (msg: string) => {
+    setToast(msg)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(''), 5000)
+  }
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+
+  const switchView = (next: OppView) => {
+    if (next === view) return
+    const scroller = scrollParentOf(pageRef.current)
+    if (scroller) scrollMem.current[view] = scroller.scrollTop
+    const params = new URLSearchParams(searchParams)
+    params.set('view', next)
+    setSearchParams(params, { replace: true })
+  }
+  // 切回某视图时恢复它上次的滚动位置；首次挂载不动滚动（避免影响从其他页进入时的落点）
+  useEffect(() => {
+    if (!viewMounted.current) { viewMounted.current = true; return }
+    const scroller = scrollParentOf(pageRef.current)
+    if (scroller) scroller.scrollTop = scrollMem.current[view] || 0
+  }, [view])
+
+  const fetchAnalysis = async () => {
+    setAnalysisLoading(true)
+    try {
+      setAnalysis(await window.electronAPI.crm.opportunityAnalysis())
+    } catch (e) {
+      showToast(`阶段分析加载失败：${String(e)}`)
+    }
+    setAnalysisLoading(false)
+  }
+  useEffect(() => {
+    if (view === 'analysis' && !analysis) void fetchAnalysis()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view])
 
   const fetch = async () => {
     setLoading(true)
@@ -389,8 +511,8 @@ export default function OpportunityPage() {
     setLoading(false)
   }
   useEffect(() => { void fetch() }, [])
-  // 切微信号 = 换库（§2.40）：账号切换后重查
-  useWxidRefresh(() => { void fetch() })
+  // 切微信号 = 换库（§2.40）：账号切换后重查（两个视图都要重查，否则阶段分析停在旧号数据）
+  useWxidRefresh(() => { void fetch(); void fetchAnalysis() })
 
   // 漏斗（2026-08-29 对齐设计稿：HTML/CSS 阶段条替代 ECharts，同源 stageDist，点击阶段仍筛选列表）
   const funnelStages = useMemo(() => {
@@ -452,9 +574,61 @@ export default function OpportunityPage() {
     await fetch()
   }
 
+  // 「去跟进」默认落点 = 应用内会话上下文（与 AIActionCard.handleOpenChat 同一路径）。
+  // 该客户无有效聊天会话时降级打开商机详情，并用 toast 说明降级原因——不静默、不装死（设计稿状态 5）。
+  const goFollow = (a: OppAssessment) => {
+    if (a.sessionId && isSessionIdLike(a.sessionId)) {
+      navigate(`/chat?sessionId=${encodeURIComponent(a.sessionId)}`)
+      return
+    }
+    const row = opps.find((o) => o.id === a.opportunityId)
+    if (row) {
+      void openDetail(row)
+      showToast('未找到与 TA 的聊天会话，已打开商机详情')
+    } else {
+      showToast('未找到与 TA 的聊天会话，且该商机不在当前列表中')
+    }
+  }
+
+  // 「查看待办」跳今日行动（待办清单的唯一所在页），本页不复刻第二份清单
+  const handleTodo = (a: OppAssessment, action: 'create' | 'view') => {
+    if (action === 'view') { navigate('/home'); return }
+    setTodoFormOpp(a)
+  }
+
+  // 「生成跟进建议」= 按需 AI：只有点击才发生调用，走既有受控链路 sales.actionSuggest
+  // （usageContext.purpose='action'，见《AI调用入口与消费清单》）。本页不直连模型、不新增 purpose。
+  const suggestFollowUp = async (a: OppAssessment): Promise<{ script: string; nextMove: string }> => {
+    const top = a.reasons[0]
+    const r = await window.electronAPI.sales.actionSuggest({
+      id: a.opportunityId,
+      sessionId: a.sessionId,
+      displayName: a.displayName,
+      // 阶段传商机真实阶段（了解/比价/决策），不套用客户档期的另一套词汇
+      stage: a.stage,
+      triggerType: top?.kind || 'opportunity_signal',
+      title: top?.text || `${a.stage}段跟进`,
+      reason: a.reasons.map((x) => x.text).join('；') || `${a.stage}段商机`,
+      silentDays: a.silentDays,
+      priorityScore: 0,
+      priority: 'info',
+      status: 'active',
+      suggestion: '',
+      createdAt: Date.now()
+    })
+    if (r?.notConfigured) throw new Error(r.error || 'AI 模型未配置')
+    if (r?.error) throw new Error(String(r.error))
+    return { script: String(r?.script || ''), nextMove: String(r?.nextMove || '') }
+  }
+
+  const refreshAll = async () => {
+    await fetch()
+    if (view === 'analysis') await fetchAnalysis()
+  }
+
   const ownerFiltered = isSalesView(identity)
   return (
-    <div className="opp-page">
+    <div className="opp-page" ref={pageRef}>
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="opp-header">
         <div className="opp-header__main">
@@ -473,11 +647,38 @@ export default function OpportunityPage() {
             </span>
           )}
         </div>
+        {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点 */}
+        <div className="opp-viewseg" role="tablist" aria-label="商机视图">
+          <button
+            role="tab"
+            aria-selected={view === 'list'}
+            className={view === 'list' ? 'on' : ''}
+            onClick={() => switchView('list')}
+          ><List size={13} /> 列表</button>
+          <button
+            role="tab"
+            aria-selected={view === 'analysis'}
+            className={view === 'analysis' ? 'on' : ''}
+            onClick={() => switchView('analysis')}
+          ><BarChart3 size={13} /> 阶段分析</button>
+        </div>
         {notice && <span className="opp-notice">{notice}</span>}
-        <button className="opp-btn opp-btn--ghost" onClick={() => void fetch()} disabled={loading}><RefreshCw size={14} /> 刷新</button>
+        <button className="opp-btn opp-btn--ghost" onClick={() => void refreshAll()} disabled={loading}>
+          <RefreshCw size={14} /> 刷新
+        </button>
       </div>
 
-      {funnelStages.length > 0 ? (
+      {view === 'analysis' && (
+        <OpportunityStageAnalysis
+          data={analysis}
+          loading={analysisLoading}
+          onGoFollow={goFollow}
+          onTodo={handleTodo}
+          onSuggest={suggestFollowUp}
+        />
+      )}
+
+      {view === 'list' && (funnelStages.length > 0 ? (
         <div className="opp-chart">
           <h4 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 600 }}>商机阶段漏斗 <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400, marginLeft: 6 }}>点击阶段筛选下方列表</span></h4>
           <div className="opp-funnel">
@@ -499,15 +700,16 @@ export default function OpportunityPage() {
         </div>
       ) : (
         <div className="opp-empty">暂无商机。客户在微信里表达采购意向（如"要几台""多少钱"）后会自动创建。</div>
-      )}
+      ))}
 
-      {stageFilter && (
+      {view === 'list' && stageFilter && (
         <div className="opp-filter">
           当前筛选：{stageFilter}
           <button className="opp-btn" onClick={() => setStageFilter('')}>清除</button>
         </div>
       )}
 
+      {view === 'list' && (
       <div className="card opp-list-card">
         <h4>商机列表{stageFilter ? ` · ${stageFilter}` : ''}{pendingOnly ? ' · 金额待确认' : ''} <span className="opp-list-count">{filtered.length} 条</span></h4>
         <div className="opp-list">
@@ -533,6 +735,7 @@ export default function OpportunityPage() {
         {!filtered.length && <div className="opp-empty">该阶段暂无商机</div>}
         </div>
       </div>
+      )}
 
       {selected && (
         <div className="opp-modal">
@@ -640,6 +843,22 @@ export default function OpportunityPage() {
       {lostFormOpp && (
         <LostReasonForm opp={lostFormOpp} onClose={() => setLostFormOpp(null)} onDone={(msg) => void afterClose(msg)} />
       )}
+
+      {todoFormOpp && (
+        <TodoForm
+          assessment={todoFormOpp}
+          onClose={() => setTodoFormOpp(null)}
+          onDone={(msg) => {
+            setTodoFormOpp(null)
+            showToast(msg)
+            // 新待办会改变候选资格与排序，两个视图都重取
+            void fetch().then(() => fetchAnalysis())
+          }}
+        />
+      )}
+
+      {/* 降级/结果提示（设计稿状态 5「不静默」）：页面内浮层，自动消失 */}
+      {toast && <div className="opp-toast" role="status">{toast}</div>}
     </div>
   )
 }

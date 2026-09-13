@@ -1,7 +1,7 @@
 /* 商机页：AI 从聊天自动识别采购信号 → 商机列表/漏斗/详情（2026-08-29 UI 美化：token 化 + 卡片浮起语言） */
 .opp-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
 .opp-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; h2 { font-size: 16px; font-weight: 700; margin-right: auto; } }
-.opp-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; transition: background .15s, border-color .15s;
+.opp-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; flex-shrink: 0; transition: background .15s, border-color .15s;
   &:hover { background: var(--color-bg-hover); }
   &.opp-btn--primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); font-weight: 600; &:hover { background: var(--color-accent-hover); } }
   &.opp-btn--win { border-color: var(--color-success-border); color: var(--color-success); &:hover { background: var(--color-success-bg); } }
@@ -213,4 +213,114 @@
 
   td.num { font-variant-numeric: tabular-nums; }
   tr.is-bound td { background: var(--color-accent-bg); }
+}
+
+// ─── 视图分段（列表 / 阶段分析，设计稿状态 1）────────────────────────────────────
+.opp-viewseg {
+  display: inline-flex; gap: 2px; padding: 2px; flex: none;
+  background: var(--color-bg-inset); border-radius: var(--radius-control);
+  button {
+    display: inline-flex; align-items: center; gap: 4px;
+    border: 0; background: transparent; color: var(--color-text-secondary);
+    font-size: 12px; font-family: var(--font-app); padding: 4px 12px; cursor: pointer;
+    border-radius: var(--radius-small); transition: background .15s, color .15s;
+    &:hover { color: var(--color-text-primary); }
+    &:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+    &.on { background: var(--color-bg-surface); color: var(--color-text-primary); font-weight: 600; box-shadow: var(--shadow-card); }
+  }
+}
+
+// ─── 阶段分析视图（设计稿状态 2）────────────────────────────────────────────────
+.opp-analysis { display: flex; flex-direction: column; gap: 14px; }
+.opp-pipe { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.opp-pstat {
+  background: var(--color-bg-surface); border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card); padding: 14px 16px;
+  .opp-pstat__k { font-size: 12px; color: var(--color-text-tertiary); margin-bottom: 6px; }
+  .opp-pstat__v { font-size: 22px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums;
+    small { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); }
+    &--warn { color: var(--color-warning); }
+    &--ok { color: var(--color-success); } }
+}
+.opp-analysis__card {
+  background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card); padding: 16px 18px;
+  > h4 { font-size: 13px; font-weight: 600; margin: 0 0 12px; }
+}
+.opp-analysis__hint { font-size: 12px; color: var(--color-text-tertiary); text-align: center; padding: 4px 0; }
+
+// 漏斗分段：条宽按商机数比例；段内「数量 + 金额」并列，「阈值 · 滞留」常驻
+.opp-fstage { display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  &__name { width: 40px; flex: none; font-size: 12.5px; font-weight: 600; color: var(--color-text-primary); }
+  &__bar {
+    height: 34px; border: 0; border-radius: 8px; cursor: pointer; color: #fff;
+    font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--color-accent); transition: filter .12s, outline-color .12s;
+    outline: 2px solid transparent;
+    small { font-size: 11px; font-weight: 500; opacity: .9; }
+    &:hover { filter: brightness(1.08); }
+    &:focus-visible { outline-color: var(--color-accent-border); }
+    &.is-selected { outline-color: var(--color-accent-border); filter: brightness(1.1); }
+  }
+  &__stuck-tag {
+    display: inline-flex; align-items: center; gap: 3px; flex: none;
+    font-size: 11px; font-weight: 700; color: var(--color-danger);
+    background: var(--color-danger-bg); border: 1px solid var(--color-danger-border);
+    border-radius: var(--radius-small); padding: 1px 7px;
+  }
+  &__meta { flex: none; font-size: 11.5px; color: var(--color-text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+}
+
+// 最大卡点提示条
+.opp-callout {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--color-warning-bg); border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-control); padding: 10px 14px;
+  font-size: 12.5px; color: var(--color-text-primary); line-height: 1.55;
+  svg { flex: none; margin-top: 2px; color: var(--color-warning); }
+  b { color: var(--color-warning); }
+}
+
+// 优先处理名单（设计稿状态 3）
+.opp-stuck-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px;
+  &__t { font-size: 13px; font-weight: 600; }
+  &__s { font-size: 11.5px; color: var(--color-text-tertiary); } }
+.opp-prow {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--color-divider);
+  &:last-child { border-bottom: none; }
+  &__rank { width: 22px; height: 22px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; background: var(--color-bg-inset); color: var(--color-text-secondary); margin-top: 3px;
+    &.is-first { background: var(--color-accent); color: var(--color-text-on-accent); } }
+  &__ava { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--color-accent-bg); color: var(--color-accent);
+    display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+  &__info { flex: 1; min-width: 0; }
+  &__name { font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  &__amt { font-size: 12px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+  &__intent { font-size: 11px; color: var(--color-text-tertiary); }
+  &__reasons { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
+  &__act { flex: none; display: flex; flex-direction: column; gap: 6px; width: 108px; }
+  &__ai { margin-top: 8px; background: var(--color-bg-inset); border-radius: var(--radius-small); padding: 8px 10px;
+    display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-secondary);
+    &--error { color: var(--color-danger); background: var(--color-danger-bg); }
+    &-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--color-accent); flex: none; align-self: flex-start; }
+    &-script { margin: 0; font-size: 12.5px; color: var(--color-text-primary); line-height: 1.55; }
+    &-next { margin: 4px 0 0; font-size: 12px; color: var(--color-text-secondary); } }
+}
+// 理由行：确定性紧迫信号红字；「来源：…」始终可见（保证数字可追溯、对比度可读）
+.opp-reason { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;
+  &--hot { color: var(--color-danger); font-weight: 600; }
+  &__src { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); } }
+.opp-btn--ai { border-color: var(--color-accent-border); color: var(--color-accent); background: var(--color-accent-bg);
+  &:hover { background: var(--color-accent-bg); filter: brightness(.97); }
+  &:disabled { opacity: .6; cursor: default; } }
+
+// 页面内 toast（降级/结果提示；设计稿状态 5「不静默」）
+.opp-toast {
+  position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
+  z-index: 60; max-width: 80vw;
+  background: var(--color-bg-elevated); color: var(--color-text-primary);
+  border: 1px solid var(--color-border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-pop); padding: 10px 16px; font-size: 13px;
 }

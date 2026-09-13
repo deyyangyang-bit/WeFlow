@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, TrendingDown, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, Bot, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
+import { Home, MessageSquare, BarChart3, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, Bot, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { useHermesStore } from '../stores/hermesStore'
 import * as configService from '../services/config'
@@ -31,7 +31,6 @@ const NAV_GROUPS: NavGroupDef[] = [
     { label: '线索', path: '/leads', icon: Inbox },
     { label: '客户', path: '/customers', icon: Users },
     { label: '商机', path: '/opportunities', icon: Target },
-    { label: '漏斗', path: '/sales-funnel', icon: TrendingDown },
     { label: '合同', path: '/crm', icon: Briefcase }
   ] },
   { key: 'review', label: '跟单', items: [{ label: '跟单中心', path: '/crm-review', icon: ClipboardCheck }] },

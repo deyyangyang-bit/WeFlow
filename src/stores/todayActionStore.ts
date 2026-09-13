@@ -8,6 +8,9 @@ export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
   // 阶段三例外告警（设计-AI见解重定位 §4.1 第 3 条）：label「重要提醒」，messageKey=原话锚点
   | { type: 'alert'; alertType: string; label: string; reason: string; recordId: string; messageKey: string }
+  // 商机确定性信号（待办逾期 / 报价未回 / 阶段滞留 / 竞对风险）：已落库字段投影，非 AI 新调用；
+  // 由主进程并入同客户卡，sourceRef 保留可追溯来源（待办 #id / quote_signal / 风险行 #id）
+  | { type: 'opportunity'; opportunityId: number; reasonKind: string; label: string; reason: string; sourceRef: string }
 // 设计-AI见解重定位 §3.2：insight 来源已随合流分支移除（自动见解落 archive 作档案标注）；
 // ActionStats.insightOnly/merged 字段保留恒 0，防前端引用断裂
 

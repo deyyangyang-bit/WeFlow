@@ -1178,7 +1178,7 @@ ORDER BY kb.updated_at DESC LIMIT ?`
    * 口径：提案类 = proposal + knowledge（行动卡 completion 不是提案，不入分母）；
    * 已处理总数（分母）= accepted + rejected + modified；分子 = accepted + modified；
    * 分母 0 → rate=null（UI 显示「—」，不伪造 0%）。generated 只上报不入比率。
-   * days=0 表示不限窗口（全历史，同 funnelStats 口径）。
+   * days=0 表示不限窗口（全历史）。
    */
   proposalAdoptionStats(days: number = 7): {
     generated: number
@@ -1824,87 +1824,6 @@ ORDER BY kb.updated_at DESC LIMIT ?`
   /**
    * 获取所有客户（供 actionEngine 全量扫描）
    */
-  /**
-   * 历史累计流转漏斗（days=0 表示全部历史）。
-   * 统计口径：窗口内「曾进入过某档位」的去重客户数（同一客户同一档位只计 1 次，
-   * 绝不按 intent_tag_log 行数统计——部分写入方不跳过未变化会产生重复记录）。
-   */
-  funnelStats(days = 30): {
-    funnel: Array<{ stage: FunnelStage; count: number }>
-    conversion: Array<{ from: string; to: string; rate: number }>
-    intentTimeline: Array<{ date: string; stage: string; count: number }>
-    currentDistribution: Array<{ stage: string; count: number }>
-    totalCustomers: number
-    newCustomersInWindow: number
-  } {
-    const sinceMs = days > 0 ? Date.now() - days * 86400_000 : 0
-    // ① 窗口内意向日志（归一化必须在 TS 层，sql.js 无自定义函数）
-    const rows = sinceMs > 0
-      ? this.all<{ session_id: string; stage: string; created_at: number }>(
-          'SELECT session_id, stage, created_at FROM intent_tag_log WHERE created_at >= ?', [sinceMs])
-      : this.all<{ session_id: string; stage: string; created_at: number }>(
-          'SELECT session_id, stage, created_at FROM intent_tag_log', [])
-    // ② 独立去重：firstIn[档位][session_id] = 窗口内首次进入时间
-    const firstIn: Record<string, Record<string, number>> = {}
-    for (const r of rows) {
-      const bucket = stageToFunnel(r.stage)
-      const m = (firstIn[bucket] ??= {})
-      const ts = Number(r.created_at)
-      if (m[r.session_id] === undefined || ts < m[r.session_id]) m[r.session_id] = ts
-    }
-    // ③ 各档位去重人数
-    const funnel = FUNNEL_ORDER.map((s) => ({ stage: s, count: Object.keys(firstIn[s] ?? {}).length }))
-    // ④ 相邻转化率（了解→比价→决策→成交；除零为 0；跳级可 >100%）
-    const cnt = (s: FunnelStage) => funnel.find((f) => f.stage === s)?.count ?? 0
-    const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0)
-    const conversion = [
-      { from: '了解', to: '比价', rate: pct(cnt('比价'), cnt('了解')) },
-      { from: '比价', to: '决策', rate: pct(cnt('决策'), cnt('比价')) },
-      { from: '决策', to: '成交', rate: pct(cnt('成交'), cnt('决策')) },
-    ]
-    // ⑤ 每天流入各档位（以窗口内首次进入该档位时间落日，逐日×逐档位补零）
-    const trend: Record<string, Record<string, number>> = {}
-    for (const [bucket, m] of Object.entries(firstIn)) {
-      for (const ts of Object.values(m)) {
-        const d = this.dayKey(ts)
-        const dm = (trend[d] ??= {})
-        dm[bucket] = (dm[bucket] ?? 0) + 1
-      }
-    }
-    const intentTimeline = this.orderedDays(sinceMs).flatMap((d) =>
-      FUNNEL_ORDER.map((s) => ({ date: d, stage: s, count: trend[d]?.[s] ?? 0 })))
-    // ⑥ 当前快照（customer_profile 当前阶段，归一化归桶）
-    const curMap: Record<string, number> = {}
-    for (const r of this.all<{ stage: string; cnt: number }>('SELECT stage, COUNT(*) AS cnt FROM customer_profile GROUP BY stage', [])) {
-      const b = stageToFunnel(r.stage)
-      curMap[b] = (curMap[b] ?? 0) + Number(r.cnt)
-    }
-    const currentDistribution = FUNNEL_ORDER.map((s) => ({ stage: s, count: curMap[s] ?? 0 }))
-    const totalCustomers = Number(this.get<{ c: number }>('SELECT COUNT(*) AS c FROM customer_profile', [])?.c || 0)
-    // ⑦ 窗口内新进漏斗客户（出现过任意档位记录的去重 session 数）
-    const newCustomersInWindow = new Set(rows.map((r) => r.session_id)).size
-    return { funnel, conversion, intentTimeline, currentDistribution, totalCustomers, newCustomersInWindow }
-  }
-
-  /** 毫秒 → 本地日期键 YYYY-MM-DD（与前端 weekTrend 口径一致） */
-  private dayKey(ts: number): string {
-    const d = new Date(ts)
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  }
-
-  /** 窗口起始日 → 今天 逐日生成日期键（days=0 全部历史时数据可能跨多周，仍逐日补零） */
-  private orderedDays(sinceMs: number): string[] {
-    const start = sinceMs > 0 ? sinceMs : Math.min(...(this.all<{ created_at: number }>('SELECT created_at FROM intent_tag_log', []).map((r) => Number(r.created_at))), Date.now())
-    const days: string[] = []
-    const cur = new Date(start)
-    const today = new Date()
-    while (cur <= today) {
-      days.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`)
-      cur.setDate(cur.getDate() + 1)
-    }
-    return days
-  }
-
   customerAll(): CustomerProfile[] {
     return this.all<CustomerProfile>('SELECT * FROM customer_profile', [])
   }

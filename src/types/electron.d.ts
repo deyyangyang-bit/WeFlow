@@ -1,4 +1,6 @@
 import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
+// 商机阶段分析载荷（与 electron/services/opportunityAnalysisService.ts 同源；纯类型，无运行时代码）
+import type { OpportunityAnalysisResult } from '../../shared/opportunitySignals'
 
 // ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
 export interface HermesEvidenceItem {
@@ -352,6 +354,7 @@ export interface LanSyncStatus {
   role: 'hub' | 'terminal' | ''
   terminalId: string
   sharedDir: string
+  /** 以下四个最近时间均为毫秒（Date.now() 写入，见 lanSyncService），0 = 未发生；注意与 WCDB 的秒级口径区分 */
   lastDownEmitAt: number
   lastDownApplyAt: number
   lastUpEmitAt: number
@@ -1917,6 +1920,7 @@ export interface ElectronAPI {
     opportunityGet: (id: number) => Promise<any>
     opportunityEvents: (id: number) => Promise<any[]>
     opportunityStats: () => Promise<{ stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number }>
+    opportunityAnalysis: () => Promise<OpportunityAnalysisResult>
     opportunityStage: (id: number, stage: string) => Promise<boolean>
     opportunityClose: (id: number, status: 'lost', reason: string) => Promise<boolean>
     opportunityRegisterDeal: (id: number, payload: OpportunityDealRegistration) => Promise<{ ok: boolean; reason?: string }>
@@ -2014,7 +2018,9 @@ export interface ElectronAPI {
     // 离职移交（PRD §1.9）：lead 批量调派循环（reason='离职'）+ owner 三列同步改写 + ownership_history/audit_event
     ownershipDeparture: (req: { fromSales: string; toSales: string; actor?: string }) => Promise<{ ok: boolean; data?: { fromSales: string; toSales: string; leadsTransferred: number; leadFailed: Array<{ assignmentId: number; code: string; message: string }>; accounts: number; opportunities: number; logistics: number }; code?: string; message?: string }>
     // 审计流水（宪法 §1.12，R 只读）：keyword 扩展一把搜 actor/detail/entity_type/entity_id
-    auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; actor: string; action: string; entity_type: string; entity_id: number | null; detail: string; created_at: number }>; total: number } }>
+    // labels = 实体显示名（key `<entity_type>:<entity_id>`，人话化设计稿 §04「对象解析」；只含 lead/account/customer，
+    // 解析不到由渲染层回落 `#id`）
+    auditQuery: (opts?: { entityType?: string; entityId?: number; actor?: string; action?: string; keyword?: string; beginAt?: number; endAt?: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; actor: string; action: string; entity_type: string; entity_id: number | null; detail: string; created_at: number }>; total: number; labels: Record<string, string> } }>
     // 归属留痕时间线（宪法 §1.8，R 只读，append-only）
     ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; entity_type: string; entity_id: number; old_owner: string; new_owner: string; reason: string; actor: string; created_at: number }>; total: number } }>
     // 存量迁移报告（migration_report SSOT，R 只读）：每模块最新快照，与 audit_event 解耦
@@ -2084,14 +2090,6 @@ export interface ElectronAPI {
     customerCurrentView: (sessionId: string) => Promise<{ success: boolean; data?: any; error?: string }>
     customerUpsert: (data: { session_id: string; display_name?: string; tags?: string; notes?: string }) => Promise<{ success: boolean; profile?: any; error?: string }>
     customerList: (filters?: { stage?: string; search?: string; sortBy?: 'updated_at' | 'last_contact_at' | 'stage'; limit?: number }) => Promise<{ success: boolean; customers: any[]; error?: string }>
-    funnelStats: (days?: number) => Promise<{ success: boolean; data?: {
-      funnel: Array<{ stage: string; count: number }>
-      conversion: Array<{ from: string; to: string; rate: number }>
-      intentTimeline: Array<{ date: string; stage: string; count: number }>
-      currentDistribution: Array<{ stage: string; count: number }>
-      totalCustomers: number
-      newCustomersInWindow: number
-    }; error?: string }>
     customerExport: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
     // P0-4.2.2/4.3：Action Funnel（Task-level 六段聚合 + 下钻；纯只读不调 LLM；rate null = 分母 0）
     actionFunnelGet: (days?: number | null) => Promise<{ success: boolean; data?: {
@@ -2140,6 +2138,35 @@ export interface ElectronAPI {
 
     // 回复建议
     replySuggest: (payload: { session_id: string; context_messages: Array<{ role: string; content: string }> }) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>
+
+    /**
+     * 行动建议生成（按需 AI，usageContext.purpose='action'，唯一入口 generateActionAnalysis）。
+     * 商机「阶段分析」的「生成跟进建议」复用此通道；传参只需 ActionItem 的语义子集。
+     */
+    actionSuggest: (item: {
+      id: number
+      sessionId: string
+      displayName: string
+      stage: string
+      triggerType: string
+      title: string
+      reason: string
+      silentDays: number
+      priorityScore: number
+      priority: string
+      status: string
+      suggestion: string
+      createdAt: number
+    }) => Promise<{
+      success: boolean
+      whyNow?: string
+      opportunity?: string
+      riskSignal?: string
+      script?: string
+      nextMove?: string
+      error?: string
+      notConfigured?: boolean
+    }>
 
     // 待办
     todoList: (filters?: { status?: string; limit?: number }) => Promise<{ success: boolean; tasks: any[]; error?: string }>

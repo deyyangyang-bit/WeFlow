@@ -21,6 +21,8 @@ import { chatService } from './chatService'
 import { simpleCompletion, isAiConfigured } from './ai/aiApiClient'
 import { salesKnowledgeService } from './salesKnowledgeService'
 import { crmDbService } from './crmDbService'
+import { collectOpportunityAssessments } from './opportunityAnalysisService'
+import type { OppAssessment } from '../../shared/opportunitySignals'
 import { scanLeadSla } from './crmLeadService'
 import { runAftersalesScan } from './crmAftersalesService'
 import { runDeliveryScan } from './crmDeliveryService'
@@ -57,6 +59,10 @@ export type SignalSource =
   | { type: 'task'; ruleCode: string; label: string; reason: string; rawTaskId: number }
   // 阶段三例外告警（设计-AI见解重定位 §4.1 第 3 条）：稀缺，加分高于 rule 卡
   | { type: 'alert'; alertType: string; label: string; reason: string; recordId: string; messageKey: string }
+  // 商机确定性信号（待办逾期 / 报价未回 / 阶段滞留 / 竞对风险）：由 opportunityAnalysisService
+  // 从已落库字段投影而来，**并入同客户既有卡**而非另开一张（设计稿：单一聚合链，不重复出卡）。
+  // sourceRef 保留可追溯来源（待办 #id / quote_signal 的 quoted_at / 风险行 #id）。
+  | { type: 'opportunity'; opportunityId: number; reasonKind: string; label: string; reason: string; sourceRef: string }
 
 export interface UnifiedSignal {
   itemKey?: string
@@ -108,6 +114,35 @@ const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
 const ALERT_BOOST = 110
 const ALERT_LABELS: Record<string, string> = {
   competitor: '重要提醒'
+}
+
+// 商机确定性信号并入卡流时的加分（与 PRIORITY_WEIGHT 同量纲，上限 140）：
+// 底座 60（= 仅阶段滞留这类非紧迫候选）→ 有到期/逾期待办 +20 → 逾期每天 +6（封顶 24）
+// → 每条紧迫信号 +8（封顶 24）。仅作卡流位次，界面不展示公式（设计稿：不展示公式）。
+const OPP_BASE_SCORE = 60
+const OPP_DUE_TASK_BONUS = 20
+const OPP_OVERDUE_STEP = 6
+const OPP_OVERDUE_CAP = 24
+const OPP_HOT_STEP = 8
+const OPP_HOT_CAP = 24
+/** 「今天必须处理」与卡流标签用的短名（长理由走 reason 字段） */
+const OPP_REASON_LABEL: Record<string, string> = {
+  task_overdue: '待办逾期', task_due_today: '待办到期', quote_unreplied: '报价未回',
+  quotation_created: '报价记录', stage_stuck: '阶段滞留', risk: '风险', intent: '意向'
+}
+
+/**
+ * 商机确定性信号的卡流分。排序层与 `compareByUrgency` 同构（逾期 → 紧迫信号 → 价值意向 → 沉默），
+ * 此处只是把同一顺序映射成卡流分数，不引入第二套排序口径。
+ * 逾期待办本身已计入 hot，故紧迫信号计数需排除待办类理由，避免重复加分。
+ */
+export function opportunityPriorityScore(a: OppAssessment): number {
+  const hot = a.reasons.filter(r => r.hot && r.kind !== 'task_overdue' && r.kind !== 'task_due_today').length
+  const score = OPP_BASE_SCORE
+    + (a.hasDueTask ? OPP_DUE_TASK_BONUS : 0)
+    + Math.min(a.overdueDays * OPP_OVERDUE_STEP, OPP_OVERDUE_CAP)
+    + Math.min(hot * OPP_HOT_STEP, OPP_HOT_CAP)
+  return Math.min(140, score)
 }
 
 /** 最后联系时间（秒）：last_contact_at 优先，缺失回退 created_at，皆无为 0。
@@ -782,6 +817,64 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
     }
   } catch (e) {
     salesLog('WARN', `[UnifiedSignals] alert 合流失败: ${e}`)
+  }
+
+  // 4c. 商机确定性信号汇入（设计稿：单一聚合链）。
+  // 事实来自 opportunityAnalysisService（与「阶段分析」视图同一份投影）；此处只做**合并**：
+  //   ① 先按 opportunity_id 归拢理由（纯函数已归拢）；
+  //   ② 同一 session_id 已有卡 → 理由并入该卡（保留全部来源证据），不重复出卡；
+  //   ③ 该客户没有卡 → 新建 opp:<id> 卡。
+  // 不新建候选/排序/落库管线，TOP 只是下游视图对结果的截取。
+  try {
+    const assessments = collectOpportunityAssessments(nowMs)
+    // 同会话多张卡时并入分数最高者（与 customerActionQueue 的会话合并取向一致）
+    const cardBySession = new Map<string, UnifiedSignal>()
+    for (const sig of signalMap.values()) {
+      if (!sig.sessionId) continue
+      const prev = cardBySession.get(sig.sessionId)
+      if (!prev || sig.priorityScore > prev.priorityScore) cardBySession.set(sig.sessionId, sig)
+    }
+    let mergedCount = 0
+    let createdCount = 0
+    for (const a of assessments) {
+      if (!a.reasons.length) continue
+      const score = opportunityPriorityScore(a)
+      const oppSources: SignalSource[] = a.reasons.map(r => ({
+        type: 'opportunity', opportunityId: a.opportunityId, reasonKind: r.kind,
+        label: OPP_REASON_LABEL[r.kind] || '商机信号', reason: r.text, sourceRef: r.source
+      }))
+      const target = a.sessionId ? cardBySession.get(a.sessionId) : undefined
+      if (target) {
+        // 同商机理由已并入过则不重复追加（同一 opp 在一次装配中只产出一次，此处为幂等护栏）
+        const already = target.sources.some(s => s.type === 'opportunity' && s.opportunityId === a.opportunityId)
+        if (already) continue
+        target.sources.push(...oppSources)
+        target.priorityScore = Math.min(140, Math.max(target.priorityScore, score))
+        mergedCount++
+        continue
+      }
+      const key = `opp:${a.opportunityId}`
+      const profile = a.sessionId ? salesDbService.customerGetBySession(a.sessionId) : undefined
+      const created: UnifiedSignal = {
+        itemKey: key,
+        sessionId: a.sessionId || key,
+        displayName: a.displayName,
+        stage: normalizeStage(profile?.stage),
+        silentDays: a.silentDays,
+        sources: oppSources,
+        priorityScore: score,
+        urgencyTier: 'normal',
+        status: 'pending'
+      }
+      signalMap.set(key, created)
+      if (a.sessionId) cardBySession.set(a.sessionId, created)
+      createdCount++
+    }
+    if (mergedCount || createdCount) {
+      salesLog('INFO', `[UnifiedSignals] 商机信号：并入 ${mergedCount} 张卡 / 新建 ${createdCount} 张卡`)
+    }
+  } catch (e) {
+    salesLog('WARN', `[UnifiedSignals] 商机信号汇入失败: ${e}`)
   }
 
   // 5. 计算 urgencyTier
