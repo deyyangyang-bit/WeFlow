@@ -2,6 +2,7 @@
 import { config } from './ipc'
 import type { ExportDefaultDateRangeConfig } from '../utils/exportDateRange'
 import type { ExportAutomationTask } from '../types/exportAutomation'
+import { normalizeInsightBlacklist, type InsightBlacklistEntry } from '../../shared/insightBlacklist'
 
 // 配置键名
 export const CONFIG_KEYS = {
@@ -1767,14 +1768,14 @@ export async function setAiInsightFilterList(list: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.AI_INSIGHT_FILTER_LIST, normalizeAiInsightFilterList(list))
 }
 
-// AI 自动判定非客户黑名单（阶段=未知 → 自动加入，命中不触发见解）
-export async function getAiInsightNonCustomerBlacklist(): Promise<string[]> {
+// AI 见解屏蔽名单（用户手动管理；命中者不触发自动/批量见解，显式单客户触发不受限）
+export async function getAiInsightNonCustomerBlacklist(): Promise<InsightBlacklistEntry[]> {
   const value = await config.get(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST)
-  return normalizeAiInsightFilterList(value)
+  return normalizeInsightBlacklist(value)
 }
 
-export async function setAiInsightNonCustomerBlacklist(list: string[]): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST, normalizeAiInsightFilterList(list))
+export async function setAiInsightNonCustomerBlacklist(list: InsightBlacklistEntry[]): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_NON_CUSTOMER_BLACKLIST, normalizeInsightBlacklist(list))
 }
 
 // 销售复盘手动排除的联系人（同事/朋友等非销售关系），周报/月报/周复盘统计一律剔除

@@ -1105,6 +1105,7 @@ export interface LanSyncStatus {
   role: LanSyncRole | ''
   terminalId: string
   sharedDir: string
+  /** 以下四个最近时间均为毫秒（Date.now() 写入），0 = 未发生；注意与 WCDB 的秒级口径区分 */
   lastDownEmitAt: number
   lastDownApplyAt: number
   lastUpEmitAt: number

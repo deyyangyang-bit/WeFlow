@@ -6,6 +6,7 @@
  *  c. 触发扫描：群发/系统消息不触发、埋在窗口内的客户回复仍触发、lastSeen 推进
  *  d. 静态护栏：insightService 两路径接线、分类器闸门顺序、上下文标注、prompt 护栏、原子写，
  *     以及「新消息 → AI 阶段分类」自动分派入口不得复活（d10-d12，2026-09-12 复核修复）
+ *     与「AI 见解屏蔽名单」不得重新引入 AI 自动写入、闸门须按触发方式裁决（d13-d16，2026-09-13）
  * 运行：npx tsx scripts/insight-noise-test.ts
  */
 import { readFileSync } from 'fs'
@@ -156,6 +157,19 @@ import {
   const classifier = strip(readFileSync(join(__dirname, '../electron/services/salesStageClassifier.ts'), 'utf-8'))
   ok('d12 阶段分类器已无 AI 调用（classifyStage 与其 prompt/解析一并移除）',
     !/simpleCompletion|callChatCompletion|isAiConfigured/.test(classifier))
+
+  // d13-d16 屏蔽名单重定义（2026-09-13）：原「AI 自动判定非客户」的自动写入链路已随 AI 简报改造
+  // 删除，名单重定义为纯手动管理的「AI 见解屏蔽名单」。以下断言锁死：不得重新引入自动写入，
+  // 且闸门必须按「触发方式」裁决（显式单客户触发放行），否则手动入口会被历史误判条目挡死。
+  ok('d13 不得重新引入 AI 自动写入屏蔽名单（blacklistNonCustomer 零残留）',
+    !/blacklistNonCustomer/.test(strip(svc)))
+  ok('d14 屏蔽名单闸门按触发方式裁决（显式手动触发白名单常量）',
+    svc.includes('EXPLICIT_MANUAL_TRIGGER_REASONS') &&
+    svc.includes("new Set<string>(['manual', 'test', 'message_analysis'])"))
+  ok('d15 名单读写经共享归一化 SSOT（shared/insightBlacklist）',
+    svc.includes("from '../../shared/insightBlacklist'") && svc.includes('isInsightBlacklisted('))
+  ok('d16 屏蔽判定只在闸门一处消费（声明 + generateInsightForSession 各 1 次，isSessionAllowed 不得加回）',
+    (strip(svc).match(/isNonCustomerBlacklisted/g) || []).length === 2)
 }
 
 console.log(`\n结果: ${pass} passed, ${fail} failed`)

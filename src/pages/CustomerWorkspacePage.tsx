@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, Bot } from 'lucide-react'
+import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, Bot, Ban } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
@@ -26,6 +26,13 @@ import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQu
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
 import { stageToFunnel } from '../../shared/salesStage'
+import * as configService from '../services/config'
+import {
+  addInsightBlacklistEntry,
+  isInsightBlacklisted,
+  removeInsightBlacklistEntry,
+  type InsightBlacklistEntry
+} from '../../shared/insightBlacklist'
 import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
 import './CrmWorkbenchPage.scss'
 import './CustomerWorkspacePage.scss'
@@ -206,6 +213,49 @@ export default function CustomerWorkspacePage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
   // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
   const [showAiTools, setShowAiTools] = useState(false)
+  /** AI 见解屏蔽名单（只影响自动/批量触发；本页只做手动加入与解除） */
+  const [insightBlacklist, setInsightBlacklist] = useState<InsightBlacklistEntry[]>([])
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const list = await configService.getAiInsightNonCustomerBlacklist()
+      if (!cancelled) setInsightBlacklist(list)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  /**
+   * 屏蔽 / 解除屏蔽所选客户的 AI 见解（决策：入口放客户工作台「…」菜单，带二次确认）。
+   * 生效范围只覆盖自动与批量类触发；用户本次的显式操作（AI 识别 / 手动见解）不受影响。
+   */
+  const toggleInsightBlacklist = async (c: any) => {
+    const sessionId = String(c?.session_id || '')
+    const name = displayNameOf(c)
+    if (!sessionId) { setNotice('该客户未关联微信会话，无法屏蔽 AI 见解'); return }
+    const blocked = isInsightBlacklisted(insightBlacklist, sessionId)
+    if (!blocked) {
+      const ok = window.confirm(
+        `屏蔽「${name}」的 AI 见解？\n\n` +
+        '屏蔽后：TA 不会被自动或批量触发 AI 见解与分析（例如早间简报）。\n' +
+        '你手动点「AI 识别这个客户」或手动触发见解仍会正常执行。\n\n' +
+        '可随时在这里或设置页解除。'
+      )
+      if (!ok) return
+      const next = addInsightBlacklistEntry(insightBlacklist, sessionId, 'manual', Date.now())
+      setInsightBlacklist(next)
+      await configService.setAiInsightNonCustomerBlacklist(next)
+      setNotice(`已屏蔽「${name}」的 AI 见解，可在设置页查看名单`)
+      return
+    }
+    const ok = window.confirm(
+      `解除对「${name}」的 AI 见解屏蔽？\n\n解除后 TA 会重新参与自动与批量的 AI 见解与分析。`
+    )
+    if (!ok) return
+    const next = removeInsightBlacklistEntry(insightBlacklist, sessionId)
+    setInsightBlacklist(next)
+    await configService.setAiInsightNonCustomerBlacklist(next)
+    setNotice(`已解除对「${name}」的 AI 见解屏蔽`)
+  }
   // Hermes 智能体入口（档案「AI 工具」下拉）：App 级单例抽屉，带着当前客户上下文打开
   const openHermes = useHermesStore((s) => s.openHermes)
   const [foldTimeline, setFoldTimeline] = useState(false)
@@ -664,6 +714,15 @@ export default function CustomerWorkspacePage() {
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
                     <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
+                    {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
+                    <button
+                      className="cws-aitools__item"
+                      onClick={() => { setShowAiTools(false); void toggleInsightBlacklist(selectedCustomer) }}
+                      disabled={!selectedCustomer.session_id}
+                      title={!selectedCustomer.session_id ? '未关联微信会话，无法屏蔽' : '只影响自动/批量触发，不影响你手动发起的识别与见解'}
+                    >
+                      <Ban size={12} /> {isInsightBlacklisted(insightBlacklist, String(selectedCustomer.session_id || '')) ? '解除 AI 见解屏蔽' : '屏蔽 TA 的 AI 见解'}
+                    </button>
                   </div>
                 )}
               </div>

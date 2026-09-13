@@ -53,6 +53,8 @@ const navUtilSrc = readFileSync(join(ROOT, 'src/utils/settingsNav.ts'), 'utf8')
 // 记录本体在 crmDbService 既有审计单点，展示在设置页「审计流水」——三处都要钉住
 const mainSrc = readFileSync(join(ROOT, 'electron/main.ts'), 'utf8')
 const auditTrailSrc = readFileSync(join(ROOT, 'src/components/settings/AuditTrailSection.tsx'), 'utf8')
+// 人话化后动作词典独立成共享模块（electron 与 renderer 共用），展示侧断言改钉词典
+const auditDictSrc = readFileSync(join(ROOT, 'shared/auditDict.ts'), 'utf8')
 const crmDbSrc = readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf8')
 
 const between = (src: string, startMarker: string, endMarker: string): string => {
@@ -152,9 +154,12 @@ async function main(): Promise<void> {
     !shellSrc.includes('isSalesView') && !shellSrc.includes('canManageAssignment') && !shellSrc.includes('leadAssignmentView'))
 
   // ── A9. 角色选项 = SettingsPage 内联枚举 ──────────────────────
+  // 2026-09-13：身份档案的角色控件由自绘下拉改为 SegmentedControl，取值来源仍是
+  // SettingsPage 内的同一份内联枚举——定位标记随源码形态更新，**断言口径不变**
+  // （两处枚举必须逐字一致，含「暂不选择」空值项）。
   const shellRoleBlock = between(shellSrc, 'const IDENTITY_ROLE_OPTIONS', ']')
   const shellRoles = [...shellRoleBlock.matchAll(/value: '([^']*)'/g)].map((m) => m[1])
-  const spIdentityBlock = between(settingsSrc, "{ value: '', label: '暂不选择' }", 'onClick={() => {\n                      setIdentityRole')
+  const spIdentityBlock = between(settingsSrc, 'ariaLabel="身份角色"', ']}')
   const spRoles = ['', ...( [...spIdentityBlock.matchAll(/value: '([^']+)'/g)].map((m) => m[1]) )]
   eq('A9 切换身份角色选项与 SettingsPage「身份档案」一致', shellRoles, spRoles)
 
@@ -193,9 +198,16 @@ async function main(): Promise<void> {
     !aiLimitBlock.includes('aiDailyCallLimitEnabled'))
 
   // A10l-m 展示侧：审计流水能认这个动作（否则写了也看不见）
-  ok('A10l 审计流水登记动作标签（AI 调用上限）', auditTrailSrc.includes("ai_daily_limit_change: 'AI 调用上限'"))
-  ok('A10m 语义档位与该动作的敏感度一致（warning，与权重调整同档）',
-    /ai_daily_limit_change: 'warning'/.test(auditTrailSrc))
+  // 2026-09-13 人话化：动作标签/语义表由组件内联映射迁到共享词典 shared/auditDict.ts，
+  // 定位标记随源码形态更新，**断言口径不变**（该动作仍必须被展示侧登记，且语义档位一致）。
+  // 具体数值（100→200）由词典整句承载，pill 只表达类别「配置变更」——设计稿 §03 口径。
+  ok('A10l 审计流水登记该动作（词典收录 ai_daily_limit_change）',
+    auditDictSrc.includes('ai_daily_limit_change: {') &&
+    auditDictSrc.includes("label: '配置变更'"))
+  ok('A10m 语义档位与该动作的敏感度一致（tone=config，与权重调整同档）',
+    /ai_daily_limit_change: \{[^}]*tone: 'config'/.test(auditDictSrc))
+  ok('A10m2 数值变化进人话整句（提高/降低 + old→new，不丢信息）',
+    /ai_daily_limit_change: \{[\s\S]*?new_limit/.test(auditDictSrc))
 
   // ── B. 导航状态机纯函数（src/utils/settingsNav.ts）─────────────
   const isTab = (l: SettingsNavLocation, tab: string, from: string): boolean =>

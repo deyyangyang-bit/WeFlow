@@ -40,6 +40,7 @@ import { crmDbService } from './crmDbService'
 import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
 import { massSendDetector, scanMessagesForTrigger, classifyInsightMessage } from './insightNoiseFilter'
+import { isInsightBlacklisted } from '../../shared/insightBlacklist'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -78,6 +79,16 @@ const DEFAULT_FOOTPRINT_SYSTEM_PROMPT = `你是“我的微信足迹”模块的
 
 /** 高意向预警冷却（毫秒），同一客户在此窗口内不重复弹预警 */
 const ALERT_COOLDOWN_MS = 6 * 3600 * 1000
+/**
+ * 显式单客户触发方式（2026-09-13 屏蔽名单重定义）。
+ * 这两个 trigger 经 generateInsightForSession 进入闸门，且都是用户主动发起的一次性动作，
+ * **不**受 AI 见解屏蔽名单约束；其余 trigger（activity / silence / alert:* 等自动与批量类）
+ * 命中名单即跳过。
+ *
+ * `message_analysis`（信箱「深度解析」）今日不走本方法、直接写记录，本就不受限；
+ * 列在此处是防御——将来若把它接进 generateInsightForSession，仍应保持「手动放行」语义。
+ */
+const EXPLICIT_MANUAL_TRIGGER_REASONS = new Set<string>(['manual', 'test', 'message_analysis'])
 const INSIGHT_CONFIG_KEYS = new Set([
   'aiInsightEnabled',
   'aiModelApiBaseUrl',
@@ -956,35 +967,29 @@ ${afterText}
   }
 
   /**
-   * AI 判定非客户黑名单：sessionId 命中一律不允许触发见解。
-   * 独立于 whitelist/blacklist 名单（那是用户手动配置），这里是 AI 自动判定的硬屏蔽。
+   * 是否命中「AI 见解屏蔽名单」。
+   *
+   * 2026-09-13 重定义：名单由用户手动管理（设置页 / 客户工作台），不再有 AI 自动写入链路。
+   * 语义边界（P0-5 拍板）：不触发 AI 见解 ≠ 非客户，该名单是见解链专用。
+   * 兼容读旧 `string[]` 存储，归一逻辑见 shared/insightBlacklist.ts。
    */
   private isNonCustomerBlacklisted(sessionId: string): boolean {
-    const normalized = String(sessionId || '').trim()
-    if (!normalized) return false
-    const list = normalizeSessionIdList(this.config.get('aiInsightNonCustomerBlacklist'))
-    return list.includes(normalized)
+    return isInsightBlacklisted(this.config.get('aiInsightNonCustomerBlacklist'), sessionId)
   }
 
+  /**
+   * 会话是否通过用户手动配置的 whitelist/blacklist 过滤。
+   *
+   * ⛔ 此处**不再**判定 AI 见解屏蔽名单：屏蔽名单的判定依据是「触发方式」，
+   * 统一在 generateInsightForSession 内按 triggerReason 裁决（显式单客户触发放行）。
+   * 勿把 isNonCustomerBlacklisted 加回本方法，否则手动触发会被重新挡死。
+   */
   private isSessionAllowed(sessionId: string): boolean {
     const normalizedSessionId = String(sessionId || '').trim()
     if (!normalizedSessionId) return false
-    // AI 判定非客户 → 硬屏蔽，不触发任何见解
-    if (this.isNonCustomerBlacklisted(normalizedSessionId)) return false
     const { mode, list } = this.getInsightFilterConfig()
     if (mode === 'whitelist') return list.includes(normalizedSessionId)
     return !list.includes(normalizedSessionId)
-  }
-
-  /** AI 判定该会话为非客户（阶段=未知）→ 加入非客户黑名单并持久化 */
-  private blacklistNonCustomer(sessionId: string): void {
-    const normalized = String(sessionId || '').trim()
-    if (!normalized) return
-    const list = normalizeSessionIdList(this.config.get('aiInsightNonCustomerBlacklist'))
-    if (list.includes(normalized)) return
-    list.push(normalized)
-    this.config.set('aiInsightNonCustomerBlacklist', list)
-    insightLog('INFO', `AI 判定「${normalized}」为非客户，已加入黑名单，后续不再触发 AI 见解`)
   }
 
   /**
@@ -1185,12 +1190,30 @@ ${afterText}
     if (!sessionId) return { success: false, message: '会话无效，无法生成见解' }
     if (!this.isEnabled()) return { success: false, message: '请先在设置中开启「AI 见解」' }
     let crmImported = false // 本次是否自动导入 CRM（用于提示）
+
+    // ── AI 见解屏蔽名单闸门（2026-09-13 重定义）────────────────────────────────
+    // 判定依据是「触发方式」而非调用点：自动/批量类命中名单直接跳过；
+    // 用户显式单客户触发（manual / test / message_analysis）一律放行——用户主动点的
+    // 操作不该被历史误判静默挡掉，但放行时带一句轻提示，不静默（六态纪律）。
+    const blacklisted = this.isNonCustomerBlacklisted(sessionId)
+    const explicitlyTriggered = EXPLICIT_MANUAL_TRIGGER_REASONS.has(triggerReason)
+    if (blacklisted && !explicitlyTriggered) {
+      insightLog('INFO', `跳过 ${displayName}：命中 AI 见解屏蔽名单（触发方式 ${triggerReason}）`)
+      return {
+        success: true,
+        message: `「${displayName}」在 AI 见解屏蔽名单中，已跳过；如需对 TA 生成见解，请在客户工作台解除屏蔽`,
+        skipped: true
+      }
+    }
+    const blacklistBypassNote = blacklisted
+      ? '（注意：TA 在 AI 见解屏蔽名单中，本次为你手动触发，已放行）'
+      : ''
     // 防重复分析：自动触发（活跃/沉默/批量）12h 内已有该客户见解记录则跳过。
     // 根因：冷却标记在内存、应用重启即清零，导致同一客户被反复分析几十次。
     // 手动触发保留覆盖权利（用户主动点，允许重析）。
     if (triggerReason !== 'manual' && insightRecordService.hasRecentRecord(sessionId, INSIGHT_RECORD_DEDUP_MS)) {
       insightLog('INFO', `跳过 ${displayName}：24h 内已生成过见解（触发 ${triggerReason}）`)
-      return { success: true, message: '最近已生成过见解，跳过', skipped: true }
+      return { success: true, message: `最近已生成过见解，跳过${blacklistBypassNote}`, skipped: true }
     }
 
     const { apiBaseUrl, apiKey, model, maxTokens } = this.getSharedAiModelConfig()
@@ -1341,8 +1364,8 @@ ${afterText}
       if (stageMatch) {
         parsedStage = stageMatch[1]
         insight = insight.replace(/\s*【阶段[：:]\s*(了解|比价|决策|成交|流失|未知)\s*】\s*/, '').trim()
-        // AI 判定非客户（阶段=未知）→ 加入黑名单，后续不再触发 AI 见解
-        // 未知表示证据不足，不能据此写入非客户黑名单。
+        // 「阶段=未知 → 自动加入非客户黑名单」的链路已于 2026-09-13 随屏蔽名单重定义删除：
+        // 未知表示证据不足，本就不该据此判定，更不该自动写名单（现名单纯手动管理）。
         // P0-2A.4：不再直接修改 customer_profile.stage。AI 阶段判断降级为 signal：
         // 只建档/改名（display_name）+ intent_tag_log 判断记录；stage 由合法写者维护。
         if (parsedStage !== '未知') {
@@ -1453,7 +1476,7 @@ ${afterText}
         success: true,
         message: (insightNotificationEnabled
           ? `已生成「${resolvedDisplayName}」的 AI 见解，请查看通知弹窗`
-          : `已生成「${resolvedDisplayName}」的 AI 见解，AI 见解消息通知当前已关闭`) + crmNote,
+          : `已生成「${resolvedDisplayName}」的 AI 见解，AI 见解消息通知当前已关闭`) + crmNote + blacklistBypassNote,
         recordId: record.id,
         insight,
         notificationEnabled: insightNotificationEnabled

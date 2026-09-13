@@ -4,6 +4,7 @@ import crypto from 'crypto'
 import Store from 'electron-store'
 import { expandHomePath } from '../utils/pathUtils'
 import { CacheMapStore } from './cacheMapStore'
+import type { InsightBlacklistEntry } from '../../shared/insightBlacklist'
 
 // 条件导入 electron（Worker 环境中不可用）
 let app: any = null
@@ -119,8 +120,12 @@ interface ConfigSchema {
   aiInsightWeiboBindings: Record<string, { uid: string; screenName?: string; updatedAt: number }>
   aiInsightFilterMode: 'whitelist' | 'blacklist'
   aiInsightFilterList: string[]
-  /** AI 判定非客户（阶段=未知）后自动加入的黑名单，命中一律不触发 AI 见解 */
-  aiInsightNonCustomerBlacklist: string[]
+  /**
+   * AI 见解屏蔽名单（用户手动管理，2026-09-13 由「AI 自动判定非客户」重定义）。
+   * 命中者不触发自动/批量类 AI 见解；用户显式单客户触发不受限。
+   * 存储兼容旧 `string[]`，读时经 `normalizeInsightBlacklist` 归一到本形态。
+   */
+  aiInsightNonCustomerBlacklist: InsightBlacklistEntry[]
   /** 销售复盘手动排除的联系人（同事/朋友等非销售关系），统计与经营分析一律剔除 */
   reportExcludedSessions: string[]
   aiInsightWhitelistEnabled: boolean

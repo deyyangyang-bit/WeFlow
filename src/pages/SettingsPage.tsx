@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactElement, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useMemo } from 'react'
 import { useAppStore } from '../stores/appStore'
@@ -7,6 +7,15 @@ import { useThemeStore, themes } from '../stores/themeStore'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
+import {
+  AUTO_TIERS, clampEnrichThreshold, isClamped, tierOf, valuesOfTier,
+  type AutoTier, type TierValues
+} from '../utils/settingsTiers'
+import { backupLayerLabel, keyProtectionLabel } from '../utils/backupStatusLabel'
+import {
+  AI_SERVICE_PRESETS, MAX_TOKENS_TIERS, maxTokensTierOf, presetOfBaseUrl, tokensOfTier
+} from '../utils/aiServicePresets'
+import { removeInsightBlacklistEntry, type InsightBlacklistEntry, type InsightBlacklistSource } from '../../shared/insightBlacklist'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
 import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
@@ -15,7 +24,7 @@ import {
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
   Palette, Database, HardDrive, Info, RefreshCw, ChevronDown, Download, Mic,
   ShieldCheck, Fingerprint, Lock, KeyRound, Bell, Globe, BarChart2, X, UserRound,
-  Sparkles, Loader2, CheckCircle2, XCircle, CloudDownload, AlertTriangle
+  Sparkles, Loader2, CheckCircle2, XCircle, CloudDownload, AlertTriangle, UserX, ChevronRight
 } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import AuditTrailSection from '../components/settings/AuditTrailSection'
@@ -58,6 +67,123 @@ const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint' | 'aiMessageIns
 
 const getSessionDisplayName = (session: Pick<ChatSession, 'username' | 'displayName'>): string =>
   displayNameOrFallback(session.username, session.displayName)
+
+/**
+ * 屏蔽名单条目的加入时间文本（YYYY-MM-DD）。
+ * 兼容秒/毫秒两种量级；非法值返回「时间无记录」——不伪造日期。
+ */
+const formatBlacklistAddedAt = (addedAt: number): string => {
+  const ms = addedAt < 1e12 ? addedAt * 1000 : addedAt
+  const date = new Date(ms)
+  if (Number.isNaN(date.getTime())) return '时间无记录'
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/**
+ * 内网同步车道的「最近时间」文本（相对时间）。
+ *
+ * ⚠️ 单位是**毫秒**：四个时间戳由 lanSyncService 以 `crmDbService.setScanState(key, Date.now())`
+ * 写入 scan_state，读回时无任何量纲转换（见 lanSyncService.ts:359/821/959/1080）。
+ * 0 = 从未发生 → 显示「—」，不是 1970；时钟回拨也不显示负数。
+ */
+const formatRelativeTime = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  const diff = Date.now() - ms
+  if (diff < 60_000) return '刚刚'
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  return formatBlacklistAddedAt(ms)
+}
+
+/** 分段选择器的一个选项 */
+interface SegOption {
+  value: string
+  label: string
+  /** 选中时标签左侧圆点的颜色（传 CSS 变量，如 'var(--color-success)'） */
+  dot?: string
+}
+
+/**
+ * 角色分段选择器（设置页内复用的小组件，不新建全局组件库）。
+ * value 为空串即「未选择态」——无任何分段高亮，与既有下拉的「暂不选择 / 未配置」等价。
+ * 键盘：radiogroup 语义，←/→/↑/↓ 循环移动并即时生效（选择即存，与原下拉一致）。
+ */
+function SegmentedControl(props: {
+  options: SegOption[]
+  value: string
+  onChange: (value: string) => void
+  ariaLabel: string
+  disabled?: boolean
+}): ReactElement {
+  const { options, value, onChange, ariaLabel, disabled } = props
+
+  /** 方向键在选项间循环移动；未选中态从第一项起算 */
+  const move = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number): void => {
+    const delta =
+      event.key === 'ArrowRight' || event.key === 'ArrowDown'
+        ? 1
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+          ? -1
+          : 0
+    if (delta === 0) return
+    event.preventDefault()
+    onChange(options[(index + delta + options.length) % options.length].value)
+  }
+
+  return (
+    <div className="s-seg" role="radiogroup" aria-label={ariaLabel}>
+      {options.map((opt, index) => {
+        const on = value === opt.value
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            tabIndex={on || (!value && index === 0) ? 0 : -1}
+            disabled={disabled}
+            className={`s-seg__btn ${on ? 'is-on' : ''}`}
+            onClick={() => onChange(opt.value)}
+            onKeyDown={(event) => move(event, index)}
+          >
+            {on && opt.dot && <span className="s-seg__dot" style={{ background: opt.dot }} />}
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * 「高级」折叠（设置页内复用的小组件，不新建全局组件库）。
+ *
+ * 用原生 `<details>/<summary>`：键盘 Enter/Space 展开收起、读屏语义、焦点环全部由浏览器提供，
+ * 无需自绘状态机；展开状态**不持久化**（按设计稿要求，每次进页面都是收起态）。
+ * 收起时 `children` 仍在 DOM 内但不渲染布局——故折叠内控件不得承载任何副作用式的初始化。
+ */
+function AdvancedFold(props: {
+  title: string
+  hint?: string
+  children: ReactNode
+}): ReactElement {
+  const { title, hint, children } = props
+  return (
+    <details className="s-adv">
+      <summary className="s-adv__sum">
+        <ChevronRight size={16} className="s-adv__caret" aria-hidden="true" />
+        <span className="s-adv__title">{title}</span>
+        {hint && <span className="s-adv__hint">{hint}</span>}
+      </summary>
+      <div className="s-adv__body">{children}</div>
+    </details>
+  )
+}
 
 const filteredTabs = tabs.filter(tab => {
   if (tab.id === 'autoDownload') {
@@ -240,6 +366,51 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [crmEnrichThreshold, setCrmEnrichThreshold] = useState(0.7)
   const [crmEnrichAutoApply, setCrmEnrichAutoApply] = useState(0.85)
   const [crmEnrichBackfillLimit, setCrmEnrichBackfillLimit] = useState(20)
+
+  // ── 自动化程度（展示层档位映射，见 src/utils/settingsTiers.ts）────────────────
+  // 由上面三个既有阈值反推当前档位；命中不了任何档位则返回 ''（未选择态），
+  // 此时「高级 · 微调」里的真实数字仍然如实展示，不假装属于某一档。
+  const autoTier = useMemo(
+    () => tierOf({ autoApply: crmEnrichAutoApply, enrichThreshold: crmEnrichThreshold, confirmThreshold: crmAutoConfirmThreshold }),
+    [crmEnrichAutoApply, crmEnrichThreshold, crmAutoConfirmThreshold])
+
+  /** 选中档位：三个键一次性写回。写入的键与原先逐个拖动滑杆**完全相同**。 */
+  const applyAutoTier = async (tier: string): Promise<void> => {
+    const v = valuesOfTier(tier)
+    if (!v) return
+    setCrmEnrichAutoApply(v.autoApply)
+    setCrmEnrichThreshold(v.enrichThreshold)
+    setCrmAutoConfirmThreshold(v.confirmThreshold)
+    await configService.setCrmEnrichAutoApply(v.autoApply)
+    await configService.setCrmEnrichThreshold(v.enrichThreshold)
+    await configService.setCrmAutoConfirmThreshold(v.confirmThreshold)
+    const label = AUTO_TIERS.find((t) => t.value === tier)?.label ?? tier
+    showMessage(`自动化程度已设为「${label}」`, true)
+  }
+
+  /** 高级微调 · 待确认下限：不得高于直接写入阈值，超出即 clamp 并**即时提示**（不静默改值） */
+  const applyEnrichThreshold = async (raw: number): Promise<void> => {
+    const next = clampEnrichThreshold(raw, crmEnrichAutoApply)
+    setCrmEnrichThreshold(next)
+    await configService.setCrmEnrichThreshold(next)
+    showMessage(isClamped(raw, crmEnrichAutoApply)
+      ? `待确认下限不能高于直接写入阈值，已自动调整为 ${next.toFixed(2)}`
+      : `待确认下限已设为 ${next.toFixed(2)}`, true)
+  }
+
+  /** 高级微调 · 直接写入阈值：调低时若待确认下限被压在下面，一并下移以维持不变量 */
+  const applyEnrichAutoApply = async (raw: number): Promise<void> => {
+    setCrmEnrichAutoApply(raw)
+    await configService.setCrmEnrichAutoApply(raw)
+    if (!isClamped(crmEnrichThreshold, raw)) {
+      showMessage(`直接写入阈值已设为 ${raw.toFixed(2)}`, true)
+      return
+    }
+    const next = clampEnrichThreshold(crmEnrichThreshold, raw)
+    setCrmEnrichThreshold(next)
+    await configService.setCrmEnrichThreshold(next)
+    showMessage(`直接写入阈值已设为 ${raw.toFixed(2)}；待确认下限不能高于它，已一并调整为 ${next.toFixed(2)}`, true)
+  }
   // 线索流转
   const [crmLeadSlaHours, setCrmLeadSlaHours] = useState(24)
   const [crmLeadSources, setCrmLeadSources] = useState<string[]>(['抖音', '视频号', '小红书'])
@@ -263,13 +434,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [identityName, setIdentityName] = useState('')
   const [identityRole, setIdentityRole] = useState('')
   const [identityActorLabel, setIdentityActorLabel] = useState('')
-  const [identityRoleDropdownOpen, setIdentityRoleDropdownOpen] = useState(false)
   // 内网同步（Phase 1 最小版）：SMB 共享目录 + 角色（中枢/终端）+ 最近同步状态
   const [lanSyncDir, setLanSyncDir] = useState('')
   const [lanSyncRole, setLanSyncRole] = useState('')
   const [lanSyncStatus, setLanSyncStatus] = useState<LanSyncStatus | null>(null)
-  const [lanSyncRoleDropdownOpen, setLanSyncRoleDropdownOpen] = useState(false)
   const [lanSyncRunning, setLanSyncRunning] = useState(false)
+  // 相对时间心跳：只用来让「3 分钟前」随时间推进重算，不参与任何判断，也不写盘
+  const [relativeTimeTick, setRelativeTimeTick] = useState(0)
 
 
 
@@ -343,6 +514,36 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiModelApiKey, setAiModelApiKey] = useState('')
   const [aiModelApiModel, setAiModelApiModel] = useState('gpt-4o-mini')
   const [aiModelApiMaxTokens, setAiModelApiMaxTokens] = useState(1024)
+
+  // ── AI 接入档位（展示层映射，见 src/utils/aiServicePresets.ts）──────────────
+  // 由当前地址反推命中的服务商；命中不了即「自定义」（含首次使用的空值）。
+  // 用户显式点「自定义」时用本地覆盖位强制展示输入框——否则自定义是 url='' 的 no-op，
+  // 点完派生值不变、分段器弹回原预设，表现为「点不动」。
+  const [aiServiceCustomOverride, setAiServiceCustomOverride] = useState(false)
+  const aiServicePreset = aiServiceCustomOverride ? 'custom' : presetOfBaseUrl(aiModelApiBaseUrl)
+  // 由当前长度反推档位；手填过非档位值的返回 ''（未选择态），真实数字仍在「高级」里如实展示。
+  const maxTokensTier = useMemo(() => maxTokensTierOf(aiModelApiMaxTokens), [aiModelApiMaxTokens])
+
+  /** 选服务商：写入的仍是既有的 aiModelApiBaseUrl 一个键；「自定义」不覆盖已填地址，只切到输入态 */
+  const applyAiServicePreset = async (preset: string): Promise<void> => {
+    const hit = AI_SERVICE_PRESETS.find((p) => p.value === preset)
+    if (!hit) return
+    if (hit.url === '') { setAiServiceCustomOverride(true); return }
+    setAiServiceCustomOverride(false)
+    setAiModelApiBaseUrl(hit.url)
+    await configService.setAiModelApiBaseUrl(hit.url)
+    showMessage(`AI 服务地址已设为「${hit.label}」`, true)
+  }
+
+  /** 选长度档位：写入的仍是既有的 aiModelApiMaxTokens 一个键 */
+  const applyMaxTokensTier = async (tier: string): Promise<void> => {
+    const tokens = tokensOfTier(tier)
+    if (tokens === null) return
+    setAiModelApiMaxTokens(tokens)
+    await configService.setAiModelApiMaxTokens(tokens)
+    const label = MAX_TOKENS_TIERS.find((t) => t.value === tier)?.label ?? tier
+    showMessage(`单次回答长度上限已设为「${label}」`, true)
+  }
   const [aiDailyCallLimitEnabled, setAiDailyCallLimitEnabled] = useState(true)
   const [aiDailyCallLimit, setAiDailyCallLimit] = useState(60)
   const [aiUsageBudget, setAiUsageBudget] = useState<AiUsageBudgetSnapshot | null>(null)
@@ -358,8 +559,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [insightTriggerResult, setInsightTriggerResult] = useState<{ success: boolean; message: string } | null>(null)
   const [aiInsightFilterMode, setAiInsightFilterMode] = useState<configService.AiInsightFilterMode>('whitelist')
   const [aiInsightFilterList, setAiInsightFilterList] = useState<Set<string>>(new Set())
-  /** AI 自动判定非客户黑名单（阶段=未知 → 自动加入，不触发见解） */
-  const [aiInsightNonCustomerBlacklist, setAiInsightNonCustomerBlacklist] = useState<string[]>([])
+  /** AI 见解屏蔽名单（用户手动管理；命中者不触发自动/批量类见解） */
+  const [aiInsightNonCustomerBlacklist, setAiInsightNonCustomerBlacklist] = useState<InsightBlacklistEntry[]>([])
+  /** 屏蔽名单里 sessionId → 显示名（经 customer_profile 解析；解析不到回落 wxid，不留空白） */
+  const [blacklistDisplayNames, setBlacklistDisplayNames] = useState<Record<string, string>>({})
   const [insightFilterType, setInsightFilterType] = useState<InsightSessionFilterTypeValue>('all')
   const [insightWhitelistSearch, setInsightWhitelistSearch] = useState('')
   const [aiInsightContextCount, setAiInsightContextCount] = useState(40)
@@ -1081,12 +1284,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     } catch { /* 状态读取失败静默，不阻塞设置页 */ }
   }
 
-  // 内网同步：角色选择（立即保存）
+  // 内网同步：角色选择（立即保存；分段选择器点选即生效，与原下拉一致）
   const handleLanSyncRoleChange = async (role: string) => {
     setLanSyncRole(role)
-    setLanSyncRoleDropdownOpen(false)
     await configService.setLanSyncRole(role)
-    showMessage(role === 'hub' ? '已设为中枢（主管机）：产出分配指令、消费终端回执' : role === 'terminal' ? '已设为终端（销售机）：消费分配指令、上行业务回执；本机不再跑 SLA 回收器' : '内网同步角色已清空（同步关闭）', true)
+    showMessage(role === 'hub' ? '已设为中枢（主管机）：产出分配指令、消费终端回执' : role === 'terminal' ? '已设为终端（销售机）：消费分配指令、上行业务回执；超时未跟进的线索不再由这台电脑自动回收' : '内网同步角色已清空（同步关闭）', true)
     await refreshLanSyncStatus()
   }
 
@@ -1108,6 +1310,32 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       await refreshLanSyncStatus()
     }
   }
+
+  // 相对时间心跳：仅在同步启用时每 30s 推进一次，让「N 分钟前」不长期停在旧值上（不改任何状态机）
+  useEffect(() => {
+    if (!lanSyncStatus?.enabled) return
+    const timer = setInterval(() => setRelativeTimeTick((n) => n + 1), 30_000)
+    return () => clearInterval(timer)
+  }, [lanSyncStatus?.enabled])
+
+  const lanSyncEnabled = !!lanSyncStatus?.enabled
+  const lanSyncBacklog = (lanSyncStatus?.backlogPending || 0) + (lanSyncStatus?.backlogIncoming || 0)
+
+  /**
+   * 同步车道文案（口径与改造前完全一致，仅把绝对时间换成相对时间）：
+   *   中枢 hub      → 下行产出 / 上行消费
+   *   终端 terminal → 下行消费 / 上行产出
+   * relativeTimeTick 故意进依赖：时间文案需随心跳重算。
+   */
+  const lanSyncLanes = useMemo(() => {
+    const hub = lanSyncStatus?.role === 'hub'
+    const downAt = (hub ? lanSyncStatus?.lastDownEmitAt : lanSyncStatus?.lastDownApplyAt) || 0
+    const upAt = (hub ? lanSyncStatus?.lastUpApplyAt : lanSyncStatus?.lastUpEmitAt) || 0
+    return {
+      down: { label: hub ? '下行产出' : '下行消费', time: formatRelativeTime(downAt) },
+      up: { label: hub ? '上行消费' : '上行产出', time: formatRelativeTime(upAt) }
+    }
+  }, [lanSyncStatus, relativeTimeTick])
 
   const handleClose = () => {
     if (!onClose) return
@@ -2660,26 +2888,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="divider" />
 
       <div className="form-group">
-        <label>解密密钥</label>
-        <span className="form-hint">64位十六进制密钥</span>
-        <div className="input-with-toggle">
-          <input
-            type={showDecryptKey ? 'text' : 'password'}
-            placeholder="例如: a1b2c3d4e5f6..."
-            value={decryptKey}
-            onChange={(e) => {
-              const value = e.target.value
-              setDecryptKey(value)
-              if (value && value.length === 64) {
-                scheduleConfigSave('keys', () => syncCurrentKeys({ decryptKey: value, wxid }))
-                // showMessage('解密密钥已保存', true)
-              }
-            }}
-          />
-          <button type="button" className="toggle-visibility" onClick={() => setShowDecryptKey(!showDecryptKey)}>
-            {showDecryptKey ? <EyeOff size={14} /> : <Eye size={14} />}
-          </button>
-        </div>
+        <label>微信数据库密钥</label>
+        <span className="form-hint">点下面的按钮自动获取即可，一般不需要手动填写</span>
         {isManualStartPrompt ? (
           <div className="manual-prompt">
             <p className="prompt-text">未能自动启动微信，请手动启动微信，看到登录窗口后点击下方确认</p>
@@ -2698,6 +2908,27 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             查看 macOS 获取密钥排障指引
           </button>
         )}
+        <AdvancedFold title="高级 · 手动填写（一般不需要）" hint="64 位十六进制密钥">
+          <div className="input-with-toggle">
+            <input
+              type={showDecryptKey ? 'text' : 'password'}
+              placeholder="例如: a1b2c3d4e5f6..."
+              aria-label="微信数据库密钥"
+              value={decryptKey}
+              onChange={(e) => {
+                const value = e.target.value
+                setDecryptKey(value)
+                if (value && value.length === 64) {
+                  scheduleConfigSave('keys', () => syncCurrentKeys({ decryptKey: value, wxid }))
+                  // showMessage('解密密钥已保存', true)
+                }
+              }}
+            />
+            <button type="button" className="toggle-visibility" onClick={() => setShowDecryptKey(!showDecryptKey)} aria-label={showDecryptKey ? '隐藏密钥' : '显示密钥'}>
+              {showDecryptKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+        </AdvancedFold>
       </div>
 
       <div className="form-group">
@@ -2728,54 +2959,55 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
 
       <div className="form-group">
-        <label>账号 wxid</label>
-        <span className="form-hint">微信账号标识</span>
+        <label>微信账号</label>
+        <span className="form-hint">微信账号标识。点「自动识别账号」即可，一般不需要手动填写</span>
         <div className="wxid-input-wrapper">
-          <input
-            type="text"
-            placeholder="例如: wxid_xxxxxx"
-            value={wxid}
-            onChange={(e) => {
-              const value = e.target.value
-              const previousWxid = wxid
-              setWxid(value)
-              scheduleConfigSave('wxid', async () => {
-                if (previousWxid && previousWxid !== value) {
-                  const currentKeys = buildKeysFromState()
-                  await configService.setWxidConfig(previousWxid, {
-                    decryptKey: currentKeys.decryptKey,
-                    imageXorKey: typeof currentKeys.imageXorKey === 'number' ? currentKeys.imageXorKey : 0,
-                    imageAesKey: currentKeys.imageAesKey
-                  })
-                }
-                if (value) {
-                  await configService.setMyWxid(value)
-                  await syncCurrentKeys({ wxid: value }) // Sync keys to the new wxid entry
-                }
-
-                if (value && previousWxid !== value) {
-                  if (isDbConnected) {
-                    try {
-                      await window.electronAPI.chat.close()
-                      const result = await window.electronAPI.chat.connect()
-                      setDbConnected(result.success, dbPath || undefined)
-                      if (!result.success && result.error) {
-                        showMessage(result.error, false)
-                      }
-                    } catch (e: any) {
-                      showMessage(`切换账号后重新连接失败: ${e}`, false)
-                      setDbConnected(false)
-                    }
+            <input
+              type="text"
+              placeholder="例如: wxid_xxxxxx"
+              aria-label="微信账号 wxid"
+              value={wxid}
+              onChange={(e) => {
+                const value = e.target.value
+                const previousWxid = wxid
+                setWxid(value)
+                scheduleConfigSave('wxid', async () => {
+                  if (previousWxid && previousWxid !== value) {
+                    const currentKeys = buildKeysFromState()
+                    await configService.setWxidConfig(previousWxid, {
+                      decryptKey: currentKeys.decryptKey,
+                      imageXorKey: typeof currentKeys.imageXorKey === 'number' ? currentKeys.imageXorKey : 0,
+                      imageAesKey: currentKeys.imageAesKey
+                    })
                   }
-                  clearAnalyticsStoreCache()
-                  resetChatStore()
-                  window.dispatchEvent(new CustomEvent('wxid-changed', { detail: { wxid: value } }))
-                }
-              })
-            }}
-          />
+                  if (value) {
+                    await configService.setMyWxid(value)
+                    await syncCurrentKeys({ wxid: value }) // Sync keys to the new wxid entry
+                  }
+
+                  if (value && previousWxid !== value) {
+                    if (isDbConnected) {
+                      try {
+                        await window.electronAPI.chat.close()
+                        const result = await window.electronAPI.chat.connect()
+                        setDbConnected(result.success, dbPath || undefined)
+                        if (!result.success && result.error) {
+                          showMessage(result.error, false)
+                        }
+                      } catch (e: any) {
+                        showMessage(`切换账号后重新连接失败: ${e}`, false)
+                        setDbConnected(false)
+                      }
+                    }
+                    clearAnalyticsStoreCache()
+                    resetChatStore()
+                    window.dispatchEvent(new CustomEvent('wxid-changed', { detail: { wxid: value } }))
+                  }
+                })
+              }}
+            />
         </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => handleScanWxid()}><Search size={14} /> 扫描 wxid</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => handleScanWxid()}><Search size={14} /> 自动识别账号</button>
       </div>
 
       <div className="divider" />
@@ -2817,36 +3049,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
 
       <div className="form-group">
-        <label>图片 XOR 密钥 <span className="optional">(可选)</span></label>
-        <span className="form-hint">用于解密图片缓存</span>
-        <input
-          type="text"
-          placeholder="例如: 0xA4"
-          value={imageXorKey}
-          onChange={(e) => {
-            const value = e.target.value
-            setImageXorKey(value)
-            const parsed = parseImageXorKey(value)
-            if (value === '' || parsed !== null) {
-              scheduleConfigSave('keys', () => syncCurrentKeys({ imageXorKey: value, wxid }))
-            }
-          }}
-        />
-      </div>
-
-      <div className="form-group">
-        <label>图片 AES 密钥 <span className="optional">(可选)</span></label>
-        <span className="form-hint">16 位密钥</span>
-        <input
-          type="text"
-          placeholder="16 位 AES 密钥"
-          value={imageAesKey}
-          onChange={(e) => {
-            const value = e.target.value
-            setImageAesKey(value)
-            scheduleConfigSave('keys', () => syncCurrentKeys({ imageAesKey: value, wxid }))
-          }}
-        />
+        <label>图片解密密钥</label>
+        <span className="form-hint">用于解密图片缓存。点下面的按钮自动识别即可，一般不需要手动填写</span>
         <div className="image-key-actions">
           <button className="btn btn-primary btn-sm" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey} title="从本地缓存快速计算">
             <Plug size={14} /> {isFetchingImageKey ? '获取中...' : '缓存计算（推荐）'}
@@ -2865,11 +3069,46 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           imageKeyStatus && <div className="form-hint status-text" style={{ marginTop: '8px' }}>{imageKeyStatus}</div>
         )}
         <span className="form-hint">优先推荐缓存计算方案。若图片无法解密，可使用内存扫描（需微信运行并打开 2-3 张图片大图）</span>
+        <AdvancedFold title="高级 · 手动填写（一般不需要）" hint="XOR 与 AES 密钥">
+          <div className="form-group">
+            <label>图片解密密钥（XOR）</label>
+            <span className="form-hint">用于解密图片缓存</span>
+            <input
+              type="text"
+              placeholder="例如: 0xA4"
+              aria-label="图片 XOR 密钥"
+              value={imageXorKey}
+              onChange={(e) => {
+                const value = e.target.value
+                setImageXorKey(value)
+                const parsed = parseImageXorKey(value)
+                if (value === '' || parsed !== null) {
+                  scheduleConfigSave('keys', () => syncCurrentKeys({ imageXorKey: value, wxid }))
+                }
+              }}
+            />
+          </div>
+          <div className="form-group">
+            <label>图片解密密钥（AES）</label>
+            <span className="form-hint">16 位密钥</span>
+            <input
+              type="text"
+              placeholder="16 位 AES 密钥"
+              aria-label="图片 AES 密钥"
+              value={imageAesKey}
+              onChange={(e) => {
+                const value = e.target.value
+                setImageAesKey(value)
+                scheduleConfigSave('keys', () => syncCurrentKeys({ imageAesKey: value, wxid }))
+              }}
+            />
+          </div>
+        </AdvancedFold>
       </div>
 
       <div className="form-group">
-        <label>调试日志</label>
-        <span className="form-hint">开启后写入 WCDB 调试日志，便于排查连接问题</span>
+        <label>诊断日志（排查问题时使用）</label>
+        <span className="form-hint">开启后会记录数据库连接的详细信息，只在排查连接问题时才需要打开</span>
         <div className="log-toggle-line">
           <span className="log-status">{logEnabled ? '已开启' : '已关闭'}</span>
           <label className="switch" htmlFor="log-enabled-toggle">
@@ -2933,10 +3172,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             <span>备份状态</span>
             <span className="setting-desc">
               {autoBackupStatus?.last
-                ? `上次：${new Date(autoBackupStatus.last.at).toLocaleString()}（本机 ${autoBackupStatus.last.local === 'ok' ? '✓' : autoBackupStatus.last.local} / 网络 ${autoBackupStatus.last.network === 'ok' ? '✓' : autoBackupStatus.last.network === 'skipped_unreachable' ? '不可达已跳过' : autoBackupStatus.last.network === 'skipped_not_configured' ? '未配置' : autoBackupStatus.last.network}）`
+                ? `上次：${new Date(autoBackupStatus.last.at).toLocaleString()}（本机 ${backupLayerLabel(autoBackupStatus.last.local)} / 共享文件夹 ${backupLayerLabel(autoBackupStatus.last.network)}）`
                 : '尚未备份'}
               {autoBackupStatus?.nextPlannedAt ? `　下次计划：${new Date(autoBackupStatus.nextPlannedAt).toLocaleString()}（每日 ${autoBackupStatus.configuredTime}，各保留最近 20 份）` : ''}
-              {autoBackupStatus?.keyProtection ? `　密钥保护：${autoBackupStatus.keyProtection === 'electron-safeStorage' ? '系统安全设施' : autoBackupStatus.keyProtection === 'local-wrap-v1' ? '本机封装（降级，建议在支持系统安全设施的环境使用）' : autoBackupStatus.keyProtection}` : ''}
+              {autoBackupStatus?.keyProtection ? `　密钥保护：${keyProtectionLabel(autoBackupStatus.keyProtection)}` : ''}
             </span>
           </div>
           <div className="setting-control">
@@ -3019,145 +3258,221 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="divider" />
 
       <div className="settings-section">
-        <h2>身份档案</h2>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>姓名与角色</span>
-            <span className="setting-desc">本地身份档案（与「安全」页的应用锁完全独立）：用于线索分配与操作审计的署名，格式「姓名（角色）」，如「杨青（销售）」。角色仅作署名，不作任何权限依据；首次启动未填时会弹一次引导，也可在此随时修改</span>
+        <div className="s-card">
+          <div className="s-card__head">
+            <div className="s-card__icon s-card__icon--accent"><UserRound size={18} /></div>
+            <div className="s-card__heading">
+              <label>身份档案</label>
+              <span className="s-card__sub">用于线索分配与审计署名，与应用锁相互独立</span>
+            </div>
+            <span className={`s-pill ${identityName.trim() ? 's-pill--ok' : ''}`}>
+              <span className="s-pill__dot" />
+              {identityName.trim() ? '已建档' : '未建档'}
+            </span>
           </div>
-          <div className="setting-control">
-            <input
-              type="text"
-              className="field-input"
-              style={{ width: '140px' }}
-              placeholder="姓名"
-              value={identityName}
-              onChange={(e) => setIdentityName(e.target.value)}
-            />
-            <div className="custom-select" style={{ minWidth: '130px' }}>
-              <div
-                className={`custom-select-trigger ${identityRoleDropdownOpen ? 'open' : ''}`}
-                onClick={() => setIdentityRoleDropdownOpen(!identityRoleDropdownOpen)}
-              >
-                <span className="custom-select-value">{identityRole || '暂不选择'}</span>
-                <ChevronDown size={14} className={`custom-select-arrow ${identityRoleDropdownOpen ? 'rotate' : ''}`} />
+          <div className="s-card__body">
+            {/* 当前身份可视化：未建档时头像位显示占位图标，不假装已有身份 */}
+            <div className="identity-card">
+              <div className={`identity-card__ava ${identityName.trim() ? '' : 'is-empty'}`}>
+                {identityName.trim() ? identityName.trim().charAt(0) : <UserRound size={22} />}
               </div>
-              <div className={`custom-select-dropdown ${identityRoleDropdownOpen ? 'open' : ''}`}>
-                {[
-                  { value: '', label: '暂不选择' },
-                  { value: '销售', label: '销售' },
-                  { value: '主管', label: '主管' },
-                  { value: '分配员', label: '分配员' }
-                ].map(option => (
-                  <div
-                    key={option.value}
-                    className={`custom-select-option ${identityRole === option.value ? 'selected' : ''}`}
-                    onClick={() => {
-                      setIdentityRole(option.value)
-                      setIdentityRoleDropdownOpen(false)
-                    }}
-                  >
-                    {option.label}
-                    {identityRole === option.value && <Check size={14} />}
-                  </div>
-                ))}
+              <div className="identity-card__who">
+                <div className="identity-card__name">{identityName.trim() || '尚未建档'}</div>
+                {identityActorLabel && (
+                  <div className="identity-card__meta">当前署名：{identityActorLabel} · 本机档案</div>
+                )}
               </div>
             </div>
-            <button className="btn btn-primary" onClick={handleIdentitySave} disabled={!identityName.trim()}>
-              保存
-            </button>
+
+            <div className="s-row">
+              <div>
+                <div className="s-row__label">姓名</div>
+                <div className="s-row__desc">显示在审计轨迹与线索分配记录中；未填时首次启动会弹一次引导</div>
+              </div>
+              <div className="s-row__ctrl">
+                <input
+                  type="text"
+                  className="field-input"
+                  style={{ width: '160px' }}
+                  placeholder="姓名"
+                  value={identityName}
+                  onChange={(e) => setIdentityName(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div>
+                <div className="s-row__label">角色</div>
+                <div className="s-row__desc">署名格式「姓名（角色）」；角色仅作署名，不作任何权限依据</div>
+              </div>
+              <div className="s-row__ctrl">
+                <SegmentedControl
+                  ariaLabel="身份角色"
+                  value={identityRole}
+                  onChange={setIdentityRole}
+                  options={[
+                    { value: '', label: '暂不选择' },
+                    { value: '销售', label: '销售', dot: 'var(--color-accent)' },
+                    { value: '主管', label: '主管', dot: 'var(--color-accent)' },
+                    { value: '分配员', label: '分配员', dot: 'var(--color-accent)' }
+                  ]}
+                />
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div />
+              <div className="s-row__ctrl">
+                <button className="btn btn-primary" onClick={handleIdentitySave} disabled={!identityName.trim()}>
+                  保存档案
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-        {identityActorLabel && (
-          <div className="setting-item">
-            <div className="setting-label">
-              <span>当前署名</span>
-              <span className="setting-desc">分配、审批等操作留痕时将以此署名：{identityActorLabel}</span>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="divider" />
 
       <div className="settings-section">
-        <h2>内网同步</h2>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>共享目录</span>
-            <span className="setting-desc">Phase 1 最小版：SMB 共享文件夹当同步通道（中枢机向下发分配指令，销售机向上回执认领/加好友/首触/审计）。填共享文件夹的挂载路径（如 /Volumes/weflow-sync 或 Windows 映射盘符目录），留空 = 同步关闭；聊天原文永不出机，只同步结构化事件</span>
-          </div>
-          <div className="setting-control">
-            <input
-              type="text"
-              className="field-input"
-              style={{ width: '300px' }}
-              placeholder="/Volumes/weflow-sync"
-              value={lanSyncDir}
-              onChange={(e) => setLanSyncDir(e.target.value)}
-              onBlur={async (e) => {
-                const v = e.target.value.trim()
-                await configService.setLanSyncSharedDir(v)
-                setLanSyncDir(v)
-                showMessage(v ? `共享目录已保存：${v}` : '共享目录已清空（同步关闭）', true)
-                await refreshLanSyncStatus()
-              }}
-            />
-          </div>
-        </div>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>本机角色</span>
-            <span className="setting-desc">中枢 = 主管机（产出分配/调派/回收指令，消费各终端回执）；终端 = 销售机（消费指令、上行回执，本机不再跑 SLA 回收器，回收由中枢下发）。目录与角色都填了同步才启用</span>
-          </div>
-          <div className="setting-control">
-            <div className="custom-select" style={{ minWidth: '150px' }}>
-              <div
-                className={`custom-select-trigger ${lanSyncRoleDropdownOpen ? 'open' : ''}`}
-                onClick={() => setLanSyncRoleDropdownOpen(!lanSyncRoleDropdownOpen)}
-              >
-                <span className="custom-select-value">{lanSyncRole === 'hub' ? '中枢（主管机）' : lanSyncRole === 'terminal' ? '终端（销售机）' : '未配置'}</span>
-                <ChevronDown size={14} className={`custom-select-arrow ${lanSyncRoleDropdownOpen ? 'rotate' : ''}`} />
-              </div>
-              <div className={`custom-select-dropdown ${lanSyncRoleDropdownOpen ? 'open' : ''}`}>
-                {[
-                  { value: '', label: '未配置' },
-                  { value: 'hub', label: '中枢（主管机）' },
-                  { value: 'terminal', label: '终端（销售机）' }
-                ].map(option => (
-                  <div
-                    key={option.value}
-                    className={`custom-select-option ${lanSyncRole === option.value ? 'selected' : ''}`}
-                    onClick={() => { void handleLanSyncRoleChange(option.value) }}
-                  >
-                    {option.label}
-                    {lanSyncRole === option.value && <Check size={14} />}
-                  </div>
-                ))}
-              </div>
+        <div className="s-card">
+          <div className="s-card__head">
+            <div className="s-card__icon s-card__icon--success"><RefreshCw size={18} /></div>
+            <div className="s-card__heading">
+              <label>内网同步</label>
+              <span className="s-card__sub">经办公室共享文件夹（SMB）在中枢机与终端机之间同步业务事件</span>
             </div>
-          </div>
-        </div>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>同步状态</span>
-            <span className="setting-desc">
-              {!lanSyncStatus?.enabled
-                ? '同步未启用（共享目录或角色未配置）'
-                : <>
-                    {lanSyncStatus.role === 'hub'
-                      ? `最近：下行产出 ${lanSyncStatus.lastDownEmitAt ? new Date(lanSyncStatus.lastDownEmitAt).toLocaleString() : '—'} / 上行消费 ${lanSyncStatus.lastUpApplyAt ? new Date(lanSyncStatus.lastUpApplyAt).toLocaleString() : '—'}`
-                      : `最近：下行消费 ${lanSyncStatus.lastDownApplyAt ? new Date(lanSyncStatus.lastDownApplyAt).toLocaleString() : '—'} / 上行产出 ${lanSyncStatus.lastUpEmitAt ? new Date(lanSyncStatus.lastUpEmitAt).toLocaleString() : '—'}`
-                    }
-                    {`　积压：待发出 ${lanSyncStatus.backlogPending} / 待消费 ${lanSyncStatus.backlogIncoming}　终端标识：${lanSyncStatus.terminalId}`}
-                  </>}
+            <span className={`s-pill ${!lanSyncStatus?.enabled ? '' : lanSyncBacklog > 0 ? 's-pill--warn' : 's-pill--ok'}`}>
+              <span className="s-pill__dot" />
+              {!lanSyncStatus?.enabled ? '未启用' : lanSyncBacklog > 0 ? '同步中 · 有积压' : '同步中'}
             </span>
           </div>
-          <div className="setting-control">
-            <button className="btn btn-secondary" onClick={handleLanSyncRunNow} disabled={lanSyncRunning || !lanSyncStatus?.enabled}>
-              {lanSyncRunning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-              {lanSyncRunning ? '同步中...' : '立即同步'}
-            </button>
+          <div className="s-card__body">
+            {/* 同步拓扑：本机 ⇄ 共享目录双车道。未启用时车道保留但不流动（不假装在同步） */}
+            <div className="sync-diagram">
+              <div className="sync-node">
+                <div className="sync-node__box">
+                  <Monitor size={20} />
+                  <small>本机</small>
+                </div>
+                <div className="sync-node__who" title={identityName.trim() || '本机'}>
+                  {identityName.trim() || '本机'}
+                </div>
+                <div className="sync-node__tag">
+                  {lanSyncRole === 'hub' ? '中枢 · 主管机' : lanSyncRole === 'terminal' ? '终端 · 销售机' : '角色未配置'}
+                </div>
+              </div>
+
+              <div className="sync-lanes">
+                <div className={`sync-lane ${lanSyncEnabled ? '' : 'sync-lane--idle'}`}>
+                  <span className="sync-lane__dir">{lanSyncLanes.down.label} ↓</span>
+                  <div className="sync-lane__track" />
+                  <span className="sync-lane__time">{lanSyncEnabled ? lanSyncLanes.down.time : '—'}</span>
+                </div>
+                <div className={`sync-lane sync-lane--up ${lanSyncEnabled ? '' : 'sync-lane--idle'}`}>
+                  <span className="sync-lane__dir">{lanSyncLanes.up.label} ↑</span>
+                  <div className="sync-lane__track" />
+                  <span className="sync-lane__time">{lanSyncEnabled ? lanSyncLanes.up.time : '—'}</span>
+                </div>
+              </div>
+
+              <div className="sync-node">
+                <div className="sync-node__box">
+                  <FolderOpen size={20} />
+                  <small>SMB</small>
+                </div>
+                <div className="sync-node__who">共享目录</div>
+                <div className="sync-node__tag" title={lanSyncStatus?.sharedDir || lanSyncDir || ''}>
+                  {lanSyncStatus?.sharedDir || lanSyncDir || '未配置'}
+                </div>
+              </div>
+            </div>
+
+            {!lanSyncEnabled && (
+              <div className="sync-off">
+                <AlertTriangle size={15} />
+                同步未启用（共享目录或角色未配置）
+              </div>
+            )}
+
+            <div className="s-stat-grid">
+              <div className="s-stat">
+                <div className="s-stat__k">待上传</div>
+                <div className={`s-stat__v ${(lanSyncStatus?.backlogPending || 0) > 0 ? 'is-warn' : ''}`}>
+                  {lanSyncStatus?.backlogPending ?? 0}
+                </div>
+              </div>
+              <div className="s-stat">
+                <div className="s-stat__k">待接收</div>
+                <div className={`s-stat__v ${(lanSyncStatus?.backlogIncoming || 0) > 0 ? 'is-warn' : ''}`}>
+                  {lanSyncStatus?.backlogIncoming ?? 0}
+                </div>
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div>
+                <div className="s-row__label">共享目录</div>
+                <div className="s-row__desc">SMB 共享文件夹的挂载路径（如 /Volumes/weflow-sync 或 Windows 映射盘符目录），留空 = 同步关闭；聊天原文永不出机，只同步结构化事件</div>
+              </div>
+              <div className="s-row__ctrl">
+                <input
+                  type="text"
+                  className="field-input"
+                  style={{ width: '280px' }}
+                  placeholder="/Volumes/weflow-sync"
+                  value={lanSyncDir}
+                  onChange={(e) => setLanSyncDir(e.target.value)}
+                  onBlur={async (e) => {
+                    const v = e.target.value.trim()
+                    await configService.setLanSyncSharedDir(v)
+                    setLanSyncDir(v)
+                    showMessage(v ? `共享目录已保存：${v}` : '共享目录已清空（同步关闭）', true)
+                    await refreshLanSyncStatus()
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div>
+                <div className="s-row__label">本机角色</div>
+                <div className="s-row__desc">中枢 = 主管机（产出分配/调派/回收指令，消费各终端回执）；终端 = 销售机（消费指令、上行回执，超时未跟进的线索不再由这台电脑自动回收）。目录与角色都填了同步才启用</div>
+              </div>
+              <div className="s-row__ctrl">
+                <SegmentedControl
+                  ariaLabel="本机在同步网络中的角色"
+                  value={lanSyncRole}
+                  onChange={(v) => { void handleLanSyncRoleChange(v) }}
+                  options={[
+                    { value: '', label: '未配置' },
+                    { value: 'hub', label: '中枢 · 主管机', dot: 'var(--color-accent)' },
+                    { value: 'terminal', label: '终端 · 销售机', dot: 'var(--color-success)' }
+                  ]}
+                />
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div>
+                <div className="s-row__label">终端标识</div>
+                <div className="s-row__desc">本机在同步网络中的唯一 ID</div>
+              </div>
+              <div className="s-row__ctrl">
+                <span className="s-mono">{lanSyncStatus?.terminalId || '—'}</span>
+              </div>
+            </div>
+
+            <div className="s-row">
+              <div />
+              <div className="s-row__ctrl">
+                <button className="btn btn-secondary" onClick={handleLanSyncRunNow} disabled={lanSyncRunning || !lanSyncStatus?.enabled}>
+                  {lanSyncRunning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                  {lanSyncRunning ? '同步中...' : '立即同步'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3169,7 +3484,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const renderModelsTab = () => (
     <div className="tab-content">
       <div className="form-group">
-        <label>语音识别模型 (Whisper)</label>
+        <label>语音识别模型</label>
         <span className="form-hint">用于语音消息转文字功能</span>
 
         <div className="setting-control vertical has-border">
@@ -3478,6 +3793,58 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     return { sessionFilterOptionMap: optionMap, sessionFilterOptions: options }
   }, [chatSessions, messagePushContactOptions])
 
+  /**
+   * 屏蔽名单的 sessionId → 显示名解析（三级回落，永不空白）：
+   * ① customer_profile.display_name（权威，经 sales:customer:get）
+   * ② 微信会话显示名（sessionFilterOptionMap）
+   * ③ 原始 sessionId（wxid），保证不出现空行
+   * 已有解析结果不重复请求（仅增不删，列表极短）。
+   */
+  useEffect(() => {
+    const pending = aiInsightNonCustomerBlacklist
+      .map((entry) => entry.sessionId)
+      .filter((sessionId) => sessionId && !blacklistDisplayNames[sessionId])
+    if (pending.length === 0) return
+    let cancelled = false
+    void (async () => {
+      const resolved: Record<string, string> = {}
+      for (const sessionId of pending) {
+        try {
+          const result = await window.electronAPI.sales.customerGet(sessionId)
+          const name = String(result?.profile?.display_name || '').trim()
+          if (name) resolved[sessionId] = name
+        } catch {
+          // 解析失败不阻塞：回落微信会话名 / wxid
+        }
+      }
+      if (cancelled || Object.keys(resolved).length === 0) return
+      setBlacklistDisplayNames((prev) => ({ ...prev, ...resolved }))
+    })()
+    return () => { cancelled = true }
+  }, [aiInsightNonCustomerBlacklist, blacklistDisplayNames])
+
+  /** 屏蔽名单显示名（三级回落；解析不到显示 wxid，不显示空白） */
+  const resolveBlacklistDisplayName = (sessionId: string): string => {
+    const fromProfile = String(blacklistDisplayNames[sessionId] || '').trim()
+    if (fromProfile) return fromProfile
+    const fromSession = String(sessionFilterOptionMap.get(sessionId)?.displayName || '').trim()
+    if (fromSession) return fromSession
+    return sessionId
+  }
+
+  /** 屏蔽名单按来源分组：手动屏蔽在前，旧版自动判定在后（后者需顶部误判提示） */
+  const blacklistGroups = useMemo(() => {
+    const groups: Array<{ source: InsightBlacklistSource; entries: InsightBlacklistEntry[] }> = [
+      { source: 'manual', entries: [] },
+      { source: 'legacy_auto', entries: [] }
+    ]
+    for (const entry of aiInsightNonCustomerBlacklist) {
+      const group = groups.find((g) => g.source === entry.source) || groups[1]
+      group.entries.push(entry)
+    }
+    return groups.filter((g) => g.entries.length > 0)
+  }, [aiInsightNonCustomerBlacklist])
+
   const getSessionFilterOptionInfo = (username: string) => {
     return sessionFilterOptionMap.get(username) || {
       username,
@@ -3568,24 +3935,37 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const renderAiCommonTab = () => (
     <div className="tab-content">
       <div className="form-group">
-        <label>通用 API 地址</label>
+        <label>AI 服务地址</label>
         <span className="form-hint">
-          这是「AI 见解」与「AI 足迹总结」共享的模型接入配置。填写 OpenAI 兼容接口的 <strong>Base URL</strong>，末尾<strong>不要加斜杠</strong>。
-          程序会自动拼接 <code>/chat/completions</code>。
-          <br />
-          示例：<code>https://api.ohmygpt.com/v1</code> 或 <code>https://api.openai.com/v1</code>
+          选一个你购买 AI 服务的平台。「AI 见解」与「AI 足迹总结」共用这一个地址。
         </span>
-        <input
-          type="text"
-          className="field-input"
-          value={aiModelApiBaseUrl}
-          placeholder="https://api.ohmygpt.com/v1"
-          onChange={(e) => {
-            const val = e.target.value
-            setAiModelApiBaseUrl(val)
-            scheduleConfigSave('aiModelApiBaseUrl', () => configService.setAiModelApiBaseUrl(val))
-          }}
-        />
+        <div style={{ marginTop: '10px' }}>
+          <SegmentedControl
+            ariaLabel="AI 服务地址"
+            value={aiServicePreset}
+            onChange={(v) => void applyAiServicePreset(v)}
+            options={AI_SERVICE_PRESETS.map((p) => ({ value: p.value, label: p.label }))}
+          />
+        </div>
+        {aiServicePreset !== 'custom' ? (
+          <span className="setting-desc" style={{ display: 'block', marginTop: '8px' }}>
+            当前：<code>{aiModelApiBaseUrl}</code>
+          </span>
+        ) : (
+          <input
+            type="text"
+            className="field-input"
+            aria-label="AI 服务地址（自定义）"
+            value={aiModelApiBaseUrl}
+            placeholder="https://api.ohmygpt.com/v1"
+            onChange={(e) => {
+              const val = e.target.value
+              setAiModelApiBaseUrl(val)
+              scheduleConfigSave('aiModelApiBaseUrl', () => configService.setAiModelApiBaseUrl(val))
+            }}
+            style={{ marginTop: '10px' }}
+          />
+        )}
       </div>
 
       <div className="form-group">
@@ -3650,25 +4030,41 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
 
       <div className="form-group">
-        <label>通用 Max Tokens</label>
+        <label>单次回答长度上限</label>
         <span className="form-hint">
-          设置单次请求的最大输出 token 数量，见解与足迹共享该值。默认 <code>1024</code>。
+          限制 AI 一次最多写多长，越长越慢也越费额度。不确定就选「标准」。
         </span>
-        <input
-          type="number"
-          className="field-input"
-          value={aiModelApiMaxTokens}
-          min={1}
-          max={2000000}
-          step={1}
-          onChange={(e) => {
-            const parsed = parseInt(e.target.value, 10)
-            const val = Math.min(2000000, Math.max(1, Number.isFinite(parsed) ? parsed : 1024))
-            setAiModelApiMaxTokens(val)
-            scheduleConfigSave('aiModelApiMaxTokens', () => configService.setAiModelApiMaxTokens(val))
-          }}
-          style={{ width: 260 }}
-        />
+        <div style={{ marginTop: '10px' }}>
+          <SegmentedControl
+            ariaLabel="单次回答长度上限"
+            value={maxTokensTier}
+            onChange={(v) => void applyMaxTokensTier(v)}
+            options={MAX_TOKENS_TIERS.map((t) => ({ value: t.value, label: t.label }))}
+          />
+        </div>
+        <AdvancedFold title="高级 · 自定义长度" hint="直接填写具体数值">
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>回答长度上限（token）</span>
+            </div>
+            <input
+              type="number"
+              className="field-input"
+              aria-label="回答长度上限（token）"
+              value={aiModelApiMaxTokens}
+              min={1}
+              max={2000000}
+              step={1}
+              onChange={(e) => {
+                const parsed = parseInt(e.target.value, 10)
+                const val = Math.min(2000000, Math.max(1, Number.isFinite(parsed) ? parsed : 1024))
+                setAiModelApiMaxTokens(val)
+                scheduleConfigSave('aiModelApiMaxTokens', () => configService.setAiModelApiMaxTokens(val))
+              }}
+              style={{ width: 260 }}
+            />
+          </div>
+        </AdvancedFold>
       </div>
 
       <div className="form-group">
@@ -4055,12 +4451,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="divider" />
 
-      <div className="form-group">
-        <label>调试工具</label>
-        <span className="form-hint">
-          该功能依赖「基础配置」里的模型配置。用于验证完整链路（数据库→API→弹窗）。
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
+      <AdvancedFold title="高级 · 故障自检" hint="怀疑 AI 没正常工作时用">
+        <div className="form-group">
+          <span className="form-hint">
+            点一下会走一遍完整流程（读取数据 → 调用 AI → 生成结果），看是卡在哪一步。
+            需要先在「AI 基础配置」里填好服务地址与密钥。
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
           <button
             className="btn btn-secondary"
             onClick={async () => {
@@ -4090,8 +4487,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               {insightTriggerResult.message}
             </span>
           )}
+          </div>
         </div>
-      </div>
+      </AdvancedFold>
 
       <div className="divider" />
 
@@ -4198,10 +4596,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="divider" />
 
+      <AdvancedFold title="高级 · 微博公开内容（实验性）" hint="需要先在下方名单里绑定微博 UID，一般用不上">
       <div className="form-group">
         <label>允许发送近期社交平台内容用于分析（实验性）</label>
         <span className="form-hint">
-          当前仅支持微博，且仅对已手动绑定微博 UID 的联系人生效。为了控制资源占用和平台风控，程序只会在触发见解时按需抓取近期公开内容，不会做后台持续扫描。
+          这是实验功能，只对已绑定微博 UID 的联系人生效。为了省资源、也为了避免被平台限流，
+          程序只在你点开见解时抓一次近期公开内容，不会在后台一直扫。
         </span>
         <div className="log-toggle-line">
           <span className="log-status">{aiInsightAllowSocialContext ? '已开启' : '已关闭'}</span>
@@ -4259,6 +4659,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </div>
         </div>
       </div>
+      </AdvancedFold>
 
       <div className="divider" />
       {/* 自定义 System Prompt */}
@@ -4275,9 +4676,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         const displayValue = aiInsightSystemPrompt || DEFAULT_SYSTEM_PROMPT
 
         return (
+          <AdvancedFold title="高级 · 自定义提示词" hint="决定 AI 用什么口吻和角度写见解">
           <div className="form-group">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <label style={{ marginBottom: 0 }}>自定义 AI 见解提示词</label>
+              <span className="setting-desc">AI 见解提示词</span>
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={async () => {
@@ -4294,6 +4696,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </span>
             <textarea
               className="field-input ai-prompt-textarea"
+              aria-label="AI 见解提示词"
               rows={8}
               style={{ width: '100%', resize: 'vertical' }}
               value={displayValue}
@@ -4305,6 +4708,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               }}
             />
           </div>
+          </AdvancedFold>
         )
       })()}
 
@@ -4536,7 +4940,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                     <span>对话（{filteredSessions.length}）</span>
                     <span className="insight-moments-column-title">朋友圈</span>
                     <span className="insight-profile-column-title">画像</span>
-                    <span className="insight-social-column-title">社交平台（微博）</span>
+                    <span className="insight-social-column-title">社交平台（微博 · 实验）</span>
                     <span className="anti-revoke-status-column-title">状态</span>
                   </div>
                   {filteredSessions.map((session) => {
@@ -4625,7 +5029,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                                     type="text"
                                     className="insight-social-binding-input"
                                     value={weiboDraftValue}
-                                    placeholder="填写数字 UID"
+                                    placeholder="填写数字 UID（实验）"
                                     onChange={(e) => updateWeiboBindingDraft(session.username, e.target.value)}
                                   />
                                 </div>
@@ -4657,7 +5061,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                                 ) : weiboBinding?.uid ? (
                                   <span className="binding-feedback">已绑定 UID：{weiboBinding.uid}</span>
                                 ) : (
-                                  <span className="binding-feedback muted">仅支持手动填写数字 UID</span>
+                                  <span className="binding-feedback muted">实验功能：仅支持手动填写数字 UID</span>
                                 )}
                               </div>
                             </>
@@ -4685,47 +5089,74 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         )
       })()}
 
-      {/* AI 自动判定非客户黑名单：AI 判定阶段=未知时自动加入，命中不触发见解；可手动解除（避免 AI 误判永久沉默） */}
-      <div className="form-group" style={{ marginTop: 16 }}>
-        <label>AI 自动判定非客户</label>
-        <span className="form-hint">
-          AI 分析时判定该联系人与采购无关（阶段=未知），会自动加入此黑名单，之后不再对 TA 触发 AI 见解。若被误判，可在此解除。
-        </span>
-        {aiInsightNonCustomerBlacklist.length === 0 ? (
-          <div className="binding-feedback muted" style={{ padding: '8px 0' }}>
-            暂无自动判定为非客户的会话
+      {/* AI 见解屏蔽名单（2026-09-13 由「AI 自动判定非客户」重定义）：名单只出不进，全部由用户手动管理 */}
+      <div style={{ marginTop: 16 }}>
+        <div className="insight-blocklist">
+          <div className="insight-blocklist__head">
+            <span className="insight-blocklist__icon" aria-hidden="true"><UserX size={18} /></span>
+            <div className="insight-blocklist__heading">
+              <label>AI 见解屏蔽名单</label>
+              <span className="insight-blocklist__sub">
+                名单内的联系人不会被自动 / 批量触发 AI 见解与分析；你手动点「AI 识别这个客户」或手动触发见解不受影响。名单由你手动维护，AI 不会自动加人。
+              </span>
+            </div>
+            {aiInsightNonCustomerBlacklist.length > 0 && (
+              <span className="insight-blocklist__count">
+                <i className="insight-blocklist__count-dot" aria-hidden="true" />
+                {aiInsightNonCustomerBlacklist.length} 人
+              </span>
+            )}
           </div>
-        ) : (
-          <div className="insight-nc-blacklist">
-            {aiInsightNonCustomerBlacklist.map((sessionId) => {
-              const matched = sessionFilterOptions.find((s) => s.username === sessionId)
-              return (
-                <div key={sessionId} className="insight-nc-blacklist-item">
-                  <Avatar
-                    src={matched?.avatarUrl}
-                    name={matched ? getSessionDisplayName(matched) : sessionId}
-                    size={24}
-                  />
-                  <span className="insight-nc-blacklist-name">
-                    {matched ? getSessionDisplayName(matched) : sessionId}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={async () => {
-                      const next = aiInsightNonCustomerBlacklist.filter((id) => id !== sessionId)
-                      setAiInsightNonCustomerBlacklist(next)
-                      await configService.setAiInsightNonCustomerBlacklist(next)
-                      showMessage('已解除该会话的 AI 非客户判定，可重新触发见解', true)
-                    }}
-                  >
-                    解除
-                  </button>
+
+          {aiInsightNonCustomerBlacklist.length === 0 ? (
+            <div className="insight-blocklist__empty">
+              名单为空 · 所有联系人都会正常触发 AI 识别
+            </div>
+          ) : (
+            blacklistGroups.map((group) => (
+              <div key={group.source} className="insight-blocklist__group">
+                <div className="insight-blocklist__group-title">
+                  {group.source === 'manual' ? '手动屏蔽' : '旧版自动判定'}
                 </div>
-              )
-            })}
-          </div>
-        )}
+                {group.source === 'legacy_auto' && (
+                  <div className="insight-blocklist__callout">
+                    以下条目来自已下线的自动判定，可能存在误判，建议逐个确认。解除屏蔽后，TA 会重新参与自动见解与分析。
+                  </div>
+                )}
+                {group.entries.map((entry) => {
+                  const name = resolveBlacklistDisplayName(entry.sessionId)
+                  const shortId = entry.sessionId.length > 14
+                    ? `${entry.sessionId.slice(0, 14)}…`
+                    : entry.sessionId
+                  // 无记录就写「时间无记录」——不伪造日期
+                  const timeText = entry.addedAt ? formatBlacklistAddedAt(entry.addedAt) : '时间无记录'
+                  const sourceText = entry.source === 'manual' ? '手动加入' : '由旧版自动判定加入'
+                  return (
+                    <div key={entry.sessionId} className="insight-blocklist__row">
+                      <span className="insight-blocklist__ava" aria-hidden="true">{name.slice(0, 1)}</span>
+                      <div className="insight-blocklist__info">
+                        <div className="insight-blocklist__name">{name}</div>
+                        <div className="insight-blocklist__meta">{shortId} · {timeText} {sourceText}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={async () => {
+                          const next = removeInsightBlacklistEntry(aiInsightNonCustomerBlacklist, entry.sessionId)
+                          setAiInsightNonCustomerBlacklist(next)
+                          await configService.setAiInsightNonCustomerBlacklist(next)
+                          showMessage(`已解除对「${name}」的 AI 见解屏蔽`, true)
+                        }}
+                      >
+                        解除屏蔽
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="divider" />
@@ -4783,9 +5214,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               </div>
             </div>
 
+            <AdvancedFold title="高级 · 自定义提示词" hint="决定足迹总结怎么写">
             <div className="form-group">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                <label style={{ marginBottom: 0 }}>足迹总结提示词</label>
+                <span className="setting-desc">足迹总结提示词</span>
                 <button
                   className="btn btn-secondary btn-sm"
                   onClick={async () => {
@@ -4801,6 +5233,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               </span>
               <textarea
                 className="field-input ai-prompt-textarea"
+                aria-label="足迹总结提示词"
                 rows={6}
                 style={{ width: '100%', resize: 'vertical' }}
                 value={displayValue}
@@ -4811,6 +5244,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 }}
               />
             </div>
+            </AdvancedFold>
           </>
         )
       })()}
@@ -4900,9 +5334,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </div>
         </div>
 
+        <AdvancedFold title="高级 · 自定义提示词" hint="决定群聊总结怎么写">
         <div className="form-group">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <label style={{ marginBottom: 0 }}>群聊总结提示词</label>
+            <span className="setting-desc">群聊总结提示词</span>
             <button
               type="button"
               className="btn btn-secondary btn-sm"
@@ -4919,6 +5354,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </span>
           <textarea
             className="field-input ai-prompt-textarea"
+            aria-label="群聊总结提示词"
             rows={10}
             style={{ width: '100%', resize: 'vertical', marginTop: 8 }}
             value={groupSummaryPromptDisplayValue}
@@ -4932,6 +5368,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             该提示词控制 JSON 输出结构和总结解析路径，不建议随意修改，否则可能导致总结失败或内容错位。
           </span>
         </div>
+        </AdvancedFold>
 
         <div className="divider" />
 
@@ -5097,9 +5534,10 @@ JSON 输出格式：
               />
             </div>
 
+            <AdvancedFold title="高级 · 自定义提示词" hint="决定消息解析输出什么字段">
             <div className="form-group">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                <label style={{ marginBottom: 0 }}>消息解析提示词</label>
+                <span className="setting-desc">消息解析提示词</span>
                 <button
                   className="btn btn-secondary btn-sm"
                   onClick={async () => {
@@ -5115,6 +5553,7 @@ JSON 输出格式：
               </span>
               <textarea
                 className="field-input ai-prompt-textarea"
+                aria-label="消息解析提示词"
                 rows={10}
                 style={{ width: '100%', resize: 'vertical' }}
                 value={displayValue}
@@ -5128,6 +5567,7 @@ JSON 输出格式：
                 该提示词控制 JSON 输出结构和解析口径，不建议随意修改，否则可能导致解析失败或内容错位。
               </span>
             </div>
+            </AdvancedFold>
           </>
         )
       })()}
@@ -5136,6 +5576,7 @@ JSON 输出格式：
 
   const renderApiTab = () => (
     <div className="tab-content">
+      {/* API 服务 tab 直出不折叠（用户决策 2026-09-13：与之前一致，普通使用者也不需要多一步展开） */}
       <div className="form-group">
         <label>HTTP API 服务</label>
         <span className="form-hint">启用后可通过 HTTP 接口查询消息数据（仅限本机访问）</span>
@@ -5709,6 +6150,95 @@ JSON 输出格式：
       </div>
 
       <div className="settings-section">
+        <div className="s-card">
+          <div className="s-card__head">
+            <div className="s-card__heading">
+              <label>自动化程度</label>
+              <span className="s-card__sub">
+                决定系统替你处理多少事情、多少留给你确认。这一档同时控制「客户信息自动填充」与「跟单中心自动确认」。
+              </span>
+            </div>
+          </div>
+          <div className="s-card__body">
+            <div className="s-row">
+              <div className="s-row__label">
+                <span>档位</span>
+                <span className="s-row__desc">
+                  {autoTier
+                    ? AUTO_TIERS.find((t) => t.value === autoTier)?.desc
+                    : '当前阈值是手动微调过的，不对应任何预设档位；可在下方「高级 · 微调」查看具体数值'}
+                </span>
+              </div>
+              <div className="s-row__ctrl">
+                <SegmentedControl
+                  ariaLabel="自动化程度"
+                  value={autoTier}
+                  onChange={(v) => void applyAutoTier(v)}
+                  options={AUTO_TIERS.map((t) => ({ value: t.value, label: t.label }))}
+                />
+              </div>
+            </div>
+
+            <AdvancedFold title="高级 · 微调" hint="三个阈值的具体数值，一般不需要改">
+              <div className="setting-item">
+                <div className="setting-label">
+                  <span>直接写入阈值</span>
+                  <span className="setting-desc">置信度 ≥ 该值的字段自动写入档案，越高越保守</span>
+                </div>
+                <div className="setting-control">
+                  <input
+                    type="range" min="0.5" max="1" step="0.05"
+                    aria-label="直接写入阈值"
+                    value={crmEnrichAutoApply}
+                    onChange={(e) => void applyEnrichAutoApply(parseFloat(e.target.value))}
+                    style={{ width: '160px' }}
+                  />
+                  <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichAutoApply.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="setting-item">
+                <div className="setting-label">
+                  <span>待确认下限</span>
+                  <span className="setting-desc">介于「待确认下限」与「直接写入阈值」之间的字段进跟单中心由你裁决，低于下限直接丢弃（不得高于直接写入阈值）</span>
+                </div>
+                <div className="setting-control">
+                  <input
+                    type="range" min="0.5" max="1" step="0.05"
+                    aria-label="待确认下限"
+                    value={crmEnrichThreshold}
+                    onChange={(e) => void applyEnrichThreshold(parseFloat(e.target.value))}
+                    style={{ width: '160px' }}
+                  />
+                  <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichThreshold.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="setting-item">
+                <div className="setting-label">
+                  <span>置信阈值</span>
+                  <span className="setting-desc">置信度 ≥ 阈值的条目才会自动处理，越低自动越多但误判风险越高（建议 0.8）</span>
+                </div>
+                <div className="setting-control">
+                  <input
+                    type="range" min="0.5" max="1" step="0.05"
+                    aria-label="置信阈值"
+                    value={crmAutoConfirmThreshold}
+                    onChange={async (e) => {
+                      const val = parseFloat(e.target.value)
+                      setCrmAutoConfirmThreshold(val)
+                      await configService.setCrmAutoConfirmThreshold(val)
+                      showMessage(`置信阈值已设为 ${val.toFixed(2)}`, true)
+                    }}
+                    style={{ width: '160px' }}
+                  />
+                  <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmAutoConfirmThreshold.toFixed(2)}</span>
+                </div>
+              </div>
+            </AdvancedFold>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-section">
         <h2>CRM 客户信息自动填充</h2>
         <div className="setting-item">
           <div className="setting-label">
@@ -5731,46 +6261,6 @@ JSON 输出格式：
               />
               <span className="switch-slider" />
             </label>
-          </div>
-        </div>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>直接写入阈值</span>
-            <span className="setting-desc">置信度 ≥ 该值的字段自动写入档案，越高越保守（建议 0.85）</span>
-          </div>
-          <div className="setting-control">
-            <input
-              type="range" min="0.5" max="1" step="0.05"
-              value={crmEnrichAutoApply}
-              onChange={async (e) => {
-                const val = parseFloat(e.target.value)
-                setCrmEnrichAutoApply(val)
-                await configService.setCrmEnrichAutoApply(val)
-                showMessage(`直接写入阈值已设为 ${val.toFixed(2)}`, true)
-              }}
-              style={{ width: '160px' }}
-            />
-            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichAutoApply.toFixed(2)}</span>
-          </div>
-        </div>
-        <div className="setting-item">
-          <div className="setting-label">
-            <span>待确认下限</span>
-            <span className="setting-desc">介于「待确认下限」与「直接写入阈值」之间的字段进跟单中心由你裁决，低于下限直接丢弃（建议 0.7）</span>
-          </div>
-          <div className="setting-control">
-            <input
-              type="range" min="0.5" max="1" step="0.05"
-              value={crmEnrichThreshold}
-              onChange={async (e) => {
-                const val = parseFloat(e.target.value)
-                setCrmEnrichThreshold(val)
-                await configService.setCrmEnrichThreshold(val)
-                showMessage(`待确认下限已设为 ${val.toFixed(2)}`, true)
-              }}
-              style={{ width: '160px' }}
-            />
-            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmEnrichThreshold.toFixed(2)}</span>
           </div>
         </div>
         <div className="setting-item">
@@ -5845,30 +6335,16 @@ JSON 输出格式：
         <div className="setting-item">
           <div className="setting-label">
             <span>置信阈值</span>
-            <span className="setting-desc">置信度 ≥ 阈值的条目才会自动处理，越低自动越多但误判风险越高（建议 0.8）</span>
+            <span className="setting-desc">由页面顶部「自动化程度」档位统一控制，当前 {crmAutoConfirmThreshold.toFixed(2)}；需要精确调整请用该区块的「高级 · 微调」</span>
           </div>
           <div className="setting-control">
-            <input
-              type="range"
-              min="0.5"
-              max="1"
-              step="0.05"
-              value={crmAutoConfirmThreshold}
-              onChange={async (e) => {
-                const val = parseFloat(e.target.value)
-                setCrmAutoConfirmThreshold(val)
-                await configService.setCrmAutoConfirmThreshold(val)
-                showMessage(`置信阈值已设为 ${val.toFixed(2)}`, true)
-              }}
-              style={{ width: '160px' }}
-            />
-            <span style={{ marginLeft: '8px', fontSize: '13px', minWidth: '36px' }}>{crmAutoConfirmThreshold.toFixed(2)}</span>
+            <span className="setting-desc">随档位联动</span>
           </div>
         </div>
         <div className="setting-item">
           <div className="setting-label">
             <span>发票自动开单</span>
-            <span className="setting-desc">发票自动关联合同后，若合同含税号（tax_no）则自动生成开票信息单</span>
+            <span className="setting-desc">发票自动关联合同后，若合同里填了税号，就自动生成开票信息单</span>
           </div>
           <div className="setting-control">
             <label className="switch" htmlFor="crm-auto-confirm-invoice-docgen-toggle">
@@ -5953,8 +6429,8 @@ JSON 输出格式：
         <h2>线索流转</h2>
         <div className="setting-item">
           <div className="setting-label">
-            <span>首触 SLA（小时）</span>
-            <span className="setting-desc">线索导入后超过该时长未首触，将生成今日行动提醒（仅盯「待首触」状态，默认 24 小时）</span>
+            <span>新线索跟进时限（小时）</span>
+            <span className="setting-desc">新线索导入后超过这个时长还没联系过，就会出现在今日行动提醒里（只盯「待首触」状态，默认 24 小时）</span>
           </div>
           <div className="setting-control">
             <input
@@ -5967,7 +6443,7 @@ JSON 输出格式：
                 const val = Math.max(1, Math.min(72, parseInt(e.target.value, 10) || 24))
                 setCrmLeadSlaHours(val)
                 await configService.setCrmLeadSlaHours(val)
-                showMessage(`首触 SLA 已设为 ${val} 小时（新导入线索生效）`, true)
+                showMessage(`新线索跟进时限已设为 ${val} 小时（新导入线索生效）`, true)
               }}
               style={{ width: '160px' }}
             />
@@ -6310,7 +6786,7 @@ JSON 输出格式：
     const channelCards: { id: configService.UpdateChannel; title: string; desc: string }[] = [
       { id: 'stable', title: '稳定版', desc: '正式发布的版本，适合日常使用' },
       { id: 'preview', title: '预览版', desc: '正式发布前的预览体验版本' },
-      { id: 'dev', title: '开发版', desc: '即刻体验我们的屎山代码' }
+      { id: 'dev', title: '开发版', desc: '最新功能抢先体验，可能不稳定' }
     ]
 
     return (
