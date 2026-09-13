@@ -1,7 +1,7 @@
 /**
  * current-view-test.ts —— P0-3 第一刀验收：getCustomerCurrentView 只读组装层
  *
- * 验收（docs/P0-3-Current-Judgment-Consumer-盘点.md §6 拍板契约）：
+ * 验收（docs/实施记录/P0-3-Current-Judgment-Consumer-盘点.md §6 拍板契约）：
  *   1  客户不存在 → null（IPC 层以失败返回）
  *   2  有客户无判断 → state 正常 + 四类型 null（明确空态，不补生成）
  *   3  三判断投影正确：value/source/generatedAt/messageKey 透传，

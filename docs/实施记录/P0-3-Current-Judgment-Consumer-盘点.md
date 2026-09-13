@@ -1,7 +1,7 @@
 # P0-3 Current Judgment Consumer Layer：盘点与设计草案
 
 > **状态：盘点完成，设计草案待拍板（2026-08-23）。本阶段不写代码。**
-> 前置：P0-2 已 CLOSED（A=State / B=Evidence / C=Judgment 三真源封板，`docs/P0-2-收口-契约验收.md`）。
+> 前置：P0-2 已 CLOSED（A=State / B=Evidence / C=Judgment 三真源封板，`docs/实施记录/P0-2-收口-契约验收.md`）。
 
 ## 1. 背景
 

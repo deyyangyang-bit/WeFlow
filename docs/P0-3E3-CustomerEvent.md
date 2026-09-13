@@ -2,7 +2,7 @@
 
 > **状态：E3.1 设计定稿（2026-08-23），进入实现**
 >
-> 前置：docs/P0-3E3-CustomerEvent-盘点.md（第一刀只读盘点）→ 用户拍板 Scope Lock（下方原文引用）→ 本设计。
+> 前置：docs/实施记录/P0-3E3-CustomerEvent-盘点.md（第一刀只读盘点）→ 用户拍板 Scope Lock（下方原文引用）→ 本设计。
 
 ---
 

@@ -1,7 +1,7 @@
 # P0-2B Evidence Resolver 设计
 
 > 2026-08-23 · 设计定稿（只盘点 + 设计，未改任何代码 / schema / UI）
-> 依据：docs/P0-2-数据契约盘点.md（硬伤② 证据链断点）+ docs/P0-2A-Canonical-State-设计.md
+> 依据：docs/实施记录/P0-2-数据契约盘点.md（硬伤② 证据链断点）+ docs/P0-2A-Canonical-State-设计.md
 > 定位：**统一「AI 判断记录 → 证据（原消息 + 上下文）」的读入口**。复用现有 WeFlow 消息读取层，
 > **不新增 WCDB 读取路径、不碰 wcdbCore、不改 `/api/v1/messages`、不迁移历史数据**。
 

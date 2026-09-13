@@ -76,6 +76,7 @@
 | `crm:opportunity:get` | `id: number` | 商机详情 \| null | R |
 | `crm:opportunity:events` | `id: number` | `opportunity_event[]` | R |
 | `crm:opportunity:stats` | — | 商机统计 | R |
+| `crm:opportunity:analysis` | — | `OpportunityAnalysisResult`（管道总览 + 仅 active 的阶段分段 + 各段优先处理名单，含最大卡点双指标） | R。只读跨库装配（crmDb + salesDb），零模型调用、零落库；事实源 `shared/opportunitySignals.ts`（§2.101） |
 | `crm:opportunity:stage` | `id: number, stage: string` | `boolean` | S。写者='manual'（宪法 §1.9 四写者） |
 | `crm:opportunity:close` | `id: number, status: 'lost', reason: string` | `boolean` | S。仅丢单；status≠lost 或 reason 空 → false；已关闭（won/lost）商机再次关单 → false |
 | `crm:opportunity:registerDeal` | `id: number, payload: OpportunityDealPayload` | `{ ok: boolean, reason?: string }` | S。正式成交单点：成交字段 + status='won' + opportunity_event + audit_event 同事务，校验失败整体回滚 |
@@ -210,14 +211,15 @@
 | `sales:customer:export` | — | Excel 导出（弹保存框） | R |
 | `sales:customer:detail` | `sessionId: string` | 画像详情（无则自动建档） | S |
 
-**统计/漏斗（4）**
+**统计/漏斗（3）**
 
 | 通道 | 请求参数 | 响应 | 幂等 |
 |---|---|---|---|
 | `sales:dashboard:stats` | — | `{ success, stats }` | R |
-| `sales:funnel:stats` | `days?: number`（0=全部，默认 30） | `{ success, data }` | R |
 | `sales:actionFunnel:get` | `days?: number \| null`（null=全量） | `{ success, data }` | R |
 | `sales:actionFunnel:breakdown` | `days?: number \| null` | `{ success, data }`（下钻） | R |
+
+> `sales:funnel:stats` 已于 2026-09-13 随销售漏斗页退役**删除**（HANDOVER §2.101）；销售漏斗能力并入商机「阶段分析」视图，其只读数据源见下方 CRM 段 `crm:opportunity:analysis`。
 
 **意向/证据/话术（5）**
 
@@ -288,7 +290,7 @@
 | `crm:assignment:list` | `{ leadId?: number, salesName?: string, status?, page?, pageSize? }` | `{ rows, total }` | — | R |
 | `crm:identity:bind` | `{ leadId?: number, identityId?: number, wxid: string, actor: string }` | `{ identityId, customerId? }` | E101 wxid 空；E301 目标不存在；E204 wxid 已挂他 customer | S：手动绑定写 `source='manual', confidence=1.0`（宪法 §1.2/§2.4），全程审计；命中冲突 → 返回合并提案所需信息，**不自动改挂** |
 | `crm:customer:mergeProposal` | `{ identityType: 'phone' \| 'wxid', identityValue: string, fromCustomerId, toCustomerId, actor: string }` | `{ proposalId }` | E204 无冲突；E301 | U：合并提案 B/C 档（AI 或人工提案）→ **审批后执行**（改挂 + ownership_history + audit_event 同事务；AI 永不执行合并） |
-| `crm:audit:query` | `{ entityType?: string, entityId?: number, actor?: string, action?: string, beginAt?, endAt?, page?, pageSize? }` | `{ rows, total }` | — | R。audit_event 只读；activity_log / auto_confirm_log 封存只读同口径（宪法 §1.12） |
+| `crm:audit:query` | `{ entityType?: string, entityId?: number, actor?: string, action?: string, beginAt?, endAt?, page?, pageSize? }` | `{ rows, total, labels }` | — | R。audit_event 只读；activity_log / auto_confirm_log 封存只读同口径（宪法 §1.12）。`labels` = 行内实体显示名（key 为 `` `${entity_type}:${entity_id}` ``，仅 `lead`/`account`/`customer` 三类，供渲染层把 `lead #id` 换成人话名；解析不到则该 key 缺席，由渲染层回落原名，**不留空白**）。纯展示层附加字段，只读、无写入路径 |
 | `crm:ownership:history` | `{ entityType: string, entityId: number, page?, pageSize? }` | `{ rows, total }` | — | R。ownership_history 只读 |
 
 > 已有端点不重复建：归属回写 `owner_sales` 由专用 `crmOwnershipService` 走直连 SQL（account/opportunity/logistics

@@ -38,7 +38,7 @@
 | `enrich` | CRM 客户信息补全 | 手动/流程内 | `crmEnrichService` |
 | `insight` | AI 见解（会话分析） | 手动 | `insightService.callInsightApi`（`promptVersion: legacy-v1`） |
 | `profile` | 客户画像生成 | 手动（设置页按钮） | `insightProfileService.callProfileApi` |
-| `action` | 行动建议生成 | 手动 | `salesActionEngine` |
+| `action` | 行动建议生成 | 手动 | `salesActionEngine`（两处入口：行动卡「生成建议」、商机阶段分析「生成跟进建议」，均走 `sales:action:suggest` → `generateActionAnalysis`，见下方注） |
 | `first_classify` | 首触分类 | 手动 | `crmFirstClassifyService` |
 | `report` | 报表摘要 / 周复盘 | 手动 | `salesReportService`（两处） |
 | `reply` | 回复建议 | 手动 | `salesReplyService` |
@@ -60,6 +60,12 @@
 > `stage` 为**已退役**取值：原调用点 `salesStageClassifier.classifyStage`（新消息 → AI 判定阶段 → 自动落库）
 > 属无人触发的自动链路，已按 PRD §5.4（R）删除。历史账本行仍可能读到 `purpose: "stage"`（账本是追加式历史，
 > 不做回溯改写），统计当日消费时会看到，属正常；新建调用点不得再使用该值。
+
+> **`action` 的第二入口（2026-09-13 商机合并 v2.1，HANDOVER §2.101）**：商机「阶段分析」视图优先处理名单行内的
+> 「生成跟进建议」。该入口的输出与消费场景与行动卡「生成建议」同构（都是用户手动为某个客户/商机生成话术与下一步），
+> 故按「若 `action` 已代表该语义则必须复用、不得新增近义 purpose」的规则**复用 `action`**，**未新增 purpose、未新增调用链**——
+> 两入口共用同一个 IPC `sales:action:suggest` → `generateActionAnalysis()`，同一 `usageContext.purpose = 'action'`，
+> 手续费归因与日调用上限一并沿用。该入口在商机**未关联聊天会话**时按钮禁用（无对话可依据，不为空上下文付费）。
 
 > `unclassified` 非零即为缺陷信号：说明有调用点绕过了打标。排查方式：
 > `grep -rn "callChatCompletion(\|simpleCompletion(" electron | grep -v usageContext`

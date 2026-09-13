@@ -1,5 +1,10 @@
 # HANDOVER-20260818 · CRM 零操作改造 + 报价跟进 + 产品库交接
 
+> 状态：已归档
+> 归档日期：2026-09-13
+> 替代文档：`docs/HANDOVER.md`（§2.15-§2.20 已并入全局交接）；同期改造清单见 `docs/实施记录/PLAN-CRM零操作改造.md`
+> 本文仅供历史追溯，不得作为当前开发或设计依据。
+
 > 交接范围：2026-08-17 ~ 08-18 两天的全部改造。接手前先读 `docs/HANDOVER.md`（全局）+ `DEVELOPMENT.md`（开发规范），再读本文件。
 > 基线：commit `8107625` 之前的所有提交已推送 `backup` 远端（永不推 origin）。
 
@@ -101,4 +106,4 @@
 | scripts/crm-enrich-test.ts | 填充引擎单测（55 项） |
 | scripts/import-product-summary.py | 产品汇总表导入脚本 |
 | resources/product-data/产品汇总表_库叉自产+外调车型.xlsx | 产品源数据（微信临时目录备份件） |
-| docs/PLAN-CRM零操作改造.md | 改造方案（已实施，含提交映射） |
+| docs/实施记录/PLAN-CRM零操作改造.md | 改造方案（已实施，含提交映射） |

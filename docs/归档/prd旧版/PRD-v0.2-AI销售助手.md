@@ -2,6 +2,11 @@
 
 # WeFlow AI 销售助手 — 产品需求文档（PRD）v0.2
 
+> 状态：已归档（原文件即位于归档目录）
+> 归档日期：2026-09-13
+> 替代文档：链条为 `PRD-v2-销售行动驱动器.md` → `weflow-hermes-PRD-v3.1.md`（均在归档内）→ 当前权威 `docs/规划/weflow-hermes-PRD-v3.4.md`
+> 本文仅供历史追溯，不得作为当前开发或设计依据。
+
 ## 摘要
 
 基于 WeFlow v5.0.0 源码（Electron 43 + React 19 + Vite 8 + TypeScript + Zustand）进行二次开发，在现有微信数据读取和 AI Insight 体系基础上，扩展销售辅助能力。本文档为 v0.1 草案的优化版，核心改动：明确复用现有 AI 基础设施、采用独立 SQLite 存储、调整功能优先级、补充技术细节。

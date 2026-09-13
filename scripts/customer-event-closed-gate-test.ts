@@ -134,7 +134,7 @@ async function main(): Promise<void> {
   // A10: 文档同步（Scope Lock + 收口验收文档）
   ok('A10 文档同步（Scope Lock 设计 + 收口验收文档）',
     /Scope Lock/.test(readFileSync(join(ROOT, 'docs/P0-3E3-CustomerEvent.md'), 'utf8')) &&
-    /E3 收口/.test(readFileSync(join(ROOT, 'docs/P0-3E3-收口-契约验收.md'), 'utf8')))
+    /E3 收口/.test(readFileSync(join(ROOT, 'docs/实施记录/P0-3E3-收口-契约验收.md'), 'utf8')))
 
   // ── B. 真实库运行态（sql.js 字节进内存只读）──────────────────────────────
   const SQL = await initSqlJs()

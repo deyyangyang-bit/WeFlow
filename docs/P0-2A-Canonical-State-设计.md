@@ -1,7 +1,7 @@
 # P0-2A Canonical State 设计
 
 > 2026-08-23 · 设计定稿（只盘点 + 设计，未改任何代码 / schema / UI）
-> 依据：docs/P0-2-数据契约盘点.md（P0-2 三刀划分：P0-2A → P0-2B Evidence Resolver → P0-2C AI Judgment Persistence → P0-2 UI）
+> 依据：docs/实施记录/P0-2-数据契约盘点.md（P0-2 三刀划分：P0-2A → P0-2B Evidence Resolver → P0-2C AI Judgment Persistence → P0-2 UI）
 > 定位：**不是 CRM 状态机重构，是"谁有资格决定客户当前阶段"的定稿**。第一阶段只解决读取统一，写者收敛按独立提交逐步进行。
 
 ---
