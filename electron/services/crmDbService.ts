@@ -1227,7 +1227,7 @@ class CrmDbService {
   }
   /** 商机漏斗统计：active 商机按阶段分布 + 总金额 */
   opportunityStats(): { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number } {
-    const rows = this.all<{ stage: string; cnt: number; amt: number }>(
+    const rows = this.all(
       "SELECT COALESCE(stage,'unknown') AS stage, COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amt FROM opportunity WHERE status = 'active' GROUP BY stage ORDER BY cnt DESC", [])
     const total = Number(this.all("SELECT COUNT(*) AS c FROM opportunity WHERE status = 'active'", [])[0]?.c ?? 0)
     const totalAmount = Number(this.all("SELECT COALESCE(SUM(amount),0) AS s FROM opportunity WHERE status = 'active'", [])[0]?.s ?? 0)
@@ -1240,6 +1240,18 @@ class CrmDbService {
   activeOpportunitiesByAccount(accountId: number): CrmRow[] {
     if (!accountId) return []
     return this.all("SELECT * FROM opportunity WHERE account_id = ? AND status = 'active' ORDER BY last_signal_at DESC", [accountId])
+  }
+  /** 客户活跃商机合计（count/quantity/amount）——跨库装配给 salesDbService.intentScore 的 opp 入参。
+   *  字段名与 opportunity 表列名一一对应（quantity / amount），此处显式定型以免 CrmRow 索引签名吞掉契约。 */
+  activeOpportunityTotals(accountId: number): { count: number; quantity: number; amount: number } {
+    return this.activeOpportunitiesByAccount(accountId).reduce<{ count: number; quantity: number; amount: number }>(
+      (o, x) => ({
+        count: o.count + 1,
+        quantity: o.quantity + (Number(x.quantity) || 0),
+        amount: o.amount + (Number(x.amount) || 0)
+      }),
+      { count: 0, quantity: 0, amount: 0 }
+    )
   }
   /** 采购信号落库：同客户同产品已有 active 商机 → 累积更新；product 未知时累积到最近的无产品
    *  active 商机（否则每条信号都新建出重复商机）；否则新建。
@@ -1512,7 +1524,8 @@ class CrmDbService {
     }))
   }
   pendingAllocations(): CrmRow[] { return this.all("SELECT * FROM allocation WHERE status = 'pending' ORDER BY id") }
-  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string }, opts: { autoBy?: string; reason?: string } = {}): { ok: boolean; reason?: string } {
+  /** 归属确认：返回 linked=是否挂上了合同（回款是否计入），供「已认领」提示区分「计入合同回款 / 未关联合同」 */
+  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string }, opts: { autoBy?: string; reason?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
     const a = this.getById('allocation', id)
     if (!a) return { ok: false, reason: '归属项不存在' }
     if (a.status !== 'pending') return { ok: false, reason: '已被处理（先到先得）' }

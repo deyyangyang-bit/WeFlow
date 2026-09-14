@@ -391,7 +391,7 @@ class MessagePushService {
       return false
     }
 
-    const sessionType = this.getSessionType(sessionId, session)
+    const sessionType = this.getSessionType(sessionId)
     if (sessionType === 'private' && !this.isRevokeSessionSummary(session)) {
       return false
     }
@@ -512,7 +512,7 @@ class MessagePushService {
       if (!payload) continue
       if (!this.shouldPushPayload(payload)) continue
 
-      httpService.broadcastMessagePush(payload)
+      httpService.broadcastMessagePush({ ...payload })
       this.rememberMessageKey(messageKey)
       this.bumpSessionBaseline(session.username, message)
     }
@@ -564,7 +564,7 @@ class MessagePushService {
       if (!payload) continue
       if (!this.shouldPushPayload(payload)) continue
 
-      httpService.broadcastMessagePush(payload)
+      httpService.broadcastMessagePush({ ...payload })
       this.rememberMessageKey(messageKey)
       this.rememberSeenMessageKey(messageKey)
       this.bumpSessionBaseline(sessionId, message)
@@ -711,7 +711,7 @@ class MessagePushService {
     if (!sessionId || !messageKey) return null
 
     const isGroup = sessionId.endsWith('@chatroom')
-    const sessionType = this.getSessionType(sessionId, session)
+    const sessionType = this.getSessionType(sessionId)
     const content = this.getMessageDisplayContent(message)
     const rawid = this.getMessageRawId(message)
 
@@ -1015,7 +1015,7 @@ class MessagePushService {
     const content = `对方撤回了一条消息（rawid：${rawid}） 内容为“${safeContent}”`
     this.rememberRecentlyRevokedOriginalTokens(sessionId, originalMessage, revokedMessageId, message)
     const isGroup = sessionId.endsWith('@chatroom')
-    const sessionType = this.getSessionType(sessionId, session)
+    const sessionType = this.getSessionType(sessionId)
     const createTime = Number(message.createTime || 0)
 
     if (isGroup) {
@@ -1164,17 +1164,34 @@ class MessagePushService {
     return 'jpg'
   }
 
-  private getSessionType(sessionId: string, session: ChatSession): MessagePushPayload['sessionType'] {
-    if (sessionId.endsWith('@chatroom')) {
+  /**
+   * 会话类型分类：只看 sessionId 形态，与 httpService.getApiSessionType 同口径
+   * （该口径里的 'channel' 在本推送协议没有对应值，归入 'other'）。
+   *
+   * ⛔ 不可改用 ChatSession.type：它是 chatService.getSessions 对 WCDB Session 表原始列做
+   * parseInt 得到的**数值**，与 'official'/'friend' 这类字符串比较恒不成立（String(parseInt(x))
+   * 只可能是数字串或 'NaN'）。2026-09-14 核实：原写法即因此让 'private' 永不命中——单聊被报成
+   * 'other'，且 shouldScanMessageBackedSession 的「单聊不进消息表兜底扫描」静默失效。
+   */
+  private getSessionType(sessionId: string): MessagePushPayload['sessionType'] {
+    const normalized = String(sessionId || '').trim()
+    const lowered = normalized.toLowerCase()
+    if (!normalized) {
+      return 'other'
+    }
+    if (lowered.endsWith('@chatroom')) {
       return 'group'
     }
-    if (sessionId.startsWith('gh_') || session.type === 'official') {
+    if (lowered.startsWith('gh_')) {
       return 'official'
     }
-    if (session.type === 'friend') {
-      return 'private'
+    // 企业 openim / weixin* 是服务通道而非单聊（shouldKeepSession 会放行这两类；
+    // gh_ 与裸 weixin 被它挡在会话列表外，上面的 'official' 分支因此实际不常命中，
+    // 保留是为了与 getApiSessionType 口径始终一致）
+    if (lowered.includes('@openim') || (lowered.startsWith('weixin') && lowered !== 'weixin')) {
+      return 'other'
     }
-    return 'other'
+    return 'private'
   }
 
   private shouldPushPayload(payload: MessagePushPayload): boolean {

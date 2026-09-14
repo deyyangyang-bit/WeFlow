@@ -2237,8 +2237,10 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    （计数含 2026-09-12/13 两轮新增断言：六态 `crm_only` 文案 3 条、`salesActionEngine`/`salesStageClassifier` 自动分派护栏 3 条、AI 上限变更审计 13 条、抬头解析与页面接线 76 条、工作台改价审计与创建链幂等 15 条、docgen 续跑复用 3 条、商机合并 72 条、人话词典全量覆盖 203 条、设置页档位映射与折叠接线 68 条）
    今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
    迁移失败项人工闭环（2026-09-14 新增）：`npx tsx scripts/migration-dismissal-test.ts`（**14/0**——dismissal 往返/幂等、模块② 扫描过滤、词典覆盖、IPC 接线、ENTITIES 白名单）
-   ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **7 个错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
-   ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 7**，只准保持 7）。基线史：156（09-13 实测）→ 8 → **7**（同日存量消肿，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §2）。单独跑主进程门禁：`npm run typecheck:node`。
+   消息推送会话类型分类（2026-09-14 新增）：`npx tsx scripts/message-push-session-type-test.ts`（**22/0**——sessionId 形态分类、单聊跳过分支生效与撤回例外、旧写法死路成因反证与防回退静态锁）
+   ✅ **2026-09-13 红测试归因收口**：上述 5 个套件此前长期红色、被当作「已知恒定失败」接受（其中 `todo-followup`／`crm-logistics` 启动即死）。已逐套归因并全部修复入基线，**本仓库不再有「红了但没人知道为什么」的套件**。归类为：测试滞后于有意变更 2 套（W2a 拒绝按客户批量完成、F1 统一信号流改纯读）、测试基建 2 套（A7 静态断言误伤 SQL 注释、B11 断言开发者真实库 0 行——一次性迁移快照）、真实回归 1 套（W2a 重写误删 `completeUnifiedSignal` 的 `logi:` 分支，已恢复）。逐套根因（含 git 证据）、分类处置与实测输出见 `docs/实施记录/红测试归因与收口-实施记录-claude-20260913.md`
+   ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **0 错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
+   ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 0**，只准保持 0）。基线史：156（09-13 实测）→ 8 → 7（存量消肿）→ 3 → **0**（同日真 bug 修复与类型清零，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §4）。单独跑主进程门禁：`npm run typecheck:node`。
 4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
 6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户

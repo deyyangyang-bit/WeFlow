@@ -83,6 +83,25 @@ async function main(): Promise<void> {
   ok('2g 客户活跃商机数=2', crmDbService.activeOpportunitiesByAccount(accId).length === 2)
   ok('2h 商机事件已留痕', crmDbService.opportunityEvents(r1.id).length >= 2)
 
+  // ── 2i~2l 跨库装配回归（2026-09-14）：CrmRow 与「合计」的字段映射 ─────────────
+  // 背景：合计此前是 handler 里的内联 reduce，TS 对 `CrmRow[]` 的累加器形参报 TS2345
+  //（形参类型 {count,quantity,amount} 与 CrmRow 无重叠），曾被误读为「商机统计恒 0 的真 bug」。
+  // 运行期本来就是对的；这里用真实行锁住「合计按 opportunity 列名求和、非 0」，并反证错误形态会归零。
+  salesDbService.customerUpsert({ session_id: 'wx_ck_hefei', display_name: '合肥某物流公司', stage: '比价' })
+  const totals = crmDbService.activeOpportunityTotals(accId)
+  ok('2i 活跃商机合计 count=2', totals.count === 2, JSON.stringify(totals))
+  ok('2j 合计按 opportunity 列名 quantity/amount 求和（20+5=25 / 70000+0）',
+    totals.quantity === 25 && totals.amount === 70000, JSON.stringify(totals))
+  const scOpp = salesDbService.intentScore('wx_ck_hefei', crmDbService.activeOpportunityTotals(accId))
+  ok('2k 合计喂入 intentScore →「商机进展」因子 15 分（有数量+金额），商机统计不恒 0',
+    (scOpp?.factors.find((f) => f.label === '商机进展')?.delta ?? 0) === 15, JSON.stringify(scOpp?.factors))
+  const badTotals = salesDbService.intentScore(
+    'wx_ck_hefei',
+    crmDbService.activeOpportunitiesByAccount(accId) as unknown as { count: number; quantity: number; amount: number }
+  )
+  ok('2l 反证：把 CrmRow 数组整个当合计传 → count 读不到，无「商机进展」因子（归零形态）',
+    !!badTotals && !badTotals.factors.some((f) => f.label === '商机进展'), JSON.stringify(badTotals?.factors))
+
   // ── 3 syncOpportunityStageByAccount：客户阶段联动 ──────────────────────────
   const n1 = crmDbService.syncOpportunityStageByAccount(accId, '比价')
   ok('3a 了解→比价 顺推（两个活跃商机都推进）', n1 === 2 && String(crmDbService.opportunityById(r1.id)?.stage) === '比价')

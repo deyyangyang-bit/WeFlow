@@ -13,7 +13,13 @@ const { execFileSync } = require('child_process')
 
 // 基线史：156（2026-09-13 实测，历史 161 → 156）→ 8（2026-09-14 存量类型消肿）
 //   → 7（同日：MigrationReportSummary interface→type，消掉迁移报告摘要的索引签名错误）
-const BASELINE = 7
+//   → 3（同日：crmDbService ×2 / crmIpcHandlers ×2 修完后的实测值，见下方订正）
+//   → 0（同日：crmIpcHandlers 首次分类 reject 补 Promise.resolve、export facade 删死委托、
+//          messagePushService 会话类型分类改按 sessionId 形态）。
+// ⚠️ 订正：实施记录 §2「剩余 7 个」的枚举漏了 messagePushService:1171/1174 的 2 个 TS2367
+//   （`session.type` 数值与 'official'/'friend' 字符串比较，`error TS2367`）；该文件编辑前实测仍报，
+//   故编辑前真实为 3 个而非 1 个。基线已同步收紧到 0，之后只准保持 0。
+const BASELINE = 0
 
 let out = ''
 try {

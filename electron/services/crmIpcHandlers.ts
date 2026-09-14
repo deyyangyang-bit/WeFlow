@@ -166,12 +166,7 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:opportunity:intentScore', async (_, accountId: number) => {
     const acc = crmDbService.getById('account', Number(accountId))
     if (!acc?.session_id) return null
-    const opps = crmDbService.activeOpportunitiesByAccount(Number(accountId))
-    const opp = opps.reduce((o, x) => ({
-      count: o.count + 1,
-      quantity: o.quantity + (Number(x.quantity) || 0),
-      amount: o.amount + (Number(x.amount) || 0)
-    }), { count: 0, quantity: 0, amount: 0 })
+    const opp = crmDbService.activeOpportunityTotals(Number(accountId))
     try {
       return salesDbService.intentScore(String(acc.session_id), opp)
     } catch { return null }
@@ -432,8 +427,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:firstClassify:list', async (_, opts) => listFirstClassifyRounds((opts || {}) as any))
   ipcMain.handle('crm:firstClassify:confirm', async (_, req: { roundId?: number; actor?: string }) =>
     enqueueSalesTask(() => confirmFirstClassification(Number(req?.roundId), String(req?.actor || ''))))
+  // reject 是同步实现（sql.js runTx 同步落库，同 main.ts 的同步服务调用口径），包 Promise.resolve 维持队列契约
   ipcMain.handle('crm:firstClassify:reject', async (_, req: { roundId?: number; actor?: string; reason?: string }) =>
-    enqueueSalesTask(() => rejectFirstClassification(Number(req?.roundId), String(req?.actor || ''), String(req?.reason || ''))))
+    enqueueSalesTask(() => Promise.resolve(
+      rejectFirstClassification(Number(req?.roundId), String(req?.actor || ''), String(req?.reason || '')))))
 
   // ── 离职移交（PRD §1.9）：lead 批量走 transferAssignment 循环（reason='离职'）+
   //    owner 三列（account/opportunity/logistics）同事务直改 + ownership_history + audit_event ──
@@ -515,10 +512,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:import:dedupeDetail', async (_, batchId: number) => getImportDedupeDetail(Number(batchId)))
 
   // 启动兜底：存量超时线索生成 SLA 今日行动卡（幂等 + partial unique index，无副作用）
-  enqueueSalesTask(() => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })
+  // （两个启动补扫都是「排进队列即返回」的副作用型任务，回调无返回值，用 async 满足队列的 Promise 契约）
+  enqueueSalesTask(async () => { try { scanLeadSla() } catch { /* 初始化时序竞争忽略 */ } })
   // 物流跟单启动补扫：物流群每晚 6/7 点更新，可能当天更新不准时 → 启动时回退 last_scan 到昨天 00:00，
   // 调度器（60s scanAll）随后补扫前一天发货；processed_msg 幂等保证已处理消息不重复落库
-  enqueueSalesTask(() => {
+  enqueueSalesTask(async () => {
     try {
       const yest = new Date(); yest.setHours(0, 0, 0, 0)
       const fallback = yest.getTime() - 86400000

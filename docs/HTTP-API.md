@@ -81,6 +81,7 @@ GET /api/v1/push/messages
 
 - `event`
 - `sessionId`
+- `sessionType`：会话类型，按 `sessionId` 形态判定——`group` 群聊（`@chatroom`）/ `private` 单聊 / `official` 公众号（`gh_`）/ `other` 非单聊通道（企业 openim、`weixin*` 等）
 - `rawid`
 - `avatarUrl`
 - `sourceName`
@@ -105,7 +106,7 @@ data: {"event":"message.new","sessionId":"xxx@chatroom","sessionType":"group","r
 
 ```text
 event: message.revoke
-data: {"event":"message.revoke","sessionId":"wxid_xxx","sessionType":"other","rawid":"1234567890123456789","avatarUrl":"https://example.com/avatar.jpg","sourceName":"张三","content":"对方撤回了一条消息（rawid：1234567890123456789） 内容为“你好”","timestamp":1760000180}
+data: {"event":"message.revoke","sessionId":"wxid_xxx","sessionType":"private","rawid":"1234567890123456789","avatarUrl":"https://example.com/avatar.jpg","sourceName":"张三","content":"对方撤回了一条消息（rawid：1234567890123456789） 内容为“你好”","timestamp":1760000180}
 ```
 
 ---

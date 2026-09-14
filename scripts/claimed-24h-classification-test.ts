@@ -49,6 +49,7 @@ import {
 } from '../electron/services/crmFirstClassifyService'
 import { gapSourceId, GAP_DEFS } from '../electron/services/crmFirstClassifyCore'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../shared/leadSla'
+import { enqueueSalesTask } from '../electron/services/salesQueue'
 
 const S_A = '测试销售甲'
 const S_B = '测试销售乙'
@@ -429,6 +430,25 @@ async function main(): Promise<void> {
   ok('Q1 crm:firstClassify:run 经 enqueueSalesTask', /enqueueSalesTask\(/.test(handlerBody('crm:firstClassify:run')))
   ok('Q2 crm:firstClassify:confirm 经 enqueueSalesTask', /enqueueSalesTask\(/.test(handlerBody('crm:firstClassify:confirm')))
   ok('Q3 crm:firstClassify:reject 经 enqueueSalesTask', /enqueueSalesTask\(/.test(handlerBody('crm:firstClassify:reject')))
+
+  // ── Q4~Q7（2026-09-14）：reject 是同步实现，队列契约靠 Promise.resolve 补齐 ──────────
+  // enqueueSalesTask<T>(fn: () => Promise<T>) 要求 fn 返回 Promise；而 rejectFirstClassification
+  // 是同步函数（sql.js runTx 同步落库）。同步返回值经 `chain.then(() => fn())` 会被自动 adopt，
+  // 运行期不会「漏 await」丢结果 —— 类型层报的是契约不匹配，不是运行时缺陷。
+  ok('Q4 rejectFirstClassification 确为同步函数（非 AsyncFunction）',
+    rejectFirstClassification.constructor.name === 'Function')
+  ok('Q5 run/confirm 确为异步函数（AsyncFunction）',
+    runFirstClassification.constructor.name === 'AsyncFunction' &&
+    confirmFirstClassification.constructor.name === 'AsyncFunction')
+  ok('Q6 reject IPC 边界用 Promise.resolve 补队列契约',
+    /Promise\.resolve\(/.test(handlerBody('crm:firstClassify:reject')))
+  // 运行期实证：fn 同步返回普通对象时，队列给出的 Promise 仍 resolve 到该对象（不丢结果）
+  {
+    const expected = { ok: true, roundId: 424242 } as unknown as ReturnType<typeof rejectFirstClassification>
+    const syncFn = (() => expected) as unknown as () => Promise<ReturnType<typeof rejectFirstClassification>>
+    const resolved = await enqueueSalesTask(syncFn)
+    ok('Q7 队列对同步返回值同样给出可 await 的 Promise（Promise.resolve 补齐无行为变化）', resolved === expected)
+  }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)
