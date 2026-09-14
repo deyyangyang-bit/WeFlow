@@ -103,6 +103,16 @@ export const CONFIG_KEYS = {
   AUTO_BACKUP_TIME: 'autoBackupTime',
   LAN_SYNC_SHARED_DIR: 'lanSyncSharedDir',
   LAN_SYNC_ROLE: 'lanSyncRole',
+  CENTRAL_SYNC_ENABLED: 'centralSyncEnabled',
+  CENTRAL_SYNC_BASE_URL: 'centralSyncBaseUrl',
+  CENTRAL_SYNC_DEVICE_TOKEN: 'centralSyncDeviceToken',
+  CENTRAL_SYNC_WORKSPACE_ID: 'centralSyncWorkspaceId',
+  CENTRAL_SYNC_EMPLOYEE_ID: 'centralSyncEmployeeId',
+  CENTRAL_SYNC_DEVICE_ID: 'centralSyncDeviceId',
+  CENTRAL_SYNC_ROLE: 'centralSyncRole',
+  CENTRAL_SYNC_DISPLAY_NAME: 'centralSyncDisplayName',
+  CENTRAL_SYNC_LAST_ERROR: 'centralSyncLastError',
+  CENTRAL_SYNC_POLL_INTERVAL_MIN: 'centralSyncPollIntervalMin',
 
   // 数据收集
 
@@ -2003,4 +2013,3 @@ export async function setAutoDownloadWhitelist(list: string[]): Promise<void> {
   const normalized = Array.from(new Set((list || []).map(item => String(item || '').trim()).filter(Boolean)))
   await config.set(CONFIG_KEYS.AUTO_DOWNLOAD_WHITELIST, normalized)
 }
-

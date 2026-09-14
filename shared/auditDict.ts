@@ -697,6 +697,48 @@ export const AUDIT_DICT: Record<string, AuditDictEntry> = {
     ]
   },
 
+  // ── 企业同步（Phase 3a 中央节点）──
+  central_unbind: {
+    label: '解除企业绑定', tone: 'recycle',
+    describe: (d) => [
+      T('解除本机与中央工作区的绑定'),
+      ...(d.serverRevoked === true ? [T('，服务端凭证已同步吊销')] : [M('·服务端未确认吊销，需管理员在中央控制台吊销该设备')])
+    ]
+  },
+  sync_push_rejected: {
+    label: '上行被拒', tone: 'recycle',
+    describe: (d) => [
+      T('一条上行事件被中央拒绝'),
+      ...(str(d.code) ? [T('（'), B(str(d.code)), T('）')] : []),
+      T('，已置终态不再重推')
+    ]
+  },
+  sync_forbidden_field_blocked: {
+    label: '拦截禁传字段', tone: 'recycle',
+    describe: (d) => [
+      T('一条上行事件含禁上传字段（聊天正文/会话标识等），已在本机拦截'),
+      ...(str(d.entityType) ? [T('：'), B(str(d.entityType))] : []),
+      M('·未发送到中央')
+    ]
+  },
+  central_supervisor_correction_pending: {
+    label: '主管修正待确认', tone: 'neutral',
+    describe: (d) => [
+      T('收到中央下发的'),
+      ...(str(d.action) === 'supervisor_correction' ? [T('主管修正')] : []),
+      T('提案，已入待确认收件箱'),
+      M('·本地事实未被改写')
+    ]
+  },
+  central_permission_change_recorded: {
+    label: '权限声明登记', tone: 'neutral',
+    describe: (d) => [
+      T('登记中央下发的权限声明'),
+      ...(str(d.declaredRole) ? [T('（'), B(str(d.declaredRole)), T('）')] : []),
+      M('·仅作展示与审计，不构成本机访问控制依据')
+    ]
+  },
+
   // ── 系统自愈 / 备份 / 脏数据 ──
   auto_backup: {
     label: '自动备份', tone: 'neutral',

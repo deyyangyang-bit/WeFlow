@@ -1485,6 +1485,28 @@ ORDER BY kb.updated_at DESC LIMIT ?`
     )
   }
 
+  /**
+   * 增量读判断（Phase 3a 中央上行投影用）：按自增 id 游标取 created_at 之后的判断行。
+   * 只读本机既有 append-only 判断表；不新建第二套判断语义，也不扫聊天表。
+   */
+  judgmentSince(id: number, limit: number = 100): CustomerJudgmentRecord[] {
+    return this.all<CustomerJudgmentRecord>(
+      'SELECT * FROM customer_judgment WHERE id > ? ORDER BY id LIMIT ?',
+      [Math.max(0, Math.floor(id)), Math.max(1, Math.min(500, Math.floor(limit)))]
+    )
+  }
+
+  /**
+   * 增量读知识提案（Phase 3a 中央上行投影用）：source='proposal' 的治理行按 id 游标增量。
+   * evidence_key 是提案锚点（PRD 2.3 / 宪法 §3 登记行），聊天原文与证据正文不上行。
+   */
+  kbSince(id: number, limit: number = 100): KnowledgeEntry[] {
+    return this.all<KnowledgeEntry>(
+      "SELECT * FROM knowledge_base WHERE id > ? AND source = 'proposal' ORDER BY id LIMIT ?",
+      [Math.max(0, Math.floor(id)), Math.max(1, Math.min(500, Math.floor(limit)))]
+    )
+  }
+
   /** 去重基础：该 session 该类型 windowMs 内是否已有判断（配合判断再生成节流；参考 hasRecentTask） */
   hasRecentJudgment(sessionId: string, judgmentType: CustomerJudgmentType, windowMs: number): boolean {
     const row = this.get<{ c: number }>(

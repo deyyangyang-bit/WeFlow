@@ -53,6 +53,8 @@ import { registerEvalIpcHandlers } from './services/evalIpcHandlers'
 import { registerIdentityIpcHandlers } from './services/identityIpcHandlers'
 import { registerLanSyncIpcHandlers } from './services/lanSyncIpcHandlers'
 import { startLanSyncScheduler, getLanSyncConfig } from './services/lanSyncService'
+import { registerCentralSyncIpcHandlers } from './services/centralSyncIpcHandlers'
+import { startCentralSyncScheduler } from './services/centralSyncService'
 import { startWeeklyReviewScheduler } from './services/salesReportService'
 import { morningDigestService } from './services/morningDigestService'
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
@@ -5602,7 +5604,9 @@ app.whenReady().then(async () => {
     // 未配置共享目录/角色 → 同步关闭静默跳过；中枢=下行产出+上行消费，终端=下行消费+上行产出。
     // 轮巡间隔 lanSyncPollIntervalMin 分钟（默认 1），首巡延迟 150s
     registerLanSyncIpcHandlers(ipcMain)
+    registerCentralSyncIpcHandlers(ipcMain)
     startLanSyncScheduler()
+    startCentralSyncScheduler()
     console.log('[Sales] 今日行动引擎 + 周复盘定时器已启动')
   } catch (e) {
     console.error('[Sales] 数据库初始化失败:', e)

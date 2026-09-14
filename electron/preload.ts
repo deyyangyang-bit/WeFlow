@@ -72,6 +72,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     runNow: () => ipcRenderer.invoke('lansync:run')
   },
 
+  // 企业同步（Phase 3a）：工作区绑定 + HTTP 同步状态/手动执行/解绑
+  centralSync: {
+    status: () => ipcRenderer.invoke('centralsync:status'),
+    claim: (payload: { baseUrl: string; inviteCode: string; deviceName?: string }) => ipcRenderer.invoke('centralsync:claim', payload),
+    disconnect: (payload?: { force?: boolean }) => ipcRenderer.invoke('centralsync:disconnect', payload),
+    runNow: () => ipcRenderer.invoke('centralsync:run')
+  },
+
 
   // 对话框
   dialog: {

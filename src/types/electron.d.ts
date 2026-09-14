@@ -363,6 +363,31 @@ export interface LanSyncStatus {
   backlogIncoming: number
 }
 
+export interface CentralSyncStatus {
+  enabled: boolean
+  configured: boolean
+  baseUrl: string
+  workspaceId: string
+  employeeId: string
+  deviceId: string
+  /** 服务端声明的角色（仅展示，绝不作为本机访问控制依据） */
+  role: string
+  /** 员工展示名（绑定返回，缺失时回退本地身份档案） */
+  displayName: string
+  backlogPending: number
+  pullCursor: number
+  lastUpAt: number
+  lastDownAt: number
+  /** 最近一次同步失败原因（脱敏文本）与时刻 */
+  lastError: string
+  lastErrorAt: number
+  running: boolean
+  schedulerRunning: boolean
+  /** 是否已绑定且调度器会真正发起同步 */
+  polling: boolean
+  pollIntervalMin: number
+}
+
 export interface BackupImageDatMeta {
   version?: number
   aesSize?: number
@@ -645,6 +670,14 @@ export interface ElectronAPI {
   lanSync: {
     status: () => Promise<{ success: boolean; status?: LanSyncStatus; error?: string }>
     runNow: () => Promise<{ success: boolean; result?: unknown; error?: string }>
+  }
+  /** 企业同步（Phase 3a）：中央工作区绑定与 HTTP adapter */
+  centralSync: {
+    status: () => Promise<{ success: boolean; status?: CentralSyncStatus; error?: string }>
+    claim: (payload: { baseUrl: string; inviteCode: string; deviceName?: string }) => Promise<{ success: boolean; principal?: { workspaceId: string; employeeId: string; deviceId: string; displayName: string; role: string }; error?: string }>
+    /** 解绑：revoked=服务端是否确认吊销；localCleared=本机凭证是否已清；两者不同时为真即表示解绑未完成 */
+    disconnect: (payload?: { force?: boolean }) => Promise<{ success: boolean; revoked?: boolean; localCleared?: boolean; error?: string }>
+    runNow: () => Promise<{ success: boolean; result?: { enabled: boolean; pushed: number; rejected: number; applied: number; error?: string }; error?: string }>
   }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>

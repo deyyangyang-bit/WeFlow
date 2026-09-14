@@ -18,7 +18,7 @@ import {
 import { removeInsightBlacklistEntry, type InsightBlacklistEntry, type InsightBlacklistSource } from '../../shared/insightBlacklist'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, CentralSyncStatus, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -439,6 +439,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [lanSyncRole, setLanSyncRole] = useState('')
   const [lanSyncStatus, setLanSyncStatus] = useState<LanSyncStatus | null>(null)
   const [lanSyncRunning, setLanSyncRunning] = useState(false)
+  // 企业同步（Phase 3a）：中央 HTTP 工作区绑定；启用后 SMB adapter 自动停用
+  const [centralSyncStatus, setCentralSyncStatus] = useState<CentralSyncStatus | null>(null)
+  const [centralBaseUrl, setCentralBaseUrl] = useState('')
+  const [centralInviteCode, setCentralInviteCode] = useState('')
+  const [centralSyncBusy, setCentralSyncBusy] = useState<'' | 'claim' | 'run' | 'disconnect'>('')
   // 相对时间心跳：只用来让「3 分钟前」随时间推进重算，不参与任何判断，也不写盘
   const [relativeTimeTick, setRelativeTimeTick] = useState(0)
 
@@ -853,6 +858,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setLanSyncDir(await configService.getLanSyncSharedDir())
       setLanSyncRole(await configService.getLanSyncRole())
       await refreshLanSyncStatus()
+      await refreshCentralSyncStatus()
 
       const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
       const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
@@ -1284,6 +1290,80 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     } catch { /* 状态读取失败静默，不阻塞设置页 */ }
   }
 
+  const refreshCentralSyncStatus = async () => {
+    try {
+      const res = await window.electronAPI.centralSync.status()
+      if (res.success && res.status) {
+        setCentralSyncStatus(res.status)
+        if (res.status.baseUrl) setCentralBaseUrl(res.status.baseUrl)
+      }
+    } catch { /* 状态读取失败静默，不阻塞设置页 */ }
+  }
+
+  const handleCentralClaim = async () => {
+    if (centralSyncBusy) return
+    if (!centralBaseUrl.trim() || !centralInviteCode.trim()) {
+      showMessage('请填写中央服务地址和管理员发放的邀请码', false)
+      return
+    }
+    setCentralSyncBusy('claim')
+    try {
+      const res = await window.electronAPI.centralSync.claim({ baseUrl: centralBaseUrl.trim(), inviteCode: centralInviteCode.trim() })
+      if (!res.success) throw new Error(res.error || '绑定失败')
+      setCentralInviteCode('')
+      showMessage(`企业工作区绑定成功：${res.principal?.displayName || identityName || '当前设备'}`, true)
+    } catch (e) {
+      showMessage(`绑定失败：${e instanceof Error ? e.message : String(e)}`, false)
+    } finally {
+      setCentralSyncBusy('')
+      await refreshCentralSyncStatus()
+      await refreshLanSyncStatus()
+    }
+  }
+
+  const handleCentralRunNow = async () => {
+    if (centralSyncBusy) return
+    setCentralSyncBusy('run')
+    try {
+      const res = await window.electronAPI.centralSync.runNow()
+      if (!res.success || res.result?.error) throw new Error(res.error || res.result?.error || '同步失败')
+      const rejected = res.result?.rejected || 0
+      showMessage(`企业同步完成：上传 ${res.result?.pushed || 0}，应用 ${res.result?.applied || 0}${rejected ? `，被拒 ${rejected}（详见本机审计）` : ''}`, true)
+    } catch (e) {
+      showMessage(`企业同步失败：${e instanceof Error ? e.message : String(e)}`, false)
+    } finally {
+      setCentralSyncBusy('')
+      await refreshCentralSyncStatus()
+    }
+  }
+
+  /**
+   * 解绑：服务端吊销优先。服务端确认吊销后才清本机凭证；
+   * 网络失败时本机凭证**保持不动**并如实提示（不做「本机已解绑」的假象），
+   * 由用户决定是否强制本地清除 —— 强制时明确告知服务端令牌仍然有效。
+   */
+  const handleCentralDisconnect = async (force = false) => {
+    if (centralSyncBusy) return
+    setCentralSyncBusy('disconnect')
+    try {
+      const res = await window.electronAPI.centralSync.disconnect({ force })
+      if (!res.success) throw new Error(res.error || '解绑失败')
+      if (res.revoked) {
+        showMessage('已在本机与服务端同时解绑，设备凭证立即失效', true)
+      } else if (res.localCleared) {
+        showMessage(`已清除本机凭证；但服务端未确认吊销（${res.error || '原因未知'}），请让管理员在中央控制台吊销该设备`, false)
+      } else {
+        showMessage(`解绑未完成：${res.error || '无法连接中央服务'}。本机凭证未清除；可重试，或选择「仅清除本机凭证」`, false)
+      }
+    } catch (e) {
+      showMessage(`解绑失败：${e instanceof Error ? e.message : String(e)}`, false)
+    } finally {
+      setCentralSyncBusy('')
+      await refreshCentralSyncStatus()
+      await refreshLanSyncStatus()
+    }
+  }
+
   // 内网同步：角色选择（立即保存；分段选择器点选即生效，与原下拉一致）
   const handleLanSyncRoleChange = async (role: string) => {
     setLanSyncRole(role)
@@ -1313,10 +1393,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
   // 相对时间心跳：仅在同步启用时每 30s 推进一次，让「N 分钟前」不长期停在旧值上（不改任何状态机）
   useEffect(() => {
-    if (!lanSyncStatus?.enabled) return
+    if (!lanSyncStatus?.enabled && !centralSyncStatus?.enabled) return
     const timer = setInterval(() => setRelativeTimeTick((n) => n + 1), 30_000)
     return () => clearInterval(timer)
-  }, [lanSyncStatus?.enabled])
+  }, [lanSyncStatus?.enabled, centralSyncStatus?.enabled])
 
   const lanSyncEnabled = !!lanSyncStatus?.enabled
   const lanSyncBacklog = (lanSyncStatus?.backlogPending || 0) + (lanSyncStatus?.backlogIncoming || 0)
@@ -3260,6 +3340,142 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="settings-section">
         <div className="s-card">
           <div className="s-card__head">
+            <div className="s-card__icon s-card__icon--accent"><Globe size={18} /></div>
+            <div className="s-card__heading">
+              <label>企业同步</label>
+              <span className="s-card__sub">通过中央机 HTTPS API 同步结构化业务数据；聊天原文永不上传</span>
+            </div>
+            <span className={`s-pill ${centralSyncStatus?.configured ? 's-pill--ok' : ''}`}>
+              <span className="s-pill__dot" />
+              {centralSyncStatus?.configured ? '已绑定' : '未绑定'}
+            </span>
+          </div>
+          <div className="s-card__body">
+            {centralSyncStatus?.configured ? (
+              <>
+                <div className="s-stat-grid">
+                  <div className="s-stat">
+                    <div className="s-stat__k">待上传</div>
+                    <div className={`s-stat__v ${(centralSyncStatus.backlogPending || 0) > 0 ? 'is-warn' : ''}`}>{centralSyncStatus.backlogPending || 0}</div>
+                  </div>
+                  <div className="s-stat">
+                    <div className="s-stat__k">下行游标</div>
+                    <div className="s-stat__v">{centralSyncStatus.pullCursor || 0}</div>
+                  </div>
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">中央服务</div>
+                    <div className="s-row__desc">启用企业同步后，旧 SMB adapter 自动停用，避免两个传输层竞争同一 outbox</div>
+                  </div>
+                  <div className="s-row__ctrl"><span className="s-mono">{centralSyncStatus.baseUrl}</span></div>
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">员工与角色</div>
+                    <div className="s-row__desc">角色由中央服务端账号决定；本地只展示，不作访问控制依据</div>
+                  </div>
+                  <div className="s-row__ctrl">
+                    <span className="s-mono">{centralSyncStatus.displayName || identityName || '—'}</span>
+                    <span className="s-pill">{centralSyncStatus.role || '—'}</span>
+                  </div>
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">设备标识</div>
+                    <div className="s-row__desc">权限由中央服务端账号与设备凭证决定，本地角色只用于署名</div>
+                  </div>
+                  <div className="s-row__ctrl"><span className="s-mono">{centralSyncStatus.deviceId || '—'}</span></div>
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">最近同步</div>
+                    <div className="s-row__desc">
+                      上行 {centralSyncStatus.lastUpAt ? new Date(centralSyncStatus.lastUpAt).toLocaleString() : '尚未同步'}
+                      {' · '}
+                      下行 {centralSyncStatus.lastDownAt ? new Date(centralSyncStatus.lastDownAt).toLocaleString() : '尚未同步'}
+                    </div>
+                  </div>
+                  <div className="s-row__ctrl">
+                    <span className="s-mono">{centralSyncStatus.polling ? `每 ${centralSyncStatus.pollIntervalMin} 分钟` : '轮巡已停止'}</span>
+                  </div>
+                </div>
+                {centralSyncStatus.lastError ? (
+                  <div className="s-row">
+                    <div>
+                      <div className="s-row__label">最近错误</div>
+                      <div className="s-row__desc">{centralSyncStatus.lastError}</div>
+                    </div>
+                    <div className="s-row__ctrl">
+                      <span className="s-mono">{centralSyncStatus.lastErrorAt ? new Date(centralSyncStatus.lastErrorAt).toLocaleString() : '—'}</span>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="s-row">
+                  <div />
+                  <div className="s-row__ctrl">
+                    <button className="btn btn-secondary" onClick={handleCentralRunNow} disabled={centralSyncBusy !== ''}>
+                      {centralSyncBusy === 'run' ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                      {centralSyncBusy === 'run' ? '同步中...' : '立即同步'}
+                    </button>
+                    <button className="btn btn-secondary" onClick={() => void handleCentralDisconnect(false)} disabled={centralSyncBusy !== ''}>
+                      {centralSyncBusy === 'disconnect' ? <Loader2 size={16} className="spin" /> : <UserX size={16} />}
+                      解绑（服务端同步吊销）
+                    </button>
+                    {centralSyncStatus.lastError ? (
+                      <button className="btn btn-secondary" onClick={() => void handleCentralDisconnect(true)} disabled={centralSyncBusy !== ''}>
+                        仅清除本机凭证
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="sync-off">
+                  <ShieldCheck size={15} />
+                  首次绑定需要管理员发放的一次性邀请码；设备凭证会进入系统安全存储
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">中央服务地址</div>
+                    <div className="s-row__desc">生产环境必须使用 HTTPS；只有 localhost 开发态允许 HTTP</div>
+                  </div>
+                  <div className="s-row__ctrl">
+                    <input className="field-input" style={{ width: '300px' }} value={centralBaseUrl}
+                      placeholder="https://weflow.internal" onChange={(e) => setCentralBaseUrl(e.target.value)} />
+                  </div>
+                </div>
+                <div className="s-row">
+                  <div>
+                    <div className="s-row__label">绑定邀请码</div>
+                    <div className="s-row__desc">邀请码使用一次即失效；不会写入日志或长期保存</div>
+                  </div>
+                  <div className="s-row__ctrl">
+                    <input type="password" autoComplete="off" className="field-input" style={{ width: '300px' }}
+                      value={centralInviteCode} placeholder="输入邀请码" onChange={(e) => setCentralInviteCode(e.target.value)} />
+                  </div>
+                </div>
+                <div className="s-row">
+                  <div />
+                  <div className="s-row__ctrl">
+                    <button className="btn btn-primary" onClick={handleCentralClaim} disabled={centralSyncBusy !== '' || !centralBaseUrl.trim() || !centralInviteCode.trim()}>
+                      {centralSyncBusy === 'claim' ? <Loader2 size={16} className="spin" /> : <Plug size={16} />}
+                      {centralSyncBusy === 'claim' ? '绑定中...' : '绑定企业工作区'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="settings-section">
+        <div className="s-card">
+          <div className="s-card__head">
             <div className="s-card__icon s-card__icon--accent"><UserRound size={18} /></div>
             <div className="s-card__heading">
               <label>身份档案</label>
@@ -3340,8 +3556,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <div className="s-card__head">
             <div className="s-card__icon s-card__icon--success"><RefreshCw size={18} /></div>
             <div className="s-card__heading">
-              <label>内网同步</label>
-              <span className="s-card__sub">经办公室共享文件夹（SMB）在中枢机与终端机之间同步业务事件</span>
+              <label>旧版内网同步</label>
+              <span className="s-card__sub">Phase 1 SMB 兼容通道；企业同步启用后自动停用</span>
             </div>
             <span className={`s-pill ${!lanSyncStatus?.enabled ? '' : lanSyncBacklog > 0 ? 's-pill--warn' : 's-pill--ok'}`}>
               <span className="s-pill__dot" />
@@ -7043,8 +7259,6 @@ JSON 输出格式：
 }
 
 export default SettingsPage
-
-
 
 
 

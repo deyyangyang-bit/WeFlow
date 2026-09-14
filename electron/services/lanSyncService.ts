@@ -68,6 +68,8 @@ export interface LanSyncConfig { enabled: boolean; role: LanSyncRole | ''; root:
 /** 读取同步配置；目录空或角色非法 = 同步关闭（enabled=false，所有入口静默跳过） */
 export function getLanSyncConfig(): LanSyncConfig {
   const cfg = ConfigService.getInstance()
+  // Phase 3a HTTP 已启用时，SMB adapter 必须停用，避免同一 outbox 被两个传输层竞争结算。
+  if (cfg.get('centralSyncEnabled')) return { enabled: false, role: '', root: '' }
   const root = expandHomePath(String(cfg.get('lanSyncSharedDir') || '').trim())
   const rawRole = String(cfg.get('lanSyncRole') || '').trim()
   const role: LanSyncRole | '' = rawRole === 'hub' || rawRole === 'terminal' ? rawRole : ''
@@ -648,6 +650,28 @@ function applyDownEventTx(
     return 'applied'
   }
   return 'invalid' // 未知类型/通知类型不应用（通知走中枢本机通道，不该到终端队列）
+}
+
+/**
+ * Phase 3a HTTP adapter 的业务应用入口：复用 Phase 1 已封板的下行状态机与幂等标记，
+ * 不经 SMB 文件系统。传输层只能换 adapter，禁止复制 assign/transfer/recycle 业务语义。
+ */
+export function applyDownEventDirect(ev: SyncEventFile): AckOutcome {
+  const role: DeliveryRole = ev.deliveryRole || 'apply'
+  const mkey = `${ev.idempotencyKey}#${role}`
+  const knownOutcome = Number(crmDbService.getScanState(outcomeKey(mkey)))
+  if (crmDbService.getScanState(appliedKey(mkey)) > 0) {
+    return knownOutcome === ACK_CODE.conflict ? 'conflict' : knownOutcome === ACK_CODE.invalid ? 'invalid' : 'applied'
+  }
+  const outcome = crmDbService.runTx((tx) => {
+    const next = applyDownEventTx(tx, { ...ev, deliveryRole: role })
+    if (next === 'applied' || next === 'conflict') {
+      tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [appliedKey(mkey), Date.now()])
+      tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [outcomeKey(mkey), next === 'applied' ? ACK_CODE.applied : ACK_CODE.conflict])
+    }
+    return next
+  })
+  return outcome
 }
 
 /** 终端写 ACK 回执（覆盖写：nolead → applied 的升级必须能覆盖旧回执） */

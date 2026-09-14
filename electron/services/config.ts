@@ -188,6 +188,26 @@ interface ConfigSchema {
   lanSyncRole: string
   /** 内网同步轮巡间隔（分钟，1-60，默认 1） */
   lanSyncPollIntervalMin: number
+  /** Phase 3a 中央 HTTP 同步开关；启用后不再运行 SMB 轮巡 */
+  centralSyncEnabled: boolean
+  /** 中央服务基地址（内网 TLS；localhost 开发态可用 http） */
+  centralSyncBaseUrl: string
+  /** 中央服务设备凭证（safeStorage 加密） */
+  centralSyncDeviceToken: string
+  /** 绑定后服务端返回的工作区/员工/设备标识（仅路由与状态展示，不作权限依据） */
+  centralSyncWorkspaceId: string
+  centralSyncEmployeeId: string
+  centralSyncDeviceId: string
+  /** 绑定时服务端返回的员工角色（**仅用于展示与上行声明，绝不作为本机访问控制依据**，PRD §3.1/§7.1） */
+  centralSyncRole: string
+  /** 绑定时服务端返回的员工展示名（设置页展示用） */
+  centralSyncDisplayName: string
+  /** 最近一次中央同步失败原因（脱敏文本；空=近期无失败） */
+  centralSyncLastError: string
+  /** 最近一次中央同步失败时刻 */
+  centralSyncLastErrorAt: number
+  /** 中央 HTTP 同步轮巡间隔（分钟，1-60，默认 1） */
+  centralSyncPollIntervalMin: number
   /** 自动备份：每日执行时刻 HH:mm（默认 14:37，工作时间） */
   autoBackupTime: string
   /** 是否启用 Telegram 推送 */
@@ -222,6 +242,7 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'httpApiToken',
   'aiModelApiKey',
   'aiInsightApiKey',
+  'centralSyncDeviceToken',
   'aiInsightWeiboCookie'
 ])
 const ENCRYPTED_BOOL_KEYS: Set<string> = new Set(['authEnabled', 'authUseHello'])
@@ -366,6 +387,17 @@ export class ConfigService {
       lanSyncSharedDir: '',
       lanSyncRole: '',
       lanSyncPollIntervalMin: 1,
+      centralSyncEnabled: false,
+      centralSyncBaseUrl: '',
+      centralSyncDeviceToken: '',
+      centralSyncWorkspaceId: '',
+      centralSyncEmployeeId: '',
+      centralSyncDeviceId: '',
+      centralSyncRole: '',
+      centralSyncDisplayName: '',
+      centralSyncLastError: '',
+      centralSyncLastErrorAt: 0,
+      centralSyncPollIntervalMin: 1,
       autoBackupTime: '14:37',
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',
@@ -1234,4 +1266,3 @@ export class ConfigService {
     this.unlockPassword = null
   }
 }
-
