@@ -3,7 +3,7 @@
 > 状态：**D1 + D2 定稿**（2026-09-02）。依据：`docs/规划/weflow-hermes-PRD-v3.4.md` §5（11 对象）/ §11（ADR-001）。
 > 本文档优先级高于各模块设计文档；凡冲突，以本文档为准，修订须经评审。
 > 范围说明：§1 对象契约（D1）+ §2 四项 Policy（D2：SSOT / Soft Delete / Feature Gate 七问 / Identity Resolution / Stage Transition）已定稿；§2.5 Stage 矩阵 🔶 格待 D8 主管签字生效；**§2.7 知识治理 Policy（2026-09-09 增补，PRD 2.3/2.7/2.8/2.9 收口：AI 有效读取唯一原语 / logical_id 版本链 / TTL 巡检 / 价格对账 / 删除纪律 / 引用回流）已定稿**。
-> **§3.1 中央投影对象（2026-09-14 增补，PRD 7.1 / §3.1 收口）已定稿**：Phase 3a 上行投影 10 表 + 中央自产审计表 + 自报角色「仅署名不作鉴权」跨机约束。
+> **§3.1 中央投影对象（2026-09-14 增补，PRD 7.1 / §3.1 收口；2026-09-15 补阻断项条款）已定稿**：Phase 3a 上行投影 10 表 + 中央自产审计表 + 自报角色「仅署名不作鉴权」跨机约束，以及 2026-09-15 增补的**出机字段白名单 / 设备命名空间与归属闸门 / 版本化水位与幂等键 / 下行指令面披露**四条。
 
 ---
 
@@ -238,6 +238,14 @@
    对象。中央不是新的写入真源——本机仍是事实生产者，中央只承接 + 裁决下行。
 3. **禁字段白名单前置**：`findForbiddenCentralField` 递归扫描，命中 `chat*` / `message*` / `conversation` /
    `session_id` / `wcdb_path` 即整条拒收并写中央审计。**聊天正文与原始聊天数据永不离开本机。**
+   禁字段清单唯一真源在 `shared/centralSync.ts`，并导出字段名谓词（`isForbiddenChatFieldName` /
+   `isForbiddenIdentityFieldName`）供**本机审计擦洗**复用——两端不各写一套。擦洗与拦截**只记字段路径与稳定错误码，
+   不记被拦字段的值**。
+4. **逐事件显式字段白名单（2026-09-15 增补）**：每个上行 `eventType` 只投递**声明过的最小字段集**，
+   不得把 outbox 原始载荷整包出机；`bind_wx` 原始 wxid 不出机，只出身份类型 / 哈希 / 掩码 / 客户引用 / 来源，
+   且哈希**复用既有身份归一规则**；`first_touch` 不出手机号 / 微信号 / `contactNormalized` / `contactRaw`；
+   `claim` 从 canonical 分配行构造合法安全投影。**服务端对投影载荷走严格白名单：出现未声明字段即整条拒收**
+   （`unknown_field:<名>`），**不静默裁剪**——宁可拒收，不留「先塞进去以后再说」的口子。
 
 **10 张投影表**
 
@@ -273,15 +281,45 @@
 - 无法在本机执行的指令必须如实回 `invalid` 或 `retry`，连续 `retry` 达上限（5）后改判 `invalid`，
   **不得无限重试**。
 
-**版本与幂等**
+**下行指令契约（2026-09-15 增补）**
+
+- **唯一真源** = `shared/centralDownCommand.ts`：逐类型（`assign` / `transfer` / `recycle` /
+  `supervisor_correction` / `permission_change` / `sla1_escalate_supervisor`）声明合法 `entityType`、
+  必填载荷、`deliveryRole`、目标、枚举与长度上限、版本前置。**SMB 与 HTTP 两条传输共用同一份纯校验器**，
+  本机 `applyDownEventDirect` 不得绕过校验。
+- `eventType` 与 `entityType` 不匹配 → 服务端拒收；员工与设备双指定时必须**同属一名员工**；
+  畸形目标标识返 **400**，不得落成数据库 500。畸形指令**不写**任何业务行（lead / assignment /
+  `notify_inbox` / audit / 幂等标记）。
+- **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode`（稳定工号）
+  解析；姓名重名或解析不到一律显式报错并保持 pending。
+- **⚠️ 已披露残留（不声称「下行零身份值」）**：`assign` / `transfer` / `recycle` 的指令载荷必带 6 个线索字段
+  （`CENTRAL_COMMAND_LEAD_FIELDS`：`leadId` / `name` / `contactType` / `contactNormalized` / `source` / `note`）——
+  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，收窄该字段会破坏既有 P0/P1 语义。
+  **聊天正文两个方向都拦**；该线索档案面属已披露的有限例外。
+
+**版本与幂等（2026-09-15 增补复合水位与归属闸门）**
 
 - 中央表主键 `(workspace_id, entity_id)`，仅当 `aggregate_version` 严格变大才覆盖（版本闸门）。
-- `entityId` 由客户端加设备前缀（`<deviceId>/<localRef>`），避免各机自增 id 相撞。
+- **引用命名空间唯一规则**：`entityId` 及一切本机投影引用一律经 `scopedRef(deviceId, localRef)` 生成
+  （`<deviceId>/<localRef>`），避免各机自增 id 相撞；中央侧另有 `isRefOwnedByDevice` 校验
+  **上行 `entityId` 必须落在 `principal.deviceId` 命名空间内**。
+- **投影归属闸门**：既有投影行**只允许原 `source_device_id` 更新**；跨设备改写一律显式冲突
+  （**更高的 `aggregate_version` 也不能覆盖**）。`customer_identity` 唯一身份冲突落冲突记录，不静默覆盖。
+- **增量水位**：可变表按 **(updated_at, id) 复合水位**推进，append-only 表仍用 id——
+  只按 id 会漏掉「已同步行的后续更新」；同毫秒多行更新不得遗漏。
+- **幂等键带版本**：同一实体新版本 → 幂等键不同（含本机修订号），`entityId` 保持稳定，
+  `aggregateVersion` 严格递增。删除 / 状态 / 归属 / 金额 / 阶段变化均产生新版本；**不做全表周期重传**。
+- **被过滤行不得卡游标**：投影读返回 `{drafts, watermark, scanned, skipped, full}` 与跳过原因；
+  暂不可投影的行不阻塞后续合法行，补齐后经台账重新入扫；永久拒收与临时失败分离
+  （前者可推水位并留审计，**后者水位不得前进**）。
 - 上行幂等键 `(workspace_id, idempotency_key)`；下行按 `eventId` 去重；`ack` 对未知 `centralSeq` 静默跳过。
 - 全部 SQL 参数化（`projections.ts` 只产出 `$n` 占位符）。
 
-**当前边界（不夸大）**：以上为**代码实现 + 自动化验证**的范围。HTTPS/反向代理/证书、真实多机演练、
-冲突裁决细化、WeKnora（Phase 3b）属**部署与后续阶段**，未验收前不得描述为已完成。
+**当前边界（不夸大）**：以上为**代码实现 + 自动化验证**的范围。HTTPS/反向代理/证书、真实 PostgreSQL
+端到端、真实多机演练、Windows 打包、SSE 与真实消息推送验收、冲突裁决细化（仍为「服务端版本闸门 +
+跨设备改写拒绝 + 唯一身份冲突记录 + 客户端 `conflict` 回执」，多写者合并策略未定）、WeKnora（Phase 3b）
+属**部署与后续阶段**，未验收前不得描述为已完成。**Phase 3a 代码侧仍未收口**——本轮只关闭了
+2026-09-15 审计报告列出的八类阻断项（见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`）。
 
 ---
 

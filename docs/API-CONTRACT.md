@@ -353,9 +353,11 @@
 
 > 承载节点当前形态为独立主机（PRD §13.1）；未来升级 NAS 时本节契约不变，只换部署形态。
 > 实现位置：`central/src/app.ts`（路由）、`central/src/permissions.ts`（角色矩阵）、
-> `central/src/projections.ts`（显式投影注册表）、`shared/centralSync.ts`（事件信封与禁字段）。
-> 自动化验证：`central/test/app-test.ts`（55 项）、`central/test/projection-test.ts`（19 项）、
-> `central/test/migration-test.ts`（23 项）、`central/test/context-test.ts`（6 项）。
+> `central/src/projections.ts`（显式投影注册表）、`shared/centralSync.ts`（事件信封、禁字段、引用命名空间）、
+> `shared/centralDownCommand.ts`（**下行指令业务校验唯一真源**）。
+> 自动化验证：`central/test/app-test.ts`（102 项）、`central/test/projection-test.ts`（36 项）、
+> `central/test/migration-test.ts`（23 项）、`central/test/context-test.ts`（6 项）；
+> 端到端契约闭环另有 `scripts/central-sync-e2e-test.ts`（44 项，无 Docker 依赖）。
 
 ### 3.1 通用约定
 
@@ -371,14 +373,25 @@
   `(workspace_id, idempotency_key)` 去重，重放返回 `duplicate: true` 且不新建业务记录。
   下行指令按 `eventId` / `idempotencyKey` 去重；`ack` 对不存在的 `centralSeq` 静默跳过（返回 0）。
 - **错误码结构**：`{ ok: false, code, message, requestId }`。已使用：
-  `E101` 参数/请求不合法 · `E102` 下行事件不合法 · `E401` 未认证/凭证失效 ·
-  `E403` 角色无权或越工作区 · `E409` 邀请码无效/已用/过期 · `E500` 内部错误 · `E503` 数据库未就绪。
+  `E101` 参数/请求不合法 · `E102` 下行事件不合法（含 `eventType`/`entityType` 不匹配）·
+  `E103` 下行命令载荷不合法（必填缺失 / 枚举越界 / 长度超限）·
+  `E400` 请求无法处理（请求侧 4xx，如缺 `content-type` 的 415 **按原状态码回，不记成中央服务内部错误**）·
+  `E401` 未认证/凭证失效 · `E403` 角色无权或越工作区 · `E409` 邀请码无效/已用/过期 **或 `idempotency_key_conflict`** ·
+  `E500` 内部错误 · `E503` 数据库未就绪。
 - **日志红线**：Fastify logger 的 `redact` 已排除 `authorization` 与 `idempotency-key` 请求头；
   错误处理只记 `message/stack/code`，不整体打印 pg 异常（其 `parameters` 可能含业务值）。
 - **上行字段脱敏（PIPL / PRD §10-R4）**：`shared/centralSync.ts#findForbiddenCentralField` 递归扫描载荷，
-  命中 `chat*` / `message*` / `conversation` / `session_id` / `wcdb_path` 即整条事件拒收
-  （`code: forbidden_field`）并写中央审计 `sync_forbidden_field`（只记字段路径，不记值）。
-  客户身份值只上行 sha256 哈希 + 展示掩码（`identity_hash` / `identity_masked`）。
+  命中 `chat*` / `message*` / `conversation` / `session_id` / `wcdb_path`、以及原始身份字段
+  （`wxid` / `contactRaw` / `contactNormalized` / `phone` / `identityValue` …）即整条事件拒收
+  （`code: forbidden_field`）并写中央审计 `sync_forbidden_field`（**只记字段路径与稳定错误码，不记值**）。
+  客户身份值只上行 sha256 哈希 + 展示掩码（`identity_hash` / `identity_masked`），哈希**复用既有身份归一规则**。
+  字段名谓词由本模块导出（`isForbiddenChatFieldName` / `isForbiddenIdentityFieldName`），
+  客户端审计擦洗与中央校验**共用同一份清单**，并保证不误伤 `evidenceKey` / `messageKey` 锚点。
+- **逐事件最小字段白名单**：每个上行 `eventType` 只投递声明过的最小字段集，**不允许整包投递 outbox 原始载荷**。
+- **引用命名空间**：`entityId` 与一切本机投影引用由 `shared/centralSync.ts#scopedRef(deviceId, localRef)` 统一生成；
+  服务端按 `isRefOwnedByDevice` 校验**上行 `entityId` 必须属 `principal.deviceId` 命名空间**，
+  否则拒收 `entity_id_not_owned`。**既有投影只允许原 `source_device_id` 更新**（跨设备改写显式冲突，
+  更高 `aggregateVersion` 也不能覆盖）。
 
 ### 3.2 角色 → 能力矩阵（`central/src/permissions.ts` 表驱动）
 
@@ -395,6 +408,14 @@
 
 > 权限唯一依据是服务端 `employee.role` + 设备绑定。本机自报角色（`permission` 投影的
 > `declaredRole`）**仅作署名与展示**，永不参与鉴权。无权限返回 403 E403。
+>
+> **角色 × 上行实体类别**（2026-09-15 增补）：`sales` 只能上传销售设备可合法产出的投影类别
+> （`customer` / `customer_identity` / `assignment` / `opportunity` / `quote` / `audit_event` /
+> `customer_judgment` / `knowledge_proposal`）；分配侧类别（如 `ownership`）对销售拒收
+> （`role_not_allowed_entity:<类型>`）。**销售本机自报为「主管」也不会获得任何服务端能力。**
+>
+> **bootstrap-admin 例外**：引导令牌 `workspaceId` 为空，**不得调用常规 push / pull / ack**
+> （400 E101）——空 workspaceId 不能成为绕过工作区隔离的入口；签发邀请码与吊销设备必须显式带 `workspaceId`。
 
 ### 3.3 端点清单
 
@@ -439,8 +460,13 @@
 请求头：`Idempotency-Key`（**必填**）。请求体：`{ events: CentralSyncEvent[] }`，1–100 条。
 逐条判定，**不做整批拒绝**：单条失败只进 `rejected`，同批有效事件照常落库并返回
 `accepted: [{ eventId, centralSeq, duplicate }]`。拒收原因码：`wrong_direction`（非 up）、
-协议校验错误码、`forbidden_field`、`missing_required:<字段>`、`unregistered_entity_type:<类型>`。
-命中禁字段额外写中央审计 `sync_forbidden_field`。
+协议校验错误码、`entity_id_not_owned`（**上行 entityId 不属于本设备命名空间**）、
+`role_not_allowed_entity:<类型>`、`forbidden_field`、`unknown_field:<字段>`（**严格白名单，多字段即拒**）、
+`missing_required:<字段>`、`unregistered_entity_type:<类型>`。
+命中禁字段额外写中央审计 `sync_forbidden_field`（只记字段路径）。
+**单条事件的判定顺序**：方向 → 协议校验 → 设备命名空间（`isRefOwnedByDevice`）→ 角色 → 禁字段 → 记录违规。
+**投影归属闸门**：`(workspace_id, entity_id)` 已存在时只允许**原 `source_device_id`** 更新，
+跨设备一律 `conflict`（更高 `aggregateVersion` 亦不覆盖）；`customer_identity` 唯一身份冲突落冲突记录。
 
 #### 9 下行拉取
 
@@ -462,6 +488,11 @@
 必须指定 `targetEmployeeId` 或 `targetDeviceId`（否则 400 E101）；目标不在本工作区 403 E403。
 响应 201：落库后的下行事件（含 `centralSeq`）。
 
+**命令体校验（2026-09-15 增补，见 §3.6）**：`eventType` 必须与 `entityType` 匹配（否则 400 E102），
+必填载荷缺失、枚举越界、长度超限一律 400 E103；员工与设备双指定时必须**同属一名员工**；
+畸形目标标识返 **400**（不得落成数据库 500）；同一 `idempotency_key` 重复下发返 409
+`idempotency_key_conflict`。校验不通过的请求**不写**任何业务行与幂等标记。
+
 ### 3.4 显式投影表（禁止数据桶）
 
 上行事件按 `entityType` 落到**明确的表 + 明确的列**（`central/src/projections.ts` 注册表，
@@ -481,17 +512,49 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 | `permission` | `central_permission` | `declared_role` / `authority_source` | `employeeRef, declaredRole` |
 
 - 全部 SQL 参数化（`projections.ts` 只产出 `$n` 占位符，值一律走参数数组）。
-- 版本闸门：`(workspace_id, entity_id)` 主键 upsert，仅当 `aggregate_version` 严格变大才覆盖。
+- **严格白名单**：`payload` 出现注册表未声明的字段即整条拒收（`unknown_field:<字段>`），
+  **不静默裁剪**——宁可拒收，不留自由 JSONB 数据桶的口子。
+- 版本闸门：`(workspace_id, entity_id)` 主键 upsert，仅当 `aggregate_version` 严格变大才覆盖；
+  同时受**投影归属闸门**约束——既有行只允许原 `source_device_id` 更新（`source_device_id` 落库为投影列）。
+- **增量水位（客户端侧）**：可变表按 **(updated_at, id)** 复合水位推进，append-only 表仍用 id；
+  幂等键带本机修订号，同一实体新版本 → 幂等键变化、`entityId` 稳定、`aggregateVersion` 严格递增。
 - `central_audit_projection` 是本机 `audit_event` 的**只读上行投影**；中央自身操作审计另存
   `central_audit_event`，两者不互相写入。
 - 中央侧数据宪法对象登记见 `docs/DATA-CONSTITUTION.md`「中央投影对象」一节。
 
-### 3.5 Phase 3a 尚未落地的部分
+### 3.5 下行指令契约（`shared/centralDownCommand.ts`）
+
+**唯一真源 = `shared/centralDownCommand.ts`**：SMB 与 HTTP 两条传输共用同一份纯校验器，
+本机 `applyDownEventDirect` 不得绕过业务校验（禁止各写一套）。
+
+| eventType | entityType | deliveryRole | 必填载荷（节选） | 目标 |
+|---|---|---|---|---|
+| `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / `lead` | 目标员工或设备 |
+| `transfer` | `assignment` | `apply` / `remove` | 同上 + `toSales` | 同上 |
+| `recycle` | `assignment` | `apply` | 同上 | 同上 |
+| `sla1_escalate_supervisor` | `assignment` | `notify` | 同上 | **主管**（按稳定工号解析） |
+| `supervisor_correction` | `assignment` | `apply` | 同上 | 同上 |
+| `permission_change` | `permission` | `apply` | `employeeRef` / `declaredRole` | 同上 |
+
+- **指令载荷的线索面（已披露残留）**：`assign` / `transfer` / `recycle` 必带 6 个线索字段
+  （`CENTRAL_COMMAND_LEAD_FIELDS`：`leadId` / `name` / `contactType` / `contactNormalized` / `source` / `note`）——
+  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，收窄会破坏既有 P0/P1 语义。
+  **聊天正文两个方向都拦**；本契约**不声称「下行零身份值」**。
+- **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 的目标由本机配置项
+  `centralSyncSupervisorCode`（**稳定工号**）解析；姓名重名或解析不到一律**显式报错并保持 pending**。
+- **中央投递目标与落地**：`sla1_escalate_supervisor` 投递给主管员工/设备，
+  本机落 `notify_inbox`（`notify_type` 为 SLA 升级类）；`supervisor_correction` 落 `notify_inbox`
+  待人工确认，**不静默覆盖**本机事实行。
+
+### 3.6 Phase 3a 尚未落地的部分
 
 - **HTTPS / 反向代理 / 证书**：服务侧仅支持「由反向代理终结 TLS」（`CENTRAL_TLS_TERMINATED`，
   影响 `trustProxy`）；证书签发与续期属部署验收，不在代码内。
-- **冲突裁决**：当前为「服务端版本闸门 + 客户端 `conflict` 回执」，多写者合并策略留待 3a 演练后细化。
+- **真实 PostgreSQL 端到端 / `docker build` / 双机演练 / Windows 打包 / 上行延迟实测**：均未执行。
+- **冲突裁决**：当前为「服务端版本闸门 + **跨设备改写拒绝** + 唯一身份冲突记录 + 客户端 `conflict` 回执」，
+  多写者合并策略留待 3a 演练后细化。
 - **WeKnora / 中央 MCP**：属 Phase 3b，见 §4.2，仍为占位规范。
+- **PRD 2.10 / 2.11**：≥100 条商机评测集与官方微信单向推送**均未完成**，与中央节点无关；Phase 4 为未启动 Backlog。
 
 ---
 
