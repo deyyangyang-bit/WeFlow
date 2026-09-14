@@ -997,6 +997,58 @@ const resolveAppIconPath = (): string => {
   return join(__dirname, `../public/${iconName}`)
 }
 
+/**
+ * Tray 图标与 BrowserWindow 图标分开解析。
+ * macOS 的窗口继续使用 ICNS；Tray 只使用 PNG，避免 Electron 43 在菜单栏
+ * 路径加载 ICNS 时返回空图导致启动告警。
+ */
+const resolveTrayIconCandidates = (): string[] => {
+  if (process.platform !== 'darwin') {
+    return [resolveAppIconPath()]
+  }
+
+  const candidates = process.env.VITE_DEV_SERVER_URL
+    ? [
+        join(__dirname, '../public/icon.png'),
+        join(app.getAppPath(), 'public/icon.png')
+      ]
+    : [
+        join(process.resourcesPath, 'icon.png'),
+        join(app.getAppPath(), 'dist/icon.png')
+      ]
+
+  return [...new Set(candidates)]
+}
+
+const loadTrayIcon = () => {
+  for (const candidate of resolveTrayIconCandidates()) {
+    try {
+      const image = nativeImage.createFromPath(candidate)
+      if (image.isEmpty()) {
+        console.warn(`[Tray] Empty tray icon candidate: ${candidate}`)
+        continue
+      }
+
+      if (process.platform === 'darwin') {
+        const resized = image.resize({ width: 18, height: 18, quality: 'best' })
+        if (resized.isEmpty()) {
+          console.warn(`[Tray] Empty resized tray icon candidate: ${candidate}`)
+          continue
+        }
+        resized.setTemplateImage(false)
+        return resized
+      }
+
+      return image
+    } catch (error) {
+      console.warn(`[Tray] Failed to load tray icon candidate: ${candidate}`, error)
+    }
+  }
+
+  console.warn('[Tray] No usable tray icon candidate; continuing without tray icon')
+  return null
+}
+
 const requestMainWindowCloseConfirmation = (win: BrowserWindow): void => {
   if (isClosePromptVisible) return
   isClosePromptVisible = true
@@ -5236,47 +5288,50 @@ app.whenReady().then(async () => {
   ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
 
-  const resolvedTrayIcon = resolveAppIconPath()
-
   try {
-    tray = new Tray(resolvedTrayIcon)
-    tray.setToolTip('WeFlow')
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: '显示主窗口',
-        click: () => {
-          if (mainWindow) {
+    const trayIcon = loadTrayIcon()
+    if (trayIcon) {
+      tray = new Tray(trayIcon)
+      tray.setImage(trayIcon)
+      tray.setToolTip('WeFlow')
+      console.log('[Tray] Created macOS tray icon from PNG resource')
+      const contextMenu = Menu.buildFromTemplate([
+        {
+          label: '显示主窗口',
+          click: () => {
+            if (mainWindow) {
+              mainWindow.show()
+              mainWindow.focus()
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => {
+            isAppQuitting = true
+            app.quit()
+          }
+        }
+      ])
+      tray.setContextMenu(contextMenu)
+      tray.on('click', () => {
+        if (mainWindow) {
+          if (mainWindow.isVisible()) {
+            mainWindow.focus()
+          } else {
             mainWindow.show()
             mainWindow.focus()
           }
         }
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          isAppQuitting = true
-          app.quit()
-        }
-      }
-    ])
-    tray.setContextMenu(contextMenu)
-    tray.on('click', () => {
-      if (mainWindow) {
-        if (mainWindow.isVisible()) {
-          mainWindow.focus()
-        } else {
+      })
+      tray.on('double-click', () => {
+        if (mainWindow) {
           mainWindow.show()
           mainWindow.focus()
         }
-      }
-    })
-    tray.on('double-click', () => {
-      if (mainWindow) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    })
+      })
+    }
   } catch (e) {
     console.warn('[Tray] Failed to create tray icon:', e)
   }
