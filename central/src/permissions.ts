@@ -16,18 +16,22 @@ export type Capability =
   | 'device.rotate'    // 轮换本设备令牌
   | 'device.revokeSelf'// 自助解绑本设备
   | 'device.revoke'    // 吊销工作区内任意设备
+  | 'directory.read'   // 读取本工作区员工目录（把本地显示名解析成 stable employeeId 的唯一依据）
 
 const BASE_DEVICE_CAPABILITIES: readonly Capability[] = ['sync.push', 'sync.pull', 'sync.ack', 'device.rotate', 'device.revokeSelf']
 
 export const ROLE_CAPABILITIES: Record<EnterpriseRole, readonly Capability[]> = {
-  // 销售：本人客户的全部日常同步；无下发指令权、无邀请码、无吊销他人设备
-  sales: BASE_DEVICE_CAPABILITIES,
-  // 销售主管：PRD §3 团队只读 + 审核/移交审批/仲裁 → 可下发指令
-  supervisor: [...BASE_DEVICE_CAPABILITIES, 'command.issue'],
+  // 销售：本人客户的全部日常同步；无下发指令权、无邀请码、无吊销他人设备。
+  // 但**必须有 directory.read**：SLA1 三次超时的升级通知由持有该分配行的设备产生，
+  // 销售设备也要能把「主管」解析成 stable employeeId，否则该通知永远无法投递（§三.6）。
+  // 目录只回员工身份元数据（employeeCode/姓名/角色/唯一性），不含任何客户数据。
+  sales: [...BASE_DEVICE_CAPABILITIES, 'directory.read'],
+  // 销售主管：PRD §3 团队只读 + 审核/移交审批/仲裁 → 可下发指令（下指令前必须能解析目标员工）
+  supervisor: [...BASE_DEVICE_CAPABILITIES, 'command.issue', 'directory.read'],
   // 分配员：录入/分配/调比例/回收 → 可下发指令（默认由主管兼任）
-  allocator: [...BASE_DEVICE_CAPABILITIES, 'command.issue'],
+  allocator: [...BASE_DEVICE_CAPABILITIES, 'command.issue', 'directory.read'],
   // 管理员：PRD §3 账号/角色/密钥 → 额外拥有邀请码与设备吊销
-  admin: [...BASE_DEVICE_CAPABILITIES, 'command.issue', 'invite.create', 'device.revoke'],
+  admin: [...BASE_DEVICE_CAPABILITIES, 'command.issue', 'directory.read', 'invite.create', 'device.revoke'],
   // 系统/AI 账号：永不人工登录、永不授予分配权，只按调用者身份只读消费
   service: ['sync.pull']
 }

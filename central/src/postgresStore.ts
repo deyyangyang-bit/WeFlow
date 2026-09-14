@@ -2,8 +2,15 @@ import { readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
 import type { CentralAckRequest, CentralPullResult, CentralSyncEvent } from '../../shared/centralSync.js'
-import { buildProjectionUpsert, projectionOf, validateProjectionPayload } from './projections.js'
-import type { CentralStore, DevicePrincipal, InviteInput, PushResult } from './store.js'
+import {
+  buildProjectionUpsert,
+  crossDeviceConflict,
+  identityAnchorOf,
+  projectionOf,
+  projectionTableName,
+  validateProjectionPayload
+} from './projections.js'
+import type { CentralStore, DevicePrincipal, EmployeeDirectoryEntry, InviteInput, PushResult } from './store.js'
 
 type DbRow = Record<string, unknown>
 
@@ -145,6 +152,74 @@ export class PostgresCentralStore implements CentralStore {
     return Boolean(result.rowCount)
   }
 
+  /**
+   * 投影归属闸门（§二.3）：既有投影只允许原 source_device_id 更新。
+   * 返回冲突码即拒收整条事件——绝不出现「B 机用更大 aggregateVersion 覆盖 A 机投影」。
+   */
+  private async ownershipConflict(client: PoolClient, principal: DevicePrincipal, event: CentralSyncEvent): Promise<string | null> {
+    if (event.direction !== 'up') return null
+    const table = projectionTableName(event.entityType)
+    const existing = await client.query(
+      `SELECT source_device_id FROM ${table} WHERE workspace_id=$1 AND entity_id=$2`,
+      [principal.workspaceId, event.entityId]
+    )
+    if (!existing.rowCount) return null
+    const owner = existing.rows[0].source_device_id === null ? null : String(existing.rows[0].source_device_id)
+    return crossDeviceConflict(owner, principal.deviceId)
+  }
+
+  /**
+   * 唯一身份锚点闸门（§二.4）：同一工作区内 identity_type+identity_hash 只能指向一个客户。
+   * 表级 UNIQUE 已经在库里拦住第二次写入，但那样只会得到一条通用 event_rejected 且没有仲裁线索；
+   * 这里显式回稳定码并留冲突记录，让人知道「两个设备把同一个手机号归到了不同客户」。
+   */
+  private async identityAnchorConflict(client: PoolClient, principal: DevicePrincipal, event: CentralSyncEvent): Promise<boolean> {
+    if (event.entityType !== 'customer_identity') return false
+    const anchor = identityAnchorOf(event.payload)
+    if (!anchor) return false
+    const clash = await client.query(
+      `SELECT entity_id FROM central_customer_identity
+       WHERE workspace_id=$1 AND identity_type=$2 AND identity_hash=$3 AND entity_id<>$4 LIMIT 1`,
+      [principal.workspaceId, anchor.identityType, anchor.identityHash, event.entityId]
+    )
+    return Boolean(clash.rowCount)
+  }
+
+  async recordConflict(principal: DevicePrincipal, event: CentralSyncEvent, code: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO central_audit_event(workspace_id,actor,action,entity_type,entity_id,detail)
+       VALUES($1,$2,'sync_entity_conflict',$3,$4,$5::jsonb)`,
+      [principal.workspaceId, `device:${principal.deviceId}`, event.entityType, event.entityId,
+        JSON.stringify({ code, eventId: event.eventId, eventType: event.eventType })]
+    )
+  }
+
+  async deviceBelongsToEmployee(workspaceId: string, deviceId: string, employeeId: string): Promise<boolean> {
+    if (!isUuid(deviceId) || !isUuid(employeeId)) return false
+    const result = await this.pool.query(
+      // 已吊销设备不是合法投递目标（与 MemoryCentralStore 的 active 判定保持一致）
+      "SELECT 1 FROM device WHERE id=$1::uuid AND workspace_id=$2 AND employee_id=$3::uuid AND status='active' LIMIT 1",
+      [deviceId, workspaceId, employeeId]
+    )
+    return Boolean(result.rowCount)
+  }
+
+  async listEmployees(workspaceId: string): Promise<EmployeeDirectoryEntry[]> {
+    if (!isUuid(workspaceId)) return []
+    const result = await this.pool.query(
+      `SELECT e.id, e.employee_code, e.display_name, e.role,
+              (SELECT COUNT(*) FROM employee x WHERE x.workspace_id=e.workspace_id
+                 AND x.display_name=e.display_name AND x.status='active')::int AS same_name
+       FROM employee e WHERE e.workspace_id=$1::uuid AND e.status='active'
+       ORDER BY e.employee_code`,
+      [workspaceId]
+    )
+    return result.rows.map((row) => ({
+      employeeId: String(row.id), employeeCode: String(row.employee_code), displayName: String(row.display_name),
+      role: row.role as EmployeeDirectoryEntry['role'], nameUnique: Number(row.same_name) === 1
+    }))
+  }
+
   async pushEvents(principal: DevicePrincipal, events: CentralSyncEvent[]): Promise<PushResult> {
     const client = await this.pool.connect()
     const accepted: PushResult['accepted'] = []
@@ -157,14 +232,31 @@ export class PostgresCentralStore implements CentralStore {
         const savepoint = `event_${index}`
         await client.query(`SAVEPOINT ${savepoint}`)
         try {
+          // 归属/身份闸门只对上行投影成立；下行指令由 appendDownEvent 单独落库，不进投影表
+          const isUplinkProjection = event.direction === 'up'
+          if (isUplinkProjection) {
+            const ownership = await this.ownershipConflict(client, principal, event)
+            if (ownership) {
+              await this.recordConflict(principal, event, ownership)
+              throw new Error(ownership)
+            }
+            if (await this.identityAnchorConflict(client, principal, event)) {
+              await this.recordConflict(principal, event, 'identity_anchor_conflict')
+              throw new Error('identity_anchor_conflict')
+            }
+          }
           const result = await this.insertEvent(client, principal, event)
-          if (!result.duplicate) await this.applyProjection(client, principal, event)
+          if (!result.duplicate && isUplinkProjection) await this.applyProjection(client, principal, event)
           await client.query(`RELEASE SAVEPOINT ${savepoint}`)
           accepted.push({ eventId: event.eventId, ...result })
         } catch (error) {
           await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`)
           await client.query(`RELEASE SAVEPOINT ${savepoint}`)
-          rejected.push({ eventId: event.eventId, code: 'event_rejected', message: describePushError(error) })
+          const message = describePushError(error)
+          // 归属/身份冲突必须是**独立稳定码**：发送方据此把本地行转终态并提示人工仲裁，
+          // 混进通用 event_rejected 会被当成可重试的瞬时错误而无限重推。
+          const code = CONFLICT_CODES.find((item) => message.startsWith(item)) || 'event_rejected'
+          rejected.push({ eventId: event.eventId, code, message })
         }
       }
       await client.query('COMMIT')
@@ -291,11 +383,20 @@ export class PostgresCentralStore implements CentralStore {
   }
 }
 
+/** 跨设备写入 / 身份锚点冲突的稳定码（与统一鉴权错误码同层级，客户端据此转终态 + 审计） */
+const CONFLICT_CODES = ['cross_device_conflict', 'identity_anchor_conflict']
+
+/** 目标员工/设备 id 必须是 UUID：非法格式要在路由层回 400，绝不让它走到 $1::uuid 变成 500。 */
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
+}
+
 /** 拒绝原因只回传稳定短码 + 截断信息，避免把 SQL/参数原文透给客户端或日志。 */
 function describePushError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  if (/^(unregistered_entity_type|forbidden_field|missing_required):/.test(message)) return message
+  if (/^(unregistered_entity_type|forbidden_field|missing_required|unknown_field):/.test(message)) return message
   if (message === 'idempotency_key_conflict') return message
+  if (CONFLICT_CODES.includes(message)) return message
   const code = (error as { code?: string } | null)?.code
   return code ? `projection_rejected:${code}` : 'projection_rejected'
 }

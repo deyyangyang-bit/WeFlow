@@ -9,8 +9,11 @@
  *
  * 用法：cd central && npm run test:projection
  */
-import { buildProjectionUpsert, PROJECTIONS, projectionColumnNames, projectionOf, projectionRegistryGaps, validateProjectionPayload } from '../src/projections.js'
-import { CENTRAL_ENTITY_TYPES, findForbiddenCentralField, type CentralSyncEvent } from '../../shared/centralSync.js'
+import {
+  buildProjectionUpsert, crossDeviceConflict, identityAnchorOf, PROJECTIONS, projectionColumnNames,
+  projectionOf, projectionRegistryGaps, projectionTableName, unknownPayloadFields, validateProjectionPayload
+} from '../src/projections.js'
+import { CENTRAL_ENTITY_TYPES, findForbiddenCentralField, findForbiddenDownlinkField, type CentralSyncEvent } from '../../shared/centralSync.js'
 
 let pass = 0
 let fail = 0
@@ -96,6 +99,48 @@ check('E3 数值列非法值归 null 而不是 NaN',
   buildProjectionUpsert(PROJECTIONS.customer_judgment, 'ws', 'dev',
     eventOf('customer_judgment', 'j', { customerRef: 'c', judgmentType: 'summary', value: 'v', confidence: 'abc' }))
     .values.includes(null))
+console.log('═══ F. 未知字段严格拒收（§一.6：中央不留任何未登记字段）═══')
+check('F1 未登记字段被列出（服务端据此拒收整事件）', unknownPayloadFields(customer, { displayName: 'X', extraNote: 'y' }).join(',') === 'extraNote')
+check('F2 未登记字段先于必填检查（缺字段也先报未知字段）',
+  validateProjectionPayload(customer, { extraNote: 'y' }) === 'unknown_field:extraNote')
+check('F3 事件类型字段 type 属于信封字段，不判为未知', unknownPayloadFields(customer, { displayName: 'X', type: 'customer_confirmed' }).length === 0)
+check('F4 登记字段一律放行（不会误伤白名单内字段）',
+  unknownPayloadFields(customer, { displayName: 'X', stage: 'contacted', ownerSales: '张三' }).length === 0)
+check('F5 原始 outbox 载荷（含 type/时间戳等本机字段）整条被拒，不做静默裁剪',
+  String(validateProjectionPayload(customer,
+    { type: 'customer_confirmed', displayName: 'X', idempotencyKey: 'k', deviceId: 'd' })) === 'unknown_field:idempotencyKey,deviceId')
+check('F6 每个投影都能给出自己的表名（归属冲突查询据此落到正确表）',
+  CENTRAL_ENTITY_TYPES.every((type) => projectionTableName(type) === PROJECTIONS[type].table))
+
+console.log('═══ G. 归属与身份锚点判定（§二.3 §二.4）═══')
+check('G1 无既有投影 → 无冲突', crossDeviceConflict(undefined, 'dev-a') === null)
+check('G2 原设备更新自己的投影 → 放行', crossDeviceConflict('dev-a', 'dev-a') === null)
+check('G3 他机改写 → cross_device_conflict（错误码不含任何设备 id）',
+  crossDeviceConflict('dev-a', 'dev-b') === 'cross_device_conflict')
+check('G4 身份锚点只取类型与哈希（掩码/引用不参与判重）',
+  JSON.stringify(identityAnchorOf({ identityType: 'phone', identityHash: 'h', identityMasked: '138****0000' })) ===
+  JSON.stringify({ identityType: 'phone', identityHash: 'h' }))
+check('G5 缺哈希不产生锚点（不会把两条无哈希记录判成同一身份）', identityAnchorOf({ identityType: 'phone' }) === null)
+
+console.log('═══ H. 禁字段覆盖面（§一.7）═══')
+const mustBlock = ['rawChat', 'chatHistory', 'messages', 'messageRaw', 'contactRaw', 'contactNormalized',
+  'wxid', 'rawChatText', 'chat_raw', 'message_log', 'session_id', 'wcdb_path', 'evidenceText', 'phone']
+const notBlocked = mustBlock.filter((field) => findForbiddenCentralField({ [field]: 'x' }) !== field)
+check('H1 聊天原文 / 消息 / 原始身份值字段全部命中禁字段', notBlocked.length === 0, notBlocked.join(','))
+check('H2 evidenceKey / messageKey 锚点不被误伤（合法证据锚点必须能上行）',
+  findForbiddenCentralField({ evidenceKey: 'ev:1', messageKey: 'msg:1' }) === null)
+check('H3 禁字段报的是字段路径，不是字段值',
+  findForbiddenCentralField({ outer: { contactRaw: '13800000000' } }) === 'outer.contactRaw')
+// 词干兜底：精确名表拦不住的同义新写法必须照样命中，否则「换个字段名就能把聊天原文传出去」
+const stemVariants = ['rawChatText', 'chatSummary', 'chatDigest', 'messageDigest', 'messageBrief',
+  'conversationDigest', 'sessionSnapshot', 'chat_log_latest']
+const stemMissed = stemVariants.filter((field) => findForbiddenCentralField({ [field]: 'x' }) !== field)
+check('H4 词干兜底：未登记的同义聊天字段名同样命中', stemMissed.length === 0, stemMissed.join(','))
+check('H4b 词干规则与精确表同名时不重复判定（chat 本身仍由精确表命中）',
+  findForbiddenCentralField({ chat: 'x' }) === 'chat')
+check('H5 下行方向同样拦聊天：指令载荷里的线索资料放行，聊天摘要拒收',
+  findForbiddenDownlinkField({ lead: { contactNormalized: '13800000000' }, name: '张三' }) === null &&
+  findForbiddenDownlinkField({ lead: { chatSummary: '客户说……' } }) === 'lead.chatSummary')
 
 console.log(`\ncentral projection test: ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

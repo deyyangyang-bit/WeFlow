@@ -1,8 +1,12 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import {
-  CENTRAL_ENTITY_TYPES, CENTRAL_SYNC_PROTOCOL_VERSION, findForbiddenCentralField,
-  validateCentralSyncEvent, type CentralAckRequest, type CentralPushRequest, type CentralSyncEvent
+  CENTRAL_ENTITY_TYPES, CENTRAL_SYNC_PROTOCOL_VERSION, findForbiddenCentralField, findForbiddenDownlinkField,
+  isRefOwnedByDevice, validateCentralSyncEvent,
+  type CentralAckRequest, type CentralEntityType, type CentralPushRequest, type CentralSyncEvent
 } from '../../shared/centralSync.js'
+import {
+  downCommandSpec, isDownDirection, validateCentralEntityId, validateDownCommand
+} from '../../shared/centralDownCommand.js'
 import { createSecret, safeSecretEqual, secretHash } from './crypto.js'
 import { can, type Capability } from './permissions.js'
 import { projectionRegistryGaps } from './projections.js'
@@ -26,6 +30,26 @@ function bearer(request: FastifyRequest): string {
 function error(code: string, message: string, requestId: string) {
   return { ok: false as const, code, message, requestId }
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * 目标标识必须是 UUID 形态。放在路由层做，是为了让非法目标返回 400 而不是
+ * 让 `$2::uuid` 在 PostgreSQL 抛错变成 500（§七.5）。
+ */
+function isUuid(value: unknown): boolean {
+  return UUID_PATTERN.test(String(value ?? ''))
+}
+
+/**
+ * §二.5：sales 角色的设备只能上传其本职业务产生的投影。
+ * `ownership`（账号归属）与 `permission`（权限声明）分别由分配侧与主管侧产生，
+ * 销售设备上传这两类即越权，直接拒收而不是静默丢弃。
+ */
+const SALES_UPLINK_ENTITY_TYPES: readonly CentralEntityType[] = [
+  'customer', 'customer_identity', 'assignment', 'opportunity', 'quote',
+  'audit_event', 'customer_judgment', 'knowledge_proposal'
+]
 
 const syncEventSchema = {
   type: 'object', additionalProperties: false,
@@ -63,10 +87,16 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
 
   app.setErrorHandler((error_, request, reply) => {
     // 只记 message/stack/错误码：pg 异常的 parameters 可能带业务值，绝不整体落日志。
-    const err = error_ as Error & { code?: string }
-    request.log.error({ err: { message: err.message, stack: err.stack, code: err.code } }, 'request failed')
+    const err = error_ as Error & { code?: string; statusCode?: number }
     const validation = typeof err === 'object' && err !== null && 'validation' in err && Boolean((err as { validation?: unknown }).validation)
-    void reply.code(validation ? 400 : 500).send(error(validation ? 'E101' : 'E500', validation ? '请求参数不合法' : '中央服务内部错误', request.id))
+    // 请求侧的 4xx（如缺 content-type 的 FST_ERR_CTP_INVALID_MEDIA_TYPE=415）是调用方错误，
+    // 必须按原状态码回，否则畸形请求会被记成「中央服务内部错误」的 500，污染服务端监控（§七.5 同类）。
+    const clientStatus = typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 0
+    // 5xx 才按服务端故障记 error 级：调用方畸形请求不占用错误告警
+    if (!validation && !clientStatus) request.log.error({ err: { message: err.message, stack: err.stack, code: err.code } }, 'request failed')
+    if (validation) return void reply.code(400).send(error('E101', '请求参数不合法', request.id))
+    if (clientStatus) return void reply.code(clientStatus).send(error('E400', '请求无法处理', request.id))
+    void reply.code(500).send(error('E500', '中央服务内部错误', request.id))
   })
 
   app.get('/health', async () => ({ ok: true, data: { service: 'weflow-central', protocolVersion: CENTRAL_SYNC_PROTOCOL_VERSION } }))
@@ -95,6 +125,16 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     const require_ = (capability: Capability) => async (request: FastifyRequest, reply: FastifyReply) => {
       if (!can(request.principal!.role, capability)) {
         return reply.code(403).send(error('E403', `当前角色无权执行 ${capability}`, request.id))
+      }
+    }
+
+    /**
+     * §二.7：bootstrap-admin 是运维身份，不属于任何工作区。
+     * 常规 push/pull/ack 必须带工作区上下文，否则「空 workspaceId」会绕过工作区隔离。
+     */
+    const requireWorkspace = async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.principal!.workspaceId) {
+        return reply.code(400).send(error('E101', 'bootstrap-admin 无工作区上下文，不得调用常规同步接口', request.id))
       }
     }
 
@@ -163,7 +203,7 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     })
 
     api.post('/sync/push', {
-      preHandler: require_('sync.push'),
+      preHandler: [require_('sync.push'), requireWorkspace],
       schema: { body: { type: 'object', additionalProperties: false, required: ['events'], properties: {
         events: { type: 'array', minItems: 1, maxItems: 100, items: syncEventSchema }
       } } }
@@ -179,6 +219,16 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
         if (event.direction !== 'up') { rejected.push({ eventId: event.eventId, code: 'wrong_direction', message: '上行接口只接受 direction=up' }); continue }
         const protocolError = validateCentralSyncEvent(event)
         if (protocolError) { rejected.push({ eventId: event.eventId, code: protocolError, message: '事件信封不合法' }); continue }
+        // §二.2：上行 entityId 必须是「本设备命名空间/localRef」，客户端不得冒充他机前缀
+        if (!isRefOwnedByDevice(principal.deviceId, event.entityId)) {
+          rejected.push({ eventId: event.eventId, code: 'entity_id_not_owned', message: '上行 entityId 不属于本设备命名空间' })
+          continue
+        }
+        // §二.5：销售设备不得上传越权类别的投影
+        if (principal.role === 'sales' && !SALES_UPLINK_ENTITY_TYPES.includes(event.entityType)) {
+          rejected.push({ eventId: event.eventId, code: `role_not_allowed_entity:${event.entityType}`, message: '当前角色不得上传该类别投影' })
+          continue
+        }
         const forbidden = findForbiddenCentralField(event.payload)
         if (forbidden) {
           rejected.push({ eventId: event.eventId, code: 'forbidden_field', message: `载荷包含禁止上行的字段：${forbidden}` })
@@ -193,7 +243,7 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     })
 
     api.get('/sync/pull', {
-      preHandler: require_('sync.pull'),
+      preHandler: [require_('sync.pull'), requireWorkspace],
       schema: { querystring: { type: 'object', additionalProperties: false, properties: {
         cursor: { type: 'integer', minimum: 0, default: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 100 }
       } } }
@@ -203,7 +253,7 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     })
 
     api.post('/sync/ack', {
-      preHandler: require_('sync.ack'),
+      preHandler: [require_('sync.ack'), requireWorkspace],
       schema: {
         body: {
           type: 'object', additionalProperties: false, required: ['acknowledgements'],
@@ -230,19 +280,60 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     })
 
     api.post('/sync/commands', {
-      preHandler: require_('command.issue'),
+      preHandler: [require_('command.issue'), requireWorkspace],
       schema: { body: syncEventSchema }
     }, async (request, reply) => {
       const event = request.body as CentralSyncEvent
-      const validation = validateCentralSyncEvent(event) || findForbiddenCentralField(event.payload)
-      if (validation) return reply.code(400).send(error('E102', `下行事件不合法：${validation}`, request.id))
-      if (!event.targetDeviceId && !event.targetEmployeeId) return reply.code(400).send(error('E101', '下行指令必须指定员工或设备', request.id))
-      // 工作区隔离：只能向本工作区内的员工/设备下发指令
-      if (request.principal!.workspaceId) {
-        const inScope = await store.isTargetInWorkspace(request.principal!.workspaceId, event.targetDeviceId, event.targetEmployeeId)
-        if (!inScope) return reply.code(403).send(error('E403', '目标员工或设备不在当前工作区', request.id))
+      const reject = (code: string, message: string) => reply.code(400).send(error(code, message, request.id))
+      // ① 信封层：协议字段、禁字段（下行只拦聊天正文，见 findForbiddenDownlinkField）
+      if (!isDownDirection(event)) return reject('E102', '下行指令必须 direction=down')
+      const envelopeError = validateCentralSyncEvent(event)
+      if (envelopeError) return reject('E102', `下行事件不合法：${envelopeError}`)
+      const chatLeak = findForbiddenDownlinkField(event.payload)
+      if (chatLeak) return reject('E102', `载荷包含禁止下行的字段：${chatLeak}`)
+
+      // ② 目标格式：非法 UUID 必须在碰数据库之前就 400，而不是让 pg 抛错变 500（§七.5）
+      for (const field of ['targetEmployeeId', 'targetDeviceId'] as const) {
+        const value = event[field]
+        if (value !== undefined && value !== null && value !== '' && !isUuid(value)) {
+          return reject('E101', `目标标识格式非法：${field}`)
+        }
       }
-      return reply.code(201).send({ ok: true, data: await store.appendDownEvent(request.principal!, { ...event, direction: 'down' }) })
+
+      // ③ 业务层：共享校验器（与 Phase 1 SMB 同一份规则，不在服务端复制一遍）
+      const businessError = validateDownCommand({
+        eventType: String(event.eventType || ''), entityType: String(event.entityType || ''),
+        payload: event.payload, targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
+      })
+      if (businessError) return reject('E103', `下行指令业务校验失败：${businessError}`)
+      const entityIdError = validateCentralEntityId(event.entityType, event.entityId)
+      if (entityIdError) return reject('E103', `下行指令实体引用非法：${entityIdError}`)
+
+      // ④ 投递范围：目标员工/设备必须同属一个工作区，且同时指定时属于同一员工（§七.4）
+      const workspaceId = request.principal!.workspaceId
+      if (!(await store.isTargetInWorkspace(workspaceId, event.targetDeviceId, event.targetEmployeeId))) {
+        return reply.code(403).send(error('E403', '目标员工或设备不在当前工作区', request.id))
+      }
+      if (event.targetDeviceId && event.targetEmployeeId &&
+        !(await store.deviceBelongsToEmployee(workspaceId, event.targetDeviceId, event.targetEmployeeId))) {
+        return reject('E103', '目标设备与目标员工不属于同一员工')
+      }
+      // ⑤ 落库前再确认一次事件类型在册（downCommandSpec 已查过，这里防止注册表与路由漂移）
+      if (!downCommandSpec(String(event.eventType || ''))) return reject('E103', `未登记的下行事件类型：${event.eventType}`)
+      try {
+        return reply.code(201).send({ ok: true, data: await store.appendDownEvent(request.principal!, { ...event, direction: 'down' }) })
+      } catch (thrown) {
+        // 幂等键被另一条 eventId 占用：语义冲突，必须 409 而不是静默改写成重复
+        const message = thrown instanceof Error ? thrown.message : String(thrown)
+        if (message === 'idempotency_key_conflict') return reply.code(409).send(error('E409', '同幂等键已存在不同指令', request.id))
+        throw thrown
+      }
+    })
+
+    // 员工目录：本地显示名 → 稳定员工标识的唯一解析依据（PRD §3.1 身份行）。
+    // 只回目录，不回任何客户数据；sales 角色无 directory.read，按名字猜人的成本被挡在权限层。
+    api.get('/directory/employees', { preHandler: require_('directory.read') }, async (request) => {
+      return { ok: true, data: { employees: await store.listEmployees(request.principal!.workspaceId) } }
     })
   }, { prefix: '/api/v1' })
 

@@ -283,13 +283,57 @@ export function projectionColumnNames(): Record<string, string[]> {
   return out
 }
 
-/** 上行事件是否载荷合法；返回拒绝原因（null = 通过）。 */
+/**
+ * payload 中**未登记**的字段（严格白名单）。
+ *
+ * 为什么必须存在：注册表只声明「中央要哪些列」，不声明「允许发送方多带什么」。少了这道闸门，
+ * 发送方一个 `{...outboxPayload}` 就能把原始手机号 / wxid / 聊天原文塞进 sync_event.payload
+ * 并长期留存在中央库里——即使实体列里没有对应列，事件载荷本身已经出机并落库。
+ * 发现未登记字段一律**拒收整条事件**，不做静默裁剪：静默裁剪会让发送方以为已经同步成功。
+ */
+export function unknownPayloadFields(projection: Projection, payload: Record<string, unknown>): string[] {
+  const allowed = new Set(projection.columns.map((column) => column.from).filter((from) => from !== ''))
+  allowed.add('type')
+  return Object.keys(payload).filter((key) => !allowed.has(key))
+}
+
+/** 上行事件是否载荷合法；返回拒绝原因（null = 通过）。错误码只带字段路径，绝不带字段值。 */
 export function validateProjectionPayload(projection: Projection, payload: Record<string, unknown>): string | null {
   const forbidden = findForbiddenCentralField(payload)
   if (forbidden) return `forbidden_field:${forbidden}`
+  const unknown = unknownPayloadFields(projection, payload)
+  if (unknown.length) return `unknown_field:${unknown.join(',')}`
   const missing = missingRequiredFields(projection, payload)
   if (missing.length) return `missing_required:${missing.join(',')}`
   return null
+}
+
+/** 投影表的中央表名（用于按主键回查归属设备，不做任何字符串拼接之外的用途） */
+export function projectionTableName(entityType: string): string {
+  return projectionOf(entityType).table
+}
+
+/**
+ * 投影归属闸门（§二.3）：既有投影只能由**原 source_device_id** 更新。
+ * 同设备的新版本照常走 aggregate_version 闸门；跨设备改写一律返回冲突码——
+ * 绝不能出现「B 机用更大的 aggregateVersion 覆盖 A 机投影」这种同工作区内的越权。
+ * 错误码不带任何 id：拒收回执本身不该泄露别人的设备标识。
+ */
+export function crossDeviceConflict(existingSourceDeviceId: string | null | undefined, incomingDeviceId: string): string | null {
+  if (!existingSourceDeviceId) return null
+  if (String(existingSourceDeviceId) === String(incomingDeviceId)) return null
+  return 'cross_device_conflict'
+}
+
+/**
+ * 唯一身份锚点（§二.4）：同一工作区内 identity_type + identity_hash 只能指向一个客户。
+ * 冲突时返回稳定码，由 store 记冲突记录并拒收——**不覆盖、不静默、不自动归并**。
+ */
+export function identityAnchorOf(payload: Record<string, unknown>): { identityType: string; identityHash: string } | null {
+  const identityType = String(payload.identityType ?? '').trim()
+  const identityHash = String(payload.identityHash ?? '').trim()
+  if (!identityType || !identityHash) return null
+  return { identityType, identityHash }
 }
 
 /** 注册表与协议实体清单必须一一对应（供测试与启动自检使用）。 */

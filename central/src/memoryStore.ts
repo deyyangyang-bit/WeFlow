@@ -1,13 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import type { CentralAckRequest, CentralPullResult, CentralSyncEvent } from '../../shared/centralSync.js'
-import { projectionOf, validateProjectionPayload } from './projections.js'
-import type { CentralStore, DevicePrincipal, InviteInput, PushResult } from './store.js'
+import {
+  crossDeviceConflict, identityAnchorOf, projectionOf, validateProjectionPayload
+} from './projections.js'
+import type { CentralStore, DevicePrincipal, EmployeeDirectoryEntry, EnterpriseRole, InviteInput, PushResult } from './store.js'
 
-interface InviteRow extends InviteInput { inviteId: string; codeHash: string; used: boolean }
+interface InviteRow extends InviteInput { inviteId: string; codeHash: string; used: boolean; employeeId: string }
+/** 员工行：与 Postgres 实现同构——员工 id 是稳定 UUID，同一员工的多台设备共用一个 id */
+interface EmployeeRow {
+  employeeId: string
+  workspaceId: string
+  employeeCode: string
+  displayName: string
+  role: EnterpriseRole
+}
 interface DeviceRow extends DevicePrincipal { tokenHash: string; active: boolean }
 interface EventRow { centralSeq: number; workspaceId: string; sourceDeviceId: string; event: CentralSyncEvent }
 /** 投影行按 (workspace, entityType, entityId) 保存：内存实现同样拒绝未登记实体与非法载荷。 */
-interface ProjectionRow { workspaceId: string; entityType: string; entityId: string; aggregateVersion: number; payload: Record<string, unknown> }
+interface ProjectionRow {
+  workspaceId: string; entityType: string; entityId: string; aggregateVersion: number
+  payload: Record<string, unknown>
+  /** 投影归属设备：跨设备改写必须被拒（§二.3），与 postgres 的 source_device_id 同语义 */
+  sourceDeviceId: string
+}
 
 /** HTTP 契约测试用内存实现；生产只使用 PostgresCentralStore。 */
 export class MemoryCentralStore implements CentralStore {
@@ -18,6 +33,8 @@ export class MemoryCentralStore implements CentralStore {
   private acknowledgements = new Map<string, CentralAckRequest['acknowledgements'][number]['outcome']>()
   private attempts = new Map<string, number>()
   private violations: Array<{ workspaceId: string; deviceId: string; eventId: string; fieldPath: string }> = []
+  private conflicts: Array<{ workspaceId: string; deviceId: string; eventId: string; entityType: string; entityId: string; code: string }> = []
+  private employees: EmployeeRow[] = []
   private audits: Array<{ workspaceId: string; actor: string; action: string; entityType: string; entityId: string }> = []
 
   async migrate(): Promise<void> {}
@@ -26,7 +43,17 @@ export class MemoryCentralStore implements CentralStore {
 
   async createInvite(input: InviteInput, codeHash: string): Promise<{ inviteId: string }> {
     const inviteId = randomUUID()
-    this.invites.push({ ...input, inviteId, codeHash, used: false })
+    // 与 postgres 同构：员工按 (workspace, employee_code) 唯一，id 稳定跨设备复用
+    let employee = this.employees.find((row) => row.workspaceId === input.workspaceId && row.employeeCode === input.employeeCode)
+    if (employee) {
+      employee.displayName = input.displayName
+      employee.role = input.role
+    } else {
+      employee = { employeeId: randomUUID(), workspaceId: input.workspaceId, employeeCode: input.employeeCode,
+        displayName: input.displayName, role: input.role }
+      this.employees.push(employee)
+    }
+    this.invites.push({ ...input, inviteId, codeHash, used: false, employeeId: employee.employeeId })
     return { inviteId }
   }
 
@@ -36,13 +63,37 @@ export class MemoryCentralStore implements CentralStore {
     invite.used = true
     const principal: DevicePrincipal = {
       workspaceId: invite.workspaceId,
-      employeeId: `employee:${invite.employeeCode}`,
+      employeeId: invite.employeeId,
       deviceId: randomUUID(),
       displayName: invite.displayName,
       role: invite.role
     }
     this.devices.push({ ...principal, tokenHash, active: true })
     return principal
+  }
+
+  async deviceBelongsToEmployee(workspaceId: string, deviceId: string, employeeId: string): Promise<boolean> {
+    // 已吊销设备不是合法投递目标（与 PostgresCentralStore 的 status='active' 判定保持一致）
+    return this.devices.some((device) => device.active && device.workspaceId === workspaceId &&
+      device.deviceId === deviceId && device.employeeId === employeeId)
+  }
+
+  async listEmployees(workspaceId: string): Promise<EmployeeDirectoryEntry[]> {
+    const rows = this.employees.filter((employee) => employee.workspaceId === workspaceId)
+    const counts = new Map<string, number>()
+    for (const row of rows) counts.set(row.displayName, (counts.get(row.displayName) || 0) + 1)
+    return rows
+      .slice()
+      .sort((a, b) => a.employeeCode.localeCompare(b.employeeCode))
+      .map((row) => ({ employeeId: row.employeeId, employeeCode: row.employeeCode, displayName: row.displayName,
+        role: row.role, nameUnique: (counts.get(row.displayName) || 0) === 1 }))
+  }
+
+  async recordConflict(principal: DevicePrincipal, event: CentralSyncEvent, code: string): Promise<void> {
+    this.conflicts.push({ workspaceId: principal.workspaceId, deviceId: principal.deviceId, eventId: event.eventId,
+      entityType: event.entityType, entityId: event.entityId, code })
+    this.audits.push({ workspaceId: principal.workspaceId, actor: `device:${principal.deviceId}`,
+      action: 'sync_entity_conflict', entityType: event.entityType, entityId: event.entityId })
   }
 
   async authenticate(tokenHash: string): Promise<DevicePrincipal | null> {
@@ -67,13 +118,18 @@ export class MemoryCentralStore implements CentralStore {
     return true
   }
 
+  /**
+   * 设备自助解绑。**只写一条审计（device_revoke_self）**：此前委托 revokeDevice 会先写一条
+   * device_revoke，同一次动作在中央审计里出现两行「谁吊销了这台设备」，运维与合规排查会误判。
+   */
   async revokeSelf(principal: DevicePrincipal): Promise<boolean> {
-    const revoked = await this.revokeDevice(principal.workspaceId, principal.deviceId, principal.displayName)
-    if (revoked) {
-      this.audits.push({ workspaceId: principal.workspaceId, actor: principal.displayName,
-        action: 'device_revoke_self', entityType: 'device', entityId: principal.deviceId })
-    }
-    return revoked
+    const row = this.devices.find((device) => device.deviceId === principal.deviceId && device.active &&
+      device.workspaceId === principal.workspaceId)
+    if (!row) return false
+    row.active = false
+    this.audits.push({ workspaceId: row.workspaceId, actor: principal.displayName,
+      action: 'device_revoke_self', entityType: 'device', entityId: principal.deviceId })
+    return true
   }
 
   async pushEvents(principal: DevicePrincipal, events: CentralSyncEvent[]): Promise<PushResult> {
@@ -100,10 +156,39 @@ export class MemoryCentralStore implements CentralStore {
         rejected.push({ eventId: event.eventId, code: 'event_rejected', message: invalid })
         continue
       }
+      // 投影写入与下述两道闸门**只对上行投影**成立；下行指令由 appendDownEvent 单独落库。
+      const isUplinkProjection = event.direction === 'up'
+      const existingProjection = isUplinkProjection
+        ? this.projections.find((row) => row.workspaceId === principal.workspaceId &&
+          row.entityType === event.entityType && row.entityId === event.entityId)
+        : undefined
+      // 归属闸门（§二.3）：既有投影只能被原设备更新，跨设备改写明确拒收，绝不覆盖
+      const ownership = isUplinkProjection ? crossDeviceConflict(existingProjection?.sourceDeviceId, principal.deviceId) : null
+      if (ownership) {
+        await this.recordConflict(principal, event, ownership)
+        rejected.push({ eventId: event.eventId, code: ownership, message: '既有投影属于其它设备，跨设备写入被拒' })
+        continue
+      }
+      // 唯一身份锚点闸门（§二.4）：同一身份值只能指向一个客户，冲突留记录并拒收（不自动归并）
+      const anchor = isUplinkProjection && event.entityType === 'customer_identity' ? identityAnchorOf(event.payload) : null
+      if (anchor) {
+        const clash = this.projections.find((row) => row.workspaceId === principal.workspaceId &&
+          row.entityType === 'customer_identity' && row.entityId !== event.entityId &&
+          String(row.payload.identityType ?? '') === anchor.identityType &&
+          String(row.payload.identityHash ?? '') === anchor.identityHash)
+        if (clash) {
+          await this.recordConflict(principal, event, 'identity_anchor_conflict')
+          rejected.push({ eventId: event.eventId, code: 'identity_anchor_conflict',
+            message: '同一身份锚点已指向其它客户，需人工仲裁后再同步' })
+          continue
+        }
+      }
       const centralSeq = this.events.length + 1
       this.events.push({ centralSeq, workspaceId: principal.workspaceId, sourceDeviceId: principal.deviceId, event })
-      const existingProjection = this.projections.find((row) => row.workspaceId === principal.workspaceId &&
-        row.entityType === event.entityType && row.entityId === event.entityId)
+      if (!isUplinkProjection) {
+        accepted.push({ eventId: event.eventId, centralSeq, duplicate: false })
+        continue
+      }
       if (existingProjection) {
         if (existingProjection.aggregateVersion < event.aggregateVersion) {
           existingProjection.aggregateVersion = event.aggregateVersion
@@ -111,7 +196,7 @@ export class MemoryCentralStore implements CentralStore {
         }
       } else {
         this.projections.push({ workspaceId: principal.workspaceId, entityType: event.entityType, entityId: event.entityId,
-          aggregateVersion: event.aggregateVersion, payload: event.payload })
+          aggregateVersion: event.aggregateVersion, payload: event.payload, sourceDeviceId: principal.deviceId })
       }
       accepted.push({ eventId: event.eventId, centralSeq, duplicate: false })
     }
@@ -155,8 +240,10 @@ export class MemoryCentralStore implements CentralStore {
 
   async isTargetInWorkspace(workspaceId: string, targetDeviceId?: string, targetEmployeeId?: string): Promise<boolean> {
     if (targetDeviceId && !this.devices.some((device) => device.deviceId === targetDeviceId && device.workspaceId === workspaceId)) return false
-    if (targetEmployeeId && !this.events.some((row) => row.workspaceId === workspaceId && row.event.targetEmployeeId === targetEmployeeId) &&
-        !this.devices.some((device) => device.employeeId === targetEmployeeId && device.workspaceId === workspaceId)) return false
+    // 员工目标只认「员工目录里存在该员工」；此前那句「历史上有人把事件投给他」会让已离职/已删除的
+    // 员工仅仅因为收过一条历史指令就继续通过目标校验，工作区隔离形同虚设。
+    if (targetEmployeeId && !this.employees.some((employee) => employee.employeeId === targetEmployeeId &&
+      employee.workspaceId === workspaceId)) return false
     return true
   }
 
@@ -186,11 +273,35 @@ export class MemoryCentralStore implements CentralStore {
     return [...this.violations]
   }
 
+  /** 仅供测试断言：跨设备/身份锚点冲突记录（只含字段路径与稳定码，不含任何业务值）。 */
+  conflictRecords(): Array<{ workspaceId: string; deviceId: string; eventId: string; entityType: string; entityId: string; code: string }> {
+    return [...this.conflicts]
+  }
+
+  /** 仅供测试断言：投影行（含归属设备），用于验证跨设备写入未被覆盖。 */
+  projectionRows(): Array<{ workspaceId: string; entityType: string; entityId: string; aggregateVersion: number; sourceDeviceId: string; payload: Record<string, unknown> }> {
+    return this.projections.map((row) => ({ ...row, payload: { ...row.payload } }))
+  }
+
+  /**
+   * 落一条下行指令。**不写投影表、不走上行归属闸门**：指令的业务合法性由共享校验器
+   * （shared/centralDownCommand.ts，路由层调用）判定，投影注册表管的是上行投影形态。
+   * 与 PostgresCentralStore.insertEvent 语义保持一致：只判幂等。
+   */
   async appendDownEvent(actor: DevicePrincipal, event: CentralSyncEvent): Promise<{ centralSeq: number; duplicate: boolean }> {
-    const result = await this.pushEvents(actor, [{ ...event, direction: 'down' }])
-    if (result.rejected[0]) throw new Error(result.rejected[0].message)
-    const row = result.accepted[0]
-    if (!row) throw new Error('EVENT_NOT_INSERTED')
-    return { centralSeq: row.centralSeq, duplicate: row.duplicate }
+    const down = { ...event, direction: 'down' as const }
+    const existing = this.events.find((row) => row.workspaceId === actor.workspaceId && row.event.idempotencyKey === event.idempotencyKey)
+    if (existing) {
+      if (existing.event.eventId !== event.eventId) throw new Error('idempotency_key_conflict')
+      return { centralSeq: existing.centralSeq, duplicate: true }
+    }
+    const centralSeq = this.events.length + 1
+    this.events.push({ centralSeq, workspaceId: actor.workspaceId, sourceDeviceId: actor.deviceId, event: down })
+    return { centralSeq, duplicate: false }
+  }
+
+  /** 测试用：当前落库的下行指令条数（校验失败的指令不得留下任何痕迹） */
+  downEventCount(): number {
+    return this.events.filter((row) => row.event.direction === 'down').length
   }
 }
