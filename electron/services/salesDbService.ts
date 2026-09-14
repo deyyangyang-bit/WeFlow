@@ -1507,6 +1507,21 @@ ORDER BY kb.updated_at DESC LIMIT ?`
     )
   }
 
+  /**
+   * 增量读知识提案（复合水位版，Phase 3a 中央上行投影用）：(updated_at, id) > (ts, id)。
+   * 知识治理行会**原地变化**（审核通过、版本升级、TTL 续期），只用 id 游标永远只上行首版，
+   * 所以可变行的增量一律走 updated_at+id。仍限定 source='proposal'：只有提案类型上行。
+   */
+  kbWatermarkSince(ts: number, id: number, limit: number = 100): KnowledgeEntry[] {
+    return this.all<KnowledgeEntry>(
+      `SELECT * FROM knowledge_base
+       WHERE source = 'proposal' AND (COALESCE(updated_at, 0) > ? OR (COALESCE(updated_at, 0) = ? AND id > ?))
+       ORDER BY COALESCE(updated_at, 0), id LIMIT ?`,
+      [Math.max(0, Math.floor(ts)), Math.max(0, Math.floor(ts)), Math.max(0, Math.floor(id)),
+       Math.max(1, Math.min(500, Math.floor(limit)))]
+    )
+  }
+
   /** 去重基础：该 session 该类型 windowMs 内是否已有判断（配合判断再生成节流；参考 hasRecentTask） */
   hasRecentJudgment(sessionId: string, judgmentType: CustomerJudgmentType, windowMs: number): boolean {
     const row = this.get<{ c: number }>(

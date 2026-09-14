@@ -16,7 +16,7 @@ import { crmDbService, type CrmRow } from './crmDbService'
 import { getIdentity, getActorLabel } from './identityService'
 import { recordOutboxTx } from './crmOutboxService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
-import { getLanSyncConfig } from './lanSyncService'
+import { outboxTransportEnabled } from './lanSyncService'
 import { ConfigService } from './config'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
@@ -316,7 +316,9 @@ export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: 
         const res = crmDbService.runTx((tx) => {
           const rec = recycleAssignmentTx(tx, id, 'SLA三次超时回收', 'system:sla')
           if (!rec.ok) return rec
-          if (getLanSyncConfig().enabled) {
+          // 任一传输层启用（SMB 或中央 HTTP）都必须登记 outbox：中央启用会关掉 SMB，
+          // 若这里仍只看 SMB，主管升级通知将既不进 outbox 也不出机（§三.6）。
+          if (outboxTransportEnabled()) {
             recordOutboxTx(tx, 'sla1_escalate_supervisor', notification.idempotencyKey, { leadId: notification.leadId, assignmentId: id, salesName: notification.salesName, remindCount: 3, reason: notification.reason, recycledAt: notification.recycledAt }, now)
           } else {
             recordSupervisorNotificationTx(tx, notification, 'local:sla')

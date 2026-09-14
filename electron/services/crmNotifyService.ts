@@ -22,6 +22,11 @@ export interface SupervisorNotificationInput {
   reason: string
   recycledAt: number
   lead?: { contactType?: string; contactNormalized?: string }
+  /**
+   * 调用方已算好的脱敏联系方式。跨机下行（中央/局域网文件）到达的终端本机**不一定**有同一个
+   * leadId，按 leadId 去本机查联系方式会张冠李戴——此时必须由发送方带上掩码，本机不再回查。
+   */
+  contactMasked?: string
 }
 
 function supervisorContact(tx: SupervisorNotificationTx, input: SupervisorNotificationInput): { contactType: 'phone' | 'wechat' | 'both'; contactNormalized: string } | null {
@@ -51,8 +56,9 @@ export function recordSupervisorNotificationTx(
   const key = String(input.idempotencyKey || '').trim()
   if (!key) return false
   if (tx.all('SELECT id FROM notify_inbox WHERE idempotency_key = ?', [key]).length) return false
-  const contact = supervisorContact(tx, input)
-  const masked = contact ? maskContact(contact) : `#${Number(input.leadId || 0)}`
+  const supplied = String(input.contactMasked || '').trim()
+  const contact = supplied ? null : supervisorContact(tx, input)
+  const masked = supplied || (contact ? maskContact(contact) : `#${Number(input.leadId || 0)}`)
   const title = `线索 ${masked} 三次超时已回收`
   const body = `原归属 ${String(input.salesName || '-')}；${Number(input.remindCount || 3)}/3 次超时未完成首触；` +
     `回收时间 ${fmtSupervisorTime(Number(input.recycledAt))}；原因：${String(input.reason || 'SLA三次超时回收')}`

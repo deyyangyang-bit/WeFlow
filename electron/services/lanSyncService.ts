@@ -59,6 +59,8 @@ import { maskPrivateText } from './crmSla2Service'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { expandHomePath } from '../utils/pathUtils'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { downCommandSpec } from '../../shared/centralDownCommand'
+import { findForbiddenDownlinkField } from '../../shared/centralSync'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
 export type LanSyncRole = 'hub' | 'terminal'
@@ -74,6 +76,17 @@ export function getLanSyncConfig(): LanSyncConfig {
   const rawRole = String(cfg.get('lanSyncRole') || '').trim()
   const role: LanSyncRole | '' = rawRole === 'hub' || rawRole === 'terminal' ? rawRole : ''
   return { enabled: !!root && !!role, role, root }
+}
+
+/**
+ * outbox 是否仍有传输层在消费：SMB 与中央 HTTP **任一**启用都成立。
+ * 生产侧据此决定「登记 outbox 交给传输层」还是「本机直接落地」——
+ * 不能让判据停留在 `getLanSyncConfig().enabled`：中央同步启用会关闭 SMB，
+ * 那样 SLA1 主管升级通知就会既不进 outbox 也不出机（静默丢失，§三.6）。
+ */
+export function outboxTransportEnabled(): boolean {
+  const cfg = ConfigService.getInstance()
+  return Boolean(cfg.get('centralSyncEnabled')) || getLanSyncConfig().enabled
 }
 
 /** 终端标识：身份档案姓名优先，未建档回退机器名；目录名安全化 */
@@ -706,12 +719,16 @@ export function validateDownEventFile(ev: SyncEventFile, ownDeliveryKey: string,
   if (role !== 'apply' && role !== 'remove' && role !== 'notify') {
     return `deliveryRole 缺失或非法(${String(role)})`
   }
-  const typeRoleOk =
-    (ev.type === 'assign' || ev.type === 'recycle') ? role === 'apply' :
-    ev.type === 'transfer' ? (role === 'apply' || role === 'remove') :
-    false
-  if (!typeRoleOk) {
+  // 类型/角色矩阵不再在本文件另写一份：以下行指令注册表为唯一真源（与中央 HTTP /sync/commands 同源）。
+  // sla1_escalate_supervisor 由中枢本机消费（见 validateSupervisorNotificationFile），不经终端应用。
+  const spec = downCommandSpec(String(ev.type || ''))
+  if (!spec || ev.type === 'sla1_escalate_supervisor' || !spec.roles.includes(role)) {
     return `type/role 组合非法(${ev.type}/${role})`
+  }
+  // 聊天原文任何方向都不出机：下行文件同样递归扫描（报字段路径，不报值）
+  const chatLeak = findForbiddenDownlinkField(ev.payload)
+  if (chatLeak) {
+    return `载荷含禁止下行字段(${chatLeak})`
   }
   const expectedName = deliveryFileName(Number(ev.eventSeq), ev.idempotencyKey, role)
   if (fileName !== expectedName) {

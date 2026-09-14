@@ -31,11 +31,13 @@ function ok(name: string, cond: boolean, detail = ''): void {
 
 import type { CentralSyncEvent } from '../shared/centralSync'
 import { findForbiddenCentralField } from '../shared/centralSync'
+import { validateCentralEntityId } from '../shared/centralDownCommand'
 
 let crmDbService: (typeof import('../electron/services/crmDbService'))['crmDbService']
 let salesDbService: (typeof import('../electron/services/salesDbService'))['salesDbService']
 let ConfigService: (typeof import('../electron/services/config'))['ConfigService']
 let service: typeof import('../electron/services/centralSyncService')
+let projectionMod: typeof import('../electron/services/centralProjection')
 
 const PHONE = '13800001111'
 const SESSION = 'session-should-never-be-uploaded'
@@ -46,6 +48,8 @@ let captured: Captured[] = []
 let pushMode: 'ok' | 'reject_all' | 'network_fail' = 'ok'
 let pullQueue: Array<CentralSyncEvent & { centralSeq: number }> = []
 let ackBodies: Array<{ acknowledgements: Array<{ eventId: string; outcome: string; detail?: string }> }> = []
+/** 中央员工目录（解析 salesName→employeeId 的唯一权威依据）：同名项 nameUnique=false，绝不按显示名猜人 */
+let directoryEmployees: Array<{ employeeId: string; employeeCode: string; displayName: string; role: string; nameUnique: boolean }> = []
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -71,6 +75,14 @@ const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (url.endsWith('/api/v1/sync/ack')) {
     ackBodies.push(body as { acknowledgements: Array<{ eventId: string; outcome: string }> })
     return jsonResponse(200, { ok: true, data: { acknowledged: (body as { acknowledgements: unknown[] }).acknowledgements.length } })
+  }
+  if (url.endsWith('/api/v1/sync/commands')) {
+    if (pushMode === 'network_fail') throw new Error('network unreachable')
+    // 中央侧实体校验/归属检查在真实节点里由 /sync/commands 完成；这里只回投递回执
+    return jsonResponse(201, { ok: true, data: { centralSeq: 1, duplicate: false } })
+  }
+  if (url.endsWith('/api/v1/directory/employees')) {
+    return jsonResponse(200, { ok: true, data: { employees: directoryEmployees } })
   }
   if (url.endsWith('/api/v1/devices/revoke-self')) {
     if (pushMode === 'network_fail') throw new Error('network unreachable')
@@ -118,7 +130,9 @@ function downEvent(eventId: string, type: string, payload: Record<string, unknow
   return {
     protocolVersion: 1, eventId, eventSeq: centralSeq, idempotencyKey: `central/${eventId}`, direction: 'down',
     entityType: 'assignment', entityId: `dev-1/${eventId}`, eventType: type, aggregateVersion: 1,
-    payload, occurredAt: Date.now(), centralSeq
+    payload, occurredAt: Date.now(), centralSeq,
+    // 中央投递的指令必须带投递目标（§七.2/§七.4）：无目标的下行指令服务端与终端都拒收
+    targetEmployeeId: 'emp-1'
   } as CentralSyncEvent & { centralSeq: number }
 }
 
@@ -127,6 +141,7 @@ async function main(): Promise<void> {
   crmDbService = (await import('../electron/services/crmDbService')).crmDbService
   salesDbService = (await import('../electron/services/salesDbService')).salesDbService
   service = await import('../electron/services/centralSyncService')
+  projectionMod = await import('../electron/services/centralProjection')
   const { getLanSyncConfig } = await import('../electron/services/lanSyncService')
 
   await crmDbService.initialize(isoDir)
@@ -141,11 +156,22 @@ async function main(): Promise<void> {
     tx.run('INSERT INTO customer (name, source, updated_at, version, deleted) VALUES (?,?,?,?,?)', ['', 'manual', Date.now(), 1, 0])
     tx.run('INSERT INTO customer_identity (identity_type, identity_value, customer_id, source, confidence, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?)',
       ['phone', PHONE, 1, 'manual', 1.0, Date.now(), 1, 0])
+    // 线索是 assignment/商机挂到 canonical 客户的**唯一**通道（宪法 §2.4）：缺 lead 行时
+    // 中央侧 customerRef 无法精确关联 central_customer，assignment 会被明确跳过而不是硬凑引用
+    tx.run('INSERT INTO lead (id, contact_type, contact_normalized, account_id, name, source, first_contact_deadline, assigned_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [501, 'phone', PHONE, 1, '上行客户甲', 'test', Date.now() + 86_400_000, Date.now(), Date.now(), Date.now()])
+    tx.run('INSERT INTO lead (id, contact_type, contact_normalized, account_id, name, source, first_contact_deadline, assigned_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [999, 'phone', '13900000009', 1, 'outbox 客户', 'test', Date.now() + 86_400_000, Date.now(), Date.now(), Date.now()])
     tx.run('INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?)',
       [501, '测试销售甲', 'manual', Date.now() + 86_400_000, 'assigned', 'test', '测试销售甲', Date.now(), 1, 0])
-    tx.run('INSERT INTO account (name, owner_sales, created_at, updated_at) VALUES (?,?,?,?)', ['账户甲', '测试销售甲', Date.now(), Date.now()])
+    tx.run('INSERT INTO account (name, owner_sales, customer_id, created_at, updated_at) VALUES (?,?,?,?,?)',
+      ['账户甲', '测试销售甲', 1, Date.now(), Date.now()])
     tx.run('INSERT INTO opportunity (account_id, name, amount, stage, owner_sales, quantity, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [1, '商机甲', 12_000, 'quoting', '测试销售甲', 2, 'active', Date.now(), Date.now()])
+    // 未归并 account（customer_id 为空）：合法中间态，中央侧必须显式跳过并记原因，不得硬造 customerRef
+    tx.run('INSERT INTO account (name, owner_sales, created_at, updated_at) VALUES (?,?,?,?)', ['未归并账户乙', '测试销售甲', Date.now(), Date.now()])
+    tx.run('INSERT INTO opportunity (account_id, name, amount, stage, owner_sales, quantity, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      [2, '未归并商机乙', 500, 'initial', '测试销售甲', 1, 'active', Date.now(), Date.now()])
     tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
       [1, 'claim:501', JSON.stringify({ type: 'claim', leadId: 501, version: 1 }), 'pending', 'test', Date.now()])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
@@ -172,7 +198,10 @@ async function main(): Promise<void> {
   ok('A4 身份映射只上哈希 + 掩码',
     byType('customer_identity').length === 1 &&
     String(byType('customer_identity')[0]!.payload.identityHash).length === 64 &&
-    byType('customer_identity')[0]!.payload.identityMasked === '138****11')
+    byType('customer_identity')[0]!.payload.identityMasked === '138****1111' &&
+    // 掩码退化的兜底：形态不被 maskContact 识别时必须是全掩码，绝不能原样上行
+    projectionMod.maskIdentity('phone', '12345') === '*****' &&
+    projectionMod.maskIdentity('wxid', 'ab') === '**')
   ok('A5 手机号原文不出现在任何上行请求体', !capturedText().includes(PHONE))
   ok('A6 session_id 既不作字段名也不作取值上行',
     !capturedText().includes('session_id') && !capturedText().includes(SESSION))
@@ -182,11 +211,26 @@ async function main(): Promise<void> {
     !capturedText().includes('客户原话不应上行'))
   ok('A8 知识提案走既有知识表投影', byType('knowledge_proposal').length === 1 &&
     byType('knowledge_proposal')[0]!.payload.title === '电池保养话术提案')
+  const customerEventV1 = byType('customer')[0]!
+  // 首版 assignment 事件留作 §四.5「新版本 entityId 稳定、aggregateVersion 严格递增」的对照基线
+  const assignmentEventV1 = byType('assignment')[0]!
+  ok('A15 outbox 事件清单全量登记：每个类型都有明确方向与落点，不存在未登记类型（§三.1/§三.11）',
+    ['assign', 'transfer', 'recycle', 'claim', 'bind_wx', 'first_touch', 'sla1_escalate_supervisor']
+      .every((t) => service.OUTBOX_ROUTED_TYPES.includes(t)) && service.OUTBOX_ROUTED_TYPES.length === 7)
   ok('A9 分配 / 归属 / 商机 / 审计 / outbox 均被上行',
     byType('assignment').length >= 1 && byType('ownership').length === 1 &&
     byType('opportunity').length === 1 && byType('audit_event').length === 1 && byType('permission').length === 1)
-  ok('A10 既有 outbox 行复用（claim 事件类型原样上行，未另造类型）',
-    events.some((e) => e.eventType === 'claim' && e.idempotencyKey === 'dev-1/claim:501'))
+  ok('A9b 未归并 account 的归属/商机显式跳过并记原因，不硬造 customerRef',
+    !events.some((e) => e.payload.customerRef !== undefined && !String(e.payload.customerRef).startsWith('dev-1/customer:')) &&
+    crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:skip:ownership:%'").length === 1 &&
+    crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:skip:opportunity:%'").length === 1)
+  ok('A9c 跳过台账只允许业务性原因（未归并等），不得出现契约错误（kind 不匹配 / 禁字段）',
+    crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:skip:%'")
+      .every((r) => !/entity_id_kind_mismatch|forbidden_field|entity_id_not_scoped/.test(String(r.key))))
+  ok('A10 既有 outbox 行不直投原始 payload：本地事实重建为 assignment 投影，幂等键带实体版本（§一.1/§四.4）',
+    events.some((e) => e.entityType === 'assignment' && e.idempotencyKey.startsWith('dev-1/assignment/assignment:1#')) &&
+    !capturedText().includes('"claim:501"') &&
+    crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:501'")[0]?.status === 'sent')
   ok('A11 同步自身的审计（sync_* 动作）不上行，避免自激',
     !byType('audit_event').some((e) => String(e.payload.action).startsWith('sync_')))
   ok('A12 审计 detail 中的手机号已脱敏',
@@ -212,6 +256,9 @@ async function main(): Promise<void> {
     !pushedEvents().some((e) => e.entityType === 'permission'))
 
   crmDbService.runTx((tx) => {
+    // claim 的本地事实是「该线索已认领」：outbox 行只用于定位本地行，投递内容由投影重建
+    tx.run('INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, status, claimed_at, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [999, '测试销售甲', 'manual', Date.now() + 86_400_000, 'claimed', Date.now(), 'test', '测试销售甲', Date.now(), 1, 0])
     tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
       [9, 'claim:999', JSON.stringify({ type: 'claim', leadId: 999, version: 1 }), 'pending', 'test', Date.now()])
   })
@@ -229,27 +276,31 @@ async function main(): Promise<void> {
   await service.runCentralSyncOnce()
   ok('B7 网络恢复后重放成功，事件不丢', String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999'")[0]?.status) === 'sent')
   ok('B8 失败期间游标未被推空（无静默丢事件）', cursorFrozen <= crmDbService.getScanState('centralSync:cursor:customer'))
-  const firstKey = pushedEvents().find((e) => e.eventType === 'claim' && e.idempotencyKey === 'dev-1/claim:999')!.eventId
+  // outbox 行 event_seq=9 是本行投递的唯一标记（投影扫描产出的事件用本地行 id 作 eventSeq）
+  const claimEvent = () => pushedEvents().find((e) => e.entityType === 'assignment' && e.eventSeq === 9)
+  const firstKey = claimEvent()!.eventId
   crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE idempotency_key='claim:999'") })
   resetCapture()
   await service.runCentralSyncOnce()
-  const secondKey = pushedEvents().find((e) => e.eventType === 'claim' && e.idempotencyKey === 'dev-1/claim:999')!.eventId
+  const secondKey = claimEvent()!.eventId
   ok('B9 同幂等键重放产生同一 eventId（中央据此判重，不产生第二条业务记录）', firstKey === secondKey)
 
   pushMode = 'reject_all'
   crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE idempotency_key='claim:999'") })
   resetCapture()
   const rejectedRun = await service.runCentralSyncOnce()
-  ok('B10 被中央拒绝的事件如实计数并留本机审计，不静默吞掉',
+  ok('B10 被中央永久拒绝的事件置 failed 且留本机审计，不静默吞掉',
     rejectedRun.rejected >= 1 &&
-    crmDbService.all("SELECT * FROM audit_event WHERE action='sync_push_rejected'").length >= 1)
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999'")[0]?.status) === 'failed' &&
+    crmDbService.all(
+      "SELECT * FROM audit_event WHERE action IN ('sync_push_rejected','sync_outbox_failed')").length >= 1)
   pushMode = 'ok'
 
   console.log('═══ C. 下行：既有状态机 ═══')
   clearBinding(); configureBinding()
   crmDbService.setScanState('centralSync:pullCursor', 0)
   pullQueue = [downEvent('ev-assign-1', 'assign', {
-    leadId: 9001, lead: { contactType: 'phone', contactNormalized: '13900000001', name: '下行客户甲' },
+    leadId: 9001, assignmentId: 9001, lead: { leadId: 9001, contactType: 'phone', contactNormalized: '13900000001', name: '下行客户甲' },
     salesName: '测试销售甲', sla1Deadline: Date.now() + 86_400_000, mode: 'manual', deliveryRole: 'apply'
   }, 1)]
   resetCapture()
@@ -273,7 +324,8 @@ async function main(): Promise<void> {
     downEvent('ev-correction-1', 'supervisor_correction', {
       leadId: 9001, title: '主管修正：归属应为乙', summary: '请确认后改派', deliveryRole: 'apply'
     }, 1),
-    downEvent('ev-perm-1', 'permission_change', { employeeRef: 'emp-1', declaredRole: 'supervisor', deliveryRole: 'apply' }, 2)
+    { ...downEvent('ev-perm-1', 'permission_change', { employeeRef: 'emp-1', declaredRole: 'supervisor', deliveryRole: 'apply' }, 2),
+      entityType: 'permission' as const }
   ]
   const beforeAssign = crmDbService.all("SELECT * FROM assignment WHERE lead_id = (SELECT id FROM lead WHERE contact_normalized = ?)", ['13900000001'])
   resetCapture()
@@ -293,11 +345,13 @@ async function main(): Promise<void> {
   ok('D5 重复拉取主管修正不重复入箱（幂等）',
     crmDbService.all("SELECT * FROM notify_inbox WHERE notify_type='supervisor_correction'").length === 1)
 
-  console.log('═══ E. 下行：终态与有界重试 ═══')
+  console.log('═══ E. 下行：终态与不回归 ═══')
   crmDbService.setScanState('centralSync:pullCursor', 0)
-  const noleadEvent = downEvent('ev-nolead-1', 'transfer', { leadId: 999999, toSales: '测试销售乙', deliveryRole: 'apply' }, 1)
-  noleadEvent.payload = { leadId: 999999, toSales: '测试销售乙', deliveryRole: 'apply', lead: null }
-  pullQueue = [noleadEvent, downEvent('ev-unknown-1', 'unknown_future_type', { deliveryRole: 'apply' }, 2)]
+  // 契约非法的指令（transfer 缺 assignmentId、lead 不是对象）：共享校验器直接判非法 → 终态 invalid。
+  // 这条路径过去会落到「本机缺线索」的有界重试；现在由 §七 的严格契约提前拦住，不产生无意义重试。
+  const malformed = downEvent('ev-malformed-1', 'transfer',
+    { leadId: 999999, toSales: '测试销售乙', deliveryRole: 'apply', lead: null }, 1)
+  pullQueue = [malformed, downEvent('ev-unknown-1', 'unknown_future_type', { deliveryRole: 'apply' }, 2)]
   let lastAcks: Array<{ eventId: string; outcome: string }> = []
   const allAcks: Array<{ eventId: string; outcome: string }> = []
   for (let i = 0; i < 5; i++) {
@@ -310,10 +364,317 @@ async function main(): Promise<void> {
   }
   ok('E1 本机不认识的类型直接回 invalid 终态（不留无休止重试）',
     lastAcks.some((a) => a.eventId === 'ev-unknown-1' && a.outcome === 'invalid'))
-  const noleadAcks = allAcks.filter((a) => a.eventId === 'ev-nolead-1')
-  ok('E2 缺依赖对象先回 retry（保留重放机会）', noleadAcks.some((a) => a.outcome === 'retry'))
-  ok('E3 重试达到上限后转 invalid 终态，不会无限重试',
-    noleadAcks.some((a) => a.outcome === 'invalid'), noleadAcks.map((a) => a.outcome).join(','))
+  const badAcks = allAcks.filter((a) => a.eventId === 'ev-malformed-1')
+  ok('E2 契约非法的指令直接终态 invalid，不进入重试循环',
+    badAcks.length > 0 && badAcks.every((a) => a.outcome === 'invalid'), badAcks.map((a) => a.outcome).join(','))
+  ok('E3 非法指令不写任何本机业务痕迹（线索 / 分配 / 通知 / 幂等标记）（§七.8）',
+    crmDbService.all('SELECT id FROM lead WHERE id = 999999').length === 0 &&
+    crmDbService.all('SELECT id FROM assignment WHERE lead_id = 999999').length === 0 &&
+    crmDbService.all("SELECT id FROM audit_event WHERE entity_id = '999999'").length === 0 &&
+    crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:downAttempt:ev-malformed-1'").length === 0)
+
+  console.log('═══ H. 上行指令链：员工目录解析（§三.5）═══')
+  configureBinding()
+  directoryEmployees = [
+    { employeeId: 'emp-1', employeeCode: 'S001', displayName: '测试销售甲', role: 'sales', nameUnique: true },
+    { employeeId: 'emp-2', employeeCode: 'S002', displayName: '重名销售', role: 'sales', nameUnique: false },
+    { employeeId: 'emp-3', employeeCode: 'S003', displayName: '重名销售', role: 'sales', nameUnique: false },
+    // 唯一主管：SLA1 三次超时的升级通知的落点（目录里角色权威，不按显示名猜人）
+    { employeeId: 'emp-9', employeeCode: 'M001', displayName: '测试主管甲', role: 'supervisor', nameUnique: true }
+  ]
+  crmDbService.runTx((tx) => {
+    for (const [seq, key, salesName] of [[11, 'assign:501', '测试销售甲'], [12, 'assign:777', '查无此人'], [13, 'assign:778', '重名销售']] as const) {
+      tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
+        [seq, key, JSON.stringify({ type: 'assign', leadId: 501, assignmentId: 1, salesName, version: 1 }), 'pending', 'test', Date.now()])
+    }
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const commandBodies = captured.filter((c) => c.url.endsWith('/api/v1/sync/commands')).map((c) => c.body as CentralSyncEvent)
+  ok('H1 唯一员工：assign 走中央指令链下发（不再伪装成上行投影）并结算 sent',
+    commandBodies.length === 1 && String(commandBodies[0]!.targetEmployeeId) === 'emp-1' &&
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='assign:501'")[0]?.status) === 'sent')
+  ok('H2 指令按稳定 employeeId 投递，不按显示名猜人',
+    commandBodies.every((e) => Boolean(e.targetEmployeeId)) &&
+    !capturedText().includes('targetEmployeeId\":\"测试销售甲'))
+  ok('H3 查无此人 / 同名的 outbox 行保持 pending，绝不猜一个人出来（§三.5）',
+    commandBodies.length === 1 &&
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='assign:777'")[0]?.status) === 'pending' &&
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='assign:778'")[0]?.status) === 'pending')
+  for (let i = 0; i < 5; i++) { resetCapture(); await service.runCentralSyncOnce() }
+  ok('H4 有界重试到上限后转 failed + 审计，不无休止重试也不假装成功',
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='assign:777'")[0]?.status) === 'failed' &&
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='assign:778'")[0]?.status) === 'failed' &&
+    crmDbService.all("SELECT * FROM audit_event WHERE action='sync_employee_unresolved'").length >= 1)
+
+  // H5/H6 SLA1 升级通知必须有明确投递目标与落点（§三.6）：无主管时宁可 pending，也不静默丢弃
+  crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
+      [21, 'sla1Escalate:1', JSON.stringify({
+        type: 'sla1_escalate_supervisor', leadId: 501, assignmentId: 1, salesName: '测试销售甲',
+        remindCount: 3, reason: 'SLA三次超时回收', recycledAt: Date.now()
+      }), 'pending', 'test', Date.now()])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const escalateBodies = captured.filter((c) => c.url.endsWith('/api/v1/sync/commands'))
+    .map((c) => c.body as CentralSyncEvent).filter((e) => e.eventType === 'sla1_escalate_supervisor')
+  ok('H5 SLA1 升级通知投给目录中唯一的主管（按角色解析，targetEmployeeId 是 stable id）并结算 sent',
+    escalateBodies.length === 1 && String(escalateBodies[0]!.targetEmployeeId) === 'emp-9' &&
+    String((escalateBodies[0]!.payload as Record<string, unknown>).deliveryRole) === 'notify' &&
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='sla1Escalate:1'")[0]?.status) === 'sent')
+  ok('H5b 通知正文只带掩码联系方式，不带联系原文',
+    !capturedText().includes(PHONE) &&
+    String((escalateBodies[0]!.payload as Record<string, unknown>).contactMasked || '').includes('****'))
+  ConfigService.getInstance().set('centralSyncSupervisorCode', 'M999')
+  crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
+      [22, 'sla1Escalate:2', JSON.stringify({
+        type: 'sla1_escalate_supervisor', leadId: 501, assignmentId: 1, salesName: '测试销售甲',
+        remindCount: 3, reason: 'SLA三次超时回收', recycledAt: Date.now()
+      }), 'pending', 'test', Date.now()])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const escalate2Row = crmDbService.all("SELECT id FROM outbox_event WHERE idempotency_key='sla1Escalate:2'")[0]
+  ok('H6 配置的主管编号查无此人时保持 pending 并记一次投递尝试，绝不改投他人、也不假装成功',
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='sla1Escalate:2'")[0]?.status) === 'pending' &&
+    crmDbService.getScanState(`centralSync:outboxAttempt:${Number(escalate2Row?.id || 0)}`) > 0 &&
+    !capturedText().includes('sla1Escalate:2'))
+  ConfigService.getInstance().set('centralSyncSupervisorCode', '')
+
+  console.log('═══ I. 版本化增量（§四）═══')
+  /**
+   * 本机修订号 = `updated_at * 1000 + min(version, 999)`，所以「改了一行」必须让 updated_at 真的变大；
+   * 这里用一个略超当前时刻的递增刻度（而非真实时钟），既保证严格递增、也保证同毫秒两行仍同刻度。
+   * 刻度超前于当前毫秒 => 该毫秒被水位保护规则钉住（`(ts, 0)`），下一拍会重扫这一毫秒（§四.3 防漏）。
+   */
+  const AHEAD_MS = 1_500
+  let aheadStep = 0
+  const aheadTs = (): number => Date.now() + AHEAD_MS + ++aheadStep
+  const seenKeys = new Set<string>()
+  const rememberKeys = (): void => { for (const e of pushedEvents()) seenKeys.add(e.idempotencyKey) }
+  rememberKeys()
+
+  // I1/I2 客户改名：可变表必须用 (updated_at, id) 复合水位——只按 id 游标会永远只上首版
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE customer SET name = ?, updated_at = ?, version = version + 1 WHERE id = 1', ['上行客户甲-改名', aheadTs()])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const renamed = pushedEvents().filter((e) => e.entityType === 'customer')
+  ok('I1 客户改名后重新上行（可变表用 updated_at+id 复合水位，不是只按 id）',
+    renamed.length === 1 && renamed[0]!.payload.displayName === '上行客户甲-改名')
+  ok('I2 新版本：entityId 稳定、幂等键随版本变化、aggregateVersion 严格递增',
+    renamed[0]!.entityId === customerEventV1.entityId &&
+    renamed[0]!.idempotencyKey !== customerEventV1.idempotencyKey &&
+    renamed[0]!.aggregateVersion > customerEventV1.aggregateVersion)
+
+  rememberKeys()
+  // I3 同毫秒两行：updated_at 完全相同，靠 id 次级序兜住，两行都必须上行
+  crmDbService.runTx((tx) => { tx.run('UPDATE account SET customer_id = 1 WHERE id = 2') })
+  const sameMs = aheadTs()
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE account SET owner_sales = ?, updated_at = ? WHERE id = 1', ['销售甲-改名', sameMs])
+    tx.run('UPDATE account SET owner_sales = ?, updated_at = ? WHERE id = 2', ['销售乙-改名', sameMs])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('I3 同毫秒写入的两行都不漏（updated_at 相同、id 次级序兜住）',
+    pushedEvents().filter((e) => e.entityType === 'ownership').length === 2)
+  rememberKeys()
+
+  // I4/I5 状态与金额变化都产生新版本
+  const assignV1 = assignmentEventV1
+  crmDbService.runTx((tx) => {
+    tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_at = ?, version = version + 1 WHERE id = 1",
+      [Date.now(), aheadTs()])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const assignV2 = pushedEvents().filter((e) => e.entityType === 'assignment')
+  ok('I4 assignment 状态流转（assigned→claimed）产生新版本事件',
+    assignV2.length >= 1 && assignV2.some((e) =>
+      String(e.payload.status) === 'claimed' &&
+      e.entityId === assignV1.entityId &&
+      e.idempotencyKey !== assignV1.idempotencyKey &&
+      e.aggregateVersion > assignV1.aggregateVersion))
+
+  const oppTs = aheadTs()
+  crmDbService.runTx((tx) => {
+    tx.run("UPDATE opportunity SET stage = 'negotiating', amount = 20000, updated_at = ? WHERE id = 1", [oppTs])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const opps = pushedEvents().filter((e) => e.entityType === 'opportunity')
+  ok('I5 商机阶段与金额变化产生新版本（不是只有首版能同步）',
+    opps.length === 1 && String(opps[0]!.payload.stage) === 'negotiating' && Number(opps[0]!.payload.amountCny) === 20000)
+  rememberKeys()
+
+  // I6 无变化重跑：超前刻度那一毫秒会被水位保护规则重扫一次（§四.3），但**版本不变**——
+  // 幂等键逐字相同，中央按幂等键判 duplicate，不会产生第二条业务事件（§四.4）
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const rerunKeys = pushedEvents().map((e) => e.idempotencyKey)
+  ok('I6 无变化重跑不产生新版本：重扫事件的幂等键与版本完全不变，没有新信息出机',
+    rerunKeys.every((k) => seenKeys.has(k)) &&
+    crmDbService.getScanState('centralSync:cursor:opportunity') === 0)
+
+  // I6b 该毫秒过去之后，水位必须推进，重投必须停止（钉住是「延迟一拍」而不是「永远重投」）
+  await new Promise((resolve) => setTimeout(resolve, AHEAD_MS + 100))
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const oppCursorTs = crmDbService.getScanState('centralSync:cursor:opportunity:ts')
+  // 收敛那一拍会把被钉住的毫秒完整重扫一次（这就是防漏的代价），但投出的仍是同一版本
+  ok('I6b 被钉住的毫秒过去后水位推进到精确 (ts, id)，该毫秒最多只被重扫一次',
+    oppCursorTs === oppTs && crmDbService.getScanState('centralSync:cursor:opportunity') === 1 &&
+    pushedEvents().every((e) => seenKeys.has(e.idempotencyKey)))
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('I6c 水位推进后继续重跑仍零上行（真·无变化不重复投递）', pushedEvents().length === 0)
+
+  // I7/I8 网络失败水位不前进；恢复后照常重放
+  const tsBefore = crmDbService.getScanState('centralSync:cursor:customer:ts')
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE customer SET name = ?, updated_at = ? WHERE id = 1', ['上行客户甲-二次改名', aheadTs()])
+  })
+  pushMode = 'network_fail'
+  const offlineRun = await service.runCentralSyncOnce()
+  ok('I7 网络失败时水位不前进（不静默丢事件）',
+    Boolean(offlineRun.error) && crmDbService.getScanState('centralSync:cursor:customer:ts') === tsBefore)
+  pushMode = 'ok'
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const recovered = pushedEvents().filter((e) => e.entityType === 'customer')
+  ok('I8 网络恢复后照常重放，事件不丢', recovered.length === 1 &&
+    recovered[0]!.payload.displayName === '上行客户甲-二次改名' &&
+    crmDbService.getScanState('centralSync:cursor:customer:ts') > tsBefore)
+
+  console.log('═══ J. 跨表引用统一（§六）═══')
+  crmDbService.runTx((tx) => { tx.run("DELETE FROM scan_state WHERE key LIKE 'centralSync:cursor:%'") })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const full = pushedEvents()
+  const customerRefs = new Set(full.filter((e) => e.entityType === 'customer').map((e) => e.entityId))
+  const refOf = (type: string) => full.filter((e) => e.entityType === type)
+    .map((e) => e.payload.customerRef).filter((v) => typeof v === 'string' && v !== '')
+  ok('J1 customer_identity.customerRef 精确等于该客户的 entityId（可回连 central_customer）',
+    customerRefs.size >= 1 && refOf('customer_identity').every((r) => customerRefs.has(r as string)))
+  ok('J2 customer_judgment.customerRef 同样精确回连客户实体',
+    refOf('customer_judgment').length >= 1 && refOf('customer_judgment').every((r) => customerRefs.has(r as string)))
+  ok('J3 ownership / opportunity 的 customerRef 指向真实客户实体，不拿 account:<id> 冒充客户',
+    [...refOf('ownership'), ...refOf('opportunity')].length >= 1 &&
+    [...refOf('ownership'), ...refOf('opportunity')].every((r) => customerRefs.has(r as string)))
+  ok('J4 任何载荷都不把 account: / 裸 lead: / contract: 当作客户引用',
+    !/"(customerRef|ownerRef)"\s*:\s*"(account|lead|contract):/.test(capturedText()))
+  ok('J5 两台设备本地 id 都是 1 时不会互相串客户（引用一律带设备命名空间前缀）',
+    projectionMod.localRefOf('dev-a', 'customer:1') !== projectionMod.localRefOf('dev-b', 'customer:1') &&
+    full.filter((e) => e.entityType === 'customer').every((e) => e.entityId.startsWith('dev-1/customer:')))
+  ok('J6 每个上行 (entityType, entityId) 都通过中央引用形态校验（本地自检与服务端同一份规则）',
+    full.every((e) => validateCentralEntityId(e.entityType, e.entityId) === null))
+
+  console.log('═══ K. 过滤行不阻塞游标（§五）═══')
+  // 台账键 = centralSync:skip:<投影名>:<本地引用>，而本地引用本身已带 customer: 前缀
+  const skipCount = (localRef: string): number =>
+    crmDbService.all('SELECT key FROM scan_state WHERE key = ?', [`centralSync:skip:customer:${localRef}`]).length
+  const skippedAudits = (): number =>
+    crmDbService.all("SELECT id FROM audit_event WHERE action='sync_projection_skipped'").length
+  const insertNamelessCustomer = (ts: number): number => {
+    crmDbService.runTx((tx) => {
+      tx.run('INSERT INTO customer (name, source, updated_at, version, deleted) VALUES (?,?,?,?,?)', ['', 'manual', ts, 1, 0])
+    })
+    return Number(crmDbService.all('SELECT MAX(id) AS id FROM customer')[0]?.id || 0)
+  }
+
+  // K1 一页里前面的行被跳过，后面的合法行必须照常上行（跳过不能拖住游标）
+  const headSkipTs = aheadTs()
+  const headSkipId = insertNamelessCustomer(headSkipTs)
+  insertNamelessCustomer(headSkipTs + 1)
+  const legitTs = aheadTs()
+  crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO customer (name, source, updated_at, version, deleted) VALUES (?,?,?,?,?)', ['跳过行之后的合法客户', 'manual', legitTs, 1, 0])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const k1Events = pushedEvents().filter((e) => e.entityType === 'customer')
+  ok('K1 被跳过的行不阻塞同页后续合法行（跳过照常推进水位）',
+    k1Events.some((e) => e.payload.displayName === '跳过行之后的合法客户') &&
+    k1Events.every((e) => String(e.payload.displayName).trim().length > 0) &&
+    skipCount(`customer:${headSkipId}`) === 1)
+  ok('K1b 跳过原因被记进待重试台账并留一次审计（不是静默丢弃）',
+    skipCount(`customer:${headSkipId}`) === 1 &&
+    crmDbService.all("SELECT id FROM audit_event WHERE action='sync_projection_skipped' AND entity_id = ?",
+      [`customer:${headSkipId}`]).length === 1)
+
+  // K2 页尾被跳过：本页最后几行不可投影，水位仍推进到页尾，且不重复留痕（§五.4）
+  const tailSkipTs = aheadTs()
+  insertNamelessCustomer(tailSkipTs)
+  const tailLastId = insertNamelessCustomer(tailSkipTs + 1)
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const auditsAfterTail = skippedAudits()
+  ok('K2 整页尾部被跳过时水位仍推进到页尾（游标不卡在跳过行上）',
+    crmDbService.getScanState('centralSync:cursor:customer:ts') >= tailSkipTs &&
+    skipCount(`customer:${tailLastId}`) === 1)
+  rememberKeys()
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('K2b 重复重扫同一批跳过行不会每分钟重写审计（同一行只留一次痕）',
+    skippedAudits() === auditsAfterTail)
+
+  // K3 补齐后重新进入同步：既有台账必须能把该行捞回来，且同一版本只投一次（§五.3）
+  const refillTs = aheadTs()
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE customer SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?',
+      ['补齐名称的客户', refillTs, headSkipId])
+  })
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const refilled = pushedEvents().filter((e) => e.entityId === `dev-1/customer:${headSkipId}`)
+  ok('K3 补齐后的行重新进入同步，且同一版本只投递一次（扫描与台账不重复投递）',
+    refilled.length === 1 && refilled[0]!.payload.displayName === '补齐名称的客户' &&
+    skipCount(`customer:${headSkipId}`) === 0)
+
+  // K4 补齐后仍未变化的行保持安静：不产生新版本、不重复留痕
+  const auditsAfterRefill = skippedAudits()
+  const refillKeys = new Set(pushedEvents().map((e) => e.idempotencyKey))
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('K4 稳态重跑不产生新版本（重扫幂等键逐字相同），也不重复写跳过审计',
+    pushedEvents().every((e) => refillKeys.has(e.idempotencyKey)) && skippedAudits() === auditsAfterRefill)
+  await new Promise((resolve) => setTimeout(resolve, AHEAD_MS + 100))
+  await service.runCentralSyncOnce()
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('K4b 补齐态收敛后零上行、零新增跳过留痕',
+    pushedEvents().length === 0 && skippedAudits() === auditsAfterRefill)
+
+  // K5 永久契约拒收是终态：水位推进 + 留审计；网络失败是临时的：水位一律不动（§五.5）
+  const permTs = aheadTs()
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE customer SET name = ?, updated_at = ? WHERE id = 1', ['被中央契约拒收的改名', permTs])
+  })
+  pushMode = 'reject_all'
+  resetCapture()
+  const rejectedOnce = await service.runCentralSyncOnce()
+  ok('K5 契约性拒收是终态：不无限重试、水位照常推进并留审计',
+    rejectedOnce.rejected >= 1 &&
+    crmDbService.getScanState('centralSync:cursor:customer:ts') >= permTs &&
+    crmDbService.all("SELECT id FROM audit_event WHERE action='sync_push_rejected'").length >= 1)
+  pushMode = 'ok'
+  const frozenTs = crmDbService.getScanState('centralSync:cursor:customer:ts')
+  crmDbService.runTx((tx) => {
+    tx.run('UPDATE customer SET name = ?, updated_at = ? WHERE id = 1', ['网络失败期间的改名', aheadTs()])
+  })
+  pushMode = 'network_fail'
+  await service.runCentralSyncOnce()
+  ok('K5b 网络失败是临时失败：水位一动不动，恢复后重放',
+    crmDbService.getScanState('centralSync:cursor:customer:ts') === frozenTs)
+  pushMode = 'ok'
+  resetCapture()
+  await service.runCentralSyncOnce()
+  ok('K5c 恢复后该改名照常送达（水位没跳过它）',
+    pushedEvents().some((e) => e.payload.displayName === '网络失败期间的改名'))
 
   console.log('═══ F. 解绑 ═══')
   pushMode = 'network_fail'

@@ -6,20 +6,30 @@
  *
  * 传输层纪律（PRD §7.1，替换 adapter 不换语义）：
  *  - 上行只从**既有业务表与 append-only 流水**投影（见 centralProjection.ts），禁止扫聊天表；
- *  - outbox 行与投影行**只有推送被接受后**才推进游标 / 置 sent；失败保留重放；
- *  - 下行只走既有 assign/transfer/recycle 状态机；本阶段新增的 supervisor_correction /
- *    permission_change 按 PRD 语义落「待确认 + 审计」，绝不静默覆盖本地事实；
+ *  - **上行载荷是显式最小白名单**：outbox 行的真实 payload 只用来定位「哪一行本地事实」，
+ *    真正上线的内容由 centralProjection 的投影构造器从 canonical 表重建——原始手机号 / wxid /
+ *    contactNormalized / contactRaw 永不出机（原先直接转发 outbox payload 是 P0 缺陷）；
+ *  - 可变表用 `(updated_at, id)` 复合水位；幂等键带实体版本，实体 id 稳定 —— 改名、状态流转、
+ *    金额阶段变化都能重新上行，且不会每次整表重传；
+ *  - 业务上暂不可投影的行（无名称客户 / 未归并身份 / 未归并 account）**不阻塞**后续合法行：
+ *    跳过照常推进水位，同时记入待重试台账，补齐后重新进入同步；
+ *  - 下行只走既有 assign/transfer/recycle 状态机；中央专有的 supervisor_correction /
+ *    permission_change / sla1 通知按 PRD 语义落「待确认 + 审计 + 收件箱」，绝不静默覆盖本地事实；
+ *  - 所有下行指令过 shared/centralDownCommand 的**同一份**业务校验（与 SMB 入口共用，不复制规则）；
  *  - 无法在本机执行的指令终态回 invalid（重试有上限），不允许无限 retry 卡死队列。
  */
 import { createHash } from 'crypto'
 import { hostname } from 'os'
 import type { CentralAckRequest, CentralSyncEvent } from '../../shared/centralSync'
-import { findForbiddenCentralField } from '../../shared/centralSync'
+import { findForbiddenCentralField, scopedRef } from '../../shared/centralSync'
+import { validateCentralEntityId, validateDownCommand } from '../../shared/centralDownCommand'
+import { maskContact as maskLeadContact } from './crmLeadImportCore'
 import { ConfigService } from './config'
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getTerminalId, applyDownEventDirect, maskAuditText, type DeliveryRole, type SyncEventFile } from './lanSyncService'
-import { CentralSyncClient, type CentralPrincipal } from './centralSyncClient'
-import { LOCAL_PROJECTIONS, projectionByKey, type ProjectionDraft } from './centralProjection'
+import { recordSupervisorNotificationTx } from './crmNotifyService'
+import { CentralSyncClient, CentralSyncHttpError, type CentralPrincipal } from './centralSyncClient'
+import { LOCAL_PROJECTIONS, projectionByKey, type ProjectionDraft, type ProjectionWatermark } from './centralProjection'
 
 const K_PULL_CURSOR = 'centralSync:pullCursor'
 const K_LAST_UP = 'centralSync:lastUpAt'
@@ -28,11 +38,21 @@ const K_PERMISSION_SENT = 'centralSync:permissionSent'
 const K_AUDIT_CURSOR = 'centralSync:auditCursor'
 /** 审计投影的游标键沿用 Phase 1 既有 key，避免升级后重放整表 */
 const AUDIT_CURSOR_ALIAS: Record<string, string> = { audit: K_AUDIT_CURSOR }
+/** 跳过台账前缀：`centralSync:skip:<投影>:<本地引用>`，值 = 最近一次复核时间 */
+const SKIP_LEDGER_PREFIX = 'centralSync:skip:'
+/** 禁字段拦截台账前缀：同一行同一原因只写一次审计，避免每轮重复刷同一条审计 */
+const BLOCKED_LEDGER_PREFIX = 'centralSync:blocked:'
 
 const PUSH_BATCH = 50
 const PULL_BATCH = 100
+/** 单轮复核的跳过行上限：跳过台账必须逐轮回扫，否则「补齐后重新进入同步」永远不成立 */
+const SKIP_RECHECK_BATCH = 20
 /** 下行事件最大重试次数：超过即回 invalid 终态，防止一条本机无法执行的事件卡死整条队列 */
 const MAX_DOWN_ATTEMPTS = 5
+/** 上行 outbox 行最大尝试次数：无法解析目标 / 本地事实缺失时有限重试，超限转 failed + 审计 */
+const MAX_OUTBOX_ATTEMPTS = 5
+/** 员工目录缓存时长：解析失败不缓存，避免一次网络抖动让后续每轮都漏投 */
+const DIRECTORY_TTL_MS = 5 * 60_000
 /** 调度器心跳（分钟）：实际执行间隔由 centralSyncPollIntervalMin 决定，间隔变更下一拍即生效 */
 const HEARTBEAT_MS = 60_000
 /** 启动后首跑宽限：避开应用启动高峰，不与应用初始化抢资源 */
@@ -42,6 +62,7 @@ let heartbeat: NodeJS.Timeout | null = null
 let firstTimer: NodeJS.Timeout | null = null
 let running = false
 let lastRunStartedAt = 0
+let directoryCache: { at: number; employees: DirectoryEmployee[] } | null = null
 
 export interface CentralSyncConfig {
   enabled: boolean
@@ -117,6 +138,11 @@ function cursorKeyOf(projectionKey: string): string {
   return AUDIT_CURSOR_ALIAS[projectionKey] || `centralSync:cursor:${projectionKey}`
 }
 
+/** 复合水位的毫秒分量键（id 分量沿用 cursorKeyOf，保持既有键名可读） */
+function watermarkKeyOf(projectionKey: string): string {
+  return `${cursorKeyOf(projectionKey)}:ts`
+}
+
 /** 同步失败留痕：脱敏后写配置（设置页展示），不写日志正文、不写令牌 */
 function recordError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error)
@@ -132,58 +158,140 @@ function clearError(): void {
   if (String(cfg.get('centralSyncLastError') || '')) cfg.set('centralSyncLastError', '')
 }
 
-// ─── 上行 ──────────────────────────────────────────────────────────────────────
-
-function eventEntity(type: string, payload: Record<string, unknown>): { entityType: 'customer_identity' | 'assignment'; entityId: string } {
-  if (type === 'bind_wx') return { entityType: 'customer_identity', entityId: String(payload.identityId || payload.leadId || 'unknown') }
-  return { entityType: 'assignment', entityId: String(payload.assignmentId || payload.leadId || 'unknown') }
+/** 本机审计留痕（只写字段路径与稳定错误码，绝不写被拦下的字段值） */
+function audit(action: string, entityType: string, entityId: string | null, detail: Record<string, unknown>): void {
+  crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      ['system:sync', action, entityType, entityId, JSON.stringify(detail), Date.now()])
+  })
 }
 
-/** Phase 1 outbox 行 → 上行事件（复用既有 event_seq / idempotency_key，不另造 seq 语义） */
-function outboxEvent(row: CrmRow, cfg: CentralSyncConfig): CentralSyncEvent | null {
-  let payload: Record<string, unknown>
-  try { payload = JSON.parse(String(row.payload || '{}')) } catch { return null }
-  const type = String(payload.type || '')
-  if (!['claim', 'bind_wx', 'first_touch'].includes(type)) return null
-  const rawKey = String(row.idempotency_key || '')
-  if (!rawKey) return null
-  const idempotencyKey = `${cfg.deviceId}/${rawKey}`
-  const entity = eventEntity(type, payload)
-  return {
-    protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey), eventSeq: Number(row.event_seq),
-    idempotencyKey, direction: 'up', ...entity, eventType: type,
-    aggregateVersion: Math.max(0, Number(payload.version || 0)), payload, occurredAt: Number(row.created_at || Date.now())
+// ─── 员工目录解析契约（§三.5）────────────────────────────────────────────────
+/**
+ * 中央侧唯一的员工解析依据：`employee.role` + 设备绑定（服务端权威）。
+ * 本机 `salesName` 只是显示名，**绝不按名字猜人**：
+ *   ① 本机显式别名（设置页 centralSyncEmployeeAlias，`{"张三":"EMP-0007"}`）优先，绑定 stable employeeCode；
+ *   ② 否则要求目录里存在**唯一**同名员工；
+ *   ③ 0 命中 = employee_unresolved，>1 命中 = employee_ambiguous —— 两种都显式报错并保持 pending。
+ */
+export interface DirectoryEmployee {
+  employeeId: string
+  employeeCode: string
+  displayName: string
+  role: string
+  nameUnique: boolean
+}
+
+async function fetchDirectory(client: CentralSyncClient): Promise<DirectoryEmployee[]> {
+  if (directoryCache && Date.now() - directoryCache.at < DIRECTORY_TTL_MS) return directoryCache.employees
+  const employees = await client.directory()
+  directoryCache = { at: Date.now(), employees }
+  return employees
+}
+
+/** 本机显式别名表（设置页配置）：显示名 → 稳定员工编号；坏 JSON 视为未配置，不猜 */
+function localEmployeeAlias(): Record<string, string> {
+  const raw = String(ConfigService.getInstance().get('centralSyncEmployeeAlias') || '').trim()
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const out: Record<string, string> = {}
+    for (const [name, code] of Object.entries(parsed)) {
+      const key = String(name).trim()
+      const value = String(code ?? '').trim()
+      if (key && value) out[key] = value
+    }
+    return out
+  } catch { return {} }
+}
+
+export function resolveDirectoryEmployee(
+  employees: DirectoryEmployee[], salesName: string, alias = localEmployeeAlias()
+): { employee: DirectoryEmployee } | { error: string } {
+  const name = String(salesName || '').trim()
+  if (!name) return { error: 'employee_unresolved:归属人为空' }
+  const code = alias[name]
+  if (code) {
+    const byCode = employees.find((item) => item.employeeCode === code)
+    if (byCode) return { employee: byCode }
+    return { error: `employee_unresolved:别名 ${name}→${code} 在中央目录中不存在` }
   }
+  const hits = employees.filter((item) => item.displayName.trim() === name)
+  if (hits.length === 1) return { employee: hits[0]! }
+  if (hits.length > 1) return { error: `employee_ambiguous:${name} 在中央目录中有 ${hits.length} 个同名员工，请在设置页配置员工编号别名` }
+  return { error: `employee_unresolved:中央目录中找不到 ${name}，请在设置页配置员工编号别名` }
 }
 
-/** 投影草稿 → 传输信封：entityId 带设备前缀，幂等键 = 设备/投影/本地行号 */
-function envelopeOf(draft: ProjectionDraft, cfg: CentralSyncConfig): CentralSyncEvent {
-  const idempotencyKey = `${cfg.deviceId}/${draft.entityType}/${draft.localRef}`
+// ─── 上行 outbox 路由表（§三.1 全量盘点）────────────────────────────────────
+/**
+ * 每个 outbox 事件类型的**方向 / 落点**都在此显式登记，未登记类型一律隔离（不静默跳过）。
+ *  - projection：该事件是**本地事实的即时触发**——真实 payload 只用于定位本地行，
+ *    上线内容由 centralProjection 的同一构造器重建（与增量扫描共用一份字段白名单，
+ *    因此这里产出的 idempotencyKey 与扫描完全一致，中央按 key 去重不会重复入库）；
+ *  - command：本地分配动作必须走中央指令链，**不得**伪装成 direction=up 的上行投影
+ *    （/sync/push 只收上行投影，指令走 /sync/commands，服务端按 command.issue 授权）。
+ */
+type OutboxRoute =
+  | { kind: 'projection'; projectionKey: string; refOf: (payload: Record<string, unknown>) => string | null }
+  | { kind: 'command'; commandType: string }
+
+function assignmentRefOf(payload: Record<string, unknown>): string | null {
+  const explicit = Number(payload.assignmentId || 0)
+  if (Number.isInteger(explicit) && explicit > 0) return `assignment:${explicit}`
+  const leadId = Number(payload.leadId || 0)
+  if (!Number.isInteger(leadId) || leadId <= 0) return null
+  // 首触不携带 assignmentId：用该线索**当前轮次**的分配行（转派会新建行，最新行 = 本轮）
+  const row = crmDbService.all(
+    "SELECT id FROM assignment WHERE lead_id = ? AND deleted = 0 AND status IN ('assigned','claimed') ORDER BY id DESC LIMIT 1",
+    [leadId])[0]
+  return row ? `assignment:${Number(row.id)}` : null
+}
+
+const OUTBOX_ROUTES: Record<string, OutboxRoute> = {
+  claim: { kind: 'projection', projectionKey: 'assignment', refOf: assignmentRefOf },
+  first_touch: { kind: 'projection', projectionKey: 'assignment', refOf: assignmentRefOf },
+  bind_wx: {
+    kind: 'projection', projectionKey: 'customer_identity',
+    refOf: (payload) => (Number(payload.identityId || 0) > 0 ? `identity:${Number(payload.identityId)}` : null)
+  },
+  assign: { kind: 'command', commandType: 'assign' },
+  transfer: { kind: 'command', commandType: 'transfer' },
+  recycle: { kind: 'command', commandType: 'recycle' },
+  sla1_escalate_supervisor: { kind: 'command', commandType: 'sla1_escalate_supervisor' }
+}
+
+/** outbox 事件类型清单（导出供契约测试断言「所有类型都有方向」） */
+export const OUTBOX_ROUTED_TYPES = Object.keys(OUTBOX_ROUTES)
+
+// ─── 上行：投影 ────────────────────────────────────────────────────────────────
+
+/** 投影草稿 → 传输信封：entityId 与 payload 引用同一命名空间，幂等键带版本 */
+function envelopeOf(draft: ProjectionDraft, cfg: CentralSyncConfig, eventSeq?: number): CentralSyncEvent {
+  const entityId = scopedRef(cfg.deviceId, draft.localRef)
+  // 幂等键必须含**实体版本**：同一实体的新版本是不同的业务事件，而 entityId 必须保持稳定
+  const idempotencyKey = `${cfg.deviceId}/${draft.entityType}/${draft.localRef}#v${draft.aggregateVersion}`
   return {
-    protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey), eventSeq: Math.max(1, draft.eventSeq),
-    idempotencyKey, direction: 'up', entityType: draft.entityType, entityId: `${cfg.deviceId}/${draft.localRef}`,
+    protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey),
+    eventSeq: Math.max(1, eventSeq === undefined ? draft.eventSeq : eventSeq),
+    idempotencyKey, direction: 'up', entityType: draft.entityType, entityId,
     eventType: draft.eventType, aggregateVersion: Math.max(0, draft.aggregateVersion), payload: draft.payload,
     occurredAt: draft.occurredAt > 0 ? draft.occurredAt : Date.now()
   }
 }
 
-/** 上行前自检：命中禁字段直接丢弃该条并在本机留痕（中央还会再拦一道，双保险） */
-function selfGuard(drafts: ProjectionDraft[]): { events: CentralSyncEvent[]; dropped: number } {
-  const events: CentralSyncEvent[] = []
-  let dropped = 0
-  for (const draft of drafts) {
-    if (findForbiddenCentralField(draft.payload)) {
-      dropped++
-      crmDbService.runTx((tx) => {
-        tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-          ['system:sync', 'sync_forbidden_field_blocked', draft.entityType, draft.localRef,
-            JSON.stringify({ entityType: draft.entityType, reason: '上行含禁上传字段，已拦截未发送' }), Date.now()])
-      })
-      continue
-    }
-    events.push(envelopeOf(draft, getCentralSyncConfig()))
-  }
-  return { events, dropped }
+/**
+ * 上行前自检：命中禁字段 / 引用命名空间不合法 → 该条不发，**同一行同一原因只记一次审计**
+ * （否则每轮都写同一条审计，会把审计表刷爆）。
+ */
+function selfGuard(draft: ProjectionDraft, cfg: CentralSyncConfig): string | null {
+  const forbidden = findForbiddenCentralField(draft.payload)
+  if (forbidden) return `forbidden_field:${forbidden}`
+  const badId = validateCentralEntityId(draft.entityType, scopedRef(cfg.deviceId, draft.localRef))
+  return badId
+}
+
+function blockedLedgerKey(draft: ProjectionDraft, reason: string): string {
+  return `${BLOCKED_LEDGER_PREFIX}${draft.entityType}:${draft.localRef}:${reason}`
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -203,81 +311,411 @@ async function pushBatch(
   }
 }
 
-/** 推送 Phase 1 outbox 待发事件（只有被接受才置 sent；被拒的如实计数并留本机审计） */
-async function pushOutbox(client: CentralSyncClient, cfg: CentralSyncConfig): Promise<{ pushed: number; rejected: number }> {
-  const rows = crmDbService.all("SELECT * FROM outbox_event WHERE status='pending' ORDER BY event_seq LIMIT ?", [PUSH_BATCH])
-  const pairs: Array<{ row: CrmRow; event: CentralSyncEvent }> = []
-  let rejected = 0
-  for (const row of rows) {
-    const event = outboxEvent(row, cfg)
-    if (!event) continue
-    if (findForbiddenCentralField(event.payload)) {
-      // 命中禁字段：本机直接不发，置 failed + 审计，避免每轮空转重试
-      rejected++
-      crmDbService.runTx((tx) => {
-        tx.run("UPDATE outbox_event SET status='failed',updated_at=? WHERE id=? AND status='pending'", [Date.now(), Number(row.id)])
-        tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-          ['system:sync', 'sync_forbidden_field_blocked', 'outbox_event', String(Number(row.id)),
-            JSON.stringify({ reason: '上行含禁上传字段，已拦截未发送' }), Date.now()])
-      })
+/** 中央拒收码是否属于「契约错误」：这类错误重推不会改变结论，可推进水位并留一次审计 */
+function isPermanentReject(code: string): boolean {
+  return code === 'event_rejected' || code.startsWith('forbidden_field') || code.startsWith('unknown_field') ||
+    code.startsWith('missing_required') || code.startsWith('invalid_entity') || code.startsWith('entity_')
+}
+
+// ─── 上行：outbox ─────────────────────────────────────────────────────────────
+
+/**
+ * 解析一条 outbox 行的路由；返回 null 表示类型未登记（违契约，隔离而不是静默跳过）。
+ * ⚠️ 这里**不做** LIMIT 之后再按类型过滤：队首若有未登记类型，必须先让它出队（隔离），
+ * 否则后面的合法事件会被永远饿死（§三.8）。
+ */
+function routeOutboxRow(row: CrmRow): { type: string; route: OutboxRoute; payload: Record<string, unknown> } | null {
+  let payload: Record<string, unknown>
+  try { payload = JSON.parse(String(row.payload || '{}')) } catch { return null }
+  const type = String(payload.type || '')
+  const route = OUTBOX_ROUTES[type]
+  return route ? { type, route, payload } : null
+}
+
+function outboxAttempts(rowId: number): number {
+  return Number(crmDbService.getScanState(`centralSync:outboxAttempt:${rowId}`) || 0)
+}
+
+/** 上行 outbox 行结算：只有中央确认受理才置 sent；契约错误终态 failed + 审计 */
+function settleOutboxRow(rowId: number, status: 'sent' | 'failed', detail: Record<string, unknown>): void {
+  crmDbService.runTx((tx) => {
+    tx.run("UPDATE outbox_event SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending'", [status, Date.now(), rowId])
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      ['system:sync', status === 'sent' ? 'sync_outbox_settled' : 'sync_outbox_failed', 'outbox_event', String(rowId),
+        JSON.stringify(detail), Date.now()])
+  })
+}
+
+/** 未到终态的失败：留在 pending 等下一轮（瞬时网络错误与「依赖尚未就绪」都属于这一类） */
+function deferOutboxRow(rowId: number, reason: string, attempts: number): void {
+  crmDbService.setScanState(`centralSync:outboxAttempt:${rowId}`, attempts)
+  if (attempts < MAX_OUTBOX_ATTEMPTS) return
+  settleOutboxRow(rowId, 'failed', { reason, attempts })
+}
+
+/** 推送一条 outbox 行（投影触发路径）：真实 payload 只用于定位本地行，载荷由投影构造器重建 */
+async function pushOutboxProjection(
+  client: CentralSyncClient, cfg: CentralSyncConfig, row: CrmRow,
+  route: Extract<OutboxRoute, { kind: 'projection' }>, payload: Record<string, unknown>
+): Promise<{ pushed: number; rejected: number }> {
+  const rowId = Number(row.id)
+  const localRef = route.refOf(payload)
+  if (!localRef) return { pushed: 0, rejected: 0 } // 缺锚点：交给调用方按尝试次数收敛
+  const projection = projectionByKey(route.projectionKey)
+  const draft = projection?.recheck(localRef, cfg.deviceId)
+  if (!draft) {
+    settleOutboxRow(rowId, 'failed', { reason: 'source_fact_missing', projection: route.projectionKey, localRef })
+    return { pushed: 0, rejected: 1 }
+  }
+  if (!('payload' in draft)) {
+    // 本地事实还在（例如身份尚未归并）：有限重试后转终态，绝不假装同步成功
+    deferOutboxRow(rowId, String(draft.reason), outboxAttempts(rowId) + 1)
+    return { pushed: 0, rejected: 0 }
+  }
+  const bad = selfGuard(draft, cfg)
+  if (bad) {
+    settleOutboxRow(rowId, 'failed', { reason: bad, localRef })
+    return { pushed: 0, rejected: 1 }
+  }
+  const event = envelopeOf(draft, cfg, Number(row.event_seq))
+  const outcome = await pushBatch(client, [event], `outbox:${cfg.deviceId}:${rowId}`)
+  if (outcome.acceptedIds.has(event.eventId)) {
+    settleOutboxRow(rowId, 'sent', { projection: route.projectionKey, localRef, aggregateVersion: draft.aggregateVersion })
+    return { pushed: 1, rejected: 0 }
+  }
+  const code = outcome.rejected[0]?.code || 'rejected'
+  // 更晚的版本已上线 → 该事实已由更新的版本承载，本行无需重推（如实记录，不谎报成功）
+  if (isPermanentReject(code)) {
+    settleOutboxRow(rowId, 'failed', { reason: code, localRef })
+    return { pushed: 0, rejected: 1 }
+  }
+  deferOutboxRow(rowId, code, outboxAttempts(rowId) + 1)
+  return { pushed: 0, rejected: 0 }
+}
+
+// ─── 上行：指令链（§三.3-6）─────────────────────────────────────────────────
+
+/**
+ * 中央下行指令的 lead 子对象白名单：**只带目标设备建档必需字段**。
+ * 相比 SMB 同机投递，去掉 contactRaw（与 contactNormalized 重复的原文副本）与 wechat
+ * （wxid 原文；contactType=wxid 时 contactNormalized 本身就是该值）——过中央服务器时多一个原文
+ * 就多一份出机面，这里显式最小化。
+ */
+export const CENTRAL_COMMAND_LEAD_FIELDS = ['leadId', 'name', 'contactType', 'contactNormalized', 'source', 'note'] as const
+
+function commandLeadOf(leadId: unknown): Record<string, unknown> | null {
+  const id = Number(leadId)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const lead = crmDbService.all('SELECT * FROM lead WHERE id = ?', [id])[0]
+  if (!lead) return null
+  return {
+    leadId: id, name: String(lead.name || ''), contactType: String(lead.contact_type || 'phone'),
+    contactNormalized: String(lead.contact_normalized || ''), source: String(lead.source || ''),
+    note: String(lead.note || '')
+  }
+}
+
+/** 指令 payload：严格按注册表白名单逐字段挑，绝不 spread outbox payload */
+function commandPayloadOf(commandType: string, payload: Record<string, unknown>, leadId: number): Record<string, unknown> {
+  const common = { type: commandType, leadId }
+  if (commandType === 'assign') {
+    return {
+      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
+      salesName: String(payload.salesName || ''), mode: String(payload.mode || ''),
+      sla1Deadline: Number(payload.sla1Deadline || 0) || null, actor: String(payload.actor || 'system:sync'),
+      lead: commandLeadOf(leadId)
+    }
+  }
+  if (commandType === 'recycle') {
+    return {
+      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
+      salesName: String(payload.salesName || ''), reason: String(payload.reason || ''),
+      actor: String(payload.actor || 'system:sync')
+    }
+  }
+  if (commandType === 'sla1_escalate_supervisor') {
+    const lead = crmDbService.all('SELECT contact_type, contact_normalized FROM lead WHERE id = ?', [leadId])[0]
+    // 通知正文里的联系方式只出**掩码**（与 SMB 落地口径一致：掩码是 PRD §10 R4 允许上线的形态）
+    const contactMasked = lead
+      ? maskLeadContact({ contactType: String(lead.contact_type || 'phone') as 'phone' | 'wechat' | 'both', contactNormalized: String(lead.contact_normalized || '') })
+      : ''
+    return {
+      ...common, deliveryRole: 'notify', assignmentId: Number(payload.assignmentId || 0),
+      salesName: String(payload.salesName || ''), remindCount: Number(payload.remindCount || 3),
+      reason: String(payload.reason || ''), recycledAt: Number(payload.recycledAt || 0), contactMasked
+    }
+  }
+  return {}
+}
+
+/**
+ * 指令投递目标（§三.5/§三.6）：
+ *  - sales：按归属人**显示名**解析成 stable employeeId（同名/查无此人显式报错，绝不猜人）；
+ *  - supervisor：SLA1 三次超时的升级通知专用——按角色/员工编号解析，通知落在主管工作机。
+ */
+type CommandTarget =
+  | { kind: 'sales'; salesName: string; role: DeliveryRole }
+  | { kind: 'supervisor'; role: DeliveryRole }
+
+/** 一条指令要投给谁：assign/recycle → 归属人；transfer → 接收方(apply) + 原归属(remove) */
+function commandTargetsOf(commandType: string, payload: Record<string, unknown>): CommandTarget[] {
+  if (commandType === 'assign' || commandType === 'recycle') {
+    const salesName = String(payload.salesName || '').trim()
+    return salesName ? [{ kind: 'sales', salesName, role: 'apply' }] : []
+  }
+  if (commandType === 'transfer') {
+    const to = String(payload.toSales || '').trim()
+    const from = String(payload.fromSales || '').trim()
+    const out: CommandTarget[] = []
+    if (to) out.push({ kind: 'sales', salesName: to, role: 'apply' })
+    if (from) out.push({ kind: 'sales', salesName: from, role: 'remove' })
+    return out
+  }
+  // 升级通知必须有明确落点（Phase 1 口径：主管工作机消费通知 → notify_inbox），不得无目标空转
+  if (commandType === 'sla1_escalate_supervisor') return [{ kind: 'supervisor', role: 'notify' }]
+  return []
+}
+
+/**
+ * SLA1 升级通知的主管目标（§三.6「明确的中央投递目标与通知落点」）。**绝不按显示名猜人**：
+ *   ① 设置页显式配置的主管员工编号（stable employeeCode）优先；
+ *   ② 未配置时取目录中角色为 supervisor 的员工：唯一 → 投给他；
+ *   ③ 查无主管 / 多名主管且未配置编号 → 显式报错并保持 pending（超限转 failed + 审计）。
+ */
+function resolveSupervisorTargets(employees: DirectoryEmployee[]): DirectoryEmployee[] | { error: string } {
+  const code = String(ConfigService.getInstance().get('centralSyncSupervisorCode') || '').trim()
+  if (code) {
+    const hits = employees.filter((item) => item.employeeCode === code)
+    if (hits.length === 1) return hits
+    if (hits.length > 1) return { error: `supervisor_ambiguous:员工编号 ${code} 在中央目录中有 ${hits.length} 条` }
+    return { error: `supervisor_unresolved:中央目录中找不到主管员工编号 ${code}` }
+  }
+  const supervisors = employees.filter((item) => item.role === 'supervisor')
+  if (supervisors.length === 1) return supervisors
+  if (supervisors.length > 1) return { error: `supervisor_ambiguous:工作区内有 ${supervisors.length} 名主管，请在设置页配置主管员工编号` }
+  return { error: 'supervisor_unresolved:工作区内没有主管员工，升级通知无处投递' }
+}
+
+/** 目标解析失败：显式报错并保持 pending，只有到重试上限才转 failed + 审计（绝不假装成功） */
+function deferUnresolvedTarget(rowId: number, commandType: string, reason: string): { pushed: number; rejected: number } {
+  deferOutboxRow(rowId, reason, outboxAttempts(rowId) + 1)
+  if (outboxAttempts(rowId) >= MAX_OUTBOX_ATTEMPTS) {
+    audit('sync_employee_unresolved', 'outbox_event', String(rowId), { commandType, reason })
+  }
+  return { pushed: 0, rejected: 0 }
+}
+
+function commandEnvelope(
+  cfg: CentralSyncConfig, commandType: string, payload: Record<string, unknown>, target: DirectoryEmployee, row: CrmRow
+): CentralSyncEvent {
+  const rawKey = String(row.idempotency_key || '')
+  const idempotencyKey = `${cfg.deviceId}/${rawKey}#${payload.deliveryRole}#${target.employeeId}`
+  const leadId = Number(payload.leadId || 0)
+  return {
+    protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey),
+    eventSeq: Number(row.event_seq), idempotencyKey, direction: 'down',
+    entityType: 'assignment', entityId: scopedRef(cfg.deviceId, `assignment:${Number(payload.assignmentId || 0) || leadId}`),
+    eventType: commandType, aggregateVersion: 1, payload,
+    targetEmployeeId: target.employeeId, occurredAt: Number(row.created_at || Date.now())
+  }
+}
+
+/** 推送一条 outbox 行（指令链路径）：本地分配动作经中央转为对该员工的显式下行指令 */
+async function pushOutboxCommand(
+  client: CentralSyncClient, cfg: CentralSyncConfig, row: CrmRow,
+  commandType: string, payload: Record<string, unknown>
+): Promise<{ pushed: number; rejected: number }> {
+  const rowId = Number(row.id)
+  const leadId = Number(payload.leadId || 0)
+  const targets = commandTargetsOf(commandType, payload)
+  if (!targets.length) {
+    settleOutboxRow(rowId, 'failed', { reason: 'missing_target_sales', commandType })
+    return { pushed: 0, rejected: 1 }
+  }
+  const employees = await fetchDirectory(client)
+  // 派发人（主管/分配员）只对 supervisor_correction / permission_change 有意义，不在本轮 outbox 清单里
+  const recipients: Array<{ target: DirectoryEmployee; role: DeliveryRole }> = []
+  for (const item of targets) {
+    if (item.kind === 'supervisor') {
+      const resolved = resolveSupervisorTargets(employees)
+      if ('error' in resolved) return deferUnresolvedTarget(rowId, commandType, resolved.error)
+      for (const employee of resolved) recipients.push({ target: employee, role: item.role })
       continue
     }
-    pairs.push({ row, event })
+    const resolved = resolveDirectoryEmployee(employees, item.salesName)
+    // 同名或解析不到 **绝不猜人**：显式报错并保持 pending，超限后转 failed + 审计
+    if ('error' in resolved) return deferUnresolvedTarget(rowId, commandType, resolved.error)
+    recipients.push({ target: resolved.employee, role: item.role })
   }
-  if (!pairs.length) return { pushed: 0, rejected }
-  const outcome = await pushBatch(client, pairs.map((p) => p.event), `outbox:${cfg.deviceId}:${Number(pairs[0]!.row.id)}-${Number(pairs[pairs.length - 1]!.row.id)}`)
   let pushed = 0
-  crmDbService.runTx((tx) => {
-    for (const pair of pairs) {
-      if (!outcome.acceptedIds.has(pair.event.eventId)) continue
-      tx.run("UPDATE outbox_event SET status='sent',updated_at=? WHERE id=? AND status='pending'", [Date.now(), Number(pair.row.id)])
-      pushed++
+  for (const item of recipients) {
+    const body = commandPayloadOf(commandType, payload, leadId)
+    body.deliveryRole = item.role
+    const event = commandEnvelope(cfg, commandType, body, item.target, row)
+    const invalid = validateDownCommand({
+      eventType: event.eventType, entityType: event.entityType, payload: body,
+      targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
+    })
+    if (invalid) {
+      settleOutboxRow(rowId, 'failed', { reason: invalid, commandType })
+      return { pushed, rejected: 1 }
     }
-    // 被中央拒绝：终态，重推不会改变结论 → 置 failed 并留审计，不留在 pending 里静默空转
-    for (const item of outcome.rejected) {
-      const pair = pairs.find((p) => p.event.eventId === item.eventId)
-      if (!pair) continue
+    await client.issueCommand(event)
+    pushed++
+  }
+  settleOutboxRow(rowId, 'sent', { commandType, recipients: recipients.length })
+  return { pushed, rejected: 0 }
+}
+
+/** 单轮上行 outbox：按 event_seq 顺序处理，逐行独立结算（一行失败不影响其它行） */
+async function pushOutbox(client: CentralSyncClient, cfg: CentralSyncConfig): Promise<{ pushed: number; rejected: number }> {
+  // ⚠️ 不带类型过滤地取队首（§三.8）：先 LIMIT 再按类型过滤会让未支持类型饿死后面的合法事件
+  const rows = crmDbService.all("SELECT * FROM outbox_event WHERE status='pending' ORDER BY event_seq LIMIT ?", [PUSH_BATCH])
+  let pushed = 0
+  let rejected = 0
+  for (const row of rows) {
+    const routed = routeOutboxRow(row)
+    if (!routed) {
+      // 类型未登记（协议外/损坏）：隔离为终态 + 审计，绝不静默跳过、也绝不卡住队列头
+      settleOutboxRow(Number(row.id), 'failed', { reason: 'unregistered_outbox_type' })
       rejected++
-      tx.run("UPDATE outbox_event SET status='failed',updated_at=? WHERE id=? AND status='pending'", [Date.now(), Number(pair.row.id)])
-      tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-        ['system:sync', 'sync_push_rejected', 'outbox_event', String(Number(pair.row.id)),
-          JSON.stringify({ code: item.code }), Date.now()])
+      continue
     }
-  })
+    const { route, payload } = routed
+    try {
+      const outcome = route.kind === 'projection'
+        ? await pushOutboxProjection(client, cfg, row, route, payload)
+        : await pushOutboxCommand(client, cfg, row, route.commandType, payload)
+      pushed += outcome.pushed
+      rejected += outcome.rejected
+    } catch (error) {
+      // 网络 / 5xx：整批不动，保留 pending 下轮重放（不能把瞬时故障记成契约错误）
+      if (error instanceof CentralSyncHttpError && error.status >= 400 && error.status < 500) {
+        settleOutboxRow(Number(row.id), 'failed', { reason: `http_${error.status}:${error.code}` })
+        rejected++
+        continue
+      }
+      throw error
+    }
+  }
   return { pushed, rejected }
 }
 
-/** 推送一个投影的增量批次：整批要么全被中央受理（含逐条拒绝），要么网络失败游标不动 */
+// ─── 上行：投影增量（§四 / §五）──────────────────────────────────────────────
+
+function readWatermark(projectionKey: string): ProjectionWatermark {
+  return {
+    ts: crmDbService.getScanState(watermarkKeyOf(projectionKey)),
+    id: crmDbService.getScanState(cursorKeyOf(projectionKey))
+  }
+}
+
+function writeWatermark(projectionKey: string, watermark: ProjectionWatermark): void {
+  crmDbService.setScanState(watermarkKeyOf(projectionKey), watermark.ts)
+  crmDbService.setScanState(cursorKeyOf(projectionKey), watermark.id)
+}
+
+function skipLedgerKey(projectionKey: string, localRef: string): string {
+  return `${SKIP_LEDGER_PREFIX}${projectionKey}:${localRef}`
+}
+
+function deleteScanState(key: string): void {
+  crmDbService.runTx((tx) => { tx.run('DELETE FROM scan_state WHERE key = ?', [key]) })
+}
+
+/** 记录跳过行：**首次**记一次审计，之后只更新复核时间（§五.4：不得每分钟重写同一条审计） */
+function noteSkipped(projectionKey: string, localRef: string, reason: string): void {
+  const key = skipLedgerKey(projectionKey, localRef)
+  const known = crmDbService.getScanState(key) > 0
+  crmDbService.setScanState(key, Date.now())
+  if (known) return
+  audit('sync_projection_skipped', projectionKey, localRef, { reason })
+}
+
+/**
+ * 回扫跳过台账：补齐后的行必须能重新进入同步（§五.3）。
+ * `alreadyEmitted` = 本拍扫描已产出的幂等键：同一行补齐后既会被台账复核到、也会被增量水位扫到，
+ * 不排重就会把**同一版本投递两次**（中央按幂等键去重不会写重复业务行，但白跑一次网络
+ * 且看起来像两条业务事件）。命中即清台账，不重复投递。
+ */
+async function recheckSkipped(
+  client: CentralSyncClient, cfg: CentralSyncConfig, projectionKey: string, alreadyEmitted: Set<string> = new Set()
+): Promise<number> {
+  const rows = crmDbService.all(
+    "SELECT key FROM scan_state WHERE key LIKE ? ORDER BY last_scan LIMIT ?",
+    [`${SKIP_LEDGER_PREFIX}${projectionKey}:%`, SKIP_RECHECK_BATCH])
+  if (!rows.length) return 0
+  const projection = projectionByKey(projectionKey)
+  if (!projection) return 0
+  let pushed = 0
+  for (const row of rows) {
+    const ledgerKey = String(row.key)
+    const localRef = ledgerKey.slice(`${SKIP_LEDGER_PREFIX}${projectionKey}:`.length)
+    const draft = projection.recheck(localRef, cfg.deviceId)
+    if (!draft) { deleteScanState(ledgerKey); continue } // 本地行已不存在：台账清掉
+    if (!('payload' in draft)) { crmDbService.setScanState(ledgerKey, Date.now()); continue }
+    const bad = selfGuard(draft, cfg)
+    if (bad) { crmDbService.setScanState(ledgerKey, Date.now()); continue }
+    const event = envelopeOf(draft, cfg)
+    if (alreadyEmitted.has(event.idempotencyKey)) { deleteScanState(ledgerKey); continue }
+    const outcome = await pushBatch(client, [event], `skipped:${cfg.deviceId}:${projectionKey}:${localRef}`)
+    if (!outcome.acceptedIds.has(event.eventId) && !isPermanentReject(outcome.rejected[0]?.code || '')) continue
+    deleteScanState(ledgerKey)
+    pushed++
+  }
+  return pushed
+}
+
+/**
+ * 推送一个投影的增量批次。
+ * 水位推进规则（§四.3 同毫秒竞态）：本页没读满且最后一行的时间戳落在本轮开始毫秒内时，
+ * 水位只推进到 `(该毫秒, 0)`，下一轮重扫这一毫秒——否则同毫秒写入但 id 更小的行会被永久漏掉。
+ * 被中央**契约性拒收**的事件是终态，水位照常推进并留一次审计；网络失败整批抛出，水位不动。
+ */
 async function pushProjection(client: CentralSyncClient, cfg: CentralSyncConfig, projectionKey: string): Promise<{ pushed: number; rejected: number }> {
   const projection = projectionByKey(projectionKey)
   if (!projection) return { pushed: 0, rejected: 0 }
-  const key = cursorKeyOf(projection.key)
-  const cursor = crmDbService.getScanState(key)
-  const drafts = projection.read(cursor, PUSH_BATCH)
-  if (!drafts.length) return { pushed: 0, rejected: 0 }
-  const { events, dropped } = selfGuard(drafts)
-  let rejected = dropped
-  let accepted = 0
-  let lastSeq = cursor
-  for (const batch of chunk(events, PUSH_BATCH)) {
-    const outcome = await pushBatch(client, batch, `projection:${cfg.deviceId}:${projection.key}:${batch[0]!.eventSeq}`)
-    accepted += outcome.acceptedIds.size
-    rejected += outcome.rejected.length
-    if (outcome.rejected.length) {
-      crmDbService.runTx((tx) => {
-        for (const item of outcome.rejected.slice(0, 20)) {
-          tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-            ['system:sync', 'sync_push_rejected', projection.entityType, item.eventId,
-              JSON.stringify({ entityType: projection.entityType, code: item.code }), Date.now()])
-        }
-      })
+  const roundStartMs = Date.now()
+  const cursor = readWatermark(projectionKey)
+  const page = projection.read(cursor, PUSH_BATCH, cfg.deviceId)
+  for (const skip of page.skipped) noteSkipped(projectionKey, skip.localRef, skip.reason)
+  // 先算出本拍扫描要投递的事件，再回扫台账：两边取并集去重，同一版本只投一次
+  const events: CentralSyncEvent[] = []
+  let rejected = 0
+  for (const draft of page.drafts) {
+    const bad = selfGuard(draft, cfg)
+    if (bad) {
+      noteSkipped(projectionKey, draft.localRef, bad)
+      rejected++
+      continue
     }
-    // 游标推进到本批最后一行：被中央拒绝的事件是**终态**，重推不会改变结论，推进不会丢数据
-    lastSeq = Math.max(lastSeq, Number(batch[batch.length - 1]!.eventSeq))
+    events.push(envelopeOf(draft, cfg))
   }
-  if (lastSeq > cursor) crmDbService.setScanState(key, lastSeq)
-  // 本批读满即认为还有余量，交由下一拍继续（避免单拍长时间占用）
-  return { pushed: accepted, rejected }
+  let pushed = await recheckSkipped(client, cfg, projectionKey, new Set(events.map((e) => e.idempotencyKey)))
+  if (events.length) {
+    for (const batch of chunk(events, PUSH_BATCH)) {
+      const outcome = await pushBatch(client, batch, `projection:${cfg.deviceId}:${projection.key}:${batch[0]!.eventSeq}`)
+      pushed += outcome.acceptedIds.size
+      rejected += outcome.rejected.length
+      const permanent = outcome.rejected.filter((item) => isPermanentReject(item.code))
+      if (permanent.length) {
+        crmDbService.runTx((tx) => {
+          for (const item of permanent.slice(0, 20)) {
+            tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+              ['system:sync', 'sync_push_rejected', projection.entityType, item.eventId,
+                JSON.stringify({ code: item.code }), Date.now()])
+          }
+        })
+      }
+    }
+  }
+  if (page.scanned > 0) {
+    const next = page.full || page.watermark.ts < roundStartMs
+      ? page.watermark
+      : { ts: page.watermark.ts, id: 0 }
+    if (next.ts > cursor.ts || (next.ts === cursor.ts && next.id > cursor.id)) writeWatermark(projectionKey, next)
+  }
+  return { pushed, rejected }
 }
 
 /** 一次性声明本机身份档案声明的角色（**展示与审计用，绝不作为权限依据**） */
@@ -286,10 +724,10 @@ async function pushPermissionDeclaration(client: CentralSyncClient, cfg: Central
   const conf = ConfigService.getInstance()
   const employeeRef = String(conf.get('identityName') || '').trim() || cfg.employeeId
   const declaredRole = cfg.role || String(conf.get('identityRole') || '').trim() || 'sales'
-  const idempotencyKey = `${cfg.deviceId}/permission/${declaredRole}`
+  const idempotencyKey = `${cfg.deviceId}/permission/${declaredRole}#v1`
   const event: CentralSyncEvent = {
     protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey), eventSeq: 1, idempotencyKey,
-    direction: 'up', entityType: 'permission', entityId: `${cfg.deviceId}/permission`,
+    direction: 'up', entityType: 'permission', entityId: scopedRef(cfg.deviceId, 'permission'),
     eventType: 'permission_declared', aggregateVersion: 1,
     payload: { employeeRef, declaredRole, authoritySource: 'local_declaration' },
     occurredAt: Date.now()
@@ -320,26 +758,37 @@ async function pushUp(client: CentralSyncClient, cfg: CentralSyncConfig): Promis
 
 /** 既有状态机覆盖的类型：只换传输 adapter，禁止复制业务语义 */
 const STATEMACHINE_DOWN_TYPES = ['assign', 'transfer', 'recycle']
-/** 本适配器新增的中央下行类型（PRD §7 Phase 3a 下行清单） */
-const CENTRAL_DOWN_TYPES = ['supervisor_correction', 'permission_change']
+/** 本适配器新增/接管的下行类型（PRD §7 Phase 3a 下行清单） */
+const CENTRAL_DOWN_TYPES = ['supervisor_correction', 'permission_change', 'sla1_escalate_supervisor']
 
+/**
+ * 中央下行事件 → 本机事件文件（HTTP 无文件/投递键概念，`to` 只是本机身份）。
+ * **业务校验与 SMB 入口共用同一份** shared/centralDownCommand（§七.6），
+ * 因此 applyDownEventDirect 不可能绕过 payload/角色/类型校验。
+ */
 function toLocalEvent(event: CentralSyncEvent & { centralSeq: number }): SyncEventFile | null {
   const known = STATEMACHINE_DOWN_TYPES.includes(event.eventType) || CENTRAL_DOWN_TYPES.includes(event.eventType)
   if (!known) return null
-  const role = String(event.payload.deliveryRole || 'apply') as DeliveryRole
-  if (!['apply', 'remove'].includes(role)) return null
+  const payload = (event.payload || {}) as Record<string, unknown>
+  const invalid = validateDownCommand({
+    eventType: event.eventType, entityType: event.entityType, payload,
+    targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
+  })
+  if (invalid) return null
   return {
     eventSeq: event.eventSeq, idempotencyKey: event.idempotencyKey, type: event.eventType,
-    deliveryRole: role, to: getTerminalId(), payload: event.payload, emittedAt: event.occurredAt
+    deliveryRole: String(payload.deliveryRole || 'apply') as DeliveryRole,
+    to: getTerminalId(), payload, emittedAt: event.occurredAt
   }
 }
 
 /**
  * 中央专有下行类型的本机落地（与既有状态机同事务纪律、同幂等口径）。
  *
- * PRD §7 Phase 3a 两条硬约束：
+ * PRD §7 Phase 3a 三条硬约束：
  *  - **主管修正不静默覆盖**：落 notify_inbox 待本地确认 + 审计，本地事实一行不改；
- *  - **权限只作声明**：落审计 + 展示配置，绝不进入本机访问控制判断。
+ *  - **权限只作声明**：落审计 + 展示配置，绝不进入本机访问控制判断；
+ *  - **SLA1 升级通知有明确落地点**：落 notify_inbox（source='sync:down'）+ 审计。
  * 返回值与既有状态机同口径：'applied' | 'invalid'。
  */
 function applyCentralOnlyDown(ev: SyncEventFile): 'applied' | 'invalid' {
@@ -373,6 +822,22 @@ function applyCentralOnlyDown(ev: SyncEventFile): 'applied' | 'invalid' {
       return 'applied'
     })
   }
+  if (ev.type === 'sla1_escalate_supervisor') {
+    return crmDbService.runTx((tx) => {
+      // 联系方式只以掩码形态到达（联系原文不跨机）；本机无对应 lead 时用掩码兜底显示
+      recordSupervisorNotificationTx(tx, {
+        idempotencyKey: ev.idempotencyKey,
+        leadId: Number(ev.payload.leadId || 0),
+        salesName: String(ev.payload.salesName || ''),
+        remindCount: Number(ev.payload.remindCount || 3),
+        reason: String(ev.payload.reason || 'SLA三次超时回收'),
+        recycledAt: Number(ev.payload.recycledAt || ev.emittedAt),
+        contactMasked: String(ev.payload.contactMasked || '')
+      }, 'sync:down')
+      // 幂等：已有同 key 行也算落地成功（重复投递不重复通知）
+      return tx.all('SELECT id FROM notify_inbox WHERE idempotency_key = ?', [ev.idempotencyKey]).length > 0 ? 'applied' : 'invalid'
+    })
+  }
   return 'invalid'
 }
 
@@ -401,9 +866,9 @@ async function pullAndApply(client: CentralSyncClient): Promise<number> {
   for (const event of result.events) {
     const local = toLocalEvent(event)
     if (!local) {
-      // 本机不认识的事件类型：**不是**可重试状态。重试不会改变结果，直接回终态 invalid。
+      // 不合法 / 本机不认识的事件类型：**不是**可重试状态。重试不会改变结果，直接回终态 invalid。
       acknowledgements.push({ centralSeq: event.centralSeq, eventId: event.eventId, outcome: 'invalid',
-        detail: `本机不支持的事件类型或不适用投递角色：${event.eventType}` })
+        detail: `指令未通过下行业务校验或本机不支持：${event.eventType}` })
       nextCursor = event.centralSeq
       continue
     }
@@ -448,6 +913,7 @@ export async function claimCentralBinding(baseUrl: string, inviteCode: string, d
   cfg.set('centralSyncLastError', '')
   cfg.set('centralSyncLastErrorAt', 0)
   cfg.set('centralSyncEnabled', true)
+  directoryCache = null
   // 绑定必须**总是**让调度器跑起来：只在启动时判断一次会让后续绑定永远不同步
   restartCentralSyncScheduler()
   return result.principal
@@ -492,6 +958,7 @@ export async function disconnectCentralBinding(options: { force?: boolean } = {}
   conf.set('centralSyncDisplayName', '')
   conf.set('centralSyncLastError', '')
   conf.set('centralSyncLastErrorAt', 0)
+  directoryCache = null
   crmDbService.setScanState(K_PERMISSION_SENT, 0)
   crmDbService.runTx((tx) => {
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',

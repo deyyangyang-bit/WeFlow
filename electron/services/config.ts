@@ -208,6 +208,18 @@ interface ConfigSchema {
   centralSyncLastErrorAt: number
   /** 中央 HTTP 同步轮巡间隔（分钟，1-60，默认 1） */
   centralSyncPollIntervalMin: number
+  /**
+   * 本机显示名 → 中央员工编号(employeeCode) 的显式别名表（JSON，如 `{"张三":"EMP-0007"}`）。
+   * 中央下行指令必须按**稳定编号**定位员工：同名或找不到时宁可保持 pending 显式报错，
+   * 也绝不按显示名猜人（PRD §7.1 身份行 / §3.1）。
+   */
+  centralSyncEmployeeAlias: string
+  /**
+   * SLA1 三次超时升级通知的主管员工编号（stable employeeCode，可空）。
+   * 空 = 按目录中角色为 supervisor 的员工解析（唯一时投递）；查无主管或多名主管时
+   * **显式报错并保持 pending**，绝不按显示名猜人（PRD §7.1 / §三.6）。
+   */
+  centralSyncSupervisorCode: string
   /** 自动备份：每日执行时刻 HH:mm（默认 14:37，工作时间） */
   autoBackupTime: string
   /** 是否启用 Telegram 推送 */
@@ -398,6 +410,8 @@ export class ConfigService {
       centralSyncLastError: '',
       centralSyncLastErrorAt: 0,
       centralSyncPollIntervalMin: 1,
+      centralSyncEmployeeAlias: '',
+      centralSyncSupervisorCode: '',
       autoBackupTime: '14:37',
       crmInternalGroups: ['总部运营中心', '库叉线上销售订单对接群', '新媒体业务奋斗群', '新媒体运营-厂商开发'],
       aiInsightSystemPrompt: '',

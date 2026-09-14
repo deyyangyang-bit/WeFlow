@@ -1,5 +1,14 @@
 import type { CentralAckRequest, CentralPullResult, CentralPushRequest, CentralPushResult, CentralSyncEvent } from '../../shared/centralSync'
 
+/** 中央员工目录条目（解析契约：stable employeeCode + 唯一姓名判定，绝不按显示名猜人） */
+export interface CentralDirectoryEntry {
+  employeeId: string
+  employeeCode: string
+  displayName: string
+  role: string
+  nameUnique: boolean
+}
+
 export interface CentralPrincipal {
   workspaceId: string
   employeeId: string
@@ -106,6 +115,20 @@ export class CentralSyncClient {
   async pull(cursor: number, limit = 100): Promise<CentralPullResult> {
     const params = new URLSearchParams({ cursor: String(Math.max(0, cursor)), limit: String(Math.max(1, Math.min(200, limit))) })
     return this.request(`/api/v1/sync/pull?${params}`)
+  }
+
+  /**
+   * 下发一条中央指令（§三.3）：本地分配动作经中央转为对目标员工的显式下行指令。
+   * **不是**上行投影：/sync/commands 由 command.issue 授权，且服务端按同一份下行业务契约校验。
+   */
+  async issueCommand(event: CentralSyncEvent): Promise<{ centralSeq: number; duplicate: boolean }> {
+    return this.request('/api/v1/sync/commands', { method: 'POST', body: JSON.stringify(event) })
+  }
+
+  /** 拉取本工作区员工目录（解析 salesName → employeeId 的唯一权威依据） */
+  async directory(): Promise<CentralDirectoryEntry[]> {
+    const result = await this.request<{ employees: CentralDirectoryEntry[] }>('/api/v1/directory/employees')
+    return Array.isArray(result?.employees) ? result.employees : []
   }
 
   async ack(acknowledgements: CentralAckRequest['acknowledgements']): Promise<number> {
