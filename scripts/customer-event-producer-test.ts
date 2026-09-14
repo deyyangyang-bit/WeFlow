@@ -11,6 +11,10 @@
  *     5  写失败不阻断：recordCustomerEventSafe 有 try/catch + WARN，绝不抛到调用方
  *     6  R7 不改（customerEventAdd 仅 1 处且在 E3.3 recordUserActionEvent 内；R7 业务路径零直接事件引用）
  *     7  recordQuoteSignal 内部无事件写（crmDbService 不被事件污染）
+ *        —— 2026-09-13 归因：原断言按「任意提及 customer_event」匹配，会误伤 SCHEMA_SQL 里的 SQL 注释
+ *           （crmDbService.ts:194 以「沿用 intent_tag_log/customer_event 先例」说明通用五列约定，
+ *           Phase 0 D3 数据宪法，3d442fd 引入）。注释不是写入，故断言改锚定「写形态」，
+ *           语义（crmDbService 零事件写）不变、覆盖更精确。
  *     8  intent_tag_log 无新写点（crmParseService 不直接 intentCreate）
  *   B 行为（temp 双库，真实生产函数）：
  *     9  报价消息 → quote_signal + quote_asked 双写一致（同 key）
@@ -64,7 +68,9 @@ async function main(): Promise<void> {
   const engineBeforeRecorder = strip(engineSrc).slice(0, strip(engineSrc).indexOf('export function recordUserActionEvent'))
   ok('A6 R7 不改（customerEventAdd 仅 1 处且在 recordUserActionEvent 内；R7 路径零直接引用）',
     engineAddCount === 1 && !/customerEventAdd|customerEventsBy|customer_event/.test(engineBeforeRecorder))
-  ok('A7 recordQuoteSignal 内部无事件写（crmDbService 不被事件污染）', !/customerEvent|customer_event/.test(strip(crmDbSrc)))
+  // A7: 锚定「写形态」而非「任意提及」——crmDbService 的 SCHEMA_SQL 注释合法提及 customer_event（见文件头 7）
+  ok('A7 recordQuoteSignal 内部无事件写（crmDbService 不被事件污染）',
+    !/customerEventAdd|customerEventUpdate|customerEventDelete|INSERT\s+INTO\s+customer_event|UPDATE\s+customer_event|DELETE\s+FROM\s+customer_event/i.test(strip(crmDbSrc)))
   ok('A8 intent_tag_log 无新写点（crmParseService 不直接 intentCreate）', !/intentCreate/.test(parseCode))
 
   // ── B. 行为（temp 双库）───────────────────────────────────────────────────

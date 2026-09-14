@@ -2235,7 +2235,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    审计流水 / 存量迁移报告展示层：`npx tsx scripts/audit-dict-test.ts`（**203/0**，2026-09-13 新增——人话词典覆盖护栏）、`npx tsx scripts/audit-query-test.ts`（32/0，同批扩充实体显示名断言）；
    设置页人话化档位（自动化程度 / AI 接入 / 术语与折叠）：`npx tsx scripts/settings-tiers-test.ts`（**68/0**，2026-09-13 新增——含两条**默认值防漂移**核心断言：自动化「标准」档 == 落库默认 0.85/0.70/0.80、回答长度「标准」档 == 默认 1024）
    （计数含 2026-09-12/13 两轮新增断言：六态 `crm_only` 文案 3 条、`salesActionEngine`/`salesStageClassifier` 自动分派护栏 3 条、AI 上限变更审计 13 条、抬头解析与页面接线 76 条、工作台改价审计与创建链幂等 15 条、docgen 续跑复用 3 条、商机合并 72 条、人话词典全量覆盖 203 条、设置页档位映射与折叠接线 68 条）
-   ⚠️ **已知恒定失败（非回归，勿当成本次改动引入）**：`crm-sla-action`（8/3）、`customer-event-producer`（14/1）、`customer-event-closed-gate`（15/1）；`todo-followup` 与 `crm-logistics` 启动即死于 `salesActionEngine`「请选择具体待办；不能按客户批量完成」
+   今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
    ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`；该工程在 HEAD 上已有 **156** 个存量错误（2026-09-13 实测，旧记的 161 系不同命令口径，已按实测校正），**不能以"零错误"为门禁**，只能比对"不新增"。详见 §2.98。
 4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
@@ -2257,6 +2257,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/实施记录/审计与迁移报告人话化-实施记录-claude-20260913.md` | 审计流水 + 存量迁移报告人话化（纯展示层）的实施记录（改动清单 / **50 条 action 全量枚举表 + 写入点 + 来源标注** / 硬性约束自查 / 真实数据目检输出 / 遗留项）；`shared/auditDict.ts` 词典与覆盖护栏的权威说明（§2.102） |
 | `docs/实施记录/设置页人话化-实施记录-claude-20260913.md` | 设置页人话化 P0–P3（纯展示层）的实施记录（改动清单按 P0–P3 / **档位映射表** / 验证真实输出 / 遗留项）；`src/utils/settingsTiers.ts` + `aiServicePresets.ts` + `backupStatusLabel.ts` 三份映射常量的权威说明（§2.103） |
 | `docs/实施记录/商机合并与优先处理-实施记录-claude-20260913.md` | 商机 + 漏斗合并（v2.1）的实施记录（改动清单 / **数据语义落点对照表（设计稿附页逐条）** / 硬性约束自查 / 真实输出 / 遗留项）；漏斗退役与统一信号流汇入的权威说明 |
+| `docs/实施记录/红测试归因与收口-实施记录-claude-20260913.md` | 5 个长期红色套件的归因与收口（**逐套根因 + git 证据** / 分类处置 (a)(b)(c) / 断言等价性说明 / 修复后实测输出 / §11 基线更新）；`completeUnifiedSignal` 的 W2a 契约与 `logi:` 分支的权威说明 |
 | `docs/MAINTENANCE.md` | 操作手册（打包/坑/安全） |
 | `docs/归档/prd旧版/PRD-v2-销售行动驱动器.md` | v2 产品规划（已被 v3 取代） |
 | `docs/归档/prd旧版/PRD-v0.2-AI销售助手.md` | 历史需求（已取代） |

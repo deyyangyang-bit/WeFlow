@@ -4,6 +4,14 @@
  *       绑客户手动待办 → 并入客户卡（不受 silentDays=0 过滤）、
  *       completeUnifiedSignal 对 todo: 虚拟卡完成即关闭、todoCreate 老链路兼容、
  *       见解记录（archive/存量 insight）不进卡流（设计-AI见解重定位 §3.2）。
+ *
+ * 行为变更出处（B 组）：W2a「修复手动卡覆盖、错误批量完成」——完成必须显式指定 taskId，
+ *   按客户 session 一次扫掉该客户全部待办被拒绝。引入于 c325179（feat(ai): AI 见解、
+ *   用量账本与今日行动）；设计见 docs/规划/AI见解-CRM-今日行动联合优化方案.md §W2a
+ *   （定位修正见 docs/规划/AI见解方案-定位修正-20260912.md，标注 W2a「已完成」）。
+ *   2026-09-13 归因：本测试 b2 原断言「完成绑客户卡 → 该客户手动待办一并 done」，
+ *   正是 W2a 有意移除的批量关闭，故改写为逐条显式 taskId 完成——等价强度：关闭链路仍被验证，
+ *   仅入口由「按客户」改为「按待办」。
  * 运行：npx tsx scripts/todo-followup-test.ts
  */
 import { mkdtempSync } from 'fs'
@@ -67,10 +75,14 @@ async function main(): Promise<void> {
   const t2after = salesDbService.getTask(t2.id!)
   ok('b1 完成虚拟待办 → 状态 done', t2after?.status === 'done')
 
-  // B2: 完成绑客户卡（通用路径）→ 该客户手动待办一并关闭
-  completeUnifiedSignal('wx_contacted', 'done')
-  const t1after = salesDbService.getTask(t1.id!)
-  ok('b2 完成绑客户卡 → 该客户手动待办 done', t1after?.status === 'done')
+  // B2: W2a 起「完成绑客户卡（通用路径）→ 该客户手动待办一并关闭」被有意移除（出处见文件头），
+  //     同客户多任务必须逐条显式 taskId 完成，禁止按客户 session 批量扫掉。
+  let batchRejected = false
+  try { completeUnifiedSignal('wx_contacted', 'done') } catch { batchRejected = true }
+  ok('b2 按客户 session 完成被拒（W2a：不能按客户批量完成）', batchRejected)
+  ok('b3 被拒后该客户手动待办仍 pending（未被批量扫掉）', salesDbService.getTask(t1.id!)?.status === 'pending')
+  completeUnifiedSignal('wx_contacted', 'done', t1.id!)
+  ok('b4 显式 taskId 逐条完成 → 该条 done', salesDbService.getTask(t1.id!)?.status === 'done')
 
   // E: 见解记录不进卡流（设计-AI见解重定位 §3.2：合流分支与 INSIGHT_BOOST 已删）
   ok('e1 archive/存量 insight 记录不产生卡流信号', !signals.some((s: any) => s.sessionId === 'wx_insight_only'))

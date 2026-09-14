@@ -927,9 +927,30 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
 /**
  * 完成/跳过统一信号：标记 task done/skipped
  * （设计-AI见解重定位 §3.2 起 insight 不再进卡流，insight read 标记随合流分支一并移除）
+ *
+ * W2a（c325179）后本函数只接受显式 taskId 或 todo:<id> 虚拟卡，按客户 session 批量完成被拒绝。
+ * logi:<logistics_id> 虚拟卡是例外——见下方分支及其不冲突论证。
  */
 export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipped', taskId?: number): void {
   if (action !== 'done' && action !== 'skipped') throw new Error('操作无效')
+  // 物流超期卡：虚拟 sessionId logi:<logistics_id>，该 session 下所有待办都是这条物流记录的 R8 提醒
+  // （同一 trigger_type、同一业务事项），关闭它们 = 关闭这一件事，不是扫荡客户。
+  // 与 W2a 禁令不冲突：禁令射程是**客户**会话（一张卡把客户名下互不相关的待办一起关掉）。
+  // 本卡即「去物流记录确认签收」的那个入口，故不适用下方 rule_r8_logistics_overdue + done 的拒绝
+  // （拒绝理由在此已被满足，而非被绕过）。完成 = 卡 done + logistics signed + activity 三一致。
+  // 出处：W2a 重写（c325179）误删此分支致今日行动／确认中心两入口都关不掉卡（该提交 message 已自陈）；
+  // 修复依据 docs/规划/两份优化方案收口计划-20260912.md §1.3 + §1.3.1 不冲突论证。
+  if (sessionId.startsWith('logi:')) {
+    const logisticsId = Number(sessionId.slice(5))
+    const tasks = salesDbService.todoList({ status: 'pending', session_id: sessionId, limit: 20 })
+    for (const t of tasks) if (t.id) completeAction(t.id, action)
+    if (action === 'done' && logisticsId > 0) {
+      try { crmDbService.markLogisticsSigned(logisticsId, { actor: '今日行动' }) } catch (e) {
+        salesLog('WARN', `[UnifiedSignals] markLogisticsSigned ${logisticsId} failed: ${e}`)
+      }
+    }
+    return
+  }
   const id = taskId || (sessionId.startsWith('todo:') ? Number(sessionId.slice(5)) : 0)
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('请选择具体待办；不能按客户批量完成')
   const task = salesDbService.getTask(id)

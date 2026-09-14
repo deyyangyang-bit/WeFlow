@@ -2,7 +2,15 @@
  * crm-sla-action-test.ts —— SLA/Action 接通单测（P0-D）
  * 覆盖：SLA 扫描接入 Action 引擎扫描周期 ——
  *   runFullScan（每日 08:00）触发 SLA 扫描、runFullScan 清理不误伤 SLA 卡（created_by='sla' 独立）、
- *   getTodayActions（今日行动页打开）触发 SLA 扫描、幂等、完成卡回写 lead 状态。
+ *   显式 scanLeadSla 幂等、完成卡回写 lead 状态；getUnifiedSignals 为纯读、不触发 SLA 扫描。
+ *
+ * 行为变更出处（1f/1g2）：F1「消除嵌套排队、拆开读取和扫描」——getUnifiedSignals 改为纯读
+ *   （全程无 enqueue、无模型调用、无扫描副作用），SLA 扫描改由 runFullScan / 显式 scanLeadSla 承担。
+ *   引入于 c325179（feat(ai): AI 见解、用量账本与今日行动）；设计见
+ *   docs/规划/AI见解-CRM-今日行动联合优化方案.md §F1；盘点见
+ *   docs/规划/两份优化方案收口计划-20260912.md §1.2（明示「crm-sla-action-test.ts:54-56 断言与新行为矛盾」）。
+ *   2026-09-13 归因：原 1f/1g2 断言 getUnifiedSignals 触发 SLA 扫描，与 F1 契约相反，故改写为
+ *   「纯读不出卡」+「显式扫描才出卡」——等价强度：第三条到期线索仍被验证能出卡，仅入口由隐式改显式。
  * 运行：npx tsx scripts/crm-sla-action-test.ts
  */
 import { mkdtempSync } from 'fs'
@@ -50,12 +58,13 @@ async function main(): Promise<void> {
   // ── 幂等：显式 scanLeadSla 不重复建卡 ──────────────────────────────────────
   ok('1e SLA 扫描幂等', scanLeadSla() === 0 && slaCards().length === 2)
 
-  // ── 接通点 3：getUnifiedSignals（今日行动页主数据源）触发 SLA —— 第三条线索到期 ──
+  // ── 接通点 3：getUnifiedSignals（今日行动页主数据源）为纯读，不触发 SLA 扫描 ──
+  // F1：getUnifiedSignals 全程无 enqueue / 无模型调用 / 无扫描副作用（出处见文件头）
   crmDbService.update('lead', Number(leads[2].id), { first_contact_deadline: Date.now() - 3600_000 })
   const unified = await getUnifiedSignals()
-  ok('1f getUnifiedSignals 触发 SLA：第三条到期线索出卡', slaCards().length === 3)
+  ok('1f getUnifiedSignals 纯读：第三条到期线索不出卡（F1 无扫描副作用）', slaCards().length === 2)
   ok('1g 主卡流不含 lead: 首触卡（散任务只在右侧侧栏，避免重影）', !unified.signals.some((s: any) => String(s.sessionId).startsWith('lead:')))
-  ok('1g2 SLA 卡仍在 todoList（右侧散任务数据源），移出卡流不丢卡', slaCards().length === 3)
+  ok('1g2 显式 scanLeadSla 后第三条出卡（扫描行为本身仍有效，卡留在 todoList 散任务源）', scanLeadSla() === 1 && slaCards().length === 3)
 
   // ── 闭环：完成 SLA 卡 → lead 置 CONTACTED ──────────────────────────────────
   const card = slaCards().find((c) => Number(c.source_id) === Number(leads[0].id))

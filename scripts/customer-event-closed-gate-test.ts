@@ -17,7 +17,10 @@
  *     9  R7 不迁移：completeUnifiedSignal 继续 todoUpdate 关单（不改为消费 customer_event）
  *     10 文档同步：Scope Lock 设计文档 + 收口验收文档存在
  *   B 真实库运行态（sql.js 字节进内存只读，绝不写真实库）：
- *     11 customer_event 表 0 基线（应用尚未以 E3.1+ 代码启动，表待重启激活）
+ *     11 customer_event 真实库行类型全部落在五类白名单内（硬门禁在真实数据上生效）
+ *        —— 2026-09-13 归因：原断言为「0 行基线」，那是 2026-08-24 A1 清理后的一次性迁移快照
+ *           （当时应用尚未以 E3.1+ 代码启动、表待重启激活）。应用正常使用后必然产生真实事件，
+ *           该快照随之失效（本机实测 13 行），属夹具假设过期而非回归；改锚定耐久不变量。
  *     12 quote_signal 分流兼容：customer_replied_at 字段在真实数据继续工作（22 行全部已回复）
  *     13 DDL 无损建表：CREATE + 3 索引在内存副本执行成功；CHECK 接受五类型、拒绝越界类型
  *
@@ -148,9 +151,18 @@ async function main(): Promise<void> {
   const crm = new SQL.Database(readFileSync(CRM_DB_PATH))
   const db2 = new SQL.Database(readFileSync(DB_PATH)) // DDL 模拟副本
 
-  // B11: customer_event 0 行基线（A1 清理后归零；表由应用建表 DDL 创建——2026-08-24 更新：表已存在，校验归零而非无表）
-  const evRows = db.exec("SELECT COUNT(*) FROM customer_event")
-  ok('B11 customer_event 0 行基线（A1 清理后归零）', evRows.length > 0 && Number(evRows[0].values[0][0]) === 0)
+  // B11: customer_event 行类型全部落在五类白名单内（硬门禁在真实数据上生效）
+  //   原断言为「0 行基线」——2026-08-24 A1 清理后的一次性迁移快照（表待重启激活）；
+  //   应用正常使用后必然产生真实事件（本机实测 13 行），快照过期属夹具假设失效而非回归。
+  //   改锚定耐久不变量：CHECK 门禁未放行任何越界类型——这正是「防万能日志表」要守的东西。
+  const evTable = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_event'")
+  const evExists = evTable.length > 0 && evTable[0].values.length > 0
+  let evCount = 0, evOutOfBand = 0
+  if (evExists) {
+    evCount = Number(db.exec("SELECT COUNT(*) FROM customer_event")[0].values[0][0])
+    evOutOfBand = Number(db.exec("SELECT COUNT(*) FROM customer_event WHERE event_type NOT IN ('customer_replied','quote_asked','script_copied','chat_opened','follow_up_done')")[0].values[0][0])
+  }
+  ok(`B11 customer_event 表在且无越界类型（实测 ${evCount} 行，硬门禁生效）`, evExists && evOutOfBand === 0)
 
   // B12: quote_signal 分流兼容（customer_replied_at 字段在真实数据继续工作）
   const quotes = crm.exec('SELECT COUNT(*) FROM quote_signal')[0].values[0][0] as number
