@@ -1774,6 +1774,105 @@
 - **未实测（如实标注）**：真实 GUI 观感、深色主题配色、键盘 Tab 与 `:focus-visible` 真机表现、折叠交互手感、SegmentedControl 窄窗口换行——均未在真实运行的应用中人工确认。
 - **遗留**：① 微博「数字 UID」是白名单表格的**一整列**，折叠它需重构表格栅格，超出本刀安全边界——已替代为表头/placeholder/空态三处加「实验」字样，**列的折叠未做**；② `AdvancedFold` 内容未重新缩进（避免 300+ 行纯空白 diff），代价是这几处 JSX 缩进浅一级；③ `src/utils/backupStatusLabel.ts` 与 `shared/auditDict.ts` 的 `BACKUP_LAYER` 是两份同词汇词典（`shared/` 不能反向依赖 `src/`，语境不同），改词需两处一起看。
 
+## 2.104 Phase 3a 代码侧收口：中央服务 + Electron 双向事件同步（2026-09-14，工作区未提交）
+
+> 完整实施记录（改动清单 / 端点契约 / 逐项验证 / 部署边界）见 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md`。
+> 端点级契约见 `docs/API-CONTRACT.md` §3；中央投影对象入宪见 `docs/DATA-CONSTITUTION.md` §3.1。
+>
+> **本刀只做代码侧**：用户已确认中央机基础安装部署由负责人完成，但**完整部署、真机、Windows、SSE、真实消息推送、
+> 反向代理与证书、备份恢复演练、告警验收统一放到代码完成之后**——本节的「✅」一律指**代码 + 自动化验证**，
+> 不指部署或真机。**不得把「中央机安装完成」写成「中央业务服务、反向代理、证书、备份恢复、告警及端到端验收全部完成」。**
+
+### 新增：中央服务 `central/`（Fastify 5 + PostgreSQL，Docker Compose）
+
+- **形态**：独立 Node 服务（`central/src/`），`type: module` + NodeNext + tsx；**未换技术栈**（沿用既定 Fastify / PostgreSQL / node-postgres）。
+- **文件**：`index.ts`（入口）/ `app.ts`（路由与鉴权）/ `config.ts`（环境变量，缺失即拒绝启动）/
+  `crypto.ts`（`createSecret` / `secretHash` / `safeSecretEqual`）/ `permissions.ts`（角色→能力表驱动矩阵）/
+  `projections.ts`（显式投影注册表）/ `store.ts`（接口）/ `postgresStore.ts`（生产实现）/ `memoryStore.ts`（测试实现）。
+- **迁移**：`central/migrations/001_initial.sql`（工作区/员工/设备/邀请码/事件/回执/审计）、
+  `002_central_projections.sql`（10 张显式投影表）。`migrate()` 在单事务内按序应用并逐条登记 `schema_migration`，可重复执行。
+- **11 个端点**（`GET /health`、`GET /ready`、`POST /api/v1/bindings/invitations`、`POST /api/v1/bindings/claim`、
+  `POST /api/v1/devices/rotate`、`POST /api/v1/devices/revoke-self`、`POST /api/v1/devices/:deviceId/revoke`、
+  `POST /api/v1/sync/push`、`GET /api/v1/sync/pull`、`POST /api/v1/sync/ack`、`POST /api/v1/sync/commands`）。
+- **安全**：设备令牌与邀请码**只存 sha256 哈希**（明文只在响应体出现一次）；Fastify logger `redact` 排除
+  `authorization` 与 `idempotency-key`；错误处理只记 `message/stack/code`（不整体打印 pg 异常，其 `parameters` 可能带业务值）；
+  日志级别真正传给 Fastify logger；错误码结构 `{ok:false, code, message, requestId}`。
+- **部署件**：`docker-compose.central.yml`（build context = 仓库根）+ **仓库根 `.dockerignore`**（排除 `node_modules`/`dist`/`.git`/
+  `.env`/`central/secrets/`/日志/`*.db`/`src`/`electron`/`docs`/`resources`/`release`；显式放行 `central/.env.example`），
+  防止构建上下文把客户库、密钥、构建产物拖进镜像。
+
+### 新增：协议与客户端
+
+- `shared/centralSync.ts`：**跨端协议唯一真源**——协议版本 1、`CentralSyncEvent` 信封、10 类实体枚举
+  `CENTRAL_ENTITY_TYPES`、`validateCentralSyncEvent`、`findForbiddenCentralField`（**递归**扫描
+  `chat*` / `message*` / `conversation` / `session_id` / `wcdb_path`，命中即拒收）。
+- `electron/services/centralSyncClient.ts`：HTTP 客户端。HTTPS 强制（仅 `http://127.0.0.1` / `localhost` 例外）、
+  `Bearer` 鉴权、`Idempotency-Key`、超时、非 2xx 与非 JSON 响应响亮报错、**错误串里不出现令牌**。
+  `claim()` 保留返回的设备令牌；新增 `revokeSelf()`。
+- `electron/services/centralProjection.ts`：**上行投影注册表**——只读既有结构化表（customer / customer_identity /
+  assignment / account.owner_sales / opportunity / quotation+contract / audit_event / customer_judgment /
+  knowledge_base(source=proposal)），**绝不扫聊天表**。身份值只上行 `identityHash`（sha256）+ `identityMasked`；
+  judgment 的 `session_id` 先经 `customer_profile.customer_id` 映射，**映射不到的行直接跳过**（session_id 不出本机）；
+  `evidence_text`（客户原话）不上行，只上行 `evidenceKey`。
+
+### 新增：Electron 同步适配 `electron/services/centralSyncService.ts`
+
+- **上行**：复用既有 `outbox_event`（幂等键原样沿用）+ 投影游标（存 `scan_state`）；仅当中央接受后才标记 `sent`；
+  被中央拒绝的事件标 `failed` 并计数 + 写 `sync_push_rejected` 审计（**不静默吞掉、不无限重试**）；
+  命中禁字段的事件标 `failed` + 审计 `sync_forbidden_field_blocked`。
+  `entityId` / `idempotencyKey` 一律加设备前缀（`<deviceId>/<ref>`），避免各机自增 id 相撞。
+- **下行**：复用 Phase 1 已封板的 assignment 状态机——**新增 `lanSyncService.applyDownEventDirect()`**，
+  走同一 `applyDownEventTx` 与同一套 `scan_state` 幂等标记，只是不经 SMB 文件系统（「只换传输 adapter」）。
+  `supervisor_correction` **不静默覆盖**：落 `notify_inbox` 待人工确认，本机事实行字节不变；
+  `permission_change` 只记声明与审计，**不当作访问控制**。未知类型立即回 `invalid`（不卡队列）；
+  `nolead` 连续 `retry` 上限 5 次后改判 `invalid` 并前移游标（**有界重试**）。
+- **调度器**：绑定成功必启动；解绑后安全空转（`isConfigured` 为假时不发任何请求）；轮巡间隔每次心跳实时读取；
+  `restartCentralSyncScheduler()` 先停后起，**不产生重复定时器**；成功清错误、失败记录（遮罩 + 截断 300 字）。
+- **传输互斥**：`getLanSyncConfig()` 在 `centralSyncEnabled` 时直接返回 `{enabled:false}`——**同一 outbox 不被两个传输层竞争结算**；
+  中央同步关闭时 Phase 1 SMB 行为完全不变。
+- **解绑三态如实**：先请服务端吊销（`revoke-self`），成功才清本地；网络失败时**保留令牌与绑定**并如实报「解绑未完成」；
+  「仅清除本机凭证」是显式的 force 选项，且返回值区分 `revoked` 与 `localCleared`——**不假装服务端已撤销**。
+- **设置页**：新增中央同步卡片——绑定状态、服务地址、员工与角色、设备标识、上行/下行游标、待上传数、最近同步时间、
+  最近错误；操作含「绑定 / 立即同步 / 解绑（服务端同步吊销）/ 仅清除本机凭证」。设备令牌存 **safeStorage**（`ENCRYPTED_STRING_KEYS`）。
+
+### 新增：审计词典
+
+`shared/auditDict.ts` 增 5 条 Phase 3a 词条：`central_unbind` / `sync_push_rejected` /
+`sync_forbidden_field_blocked` / `central_supervisor_correction_pending` / `central_permission_change_recorded`。
+（`scripts/audit-dict-test.ts` 的「词典覆盖源码 action」硬门禁要求：新增审计写点必须同步补词条，本刀未放宽该断言。）
+
+### 测试
+
+- 新增 `scripts/central-sync-client-test.ts` **24/0**（传输约束 / 鉴权 / 失败语义 / 不泄令牌 / 端点契约；注入假 fetch，**不发真实网络请求**）。
+- 新增 `scripts/central-sync-adapter-test.ts` **50/0**（上行投影与禁字段 / 推送语义 / 下行状态机 / 中央专有下行 /
+  有界重试 / 解绑三态 / 调度器与 SMB 互斥）。
+- 新增 `central/test/*`：`app-test.ts` **55/0**、`projection-test.ts` **19/0**、`migration-test.ts` **23/0**、`context-test.ts` **6/0**。
+- `central/package.json`：`typecheck` / `test` / `build` 三条命令齐备（`test` 串联四个套件，含 `.dockerignore` 上下文校验）。
+
+### 验证（2026-09-14 实测）
+
+`npm run typecheck` **0 错误**；`node scripts/typecheck-node-ratchet.cjs` **electron/ 类型错误 0（基线 0）**；
+`npx tsx scripts/p0-3-closed-gate.ts` **6/0**；`git diff --check` 干净；
+central 侧 `npm run typecheck` / `npm test`（55+19+23+6 全 0 失败）/ `npm run build`（`dist/central/src/*.js`）全部通过。
+Phase 0/1/2 既有套件（canonical / customer-event 四套 / assignment 系列 / audit 两套 / knowledge-governance 112 /
+lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
+
+### ⚠️ 未实测 / 未验收（如实标注，不得写成通过）
+
+- **`docker build` 未执行**：本机 Docker daemon 不可用；`.dockerignore` 正确性由 `central/test/context-test.ts`
+  按 Docker `filepath.Match` 语义做静态等价验证，**不等于镜像构建过**。镜像体积与构建产物为部署验收项。
+- **无真机联调**：无两台真实机器之间的 HTTP 同步演练；无反向代理 / 证书 / HTTPS 真实终结；
+  无 SSE 与真实微信消息推送验收；无 Windows 打包验证；无公证签名验证。
+- **无真实 PostgreSQL 运行态数据**：`app-test` 走内存 store（与 `postgresStore` 同款语义），
+  `migration-test` 只做 DDL / 迁移执行校验，**未在真实 pg 实例上跑过端到端同步**。
+- **冲突裁决未细化**：当前为「服务端版本闸门 + 客户端 `conflict` 回执」，多写者合并策略留待 3a 演练。
+- **WeKnora / 中央 MCP 未做**：属 Phase 3b。
+
+### 遗留（与既有技术债一致，非本刀引入）
+
+`scripts/assignment-correction-test.ts` **15/2**：A2/A3 两条断言比对的是 2026-09-05 冻结的真实库快照分布
+（`许丽娟:1511 / 李林辉:1356 / 杨青:981`，现为 `1527/1373/998`），属**既有 live 数据漂移**，
+非本刀改动所致（本刀在未绑定状态下零分配写入）。**未放宽断言**，如实登记为已知红项。
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -2014,6 +2113,7 @@
 | `hermesProtocol.ts` | **Hermes 跨进程协议 v2 唯一真源**（§2.87/§2.89）：Main↔Utility 两消息族 + 严格键集递归校验器 + `HermesBridgeEvidence`（工具结果在途证据，无 ref 无 messageKey）+ `evidenceHandle` 不透明锚点回查句柄（`/^evh-[a-z0-9-]+$/` 收紧，messageKey 形态值拒绝）+ runId 轮次号必填（start/continue/progress/response/checkpoint）+ 脱敏 checkpoint 形态（无 handle） |
 | `hermesErrorMessages.ts` | **Hermes 生命周期错误文案唯一真源**（§2.91）：Main/Renderer 共用 `agent_starting` / `agent_unavailable` / `agent_missing` / `protocol_mismatch` / `timeout` / `not_configured` 等稳定错误码的人话映射 |
 | `crmRepeat.ts` | **复购归并口径与等级唯一语义源**（交付售后配套，零依赖纯模块）：`crmCustomerKey`（customer_id 优先退 account_id）+ `crmCustomerKeyForOpportunity` + `computeRepeatLevel`（≥3 高频复购·升A / =2 复购老客 / 否则首购）+ `crmRepeatLevel`（旧名兼容）。前端 `src/utils/crmDealKey.ts` re-export 收敛到此，后端 crmAftersalesService.wonDeals / crmDeliveryService.recomputeRepeatLevel 同用，禁止各自手写阈值 |
+| `centralSync.ts` | **中央同步协议唯一真源**（§2.104，零依赖纯模块）：协议版本 1、`CentralSyncEvent` 信封、10 类实体 `CENTRAL_ENTITY_TYPES`、`validateCentralSyncEvent`、`findForbiddenCentralField`（**递归**命中 `chat*`/`message*`/`conversation`/`session_id`/`wcdb_path` 即拒收）。中央服务与 Electron 两端共用，禁字段规则只此一处，不得各写一套 |
 
 ### 后端 `electron/services/`
 | 文件 | 说明 |
@@ -2028,6 +2128,10 @@
 | `salesReplyService.ts` | 回复建议（引用知识库） |
 | `salesFollowUpService.ts` | 两段式待办提取 |
 | `salesQueue.ts` | 串行队列（防WCDB段错误） |
+| `centralSyncClient.ts` | **中央 HTTP 客户端**（§2.104）：HTTPS 强制（仅 `http://127.0.0.1`/`localhost` 例外）、`Bearer` 鉴权、`Idempotency-Key`、超时、非 2xx/非 JSON 响亮报错、**错误串不带令牌**；`claim()` 保留返回的设备令牌，`revokeSelf()` 供解绑先吊销后清本地 |
+| `centralProjection.ts` | **上行投影注册表**（§2.104）：只读既有结构化表的 9 类投影，游标存 `scan_state`；客户身份只上行 sha256 哈希 + 展示掩码；judgment 的 `session_id` 先经 `customer_profile.customer_id` 映射，**映射不到直接跳过**（session_id 与客户原话永不出本机） |
+| `centralSyncService.ts` | **Phase 3a 双向同步适配 + 调度器**（§2.104）：上行复用 `outbox_event`（成功才标 sent，被拒标 failed + 计数 + 审计）；下行复用 `lanSyncService.applyDownEventDirect()` 的既有状态机与幂等标记；`supervisor_correction` 落 `notify_inbox` 不静默覆盖、`permission_change` 只记声明不作鉴权；未知类型立即 `invalid`、`nolead` 有界重试 5 次后 `invalid`；绑定必启调度器、解绑安全空转、轮巡间隔实时读取、不重复定时器 |
+| `centralSyncIpcHandlers.ts` | 中央同步 IPC（状态 / 绑定认领 / 立即同步 / 解绑，解绑可带 `force` 走「仅清本机凭证」） |
 | `salesLogger.ts` | 落盘日志 |
 | `ai/aiApiClient.ts` | 统一AI调用层 |
 | `insightService.ts`（改） | 销售prompt + 高意向预警（P0-2A.4 起 stage 解析仅写 signal 不覆盖 stage）。**沉默扫描/活跃分析/催办识别已按 PRD §5.4（R）删除**，见 §2.98。**AI 见解屏蔽名单闸门在此按 `triggerReason` 裁决**（显式单客户放行、自动/批量受挡，见 §2.99）；`isSessionAllowed` 只管手动 whitelist/blacklist，**不得把黑名单判定加回** |
@@ -2054,6 +2158,23 @@
 | `crmLeadService.ts` | **线索流转装配层**（§2.12）：importLeads/listLeads/leadDetail/leadOverview/updateLeadStatus/toAccount/scanLeadSla/complete·skipLeadFirstContact + setLeadConfig shim |
 | `intentScore.ts` | **意向评分纯核心**（§2.14，零 electron 可单测）：`computeIntentScore`（阶段基数+近期事件+衰减+商机加权，0-100 封顶） |
 | `crmParseRules.ts`（改） | §2.14 新增 `parseBuySignal`（采购信号）+ `parseRiskSignal`（竞品/价格/服务风险） |
+
+### 中央服务 `central/`（独立部署，§2.104）
+
+| 文件 | 说明 |
+|------|------|
+| `src/index.ts` | 入口：读环境变量配置 → 建 store → `buildCentralApp` → listen；配置缺失即拒绝启动（不静默降级） |
+| `src/app.ts` | 路由与鉴权：免认证端点（`/health`、`/ready`、`bindings/claim`）、bootstrap-admin 令牌、设备凭证 Bearer、统一 `require_(capability)` 权限闸门、`redact` 日志、错误码信封 |
+| `src/permissions.ts` | **角色→能力表驱动矩阵**（sales/supervisor/allocator/admin/service）；端点只查 `can()`，不散落 role 比较 |
+| `src/projections.ts` | **显式投影注册表**：每个实体一张表 + 明确列，缺注册项拒收；SQL 全参数化（只产 `$n`）；版本闸门 upsert |
+| `src/store.ts` / `postgresStore.ts` / `memoryStore.ts` | store 接口 + 生产（node-postgres）/ 测试（内存，同款语义）双实现 |
+| `src/crypto.ts` | `createSecret`（明文一次性）/ `secretHash`（**只存 sha256 哈希**）/ `safeSecretEqual`（定时安全比较） |
+| `src/config.ts` | 环境变量读取与校验（含 `CENTRAL_LOG_LEVEL` 真正传给 Fastify logger、`CENTRAL_TLS_TERMINATED` 影响 `trustProxy`） |
+| `migrations/001_initial.sql` / `002_central_projections.sql` | 初始表（工作区/员工/设备/邀请码/事件/回执/审计）+ 10 张显式投影表；单事务按序应用并登记 `schema_migration` |
+| `test/*.ts` | `app-test` 55 / `projection-test` 19 / `migration-test` 23 / `context-test` 6（后者校验仓库根 `.dockerignore` 的构建上下文） |
+
+> 部署件在仓库根：`docker-compose.central.yml` + `.dockerignore`。**尚未执行 `docker build`**（本机无 Docker daemon），
+> 镜像构建与体积属部署验收项。
 
 ### 后端 `electron/hermes/`（§2.87 UtilityProcess 架构）
 | 文件 | 说明 |
@@ -2197,6 +2318,13 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | crmEnrichBackfillLimit | 20 | 自动填充：单次存量回填客户数上限 |
 | crmLeadSlaHours | 24 | 线索首触 SLA 小时数（1-72，导入时锁定不回溯） |
 | crmLeadSourcePreset | 抖音,视频号,小红书 | 线索来源预设（逗号分隔，导入/筛选下拉） |
+| centralSyncEnabled | false | **Phase 3a 中央同步总开关**（§2.104）。为 true 时 Phase 1 SMB 同步自动停用（同一 outbox 不被两个传输层竞争结算）；为 false 时 Phase 1 行为完全不变 |
+| centralSyncBaseUrl | — | 中央服务地址（必须 HTTPS；仅 `http://127.0.0.1` / `localhost` 放行用于本机联调） |
+| centralSyncDeviceToken | — | 设备凭证，**存 safeStorage（`ENCRYPTED_STRING_KEYS`），不明文持久化**；服务端只存 sha256 哈希 |
+| centralSyncWorkspaceId / centralSyncEmployeeId / centralSyncDeviceId | — | 绑定后的工作区 / 员工 / 设备标识（设备标识用于生成 `entityId` 与 `idempotencyKey` 前缀） |
+| centralSyncDisplayName / centralSyncRole | — | 员工显示名与服务端角色（**仅署名与展示；权限一律以服务端 employee.role 为准**） |
+| centralSyncPollIntervalMin | 1 | 轮巡间隔（分钟）；**每次心跳实时读取**，改配置即时生效，不需要重启调度器 |
+| centralSyncLastError / centralSyncLastErrorAt | '' / 0 | 最近一次同步失败的遮罩后原因与时刻（设置页「最近错误」行数据源；成功即清空） |
 
 ---
 
@@ -2218,7 +2346,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | P1 | 复盘页限宽居中 | §2.41 七页中唯一未做（.sr-page 全高滚动布局，需验证后改） |
 | 暂缓 | 触发规则配置 UI | **§2.26 L0-L3 文档化决策**：v1 硬编码，先验证有效再评估，P0 闭环前冻结 |
 | 暂缓 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
-| 大后期 | CRM双向同步 | 仅预留字段 |
+| **P3a 收口** | **中央节点 Phase 3a 部署验收** | 代码侧已收口（§2.104）：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项 |
+| 大后期 | CRM 双向同步（业务面） | 传输层已由 §2.104 Phase 3a 打通；此处指更上层的双向业务编排，仍仅预留 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
 ---
@@ -2238,6 +2367,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
    迁移失败项人工闭环（2026-09-14 新增）：`npx tsx scripts/migration-dismissal-test.ts`（**14/0**——dismissal 往返/幂等、模块② 扫描过滤、词典覆盖、IPC 接线、ENTITIES 白名单）
    消息推送会话类型分类（2026-09-14 新增）：`npx tsx scripts/message-push-session-type-test.ts`（**22/0**——sessionId 形态分类、单聊跳过分支生效与撤回例外、旧写法死路成因反证与防回退静态锁）
+   **Phase 3a 中央同步（2026-09-14 新增，§2.104）**：`npx tsx scripts/central-sync-client-test.ts`（**24/0**——传输约束/鉴权/失败语义/不泄令牌/端点契约，注入假 fetch 不发真实网络）；`npx tsx scripts/central-sync-adapter-test.ts`（**50/0**——上行投影与禁字段/成功才标 sent/下行状态机/有界重试/解绑三态/调度器与 SMB 互斥）。中央服务侧另跑：`cd central && npm run typecheck && npm test`（app 55 / projection 19 / migration 23 / context 6，全 0 失败）与 `cd central && npm run build`。**注意**：`central/` 是独立包，**不在根 `npm run typecheck` 的覆盖范围内**，改中央代码必须另跑这两条
    ✅ **2026-09-13 红测试归因收口**：上述 5 个套件此前长期红色、被当作「已知恒定失败」接受（其中 `todo-followup`／`crm-logistics` 启动即死）。已逐套归因并全部修复入基线，**本仓库不再有「红了但没人知道为什么」的套件**。归类为：测试滞后于有意变更 2 套（W2a 拒绝按客户批量完成、F1 统一信号流改纯读）、测试基建 2 套（A7 静态断言误伤 SQL 注释、B11 断言开发者真实库 0 行——一次性迁移快照）、真实回归 1 套（W2a 重写误删 `completeUnifiedSignal` 的 `logi:` 分支，已恢复）。逐套根因（含 git 证据）、分类处置与实测输出见 `docs/实施记录/红测试归因与收口-实施记录-claude-20260913.md`
    ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **0 错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
    ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 0**，只准保持 0）。基线史：156（09-13 实测）→ 8 → 7（存量消肿）→ 3 → **0**（同日真 bug 修复与类型清零，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §4）。单独跑主进程门禁：`npm run typecheck:node`。
@@ -2256,6 +2386,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/规划/weflow-hermes-PRD-v3.4.md` | **当前需求文档（开发执行依据）** |
 | `docs/规划/AI简报与按需识别-PRD-v1.0.md` | AI 简报/按需识别的实施契约（§2.98 的依据） |
 | `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` | 迁移失败项人工闭环 + tsc 棘轮门禁与存量消肿（含疑似真 bug 清单） |
+| `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` | **§2.104 的实施记录**：改动清单 / 11 端点契约 / 逐项验证输出 / 明确区分「已实现且自动化验证」与「需部署或真机才能完成」 |
 | `docs/规划/AI调用入口与消费清单.md` | **AI 调用点与 purpose 对照表**（唯一采集层、价格表与上限规则；新增 AI 调用点必读） |
 | `docs/实施记录/AI简报与按需识别-实施记录-claude-20260912.md` | §2.98 的实施记录（验收逐条自查 / 真实输出 / 遗留项）＋ §6.8 = §2.99 屏蔽名单重定义（含开工前提证伪核实、闸门决策落点、遗留项） |
 | `docs/实施记录/合同与报价录入加速-实施记录-claude-20260912.md` | 合同/报价录入加速（PRD v1.4）的实施记录（改动清单 / §10 逐条自查 / 真实输出 / 未实测项） |

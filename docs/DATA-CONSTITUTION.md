@@ -3,6 +3,7 @@
 > 状态：**D1 + D2 定稿**（2026-09-02）。依据：`docs/规划/weflow-hermes-PRD-v3.4.md` §5（11 对象）/ §11（ADR-001）。
 > 本文档优先级高于各模块设计文档；凡冲突，以本文档为准，修订须经评审。
 > 范围说明：§1 对象契约（D1）+ §2 四项 Policy（D2：SSOT / Soft Delete / Feature Gate 七问 / Identity Resolution / Stage Transition）已定稿；§2.5 Stage 矩阵 🔶 格待 D8 主管签字生效；**§2.7 知识治理 Policy（2026-09-09 增补，PRD 2.3/2.7/2.8/2.9 收口：AI 有效读取唯一原语 / logical_id 版本链 / TTL 巡检 / 价格对账 / 删除纪律 / 引用回流）已定稿**。
+> **§3.1 中央投影对象（2026-09-14 增补，PRD 7.1 / §3.1 收口）已定稿**：Phase 3a 上行投影 10 表 + 中央自产审计表 + 自报角色「仅署名不作鉴权」跨机约束。
 
 ---
 
@@ -221,6 +222,66 @@
 - **opportunity 补列 `over_ship_reason`**（2026-09-10 本刀入宪，交付售后配套）：opportunity 表加列（幂等 ALTER）。超发（shipped_qty > order_qty）时必须填写的超发原因快照（≤200 字）。**写入者**：`crmDeliveryService.registerDelivery`（人工交付登记，同事务写 opportunity + audit_event）；`shipped_qty` 硬校验 = 非负整数、> order_qty 必须带 over_ship_reason。
 - **follow_up_task 触发枚举 `diff_shipped_shortage` / `warranty_mod_near` / `warranty_mod_expired` / `trade_in_proposal`**（2026-09-10 本刀入宪，交付售后配套）：行动卡新 trigger_type（稳定枚举，沿用 follow_up_task 载体不建新表）。`diff_shipped_shortage` source_id=opportunity.id，**同一商机只保留一张 pending**（idx_ft_sla_once 双保险），实发量补齐时自动关闭（todoUpdate done + analysis.closedReason + audit_event action=`diff_task_autoclose`），差异再现按规则重新出卡不覆盖历史 done；`warranty_mod_near`（临期）与 `warranty_mod_expired`（已到期）source_id=customer.id，同一质保周期幂等（pending 去重 + 一次性出卡），无真实起算日（warranty_start_date 且 warranty_days 缺一）不出假提醒；`trade_in_proposal` source_id=customer.id，提案必须携带 evidence_key（真实设备日期或聊天证据）+ reason + 时间，confirm/reject 写 proposal_event + audit_event，**不自动改客户事实**。**创建者 = crmDeliveryService**；页面提醒一律读后端 follow_up_task 事实，禁止前端本地计算。
 - **migration_dismissal**（2026-09-14 本刀入宪，存量迁移失败项人工闭环配套）：迁移报告失败/冲突项的「确认忽略」登记表，落 **crmDb**（ENTITIES 白名单已注册）。字段：`module`（迁移模块 key，如 `02-account-to-customer`）/ `entity_key`（失败项 key，如 `account:218`）/ `dismissed_by`（操作人）/ `dismissed_at`（epoch ms），`PRIMARY KEY (module, entity_key)`（幂等：重复忽略 upsert）。**语义边界**：忽略是操作态不是业务事实——只影响迁移报告的失败计数与展示，不触碰 account/customer 任何业务行；被忽略项仍留在原表，锚点补齐后自动归位。**写入者**：设置页「存量迁移报告」→ `crm:migration:failure:dismiss` / `:restore` IPC（crmIpcHandlers），忽略写 `migration_dismissal` + audit_event(action=`migration_failure_dismiss`)，恢复 = 删行 + audit_event(action=`migration_failure_restore`)。**消费**：① `crmMigrationService.migrate02AccountToCustomer`（启动扫描时被忽略项计入 `dismissed` 不进 failures）；② 设置页迁移报告（即时隐藏 + 「已确认忽略」分组可恢复）。
+
+### 3.1 中央投影对象（Phase 3a 本刀入宪，PRD 7.1 / §3.1）
+
+> 位置说明：这些对象**不落本机库**，落中央主机 PostgreSQL；登记于此是为了让「上行什么、以什么真源为准」
+> 有唯一裁决处，防止本机与中央各写一套语义。代码真源 = `shared/centralSync.ts`（信封与实体枚举）+
+> `central/src/projections.ts`（列级注册表）+ `central/migrations/002_central_projections.sql`（DDL）。
+
+**总约束（三条硬门，越界即拒收）**
+
+1. **显式列，禁止数据桶**：每个 `entityType` 对应一张明确表 + 明确列。中央侧**不存在**通用 JSONB
+   业务桶；`payload` 只是传输形态，落库时按注册表拆到列上。缺注册项 = 拒收（`unregistered_entity_type`），
+   不允许"先塞进去以后再说"。
+2. **不新建第二套业务语义**：中央表只做本机既有对象的**只读副本 / 投影**，列语义必须能在 §1 找到对应
+   对象。中央不是新的写入真源——本机仍是事实生产者，中央只承接 + 裁决下行。
+3. **禁字段白名单前置**：`findForbiddenCentralField` 递归扫描，命中 `chat*` / `message*` / `conversation` /
+   `session_id` / `wcdb_path` 即整条拒收并写中央审计。**聊天正文与原始聊天数据永不离开本机。**
+
+**10 张投影表**
+
+| entityType | 中央表 | 承接的本机真源（§1 对应） | 上行边界 |
+|---|---|---|---|
+| `customer` | `central_customer` | §1.1 customer | 客户名/阶段/类型/归属销售；无聊天正文 |
+| `customer_identity` | `central_customer_identity` | §1.2 customer_identity | **只上行 `identity_hash`（sha256）+ `identity_masked`**，手机号/微信号原文不出本机 |
+| `assignment` | `central_assignment` | §1.3 assignment | 分配轮次与 SLA；本机 `assignment` 为唯一写入者 |
+| `ownership` | `central_ownership` | §1.7 ownership（`account.owner_sales` 列语义） | 归属销售快照，不建中央归属真源 |
+| `opportunity` | `central_opportunity` | §1.5 opportunity | 成交/商机字段；金额为本位币口径 |
+| `quote` | `central_quote` | §1.6 quote（物理表 `quotation`） | 版本链快照：`opportunity_ref` + `version_no` + `doc_hash`（PDF 哈希），append-only 版本不覆盖 |
+| `audit_event` | `central_audit_projection` | §1.12 audit_event | **只读上行投影**：本机审计的镜像，中央**不写**此表 |
+| `customer_judgment` | `central_customer_judgment` | AI 判断双存档（PRD 7.1） | 判断类型/值/置信/模型 + `evidence_key`；**`evidence_text`（客户原话）不上行** |
+| `knowledge_proposal` | `central_knowledge_proposal` | §2.7 知识提案 | 提案元数据与治理字段；不替代本机 kbReview 状态机 |
+| `permission` | `central_permission` | 1.2a 本地身份档案 | 见下方「自报角色」裁决 |
+
+**另有一张非投影表**：`central_audit_event` = 中央自身操作审计（邀请码签发、设备吊销、禁字段违规、
+下行指令等），append-only。与 `central_audit_projection` **方向相反、互不写入**——本机审计上行、中央审计
+自产，两者不合并成一张表（合并会让"谁写的"这条最关键的信息消失）。
+
+**自报角色裁决（重复 §1.12 的边界并升级为跨机约束）**
+
+`permission.declared_role` 来自本机身份档案（1.2a），**仅作署名与展示**，`authority_source='local_declaration'`。
+中央侧权限一律由服务端 `employee.role` + 设备绑定决定（`central/src/permissions.ts` 表驱动）。
+**本机自报角色永不升级为服务端权限依据**——这是 §1.12「身份与权限分离」在跨机形态下的同一条规则。
+
+**下行边界（防止中央成为绕过状态机的万能写入者）**
+
+- `assign` / `transfer` / `recycle`：映射为**本机既有 assignment 状态机**的输入，不直改 `account.owner_sales`。
+- `supervisor_correction`：**不静默覆盖**——落 `notify_inbox`（`notify_type='supervisor_correction'`）
+  由本机人工确认；确认前的本机事实行保持字节不变。
+- `permission_change`：只记声明与审计，**不当作访问控制**（真权限在服务端）。
+- 无法在本机执行的指令必须如实回 `invalid` 或 `retry`，连续 `retry` 达上限（5）后改判 `invalid`，
+  **不得无限重试**。
+
+**版本与幂等**
+
+- 中央表主键 `(workspace_id, entity_id)`，仅当 `aggregate_version` 严格变大才覆盖（版本闸门）。
+- `entityId` 由客户端加设备前缀（`<deviceId>/<localRef>`），避免各机自增 id 相撞。
+- 上行幂等键 `(workspace_id, idempotency_key)`；下行按 `eventId` 去重；`ack` 对未知 `centralSeq` 静默跳过。
+- 全部 SQL 参数化（`projections.ts` 只产出 `$n` 占位符）。
+
+**当前边界（不夸大）**：以上为**代码实现 + 自动化验证**的范围。HTTPS/反向代理/证书、真实多机演练、
+冲突裁决细化、WeKnora（Phase 3b）属**部署与后续阶段**，未验收前不得描述为已完成。
 
 ---
 

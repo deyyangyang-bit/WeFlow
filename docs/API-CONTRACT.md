@@ -1,6 +1,7 @@
 # API-CONTRACT — WeFlow 接口契约（Phase 0 D5 · 2026-09-02 拍板收缩版）
 
-> 状态：D5 骨架定稿（2026-09-02）。冲突裁决顺序：PRD v3.4 ≥ DATA-CONSTITUTION ≥ 启动细化 ≥ 本文档。
+> 状态：D5 骨架定稿（2026-09-02）；§3 中央主机内网 API 于 2026-09-14 随 Phase 3a 实现补齐。
+> 冲突裁决顺序：PRD v3.4 ≥ DATA-CONSTITUTION ≥ 启动细化 ≥ 本文档。
 >
 > **分层深度（9/2 拍板，不得超纲）**：
 >
@@ -8,12 +9,14 @@
 > |---|---|---|
 > | IPC 层（主进程 ↔ 渲染层） | **端点级完整** | 现有 113 通道（crm:71 + sales:42）从实际代码梳理 + Phase 0/1 新增端点规范 |
 > | 本机 HTTP 只读层 | 端点级 | 延续 `docs/HTTP-API.md` 现状梳理，本篇做契约摘要与差距标注 |
-> | 中央主机内网 API | **只写规范** | 认证/版本/幂等/错误码结构 + Phase 3a 端点占位清单（空表头） |
-> | MCP 工具面 | **只写规范** | 工具命名/输入输出/错误/审计规范 + Phase 2 工具占位（空表头） |
+> | 中央主机内网 API | **端点级已实现** | Phase 3a 已落地 11 个端点（§3），含认证/能力矩阵/幂等/禁字段/显式投影表 |
+> | 本机 Hermes Tool Gateway | **端点级已实现** | Electron/Utility 内部 9 个只读白名单工具，见 §4.1 |
+> | 中央 MCP 工具面 | **只写规范** | Phase 3b 对外服务的命名/输入输出/错误/审计规范，见 §4.2 |
 >
-> ⚠️ **中央主机与 MCP 两层为占位规范**——端点级契约分别到 **Phase 3a / Phase 2** 落地时再补（9/2 拍板：
-> 现在写细节 = 猜需求）。本篇中 Phase 0/1 新增 IPC 端点为规范级（参数/响应/错误码/幂等完整，
-> 实现属 Phase 1）。
+> ✅ **中央主机内网 API（§3）已按 Phase 3a 实现**，端点级契约与代码一致（`central/src/app.ts`）。
+> ⚠️ **中央 MCP（§4.2）仍是占位规范**，Phase 3b 落地时补齐；本机 Hermes Tool Gateway 已随 Phase 2
+> 实现，不能与未来对外 MCP 混称。本篇中 Phase 0/1 新增 IPC 端点为规范级（参数/响应/错误码/
+> 幂等完整，实现属 Phase 1）。
 
 ---
 
@@ -346,32 +349,173 @@
 
 ---
 
-## 3. 中央主机内网 API（占位规范——端点级契约 Phase 3a 再补）
+## 3. 中央主机内网 API（Phase 3a · 端点级已实现）
 
-> ⚠️ 本节为**规范占位**（9/2 拍板）：Phase 3a「同步通道与客户档案库」开工时按此规范落端点级契约。
 > 承载节点当前形态为独立主机（PRD §13.1）；未来升级 NAS 时本节契约不变，只换部署形态。
+> 实现位置：`central/src/app.ts`（路由）、`central/src/permissions.ts`（角色矩阵）、
+> `central/src/projections.ts`（显式投影注册表）、`shared/centralSync.ts`（事件信封与禁字段）。
+> 自动化验证：`central/test/app-test.ts`（55 项）、`central/test/projection-test.ts`（19 项）、
+> `central/test/migration-test.ts`（23 项）、`central/test/context-test.ts`（6 项）。
 
-- **认证方式**：中央主机服务端绑定认证（账号白名单 + 长期 Token + 内网 TLS）；无传统登录界面
-  （PRD 3.1 身份认证分层）。Phase 3a 评审时定 Token 轮换策略。
+### 3.1 通用约定
+
+- **认证**：`Authorization: Bearer <token>`。两种主体——
+  - **bootstrap-admin**：`CENTRAL_ADMIN_TOKEN` 环境变量注入的引导令牌，仅用于首次签发邀请码与管理设备；
+    `workspaceId` 为空，跨工作区操作必须显式带 `workspaceId`（否则 400 E101）。
+  - **设备凭证**：认领邀请码后下发的一次性明文令牌，服务端**只存 sha256 哈希**
+    （`central/src/crypto.ts`）；轮换后旧令牌立即失效。凭证存本机 `safeStorage`，不落明文。
+- **免认证端点**：`GET /health`、`GET /ready`、`POST /api/v1/bindings/claim`（认领凭邀请码本身鉴权）。
+  其余 `/api/v1/*` 一律 401 E401。
 - **版本策略**：URL 路径版本 `/api/v1/*` 起步；不兼容变更升 v2 并保留 v1 只读窗口 ≥1 个 Phase。
-- **幂等约定**：所有上行写请求携带 `Idempotency-Key`（对应 outbox_event.idempotency_key，
-  宪法 §1.11）；服务端按 key 去重，重放返回首次结果。
-- **错误码结构**：`{ ok: false, code: 'E1xx/E2xx/E3xx/E4xx/E5xx', message, requestId }`（与 IPC 层
-  §1.14 同一套码表；`requestId` 供中央主机日志追踪）。
-- **上行字段脱敏**：PIPL 约束——聊天原文不出本机；上行字段清单（成本/手机号打码范围）随
-  Phase 3a 评审定（PRD §10-R4）。
+- **幂等约定**：`POST /api/v1/sync/push` 必带 `Idempotency-Key`（缺则 400 E101）；服务端按
+  `(workspace_id, idempotency_key)` 去重，重放返回 `duplicate: true` 且不新建业务记录。
+  下行指令按 `eventId` / `idempotencyKey` 去重；`ack` 对不存在的 `centralSeq` 静默跳过（返回 0）。
+- **错误码结构**：`{ ok: false, code, message, requestId }`。已使用：
+  `E101` 参数/请求不合法 · `E102` 下行事件不合法 · `E401` 未认证/凭证失效 ·
+  `E403` 角色无权或越工作区 · `E409` 邀请码无效/已用/过期 · `E500` 内部错误 · `E503` 数据库未就绪。
+- **日志红线**：Fastify logger 的 `redact` 已排除 `authorization` 与 `idempotency-key` 请求头；
+  错误处理只记 `message/stack/code`，不整体打印 pg 异常（其 `parameters` 可能含业务值）。
+- **上行字段脱敏（PIPL / PRD §10-R4）**：`shared/centralSync.ts#findForbiddenCentralField` 递归扫描载荷，
+  命中 `chat*` / `message*` / `conversation` / `session_id` / `wcdb_path` 即整条事件拒收
+  （`code: forbidden_field`）并写中央审计 `sync_forbidden_field`（只记字段路径，不记值）。
+  客户身份值只上行 sha256 哈希 + 展示掩码（`identity_hash` / `identity_masked`）。
 
-**Phase 3a 端点占位清单**（空表头，届时不猜需求）：
+### 3.2 角色 → 能力矩阵（`central/src/permissions.ts` 表驱动）
 
-| 通道 | 方法 | 说明 |
-|---|---|---|
-|  |  |  |
+| 能力 | sales | supervisor | allocator | admin | service |
+|---|---|---|---|---|---|
+| `sync.push` 上行推送 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `sync.pull` 下行拉取 | ✅ | ✅ | ✅ | ✅ | ✅（只读） |
+| `sync.ack` 回执 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `command.issue` 下发指令 | ❌ | ✅ | ✅ | ✅ | ❌ |
+| `invite.create` 签发邀请码 | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `device.rotate` 轮换本机令牌 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `device.revokeSelf` 自助解绑 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `device.revoke` 吊销工作区设备 | ❌ | ❌ | ❌ | ✅ | ❌ |
+
+> 权限唯一依据是服务端 `employee.role` + 设备绑定。本机自报角色（`permission` 投影的
+> `declaredRole`）**仅作署名与展示**，永不参与鉴权。无权限返回 403 E403。
+
+### 3.3 端点清单
+
+| # | 方法 | 路径 | 认证 | 能力 | 说明 |
+|---|---|---|---|---|---|
+| 1 | GET | `/health` | 免 | — | 存活探针：`{service, protocolVersion}` |
+| 2 | GET | `/ready` | 免 | — | 就绪探针：`store.ping()` 失败返 503 E503 |
+| 3 | POST | `/api/v1/bindings/invitations` | Bearer | `invite.create` | 签发一次性绑定邀请码（默认 30 分钟有效） |
+| 4 | POST | `/api/v1/bindings/claim` | 免（凭邀请码） | — | 设备认领，返回设备凭证 + principal |
+| 5 | POST | `/api/v1/devices/rotate` | Bearer | `device.rotate` | 轮换本设备令牌（旧令牌立即失效） |
+| 6 | POST | `/api/v1/devices/revoke-self` | Bearer | `device.revokeSelf` | 自助解绑（客户端先调此接口再清本地） |
+| 7 | POST | `/api/v1/devices/:deviceId/revoke` | Bearer | `device.revoke` | 管理员吊销指定设备 |
+| 8 | POST | `/api/v1/sync/push` | Bearer | `sync.push` | 上行事件批推（≤100 条/批） |
+| 9 | GET | `/api/v1/sync/pull` | Bearer | `sync.pull` | 按游标拉取本设备下行事件 |
+| 10 | POST | `/api/v1/sync/ack` | Bearer | `sync.ack` | 下行事件回执（applied/conflict/invalid/retry） |
+| 11 | POST | `/api/v1/sync/commands` | Bearer | `command.issue` | 下发中央指令（归属/移交/回收/主管修正/权限变更） |
+
+#### 3 邀请码签发
+
+请求：`{ workspaceId, employeeCode, displayName, role, expiresInMinutes? }`（`role` ∈ 五角色枚举，
+`expiresInMinutes` 5–1440，默认 30）。响应 201：`{ ...record, inviteCode, expiresAt }`。
+**`inviteCode` 只在这一次响应体里出现**，服务端只存哈希；非 bootstrap-admin 只能签发本工作区
+邀请码，跨工作区 403 E403。字段级 schema 见 `central/src/app.ts`。
+
+#### 4 设备认领
+
+请求：`{ inviteCode, deviceName }`。响应 201：`{ deviceToken, principal }`。
+邀请码**一次性**：已用、过期、不存在一律 409 E409（不区分原因，避免探测）。
+`deviceToken` 明文只在此响应出现一次，服务端只存 `secretHash(deviceToken)`。
+
+#### 5–7 令牌轮换 / 自助解绑 / 管理员吊销
+
+- `rotate`：无 body；响应 `{ deviceToken }`；旧令牌在轮换提交后立即 401。
+- `revoke-self`：无 body；响应 `{ revoked, deviceId }`；只作用于调用者自身设备。
+  客户端约定：**先调本接口，成功后才清本地凭证**；网络失败时保持凭证与绑定，如实报「解绑未完成」。
+- `revoke`：body `{ workspaceId? }`（bootstrap-admin 必须显式指定，否则 400 E101）；
+  响应 `{ revoked: boolean }`；跨工作区一律 `revoked: false`（不泄漏他区设备是否存在）。
+  自助解绑与管理员吊销都写中央审计（`device_revoke_self` / `device_revoke`）。
+
+#### 8 上行推送
+
+请求头：`Idempotency-Key`（**必填**）。请求体：`{ events: CentralSyncEvent[] }`，1–100 条。
+逐条判定，**不做整批拒绝**：单条失败只进 `rejected`，同批有效事件照常落库并返回
+`accepted: [{ eventId, centralSeq, duplicate }]`。拒收原因码：`wrong_direction`（非 up）、
+协议校验错误码、`forbidden_field`、`missing_required:<字段>`、`unregistered_entity_type:<类型>`。
+命中禁字段额外写中央审计 `sync_forbidden_field`。
+
+#### 9 下行拉取
+
+查询参数：`cursor`（默认 0）、`limit`（1–200，默认 100）。响应
+`{ events: CentralSyncEvent[], nextCursor }`。只返回 `direction=down` 且**指向本设备或本员工**
+的事件；`retry` 状态事件可被重拉，`applied`/`conflict`/`invalid` 终态不再返回。
+
+#### 10 回执
+
+请求体：`{ acknowledgements: [{ centralSeq, eventId, outcome, localVersion?, detail? }] }`（1–200 条）；
+`outcome` ∈ `applied | conflict | invalid | retry`。响应 `{ acknowledged: n }`。
+`retry` 累计重试次数 +1 且事件保持可重拉；`centralSeq` 不存在或工作区不符时静默跳过（幂等）。
+客户端约定：同一事件连续 `retry` 达 `MAX_DOWN_ATTEMPTS`（5）后必须改判 `invalid` 并前移游标，
+**不得无限 retry**。
+
+#### 11 下发指令
+
+请求体：单个 `CentralSyncEvent`（`direction` 由服务端强制为 `down`；`payload` 过同一套禁字段扫描）。
+必须指定 `targetEmployeeId` 或 `targetDeviceId`（否则 400 E101）；目标不在本工作区 403 E403。
+响应 201：落库后的下行事件（含 `centralSeq`）。
+
+### 3.4 显式投影表（禁止数据桶）
+
+上行事件按 `entityType` 落到**明确的表 + 明确的列**（`central/src/projections.ts` 注册表，
+DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接拒收，不落任何自由 JSONB 桶：
+
+| entityType | 中央表 | 关键列（节选） | 必填字段 |
+|---|---|---|---|
+| `customer` | `central_customer` | `display_name` / `stage` / `owner_sales` / `deleted` | `displayName` |
+| `customer_identity` | `central_customer_identity` | `identity_type` / `identity_hash` / `identity_masked` | `customerRef, identityType, identityHash` |
+| `assignment` | `central_assignment` | `sales_name` / `status` / `mode` / `sla1_deadline` | `customerRef, salesName, status` |
+| `ownership` | `central_ownership` | `owner_sales` / `reason` / `effective_from` | `customerRef, ownerSales` |
+| `opportunity` | `central_opportunity` | `stage` / `amount_cny` / `order_qty` / `expected_ship_*` | `customerRef, stage` |
+| `quote` | `central_quote` | `opportunity_ref` / `version_no` / `doc_hash` / `effective_to` | `opportunityRef, versionNo` |
+| `audit_event` | `central_audit_projection` | `source_audit_id` / `actor` / `action` / `detail_masked` | `actor, action` |
+| `customer_judgment` | `central_customer_judgment` | `judgment_type` / `value` / `evidence_key` | `customerRef, judgmentType, value` |
+| `knowledge_proposal` | `central_knowledge_proposal` | `logical_id` / `title` / `authority` / `status` | `logicalId, title, status` |
+| `permission` | `central_permission` | `declared_role` / `authority_source` | `employeeRef, declaredRole` |
+
+- 全部 SQL 参数化（`projections.ts` 只产出 `$n` 占位符，值一律走参数数组）。
+- 版本闸门：`(workspace_id, entity_id)` 主键 upsert，仅当 `aggregate_version` 严格变大才覆盖。
+- `central_audit_projection` 是本机 `audit_event` 的**只读上行投影**；中央自身操作审计另存
+  `central_audit_event`，两者不互相写入。
+- 中央侧数据宪法对象登记见 `docs/DATA-CONSTITUTION.md`「中央投影对象」一节。
+
+### 3.5 Phase 3a 尚未落地的部分
+
+- **HTTPS / 反向代理 / 证书**：服务侧仅支持「由反向代理终结 TLS」（`CENTRAL_TLS_TERMINATED`，
+  影响 `trustProxy`）；证书签发与续期属部署验收，不在代码内。
+- **冲突裁决**：当前为「服务端版本闸门 + 客户端 `conflict` 回执」，多写者合并策略留待 3a 演练后细化。
+- **WeKnora / 中央 MCP**：属 Phase 3b，见 §4.2，仍为占位规范。
 
 ---
 
-## 4. MCP 工具面（占位规范——端点级契约 Phase 2 再补）
+## 4. Hermes Tool Gateway 与中央 MCP
 
-> ⚠️ 本节为**规范占位**（9/2 拍板）：Phase 2 Hermes（2.11 微信推送 / AI 助手）开工时补工具清单。
+### 4.1 本机 Hermes Tool Gateway（Phase 2 已实现）
+
+本机工具运行在 Electron/Utility 信任边界内，注册唯一真源为 `electron/services/hermesToolRegistry.ts`。当前全部为只读工具，执行前经过白名单、宿主上下文与 owner 过滤；不存在/不可见使用相同结果，避免泄露他人客户是否存在。工具名沿用内部 `domain.action` 形式，不等同于未来中央 MCP 的公开命名。
+
+| 工具名 | 输入 | 输出摘要 | 权限/数据边界 |
+|---|---|---|---|
+| `customer.search` | `query`，可选 `limit` 1～10 | 客户 id、名称、阶段、公司 | 先取完整候选，再按 owner 过滤后截断 |
+| `customer.by_session` | 无；会话由宿主上下文提供 | 当前会话对应客户 | 不接受模型提供 sessionId；非聊天上下文拒绝 |
+| `customer.current_view` | `accountId` | canonical stage + 四类当前判断 | 复用 `getCustomerCurrentView()`，不展开证据正文 |
+| `chat.recent` | `accountId`，可选 `limit` 1～20 | 脱敏消息、方向、时间、messageKey | owner 校验后读取；手机号/wxid/身份证脱敏并截断 |
+| `crm.customer_business` | `accountId` | 客户商机与合同 | 先校验客户归属，再组合既有只读口 |
+| `opportunity.my_list` | 可选 `limit` 1～30 | 当前可见活跃商机 | owner 过滤，按沉默时长排序 |
+| `payment.month_paid` | 无 | 本月确认到款金额、笔数、分组 | 销售只看本人；管理视角可看分组 |
+| `action.pending` | 可选 `limit` 1～20 | 待办行动卡 | 全量候选先按 owner 过滤再截断 |
+| `knowledge.search` | `query` | 已发布知识的标题、版本、摘句与引用 | 只经 `kbValidEntries`，排除 staging/过期/历史版本 |
+
+统一内部返回为 `{ ok, data?, publicSummary, evidence?, errorCode? }`；白名单外工具 fail closed。当前没有写工具，AI 无 publish、归属变更或对外发送能力。
+
+### 4.2 中央 MCP（Phase 3b 占位规范）
 
 - **工具命名**：`weflow_<对象>_<动作>`，snake_case（MCP 惯例），对象名对齐宪法术语表
   （assignment / customer / quote / …）。
@@ -381,7 +525,7 @@
 - **审计**：每个工具调用写 `audit_event`（actor 含工具名标识，宪法 §1.12）。
 - **证据**：AI 产出带 evidence_key 才可进 B/A 档（宪法 §1.10）。
 
-**Phase 2 工具占位清单**（空表头）：
+**Phase 3b 中央 MCP 端点占位清单**：
 
 | 工具名 | 输入 | 输出 |
 |---|---|---|
@@ -393,4 +537,5 @@
 
 - 本文档与代码同步：新增/下线 IPC 通道须同步本篇（收尾检查项，DEVELOPMENT.md）。
 - 端点级契约变更（参数/响应/错误码破坏性变化）→ 先答 Feature Gate 七问（宪法 §2.3）。
-- 中央主机 / MCP 两层在 Phase 3a / Phase 2 开工前**不得**在本篇展开端点细节（9/2 拍板约束）。
+- 中央主机内网 API（§3）改端点时须同步 `central/test/app-test.ts` 与客户端 `scripts/central-sync-client-test.ts`；
+  中央 MCP（§4.2）在 Phase 3b 开工前不得猜写端点细节；本机 Hermes Tool Gateway 已按实际代码登记在 §4.1。
