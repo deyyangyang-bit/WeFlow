@@ -40,8 +40,6 @@ const K_AUDIT_CURSOR = 'centralSync:auditCursor'
 const AUDIT_CURSOR_ALIAS: Record<string, string> = { audit: K_AUDIT_CURSOR }
 /** 跳过台账前缀：`centralSync:skip:<投影>:<本地引用>`，值 = 最近一次复核时间 */
 const SKIP_LEDGER_PREFIX = 'centralSync:skip:'
-/** 禁字段拦截台账前缀：同一行同一原因只写一次审计，避免每轮重复刷同一条审计 */
-const BLOCKED_LEDGER_PREFIX = 'centralSync:blocked:'
 
 const PUSH_BATCH = 50
 const PULL_BATCH = 100
@@ -288,10 +286,6 @@ function selfGuard(draft: ProjectionDraft, cfg: CentralSyncConfig): string | nul
   if (forbidden) return `forbidden_field:${forbidden}`
   const badId = validateCentralEntityId(draft.entityType, scopedRef(cfg.deviceId, draft.localRef))
   return badId
-}
-
-function blockedLedgerKey(draft: ProjectionDraft, reason: string): string {
-  return `${BLOCKED_LEDGER_PREFIX}${draft.entityType}:${draft.localRef}:${reason}`
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
