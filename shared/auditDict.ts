@@ -460,6 +460,20 @@ export const AUDIT_DICT: Record<string, AuditDictEntry> = {
     label: '存量迁移', tone: 'config',
     describe: (d) => migrationParts(d, '线索身份建档')
   },
+  // 迁移失败/冲突项的人工闭环（设置页「存量迁移报告」的确认忽略/恢复，2026-09-14）
+  migration_failure_dismiss: {
+    label: '忽略迁移项', tone: 'config',
+    describe: (d, ctx) => [
+      ...rowRef(ctx), T(' 已确认忽略：'), T(str(d.reason, '（无原因）')),
+      T('（不再计入迁移失败）')
+    ]
+  },
+  migration_failure_restore: {
+    label: '恢复迁移项', tone: 'config',
+    describe: (d, ctx) => [
+      ...rowRef(ctx), T(' 已恢复：重新计入迁移失败清单')
+    ]
+  },
 
   // ── 归属移交 ──
   departure_handoff: {

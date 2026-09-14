@@ -211,7 +211,7 @@ export class HtmlFormatter {
       const avatarMap = options.exportAvatars
         ? await this.exportService.exportAvatarsToFiles(
           [
-            ...Array.from(collected.memberSet.entries()).map(([username, info]: [string, any]) => ({
+            ...Array.from<[string, { avatarUrl?: string }]>(collected.memberSet.entries()).map(([username, info]) => ({
               username,
               avatarUrl: info.avatarUrl
             })),

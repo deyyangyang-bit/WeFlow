@@ -816,6 +816,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:ownership:history', opts),
     // 存量迁移报告（migration_report SSOT，R 只读）：每模块最新快照，与 audit_event 解耦
     migrationReports: () => ipcRenderer.invoke('crm:migration:report:list'),
+    // 迁移失败/冲突项人工闭环：确认忽略 / 恢复 / 忽略清单（SSOT = migration_dismissal 表）
+    migrationDismissals: () => ipcRenderer.invoke('crm:migration:dismissal:list'),
+    migrationDismissFailure: (module: string, entityKey: string, reason?: string) => ipcRenderer.invoke('crm:migration:failure:dismiss', module, entityKey, reason),
+    migrationRestoreFailure: (module: string, entityKey: string) => ipcRenderer.invoke('crm:migration:failure:restore', module, entityKey),
     // 主管升级提醒（SLA1 三次超时通知闭环，2026-09-08）：列表（含未读数）+ 已读
     notifyList: (opts?: { status?: string; limit?: number; offset?: number }) => ipcRenderer.invoke('crm:notify:list', opts),
     notifyMarkRead: (ids: number[]) => ipcRenderer.invoke('crm:notify:markRead', { ids }),

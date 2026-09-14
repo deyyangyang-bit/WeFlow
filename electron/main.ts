@@ -168,7 +168,8 @@ const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
   if (inferred === 'preview' || inferred === 'dev') return inferred
   return 'stable'
 })()
-let configService: ConfigService | null = null
+// 在 app ready 初始化后赋值（见 5161 行附近），此后 IPC/调度回调中不再为 null
+let configService!: ConfigService
 const activeExportWorkers = new Map<string, Worker>()
 const activeExportTasks = new Set<string>()
 

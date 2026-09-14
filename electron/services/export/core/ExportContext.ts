@@ -1,6 +1,6 @@
-import { ExportOptions, ExportProgress, ExportStatsResult, ExportStatsCacheEntry, ExportStatsSessionSnapshot, ExportAggregatedSessionStatsCacheEntry, MediaExportTelemetry, MediaSourceResolution, MessageCollectMode } from '../types';
+import { ExportOptions, ExportProgress, ExportStatsResult, ExportStatsCacheEntry, ExportStatsSessionSnapshot, ExportAggregatedSessionStatsCacheEntry, MediaExportTelemetry, MediaSourceResolution, MessageCollectMode, ExportTaskControl, MediaContentType, MediaExportItem, ChatLabMember, ChatLabHeader, ChatLabMeta, ExportDisplayProfile, ExportAggregatedSessionMetric, FileAttachmentSearchRoot, FileExportCandidate } from '../types';
 import { parallelLimit } from '../utils/parallelLimit';
-import { FILE_APP_LOCAL_TYPES, FILE_APP_LOCAL_TYPE_SET, MESSAGE_TYPE_MAP } from '../constants';
+import { FILE_APP_LOCAL_TYPES, FILE_APP_LOCAL_TYPE_SET, MESSAGE_TYPE_MAP, TXT_COLUMN_DEFINITIONS } from '../constants';
 import * as fs from 'fs'
 import * as path from 'path'
 import * as http from 'http'

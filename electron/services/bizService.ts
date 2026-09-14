@@ -1,7 +1,20 @@
 import { wcdbService } from './wcdbService'
 import { ConfigService } from './config'
 import { chatService } from './chatService'
+import type { ChatSession } from './chatService'
 import { ipcMain } from 'electron'
+
+// getSessions 上游（WCDB 原始行/旧版缓存）可能返回蛇形字段，以下回退为运行时兼容保留
+type LegacyChatSessionRow = ChatSession & {
+  strUsrName?: string
+  userName?: string
+  id?: string
+  last_timestamp?: number | string
+  sort_timestamp?: number | string
+  nTime?: number | string
+  timestamp?: number | string
+  unread_count?: number
+}
 
 export interface BizAccount {
   username: string
@@ -161,8 +174,8 @@ export class BizService {
       try {
         const sessionsRes = await chatService.getSessions()
         if (sessionsRes.success && sessionsRes.sessions) {
-          for (const session of sessionsRes.sessions) {
-            const uname = session.username || session.strUsrName || session.userName || session.id
+          for (const session of sessionsRes.sessions as LegacyChatSessionRow[]) {
+            const uname = session.username || session.strUsrName || session.userName || session.id || ''
             // 适配日志中发现的字段，注意转为整型数字
             const timeStr = session.lastTimestamp || session.sortTimestamp || session.last_timestamp || session.sort_timestamp || session.nTime || session.timestamp || '0'
             const time = parseInt(timeStr.toString(), 10)
@@ -262,7 +275,7 @@ export class BizService {
       try {
         const sessionsRes = await chatService.getSessions()
         if (sessionsRes.success && sessionsRes.sessions) {
-          for (const session of sessionsRes.sessions) {
+          for (const session of sessionsRes.sessions as LegacyChatSessionRow[]) {
             const username = String(session.username || session.strUsrName || session.userName || session.id || '').trim()
             if (!username) continue
             const time = this.toInt(session.lastTimestamp || session.sortTimestamp || session.last_timestamp || session.sort_timestamp || session.nTime || session.timestamp)

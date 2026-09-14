@@ -21,7 +21,7 @@ export class ImageDownloadService {
   private pollTimer: NodeJS.Timeout | null = null
   private isHooked = false
 
-  private lastWhitelist: string[] = []
+  private lastWhitelist: string[] | string = []
 
   static getInstance(): ImageDownloadService {
     if (!ImageDownloadService.instance) {

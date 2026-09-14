@@ -47,13 +47,18 @@ export function accountAnchor(acc: { phone?: unknown; session_id?: unknown }): {
 export interface MigrationIssue { key: string; reason: string; detail?: string }
 
 /** 报告摘要（落 migration_report.summary JSON；核心五计数 + 各模块特有计数） */
-export interface MigrationReportSummary {
+/** 报告摘要（落 migration_report.summary JSON；核心五计数 + 各模块特有计数）。
+ *  注意保持为 type（对象字面量类型有隐式索引签名），不要改回 interface——
+ *  saveMigrationReport(summary: Record<string, number|undefined>) 依赖这一点。 */
+export type MigrationReportSummary = {
   total: number
   applied: number
   alreadyDone: number
   skipped: number
   failed: number
   conflicts: number
+  /** 人工「确认忽略」计数（存 migration_dismissal；不计入失败） */
+  dismissed: number
   customersCreated?: number
   identitiesCreated?: number
   linkedToCustomer?: number
@@ -78,6 +83,8 @@ export interface ModuleMigrationResult {
   skipped: number
   failed: number
   conflicts: number
+  /** 已被人工「确认忽略」的条目数（不计入失败；存 migration_dismissal 表） */
+  dismissed: number
   failures: MigrationIssue[]
   conflictList: MigrationIssue[]
   // 模块特有计数（未涉及模块为 0）
@@ -101,7 +108,7 @@ const AUDIT_LIST_CAP = 200
 function emptyResult(module: string, title: string): ModuleMigrationResult {
   return {
     module, title,
-    total: 0, applied: 0, alreadyDone: 0, skipped: 0, failed: 0, conflicts: 0,
+    total: 0, applied: 0, alreadyDone: 0, skipped: 0, failed: 0, conflicts: 0, dismissed: 0,
     failures: [], conflictList: [],
     customersCreated: 0, identitiesCreated: 0, linkedToCustomer: 0, pooled: 0,
     wonOppCreated: 0, wonOppAlready: 0, amountBackfilled: 0, chainsNormalized: 0, noQuoteContracts: 0
@@ -111,7 +118,7 @@ function emptyResult(module: string, title: string): ModuleMigrationResult {
 function summaryOf(r: ModuleMigrationResult): MigrationReportSummary {
   return {
     total: r.total, applied: r.applied, alreadyDone: r.alreadyDone, skipped: r.skipped,
-    failed: r.failed, conflicts: r.conflicts,
+    failed: r.failed, conflicts: r.conflicts, dismissed: r.dismissed,
     customersCreated: r.customersCreated, identitiesCreated: r.identitiesCreated,
     linkedToCustomer: r.linkedToCustomer, pooled: r.pooled,
     wonOppCreated: r.wonOppCreated, wonOppAlready: r.wonOppAlready,
@@ -151,6 +158,10 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
       'SELECT id, name, phone, session_id, owner_sales, customer_id, updated_at FROM account ORDER BY id')
     r.total = accounts.length
 
+    // 人工「确认忽略」清单（migration_dismissal）：已忽略的条目不再计失败、不进 failures
+    const dismissedKeys = new Set(
+      crmDbService.migrationDismissals(r.module).map((d) => String(d.entity_key)))
+
     // 既有 identity 占用索引（重复执行/脏数据场景 → 冲突，不自动处置）
     const identityOwners = new Map<string, number>()
     for (const row of tx.all('SELECT identity_type, identity_value, customer_id FROM customer_identity')) {
@@ -164,8 +175,10 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
       if (a.customer_id != null && Number(a.customer_id) > 0) { r.alreadyDone++; continue }
       const anchor = accountAnchor(a)
       if (!anchor) {
+        const issueKey = `account:${aid}`
+        if (dismissedKeys.has(issueKey)) { r.dismissed++; continue }
         r.failures.push({
-          key: `account:${aid}`,
+          key: issueKey,
           reason: '无可用身份锚点（手机号非 11 位且无 session_id）——无法参与查重归并，留人工处理',
           detail: `name='${String(a.name)}' phone='${String(a.phone ?? '').trim()}'`
         })

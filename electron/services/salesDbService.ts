@@ -1830,14 +1830,14 @@ ORDER BY kb.updated_at DESC LIMIT ?`
 
   /**
    * 客户意向评分 0-100（P0）：阶段 + 近 7 天意向活跃 + 久未跟进衰减 + 商机进展。
-   * opp 由调用方跨库装配（crmDbService.activeOpportunitiesByAccount）。
+   * opp 由调用方跨库装配（crmDbService.activeOpportunityTotals 给出的合计，不是 CrmRow[] 原始行）。
    */
   intentScore(sessionId: string, opp?: { count: number; quantity: number; amount: number }): IntentScore | null {
     const p = this.customerGetBySession(sessionId)
     if (!p) return null
     const since = Date.now() - ACTIVE_WINDOW_MS
-    const recent = Number(this.all('SELECT COUNT(*) AS c FROM intent_tag_log WHERE session_id = ? AND created_at >= ?', [sessionId, since])[0]?.c ?? 0)
-    const last = this.all('SELECT created_at FROM intent_tag_log WHERE session_id = ? ORDER BY id DESC LIMIT 1', [sessionId])[0]
+    const recent = Number(this.all<{ c: unknown }>('SELECT COUNT(*) AS c FROM intent_tag_log WHERE session_id = ? AND created_at >= ?', [sessionId, since])[0]?.c ?? 0)
+    const last = this.all<{ created_at: unknown }>('SELECT created_at FROM intent_tag_log WHERE session_id = ? ORDER BY id DESC LIMIT 1', [sessionId])[0]
     return computeIntentScore({
       stage: String(p.stage || 'unknown'),
       // last_contact_at 生产环境为秒（WCDB createTime 回填，salesActionEngine 亦按秒比较）；

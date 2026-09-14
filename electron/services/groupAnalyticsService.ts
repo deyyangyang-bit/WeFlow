@@ -1171,7 +1171,7 @@ class GroupAnalyticsService {
     let myGroupMessageCountHint: number | undefined
 
     const data: GroupMembersPanelEntry[] = members
-      .map((member) => {
+      .map((member): GroupMembersPanelEntry | null => {
         const wxid = String(member.username || '').trim()
         if (!wxid) return null
 

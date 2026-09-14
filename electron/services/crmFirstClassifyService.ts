@@ -59,6 +59,11 @@ function scanIntervalMin(): number {
 }
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
+
+// crmDbService.run 声明为 private，但本服务运行时一直直接调用它（两处单语句写入）。
+// 不改 crmDbService（并行任务占用该文件），此处仅做类型层窄化，运行时调用路径不变。
+const crmDbRun: (sql: string, params?: unknown[]) => number =
+  (crmDbService as unknown as { run(sql: string, params?: unknown[]): number }).run.bind(crmDbService)
 export interface FirstClassifyRunResult {
   ok: boolean
   data?: { roundId: number; status: string; reused?: boolean; gapsCreated?: number }
@@ -199,7 +204,7 @@ async function executeRound(roundId: number, trigger: 'scan' | 'manual'): Promis
   const round = roundById(roundId)
   if (!round) return { ok: false, code: 'E301', message: '分类轮次不存在' }
   // 只许 pending/failed 进入执行；check-and-set 防并发双跑
-  const claim = crmDbService.run(
+  const claim = crmDbRun(
     "UPDATE first_classification SET status = 'pending', updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('pending','failed')",
     [Date.now(), roundId]
   )
@@ -502,7 +507,7 @@ export function reevaluateInfoGapCards(leadId: number, actor: string): { closed:
     analysis.closedBy = actor
     analysis.closedAt = Date.now()
     salesDbService.todoUpdate(Number(card.id), { status: 'done', analysis: JSON.stringify(analysis) })
-    crmDbService.run(
+    crmDbRun(
       'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [actor, 'info_gap_autoclose', 'lead', id,
         JSON.stringify({ taskId: Number(card.id), gap: def.key, label: def.label, assignmentId: decoded.assignmentId }), Date.now()]

@@ -386,7 +386,7 @@ async function runWeliveEngine() {
         sanitize: config.options?.sanitize === true,
         batchSize: Number(config.options?.batchSize || 20_000),
         ascending: config.options?.ascending !== false,
-        options: effectiveOptions
+        options: { ...effectiveOptions }
       },
       onEvent: (event) => {
         const createdPath = String((event as any).path || '').trim()

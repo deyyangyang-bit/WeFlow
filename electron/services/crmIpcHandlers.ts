@@ -464,6 +464,44 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     }
   })
 
+  // ── 迁移失败/冲突项的人工闭环（确认忽略 / 恢复；SSOT = migration_dismissal 表）──
+  //    忽略后：本次界面即时隐藏 + 下次启动迁移扫描不再计入失败；全程 audit 留痕。
+  ipcMain.handle('crm:migration:dismissal:list', async () => {
+    try {
+      const rows = crmDbService.migrationDismissals().map((r) => ({
+        module: String(r.module || ''),
+        entityKey: String(r.entity_key || ''),
+        dismissedBy: String(r.dismissed_by || ''),
+        dismissedAt: Number(r.dismissed_at || 0)
+      }))
+      return { ok: true, data: rows }
+    } catch (e) {
+      return { ok: false, data: [], error: String((e as Error)?.message || e) }
+    }
+  })
+  ipcMain.handle('crm:migration:failure:dismiss', async (_, module: string, entityKey: string, reason?: string) => {
+    try {
+      const actor = config.get('identityName') || '操作员'
+      crmDbService.migrationDismiss(String(module), String(entityKey), actor)
+      crmDbService.auditAppend(actor, 'migration_failure_dismiss', 'migration', null,
+        { module: String(module), key: String(entityKey), reason: String(reason || '') })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message || e) }
+    }
+  })
+  ipcMain.handle('crm:migration:failure:restore', async (_, module: string, entityKey: string) => {
+    try {
+      const actor = config.get('identityName') || '操作员'
+      crmDbService.migrationUndismiss(String(module), String(entityKey))
+      crmDbService.auditAppend(actor, 'migration_failure_restore', 'migration', null,
+        { module: String(module), key: String(entityKey) })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message || e) }
+    }
+  })
+
   // ── 主管升级提醒（SLA1 三次超时通知闭环的 UI 供数；写者唯一=lanSyncService 通知消费）──
   ipcMain.handle('crm:notify:list', async (_, opts?: { status?: string; limit?: number; offset?: number }) =>
     listNotifyInbox(opts || {}))

@@ -569,6 +569,14 @@ export interface MigrationReportRow {
   ranAt: number
 }
 
+/** 迁移失败/冲突项的「确认忽略」记录（migration_dismissal 表） */
+export interface MigrationDismissal {
+  module: string
+  entityKey: string
+  dismissedBy: string
+  dismissedAt: number
+}
+
 /** 知识库条目（knowledge_base 表全列；治理列见宪法 §3 登记行） */
 export interface KbEntryRecord {
   id: number
@@ -2025,6 +2033,10 @@ export interface ElectronAPI {
     ownershipHistory: (opts: { entityType: string; entityId: number; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; entity_type: string; entity_id: number; old_owner: string; new_owner: string; reason: string; actor: string; created_at: number }>; total: number } }>
     // 存量迁移报告（migration_report SSOT，R 只读）：每模块最新快照，与 audit_event 解耦
     migrationReports: () => Promise<{ ok: boolean; data: MigrationReportRow[]; error?: string }>
+    // 迁移失败/冲突项人工闭环：确认忽略 / 恢复 / 忽略清单（SSOT = migration_dismissal 表）
+    migrationDismissals: () => Promise<{ ok: boolean; data: MigrationDismissal[]; error?: string }>
+    migrationDismissFailure: (module: string, entityKey: string, reason?: string) => Promise<{ ok: boolean; error?: string }>
+    migrationRestoreFailure: (module: string, entityKey: string) => Promise<{ ok: boolean; error?: string }>
     /** 主管升级提醒（SLA1 三次超时通知闭环，2026-09-08）：列表（含未读数）+ 已读 */
     notifyList: (opts?: { status?: string; limit?: number; offset?: number }) => Promise<{ ok: boolean; data: { rows: Array<{ id: number; notify_type: string; idempotency_key: string; title: string; body: string; lead_id: number | null; detail: string; status: string; created_at: number }>; unread: number } }>
     notifyMarkRead: (ids: number[]) => Promise<{ ok: boolean; updated: number }>

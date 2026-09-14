@@ -179,7 +179,7 @@ class GroupSummaryRecordService {
         this.backupLegacyFile(filePath)
       }
 
-      this.records = legacyRecords.map((record) => {
+      this.records = legacyRecords.map((record): GroupSummaryIndexRecord => {
         const id = String(record.id || randomUUID())
         const logFile = record.log
           ? this.writeLogFile(id, record.log, String(record.rawOutput || record.log.rawOutput || ''))

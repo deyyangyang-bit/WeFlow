@@ -166,6 +166,13 @@ CREATE TABLE IF NOT EXISTS migration_report (
   summary TEXT NOT NULL DEFAULT '{}', failures TEXT NOT NULL DEFAULT '[]',
   conflicts TEXT NOT NULL DEFAULT '[]', ran_at INTEGER NOT NULL DEFAULT 0
 );
+-- 迁移失败/冲突项的人工「确认忽略」（宪法 §3 已登记）：操作员确认后不再计入失败展示；
+-- 恢复 = 删除本行（忽略是操作态不是业务事实，不进 append-only 纪律）。详情写 audit_event。
+CREATE TABLE IF NOT EXISTS migration_dismissal (
+  module TEXT NOT NULL, entity_key TEXT NOT NULL,
+  dismissed_by TEXT NOT NULL DEFAULT '', dismissed_at INTEGER NOT NULL,
+  PRIMARY KEY (module, entity_key)
+);
 CREATE TABLE IF NOT EXISTS contract_status_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, from_status TEXT,
   to_status TEXT, operator TEXT, created_at INTEGER
@@ -359,7 +366,7 @@ const ENTITIES = [
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
   'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk',
   'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event',
-  'payment_promise', 'notify_inbox', 'first_classification'
+  'payment_promise', 'notify_inbox', 'first_classification', 'migration_dismissal'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
 
@@ -1881,7 +1888,7 @@ class CrmDbService {
    * 迁移报告落库（幂等 upsert：每个模块只保留最新一份快照）——设置页「存量迁移报告」的 SSOT。
    * 与 audit_event（append-only 业务留痕）解耦：audit 只在有实际写入时追加，报告每次扫描都刷新。
    */
-  saveMigrationReport(module: string, title: string, summary: Record<string, number>, failures: unknown[], conflicts: unknown[], ranAt: number): void {
+  saveMigrationReport(module: string, title: string, summary: Record<string, number | undefined>, failures: unknown[], conflicts: unknown[], ranAt: number): void {
     this.run(
       'INSERT INTO migration_report (module, title, summary, failures, conflicts, ran_at) VALUES (?,?,?,?,?,?) ON CONFLICT(module) DO UPDATE SET title = excluded.title, summary = excluded.summary, failures = excluded.failures, conflicts = excluded.conflicts, ran_at = excluded.ran_at',
       [module, title, JSON.stringify(summary), JSON.stringify(failures), JSON.stringify(conflicts), ranAt]
@@ -1889,6 +1896,21 @@ class CrmDbService {
   }
   listMigrationReports(): CrmRow[] {
     return this.all('SELECT module, title, summary, failures, conflicts, ran_at FROM migration_report ORDER BY module')
+  }
+  /** 迁移失败/冲突项的「确认忽略」清单（设置页迁移报告的人工闭环出口） */
+  migrationDismissals(module?: string): CrmRow[] {
+    return module
+      ? this.all('SELECT module, entity_key, dismissed_by, dismissed_at FROM migration_dismissal WHERE module = ? ORDER BY dismissed_at DESC', [module])
+      : this.all('SELECT module, entity_key, dismissed_by, dismissed_at FROM migration_dismissal ORDER BY dismissed_at DESC')
+  }
+  migrationDismiss(module: string, entityKey: string, actor: string): void {
+    this.run(
+      'INSERT INTO migration_dismissal (module, entity_key, dismissed_by, dismissed_at) VALUES (?,?,?,?) ON CONFLICT(module, entity_key) DO UPDATE SET dismissed_by = excluded.dismissed_by, dismissed_at = excluded.dismissed_at',
+      [module, entityKey, actor, Date.now()]
+    )
+  }
+  migrationUndismiss(module: string, entityKey: string): void {
+    this.run('DELETE FROM migration_dismissal WHERE module = ? AND entity_key = ?', [module, entityKey])
   }
   /**
    * 按收件人自动认领：收件人命中客户（shipping_info/私聊地址）即认领到该客户，

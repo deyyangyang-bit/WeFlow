@@ -2236,7 +2236,9 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    设置页人话化档位（自动化程度 / AI 接入 / 术语与折叠）：`npx tsx scripts/settings-tiers-test.ts`（**68/0**，2026-09-13 新增——含两条**默认值防漂移**核心断言：自动化「标准」档 == 落库默认 0.85/0.70/0.80、回答长度「标准」档 == 默认 1024）
    （计数含 2026-09-12/13 两轮新增断言：六态 `crm_only` 文案 3 条、`salesActionEngine`/`salesStageClassifier` 自动分派护栏 3 条、AI 上限变更审计 13 条、抬头解析与页面接线 76 条、工作台改价审计与创建链幂等 15 条、docgen 续跑复用 3 条、商机合并 72 条、人话词典全量覆盖 203 条、设置页档位映射与折叠接线 68 条）
    今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
-   ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`；该工程在 HEAD 上已有 **156** 个存量错误（2026-09-13 实测，旧记的 161 系不同命令口径，已按实测校正），**不能以"零错误"为门禁**，只能比对"不新增"。详见 §2.98。
+   迁移失败项人工闭环（2026-09-14 新增）：`npx tsx scripts/migration-dismissal-test.ts`（**14/0**——dismissal 往返/幂等、模块② 扫描过滤、词典覆盖、IPC 接线、ENTITIES 白名单）
+   ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **7 个错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
+   ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 7**，只准保持 7）。基线史：156（09-13 实测）→ 8 → **7**（同日存量消肿，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §2）。单独跑主进程门禁：`npm run typecheck:node`。
 4. **测试零操作闭环**：跟单中心（自动确认摘要块/运行按钮/历史撤销、设置页阈值）、今日行动（打开聊天/复制话术）、CRM 工作台客户（打开聊天）
 5. **测试话术提炼**：知识库页 → 选联系人设日期区间 → 提炼 → 看效果
 6. **测试线索池**：/leads → 导入 Excel/CSV 或粘贴文本（来源下拉）→ 验证清洗/去重/统计 → 等 SLA 超时后今日行动出现「首触提醒」卡 → 完成/跳过 → 转客户
@@ -2251,6 +2253,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/HANDOVER.md` | 本文件（全局交接） |
 | `docs/规划/weflow-hermes-PRD-v3.4.md` | **当前需求文档（开发执行依据）** |
 | `docs/规划/AI简报与按需识别-PRD-v1.0.md` | AI 简报/按需识别的实施契约（§2.98 的依据） |
+| `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` | 迁移失败项人工闭环 + tsc 棘轮门禁与存量消肿（含疑似真 bug 清单） |
 | `docs/规划/AI调用入口与消费清单.md` | **AI 调用点与 purpose 对照表**（唯一采集层、价格表与上限规则；新增 AI 调用点必读） |
 | `docs/实施记录/AI简报与按需识别-实施记录-claude-20260912.md` | §2.98 的实施记录（验收逐条自查 / 真实输出 / 遗留项）＋ §6.8 = §2.99 屏蔽名单重定义（含开工前提证伪核实、闸门决策落点、遗留项） |
 | `docs/实施记录/合同与报价录入加速-实施记录-claude-20260912.md` | 合同/报价录入加速（PRD v1.4）的实施记录（改动清单 / §10 逐条自查 / 真实输出 / 未实测项） |

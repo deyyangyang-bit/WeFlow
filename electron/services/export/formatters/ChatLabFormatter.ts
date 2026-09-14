@@ -452,7 +452,7 @@ export class ChatLabFormatter {
       const avatarMap = options.exportAvatars
         ? await this.exportService.exportAvatars(
           [
-            ...Array.from(collected.memberSet.entries()).map(([username, info]: [string, any]) => ({
+            ...Array.from<[string, { avatarUrl?: string }]>(collected.memberSet.entries()).map(([username, info]) => ({
               username,
               avatarUrl: info.avatarUrl
             })),
@@ -462,7 +462,7 @@ export class ChatLabFormatter {
         : new Map<string, string>()
 
       const sessionAvatar = avatarMap.get(sessionId)
-      const members = await Promise.all(Array.from(collected.memberSet.values()).map(async (info) => {
+      const members = await Promise.all(Array.from<{ member: ChatLabMember; avatarUrl?: string }>(collected.memberSet.values()).map(async (info) => {
         const profile = isGroup
           ? (senderProfileMap.get(info.member.platformId) || await resolveExportDisplayProfile(
             info.member.platformId,

@@ -476,7 +476,7 @@ export class JsonFormatter {
       const avatarMap = options.exportAvatars
         ? await this.exportService.exportAvatars(
           [
-            ...Array.from(collected.memberSet.entries()).map(([username, info]: [string, any]) => ({
+            ...Array.from<[string, { avatarUrl?: string }]>(collected.memberSet.entries()).map(([username, info]) => ({
               username,
               avatarUrl: info.avatarUrl
             })),
@@ -623,7 +623,7 @@ export class JsonFormatter {
         }> | undefined
 
         if (isGroup) {
-          const memberUsernames = Array.from(collected.memberSet.keys()).filter(Boolean)
+          const memberUsernames = Array.from<string>(collected.memberSet.keys()).filter(Boolean)
           await this.exportService.preloadContacts(memberUsernames, contactCache)
           const friendLookupUsernames = buildGroupNicknameIdCandidates(memberUsernames)
           const friendFlagMap = await this.exportService.queryFriendFlagMap(friendLookupUsernames)

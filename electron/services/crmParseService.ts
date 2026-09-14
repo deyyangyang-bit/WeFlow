@@ -6,6 +6,7 @@
 import { app } from 'electron'
 import { readFileSync } from 'fs'
 import { chatService } from './chatService'
+import type { Message } from './chatService'
 import { wcdbService } from './wcdbService'
 import { crmDbService, type CrmRow } from './crmDbService'
 import { crmFileService } from './crmFileService'
@@ -156,7 +157,9 @@ async function scanAll(): Promise<number> {
           const key = String(msg.messageKey || `${uid}:${String(msg.createTime)}`)
           if (crmDbService.isMsgProcessed(key)) { if (ms > maxMs) maxMs = ms; continue }
           const content = String(msg.content ?? msg.parsedContent ?? '')
-          const isSend = Number(msg.isSend ?? msg.computed_is_send ?? msg.is_send ?? 0)
+          // 上游旧版/不同来源的消息对象可能带蛇形字段，运行时回退保留，仅类型层收窄
+          const legacyMsg = msg as Message & { computed_is_send?: number | null; is_send?: number | null }
+          const isSend = Number(legacyMsg.isSend ?? legacyMsg.computed_is_send ?? legacyMsg.is_send ?? 0)
           // 私域成交检测：客户消息含明确成交信号 → 阶段=won + 自动建 CRM 合同
           if (isDealSignal(content, isSend)) {
             try {

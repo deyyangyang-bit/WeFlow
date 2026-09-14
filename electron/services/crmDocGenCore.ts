@@ -18,6 +18,11 @@ export type DocgenResult =
   | { ok: false; reason: string }
 
 // ── 工具 ────────────────────────────────────────────────────────────────
+
+// ExcelJS 的 vertical 类型缺 OOXML 规范合法值 "center"（Excel 垂直居中在 xlsx 中就是 center 而非 middle）；
+// 仅放宽类型，运行时写出的 xlsx 保持 vertical="center" 不变
+const EXCEL_VERTICAL_CENTER = 'center' as unknown as 'middle'
+
 /** 产物 SHA-256 存证（宪法 §1.6 修订 2026-09-09）：报价文件生成完成后对最终产物计算。 */
 export function sha256Hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex')
@@ -269,13 +274,13 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
   const title = ws.getCell('B3')
   title.value = '无锡库叉搬运设备有限公司开票申请单'
   title.font = { name: '宋体', size: 16, bold: true }
-  title.alignment = { horizontal: 'center', vertical: 'center' }
+  title.alignment = { horizontal: 'center', vertical: EXCEL_VERTICAL_CENTER }
   // 日期 r4
   ws.mergeCells('B4:I4')
   const dateCell = ws.getCell('B4')
   dateCell.value = `日期 ：${data.date}`
   dateCell.font = { name: '宋体', size: 10 }
-  dateCell.alignment = { horizontal: 'center', vertical: 'center' }
+  dateCell.alignment = { horizontal: 'center', vertical: EXCEL_VERTICAL_CENTER }
   // r5 开票单位 + 税号
   ws.getCell('B5').value = '开票单位名称：'
   ws.mergeCells('C5:D5')
@@ -285,7 +290,7 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
   ws.getCell('H5').value = data.tax_no
   for (const addr of ['B5', 'C5', 'F5', 'H5']) {
     ws.getCell(addr).font = { name: '宋体', size: 10 }
-    ws.getCell(addr).alignment = { horizontal: 'center', vertical: 'center' }
+    ws.getCell(addr).alignment = { horizontal: 'center', vertical: EXCEL_VERTICAL_CENTER }
   }
 
   // 表头 r8
@@ -298,7 +303,7 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
   ws.getCell('I8').value = '总额'
   for (const c of ['B8', 'C8', 'E8', 'F8', 'G8', 'H8', 'I8']) {
     ws.getCell(c).font = { name: '宋体', size: 11 }
-    ws.getCell(c).alignment = { horizontal: 'center', vertical: 'center' }
+    ws.getCell(c).alignment = { horizontal: 'center', vertical: EXCEL_VERTICAL_CENTER }
   }
 
   // 明细 r9..，只写用到的行；总额 = 单价×数量 公式
@@ -314,7 +319,7 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
     ws.getCell(`I${r}`).value = { formula: `H${r}*G${r}` }
     for (const addr of [`B${r}`, `C${r}`, `E${r}`, `F${r}`, `G${r}`, `H${r}`, `I${r}`]) {
       ws.getCell(addr).font = { name: '宋体', size: 11 }
-      ws.getCell(addr).alignment = { horizontal: 'center', vertical: 'center' }
+      ws.getCell(addr).alignment = { horizontal: 'center', vertical: EXCEL_VERTICAL_CENTER }
     }
   })
 
@@ -323,7 +328,7 @@ export async function buildInvoiceAppWorkbook(data: CrmRow): Promise<Buffer> {
   ws.mergeCells(`C${totalRow}:E${totalRow}`)
   ws.getCell(`C${totalRow}`).value = data.amount_cn
   ws.getCell(`G${totalRow}`).value = '小写：'
-  ws.getCell(`G${totalRow}`).alignment = { horizontal: 'right', vertical: 'center' }
+  ws.getCell(`G${totalRow}`).alignment = { horizontal: 'right', vertical: EXCEL_VERTICAL_CENTER }
   ws.mergeCells(`H${totalRow}:I${totalRow}`)
   ws.getCell(`H${totalRow}`).value = items.length ? { formula: `SUM(I${itemStart}:I${lastItemRow})` } : ''
   for (const addr of [`B${totalRow}`, `C${totalRow}`, `H${totalRow}`]) {

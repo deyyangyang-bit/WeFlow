@@ -50,6 +50,7 @@ export interface WeliveExportRequest {
   preferredOutputPath?: string
   parseContent?: boolean
   preserveMessageContent?: boolean
+  compactRaw?: boolean
   sanitize?: boolean
   batchSize?: number
   ascending?: boolean

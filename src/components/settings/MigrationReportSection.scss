@@ -125,3 +125,27 @@
     gap: 8px;
   }
 }
+
+/* 人工闭环（2026-09-14）：确认忽略按钮 + 已忽略分组 */
+.migration-report {
+  &__issue {
+    position: relative;
+  }
+
+  &__dismiss {
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &__dismissed-head {
+    cursor: pointer;
+    user-select: none;
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+  }
+}

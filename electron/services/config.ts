@@ -144,6 +144,12 @@ interface ConfigSchema {
   crmAutoConfirmThreshold: number
   /** 发票自动关联后是否自动生成开票信息单（默认关，需合同含 tax_no） */
   crmAutoConfirmInvoiceDocgen: boolean
+  /** 线索首次分类总开关（默认开） */
+  crmFirstClassifyEnabled: boolean
+  /** 首次分类延迟小时数（默认 24） */
+  crmFirstClassifyDelayHours: number
+  /** 首次分类扫描间隔分钟数（默认 30） */
+  crmFirstClassifyScanIntervalMin: number
   /** CRM 客户信息 AI 自动填充总开关（默认开） */
   crmEnrichEnabled: boolean
   /** 自动填充：进 pending 人工队列的置信下限 0-1（默认 0.7，低于直接丢弃） */
@@ -335,6 +341,12 @@ export class ConfigService {
       aiInsightContextCount: 40,
       aiInsightSocialContextCount: 3,
       crmInternalList: ['库叉', '文件传输助手'],
+      crmAutoConfirmEnabled: true,
+      crmAutoConfirmThreshold: 0.8,
+      crmAutoConfirmInvoiceDocgen: false,
+      crmFirstClassifyEnabled: true,
+      crmFirstClassifyDelayHours: 24,
+      crmFirstClassifyScanIntervalMin: 30,
       crmEnrichEnabled: true,
       crmEnrichThreshold: 0.7,
       crmEnrichAutoApply: 0.85,

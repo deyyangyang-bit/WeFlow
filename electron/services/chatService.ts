@@ -50,6 +50,8 @@ export interface Message {
   sortSeq: number
   isSend: number | null
   senderUsername: string | null
+  senderDisplayName?: string  // 群消息发送者资料显示名（enrichGroupMessageSenderProfiles 补充）
+  senderAvatarUrl?: string    // 群消息发送者头像（enrichGroupMessageSenderProfiles 补充）
   parsedContent: string
   rawContent: string
   content?: string  // 原始XML内容（与rawContent相同，供前端使用）
@@ -359,7 +361,7 @@ const FRIEND_EXCLUDE_USERNAMES = new Set(['medianote', 'floatbottle', 'qmessage'
 
 class ChatService {
   private configService: ConfigService
-  private runtimeConfig?: { dbPath?: string; decryptKey?: string; myWxid?: string }
+  private runtimeConfig?: { dbPath?: string; decryptKey?: string; myWxid?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }
   private connected = false
   private readonly dbMonitorListeners = new Set<(type: string, json: string) => void>()
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
