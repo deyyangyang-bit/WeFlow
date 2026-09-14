@@ -1,0 +1,56 @@
+# 中央服务镜像构建上下文（context = 仓库根，见 docker-compose.central.yml）
+# 目的：只允许源码、迁移与锁文件进入构建上下文，杜绝 node_modules/dist/日志/密钥/客户数据进镜像。
+
+# 依赖与构建产物（镜像内用 npm ci 重建）
+**/node_modules
+**/dist
+**/dist-electron
+**/dist-ssr
+**/out
+**/release
+**/build
+
+# 版本控制与编辑器
+.git
+.gitignore
+.github
+.vscode
+.idea
+**/*.swp
+.DS_Store
+
+# 日志 / 备份 / 临时
+**/logs
+**/*.log
+**/tmp
+**/.tmp
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# 密钥与运行期环境（值一律走 env_file / docker secret，绝不进镜像）
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+
+# Electron 打包与前端静态资源（中央服务用不到，避免上下文膨胀）
+resources
+public
+src
+electron
+scripts
+docs
+release
+
+# 测试与本地数据
+**/coverage
+**/.cache
+**/uploads
+**/exports

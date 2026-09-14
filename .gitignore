@@ -14,6 +14,8 @@ dist-electron
 dist-ssr
 *.local
 test/
+# 中央服务是独立包，测试在 central/test/：上面的 test/ 会连它一起忽略，须显式放行
+!central/test/
 
 # Editor directories and files
 .vscode/*

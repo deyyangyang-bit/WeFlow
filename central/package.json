@@ -1,0 +1,27 @@
+{
+  "name": "weflow-central",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/central/src/index.js",
+    "test": "tsx test/app-test.ts && tsx test/projection-test.ts && tsx test/migration-test.ts && tsx test/context-test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:app": "tsx test/app-test.ts",
+    "test:projection": "tsx test/projection-test.ts",
+    "test:migration": "tsx test/migration-test.ts",
+    "test:context": "tsx test/context-test.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.6.0",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.0"
+  }
+}
