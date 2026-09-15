@@ -46,7 +46,7 @@ export class PostgresCentralStore implements CentralStore {
   async ping(): Promise<void> { await this.pool.query('SELECT 1') }
   async close(): Promise<void> { await this.pool.end() }
 
-  async createInvite(input: InviteInput, codeHash: string): Promise<{ inviteId: string }> {
+  async createInvite(input: InviteInput, codeHash: string, actor: string): Promise<{ inviteId: string }> {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
@@ -67,6 +67,14 @@ export class PostgresCentralStore implements CentralStore {
         `INSERT INTO binding_invite(workspace_id,employee_id,code_hash,expires_at)
          VALUES($1,$2,$3,to_timestamp($4 / 1000.0)) RETURNING id`,
         [input.workspaceId, employee.rows[0].id, codeHash, input.expiresAt]
+      )
+      // §四：邀请码签发必须留痕，且与签发在同一次提交里（回滚则审计一并回滚，不留孤儿审计）。
+      // 审计**只**记 inviteId / employeeId / role：邀请码明文与 code_hash 都不进审计表。
+      await client.query(
+        `INSERT INTO central_audit_event(workspace_id,actor,action,entity_type,entity_id,detail)
+         VALUES($1,$2,'invite_create','binding_invite',$3,$4::jsonb)`,
+        [input.workspaceId, actor, String(invite.rows[0].id),
+          JSON.stringify({ employeeId: String(employee.rows[0].id), role: input.role })]
       )
       await client.query('COMMIT')
       return { inviteId: String(invite.rows[0].id) }
@@ -374,6 +382,18 @@ export class PostgresCentralStore implements CentralStore {
     try {
       await client.query('BEGIN')
       const result = await this.insertEvent(client, actor, { ...event, direction: 'down' })
+      // §四：首次写入才留痕——同幂等键重放（duplicate）不追加审计，审计不随重放增长。
+      // 只记定位元数据（eventId/eventType/投递目标），不记载荷内容。
+      if (!result.duplicate) {
+        await client.query(
+          `INSERT INTO central_audit_event(workspace_id,actor,action,entity_type,entity_id,detail)
+           VALUES($1,$2,'down_command',$3,$4,$5::jsonb)`,
+          [actor.workspaceId, `device:${actor.deviceId}`, event.entityType, event.entityId,
+            JSON.stringify({ eventId: event.eventId, eventType: event.eventType,
+              ...(event.targetEmployeeId ? { targetEmployeeId: event.targetEmployeeId } : {}),
+              ...(event.targetDeviceId ? { targetDeviceId: event.targetDeviceId } : {}) })]
+        )
+      }
       await client.query('COMMIT')
       return result
     } catch (error) {

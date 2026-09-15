@@ -562,7 +562,7 @@ async function pushOutboxCommand(
     const invalid = validateDownCommand({
       eventType: event.eventType, entityType: event.entityType, payload: body,
       targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
-    })
+    }, 'central-http')
     if (invalid) {
       settleOutboxRow(rowId, 'failed', { reason: invalid, commandType, failedRole: item.role, delivered: pushed })
       return { pushed, rejected: 1 }
@@ -794,7 +794,7 @@ function toLocalEvent(event: CentralSyncEvent & { centralSeq: number }): SyncEve
   const invalid = validateDownCommand({
     eventType: event.eventType, entityType: event.entityType, payload,
     targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
-  })
+  }, 'central-http')
   if (invalid) return null
   return {
     eventSeq: event.eventSeq, idempotencyKey: event.idempotencyKey, type: event.eventType,

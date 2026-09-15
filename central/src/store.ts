@@ -37,7 +37,11 @@ export interface CentralStore {
   migrate(): Promise<void>
   ping(): Promise<void>
   close(): Promise<void>
-  createInvite(input: InviteInput, codeHash: string): Promise<{ inviteId: string }>
+  /**
+   * 签发邀请码。`actor` 是中央运维身份（`device:<deviceId>`）——邀请签发与设备吊销同属
+   * 必须留痕的中央运维动作，审计行与本次签发在**同一事务**内写入（§四）。
+   */
+  createInvite(input: InviteInput, codeHash: string, actor: string): Promise<{ inviteId: string }>
   claimInvite(codeHash: string, deviceName: string, tokenHash: string): Promise<DevicePrincipal>
   authenticate(tokenHash: string): Promise<DevicePrincipal | null>
   rotateDeviceToken(principal: DevicePrincipal, tokenHash: string): Promise<void>
@@ -48,6 +52,10 @@ export interface CentralStore {
   pushEvents(principal: DevicePrincipal, events: CentralSyncEvent[]): Promise<PushResult>
   pullEvents(principal: DevicePrincipal, cursor: number, limit: number): Promise<CentralPullResult>
   ackEvents(principal: DevicePrincipal, acknowledgements: CentralAckRequest['acknowledgements']): Promise<number>
+  /**
+   * 落一条下行指令。首次写入时与事件同事务写一条 `central_audit_event`（§四）；
+   * 同幂等键重放（duplicate）**不**追加审计，审计不随重放增长。
+   */
   appendDownEvent(actor: DevicePrincipal, event: CentralSyncEvent): Promise<{ centralSeq: number; duplicate: boolean }>
   /** 下行指令目标必须落在指令发起者所属工作区内 */
   isTargetInWorkspace(workspaceId: string, targetDeviceId?: string, targetEmployeeId?: string): Promise<boolean>

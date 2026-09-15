@@ -35,13 +35,17 @@ export class MemoryCentralStore implements CentralStore {
   private violations: Array<{ workspaceId: string; deviceId: string; eventId: string; fieldPath: string }> = []
   private conflicts: Array<{ workspaceId: string; deviceId: string; eventId: string; entityType: string; entityId: string; code: string }> = []
   private employees: EmployeeRow[] = []
-  private audits: Array<{ workspaceId: string; actor: string; action: string; entityType: string; entityId: string }> = []
+  /**
+   * 中央审计流水。`detail` 与 PostgresCentralStore 的 `central_audit_event.detail` 同语义：
+   * 只放稳定元数据（eventType / targetEmployeeId …），**不放**邀请码、令牌、联系方式或任何客户数据。
+   */
+  private audits: Array<{ workspaceId: string; actor: string; action: string; entityType: string; entityId: string; detail: Record<string, unknown> }> = []
 
   async migrate(): Promise<void> {}
   async ping(): Promise<void> {}
   async close(): Promise<void> {}
 
-  async createInvite(input: InviteInput, codeHash: string): Promise<{ inviteId: string }> {
+  async createInvite(input: InviteInput, codeHash: string, actor: string): Promise<{ inviteId: string }> {
     const inviteId = randomUUID()
     // 与 postgres 同构：员工按 (workspace, employee_code) 唯一，id 稳定跨设备复用
     let employee = this.employees.find((row) => row.workspaceId === input.workspaceId && row.employeeCode === input.employeeCode)
@@ -54,6 +58,10 @@ export class MemoryCentralStore implements CentralStore {
       this.employees.push(employee)
     }
     this.invites.push({ ...input, inviteId, codeHash, used: false, employeeId: employee.employeeId })
+    // §四：邀请码签发是中央运维动作，必须留痕。审计**只**记 inviteId / employeeId / role——
+    // 邀请码明文与哈希都不进审计（审计表不存任何凭据材料）。
+    this.audits.push({ workspaceId: input.workspaceId, actor, action: 'invite_create',
+      entityType: 'binding_invite', entityId: inviteId, detail: { employeeId: employee.employeeId, role: input.role } })
     return { inviteId }
   }
 
@@ -93,7 +101,8 @@ export class MemoryCentralStore implements CentralStore {
     this.conflicts.push({ workspaceId: principal.workspaceId, deviceId: principal.deviceId, eventId: event.eventId,
       entityType: event.entityType, entityId: event.entityId, code })
     this.audits.push({ workspaceId: principal.workspaceId, actor: `device:${principal.deviceId}`,
-      action: 'sync_entity_conflict', entityType: event.entityType, entityId: event.entityId })
+      action: 'sync_entity_conflict', entityType: event.entityType, entityId: event.entityId,
+      detail: { code, eventId: event.eventId, eventType: event.eventType } })
   }
 
   async authenticate(tokenHash: string): Promise<DevicePrincipal | null> {
@@ -114,7 +123,7 @@ export class MemoryCentralStore implements CentralStore {
       (!workspaceId || device.workspaceId === workspaceId))
     if (!row) return false
     row.active = false
-    this.audits.push({ workspaceId: row.workspaceId, actor, action: 'device_revoke', entityType: 'device', entityId: deviceId })
+    this.audits.push({ workspaceId: row.workspaceId, actor, action: 'device_revoke', entityType: 'device', entityId: deviceId, detail: {} })
     return true
   }
 
@@ -128,7 +137,7 @@ export class MemoryCentralStore implements CentralStore {
     if (!row) return false
     row.active = false
     this.audits.push({ workspaceId: row.workspaceId, actor: principal.displayName,
-      action: 'device_revoke_self', entityType: 'device', entityId: principal.deviceId })
+      action: 'device_revoke_self', entityType: 'device', entityId: principal.deviceId, detail: {} })
     return true
   }
 
@@ -250,11 +259,12 @@ export class MemoryCentralStore implements CentralStore {
   async recordPolicyViolation(principal: DevicePrincipal, event: CentralSyncEvent, fieldPath: string): Promise<void> {
     this.violations.push({ workspaceId: principal.workspaceId, deviceId: principal.deviceId, eventId: event.eventId, fieldPath })
     this.audits.push({ workspaceId: principal.workspaceId, actor: `device:${principal.deviceId}`,
-      action: 'sync_forbidden_field', entityType: event.entityType, entityId: event.eventId })
+      action: 'sync_forbidden_field', entityType: event.entityType, entityId: event.eventId,
+      detail: { fieldPath, eventType: event.eventType } })
   }
 
   /** 仅供测试断言：审计流水（与 postgres 实现同款语义）。 */
-  auditActions(): Array<{ workspaceId: string; actor: string; action: string; entityType: string; entityId: string }> {
+  auditActions(): Array<{ workspaceId: string; actor: string; action: string; entityType: string; entityId: string; detail: Record<string, unknown> }> {
     return [...this.audits]
   }
 
@@ -297,6 +307,13 @@ export class MemoryCentralStore implements CentralStore {
     }
     const centralSeq = this.events.length + 1
     this.events.push({ centralSeq, workspaceId: actor.workspaceId, sourceDeviceId: actor.deviceId, event: down })
+    // §四：下行指令首次落库留一条审计（同事务语义：内存实现里两者一起返回）。
+    // 幂等重放已在上面提前 return，因此审计不会随重放增长。只记定位元数据，不记载荷。
+    this.audits.push({ workspaceId: actor.workspaceId, actor: `device:${actor.deviceId}`, action: 'down_command',
+      entityType: event.entityType, entityId: event.entityId,
+      detail: { eventId: event.eventId, eventType: event.eventType,
+        ...(event.targetEmployeeId ? { targetEmployeeId: event.targetEmployeeId } : {}),
+        ...(event.targetDeviceId ? { targetDeviceId: event.targetDeviceId } : {}) } })
     return { centralSeq, duplicate: false }
   }
 

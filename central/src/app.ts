@@ -27,6 +27,14 @@ function bearer(request: FastifyRequest): string {
   return value.startsWith('Bearer ') ? value.slice(7).trim() : ''
 }
 
+/**
+ * 中央运维动作的 actor 标识。用 `device:<deviceId>` 而不是显示名：显示名可重复，
+ * 设备 id 才能在「谁签发了这张邀请码 / 谁吊销了这台设备」的追溯里唯一定位。
+ */
+function actorOf(request: FastifyRequest): string {
+  return `device:${request.principal!.deviceId}`
+}
+
 function error(code: string, message: string, requestId: string) {
   return { ok: false as const, code, message, requestId }
 }
@@ -154,7 +162,8 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
       }
       const inviteCode = createSecret(24)
       const expiresAt = Date.now() + (body.expiresInMinutes || 30) * 60_000
-      const created = await store.createInvite({ ...body, workspaceId, expiresAt }, secretHash(inviteCode))
+      // §四：签发人进审计（与签发同事务）。审计不记邀请码明文，也不记 code_hash。
+      const created = await store.createInvite({ ...body, workspaceId, expiresAt }, secretHash(inviteCode), actorOf(request))
       // 邀请码只在此响应体里出现一次；服务端只存哈希，日志已按 redact 规则排除
       return reply.code(201).send({ ok: true, data: { ...created, inviteCode, expiresAt } })
     })
@@ -190,12 +199,21 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     api.post('/devices/:deviceId/revoke', {
       preHandler: require_('device.revoke'),
       schema: {
-        params: { type: 'object', required: ['deviceId'], properties: { deviceId: { type: 'string', minLength: 1, maxLength: 100 } } },
+        // §五：deviceId 直接进 `$1::uuid`。schema 层限死 UUID 形态，非法路径参数在路由层就 400，
+        // 绝不落到 PostgreSQL 的 22P02（那会把调用方拼错 URL 记成中央服务 500）。
+        params: { type: 'object', required: ['deviceId'], properties: { deviceId: { type: 'string', format: 'uuid' } } },
         body: { type: 'object', additionalProperties: false, properties: { workspaceId: { type: 'string', format: 'uuid' } } }
       }
     }, async (request, reply) => {
       const { deviceId } = request.params as { deviceId: string }
-      const workspaceId = request.principal!.workspaceId || String((request.body as { workspaceId?: string } | undefined)?.workspaceId || '')
+      // schema 的 format 依赖 ajv-formats 已加载；这里再显式判一次，保证「非法标识绝不碰数据库」
+      // 这条纪律不依赖校验器实现细节（也是 MemoryStore 契约测试能覆盖的那一层）。
+      if (!isUuid(deviceId)) return reply.code(400).send(error('E101', '设备标识格式非法：deviceId', request.id))
+      const body = (request.body || {}) as { workspaceId?: string }
+      if (body.workspaceId !== undefined && !isUuid(body.workspaceId)) {
+        return reply.code(400).send(error('E101', '工作区标识格式非法：workspaceId', request.id))
+      }
+      const workspaceId = request.principal!.workspaceId || String(body.workspaceId || '')
       // 无工作区上下文的 bootstrap-admin 必须显式指定目标工作区，否则越权吊销无法追责
       if (!workspaceId) return reply.code(400).send(error('E101', 'bootstrap-admin 吊销设备时必须指定 workspaceId', request.id))
       const revoked = await store.revokeDevice(workspaceId, deviceId, request.principal!.displayName)
@@ -315,10 +333,12 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
       }
 
       // ③ 业务层：共享校验器（与 Phase 1 SMB 同一份规则，不在服务端复制一遍）
+      // transport 显式写 'central-http'：lead 子对象只允许 6 个字段，contactRaw / wechat 一律 400。
+      // SMB 文件通道的历史口径（8 字段）走 leadFieldsFor('smb')，不得与中央 HTTP 混用同一份白名单。
       const businessError = validateDownCommand({
         eventType: String(event.eventType || ''), entityType: String(event.entityType || ''),
         payload: event.payload, targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
-      })
+      }, 'central-http')
       if (businessError) return reject('E103', `下行指令业务校验失败：${businessError}`)
       const entityIdError = validateCentralEntityId(event.entityType, event.entityId)
       if (entityIdError) return reject('E103', `下行指令实体引用非法：${entityIdError}`)
