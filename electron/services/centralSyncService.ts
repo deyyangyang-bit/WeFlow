@@ -324,7 +324,8 @@ function isPermanentReject(code: string): boolean {
 function routeOutboxRow(row: CrmRow): { type: string; route: OutboxRoute; payload: Record<string, unknown> } | null {
   let payload: Record<string, unknown>
   try { payload = JSON.parse(String(row.payload || '{}')) } catch { return null }
-  const type = String(payload.type || '')
+  const type = payload.type
+  if (typeof type !== 'string' || !type) return null
   const route = OUTBOX_ROUTES[type]
   return route ? { type, route, payload } : null
 }
@@ -401,8 +402,8 @@ async function pushOutboxProjection(
 export const CENTRAL_COMMAND_LEAD_FIELDS = ['leadId', 'name', 'contactType', 'contactNormalized', 'source', 'note'] as const
 
 function commandLeadOf(leadId: unknown): Record<string, unknown> | null {
-  const id = Number(leadId)
-  if (!Number.isInteger(id) || id <= 0) return null
+  if (typeof leadId !== 'number' || !Number.isSafeInteger(leadId) || leadId <= 0) return null
+  const id = leadId
   const lead = crmDbService.all('SELECT * FROM lead WHERE id = ?', [id])[0]
   if (!lead) return null
   return {
@@ -413,25 +414,23 @@ function commandLeadOf(leadId: unknown): Record<string, unknown> | null {
 }
 
 /** 指令 payload：严格按注册表白名单逐字段挑，绝不 spread outbox payload */
-function commandPayloadOf(commandType: string, payload: Record<string, unknown>, leadId: number): Record<string, unknown> {
+function commandPayloadOf(commandType: string, payload: Record<string, unknown>, leadId: unknown): Record<string, unknown> {
   const common = { type: commandType, leadId }
   if (commandType === 'assign') {
-    const mode = String(payload.mode || '')
-    return {
-      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
-      salesName: String(payload.salesName || ''),
-      // mode 在 assign 上是可选字段：本地没写就**省略**，绝不发空串——
-      // 注册表对 mode 的约束是「出现即必须是枚举内的字符串」，`''` 会被判非法而不是「未设置」。
-      ...(mode ? { mode } : {}),
-      sla1Deadline: Number(payload.sla1Deadline || 0) || null, actor: String(payload.actor || 'system:sync'),
+    const out: Record<string, unknown> = {
+      ...common, deliveryRole: 'apply', assignmentId: payload.assignmentId,
+      salesName: payload.salesName, actor: payload.actor ?? 'system:sync',
       lead: commandLeadOf(leadId)
     }
+    // 可选字段只在原始载荷实际出现时透传；不把对象/数组/数字洗成字符串或时间戳。
+    if (Object.prototype.hasOwnProperty.call(payload, 'mode')) out.mode = payload.mode
+    if (Object.prototype.hasOwnProperty.call(payload, 'sla1Deadline')) out.sla1Deadline = payload.sla1Deadline
+    return out
   }
   if (commandType === 'recycle') {
     return {
-      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
-      salesName: String(payload.salesName || ''), reason: String(payload.reason || ''),
-      actor: String(payload.actor || 'system:sync')
+      ...common, deliveryRole: 'apply', assignmentId: payload.assignmentId,
+      salesName: payload.salesName, reason: payload.reason, actor: payload.actor ?? 'system:sync'
     }
   }
   // 移交：单条 outbox 行 → 两条下行指令（接收方 apply / 原归属 remove）。
@@ -440,11 +439,11 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
   // 接收端落地精确等于本值，不按接收端配置/时钟重算）。
   if (commandType === 'transfer') {
     return {
-      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
-      oldAssignmentId: Number(payload.oldAssignmentId || 0),
-      fromSales: String(payload.fromSales || ''), toSales: String(payload.toSales || ''),
-      reason: String(payload.reason || ''), mode: String(payload.mode || ''),
-      sla1Deadline: Number(payload.sla1Deadline || 0) || null, actor: String(payload.actor || 'system:sync'),
+      ...common, deliveryRole: 'apply', assignmentId: payload.assignmentId,
+      oldAssignmentId: payload.oldAssignmentId,
+      fromSales: payload.fromSales, toSales: payload.toSales,
+      reason: payload.reason, mode: payload.mode,
+      sla1Deadline: payload.sla1Deadline, actor: payload.actor ?? 'system:sync',
       lead: commandLeadOf(leadId)
     }
   }
@@ -455,9 +454,9 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
       ? maskLeadContact({ contactType: String(lead.contact_type || 'phone') as 'phone' | 'wechat' | 'both', contactNormalized: String(lead.contact_normalized || '') })
       : ''
     return {
-      ...common, deliveryRole: 'notify', assignmentId: Number(payload.assignmentId || 0),
-      salesName: String(payload.salesName || ''), remindCount: Number(payload.remindCount || 3),
-      reason: String(payload.reason || ''), recycledAt: Number(payload.recycledAt || 0), contactMasked
+      ...common, deliveryRole: 'notify', assignmentId: payload.assignmentId,
+      salesName: payload.salesName, remindCount: payload.remindCount,
+      reason: payload.reason, recycledAt: payload.recycledAt, contactMasked
     }
   }
   return {}
@@ -475,12 +474,12 @@ type CommandTarget =
 /** 一条指令要投给谁：assign/recycle → 归属人；transfer → 接收方(apply) + 原归属(remove) */
 function commandTargetsOf(commandType: string, payload: Record<string, unknown>): CommandTarget[] {
   if (commandType === 'assign' || commandType === 'recycle') {
-    const salesName = String(payload.salesName || '').trim()
+    const salesName = typeof payload.salesName === 'string' ? payload.salesName.trim() : ''
     return salesName ? [{ kind: 'sales', salesName, role: 'apply' }] : []
   }
   if (commandType === 'transfer') {
-    const to = String(payload.toSales || '').trim()
-    const from = String(payload.fromSales || '').trim()
+    const to = typeof payload.toSales === 'string' ? payload.toSales.trim() : ''
+    const from = typeof payload.fromSales === 'string' ? payload.fromSales.trim() : ''
     const out: CommandTarget[] = []
     if (to) out.push({ kind: 'sales', salesName: to, role: 'apply' })
     if (from) out.push({ kind: 'sales', salesName: from, role: 'remove' })
@@ -550,7 +549,7 @@ async function pushOutboxCommand(
     return { pushed: 0, rejected: 1 }
   }
   const body0 = healed.payload
-  const leadId = Number(body0.leadId || 0)
+  const leadId = body0.leadId
   const targets = commandTargetsOf(commandType, body0)
   if (!targets.length) {
     settleOutboxRow(rowId, 'failed', { reason: 'missing_target_sales', commandType })
@@ -820,7 +819,7 @@ function toLocalEvent(event: CentralSyncEvent & { centralSeq: number }): SyncEve
   if (invalid) return null
   return {
     eventSeq: event.eventSeq, idempotencyKey: event.idempotencyKey, type: event.eventType,
-    deliveryRole: String(payload.deliveryRole || 'apply') as DeliveryRole,
+    deliveryRole: payload.deliveryRole as DeliveryRole,
     to: getTerminalId(), payload, emittedAt: event.occurredAt
   }
 }

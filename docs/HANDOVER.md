@@ -2203,12 +2203,13 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 
 **修法**：`DOWN_COMMAND_SPECS` 新增 `fields?: Record<string, DownFieldRule>`，与 eventType 同处一个
 注册表，**HTTP 与 SMB 共用同一份规则，不新增第二套校验器、不引入新依赖**。
-`DownFieldKind = 'positive_int' | 'non_negative_int' | 'string'`。
+`DownFieldKind = 'positive_int' | 'non_negative_int' | 'timestamp' | 'string'`。
 
 - **`kind` 自带自然下界**：`checkNumberField` 此前只在显式登记 `min` 时才判下界，而
   `leadId` / `assignmentId` / `oldAssignmentId` 都没登记 `min` —— 于是 `0` 与负数仍然通过。
   现在 `positive_int` ≥ 1、`non_negative_int` ≥ 0 由 kind 承担，显式 `min` / `max` **只用于收窄**
-  （`remindCount` → 3、`slaHours` → 72）。`Number.isInteger` 同时覆盖小数 / `NaN` / `Infinity`。
+  （`remindCount` → 3、`slaHours` → 72）。`Number.isSafeInteger` 同时覆盖小数 / `NaN` / `Infinity` /
+  超出 JavaScript 安全整数范围的数字。
 - **值域的业务依据（读生产者与消费者得到，非猜测）**：`remindCount` **0–3** ——
   `assignment.sla1_remind_count` 的语义是「已提醒次数」（0 = 从未提醒），三次提醒制下生产者
   `crmAssignmentService` 恒发 `3`、接收端 `crmNotifyService` 按 `N/3` 渲染；越界会让主管看到假次数。
@@ -2220,10 +2221,10 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 - **注册表自相矛盾即拒收**：`required` 里的顶层标量字段若既无 `fields` 规则、又不归 `lead` 子对象
   （`validateLeadObject`）或 `spec.enums` 的专门校验器管，返回 `unregistered_field_rule:<字段>` ——
   不给「只判非空就放行」留后门。
-- **`requiredTimestamps` 与 `fields` 并存**（未合并）：`invalid_timestamp:` 系列码被既有测试断言，
-  合并会制造码漂移；反之 `recycledAt: 0` / 字符串 `sla1Deadline` 现在会先命中 `fields` 的
-  `invalid_integer:` / `invalid_type:`。**两者都是稳定拒绝码、HTTP 状态码同样 400**，断言接受任一。
-  这是刻意的：字段规则先于版本前置生效，语义是「先判形态，再判版本前置的取值」。
+- **时间戳字段只保留一条校验路径**：`requiredTimestamps` 仅声明必填，时间戳字段同时在 `fields` 登记为
+  `timestamp`；缺失统一 `missing_field:<字段>`，任何非法形态、非安全整数、非正数统一
+  `invalid_timestamp:<字段>`。因此 `recycledAt: 0` 与字符串 `sla1Deadline` 不再漂移到
+  `invalid_integer:` / `invalid_type:`，HTTP 与 SMB 的错误码保持一致。
 
 **历史移交（`healLegacyDownPayload`）**：`assignmentId` 形态非法 → 无条件拒；**assignment 行不存在 →
 无条件拒**（`legacy_transfer_assignment_missing`）。依据：本机 assignment 只软删 / 只改 status
@@ -2240,6 +2241,32 @@ B 层真实 Fastify `/sync/commands`（**签发者必须是有 `command.issue` �
 D 层历史 transfer 富化（**合法载荷的来源行 = 新行**，即 `sales_name === toSales`，与
 `crmAssignmentService.transferAssignment()` 的写法一致）。每个负例都要求零副作用：不写
 lead / assignment / audit_event / notify_inbox，不写成功幂等标记，不生成可被中枢接受的成功 ACK。
+
+## 2.111 中央/SMB 下行协议复核收口（2026-09-15 第七轮）
+
+本轮修复复核指出的 1 个 P1 与 3 个 P2：
+
+- **P1：原始值角色/类型校验**。`payload.type` 现在是所有下行类型的必填字段，必须是原始非空字符串且严格等于信封 `eventType`；`deliveryRole` 不再经 `String()` 洗白。SMB 外层角色作为路由来源，payload 若同时带角色必须严格相等，不能用外层值覆盖畸形 payload。主管通知也走同一份共享业务校验，不再保留旁路。
+- **P2：时间戳错误码统一**。`sla1Deadline` / `recycledAt` 登记为 `timestamp`；`requiredTimestamps` 只声明必填，缺失统一 `missing_field:<字段>`，类型、非正数、非安全整数统一 `invalid_timestamp:<字段>`。
+- **P2：安全整数边界**。顶层 id、lead 子对象 id、历史 transfer 富化 id/时间戳统一使用 `Number.isSafeInteger`，并保留原始值进入共享校验；中央 HTTP / SMB 路由均不再把异常 `type` 转成字符串。
+- **P2：transfer / 通知夹具与实现对齐**。D0 夹具改为调用真实 `transferAssignment(assignmentId, toSales, reason, actor)`，先插入隔离占位 assignment，并明确断言新旧 assignment id 不同、旧行 transferred、新行属于原 lead 且归属目标销售。SMB SLA 通知不再无条件附加不在契约内的 `slaHours`。
+
+改动集中在 `shared/centralDownCommand.ts`、`central/src/app.ts`、`electron/services/centralSyncService.ts`、
+`electron/services/lanSyncService.ts`、`electron/services/crmDownPayloadCompat.ts`；边界与零副作用回归补在
+`scripts/central-down-fields-test.ts`、`scripts/central-sync-adapter-test.ts`、`scripts/lan-sync-test.ts`、
+`scripts/sla1-supervisor-notify-test.ts` 与 `central/test/app-test.ts`。未新增依赖，未改变 SMB 历史 lead 八字段档，
+未触碰 `docs/归档/**` / `docs/lib/**`。
+
+实际验证：`central-down-fields-test` **42/0**、`central-down-compat-test` **45/0**、`central-sync-adapter-test` **98/0**、
+`central-sync-e2e-test` **88/0**、`lan-sync-test` **93/0**、`lan-sync-e2e-test` **42/0**、
+`p0-3-closed-gate-test` **23/0**、`p0-3-closed-gate` **6/0**、`assignment-test` **28/0**、
+`assignment-batch-count-test` **7/0**、`assignment-full-test` **100/0**、`lead-assignment-view-test` **64/0**、
+`aftersales-transfer-outbox-test` **60/0**、`sla1-supervisor-notify-test` **24/0**、`crm-sla-action-test` **11/0**；
+根 `npm run typecheck`、中央 `typecheck` / `test`（app **159**、projection **36**、migration **23**、context **6**）/
+`build`、`git diff --check` 均通过。
+
+边界保持不变：以上是隔离临时库与 `MemoryCentralStore` 上的代码级验证，不代表真实 PostgreSQL、Docker、双机、
+Windows、SSE、真实消息推送或部署验收；两个被明确禁止的基线脚本仍未运行，Phase 3a 仍不能表述为已完成。
 
 ## 2.109 Phase 3a 中央同步收口：富化一致性 + 字符串 SLA 拒收 + 本机 mode 契约 + 重投结果口径 + 守卫补真（2026-09-15 第五轮）
 

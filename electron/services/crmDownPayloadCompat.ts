@@ -45,16 +45,16 @@ export type DownPayloadHeal =
 
 /** 正整数（assignmentId / leadId 的形态判定；两端共用，不各写一遍） */
 function isPositiveInt(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 /**
  * 绝对 SLA 截止时间：**原始类型必须是 number** 且为有限正整数（毫秒）。
- * `Number.isInteger` 已排除 NaN / Infinity / 小数；字符串（含 `"123456"` 这种数字串）一律不算，
+ * `Number.isSafeInteger` 已排除 NaN / Infinity / 小数及超出安全范围的数字；字符串（含 `"123456"` 这种数字串）一律不算，
  * 否则「已合法」的判定会在中央 HTTP 与 SMB 两条通道上分叉。
  */
 function isAbsoluteDeadline(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 function isKnownMode(value: unknown): value is AssignmentMode {

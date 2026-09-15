@@ -336,7 +336,7 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
       // transport 显式写 'central-http'：lead 子对象只允许 6 个字段，contactRaw / wechat 一律 400。
       // SMB 文件通道的历史口径（8 字段）走 leadFieldsFor('smb')，不得与中央 HTTP 混用同一份白名单。
       const businessError = validateDownCommand({
-        eventType: String(event.eventType || ''), entityType: String(event.entityType || ''),
+        eventType: event.eventType, entityType: event.entityType,
         payload: event.payload, targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
       }, 'central-http')
       if (businessError) return reject('E103', `下行指令业务校验失败：${businessError}`)
@@ -353,7 +353,7 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
         return reject('E103', '目标设备与目标员工不属于同一员工')
       }
       // ⑤ 落库前再确认一次事件类型在册（downCommandSpec 已查过，这里防止注册表与路由漂移）
-      if (!downCommandSpec(String(event.eventType || ''))) return reject('E103', `未登记的下行事件类型：${event.eventType}`)
+      if (!downCommandSpec(event.eventType)) return reject('E103', `未登记的下行事件类型：${event.eventType}`)
       try {
         return reply.code(201).send({ ok: true, data: await store.appendDownEvent(request.principal!, { ...event, direction: 'down' }) })
       } catch (thrown) {

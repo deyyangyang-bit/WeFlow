@@ -323,6 +323,7 @@ async function main(): Promise<void> {
   clearBinding(); configureBinding()
   crmDbService.setScanState('centralSync:pullCursor', 0)
   pullQueue = [downEvent('ev-assign-1', 'assign', {
+    type: 'assign',
     leadId: 9001, assignmentId: 9001,
     // 中央 HTTP 下行建档契约（2026-09-15 起强制）：lead 必须是完整 6 字段
     // （leadId 正整数 / contactType 枚举 / contactNormalized 非空 / name、source、note 以字符串存在）
@@ -348,9 +349,9 @@ async function main(): Promise<void> {
   crmDbService.setScanState('centralSync:pullCursor', 0)
   pullQueue = [
     downEvent('ev-correction-1', 'supervisor_correction', {
-      leadId: 9001, title: '主管修正：归属应为乙', summary: '请确认后改派', deliveryRole: 'apply'
+      type: 'supervisor_correction', leadId: 9001, title: '主管修正：归属应为乙', summary: '请确认后改派', deliveryRole: 'apply'
     }, 1),
-    { ...downEvent('ev-perm-1', 'permission_change', { employeeRef: 'emp-1', declaredRole: 'supervisor', deliveryRole: 'apply' }, 2),
+    { ...downEvent('ev-perm-1', 'permission_change', { type: 'permission_change', employeeRef: 'emp-1', declaredRole: 'supervisor', deliveryRole: 'apply' }, 2),
       entityType: 'permission' as const }
   ]
   const beforeAssign = crmDbService.all("SELECT * FROM assignment WHERE lead_id = (SELECT id FROM lead WHERE contact_normalized = ?)", ['13900000001'])

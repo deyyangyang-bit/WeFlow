@@ -832,15 +832,13 @@ async function main(): Promise<void> {
   const jTransferFile = (tag: string, payload: Record<string, unknown>) => ({
     eventSeq: 802, idempotencyKey: `transfer:j-${tag}`, type: 'transfer', deliveryRole: 'apply', to: rk, payload, emittedAt: NOW
   })
-  // 2026-09-15 顶层字段共享规则接入后，`sla1Deadline` 先过 fields 的类型/区间判定（字符串 → invalid_type），
-  // 再走 requiredTimestamps 的既有 `invalid_timestamp:` 早退检查；两条路径都拒收，只分先后。
-  // 这里两种稳定码都接受，避免把「先撞哪一条」写成契约。
   const slaReject = String(validateDownEventFile(jTransferFile('bad-sla', { ...jTransferPayload, sla1Deadline: '999' }) as never, rk, deliveryFileName(802, 'transfer:j-bad-sla', 'apply')))
-  ok('J4 transfer 缺 sla1Deadline / 缺 mode / sla1Deadline 非正整数 → 全部拒收',
-    String(validateDownEventFile(jTransferFile('no-sla', { ...jTransferPayload, sla1Deadline: undefined }) as never, rk, deliveryFileName(802, 'transfer:j-no-sla', 'apply'))).includes('invalid_timestamp:sla1Deadline') &&
+  const missingSlaReject = String(validateDownEventFile(jTransferFile('no-sla', { ...jTransferPayload, sla1Deadline: undefined }) as never, rk, deliveryFileName(802, 'transfer:j-no-sla', 'apply')))
+  ok('J4 transfer 缺 sla1Deadline / 缺 mode / sla1Deadline 非正整数 → 全部拒收（缺失=missing_field，非法形态=invalid_timestamp）',
+    missingSlaReject.includes('missing_field:sla1Deadline') &&
     String(validateDownEventFile(jTransferFile('no-mode', { ...jTransferPayload, mode: undefined }) as never, rk, deliveryFileName(802, 'transfer:j-no-mode', 'apply'))).includes('missing_field:mode') &&
-    (slaReject.includes('invalid_type:sla1Deadline') || slaReject.includes('invalid_timestamp:sla1Deadline')),
-    slaReject)
+    slaReject.includes('invalid_timestamp:sla1Deadline'),
+    JSON.stringify({ missingSlaReject, slaReject }))
   // SMB recycle 历史信封（带 8 字段 lead + slaHours）继续通过；中央档才禁止 recycle 带 lead
   ok('J5 SMB recycle 历史信封（lead + slaHours）通过共享校验（smb 档开口，中央档不开）',
     validateDownEventFile({ eventSeq: 803, idempotencyKey: 'recycle:j-ok', type: 'recycle', deliveryRole: 'apply', to: rk,

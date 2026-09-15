@@ -12,7 +12,7 @@
  *
  * 隔离：WEFLOW_WORKER='1' + /tmp 空库。运行：npx tsx scripts/sla1-supervisor-notify-test.ts
  */
-import { existsSync, mkdtempSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -119,6 +119,46 @@ async function main(): Promise<void> {
     listNotifyInbox({}).data.rows.length === 1 &&
     existsSync(join(shared, 'down', hubRk, '.failed', forgedName)),
     JSON.stringify(forgedConsume))
+
+  // P1 回归：主管通知也必须经过共享 role/type 校验；外层 notify 不能把 payload 中的
+  // 数组/对象角色或类型洗成合法值。夹具只插入 pending outbox，不改状态结算语义，消费失败后删除夹具行。
+  const protocolCases: Array<[string, (payload: Record<string, unknown>) => void]> = [
+    ['sla1-protocol-type-array', (payload) => { payload.type = ['sla1_escalate_supervisor'] }],
+    ['sla1-protocol-role-object', (payload) => { payload.deliveryRole = { role: 'notify' } }]
+  ]
+  crmDbService.runTx((tx) => {
+    for (const [key] of protocolCases) {
+      const seq = Number(tx.all('SELECT COALESCE(MAX(event_seq), 0) + 1 AS s FROM outbox_event')[0]?.s || 1)
+      tx.run(
+        "INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES (?,?,?,'pending','weflow-crm',?,?)",
+        [seq, key, JSON.stringify({ type: 'sla1_escalate_supervisor', leadId: lid, assignmentId: aid, salesName: '销售甲', remindCount: 3, reason: '协议负例', recycledAt: NOW }), NOW, NOW]
+      )
+    }
+  })
+  const protocolEmit = emitDownEvents(shared)
+  const protocolRows = protocolCases.map(([key]) => crmDbService.all('SELECT event_seq, status FROM outbox_event WHERE idempotency_key = ?', [key])[0])
+  for (const [key, mutate] of protocolCases) {
+    const seq = Number(crmDbService.all('SELECT event_seq FROM outbox_event WHERE idempotency_key = ?', [key])[0]?.event_seq || 0)
+    const name = deliveryFileName(seq, key, 'notify')
+    const path = join(shared, 'down', hubRk, name)
+    const body = JSON.parse(readFileSync(path, 'utf-8')) as { payload: Record<string, unknown> }
+    mutate(body.payload)
+    writeFileSync(path, JSON.stringify(body))
+  }
+  const protocolBeforeInbox = listNotifyInbox({}).data.rows.length
+  const protocolConsume = consumeSupervisorNotifications(shared)
+  ok('B7 主管通知的 payload.type / payload.deliveryRole 畸形值均被共享校验拒收：隔离、零落 inbox、outbox 保持 pending',
+    protocolEmit.emitted === 2 && protocolConsume.failed === 2 &&
+    listNotifyInbox({}).data.rows.length === protocolBeforeInbox &&
+    protocolRows.every((row) => String(row?.status) === 'pending') &&
+    protocolCases.every(([key]) => {
+      const seq = Number(crmDbService.all('SELECT event_seq FROM outbox_event WHERE idempotency_key = ?', [key])[0]?.event_seq || 0)
+      return existsSync(join(shared, 'down', hubRk, '.failed', deliveryFileName(seq, key, 'notify')))
+    }),
+    JSON.stringify({ protocolEmit, protocolConsume, protocolRows }))
+  crmDbService.runTx((tx) => {
+    for (const [key] of protocolCases) tx.run('DELETE FROM outbox_event WHERE idempotency_key = ? AND status = \'pending\'', [key])
+  })
 
   console.log('\n═══ C. 幂等：重复投递/重复落地/重复已读 ═══')
   emitDownEvents(shared) // 行已 sent，重跑不产新文件

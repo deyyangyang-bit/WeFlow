@@ -322,8 +322,8 @@ export function emitDownEvents(root: string): EmitResult {
   for (const row of rows) {
     let payload: Record<string, unknown>
     try { payload = JSON.parse(String(row.payload || '{}')) } catch { continue }
-    const type = String(payload.type || '')
-    if (!(DOWN_TYPES as readonly string[]).includes(type)) continue
+    const type = payload.type
+    if (typeof type !== 'string' || !(DOWN_TYPES as readonly string[]).includes(type)) continue
     const key = String(row.idempotency_key || '')
     if (!key) continue
     let lead: Record<string, unknown> | null = null
@@ -380,7 +380,9 @@ export function emitDownEvents(root: string): EmitResult {
           type,
           deliveryRole: rc.role,
           to: rc.key,
-          payload: { ...payload, lead, slaHours: slaHoursNow() },
+          payload: type === 'sla1_escalate_supervisor'
+            ? { ...payload, lead }
+            : { ...payload, lead, slaHours: slaHoursNow() },
           emittedAt: Date.now()
         }
         const dir = downQueueDir(root, rc.key)
@@ -427,8 +429,8 @@ export function settleDownDeliveries(root: string): SettleResult {
   for (const row of rows) {
     let payload: Record<string, unknown>
     try { payload = JSON.parse(String(row.payload || '{}')) } catch { continue }
-    const type = String(payload.type || '')
-    if (!(DOWN_TYPES as readonly string[]).includes(type)) continue
+    const type = payload.type
+    if (typeof type !== 'string' || !(DOWN_TYPES as readonly string[]).includes(type)) continue
     const key = String(row.idempotency_key || '')
     if (!key) continue
     const keyConflict = downDeliveryKeyConflict(type, payload)
@@ -501,8 +503,8 @@ function validateAck(ack: AckFile, directoryTerminal: string): { key: string; ba
   if (pending.length !== 1) return null
   let payload: Record<string, unknown>
   try { payload = JSON.parse(String(pending[0].payload || '{}')) } catch { return null }
-  const type = String(payload.type || '')
-  if (!(DOWN_TYPES as readonly string[]).includes(type)) return null
+  const type = payload.type
+  if (typeof type !== 'string' || !(DOWN_TYPES as readonly string[]).includes(type)) return null
   const expected = routeDownRecipients(type, payload).some((rc) => rc.key === to && rc.role === role)
   return expected ? { key, base, role, outcome } : null
 }
@@ -691,7 +693,8 @@ function applyDownEventTx(
  * 不经 SMB 文件系统。传输层只能换 adapter，禁止复制 assign/transfer/recycle 业务语义。
  */
 export function applyDownEventDirect(ev: SyncEventFile): AckOutcome {
-  const role: DeliveryRole = ev.deliveryRole || 'apply'
+  const role = ev.deliveryRole
+  if (role !== 'apply' && role !== 'remove' && role !== 'notify') return 'invalid'
   const mkey = `${ev.idempotencyKey}#${role}`
   const knownOutcome = Number(crmDbService.getScanState(outcomeKey(mkey)))
   if (crmDbService.getScanState(appliedKey(mkey)) > 0) {
@@ -732,22 +735,21 @@ function writeAckFile(root: string, ev: SyncEventFile, base: string, outcome: Ac
  *   - 文件名必须与 deliveryFileName(eventSeq, idempotencyKey, role) 完全一致。
  */
 export function validateDownEventFile(ev: SyncEventFile, ownDeliveryKey: string, fileName: string): string | null {
-  if (String(ev.to || '') !== ownDeliveryKey) {
-    return `ev.to(${String(ev.to || '')}) 与本机投递键(${ownDeliveryKey})不一致`
-  }
+  if (typeof ev.to !== 'string' || ev.to !== ownDeliveryKey) return 'ev.to 与本机投递键不一致'
   if (typeof ev.eventSeq !== 'number' || !Number.isSafeInteger(ev.eventSeq) || ev.eventSeq < 0) {
-    return `eventSeq 非法(${String(ev.eventSeq)})`
+    return 'eventSeq 非法'
   }
   const role = ev.deliveryRole
   if (role !== 'apply' && role !== 'remove' && role !== 'notify') {
-    return `deliveryRole 缺失或非法(${String(role)})`
+    return 'deliveryRole 缺失或非法'
   }
+  if (!ev.payload || typeof ev.payload !== 'object' || Array.isArray(ev.payload)) return '业务校验失败(invalid_payload)'
   // 类型/角色矩阵不再在本文件另写一份：以下行指令注册表为唯一真源（与中央 HTTP /sync/commands 同源）。
   // sla1_escalate_supervisor 由中枢本机消费（见 validateSupervisorNotificationFile），不经终端应用。
-  const spec = downCommandSpec(String(ev.type || ''))
-  if (!spec || ev.type === 'sla1_escalate_supervisor' || !spec.roles.includes(role)) {
-    return `type/role 组合非法(${ev.type}/${role})`
-  }
+  const type = ev.type
+  if (typeof type !== 'string' || !type) return 'type/role 组合非法'
+  const spec = downCommandSpec(type)
+  if (!spec || type === 'sla1_escalate_supervisor' || !spec.roles.includes(role)) return 'type/role 组合非法'
   // 聊天原文任何方向都不出机：下行文件同样递归扫描（报字段路径，不报值）
   const chatLeak = findForbiddenDownlinkField(ev.payload)
   if (chatLeak) {
@@ -758,9 +760,10 @@ export function validateDownEventFile(ev: SyncEventFile, ownDeliveryKey: string,
   // （transport='smb'：lead 保留历史 8 字段口径；目标存在性用上面已验证的本机投递键证明，
   //  SMB 没有中央 UUID target 字段，绝不伪造）。此前合法信封配 payload={} 也能进入状态机。
   const businessError = validateDownCommand({
-    eventType: String(ev.type || ''), entityType: spec.entityType,
-    payload: { ...ev.payload, deliveryRole: role },
-    localDeliveryKey: String(ev.to || '')
+    eventType: type, entityType: spec.entityType,
+    payload: ev.payload,
+    deliveryRole: role,
+    localDeliveryKey: ev.to
   }, 'smb')
   if (businessError) return `业务校验失败(${businessError})`
   const expectedName = deliveryFileName(Number(ev.eventSeq), ev.idempotencyKey, role)
@@ -787,18 +790,30 @@ function validateSupervisorNotificationFile(
   if (status !== 'pending' && status !== 'sent') return null
   let payload: Record<string, unknown>
   try { payload = JSON.parse(String(rows[0].payload || '{}')) } catch { return null }
-  if (String(payload.type || '') !== 'sla1_escalate_supervisor') return null
+  const sourceType = payload.type
+  if (sourceType !== 'sla1_escalate_supervisor') return null
+  const sourceError = validateDownCommand({
+    eventType: 'sla1_escalate_supervisor', entityType: 'assignment', payload,
+    deliveryRole: 'notify', localDeliveryKey: ownDeliveryKey
+  }, 'smb')
+  if (sourceError) return null
   const expected = routeDownRecipients('sla1_escalate_supervisor', payload)
   if (expected.length !== 1 || expected[0].key !== ownDeliveryKey || expected[0].role !== 'notify') return null
-  const body = ev.payload || {}
-  if (String(body.type || '') !== 'sla1_escalate_supervisor') return null
+  if (!ev.payload || typeof ev.payload !== 'object' || Array.isArray(ev.payload)) return null
+  const body = ev.payload
+  const bodyError = validateDownCommand({
+    eventType: 'sla1_escalate_supervisor', entityType: 'assignment', payload: body,
+    deliveryRole: 'notify', localDeliveryKey: ownDeliveryKey
+  }, 'smb')
+  if (bodyError) return null
   if (
-    Number(body.leadId || 0) !== Number(payload.leadId || 0) ||
-    Number(body.assignmentId || 0) !== Number(payload.assignmentId || 0) ||
-    Number(body.remindCount || 0) !== Number(payload.remindCount || 0) ||
-    Number(body.recycledAt || 0) !== Number(payload.recycledAt || 0) ||
-    String(body.salesName || '') !== String(payload.salesName || '') ||
-    String(body.reason || '') !== String(payload.reason || '')
+    body.type !== payload.type ||
+    body.leadId !== payload.leadId ||
+    body.assignmentId !== payload.assignmentId ||
+    body.remindCount !== payload.remindCount ||
+    body.recycledAt !== payload.recycledAt ||
+    body.salesName !== payload.salesName ||
+    body.reason !== payload.reason
   ) return null
   return { outboxStatus: status }
 }

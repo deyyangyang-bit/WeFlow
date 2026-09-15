@@ -110,11 +110,16 @@ async function main(): Promise<void> {
   // ── 真值准备：一条真实线索 + 一次真实分配（供合法对照与身份一致性用例） ────────
   leadSvc.importLeads('fields', 'fields.csv', [
     { phone: '13900008001', name: '字段线索甲', source: '测试' },
-    { phone: '13900008002', name: '字段线索乙', source: '测试' }
+    { phone: '13900008002', name: '字段线索乙', source: '测试' },
+    { phone: '13900008003', name: '字段隔离占位线索', source: '测试' }
   ])
   const leadId = Number(crmDbService.all("SELECT id FROM lead WHERE contact_normalized = '13900008001'")[0]?.id || 0)
   const leadId2 = Number(crmDbService.all("SELECT id FROM lead WHERE contact_normalized = '13900008002'")[0]?.id || 0)
-  assignmentSvc.assignLeads([leadId], SUPERVISOR, SUPERVISOR)
+  const placeholderLeadId = Number(crmDbService.all("SELECT id FROM lead WHERE contact_normalized = '13900008003'")[0]?.id || 0)
+  // 先为无关线索建一条 assignment，保证后面的 transfer 夹具不会把 leadId 恰好复用成 assignmentId；
+  // D0 要证明真实移交确实是「旧行 + 新行」两条不同记录，而不是数字碰巧相等。
+  assignmentSvc.assignLeads([placeholderLeadId], SALES2, SUPERVISOR)
+  assignmentSvc.assignLeads([leadId], SALES2, SUPERVISOR)
   const assignmentId = Number(assignmentSvc.currentAssignment(leadId)?.id || 0)
   assignmentSvc.assignLeads([leadId2], SALES2, SUPERVISOR)
   const otherLeadAssignmentId = Number(assignmentSvc.currentAssignment(leadId2)?.id || 0)
@@ -142,7 +147,7 @@ async function main(): Promise<void> {
 
   console.log('═══ A. 共享校验器：顶层字段严格运行时契约 ═══')
   ok('A0 前置：真实线索与真实分配行已就位（否则后续全部是空断言）',
-    leadId > 0 && leadId2 > 0 && leadId !== leadId2 && assignmentId > 0 &&
+    leadId > 0 && leadId2 > 0 && placeholderLeadId > 0 && leadId !== leadId2 && assignmentId > 0 &&
     otherLeadAssignmentId > 0 && otherLeadAssignmentId !== assignmentId,
     JSON.stringify({ leadId, leadId2, assignmentId, otherLeadAssignmentId }))
   ok('A0b 对照：完全合法的 assign / transfer 载荷通过校验（证明负例不是被别的规则误伤）',
@@ -230,6 +235,34 @@ async function main(): Promise<void> {
       const code = String(validateDownCommand(assignSubject({ ...assignBase(), slaHours: bad }), 'smb'))
       return code === 'invalid_type:slaHours' || code === 'invalid_integer:slaHours'
     }))
+
+  // ── A4c JS 安全整数边界：所有整数/时间戳字段统一拒绝 unsafe number ────────
+  const maxSafe = Number.MAX_SAFE_INTEGER
+  const minUnsafe = Number.MIN_SAFE_INTEGER - 1
+  const safeLead = { ...leadSub, leadId: maxSafe }
+  const safeBoundaryCases: Array<[string, string | null, string | null]> = [
+    ['leadId=max_safe', validateDownCommand(assignSubject({ ...assignBase(), leadId: maxSafe, lead: safeLead }), 'smb'), null],
+    ['assignmentId=max_safe', validateDownCommand(assignSubject({ ...assignBase(), assignmentId: maxSafe }), 'smb'), null],
+    ['oldAssignmentId=max_safe', validateDownCommand(transferSubject({ ...transferBase(), oldAssignmentId: maxSafe }), 'smb'), null],
+    ['sla1Deadline=max_safe', validateDownCommand(transferSubject({ ...transferBase(), sla1Deadline: maxSafe }), 'smb'), null],
+    ['recycledAt=max_safe', validateDownCommand({
+      eventType: 'sla1_escalate_supervisor', entityType: 'assignment', localDeliveryKey: 'k-fields',
+      payload: { ...sla1Subject(3).payload, recycledAt: maxSafe }
+    }, 'smb'), null],
+    ['leadId=min_unsafe', validateDownCommand(assignSubject({ ...assignBase(), leadId: minUnsafe }), 'smb'), 'invalid_integer:leadId'],
+    ['assignmentId=min_unsafe', validateDownCommand(assignSubject({ ...assignBase(), assignmentId: minUnsafe }), 'smb'), 'invalid_integer:assignmentId'],
+    ['oldAssignmentId=min_unsafe', validateDownCommand(transferSubject({ ...transferBase(), oldAssignmentId: minUnsafe }), 'smb'), 'invalid_integer:oldAssignmentId'],
+    ['sla1Deadline=min_unsafe', validateDownCommand(transferSubject({ ...transferBase(), sla1Deadline: minUnsafe }), 'smb'), 'invalid_timestamp:sla1Deadline'],
+    ['recycledAt=min_unsafe', validateDownCommand({
+      eventType: 'sla1_escalate_supervisor', entityType: 'assignment', localDeliveryKey: 'k-fields',
+      payload: { ...sla1Subject(3).payload, recycledAt: minUnsafe }
+    }, 'smb'), 'invalid_timestamp:recycledAt'],
+    ['leadId=max_safe+1', validateDownCommand(assignSubject({ ...assignBase(), leadId: maxSafe + 1 }), 'smb'), 'invalid_integer:leadId'],
+    ['sla1Deadline=max_safe+1', validateDownCommand(transferSubject({ ...transferBase(), sla1Deadline: maxSafe + 1 }), 'smb'), 'invalid_timestamp:sla1Deadline']
+  ]
+  ok('A4c 安全整数边界：MAX_SAFE_INTEGER 可作为未收窄字段值，超出/低于安全范围按稳定 integer/timestamp 码拒收',
+    safeBoundaryCases.every(([, got, want]) => want === null ? got === null : got === want),
+    JSON.stringify(safeBoundaryCases.filter(([, got, want]) => want === null ? got !== null : got !== want)))
 
   // ── A5 顶层 leadId 与 lead.leadId 一致性：原始数字直接比较 ─────────────────────
   ok('A5 顶层 `leadId: "41"`（字符串）+ 子对象 `leadId: 41`（数字）→ 拒收，而不是因 Number() 相等而通过',
@@ -339,6 +372,29 @@ async function main(): Promise<void> {
     leadId: id, name: '字段线索甲', contactType: 'phone', contactNormalized: '13900008001', source: '测试', note: ''
   })
   httpCases.push(['assign-leadId-mismatch', { ...assignBase(), leadId, lead: httpLead(leadId2) }, 'assign', 'lead_id_mismatch'])
+  const invalidRoleValues: Array<[string, unknown, string]> = [
+    ['missing', undefined, 'missing_field:deliveryRole'], ['array', ['apply'], 'invalid_type:deliveryRole'],
+    ['object', { 0: 'apply' }, 'invalid_type:deliveryRole'], ['number', 1, 'invalid_type:deliveryRole'],
+    ['boolean', true, 'invalid_type:deliveryRole'], ['null', null, 'missing_field:deliveryRole'],
+    ['empty', '', 'missing_field:deliveryRole']
+  ]
+  for (const [tag, role, expect] of invalidRoleValues) {
+    const payload = { ...assignBase(), deliveryRole: role }
+    if (tag === 'missing') delete payload.deliveryRole
+    httpCases.push([`assign-deliveryRole-${tag}`, payload, 'assign', expect])
+  }
+  const missingType = assignBase()
+  delete missingType.type
+  httpCases.push(['assign-type-missing', missingType, 'assign', 'missing_field:type'])
+  for (const [tag, value, expect] of [
+    ['object', {}, 'invalid_type:type'], ['array', ['assign'], 'invalid_type:type'],
+    ['number', 1, 'invalid_type:type'], ['boolean', true, 'invalid_type:type'],
+    ['null', null, 'missing_field:type'], ['empty', '', 'missing_field:type']
+  ] as Array<[string, unknown, string]>) {
+    httpCases.push([`assign-type-${tag}`, { ...assignBase(), type: value }, 'assign', expect])
+  }
+  httpCases.push(['assign-type-mismatch-recycle', { ...assignBase(), type: 'recycle' }, 'assign', 'payload_type_mismatch'])
+  httpCases.push(['transfer-type-mismatch-assign', { ...transferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch'])
 
   const httpResults: Array<[string, number, string]> = []
   let httpAllReject = true
@@ -386,14 +442,15 @@ async function main(): Promise<void> {
   const downDir = join(smbRoot, 'down', rk)
   const failedDir = join(downDir, '.failed')
   mkdirSync(downDir, { recursive: true })
-  const smbFile = (tag: string, seq: number, payload: Record<string, unknown>, eventType = 'assign') => ({
+  const missingRole = Symbol('missing-delivery-role')
+  const smbFile = (tag: string, seq: number, payload: Record<string, unknown>, eventType = 'assign', outerRole: unknown = 'apply') => ({
     name: lanSync.deliveryFileName(seq, `${eventType}:f-${tag}`, 'apply'),
     body: {
-      eventSeq: seq, idempotencyKey: `${eventType}:f-${tag}`, type: eventType, deliveryRole: 'apply',
+      eventSeq: seq, idempotencyKey: `${eventType}:f-${tag}`, type: eventType, deliveryRole: outerRole,
       to: rk, payload, emittedAt: NOW
     }
   })
-  const smbCases: Array<[string, Record<string, unknown>, string, string]> = [
+  const smbCases: Array<[string, Record<string, unknown>, string, string, unknown?]> = [
     ['assign-assignmentId-zero', { ...assignBase(), assignmentId: 0 }, 'assign', 'invalid_integer:assignmentId'],
     ['assign-assignmentId-object', { ...assignBase(), assignmentId: {} }, 'assign', 'invalid_type:assignmentId'],
     ['assign-leadId-numeric-string', { ...assignBase(), leadId: '41' }, 'assign', 'invalid_type:leadId'],
@@ -401,22 +458,44 @@ async function main(): Promise<void> {
     ['assign-slaHours-overflow', { ...assignBase(), slaHours: 999 }, 'assign', 'invalid_integer:slaHours'],
     ['assign-slaHours-numeric-string', { ...assignBase(), slaHours: '24' }, 'assign', 'invalid_type:slaHours'],
     ['transfer-oldAssignmentId-array', { ...transferBase(), oldAssignmentId: [] }, 'transfer', 'invalid_type:oldAssignmentId'],
-    ['transfer-lead-id-cross-type', { ...transferBase(), leadId: '41', lead: { ...leadSub, leadId: 41 } }, 'transfer', 'invalid_type:leadId']
+    ['transfer-lead-id-cross-type', { ...transferBase(), leadId: '41', lead: { ...leadSub, leadId: 41 } }, 'transfer', 'invalid_type:leadId'],
+    ['assign-outer-role-missing', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', missingRole],
+    ['assign-outer-role-array', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', ['apply']],
+    ['assign-outer-role-object', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', { role: 'apply' }],
+    ['assign-outer-role-number', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', 1],
+    ['assign-outer-role-boolean', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', true],
+    ['assign-outer-role-null', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', null],
+    ['assign-outer-role-empty', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', ''],
+    ['assign-payload-role-array', { ...assignBase(), deliveryRole: ['apply'] }, 'assign', 'invalid_type:deliveryRole'],
+    ['assign-payload-role-object', { ...assignBase(), deliveryRole: { role: 'apply' } }, 'assign', 'invalid_type:deliveryRole'],
+    ['assign-payload-role-number', { ...assignBase(), deliveryRole: 1 }, 'assign', 'invalid_type:deliveryRole'],
+    ['assign-payload-role-boolean', { ...assignBase(), deliveryRole: true }, 'assign', 'invalid_type:deliveryRole'],
+    ['assign-payload-role-null', { ...assignBase(), deliveryRole: null }, 'assign', 'missing_field:deliveryRole'],
+    ['assign-payload-role-empty', { ...assignBase(), deliveryRole: '' }, 'assign', 'missing_field:deliveryRole'],
+    ['assign-type-missing', (() => { const p = assignBase(); delete p.type; return p })(), 'assign', 'missing_field:type'],
+    ['assign-type-object', { ...assignBase(), type: {} }, 'assign', 'invalid_type:type'],
+    ['assign-type-array', { ...assignBase(), type: ['assign'] }, 'assign', 'invalid_type:type'],
+    ['assign-type-number', { ...assignBase(), type: 1 }, 'assign', 'invalid_type:type'],
+    ['assign-type-boolean', { ...assignBase(), type: true }, 'assign', 'invalid_type:type'],
+    ['assign-type-null', { ...assignBase(), type: null }, 'assign', 'missing_field:type'],
+    ['assign-type-empty', { ...assignBase(), type: '' }, 'assign', 'missing_field:type'],
+    ['assign-type-mismatch-recycle', { ...assignBase(), type: 'recycle' }, 'assign', 'payload_type_mismatch'],
+    ['transfer-type-mismatch-assign', { ...transferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch']
   ]
   let smbDirectPass = true
-  for (const [tag, payload, eventType, expect] of smbCases) {
-    const f = smbFile(tag, 900, payload, eventType)
+  for (const [tag, payload, eventType, expect, outerRole] of smbCases) {
+    const f = smbFile(tag, 900, payload, eventType, outerRole)
     const reason = String(lanSync.validateDownEventFile(f.body as never, rk, f.name))
     if (!reason.includes(expect)) { smbDirectPass = false; console.log(`    ✗ ${tag}: ${reason}（期望含 ${expect}）`) }
   }
   ok(`C1 ${smbCases.length} 类非法 SMB 载荷在进入状态机前被拒，错误码指向对应字段`, smbDirectPass)
 
   /** 把一批事件写进队列目录，跑一轮真实消费，返回结果 */
-  const runQueue = (root: string, cases: Array<[string, Record<string, unknown>, string]>, seq: number) => {
+  const runQueue = (root: string, cases: Array<[string, Record<string, unknown>, string, string, unknown?]>, seq: number) => {
     const dir = join(root, 'down', lanSync.deliveryKey(SALES))
     mkdirSync(dir, { recursive: true })
-    for (const [tag, payload, eventType] of cases) {
-      const f = smbFile(tag, seq, payload, eventType)
+    for (const [tag, payload, eventType, , outerRole] of cases) {
+      const f = smbFile(tag, seq, payload, eventType, outerRole)
       writeFileSync(join(dir, f.name), JSON.stringify(f.body))
     }
     return { dir, result: lanSync.consumeDownEvents(root) }
@@ -425,7 +504,7 @@ async function main(): Promise<void> {
   const beforeSmb = insertAuditCounts()
   const { dir: cDir, result: smbRound } = runQueue(smbRoot, smbCases, 900)
   const cFailedDir = join(cDir, '.failed')
-  ok('C2 非法文件全部 .failed 隔离（failed=8）、零 applied / conflict / invalid / nolead —— 校验失败的文件绝不能被算作「已消费」或留下重试残影',
+  ok(`C2 非法文件全部 .failed 隔离（failed=${smbCases.length}）、零 applied / conflict / invalid / nolead —— 校验失败的文件绝不能被算作「已消费」或留下重试残影`,
     smbRound.failed === smbCases.length && smbRound.applied === 0 &&
     smbRound.conflict === 0 && smbRound.invalid === 0 && smbRound.nolead === 0 && smbRound.skippedDup === 0,
     JSON.stringify(smbRound))
@@ -445,7 +524,7 @@ async function main(): Promise<void> {
       return outcome !== 'applied' && outcome !== 'conflict'
     }))
   ok('C6 隔离文件本体确实落在 .failed/（可审计保留，未被静默删除），且原队列目录已清空',
-    smbCases.every(([tag, , eventType]) => existsSync(join(cFailedDir, smbFile(tag, 900, {}, eventType).name))) &&
+    smbCases.every(([tag, , eventType, , outerRole]) => existsSync(join(cFailedDir, smbFile(tag, 900, {}, eventType, outerRole).name))) &&
     readdirSync(cDir).filter((f) => f.endsWith('.json')).length === 0)
 
   // 正反对照（独立根目录、独立 lead）：完全合法的 assign 经同一入口真实落地 applied
@@ -490,7 +569,7 @@ async function main(): Promise<void> {
   const beforeTransferId = Number(assignmentSvc.currentAssignment(leadId)?.id || 0)
   const beforeTransfer = rowOf(beforeTransferId)
   const heldBy = String(beforeTransfer.sales_name || '')
-  const moved = assignmentSvc.transferAssignment(leadId, SALES, SUPERVISOR, '字段移交') as unknown as
+  const moved = assignmentSvc.transferAssignment(beforeTransferId, SALES, '字段移交', SUPERVISOR) as unknown as
     { ok?: boolean; data?: { assignmentId?: number } }
   const legacyRowId = Number(moved?.data?.assignmentId || assignmentSvc.currentAssignment(leadId)?.id || 0)
   const newRow = rowOf(legacyRowId)
@@ -504,7 +583,7 @@ async function main(): Promise<void> {
   })
   const legacyFrozen = JSON.stringify(legacyTransfer())
   ok('D0 前置：一次真实移交同时留下「目标销售的新行」(assigned) 与「原持有者的旧行」(transferred)；合法载荷的来源行 = 新行，与生产者 transferAssignment 的写法一致',
-    legacyRowId > 0 && legacyOldRowId > 0 && legacyRowId !== legacyOldRowId &&
+    moved?.ok === true && leadId !== beforeTransferId && legacyRowId > 0 && legacyOldRowId > 0 && legacyRowId !== legacyOldRowId &&
     String(newRow.lead_id) === String(leadId) && String(newRow.sales_name) === SALES &&
     String(crmDbService.all('SELECT status FROM assignment WHERE id = ?', [legacyOldRowId])[0]?.status) === 'transferred',
     JSON.stringify({ legacyRowId, legacyOldRowId, newRow, old: rowOf(legacyOldRowId), heldBy,

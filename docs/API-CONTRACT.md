@@ -580,19 +580,27 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 | `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary` | 同上 |
 | `permission_change` | `permission` | `apply` | `employeeRef` / `declaredRole` | 同上 |
 
+- **`type` 与 `deliveryRole` 绑定**：每个 payload 都必须带原始字符串 `type`，且必须严格等于信封
+  `eventType`；缺失/空值返回 `missing_field:type`，对象、数组、数字、布尔等返回 `invalid_type:type`，
+  字符串但与信封不一致返回 `payload_type_mismatch`。角色同样按原始类型校验，禁止用 `String()` 洗白；
+  中央 HTTP 从 payload 读取 `deliveryRole`，SMB 以文件外层 `deliveryRole` 作为来源，若 payload 也带角色则
+  两层必须是同一个字符串，否则拒收。角色缺失/空值返回 `missing_field:deliveryRole`，非法形态返回
+  `invalid_type:deliveryRole`（SMB 文件外层非法角色在本体校验阶段隔离）。
+
 - **顶层字段的严格运行时契约（2026-09-15 增补）**：必填判定与**形态判定**是两件事。必填只判
-  「有没有」（`isBlank`）；形态一律按 `DOWN_COMMAND_SPECS[eventType].fields` 的**共享字段规则**判——
+  「有没有」（`isBlank`），随后对非空值按 `DOWN_COMMAND_SPECS[eventType].fields` 的**共享字段规则**判——
   两条通道（中央 HTTP / SMB）共用同一份规则，**不各写一套**。规则集中登记在
   `shared/centralDownCommand.ts`，与 eventType 同处一个注册表。
 
   | 字段 | kind | 值域 | 出现即必须 | 违反时稳定码 |
   |---|---|---|---|---|
+  | `type` | `string` | 必须等于信封 `eventType` | 原始非空 `string` | 缺失/空值 `missing_field:type`／形态 `invalid_type:type`／不一致 `payload_type_mismatch` |
   | `leadId` | `positive_int` | ≥ 1，安全整数 | 原始 `number`，非字符串 / 对象 / 数组 / 布尔 | 缺失 `missing_field`／形态 `invalid_type`／越界或小数 `invalid_integer` |
   | `assignmentId` | `positive_int` | ≥ 1，安全整数 | 同上 | 同上 |
   | `oldAssignmentId` | `positive_int`（**可选**） | ≥ 1，安全整数 | 同上；`null` / 省略 = 未提供（合法） | 同上 |
   | `remindCount` | `non_negative_int` | **0 – 3** | 原始 `number` 整数 | 越界 `invalid_integer:remindCount` |
   | `slaHours` | `positive_int` | **1 – 72** | 原始 `number` 整数 | 越界 `invalid_integer:slaHours` |
-  | `sla1Deadline` / `recycledAt` | `positive_int` | ≥ 1，有限正整数毫秒 | 原始 `number` | `invalid_timestamp:<字段>`（`requiredTimestamps`）或 `invalid_integer:<字段>` |
+  | `sla1Deadline` / `recycledAt` | `timestamp` | ≥ 1，安全正整数毫秒 | 原始 `number` | 缺失 `missing_field:<字段>`／任何非法形态或越界 `invalid_timestamp:<字段>` |
   | `salesName` / `toSales` / `fromSales` / `reason` / `actor` / `title` / `summary` / `employeeRef` / `declaredRole` / `authoritySource` / `displayName` / `contactMasked` | `string` | 非空（另有 `maxLength` 上限） | 原始 `string` 字面量 | `invalid_type:<字段>`／过长 `too_long:<字段>` |
 
   **纪律**：
@@ -654,9 +662,8 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**（否则中央会当成新事件）。
 
 - **字符串 SLA 不是合法绝对时间戳（2026-09-15 增补）**：`payload.sla1Deadline` 只有在**原始类型就是
-  `number`** 且是**有限正整数**时才算「已合法」。**字符串数字（如 `"1735689600000"`）不算合法**——
-  中央 HTTP 侧的 `commandPayloadOf` 会对它做 `Number()`、SMB 侧的 `requiredTimestamps` 会拒字符串，
-  同一个载荷在两条通道上口径会漂移，因此一律**用 assignment 行读回的 `number` 覆盖**，
+  `number`** 且是**安全正整数**时才算「已合法」。**字符串数字（如 `"1735689600000"`）不算合法**——
+  两条通道都保留原始值并由共享 `timestamp` 规则拒收，因此一律**用 assignment 行读回的 `number` 覆盖**，
   **绝不把字符串时间戳原样透传**。小数 / `NaN` / `Infinity` / `0` / 负数 / 对象 / 数组 / 布尔 / 空串
   一律按「未合法」处理（**不是**「看起来能转数字就放过」）。
 

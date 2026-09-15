@@ -310,11 +310,16 @@
   「目标存在」由已验证的本机投递键（`localDeliveryKey`）证明，不伪造业务 UUID。
 - **顶层字段的严格运行时契约（2026-09-15 增补）**：必填（`isBlank`）与**形态**是两件事。
   `DOWN_COMMAND_SPECS[eventType].fields` 与 eventType 同处一个注册表，两条通道共用，**不各写一套**：
-  - `leadId` / `assignmentId` / `oldAssignmentId`：`positive_int`（≥ 1，原始 `number` 整数）；
+  - `payload.type`：必须是原始非空字符串，且严格等于信封 `eventType`；缺失/空值、非法形态、不一致分别返回
+    `missing_field:type`、`invalid_type:type`、`payload_type_mismatch`。`deliveryRole` 也必须按原始类型校验；
+    SMB 外层角色是来源，若 payload 同时带角色必须与外层严格一致，禁止 `String()` 洗白或覆盖。
+  - `leadId` / `assignmentId` / `oldAssignmentId`：`positive_int`（≥ 1，原始 `number` 安全整数）；
   - `remindCount`：`non_negative_int` **0–3**（依据：`assignment.sla1_remind_count` 是「已提醒次数」，
     三次提醒制下生产者恒发 3、接收端按 `N/3` 渲染；越界会让主管看到假次数）；
   - `slaHours`：`positive_int` **1–72**（口径 = `crmLeadSlaHours` 可接受区间，缺省 24）；
-  - `sla1Deadline` / `recycledAt`：有限正整数毫秒时间戳；
+  - `sla1Deadline` / `recycledAt`：`timestamp`（≥ 1 的安全正整数毫秒时间戳）；缺失统一 `missing_field:<字段>`，
+    任何非法类型、越界或超出安全整数范围统一 `invalid_timestamp:<字段>`；不再与 `invalid_type:` /
+    `invalid_integer:` 并列竞速；
   - 其余登记字段为**非空字符串字面量**（另有长度上限）。
   **`kind` 自带自然下界**（`positive_int` ≥ 1、`non_negative_int` ≥ 0），显式 `min` / `max` 只用于收窄——
   绝不因为没登记 `min` 就让 `0` / 负数溜过去。**禁止在校验之前 `Number()` / `String()`**（会把 `{}`→
