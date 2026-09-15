@@ -478,6 +478,54 @@ check('M7 lead.name 超长 → 400 too_long_lead_field:name',
 const mLeadNotObject = await postAssignWithLead('lead-not-object', '不是对象')
 check('M8 lead 非对象 → 400 invalid_lead',
   mLeadNotObject.statusCode === 400 && String(mLeadNotObject.json().message).includes('invalid_lead'))
+
+// ── 建档契约（2026-09-15）：中央 assign/transfer 的 lead 必须能安全建档 ──
+// 只带 leadId 会让接收端 createLeadFromInfoTx 以空 contact_normalized 建档，
+// 破坏身份定位并可能撞 UNIQUE(contact_type, contact_normalized)——建档字段在服务端就拒收。
+const mLeadOnlyId = await postAssignWithLead('lead-only-id', { leadId: 41 })
+check('M11 lead 只有 leadId → 400（缺建档身份字段，绝不允许空身份建档）',
+  mLeadOnlyId.statusCode === 400 && String(mLeadOnlyId.json().message).includes('missing_lead_field:'), String(mLeadOnlyId.payload))
+const mNoContactType = await postAssignWithLead('no-contact-type', { ...lead6, contactType: undefined })
+check('M12 lead 缺 contactType → 400 missing_lead_field:contactType',
+  mNoContactType.statusCode === 400 && String(mNoContactType.json().message).includes('missing_lead_field:contactType'))
+const mNoContactNorm = await postAssignWithLead('no-contact-norm', { ...lead6, contactNormalized: undefined })
+check('M13 lead 缺 contactNormalized → 400 missing_lead_field:contactNormalized',
+  mNoContactNorm.statusCode === 400 && String(mNoContactNorm.json().message).includes('missing_lead_field:contactNormalized'))
+const mEmptyContactNorm = await postAssignWithLead('empty-contact-norm', { ...lead6, contactNormalized: '  ' })
+check('M14 lead.contactNormalized 空白串 → 400（空身份不能建档）',
+  mEmptyContactNorm.statusCode === 400 && String(mEmptyContactNorm.json().message).includes('missing_lead_field:contactNormalized'))
+const mNoNote = await postAssignWithLead('no-note', { ...lead6, note: undefined })
+check('M15 固定 6 字段缺一即拒：lead 缺 note → 400（允许空串但必须存在）',
+  mNoNote.statusCode === 400 && String(mNoNote.json().message).includes('missing_lead_field:note'))
+const mMismatch = await postAssignWithLead('id-mismatch', { ...lead6, leadId: 42 })
+check('M16 顶层 leadId 与 lead.leadId 不一致 → 400 lead_id_mismatch（禁止按其中一个猜）',
+  mMismatch.statusCode === 400 && String(mMismatch.json().message).includes('lead_id_mismatch'))
+// 被拒指令不消耗幂等键：先用缺建档字段的 lead 拒收一次（同 key 修正后的受理正例在 M10 无痕断言之后，见 M22）
+const mReuseKey = 'm-recover-after-invalid'
+const mReuseBad = await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(guardSup.token),
+  payload: { ...downCommand, eventId: 'm-reuse-bad', idempotencyKey: mReuseKey, eventType: 'assign',
+    entityId: scoped('assignment:1', guardDeviceId), targetEmployeeId: guardSales.principal.employeeId,
+    payload: { type: 'assign', deliveryRole: 'apply', leadId: 41, assignmentId: 1, salesName: '护栏销售', lead: { leadId: 41 } } } })
+check('M17 建档字段缺失的 assign → 400（不消耗幂等键，修正后同 key 受理见 M22）', mReuseBad.statusCode === 400)
+
+// transfer 的 SLA 纪律：sla1Deadline/mode 是移交事实产生时确定的值，必填且必须是有限正整数
+const postTransfer = (suffix: string, payload: Record<string, unknown>) => app.inject({
+  method: 'POST', url: '/api/v1/sync/commands', headers: authOf(guardSup.token),
+  payload: { ...downCommand, eventId: `m-t-${suffix}`, idempotencyKey: `m-t-${suffix}`, eventType: 'transfer',
+    entityId: scoped('assignment:2', guardDeviceId), targetEmployeeId: guardSales.principal.employeeId, payload }
+})
+const transferBase = { type: 'transfer', deliveryRole: 'apply', leadId: 41, assignmentId: 2, oldAssignmentId: 1,
+  fromSales: '护栏主管', toSales: '护栏销售', mode: 'manual', sla1Deadline: Date.now() + 86_400_000, lead: lead6 }
+const mTransferNoSla = await postTransfer('no-sla', { ...transferBase, sla1Deadline: undefined })
+check('M19 transfer 缺 sla1Deadline → 400 invalid_timestamp（不在接收端重算 SLA）',
+  mTransferNoSla.statusCode === 400 && String(mTransferNoSla.json().message).includes('invalid_timestamp:sla1Deadline'))
+const mTransferStrSla = await postTransfer('str-sla', { ...transferBase, sla1Deadline: '1758000000000' })
+check('M20 transfer 的 sla1Deadline 是字符串数字 → 400（必须 number 类型正整数）',
+  mTransferStrSla.statusCode === 400 && String(mTransferStrSla.json().message).includes('invalid_timestamp:sla1Deadline'))
+const mTransferNoMode = await postTransfer('no-mode', { ...transferBase, mode: undefined })
+check('M21 transfer 缺 mode → 400 missing_field:mode',
+  mTransferNoMode.statusCode === 400 && String(mTransferNoMode.json().message).includes('missing_field:mode'))
+
 // recycle 的白名单里没有 lead，携带即按「未登记字段」整事件拒收（错误码带字段名、不带值）。
 // 无论走哪条分支，结论一致：recycle 不携带 lead —— 「recycle 必带 6 字段」的旧口径不成立。
 const mRecycleLead = await postCommand({ eventId: 'm-recycle-lead', idempotencyKey: 'm-recycle-lead',
@@ -490,6 +538,17 @@ check('M10 以上被拒的下行载荷不留 sync_event / 投影 / 审计（中�
   store.downEventCount() === mBefore.down && store.projectionRows().length === mBefore.projections &&
   store.auditActions().length === mBefore.audits,
   JSON.stringify([mBefore, store.downEventCount(), store.projectionRows().length, store.auditActions().length]))
+
+// 无痕断言之后的正例：被拒收不消耗幂等键，修正后同 key 受理；合法 transfer（含 SLA/mode）受理
+const mReuseGood = await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(guardSup.token),
+  payload: { ...downCommand, eventId: 'm-reuse-good', idempotencyKey: mReuseKey, eventType: 'assign',
+    entityId: scoped('assignment:1', guardDeviceId), targetEmployeeId: guardSales.principal.employeeId,
+    payload: { type: 'assign', deliveryRole: 'apply', leadId: 41, assignmentId: 1, salesName: '护栏销售', lead: lead6 } } })
+check('M22 建档拒收不消耗幂等键（同 key 修正后 → 201 受理）',
+  mReuseGood.statusCode === 201 && mReuseGood.json().data.duplicate === false, String(mReuseGood.payload))
+const mTransferOk = await postTransfer('ok', transferBase)
+check('M23 合法 transfer（sla1Deadline 有限正整数 + mode + 6 字段 lead）→ 201',
+  mTransferOk.statusCode === 201, String(mTransferOk.payload))
 
 console.log('═══ N. 上行载荷引用闸门：类别 / 命名空间 / 形态（§三）═══')
 const guardPush = (idem: string, events: CentralSyncEvent[]) => pushAs(authOf(guardSales.token), idem, events)

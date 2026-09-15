@@ -309,7 +309,10 @@ async function main(): Promise<void> {
   clearBinding(); configureBinding()
   crmDbService.setScanState('centralSync:pullCursor', 0)
   pullQueue = [downEvent('ev-assign-1', 'assign', {
-    leadId: 9001, assignmentId: 9001, lead: { leadId: 9001, contactType: 'phone', contactNormalized: '13900000001', name: '下行客户甲' },
+    leadId: 9001, assignmentId: 9001,
+    // 中央 HTTP 下行建档契约（2026-09-15 起强制）：lead 必须是完整 6 字段
+    // （leadId 正整数 / contactType 枚举 / contactNormalized 非空 / name、source、note 以字符串存在）
+    lead: { leadId: 9001, contactType: 'phone', contactNormalized: '13900000001', name: '下行客户甲', source: 'test', note: '' },
     salesName: '测试销售甲', sla1Deadline: Date.now() + 86_400_000, mode: 'manual', deliveryRole: 'apply'
   }, 1)]
   resetCapture()
@@ -381,6 +384,43 @@ async function main(): Promise<void> {
     crmDbService.all('SELECT id FROM assignment WHERE lead_id = 999999').length === 0 &&
     crmDbService.all("SELECT id FROM audit_event WHERE entity_id = '999999'").length === 0 &&
     crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:downAttempt:ev-malformed-1'").length === 0)
+
+  // E4-E7 建档契约（2026-09-15）：缺建档字段的中央指令在本机应用侧同样直接终态 invalid，
+  // 绝不以空身份建档（空 contact_normalized 会撞 UNIQUE(contact_type, contact_normalized)）
+  crmDbService.setScanState('centralSync:pullCursor', 0)
+  const leadBase = { leadId: 9101, contactType: 'phone', contactNormalized: '13900000101', name: '建档契约线索', source: 'test', note: '' }
+  pullQueue = [
+    downEvent('ev-lead-only', 'assign', {
+      leadId: 9102, assignmentId: 9102, salesName: '测试销售甲', sla1Deadline: Date.now() + 86_400_000,
+      mode: 'manual', deliveryRole: 'apply', lead: { leadId: 9102 } // 只有 leadId：无法定位/建档
+    }, 1),
+    downEvent('ev-lead-no-contact', 'assign', {
+      leadId: 9103, assignmentId: 9103, salesName: '测试销售甲', sla1Deadline: Date.now() + 86_400_000,
+      mode: 'manual', deliveryRole: 'apply', lead: { ...leadBase, leadId: 9103, contactNormalized: '' }
+    }, 2),
+    downEvent('ev-lead-id-mismatch', 'assign', {
+      leadId: 9104, assignmentId: 9104, salesName: '测试销售甲', sla1Deadline: Date.now() + 86_400_000,
+      mode: 'manual', deliveryRole: 'apply', lead: { ...leadBase, leadId: 9999 } // 顶层≠子对象：禁止按其中一个猜
+    }, 3),
+    downEvent('ev-transfer-no-sla', 'transfer', {
+      leadId: 9105, assignmentId: 9105, oldAssignmentId: 9100, fromSales: '测试销售乙', toSales: '测试销售甲',
+      deliveryRole: 'apply', lead: { ...leadBase, leadId: 9105, contactNormalized: '13900000105' } // 缺 sla1Deadline/mode
+    }, 4)
+  ]
+  resetCapture()
+  await service.runCentralSyncOnce()
+  const contractAcks = ackBodies.flatMap((b) => b.acknowledgements)
+  ok('E4 只有 leadId / 空 contactNormalized / leadId 不一致的 assign 全部终态 invalid（不以空身份建档）',
+    ['ev-lead-only', 'ev-lead-no-contact', 'ev-lead-id-mismatch']
+      .every((id) => contractAcks.some((a) => a.eventId === id && a.outcome === 'invalid')),
+    JSON.stringify(contractAcks))
+  ok('E5 缺 sla1Deadline/mode 的 transfer 终态 invalid（SLA 不在接收端重算）',
+    contractAcks.some((a) => a.eventId === 'ev-transfer-no-sla' && a.outcome === 'invalid'))
+  ok('E6 被拒指令本机零业务写（不建 lead/assignment、不留 sync_apply 审计）',
+    crmDbService.all("SELECT id FROM lead WHERE contact_normalized IN ('13900000101','13900000105')").length === 0 &&
+    crmDbService.all('SELECT id FROM assignment WHERE lead_id IN (9102, 9103, 9104, 9105)').length === 0)
+  ok('E7 被拒指令不消耗幂等标记（修正后重发同 key 仍可应用）',
+    crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'syncApplied:central/ev-lead-%'").length === 0)
 
   console.log('═══ H. 上行指令链：员工目录解析（§三.5）═══')
   configureBinding()

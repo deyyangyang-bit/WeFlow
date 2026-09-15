@@ -326,7 +326,7 @@ async function main(): Promise<void> {
   const evSeq = Number(trRow.event_seq) + 100
   writeFileSync(join(queueDir(RK_JIA), deliveryFileName(evSeq, `assign:${r1.data!.assignments[0].assignmentId}`, 'apply')), JSON.stringify({
     eventSeq: evSeq, idempotencyKey: `assign:${r1.data!.assignments[0].assignmentId}`, type: 'assign', deliveryRole: 'apply', to: RK_JIA,
-    payload: { type: 'assign', leadId: l1, salesName: S_JIA, sla1Deadline: NOW + 86400000,
+    payload: { type: 'assign', leadId: l1, assignmentId: r1.data!.assignments[0].assignmentId, salesName: S_JIA, sla1Deadline: NOW + 86400000,
       lead: { leadId: l1, name: '张老板', contactType: 'phone', contactNormalized: '13922221111', contactRaw: '13922221111', wechat: '', source: '抖音', note: 'e2e 备注' } },
     emittedAt: NOW
   }))
@@ -379,7 +379,7 @@ async function main(): Promise<void> {
     writeFileSync(join(queueDir(RK_JIA), deliveryFileName(500, l3Key, 'apply')), JSON.stringify({
       eventSeq: 500, idempotencyKey: l3Key,
       type: 'assign', deliveryRole: 'apply', to: RK_JIA,
-      payload: { type: 'assign', leadId: l3, salesName: S_JIA, sla1Deadline: NOW + 86400000,
+      payload: { type: 'assign', leadId: l3, assignmentId: 1, salesName: S_JIA, sla1Deadline: NOW + 86400000,
         lead: { leadId: l3, name: '王老板', contactType: 'phone', contactNormalized: '13922224444', contactRaw: '13922224444', wechat: '', source: '抖音', note: 'e2e 备注' } },
       emittedAt: NOW
     }))

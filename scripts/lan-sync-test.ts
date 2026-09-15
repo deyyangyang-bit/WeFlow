@@ -405,44 +405,49 @@ async function main(): Promise<void> {
     String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(trRow.id)])[0]?.status) === 'sent' && settleTr.completed >= 1,
     JSON.stringify(settleTr))
 
-  // F13 nolead：无 lead 资料的孤儿事件 → ACK(nolead) 不结算、文件保留重试
+  // F13 缺 lead 资料的 assign：2026-09-15 起在共享业务校验器即被拒（missing_field:lead），
+  // 不再进入状态机的 nolead 分支——缺建档资料的事件重试永远不会自愈，隔离比挂着重试更诚实。
   const noleadKey = 'assign:nolead-test'
   const noleadDir = join(shared, 'down', rk)
   const noleadFile = deliveryFileName(999, noleadKey, 'apply')
   if (!existsSync(noleadDir)) { /* 甲的队列目录 */ }
+  const gBeforeF13 = { lead: crmDbService.all('SELECT COUNT(*) AS c FROM lead')[0].c, asg: crmDbService.all('SELECT COUNT(*) AS c FROM assignment')[0].c }
   writeFileSync(join(noleadDir, noleadFile), JSON.stringify({
     eventSeq: 999, idempotencyKey: noleadKey, type: 'assign', deliveryRole: 'apply', to: rk,
-    payload: { type: 'assign', leadId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000 }, emittedAt: NOW
+    payload: { type: 'assign', leadId: 424242, assignmentId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000 }, emittedAt: NOW
   }))
   cfg.set('lanSyncRole', 'terminal')
   setIdentity(SALES, '销售')
   const cdNolead = consumeDownEvents(shared)
-  ok('F13 nolead：ACK(nolead)、文件保留等重试、零业务写',
-    cdNolead.nolead === 1 && existsSync(join(noleadDir, noleadFile)) &&
+  ok('F13 缺 lead 的 assign 在校验层被拒：failed + .failed 隔离、零业务写、零幂等标记、零 ACK',
+    cdNolead.failed === 1 && cdNolead.nolead === 0 && !existsSync(join(noleadDir, noleadFile)) &&
+    existsSync(join(noleadDir, '.failed', noleadFile)) &&
+    Number(crmDbService.all('SELECT COUNT(*) AS c FROM lead')[0].c) === Number(gBeforeF13.lead) &&
+    Number(crmDbService.all('SELECT COUNT(*) AS c FROM assignment')[0].c) === Number(gBeforeF13.asg) &&
     crmDbService.getScanState(`syncApplied:${noleadKey}#apply`) <= 0, JSON.stringify(cdNolead))
   cfg.set('lanSyncRole', 'hub')
   setIdentity('测试主管', '主管')
   processUpAcks(shared)
   settleDownDeliveries(shared)
-  ok('F14 nolead ACK 不结算（行仍 pending，不静默当成功）',
-    String(crmDbService.all("SELECT status FROM outbox_event WHERE idempotency_key = 'assign:nolead-test'")[0]?.status || 'absent') !== 'sent')
-  // 补上 lead 资料后再投递 → 可应用（模拟 lead 随后续事件到达）
+  ok('F14 校验拒绝不产生任何 ACK：中枢侧无结算依据（不静默当成功）',
+    String(crmDbService.all("SELECT status FROM outbox_event WHERE idempotency_key = 'assign:nolead-test'")[0]?.status || 'absent') === 'absent')
+  // 补上完整 lead 资料 + assignmentId 后再投递 → 可应用（模拟 lead 资料齐备的正规投递）
   writeFileSync(join(noleadDir, noleadFile), JSON.stringify({
     eventSeq: 999, idempotencyKey: noleadKey, type: 'assign', deliveryRole: 'apply', to: rk,
-    payload: { type: 'assign', leadId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000,
+    payload: { type: 'assign', leadId: 424242, assignmentId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000,
       lead: { leadId: 424242, name: '补投线索', contactType: 'phone', contactNormalized: '13911124444', contactRaw: '13911124444', wechat: '', source: '同步', note: '' } },
     emittedAt: NOW
   }))
   cfg.set('lanSyncRole', 'terminal')
   setIdentity(SALES, '销售')
   const cdRetry = consumeDownEvents(shared)
-  ok('F15 lead 到位后重试成功（applied + 删文件）', cdRetry.applied === 1 && !existsSync(join(noleadDir, noleadFile)), JSON.stringify(cdRetry))
+  ok('F15 lead 资料齐备的合法 8 字段投递正常落地（applied + 删文件）', cdRetry.applied === 1 && !existsSync(join(noleadDir, noleadFile)), JSON.stringify(cdRetry))
 
   // F16 重复投递命中 syncApplied 幂等零重复（dup 路径按记录 outcome 补 ACK）
   const asgCountBefore = crmDbService.all('SELECT COUNT(*) AS c FROM assignment')[0].c
   writeFileSync(join(noleadDir, noleadFile), JSON.stringify({
     eventSeq: 999, idempotencyKey: noleadKey, type: 'assign', deliveryRole: 'apply', to: rk,
-    payload: { type: 'assign', leadId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000,
+    payload: { type: 'assign', leadId: 424242, assignmentId: 424242, salesName: SALES, sla1Deadline: NOW + 86400000,
       lead: { leadId: 424242, name: '补投线索', contactType: 'phone', contactNormalized: '13911124444', contactRaw: '13911124444', wechat: '', source: '同步', note: '' } },
     emittedAt: NOW
   }))
@@ -529,7 +534,7 @@ async function main(): Promise<void> {
   }
   const gEv = (over: Record<string, unknown>): Record<string, unknown> => ({
     eventSeq: 700, idempotencyKey: 'assign:g-valid', type: 'assign', deliveryRole: 'apply', to: rk,
-    payload: { type: 'assign', leadId: 888888, salesName: SALES, sla1Deadline: NOW + 86400000,
+    payload: { type: 'assign', leadId: 888888, assignmentId: 888888, salesName: SALES, sla1Deadline: NOW + 86400000,
       lead: { leadId: 888888, name: 'G校验线索', contactType: 'phone', contactNormalized: '13999990001', contactRaw: '13999990001', wechat: '', source: '同步', note: '' } },
     emittedAt: NOW, ...over
   })
@@ -568,7 +573,9 @@ async function main(): Promise<void> {
     undefined)
   ok('G8 validateDownEventFile 纯函数直测（合法事件返回 null）',
     validateDownEventFile({ ...gEv({}), to: rk, deliveryRole: 'apply' } as never, rk, deliveryFileName(700, 'assign:g-valid', 'apply')) === null &&
-    validateDownEventFile({ ...gEv({ idempotencyKey: 'transfer:g-valid', type: 'transfer', deliveryRole: 'remove' }) } as never, rk, deliveryFileName(700, 'transfer:g-valid', 'remove')) === null &&
+    validateDownEventFile({ ...gEv({ idempotencyKey: 'transfer:g-valid', type: 'transfer', deliveryRole: 'remove',
+      payload: { type: 'transfer', leadId: 888888, assignmentId: 888889, oldAssignmentId: 888888, fromSales: SALES2, toSales: SALES, mode: 'manual', sla1Deadline: NOW + 86400000,
+        lead: { leadId: 888888, name: 'G校验线索', contactType: 'phone', contactNormalized: '13999990001', contactRaw: '13999990001', wechat: '', source: '同步', note: '' } } }) } as never, rk, deliveryFileName(700, 'transfer:g-valid', 'remove')) === null &&
     validateDownEventFile({ ...gEv({}), to: deliveryKey(SALES2) } as never, rk, deliveryFileName(700, 'assign:g-valid', 'apply')) !== null &&
     validateDownEventFile({ ...gEv({ eventSeq: '700' }) } as never, rk, deliveryFileName(700, 'assign:g-valid', 'apply')) !== null &&
     validateDownEventFile({ ...gEv({ eventSeq: null }) } as never, rk, deliveryFileName(0, 'assign:g-valid', 'apply')) !== null)
@@ -588,9 +595,9 @@ async function main(): Promise<void> {
   const lCol2 = seedLead('H-碰撞2', '13911130002')
   crmDbService.runTx((tx) => {
     tx.run("INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES ((SELECT COALESCE(MAX(event_seq),0)+1 FROM outbox_event), ?, ?, 'pending', 'weflow-crm', ?, ?)",
-      [keyAB, JSON.stringify({ type: 'assign', leadId: lCol1, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
+      [keyAB, JSON.stringify({ type: 'assign', leadId: lCol1, assignmentId: 880001, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
     tx.run("INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES ((SELECT COALESCE(MAX(event_seq),0)+1 FROM outbox_event), ?, ?, 'pending', 'weflow-crm', ?, ?)",
-      [keyAC, JSON.stringify({ type: 'assign', leadId: lCol2, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
+      [keyAC, JSON.stringify({ type: 'assign', leadId: lCol2, assignmentId: 880002, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
   })
   cfg.set('lanSyncRole', 'hub')
   setIdentity('测试主管', '主管')
@@ -643,9 +650,9 @@ async function main(): Promise<void> {
     tx.run("DELETE FROM assignment WHERE lead_id = ?", [lCol3])
     tx.run("DELETE FROM assignment WHERE lead_id = ?", [lCol4])
     tx.run("INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES ((SELECT COALESCE(MAX(event_seq),0)+1 FROM outbox_event), ?, ?, 'pending', 'weflow-crm', ?, ?)",
-      [keyLong1, JSON.stringify({ type: 'assign', leadId: lCol3, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
+      [keyLong1, JSON.stringify({ type: 'assign', leadId: lCol3, assignmentId: 880003, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
     tx.run("INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES ((SELECT COALESCE(MAX(event_seq),0)+1 FROM outbox_event), ?, ?, 'pending', 'weflow-crm', ?, ?)",
-      [keyLong2, JSON.stringify({ type: 'assign', leadId: lCol4, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
+      [keyLong2, JSON.stringify({ type: 'assign', leadId: lCol4, assignmentId: 880004, salesName: SALES, sla1Deadline: NOW + 86400000 }), NOW, NOW])
   })
   emitDownEvents(shared)
   cfg.set('lanSyncRole', 'terminal')
@@ -714,6 +721,82 @@ async function main(): Promise<void> {
   ok('I8 旧格式无 claimedAt：回退 ev.emittedAt 落下有效 claimed_at',
     String(oldAsgAfter?.status) === 'claimed' && Number(oldAsgAfter?.claimed_at) === legacyEmittedAt,
     JSON.stringify({ status: oldAsgAfter?.status, claimed_at: oldAsgAfter?.claimed_at, expect: legacyEmittedAt }))
+
+  // ── J. SMB 下行接入共享业务校验器（2026-09-15）：缺/错业务字段的文件进入状态机前即被拒 ──
+  console.log('\n═══ J. SMB 下行共享校验器：非法载荷零副作用隔离 ═══')
+  cfg.set('lanSyncRole', 'terminal')
+  setIdentity(SALES, '销售')
+  const jLead = { leadId: 888888, name: 'J校验线索', contactType: 'phone', contactNormalized: '13999990002', contactRaw: '13999990002', wechat: '', source: '同步', note: '' }
+  const jPayload = { type: 'assign', leadId: 888888, assignmentId: 888888, salesName: SALES, sla1Deadline: NOW + 86400000, lead: jLead }
+  const jEv = (tag: string, payload: Record<string, unknown>): { name: string; body: Record<string, unknown> } => ({
+    name: deliveryFileName(800, `assign:j-${tag}`, 'apply'),
+    body: { eventSeq: 800, idempotencyKey: `assign:j-${tag}`, type: 'assign', deliveryRole: 'apply', to: rk, payload, emittedAt: NOW }
+  })
+  // 直测：逐类非法载荷返回稳定错误码（只带字段名，不带字段值）
+  const jCases: Array<[string, Record<string, unknown>, string]> = [
+    ['空 payload', {}, 'missing_field'],
+    ['缺 leadId', { ...jPayload, leadId: undefined }, 'missing_field:leadId'],
+    ['缺 assignmentId', { ...jPayload, assignmentId: undefined }, 'missing_field:assignmentId'],
+    ['缺目标销售', { ...jPayload, salesName: undefined }, 'missing_field:salesName'],
+    ['缺 lead 子对象', { ...jPayload, lead: undefined }, 'missing_field:lead'],
+    ['lead 不是对象', { ...jPayload, lead: '不是对象' }, 'invalid_lead'],
+    ['leadId 非正整数', { ...jPayload, lead: { ...jLead, leadId: 'x' } }, 'invalid_lead_field:leadId'],
+    ['contactType 非枚举', { ...jPayload, lead: { ...jLead, contactType: 'telegram' } }, 'invalid_lead_field:contactType'],
+    ['contactNormalized 为空', { ...jPayload, lead: { ...jLead, contactNormalized: '' } }, 'missing_lead_field:contactNormalized'],
+    ['字段超长', { ...jPayload, lead: { ...jLead, name: '长'.repeat(121) } }, 'too_long_lead_field:name'],
+    ['未知顶层字段', { ...jPayload, extraNote: '未登记' }, 'unknown_field:extraNote'],
+    ['未知 lead 字段', { ...jPayload, lead: { ...jLead, foo: '未登记' } }, 'unknown_lead_field:foo'],
+    ['顶层与子对象 leadId 不一致', { ...jPayload, lead: { ...jLead, leadId: 999999 } }, 'lead_id_mismatch'],
+    // 聊天字段在本体校验的禁字段扫描即被拦（报字段路径，不报值），先于共享校验器返回
+    ['聊天字段', { ...jPayload, chatContent: '聊天正文不出机' }, '禁止下行字段(chatContent']
+  ]
+  let jDirectPass = true
+  for (const [tag, payload, expect] of jCases) {
+    const { name, body } = jEv(tag, payload)
+    const reason = validateDownEventFile(body as never, rk, name)
+    if (!reason || !reason.includes(expect)) { jDirectPass = false; console.log(`    ✗ ${tag}: ${reason}（期望含 ${expect}）`) }
+  }
+  ok('J1 十四类非法 SMB 载荷被 validateDownEventFile 逐项拒收（错误码只带字段名）', jDirectPass)
+  // 落地证明：全部真实走 consumeDownEvents → .failed 隔离、零业务写、零幂等标记、零 ACK
+  const jBefore = gCounts()
+  for (const [tag, payload] of jCases) {
+    const { name, body } = jEv(tag, payload)
+    writeFileSync(join(noleadDir, name), JSON.stringify(body))
+  }
+  const jRound = consumeDownEvents(shared)
+  const jFailedDir = join(noleadDir, '.failed')
+  ok('J2 非法文件全部 .failed 隔离（计 failed），零业务写、零幂等标记',
+    jRound.failed === jCases.length && jRound.applied === 0 &&
+    jCases.every(([tag]) => existsSync(join(jFailedDir, deliveryFileName(800, `assign:j-${tag}`, 'apply')))) &&
+    (() => { const a = gCounts(); return a.lead === jBefore.lead && a.asg === jBefore.asg && a.aud === jBefore.aud })() &&
+    jCases.every(([tag]) => crmDbService.getScanState(`syncApplied:assign:j-${tag}#apply`) <= 0),
+    JSON.stringify(jRound))
+  // 正反对照：合法的 8 字段 assign / transfer（apply+remove）继续通过
+  const jTransferLead = { leadId: 888889, name: 'J移交线索', contactType: 'wechat', contactNormalized: 'wxid_j_transfer', contactRaw: 'wxid_j_transfer', wechat: 'wxid_j_transfer', source: '同步', note: '' }
+  ok('J3 合法 8 字段 assign/transfer（含 contactRaw/wechat 的 SMB 历史口径）继续通过校验',
+    validateDownEventFile({ ...jEv('ok-assign', jPayload).body } as never, rk, deliveryFileName(800, 'assign:j-ok-assign', 'apply')) === null &&
+    validateDownEventFile({ eventSeq: 801, idempotencyKey: 'transfer:j-ok', type: 'transfer', deliveryRole: 'apply', to: rk,
+      payload: { type: 'transfer', leadId: 888889, assignmentId: 888890, oldAssignmentId: 888889, fromSales: SALES2, toSales: SALES, mode: 'manual', sla1Deadline: NOW + 86400000, lead: jTransferLead },
+      emittedAt: NOW } as never, rk, deliveryFileName(801, 'transfer:j-ok', 'apply')) === null &&
+    validateDownEventFile({ eventSeq: 801, idempotencyKey: 'transfer:j-ok', type: 'transfer', deliveryRole: 'remove', to: rk,
+      payload: { type: 'transfer', leadId: 888889, assignmentId: 888890, oldAssignmentId: 888889, fromSales: SALES2, toSales: SALES, mode: 'manual', sla1Deadline: NOW + 86400000, lead: jTransferLead },
+      emittedAt: NOW } as never, rk, deliveryFileName(801, 'transfer:j-ok', 'remove')) === null)
+  // transfer 缺 sla1Deadline / mode：移交 SLA 是指令事实，缺失即拒收（不在接收端重算）
+  const jTransferPayload = { type: 'transfer', leadId: 888889, assignmentId: 888890, oldAssignmentId: 888889, fromSales: SALES2, toSales: SALES, mode: 'manual', sla1Deadline: NOW + 86400000, lead: jTransferLead }
+  const jTransferFile = (tag: string, payload: Record<string, unknown>) => ({
+    eventSeq: 802, idempotencyKey: `transfer:j-${tag}`, type: 'transfer', deliveryRole: 'apply', to: rk, payload, emittedAt: NOW
+  })
+  ok('J4 transfer 缺 sla1Deadline / 缺 mode / sla1Deadline 非正整数 → 全部拒收',
+    String(validateDownEventFile(jTransferFile('no-sla', { ...jTransferPayload, sla1Deadline: undefined }) as never, rk, deliveryFileName(802, 'transfer:j-no-sla', 'apply'))).includes('invalid_timestamp:sla1Deadline') &&
+    String(validateDownEventFile(jTransferFile('no-mode', { ...jTransferPayload, mode: undefined }) as never, rk, deliveryFileName(802, 'transfer:j-no-mode', 'apply'))).includes('missing_field:mode') &&
+    String(validateDownEventFile(jTransferFile('bad-sla', { ...jTransferPayload, sla1Deadline: '999' }) as never, rk, deliveryFileName(802, 'transfer:j-bad-sla', 'apply'))).includes('invalid_timestamp:sla1Deadline'))
+  // SMB recycle 历史信封（带 8 字段 lead + slaHours）继续通过；中央档才禁止 recycle 带 lead
+  ok('J5 SMB recycle 历史信封（lead + slaHours）通过共享校验（smb 档开口，中央档不开）',
+    validateDownEventFile({ eventSeq: 803, idempotencyKey: 'recycle:j-ok', type: 'recycle', deliveryRole: 'apply', to: rk,
+      payload: { type: 'recycle', leadId: 888888, assignmentId: 888888, salesName: SALES, reason: '回收', lead: jLead, slaHours: 24 },
+      emittedAt: NOW } as never, rk, deliveryFileName(803, 'recycle:j-ok', 'apply')) === null)
+  cfg.set('lanSyncRole', 'hub')
+  setIdentity('测试主管', '主管')
 
   // F24 状态查询
   const st = lanSyncStatus()
