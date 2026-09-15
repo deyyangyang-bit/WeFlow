@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v3.4 |
 | 日期 | 2026-09-14（实施状态校准；原始评审版 2026-09-02） |
-| 状态 | 现行执行版（P0/P1/P2 已进入实现与验收；**Phase 3a 代码侧已实现（含 2026-09-15 四轮修复），部署与真机验收未做——代码侧仍未收口**；Phase 3b / Phase 4 未启动；管理层最终签字待补） |
+| 状态 | 现行执行版（P0/P1/P2 已进入实现与验收；**Phase 3a 代码侧已实现（含 2026-09-15 五轮修复），部署与真机验收未做——代码侧仍未收口**；Phase 3b / Phase 4 未启动；管理层最终签字待补） |
 | 前置文档 | 总体规划 v3 冻结版（XMind） |
 
 > 本文档是开发执行依据。架构概念见规划导图，本文只写：做什么、谁用、怎么算做完、有什么风险。
@@ -24,6 +24,8 @@
 **2026-09-15 Phase 3a 复核收口（5 个缺口）**：同日复核又发现 5 个代码/测试缺口并已收口——①`transfer` 中央指令链此前实际断裂（`commandPayloadOf()` 无 `transfer` 分支，outbox 直接落 `failed`），且 e2e 头部「覆盖 transfer」的声明不实；现补齐分支并实现**双目标投递**（新归属 `apply` / 原归属 `remove`，**两个目标都被中央受理才结算 `sent`**，部分成功靠顺序重试 + 中央幂等收敛），e2e 补真实 `transferAssignment()` 全链与真实 `runSla1Recycle()` 回收链；②中央 HTTP 下行 lead 白名单由 8 字段收紧为**按传输上下文分档**（中央 6 字段、SMB 保留 Phase 1 的 8 字段历史口径）；③`/sync/push` 补服务端**实体引用闸门**（实体类别 + 载荷 `*Ref` 形态/类别/命名空间归属）；④补齐**中央 append-only 审计**（邀请码签发、下行指令首次受理，与业务同事务，**幂等重放不追加**）；⑤管理员吊销的畸形 UUID 由 500 改为 **400 E101 且不碰数据库**。**此结论仍仅指代码**：中央侧全部跑在 `MemoryCentralStore` 上，**真实 PostgreSQL 未验证**（PG 侧只有源码级契约断言），`docker build`、双机、Windows、SSE、真实消息推送、反向代理与证书**全部未执行**。**Phase 3a 代码侧仍未收口。**
 
 **2026-09-15 Phase 3a 第四轮收口（升级兼容 / 失败重投 / 契约收紧 / 门禁脱敏）**：同日第四轮——①**修复升级前 pending 移交被永久卡死**的真实缺陷：`mode`/`sla1Deadline` 成为 transfer 必填后，升级前已写入 outbox 的旧格式载荷每轮都被共享校验器拒绝且永不收敛；现发送侧惰性补齐（`crmDownPayloadCompat.healLegacyDownPayload`，两条通道共用一处，**不做全表 UPDATE**），两字段从**本机 assignment 行读回移交事实产生时写死的绝对值**，**严禁按当前时间 / 当前 `crmLeadSlaHours` / 接收端配置重算**，且**不动 `event_seq`/`idempotency_key`/`assignmentId`/`oldAssignmentId`**；不可恢复（assignmentId 非法 / 行不存在 / mode 不在枚举 / sla 非正整数时间戳）一律**不猜不发**，置 `failed` + 脱敏审计；旧 SMB 隔离件在同路径重写后**最多两轮收敛，非永久死锁**。②**失败 outbox 的正式重投入口**：此前双目标部分成功只能靠测试直接 `UPDATE outbox_event SET status='pending'` 恢复——那是改库不是产品能力；现补服务层 `retryFailedOutbox(rowId)`（事务内只接受 `failed` 行、类型须已注册、原子条件更新、重复点击幂等、**不改 payload/event_seq/idempotency_key**）+ 只读 `listFailedOutbox`（字段裁剪、**不回传 payload 原文**）+ IPC `centralsync:failed`/`centralsync:retryFailed` + 设置页「失败同步项」重试按钮 + `sync_outbox_retry` 脱敏审计；e2e 的 SQL 翻转已删除，改走正式入口。③**`mode` 收紧为四值枚举**（`ASSIGNMENT_MODES` = manual/weight/round_robin/load，唯一枚举源）：出现即必须是枚举内字符串，对象/数组/数字/布尔/空串/未知字符串一律 `invalid_enum:mode`，**禁止先 `String()` 再比对**；`transfer` 必填、`assign` 可选（应省略而非发空串）。④**`entityId` 必须具体引用**：复用 `isConcreteRef` 要求「设备命名空间 + 类别与 entityType 相符 + 非空白行号」，`device/customer:`、空白行号、裸 `customer:1`、类别不符一并拒收。⑤**p0-3 收口门禁输出脱敏**：会读真实客户库的门禁脚本此前逐行打印 `session_id`/判断正文/`message_key`/库绝对路径；现只输出聚合计数与结构性结论，并由新增守卫测试（静态 + 合成库输出捕获）强制。**边界同上**：全部跑在 `MemoryCentralStore` 与隔离临时目录上，真实 PostgreSQL / Docker / 双机 / Windows / SSE / 真实消息与 AI 调用**均未验证**；**Phase 3a 代码侧仍未收口。**
+
+**2026-09-15 Phase 3a 第五轮收口（富化一致性 / 字符串 SLA / 本机 mode 契约 / 重投结果口径 / 守卫补真）**：同日第五轮——①**历史移交富化必须先核对一致性**：`healLegacyDownPayload` 此前只按 `payload.assignmentId` 取行即补齐，`assignmentId` 只要是存在的行号就通过，构成**跨线索串档**（A 线索的 `mode` / SLA 被富化到 B 线索的 transfer 上，接收端建出的移交事实是错的且看起来正常）；现读到行后**总是**先核对 `payload.leadId` 为正整数、`assignment.lead_id` 与之相等、`payload.toSales` 为非空字符串、`assignment.sales_name` 与之相等，任一不符即拒收（`legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`），**已合法载荷同样核对**（不能因为「不需要补齐」就放过串档）。②**字符串 SLA 不是合法绝对时间戳**：`sla1Deadline` 只有**原始类型为 `number`** 且为**有限正整数**才算已合法；字符串数字（如 `"1735689600000"`）不算——中央 HTTP 侧会 `Number()`、SMB 侧 `requiredTimestamps` 会拒字符串，原样透传会造成**同一载荷两条通道口径漂移**；一律按「未合法」处理并从 assignment 行读回 `number` 覆盖，**不存在把字符串时间戳透传出去的分支**（小数 / `NaN` / `Infinity` / `0` / 负数 / 对象 / 数组 / 布尔 / 空串同样不合法）。③**本机生产端与同步接收端共用同一条四值 `mode` 契约**：`assignLeads()` 此前的 `String(mode || 'manual')` 让 `assignLeads(..., 'teleport')` 本机「成功」并写入 `assignment.mode='teleport'`，上行后被中央拒收 → **本机成功 / 中央失败的脏数据**；现显式非法值**在开事务前返回 `E101`**，零 `assignment`/`ownership_history`/`audit_event`/`outbox_event` 写入；`assignBatchLeads()` **不再静默回退 `weight`**（显式非法值同样 `E101`，缺省回退仅在 `undefined`/`null` 生效）；两个 IPC **不得先 `String()` 收窄**，原值以 `unknown` 交服务层运行时校验。④**重投结果按「该行自己的最终状态」判定**：`centralsync:retryFailed` 此前一律回 `success:true`、设置页只看整轮 `pushed`/`rejected` 并忽略 `result.error`，**网络故障时会显示绿色「已重投」而该行其实仍是 `pending`**——「重新排队」被当成了「同步成功」；现回读该 `rowId` 的库内状态，回传 `retryOutcome`（`sent`/`pending`/`failed`/`unconfigured`/`unknown`）+ `deliveryStatus` + `syncConfigured` + **脱敏后**的 `syncError`（走既有 `maskAuditText` + 令牌隐藏 + 截断），设置页 `sent` 绿 / `pending` 与 `unconfigured` 警告（**绝不显示为成功**）/ `failed` 红。⑤**脱敏测试的哨兵必须真的落库**：`p0-3-closed-gate-test` 的 `S_CONTACT` 此前只被定义、从未写进合成库，「输出不含联系方式哨兵」是**恒真的空断言**；现合成 `customer_profile` 按**真实生产 DDL** 建表并把哨兵写进两个真实承载列（`notes` / 第二行 `display_name`），跑门前先**只读回查**证明哨兵在库里。⑥**适配器测试不再直接改 outbox 状态**：删除两处裸 `UPDATE outbox_event SET status='pending'`（宪法 §1.11 禁止），改为新建同 `eventId` 的 pending 投递行 + 新建合法 fixture 让真实服务路径驱动到 `failed`，**行为断言一条未放宽**。**边界同上**：全部跑在 `MemoryCentralStore` 与隔离临时目录上，真实 PostgreSQL / Docker / 双机 / Windows / SSE / 真实消息推送与 AI 调用**均未验证**，签名与公证亦未做；**Phase 3a 代码侧仍未收口，也不得据此宣称整个项目已完成。**
 
 **2026-09-15 Phase 3a 契约修复（移交 SLA / SMB 校验 / 建档字段）**：同日第三轮——①修复 **transfer 丢失 SLA1** 的真实缺陷：outbox 与中央指令此前不携带 `sla1Deadline`/`mode`，接收端 `sla1_deadline` 落 NULL；现发起端同事务写入、指令必填（`sla1Deadline` 必须有限正整数）、接收端**精确按指令值落地不重算**、`remove` 不动 SLA、重放零漂移；②SMB `validateDownEventFile()` **真正接入** `validateDownCommand(subject, 'smb')`（此前合法信封配空 payload 也能进状态机；SMB 保留 8 字段 lead、目标存在性用已验证的本机投递键证明，不伪造 UUID）；③中央 assign/transfer **建档字段强制**：lead 必须含最小身份（`leadId` 正整数 / `contactType` 枚举 / `contactNormalized` 非空），中央 HTTP 固定 6 字段全部存在，顶层与子对象 `leadId` 不一致即拒收，被拒指令不消耗幂等键；④双目标 4xx 部分成功：整行 `failed` + 审计补 `failedTarget`，网络/5xx 仍 `pending` 靠幂等重试收敛。**边界同上**：仍全部跑在 `MemoryCentralStore` 与隔离临时目录上，真实 PostgreSQL / Docker / 双机 / Windows / SSE / 真实消息与 AI 调用**均未验证**；下行仍携带 `contactNormalized`，**不声称「下行零身份值」**。**Phase 3a 代码侧仍未收口。**
 
@@ -278,17 +280,32 @@ Phase 3/4 是在现有业务契约上增加中央传输、服务端权限与经�
   **本机 assignment 行**读回移交事实产生时写死的绝对值，**不按当前时间 / 当前配置 / 接收端重算**；
   **不动 `event_seq`/`idempotency_key`/`assignmentId`/`oldAssignmentId`**；不可恢复即置 `failed` +
   脱敏审计（`{type, reason}`），**不猜不发**；旧 SMB 隔离件同路径重写后最多两轮收敛。
+  **富化前必须核对一致性**：`payload.leadId` 为正整数 + `assignment.lead_id` 相等 + `payload.toSales`
+  非空 + `assignment.sales_name` 相等，不符即 `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`
+  （**读到行时总是核对，已合法载荷也拦跨线索串档**）。**字符串 SLA 不是合法绝对时间戳**：只有原始类型为
+  `number` 且有限正整数才算已合法，字符串数字一律按「未合法」处理并从 assignment 行读回 `number` 覆盖
+  （HTTP 会 `Number()`、SMB 会拒字符串，原样透传会口径漂移）。**错误码只带稳定码，不含客户值 / 销售姓名 / 联系方式**。
 - **失败同步项的正式重投入口**：服务层 `retryFailedOutbox(rowId)`（事务内只接受 `failed` 行、类型须已注册、
   原子条件更新、重复点击幂等、**不改 payload/`event_seq`/`idempotency_key`**）+ 只读 `listFailedOutbox`
   （字段裁剪、**不回传 payload 原文**）+ IPC `centralsync:failed` / `centralsync:retryFailed` + 设置页
   「失败同步项」重试按钮与 `backlogFailed` 计数 + `sync_outbox_retry` 脱敏审计（不含客户数据）。
-  **测试与任何调用方不再直接 `UPDATE outbox_event`。**
+  **测试与任何调用方不再直接 `UPDATE outbox_event`**（隔离测试需要终态行时新建合法 fixture，不得改既有行状态）。
+  **重投结果的判定依据是该 `rowId` 自己的最终状态，不是整轮的 `pushed`/`rejected` 计数**——「重新排队」≠「同步成功」：
+  回包带 `retryOutcome`（`sent`/`pending`/`failed`/`unconfigured`/`unknown`）+ `deliveryStatus` + `syncConfigured`
+  + **经既有脱敏后**的 `syncError`；设置页 `sent` 显示成功、`pending` 与 `unconfigured` 显示警告（**绝不显示为成功**）、
+  `failed` 显示「重投后仍被拒绝，请查看审计」。
 - **契约收紧**：`mode` 为四值枚举（`ASSIGNMENT_MODES` = manual/weight/round_robin/load，唯一枚举源；
   出现即必须是枚举内字符串，**禁止 `String()` 后比对**）；`entityId` 必须为**具体引用**
   （设备命名空间 + 类别与 `entityType` 相符 + 非空白行号，复用 `isConcreteRef`，不新造解析器）。
+  **同一份四值枚举也是本机生产端的唯一来源**：`crmAssignmentService.assignLeads()` 显式非法值在**开事务前**
+  返回 `E101`（零业务写入，杜绝 `assignment.mode='teleport'` 这类「本机成功 / 中央失败」的脏行），
+  `assignBatchLeads()` **不再静默回退 `weight`**（显式非法值同样 `E101`，缺省回退仅在 `undefined`/`null` 生效），
+  两个 IPC **不得先 `String()` 收窄**（原值以 `unknown` 交服务层运行时校验）。
 - **验收输出脱敏**：会读真实客户库的 `scripts/p0-3-closed-gate.ts` 只输出聚合计数 / 通过失败 / 结构性结论，
   **不打印 `session_id`、客户姓名、联系方式、判断正文与摘要、`evidence_text`、`message_key` 原文与库绝对路径**；
-  由 `scripts/p0-3-closed-gate-test.ts`（静态 + 合成库输出捕获）强制。
+  由 `scripts/p0-3-closed-gate-test.ts`（静态 + 合成库输出捕获）强制；该守卫的**每个哨兵都必须真的写进
+  合成数据**（联系方式哨兵落在真实承载列 `notes` / 第二行 `display_name`，跑门前只读回查确认），
+  **不允许出现「库里根本没有那个值」的恒真空断言**。
 - 传输互斥：`centralSyncEnabled` 为真时 Phase 1 SMB 同步自动停用；关闭时 Phase 1 行为完全不变。
 - **服务端实体引用闸门**：`/sync/push` 逐条校验实体引用类别（`validateCentralEntityId`），并对 `payload` 内已登记的 `*Ref`（`customerRef`/`leadRef`/`opportunityRef`/`employeeRef`）校验形态、类别与命名空间归属，**借用同工作区他机命名空间同样拒绝**；拒收只影响该条事件，同批合法事件照常落库，被拒事件不留 `sync_event`、不留投影、不消耗幂等键。
 - **中央自身操作审计**（`central_audit_event`，append-only，与只读上行投影 `central_audit_projection` 严格分离）：邀请码签发（与签发**同一事务**，不记邀请码明文/哈希）与下行指令**首次**受理（只记 `eventId`/`eventType`/投递目标，**不记载荷**）均已落库；**幂等重放不追加审计、被拒请求不留痕**。

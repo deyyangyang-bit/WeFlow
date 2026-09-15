@@ -39,7 +39,8 @@ function ok(name: string, cond: boolean, detail = ''): void {
 }
 
 import type { CentralSyncEvent } from '../shared/centralSync'
-import { findForbiddenCentralField, isConcreteRef, validateCentralEntityId } from '../shared/centralSync'
+import { findForbiddenCentralField, isConcreteRef } from '../shared/centralSync'
+// 实体引用校验的唯一实现（下行/上行共用）；shared/centralSync 不导出同名函数
 import { validateCentralEntityId } from '../shared/centralDownCommand'
 
 let crmDbService: (typeof import('../electron/services/crmDbService'))['crmDbService']
@@ -271,6 +272,14 @@ async function main(): Promise<void> {
     tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
       [9, 'claim:999', JSON.stringify({ type: 'claim', leadId: 999, version: 1 }), 'pending', 'test', Date.now()])
   })
+  // 布置测试 fixture 一律**新增 pending 行**，绝不直接 `UPDATE outbox_event SET status=...`
+  // （宪法 §1.11）：outbox 状态只由状态机迁移，绕过状态机就同时绕过了终态判定、尝试计数与审计。
+  // 投影路线的交付行只用于**定位本地事实**，投递内容由投影按本地行重建，因此新插一行即等价于
+  // 「同一条事实的下一次投递」。
+  const insertClaimOutbox = (eventSeq: number, key: string) => crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at) VALUES (?,?,?,?,?,?)',
+      [eventSeq, key, JSON.stringify({ type: 'claim', leadId: 999, version: 1 }), 'pending', 'test', Date.now()])
+  })
   pushMode = 'network_fail'
   resetCapture()
   const failRun = await service.runCentralSyncOnce()
@@ -285,22 +294,27 @@ async function main(): Promise<void> {
   await service.runCentralSyncOnce()
   ok('B7 网络恢复后重放成功，事件不丢', String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999'")[0]?.status) === 'sent')
   ok('B8 失败期间游标未被推空（无静默丢事件）', cursorFrozen <= crmDbService.getScanState('centralSync:cursor:customer'))
-  // outbox 行 event_seq=9 是本行投递的唯一标记（投影扫描产出的事件用本地行 id 作 eventSeq）
-  const claimEvent = () => pushedEvents().find((e) => e.entityType === 'assignment' && e.eventSeq === 9)
-  const firstKey = claimEvent()!.eventId
-  crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE idempotency_key='claim:999'") })
+  // outbox 行 event_seq 是该次投递的唯一标记（投影扫描产出的事件按投递行的 event_seq 编号）
+  const claimEvent = (seq: number) => pushedEvents().find((e) => e.entityType === 'assignment' && e.eventSeq === seq)
+  const firstKey = claimEvent(9)!.eventId
+  // B9：同一条本地事实的**再次投递**。事件 id 只由「实体 + 本地引用 + 聚合版本」派生
+  // （envelopeOf 的 idempotencyKey），与该事实由哪一行 outbox 投递无关 —— 因此新交付行重放
+  // 必然落在同一 eventId 上，中央据此判重，不产生第二条业务记录。
+  insertClaimOutbox(19, 'claim:999:replay')
   resetCapture()
   await service.runCentralSyncOnce()
-  const secondKey = claimEvent()!.eventId
+  const secondKey = claimEvent(19)!.eventId
   ok('B9 同幂等键重放产生同一 eventId（中央据此判重，不产生第二条业务记录）', firstKey === secondKey)
+  ok('B9b 重放行由状态机自行结算为 sent（fixture 不参与状态迁移）',
+    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999:replay'")[0]?.status) === 'sent')
 
   pushMode = 'reject_all'
-  crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE idempotency_key='claim:999'") })
+  insertClaimOutbox(29, 'claim:999:reject')
   resetCapture()
   const rejectedRun = await service.runCentralSyncOnce()
+  const rejectedRow = crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999:reject'")[0]
   ok('B10 被中央永久拒绝的事件置 failed 且留本机审计，不静默吞掉',
-    rejectedRun.rejected >= 1 &&
-    String(crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:999'")[0]?.status) === 'failed' &&
+    rejectedRun.rejected >= 1 && String(rejectedRow?.status) === 'failed' &&
     crmDbService.all(
       "SELECT * FROM audit_event WHERE action IN ('sync_push_rejected','sync_outbox_failed')").length >= 1)
   pushMode = 'ok'

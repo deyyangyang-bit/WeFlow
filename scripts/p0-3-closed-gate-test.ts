@@ -10,9 +10,18 @@
  *      以及把库路径插进 console 的写法（注释先剥离，避免文档说明误报）。
  *   ② 输出捕获守卫（隔离）：用**合成库**（sentinel 值全是编造字符串，不含任何真实客户数据）
  *      起一个子进程跑 gate，捕获 stdout+stderr，断言：
- *        - 哨兵值一个都不出现（sessionId / 判断正文 / 摘要 / evidence_text / messageKey / 姓名）；
+ *        - 哨兵值一个都不出现（sessionId / 判断正文 / 摘要 / evidence_text / messageKey / 姓名 / 联系方式）；
  *        - 合成库的绝对路径不出现；
  *        - 聚合计数**仍在**（脱敏不等于把验收输出砍空——那会让 gate 失去验收价值）。
+ *
+ * 哨兵必须**真的落在合成数据里**（2026-09-15 第二轮）：此前 `S_CONTACT` 只被定义、从未写进合成库，
+ * 于是「输出不含联系方式哨兵」是一条**空断言**——它证明不了任何事，因为库里本来就没有那个值。
+ * 现在：
+ *   - 合成 `customer_profile` 按**真实生产 schema**（salesDbService 的 DDL）建表，不再自造窄表；
+ *   - 联系方式同时写进两个真实承载列：`notes`（备注里粘手机号）与第二行客户的 `display_name`
+ *     （微信备注常常直接就是手机号）；
+ *   - 跑 gate 之前先**只读回查**合成库，断言这两个哨兵确实在库里（否则立即失败，不允许空断言通过）。
+ * 这样 O7 才是在「值真实存在」的前提下证明「输出里没有它」。
  *
  * 隔离：合成库建在 /tmp 的一次性目录里，跑完即删；**绝不打开真实业务库**。
  * 运行：npx tsx scripts/p0-3-closed-gate-test.ts
@@ -46,18 +55,40 @@ async function buildSyntheticDb(): Promise<{ dir: string; dbPath: string }> {
   const dbPath = join(dir, 'synthetic-sales.db')
   const SQL = await initSqlJs({ locateFile: () => join(ROOT, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm') })
   const db = new SQL.Database()
+  const now = Date.now()
+  // customer_profile 按**真实生产 schema** 建（electron/services/salesDbService.ts 的 SCHEMA_SQL 原样）：
+  // 合成库若自造窄表，「真实承载列里有没有哨兵」就无从谈起，守卫会退化成空断言。
   db.run(`
-    CREATE TABLE customer_profile (id INTEGER PRIMARY KEY, session_id TEXT, name TEXT, stage TEXT);
+    CREATE TABLE customer_profile (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      display_name TEXT,
+      customer_id TEXT,
+      external_source TEXT,
+      stage TEXT DEFAULT 'unknown',
+      tags TEXT DEFAULT '[]',
+      notes TEXT,
+      last_contact_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
     CREATE TABLE customer_judgment (
       id INTEGER PRIMARY KEY, session_id TEXT, judgment_type TEXT, value TEXT, summary TEXT,
       evidence_text TEXT, message_key TEXT, generated_at INTEGER, created_at INTEGER
     );
   `)
-  db.run('INSERT INTO customer_profile (id, session_id, name, stage) VALUES (?,?,?,?)',
-    [1, S_SESSION, S_NAME, 'won'])
+  // 客户行 1：姓名哨兵在 display_name，联系方式哨兵在 notes（备注里粘手机号是最真实的落点）
+  db.run(`INSERT INTO customer_profile
+    (id, session_id, display_name, customer_id, external_source, stage, tags, notes, last_contact_at, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  [1, S_SESSION, S_NAME, null, 'wechat', 'won', '[]', `备注：${S_CONTACT}`, now, now, now])
+  // 客户行 2：微信备注本身就是手机号（本业务的常见形态），让「显示名承载联系方式」这一路也有真值
+  db.run(`INSERT INTO customer_profile
+    (id, session_id, display_name, customer_id, external_source, stage, tags, notes, last_contact_at, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  [2, `${S_SESSION}-b`, S_CONTACT, null, 'wechat', 'unknown', '[]', null, now, now, now])
   // 四类型各一行 → 覆盖「四类型分布 / 四类全齐 / stale / message_key / 冲突观察」全部打印分支
   const types = ['summary', 'opportunity', 'risk', 'nextAction']
-  const now = Date.now()
   types.forEach((t, i) => {
     db.run(
       'INSERT INTO customer_judgment (id, session_id, judgment_type, value, summary, evidence_text, message_key, generated_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -66,6 +97,34 @@ async function buildSyntheticDb(): Promise<{ dir: string; dbPath: string }> {
   writeFileSync(dbPath, Buffer.from(db.export()))
   db.close()
   return { dir, dbPath }
+}
+
+/**
+ * 只读回查合成库：证明每个哨兵**真的写进了库**（尤其联系方式——它此前从未落库，
+ * 使 O7 变成一条恒真的空断言）。返回各哨兵在库中的命中行数。
+ */
+async function sentinelHits(dbPath: string): Promise<Record<string, number>> {
+  const SQL = await initSqlJs({ locateFile: () => join(ROOT, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm') })
+  const db = new SQL.Database(readFileSync(dbPath))
+  const count = (sql: string, param: string): number => {
+    const stmt = db.prepare(sql)
+    stmt.bind([`%${param}%`])
+    let n = 0
+    while (stmt.step()) n = Number((stmt.getAsObject() as { c?: number }).c || 0)
+    stmt.free()
+    return n
+  }
+  const hits = {
+    session: count('SELECT COUNT(*) AS c FROM customer_profile WHERE session_id LIKE ?', S_SESSION),
+    name: count('SELECT COUNT(*) AS c FROM customer_profile WHERE display_name LIKE ?', S_NAME),
+    // 两个真实承载列：备注与显示名
+    contactNotes: count('SELECT COUNT(*) AS c FROM customer_profile WHERE notes LIKE ?', S_CONTACT),
+    contactDisplayName: count('SELECT COUNT(*) AS c FROM customer_profile WHERE display_name LIKE ?', S_CONTACT),
+    value: count('SELECT COUNT(*) AS c FROM customer_judgment WHERE value LIKE ?', S_VALUE),
+    key: count('SELECT COUNT(*) AS c FROM customer_judgment WHERE message_key LIKE ?', S_KEY)
+  }
+  db.close()
+  return hits
 }
 
 async function main(): Promise<void> {
@@ -89,6 +148,12 @@ async function main(): Promise<void> {
   // ── ② 输出捕获守卫：合成库跑真实 gate，哨兵一个都不许出现 ────────────────
   console.log('\n═══ ② 输出捕获守卫：合成库运行 gate，输出零哨兵 ═══')
   const { dir, dbPath } = await buildSyntheticDb()
+  // 前置断言：脱敏守卫只有在「哨兵确实在库里」时才有意义（否则是空断言）
+  const hits = await sentinelHits(dbPath)
+  ok('P1 前置：联系方式哨兵真的写进了合成库的 notes（备注承载列）', hits.contactNotes === 1, JSON.stringify(hits))
+  ok('P2 前置：联系方式哨兵真的写进了合成库的 display_name（微信备注承载列）', hits.contactDisplayName === 1, JSON.stringify(hits))
+  ok('P3 前置：其余哨兵（会话号 / 姓名 / 判断正文 / message_key）均真实落库',
+    hits.session >= 1 && hits.name === 1 && hits.value === 4 && hits.key === 4, JSON.stringify(hits))
   let captured = ''
   let status: number | null = null
   let crash: string | null = null

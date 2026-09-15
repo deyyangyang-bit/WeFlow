@@ -11,13 +11,19 @@
  *   E. SLA1 三次提醒回收器（设计稿屏 4/屏 6）：首超时只提醒不回收 / 间隔不足 20h 不重复提醒 /
  *      满第 3 次才回收（SLA三次超时回收）+ outbox 抄送主管 / claimed 纳入扫描 / 停表跳过 / 重跑幂等
  *   F. 存量补写：sla1_deadline NULL 行补 = 分配时间(updated_at) + 24h / 幂等 / 汇总审计 / 非 NULL 不动
+ *   I. 分配模式运行时校验（2026-09-15 第二轮）：`mode` 必须是 `shared/centralDownCommand.ASSIGNMENT_MODES`
+ *      里的字符串字面量。**实测复现的真实缺陷**：`String(mode || 'manual')` 会把 `'teleport'` 原样放行、
+ *      把 `{}` / `1` / `true` 洗成 `'[object Object]'` / `'1'` / `'true'` 落进 `assignment.mode` —— 本机
+ *      「分配成功」，中央却按契约拒收，制造出**本机成功 / 中央失败**的坏数据。现在非法值在任何事务与
+ *      业务写之前返回 E101，零 assignment / ownership_history / audit_event / outbox 行；
+ *      批量分配也不再对显式非法值静默回退 weight（缺省只对 undefined / null 生效）。
  *
  * 隔离：WEFLOW_WORKER='1' + WEFLOW_USER_DATA_PATH / WEFLOW_CONFIG_CWD 指向 /tmp（config.ts:358-364
  *       仅 worker 模式才把 store cwd 指向 WEFLOW_CONFIG_CWD，否则落 ~/Library/Preferences 互相污染）；
  *       crmDb 用 fresh 空库，绝不碰 live 库与真实配置。
  * 运行：npx tsx scripts/assignment-full-test.ts
  */
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -388,6 +394,83 @@ async function main(): Promise<void> {
   const impAudit = crmDbService.all('SELECT * FROM audit_event WHERE action = ? ORDER BY id DESC LIMIT 1', ['lead_import'])[0]
   ok('H11 importLeads 落 lead_import 审计行', Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event WHERE action = ?', ['lead_import'])[0].c) === auditBefore + 1)
   ok('H12 审计 detail 含批次统计', !!impAudit && JSON.parse(String(impAudit.detail)).valid === 2 && JSON.parse(String(impAudit.detail)).batchId > 0)
+
+  console.log('\n═══ I. 分配模式运行时校验（唯一枚举源；非法值零业务写）═══')
+  const countsNow = (): Record<string, number> => ({
+    assignment: Number(crmDbService.all('SELECT COUNT(*) AS c FROM assignment')[0].c),
+    history: Number(crmDbService.all('SELECT COUNT(*) AS c FROM ownership_history')[0].c),
+    audit: Number(crmDbService.all('SELECT COUNT(*) AS c FROM audit_event')[0].c),
+    outbox: Number(crmDbService.all('SELECT COUNT(*) AS c FROM outbox_event')[0].c)
+  })
+  const countsEqual = (a: Record<string, number>, b: Record<string, number>): boolean =>
+    JSON.stringify(a) === JSON.stringify(b)
+  const modeOfRow = (assignmentId: number): string =>
+    String(crmDbService.all('SELECT mode FROM assignment WHERE id = ?', [assignmentId])[0]?.mode || '')
+
+  // I1：四个合法值逐值落库（不映射、不改写），缺省（未传）按 manual
+  const legalCases: Array<[string | undefined, string]> = [
+    ['manual', 'manual'], ['weight', 'weight'], ['round_robin', 'round_robin'], ['load', 'load'], [undefined, 'manual']
+  ]
+  const legalHits = legalCases.map(([given, want]) => {
+    const leadId = seedLead(`I-合法-${String(given)}`)
+    const res = given === undefined
+      ? assignLeads([leadId], S_A, '分配员')
+      : assignLeads([leadId], S_A, '分配员', given)
+    const assignmentId = Number(res.data?.assignments[0]?.assignmentId || 0)
+    return res.ok === true && modeOfRow(assignmentId) === want
+  })
+  ok('I1 四个合法值逐值落库，缺省（未传）为 manual', legalHits.every(Boolean), JSON.stringify(legalHits))
+  const nullModeLead = seedLead('I-合法-null')
+  const nullMode = assignLeads([nullModeLead], S_A, '分配员', null)
+  ok('I2 显式 null 视为「未设置」→ manual（缺省只给 null/undefined，不给其他假值）',
+    nullMode.ok === true && modeOfRow(Number(nullMode.data?.assignments[0]?.assignmentId || 0)) === 'manual')
+
+  // I3：实测复现的那条路径——'teleport' 曾经返回成功并落库 assignment.mode='teleport'
+  const beforeTeleport = countsNow()
+  const teleport = assignLeads([seedLead('I-teleport')], S_A, '分配员', 'teleport')
+  ok('I3 实测复现已闭合：assignLeads(..., \'teleport\') 返回 E101，且零业务写、库里不存在 teleport 归属',
+    teleport.ok === false && teleport.code === 'E101' && countsEqual(beforeTeleport, countsNow()) &&
+    Number(crmDbService.all("SELECT COUNT(*) AS c FROM assignment WHERE mode = 'teleport'")[0].c) === 0,
+    JSON.stringify({ res: teleport, counts: countsNow() }))
+
+  // I4：Object/Array/Number/Boolean/空串/大小写/尾空格——绝不先 String() 再比对
+  const illegalModes: unknown[] = ['', '   ', {}, [], 123, 0, true, false, 'MANUAL', 'Manual', 'weight ', 'teleport']
+  const beforeIllegal = countsNow()
+  const illegalResults = illegalModes.map((bad) => assignLeads([seedLead(`I-非法-${String(bad)}`)], S_A, '分配员', bad))
+  ok('I4 非法 mode（空串/空白/对象/数组/数字/布尔/大小写/尾空格）一律 E101，零 assignment/history/audit/outbox 写入',
+    illegalResults.every((r) => r.ok === false && r.code === 'E101') && countsEqual(beforeIllegal, countsNow()),
+    JSON.stringify(illegalResults.map((r) => r.code)))
+
+  // I5：批量分配的显式非法值不再静默回退 weight（回退 = 无声的语义篡改）
+  const beforeBatchIllegal = countsNow()
+  const batchIllegal = ['teleport', 'manual', '', {}, [], 5, false, 'Weight'].map((m) =>
+    assignBatchLeads({ count: 1, mode: m, actor: 'I-非法批量' }))
+  ok('I5 批量分配显式非法 mode（含 manual / teleport / 空串 / 对象 / 数组 / 数字 / 布尔）一律 E101，不回退 weight',
+    batchIllegal.every((r) => r.ok === false && r.code === 'E101') && countsEqual(beforeBatchIllegal, countsNow()),
+    JSON.stringify(batchIllegal.map((r) => r.code)))
+
+  // I6：缺省仍生效（undefined 与 null → weight，合法三值照常工作）
+  while (poolCount() < 1) seedLead('I-补种')
+  const defaultBatch = assignBatchLeads({ count: 1, actor: 'I-缺省模式' })
+  const defaultRow = crmDbService.all("SELECT mode FROM assignment WHERE updated_by = 'I-缺省模式' ORDER BY id DESC LIMIT 1")[0]
+  while (poolCount() < 1) seedLead('I-补种2')
+  const nullBatch = assignBatchLeads({ count: 1, mode: null, actor: 'I-null模式' })
+  const nullBatchRow = crmDbService.all("SELECT mode FROM assignment WHERE updated_by = 'I-null模式' ORDER BY id DESC LIMIT 1")[0]
+  ok('I6 批量分配缺省（未传 / null）仍为 weight，合法调用不受影响',
+    defaultBatch.ok === true && String(defaultRow?.mode) === 'weight' &&
+    nullBatch.ok === true && String(nullBatchRow?.mode) === 'weight',
+    JSON.stringify({ defaultBatch: defaultBatch.data?.mode, nullBatch: nullBatch.data?.mode }))
+
+  // I7-I9：静态契约（源码级）——单一枚举源、不做 String() 掩盖、IPC 原样透传未知类型
+  const svcSrc = readFileSync(join(__dirname, '..', 'electron/services/crmAssignmentService.ts'), 'utf8')
+  const ipcSrc = readFileSync(join(__dirname, '..', 'electron/services/crmIpcHandlers.ts'), 'utf8')
+  ok('I7 本机生产者不做 `String(mode)` 预洗（该写法会把对象/数字/布尔洗成「看起来合法」的字符串）',
+    !/String\(\s*mode\b/.test(svcSrc) && !/String\(\s*input\?\.mode/.test(svcSrc))
+  ok('I8 枚举只有一处来源：service 从 shared/centralDownCommand 取 ASSIGNMENT_MODES，不自定义第二套字面量',
+    /import\s*\{[^}]*\bASSIGNMENT_MODES\b[^}]*\}\s*from\s*'\.\.\/\.\.\/shared\/centralDownCommand'/.test(svcSrc) &&
+    !/\bconst\s+ASSIGNMENT_MODES\b/.test(svcSrc))
+  ok('I9 IPC 层只透传未知类型（声明 mode?: unknown，不做 String() 掩盖，校验与 E101 全在 service）',
+    /mode\?:\s*unknown/.test(ipcSrc) && !/String\(\s*req\?\.mode/.test(ipcSrc) && /mode:\s*req\?\.mode\b/.test(ipcSrc))
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   process.exit(fail ? 1 : 0)

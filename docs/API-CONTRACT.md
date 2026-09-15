@@ -602,6 +602,16 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   （缺失 → `missing_field:mode`）；`assign` 上 `mode` 可选，**发送方应省略而不是发空串**。
   中央 HTTP 发送前自检、SMB 消费入口、中央服务端建指令**三处共用同一份约束**；错误码只带字段名，不带值。
 
+  同一份枚举也是**本机生产端**的唯一来源（2026-09-15 增补）：`crmAssignmentService.assignLeads()` 与
+  `assignBatchLeads()` 一律经 `ASSIGNMENT_MODES` 校验，**不得自建第二套枚举**。`assignLeads` 缺省
+  `manual`；**显式非法值（对象 / 数组 / 数字 / 布尔 / 未知字符串）在开事务前返回
+  `{ok:false, code:'E101'}`，零 `assignment` / `ownership_history` / `audit_event` / `outbox_event` 写入**
+  ——「本机成功、中央失败」的脏行（如 `assignment.mode = 'teleport'`）由此杜绝。`assignBatchLeads`
+  只接受 `weight` / `round_robin` / `load`；**显式非法值返回 `E101`，不再静默回退 `weight`**（缺省仅在
+  `undefined` / `null` 时生效）。IPC `crm:assignment:assign` / `crm:assignment:assignBatch` **不得先
+  `String()` 收窄再传**（`{}` 会被拍成 `[object Object]` 从而「看起来合法」），原值以 `unknown` 交给
+  服务层做运行时校验。
+
 - **升级前 pending 移交的兼容（2026-09-15 增补）**：`mode` / `sla1Deadline` 成为 transfer 必填之后，
   **升级前**就已写入 `outbox_event` 的 pending 行携带的是旧格式载荷。发送侧在投递前调用
   `electron/services/crmDownPayloadCompat.ts#healLegacyDownPayload(type, payload)` **惰性补齐**
@@ -609,11 +619,31 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   从**本机 assignment 行**（`payload.assignmentId`）读回 `assignment.mode` / `assignment.sla1_deadline`，
   即**移交事实产生时就写死的绝对值**。**严禁按当前时间、当前 `crmLeadSlaHours` 或接收端配置重算**。
   补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**（否则中央会当成新事件）。
-  不可恢复（`assignmentId` 非法 / assignment 行不存在 / `mode` 不在枚举内 / `sla1_deadline` 不是正整数时间戳）
-  一律**不猜、不发**：该行 outbox 显式置 `failed` + 脱敏审计（`detail` 只有 `{type, reason}`，
-  稳定码 `legacy_transfer_bad_assignment_id` / `legacy_transfer_assignment_missing` /
-  `legacy_transfer_mode_unrecoverable` / `legacy_transfer_sla_unrecoverable`）。已落盘的旧 SMB 文件
-  走既有 `.failed/` 隔离语义，隔离释放路径后下一轮会在**同一路径**写入补齐后的合法文件（最多两轮收敛）。
+
+- **字符串 SLA 不是合法绝对时间戳（2026-09-15 增补）**：`payload.sla1Deadline` 只有在**原始类型就是
+  `number`** 且是**有限正整数**时才算「已合法」。**字符串数字（如 `"1735689600000"`）不算合法**——
+  中央 HTTP 侧的 `commandPayloadOf` 会对它做 `Number()`、SMB 侧的 `requiredTimestamps` 会拒字符串，
+  同一个载荷在两条通道上口径会漂移，因此一律**用 assignment 行读回的 `number` 覆盖**，
+  **绝不把字符串时间戳原样透传**。小数 / `NaN` / `Infinity` / `0` / 负数 / 对象 / 数组 / 布尔 / 空串
+  一律按「未合法」处理（**不是**「看起来能转数字就放过」）。
+
+- **富化前必须核对一致性（2026-09-15 增补）**：`payload.assignmentId` 指向的 assignment 行**存在时**
+  一律先核对四项——`payload.leadId` 为正整数、`assignment.lead_id === payload.leadId`、
+  `payload.toSales` 为非空字符串、`assignment.sales_name === payload.toSales`；任一不符即拒收，
+  稳定码 `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`。
+  **理由**：只按 `assignmentId` 取行、不核对线索与目标销售，会把**别的线索**的 `mode` / SLA 富化到
+  这条指令上（跨线索串档），接收端据此建出的移交事实是错的。核对**在读到该行时总是执行**——
+  包括「两个字段都已合法、本不需要补齐」的载荷（已合法也要拦串档）；读不到行则无从核对，
+  此时按「是否真的需要补齐」决定放行还是拒收。
+
+- **不可恢复即显式失败、不猜不发（2026-09-15 增补）**：需要补齐而 `assignmentId` 形态非法 /
+  assignment 行不存在 / `mode` 不在枚举内 / `sla1_deadline` 不是有限正整数时间戳 → 该行 outbox 显式置
+  `failed` + 脱敏审计（`detail` 只有 `{type, reason}`）。稳定码：`legacy_transfer_bad_assignment_id` /
+  `legacy_transfer_assignment_missing` / `legacy_transfer_mode_unrecoverable` /
+  `legacy_transfer_sla_unrecoverable` / `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`。
+  **错误码只带稳定码，不携带客户值、销售姓名或联系方式**（审计 `detail` 亦同）。
+  已落盘的旧 SMB 文件走既有 `.failed/` 隔离语义，隔离释放路径后下一轮会在**同一路径**写入补齐后的
+  合法文件（最多两轮收敛）。
 
 - **`transfer` 的 SLA 纪律（2026-09-15 增补）**：`sla1Deadline` 与 `mode` 是移交事实**产生时**就确定的
   绝对值，由发起端在同一事务写入 outbox 并随指令传递；`sla1Deadline` 必须是有限正整数时间戳
@@ -664,6 +694,18 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   完整线索资料与令牌**。
 - **双目标部分成功**：已受理的 `apply` 目标重投被判 duplicate，原先 4xx 的 `remove` 目标重新投递，
   **两个目标都被受理才结算 `sent`**（与网络类失败靠重放收敛同一条路径）。
+
+- **重投结果是「该行自己的最终状态」，不是整轮计数（2026-09-15 增补）**：`centralsync:retryFailed`
+  在 `runCentralSyncOnce()` 返回后**回读该 `rowId` 的库内状态**，回包带
+  `retryOutcome ∈ {sent, pending, failed, unconfigured, unknown}`、`deliveryStatus`
+  （`pending` / `failed` / `sent` / `unknown`）与 `syncConfigured`。**判定绝不看整轮的 `pushed` / `rejected`**
+  ——那是**所有行**的合计：别的行成功会把它顶上去，网络故障时全都没发出去也证明不了这一行没成功。
+  设置页按此分支：`sent` → 绿色「已完成同步」；`unconfigured` → 警告「已重新排队，但中央同步未配置」；
+  `failed` → 红色「重投后仍被拒绝，请查看审计」；`pending` → 警告「已重新排队，等待网络/下一轮同步」。
+  **「重新排队」≠「同步成功」**：`failed → pending` 只说明该行回到可投递队列，与中央是否受理无关；
+  `pending` 一律**不得**呈现为成功。回传的 `syncError` 经**既有脱敏**（`maskAuditText` 手机号打码 +
+  设备令牌隐藏，截断 300 字）后才出机，**不含令牌、payload 原文或联系方式**；服务侧原始 `error`
+  不得绕过脱敏直出。读取行状态是**只读**的，不因读取而改写任何行。
 
 ### 3.6 Phase 3a 尚未落地的部分
 

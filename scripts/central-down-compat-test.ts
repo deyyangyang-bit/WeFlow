@@ -10,6 +10,10 @@
  * 本脚本覆盖：
  *   A. 富化语义（单元）：从本机 assignment 行取**当时写入的绝对值**；改当前 SLA 配置不改变恢复值；
  *      已合法载荷原样放行不覆盖；重复调用幂等、不就地改入参；不可恢复时返回稳定错误码。
+ *   G. 判定口径与身份一致性（2026-09-15 第二轮）：SLA「已合法」是**原始类型**判定（字符串数字
+ *      不算，小数/NaN/Infinity/0/负数/对象/数组同样不算）；用恢复行之前必须核对
+ *      `assignment.lead_id === payload.leadId` 且 `assignment.sales_name === payload.toSales`，
+ *      不符一律拒（不把别的线索的 mode/SLA 贴到本条指令上）；错误码不含任何客户值。
  *   B. 发射端单一来源（静态）：两条通道 import 同一个 helper，不各写一套兼容逻辑。
  *   C. SMB 通道：升级前写法的 pending transfer 行 → 富化后落盘合法文件；
  *      文件名（由 event_seq + 幂等键 + 角色决定）与升级前逐字相同，即幂等键未被改写。
@@ -190,6 +194,79 @@ async function main(): Promise<void> {
   const brokenSla = healLegacyDownPayload('transfer', { ...legacy, assignmentId: brokenSlaId })
   ok('A15 assignment 行的 sla1_deadline 为 NULL/0 → legacy_transfer_sla_unrecoverable（不按当前时间补）',
     brokenSla.ok === false && brokenSla.code === 'legacy_transfer_sla_unrecoverable')
+
+  console.log('\n═══ G. 判定口径（原始类型）与身份一致性（跨线索不容错）═══')
+  // G1：字符串数字**不是**合法绝对时间戳。两条通道会各自解读它（中央 Number() 成数字、SMB 原样保留
+  // 字符串被 requiredTimestamps 拒收）→ 同一行一条通过一条被拒。必须按「不可用」处理并恢复成 number。
+  const stringSla: Record<string, unknown> = { ...legacy, sla1Deadline: String(rowSla) }
+  const stringHealed = healLegacyDownPayload('transfer', stringSla)
+  ok('G1 字符串数字 SLA 不算「已合法」：恢复成 number，绝不把字符串时间戳放行',
+    stringHealed.ok === true && typeof stringHealed.payload.sla1Deadline === 'number' &&
+    Number(stringHealed.payload.sla1Deadline) === rowSla,
+    JSON.stringify({ got: stringHealed.ok ? stringHealed.payload.sla1Deadline : stringHealed }))
+  const illegalSlas: unknown[] = [String(rowSla), 1.5, Number.NaN, Number.POSITIVE_INFINITY, 0, -1, {}, [], true, '']
+  const slaResults = illegalSlas.map((bad) => healLegacyDownPayload('transfer', { ...legacy, sla1Deadline: bad }))
+  ok('G2 小数 / NaN / Infinity / 0 / 负数 / 对象 / 数组 / 布尔 / 空串 一律按不可用处理，全部恢复为 number',
+    slaResults.every((r) => r.ok === true && typeof r.payload.sla1Deadline === 'number' &&
+      Number(r.payload.sla1Deadline) === rowSla),
+    JSON.stringify(slaResults.map((r) => (r.ok ? r.payload.sla1Deadline : r.code))))
+  ok('G3 富化结果里不可能出现字符串 SLA（该字段只能是 number）',
+    slaResults.every((r) => !r.ok || typeof r.payload.sla1Deadline !== 'string'))
+
+  // 恢复不了就拒：字符串 SLA + 不可用的 assignment 行 → 稳定码（不按当前时间补一个数字顶上）
+  const stringOnBrokenRow = healLegacyDownPayload('transfer', { ...legacy, assignmentId: brokenSlaId, sla1Deadline: String(rowSla) })
+  ok('G4 字符串 SLA + assignment 行 SLA 不可用 → legacy_transfer_sla_unrecoverable（不按当前时间补）',
+    stringOnBrokenRow.ok === false && stringOnBrokenRow.code === 'legacy_transfer_sla_unrecoverable')
+
+  // G5：跨线索。第二条线索的 leadId 配上第一条线索的 assignmentId —— 行存在但与载荷矛盾，必须拒。
+  const imported2 = importLeads('compat2', 'compat2.csv', [{ phone: '13900007002', name: '另一条线索', source: '测试' }])
+  const leadId2 = Number(crmDbService.all('SELECT id FROM lead WHERE contact_normalized = ?', ['13900007002'])[0]?.id || 0)
+  const crossLead = healLegacyDownPayload('transfer', { ...legacy, leadId: leadId2 })
+  ok('G5 前置：第二条线索真实存在且 id 不同（否则跨线索断言是空断言）',
+    imported2.valid === 1 && leadId2 > 0 && leadId2 !== leadId, JSON.stringify({ leadId, leadId2 }))
+  ok('G6 payload.leadId 指向别的线索 → legacy_transfer_lead_mismatch（不把 B 线索的 mode/SLA 贴到 A 线索的指令上）',
+    crossLead.ok === false && crossLead.code === 'legacy_transfer_lead_mismatch')
+  const noLeadId = healLegacyDownPayload('transfer', { ...legacy, leadId: undefined })
+  ok('G7 payload.leadId 缺失 / 非正整数 → 同一稳定码（无法核对身份就不恢复）',
+    noLeadId.ok === false && noLeadId.code === 'legacy_transfer_lead_mismatch' &&
+    [0, -1, 2.5, '1', {}, null].every((bad) => {
+      const r = healLegacyDownPayload('transfer', { ...legacy, leadId: bad })
+      return r.ok === false && r.code === 'legacy_transfer_lead_mismatch'
+    }))
+
+  // G8：目标销售不符 / 缺失。assignment.sales_name 必须逐字等于 payload.toSales。
+  const wrongTarget = healLegacyDownPayload('transfer', { ...legacy, toSales: SALES })
+  ok('G8 payload.toSales 与 assignment.sales_name 不符 → legacy_transfer_target_mismatch',
+    wrongTarget.ok === false && wrongTarget.code === 'legacy_transfer_target_mismatch')
+  ok('G9 toSales 为空串 / 非字符串 / 对象 → 同一稳定码',
+    ['', '   ', {}, [], 123, null, undefined].every((bad) => {
+      const r = healLegacyDownPayload('transfer', { ...legacy, toSales: bad })
+      return r.ok === false && r.code === 'legacy_transfer_target_mismatch'
+    }))
+
+  // G11：身份检查不被「字段已合法」短路——已合法的载荷指向别的线索同样必须拒（否则等于用合法字段
+  // 换取了把 B 线索的上下文当 A 线索事实发送的许可）。
+  const legalButCrossLead = healLegacyDownPayload('transfer', { ...alreadyLegal, leadId: leadId2 })
+  const legalButWrongTarget = healLegacyDownPayload('transfer', { ...alreadyLegal, toSales: SALES })
+  ok('G10 字段已合法但身份不符 → 仍拒（身份检查不是「需要恢复时才跑」）',
+    legalButCrossLead.ok === false && legalButCrossLead.code === 'legacy_transfer_lead_mismatch' &&
+    legalButWrongTarget.ok === false && legalButWrongTarget.code === 'legacy_transfer_target_mismatch')
+  // G12：行不存在而载荷自足 → 原样放行（没有可恢复的值，也不引入与「富化」无关的新失败路径）
+  const selfSufficientInput: Record<string, unknown> = { ...alreadyLegal, assignmentId: 987654321 }
+  const selfSufficient = healLegacyDownPayload('transfer', selfSufficientInput)
+  ok('G11 行不存在但载荷自足 → 原样放行（返回入参本身，不新造一条失败路径）',
+    selfSufficient.ok === true && selfSufficient.payload === selfSufficientInput &&
+    Number(selfSufficient.payload.assignmentId) === 987654321)
+
+  // G13：错误码只描述字段与一致性结论，不带客户值 / 销售姓名 / 线索资料
+  const gCodes = [crossLead, noLeadId, wrongTarget, stringOnBrokenRow]
+    .map((r) => (r.ok ? '' : r.code)).join('|')
+  ok('G12 拒收码不含客户值 / 销售姓名 / 线索资料（只有字段与一致性结论）',
+    /^(legacy_transfer_[a-z_]+\|?)+$/.test(gCodes) && !gCodes.includes('13900007001') &&
+    !gCodes.includes('兼容线索') && !gCodes.includes(SALES) && !gCodes.includes(SALES2), gCodes)
+  ok('G13 拒收路径零业务写：这些调用没有新增 assignment / audit 行',
+    assignmentRow(newAssignmentId)?.id !== undefined &&
+    auditsOf('sync_down_payload_unrecoverable').length === 0)
 
   console.log('\n═══ B. 两条发射端共用同一个 helper（静态，防止各写一套漂移）═══')
   const root = join(__dirname, '..')

@@ -989,6 +989,51 @@ async function main(): Promise<void> {
     !JSON.stringify(kBadAudit).includes(K_PHONE) && !JSON.stringify(kBadAudit).includes('升级兼容线索'),
     JSON.stringify(kBadDetail))
 
+  // K9/K10：身份一致性（2026-09-15 第二轮）。历史行可以补齐**自己这次移交**缺失的字段，
+  // 但绝不能拿别的线索 / 别的销售的 assignment 行当自己的事实去补齐——那会把 B 线索的 mode/SLA
+  // 贴到 A 线索的指令上。行存在却与载荷矛盾 → 不猜、不发，整行终态 failed + 脱敏审计。
+  const K_PHONE2 = '13800007778'
+  const kImported2 = leadSvc.importLeads('e2e-legacy-mismatch', 'e2e-legacy-mismatch.csv',
+    [{ phone: K_PHONE2, name: '另线索', source: 'e2e' }])
+  const kLeadId2 = Number(crmDbService.all('SELECT id FROM lead WHERE contact_normalized = ?', [K_PHONE2])[0]?.id || 0)
+  const insertKFixture = (seq: number, key: string, payload: Record<string, unknown>): number => crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+      [seq, key, JSON.stringify(payload), 'pending', 'e2e', Date.now(), Date.now()])
+    return Number(tx.all('SELECT id FROM outbox_event WHERE idempotency_key = ?', [key])[0]?.id || 0)
+  })
+  const kMismatchBase = {
+    type: 'transfer', oldAssignmentId: kOldAssignmentId, fromSales: SALES_NAME, reason: 'e2e 身份不符',
+    actor: `system:${SUPERVISOR_NAME}`,
+    lead: { leadId: kLeadId, name: '升级兼容线索', contactType: 'phone', contactNormalized: K_PHONE, source: 'e2e', note: '' }
+  }
+  const kCrossRowId = insertKFixture(kSeq + 2, 'transfer:e2e-cross-lead',
+    { ...kMismatchBase, leadId: kLeadId2, assignmentId: kNewAssignmentId, toSales: SALES2_NAME })
+  const kTargetRowId = insertKFixture(kSeq + 3, 'transfer:e2e-target-mismatch',
+    { ...kMismatchBase, leadId: kLeadId, assignmentId: kNewAssignmentId, toSales: SALES_NAME })
+  const kDownBeforeMismatch = store.downEventCount()
+  resetCapture()
+  const kMismatchRun = await service.runCentralSyncOnce()
+  const kMismatchStatus = (rowId: number) => String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [rowId])[0]?.status)
+  ok('K9 前置：第二条线索真实存在且 id 不同（否则跨线索断言是空断言）',
+    kImported2.valid === 1 && kLeadId2 > 0 && kLeadId2 !== kLeadId, JSON.stringify({ kLeadId, kLeadId2 }))
+  ok('K10 载荷与 assignment 行矛盾（跨线索 / 跨目标销售）：不猜值、不发送，两行都终态 failed，中央一条都没收到',
+    kMismatchRun.error === undefined && kMismatchRun.rejected === 2 &&
+    kMismatchStatus(kCrossRowId) === 'failed' && kMismatchStatus(kTargetRowId) === 'failed' &&
+    store.downEventCount() === kDownBeforeMismatch &&
+    commandBodies().filter((e) => e.eventType === 'transfer').length === 0,
+    JSON.stringify({ run: kMismatchRun, s1: kMismatchStatus(kCrossRowId), s2: kMismatchStatus(kTargetRowId) }))
+  const kMismatchAudits = crmDbService.all(
+    "SELECT * FROM audit_event WHERE action = 'sync_outbox_failed' ORDER BY id DESC LIMIT 2").reverse()
+  const kReasons = kMismatchAudits.map((a) => String((JSON.parse(String(a.detail || '{}')) as Record<string, unknown>).reason))
+  ok('K11 两条审计各自带**专属的**一致性错误码（跨线索 / 跨目标销售不共用同一个笼统码）',
+    kReasons.join() === 'legacy_transfer_lead_mismatch,legacy_transfer_target_mismatch' && ackOf(String(kCrossRowId)) === '',
+    JSON.stringify(kReasons))
+  ok('K12 审计仍只带行号 + 类型 + 稳定错误码：不含联系方式 / 线索资料 / 销售姓名',
+    kMismatchAudits.every((a) => Object.keys(JSON.parse(String(a.detail || '{}')) as Record<string, unknown>).sort().join() === 'commandType,reason') &&
+    !JSON.stringify(kMismatchAudits).includes(K_PHONE) && !JSON.stringify(kMismatchAudits).includes(K_PHONE2) &&
+    !JSON.stringify(kMismatchAudits).includes('升级兼容线索') && !JSON.stringify(kMismatchAudits).includes(SALES2_NAME),
+    JSON.stringify(kMismatchAudits))
+
   // 恢复本机绑定（本机 = 主管工作机），避免改变后续任何前置状态
   bindAs(supervisor, 'supervisor')
   crmDbService.setScanState('centralSync:pullCursor', supervisorCursor)

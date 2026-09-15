@@ -121,6 +121,14 @@
   （只记 actor / 行号 / 类型，不含客户数据）。设置页经 `centralsync:failed`（只读，字段裁剪，
   **不回传 payload 原文**）与 `centralsync:retryFailed` 消费。**测试与任何调用方都不得再直接
   `UPDATE outbox_event SET status=...`** —— 那会绕过权限、审计与状态机。
+- **「重新排队」≠「同步成功」（2026-09-15 澄清）**：`failed → pending` 只表示该行**回到可投递队列**，
+  与中央是否受理无关。任何向用户汇报同步结果的入口都必须**回读该行自己的最终 `status`**，
+  **不得用整轮的 `pushed` / `rejected` 计数反推单行结果**；`pending` 一律按「等待下一轮」呈现，
+  不得呈现为成功。回传的错误文本必须经既有脱敏（手机号打码、设备令牌隐藏）后才可出机。
+- **隔离测试的布置口径（2026-09-15 澄清）**：上一条同样约束测试。测试需要「终态行」时应当
+  **新建一条合法 fixture 行**（`INSERT`，行本身即为终态），**不得对既有行直接
+  `UPDATE ... SET status=...`**；`status` 的每一次迁移都只能由状态机自己完成
+  （`settleOutboxRow` / `retryFailedOutbox` 的条件更新）。
 
 ### 1.12 audit_event（新建）
 - **定义**：统一审计流水；append-only，无删除、无更新。

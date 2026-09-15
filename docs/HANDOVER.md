@@ -6,7 +6,7 @@
 >
 > **当前需求文档 = `docs/规划/weflow-hermes-PRD-v3.4.md`**（Phase 0 数据宪法 / Phase 1 单机可靠性 / Phase 2 Hermes 与知识治理；开发约定见 `AGENTS.md`）。
 > **上一阶段主线「AI 销售副驾驶」（§2.26）已于 2026-08-24 P0-4 CLOSED 后收口**，成果仍在主干运行（`customer_judgment` + `getCustomerCurrentView()`、`customer_event` + `task_id`、双漏斗 UI）。§2.26 的 P0-5（L0-L3 文档化）从未产出，已作废。**新会话不要按 §2.26 路线继续开发。**
-> **Phase 3a 中央同步（当前重点）**：首轮实现 = `160786e` / `b295155` / `ae6903b`；2026-09-15 阻断项修复 = `8e757f7`（中央协议与服务端闸门）/ `7a4c5fa`（本机侧出机白名单、双向投递与版本化增量）/ `5024030`（真实契约闭环测试）/ `aa73c26`（文档校准）。详见 **§2.104 / §2.105** 与 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**Phase 3a 代码侧仍未收口**——部署、真机、Windows、SSE、真实消息推送验收全部未做。第四轮收口（§2.108：升级前 pending 移交惰性兼容 / 失败 outbox 正式重投入口（替换测试里的 SQL 翻转）/ `mode` 四值枚举收紧 / `entityId` 必须具体引用 / p0-3 门禁输出脱敏）已完成并通过自动化验证。
+> **Phase 3a 中央同步（当前重点）**：首轮实现 = `160786e` / `b295155` / `ae6903b`；2026-09-15 阻断项修复 = `8e757f7`（中央协议与服务端闸门）/ `7a4c5fa`（本机侧出机白名单、双向投递与版本化增量）/ `5024030`（真实契约闭环测试）/ `aa73c26`（文档校准）。详见 **§2.104 / §2.105** 与 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**Phase 3a 代码侧仍未收口**——部署、真机、Windows、SSE、真实消息推送验收全部未做。第四轮收口（§2.108：升级前 pending 移交惰性兼容 / 失败 outbox 正式重投入口（替换测试里的 SQL 翻转）/ `mode` 四值枚举收紧 / `entityId` 必须具体引用 / p0-3 门禁输出脱敏）已完成并通过自动化验证。第五轮收口（§2.109：历史移交富化的**一致性核对**与字符串 SLA 拒收 / 本机分配 `mode` 与同步接收端共用同一四值契约（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）/ 重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」）/ p0-3 文案哨兵**真的写进合成库**（消除空断言）/ 适配器测试**不再直接改 outbox 状态**）已完成并通过自动化验证。
 > 基线 commit `d40cd4d`；（历史）AI 销售副驾驶 §2.26 已收口，见文件头；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（已提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（已提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，已提交）；最近提交 **P0-4.4 打磨修正**（`828b6bb` 固定比例梯形 + svg 圆角渐变 + 主题蓝箭头 + 映射 tooltip + 删跳级；`a21fc2e` 文档；见 §2.38）+ **P0-4.4 双漏斗 UI 统一视觉体系**（`e0736b3` 四档窗口 + 蓝系渐变 + 行动漏斗 HTML/CSS 自绘梯形 + 映射 tooltip，纯 UI，见 §2.38）+ P0-4.3 UI/KPI 消费（`94f1bbb` 五段漏斗 + 6 KPI + 点击下钻可追溯 + breakdown 下钻原语共享判定行，25/25，**P0-4 CLOSED**，见 §2.37）+ P0-4.2.3（`e431221` 护栏 17/17 + 验收文档 `docs/实施记录/P0-4.2-收口-契约验收.md`，**P0-4.2 CLOSED**，见 §2.36）+ P0-4.2.2（`20ddc3f` getActionFunnel Task-level 只读组装层：六段去重 / sources 逐段 / rate null 守卫 / superseded 排除 / 时序守卫 / days 只过滤 created，19/19 + 真实库验收 5/5，见 §2.36）+ P0-4.2.1（`4292d06` correlation 补齐：customer_event.task_id + 三写点带 task_id，20/20，见 §2.36）+ E3 收口（`d97f663`，16/16，见 §2.35）+ P0-3 收口（`scripts/p0-3-closed-gate.ts` + `docs/实施记录/P0-3-收口-契约验收.md`，**P0-3 CLOSED**，见 §2.34）+ `03d994d`（P0-3.4：今日行动卡判断展示消费 currentView，analysis JSON 不再冒充当前判断，见 §2.33）+ `14eaa07`（P0-3.3：SalesContextStrip 消费 currentView + suggest 主动生成保留 + 落库断链修复，见 §2.32）+ `9a375b3`（P0-3.2：Customer 360 判断卡消费 currentView，360 不再现场调 LLM，见 §2.31）+ `7950ca6`（P0-3 第一刀：customer current view 只读组装层 + 独立 IPC，见 §2.30）+ `2ce99fc`（P0-2 收口 runtime CLOSED）+ `2932195`（P0-3 Current Judgment Consumer 盘点）+ `35519a1`（P0-2 收口：真实库只读盘点 + 契约验收封板）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）+ `fc654b2`（P0-2C.2 summary 判断落库）+ `07241f4`（P0-2C.1 customer_judgment 基础设施）+ `21fd148`（P0-2B evidence resolver）+ `04dbaec`（P0-2B messageKey 集中化）；`3ff3f1f`（P0-2A.6 manual/deal 写者元数据收口）；`ef100ed`（2026-08-23 漏斗改造：历史累计流转 + canonical 语义层 + 下钻修复，见 §2.24）；P0-1 AI 证据链 `4338921`——intent_tag_log 证据列 message_key/evidence_text + follow_up_task.source_message_id，三件运行时验证通过，见 §2.26；P0-2A 六刀已全部提交：`6bf1ff6` intentScore 两 bug → `a3f3479` canonical read model（真实库并行验证 0 漏斗变化）→ `308d5d9` action rules 阶段口径归一 → `53ee94b` insightService 禁写 stage 降 signal → `2933a2d` generic upsert 移除 stage 资格（IPC 运行时剥离 + TS 类型删除双保险，tags/notes 仍正常更新）→ `3ff3f1f` manual/deal rule 写者元数据收口（manual 校验值合法性 + changedAt；deal rule 补写 intent_tag_log + changedAt）；**P0-2 数据契约盘点完成**（`docs/实施记录/P0-2-数据契约盘点.md`；**P0-2A Canonical State 设计已定稿**，`docs/P0-2A-Canonical-State-设计.md`——canonical stage 6 值 + activityState 拆 dormant + unknown 异常位；写者资格 classifier/intent/manual/deal 保留、insightService 禁写 stage 降 signal、generic upsert 移除、dormant 规则写 activityState；intentScore 只修两 bug 不重做算法；**六刀已全部提交**）；**P0-2B Evidence Resolver 两刀已提交**（`04dbaec` messageKey 构造集中 + `21fd148` 统一证据读入口，45 测试断言含只读验证，设计 docs/P0-2B-Evidence-Resolver-设计.md）；**P0-2C AI Judgment Persistence 三刀已全部提交**：`07241f4`（P0-2C.1 customer_judgment 基础设施，盘点 docs/P0-2C-AI-Judgment-Persistence-盘点.md）+ `fc654b2`（P0-2C.2 summary 落库，接入 generateInsightForSession）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）；**P0-2 已收口 CLOSED**（静态契约验收全绿 + 真实库只读盘点 + 8 条架构护栏封死，见 §2.29，下一动作 = P0-3 Current Judgment Consumer Layer））；客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环 `068a403`，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/归档/交接旧版/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **50/50**、golden **45/45**、claim **17/17**、autoconfirm **58/58**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **37/37**、opportunity **45/45**、funnel **40/40**（历史累计流转漏斗 + P0-1 证据断言）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）、message-key **17/17**（P0-2B messageKey 构造集中）、evidence-resolver **45/45**（P0-2B 证据统一读入口，含只读断言）、customer-judgment **40/40**（P0-2C.1 AI 判断基础设施，禁 stage 硬门禁 + 证据诚实）、summary-judgment **33/33**（P0-2C.2 summary 落库：证据诚实 / append-only 去重 / 手动覆盖权利）、action-analysis-judgment **37/37**（P0-2C.3 三调用点统一落 judgment：任务锚点证据 / 兜底链路 / 按类型去重 / suggest 手动覆盖 / 三层分离）、current-view **30/30**（P0-3 第一刀只读组装层：空态 / 投影 / freshness 窗口 / analysis 不并入）、customer360-consumer **13/13**（P0-3.2 360 消费 currentView：无现场 LLM / 无 advice 直读 / UI 不直读真源）、sales-context-strip **10/10**（P0-3.3 状态条消费 currentView：suggest 主动生成保留 / sessionId 断链修复 / 生成后立即重读闭环）、today-action-consumer **14/14**（P0-3.4 今日行动卡消费 currentView：analysis JSON 不再冒充 / 虚拟卡 judgments null / 生成后重读闭环 / 收件箱保留历史语义）、p0-3-closed-gate **6/6 静态 + 真实库运行态**（P0-3 收口：全仓 137 文件历史载体零冒充 / 真实库 18 判断 6 客户全 fresh 证据可解析，见 §2.34）、customer-event **16/16**（P0-3 E3.1 CustomerEvent 基础设施：五类型 CHECK 门禁 / message_key 幂等 / 单表写四者不互相冒充 / 无 key 手动事件可重复，见 §2.35）、customer-event-producer **15/15**（P0-3 E3.2 最小生产者：quote_asked/customer_replied 双写不改变原链路 / closed>0 门控 / 复用 canonical key / 写失败不阻断 / 三表零污染 / **无名 session 门控**（accountId=0 不写 customer_event——观察期防污染），见 §2.35）、insight-unnamed-session **6/6**（无名 session 跳过见解链：沉默扫描 + blacklist 活跃分析无客户档案会话不入队 + 零 this.isSessionIdLike 模块函数护栏，见 §2.37、2026-08-24 isSessionIdLike 修复）、customer-event-action **20/20**（P0-3 E3.3 销售行动事件：script_copied/chat_opened/follow_up_done 挂在动作成功点 / follow_up_done 状态转换幂等 / 写失败不阻断 UI / 无第二套 action log；**P0-4.2.1** 行动事件带 task_id correlation（before.id / 前端 rawTaskId / 无 task 上下文 NULL 不伪造），见 §2.35、§2.36）、customer-event-closed-gate **16/16**（P0-3 E3 收口：全仓静态 13 项契约 + 真实库运行态 3 项，E3 已 CLOSED，见 §2.35；**P0-4.2.2 起 A2 更新为「事件查询原语仅 Action Funnel 消费」**——getActionFunnel 为唯一正当只读消费者，四消费者仍不迁）、action-funnel **25/25**（P0-4.2.2 六段只读组装 + **P0-4.3 breakdown 下钻**：executed/responded 事件类型计数精确 + 最近任务样本降序去重 / 与聚合共享 collectTaskRows 判定行口径严格一致，见 §2.36、§2.37）、action-funnel-closed-gate **17/17**（P0-4.2.3 收口护栏：静态 8 + 真实库运行态 7——created 口径闭合 1217+1601=2818 / won=26 / 窗口结构不变量 / executed+responded+progressed 0 样本属部署时序，见 §2.36；**P0-4.3 起 A2 升级为整文件检查**——collectTaskRows 提取后读方法移出 getActionFunnel 体，改查全文件零写方法 + 读访问仅白名单三原语，更严格）。
 > Mac + Windows 双平台打包验证通过。
@@ -2192,6 +2192,132 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 **Phase 3a 代码侧仍未收口**。
 （`scripts/lead-sla-reset-test.ts` 14/4 为基线既红——本刀前后结果一致，与本改动无关。）
 
+## 2.109 Phase 3a 中央同步收口：富化一致性 + 字符串 SLA 拒收 + 本机 mode 契约 + 重投结果口径 + 守卫补真（2026-09-15 第五轮）
+
+第四轮（§2.108）收口后第 5 项仍未闭合：**历史移交富化只按 `assignmentId` 取行，不核对线索与目标销售**，
+且把「字符串数字的 SLA」当成了已合法值；**本机分配端**（`assignLeads`）对 `mode` 只做 `String()` 兜底，
+与同步接收端的四值契约不是同一条；**重投回包**用整轮 `pushed` / `rejected` 反推单行结果；
+**p0-3 脱敏守卫的 `S_CONTACT` 从未写进合成库**（O7 是恒真空断言）；**适配器测试仍在直接
+`UPDATE outbox_event SET status`**。五项本轮一并收口。
+
+### 1. 历史移交富化必须先核对一致性（真实缺陷）
+
+**根因**：`healLegacyDownPayload` 此前只用 `payload.assignmentId` 查一行，取回 `mode` / `sla1_deadline`
+就补齐。但 `assignmentId` 只要是个存在的行号就通过——**跨线索串档**：A 线索的 assignment 行会把
+A 的 `mode` 与 SLA 富化到 B 线索的 transfer 指令上，接收端据此建出的移交事实（谁、何时到期）是错的，
+而且**看起来一切正常**。
+
+**修法**：读到 assignment 行后**先核对四项再补齐**——`payload.leadId` 为正整数、
+`assignment.lead_id === payload.leadId`、`payload.toSales` 为非空字符串、
+`assignment.sales_name === payload.toSales`；任一不符即拒收，稳定码 `legacy_transfer_lead_mismatch` /
+`legacy_transfer_target_mismatch`。
+
+- **核对总是执行**：只要 assignment 行读到了就核对，**包括「两个字段都已合法、本不需要补齐」的载荷**
+  ——已合法的载荷同样可能是串档来的，不能因为「不需要补齐」就跳过。
+- **读不到行则无从核对**：此时按「是否真的需要补齐」决定放行还是拒收（不需要补齐 → 原对象原样返回，
+  不因 `assignmentId` 形态额外拒收；需要补齐 → `legacy_transfer_bad_assignment_id` /
+  `legacy_transfer_assignment_missing`）。
+- **错误码只带稳定码**：不含客户值、销售姓名、联系方式；审计 `detail` 仍只有 `{type, reason}`。
+
+### 2. 字符串 SLA 不是合法绝对时间戳
+
+**根因**：`sla1Deadline` 的合法性判定此前没有限定**原始类型**，`"1735689600000"` 这种字符串数字会被
+当成已合法而**原样透传**。而两条通道对它口径不同：中央 HTTP 侧 `commandPayloadOf` 会做 `Number()`、
+SMB 侧 `requiredTimestamps` 会拒字符串 —— 同一个载荷在两条通道上一个通过一个被拒，**口径漂移**。
+
+**修法**：`isAbsoluteDeadline` 要求**原始类型为 `number`** 且为**有限正整数**；字符串数字、
+小数、`NaN`、`Infinity`、`0`、负数、对象、数组、布尔、空串一律按「**未合法**」处理，
+走「从 assignment 行读回 `number` 覆盖」这条唯一出口 —— **绝不存在把字符串时间戳透传出去的分支**。
+恢复值仍然只能是库里已存的绝对值，**不按当前时间 / 当前 `crmLeadSlaHours` / 接收端配置重算**（§2.108 纪律不变）。
+
+### 3. 本机生产端与同步接收端共用同一条四值 `mode` 契约
+
+**根因**：`assignLeads()` 的 `const m = String(mode || 'manual')` 把一切类型都兜成字符串——
+`assignLeads(..., 'teleport')` 会**成功返回**并把 `assignment.mode = 'teleport'` 写进本机库。
+这条行本机「成功」，随 outbox 上行时被中央的 `ASSIGNMENT_MODES` 拒收 → **本机成功 / 中央失败的脏数据**。
+`assignBatchLeads()` 则对非法 `mode` **静默回退 `weight`**，用户显式传错却被当成没传。
+
+**修法**：**唯一枚举源仍是 `shared/centralDownCommand.ts#ASSIGNMENT_MODES`，不自建第二套枚举。**
+
+- `assignLeads`：缺省 `manual`；`mode` 出现时必须是 `manual` / `weight` / `round_robin` / `load` 之一，
+  **非法值在开事务前返回 `{ok:false, code:'E101'}`**，零 `assignment` / `ownership_history` /
+  `audit_event` / `outbox_event` 写入 —— **不存在「本机写成功、中央才拒」的窗口**。
+- `assignBatchLeads`：只接受 `weight` / `round_robin` / `load`；**显式非法值返回 `E101`，不再静默回退
+  `weight`**；缺省回退**仅在 `undefined` / `null`** 时生效（前端既有合法调用不受影响）。
+- **IPC 不再收窄类型**：`crm:assignment:assign` / `assignBatch` 原值以 `unknown` 交给服务层做运行时校验，
+  **不得先 `String()` 再传**（`{}` 会被拍成 `[object Object]` 从而「看起来合法」）。
+- 前端类型（preload + `src/types/electron.d.ts`）改用同一份 `AssignmentMode`，合法调用保持兼容。
+
+### 4. 重投结果按「该行自己的最终状态」判定（「重新排队」≠「同步成功」）
+
+**根因**：`centralsync:retryFailed` 此前一律回 `success: true`；设置页只看整轮的 `pushed` / `rejected`，
+**完全忽略 `result.error`**。于是**网络故障**时会出现绿色「已重投」，而那一行其实还躺在 `pending` 里。
+「重新排队成功」被当成了「同步成功」。
+
+**修法**：判定依据只能是**该 `rowId` 自己的最终状态**（整轮计数是**所有行**的合计——别的行成功会把它
+顶上去，网络故障时全都没发出去也证明不了这一行没成功）。
+
+- 新增纯函数 `outboxDeliveryStatusOf(rowId)`（**只读**回读单行状态，非法行号返回 `unknown`）与
+  `retryOutcomeOf(deliveryStatus, syncConfigured)`（`unconfigured` 优先于行状态）。
+- 新增 `safeSyncError(error)`：走**既有脱敏**（`maskAuditText` 手机号打码 + 令牌隐藏）后截断 300 字；
+  IPC **不再回传未脱敏的 `result.error`**。
+- 设置页四种语义：`sent` → 绿色「已完成同步」；`unconfigured` → 警告「已重新排队，但中央同步未配置」
+  （**绝不显示为成功**）；`failed` → 红色「重投后仍被拒绝，请查看审计」；`pending` → 警告
+  「已重新排队，等待网络/下一轮同步」。失败清单与同步状态的既有刷新（`finally`）保持不动。
+- **不变式**：重投仍**不改 payload / `event_seq` / `idempotency_key`**，只做状态机迁移。
+
+### 5. p0-3 脱敏守卫的哨兵必须真的落库
+
+**根因**：`S_CONTACT` 只被定义、**从未写进合成库**，所以 O7「输出不含联系方式哨兵」是**恒真的空断言**
+——它证明不了任何事，因为库里本来就没有那个值。而 `customer_profile.contact_normalized` 这个字段
+在真实 schema 里**并不存在**（联系方式列在 crmDb 的 `lead.contact_normalized`）。
+
+**修法**：合成 `customer_profile` 改按 `salesDbService` 的**真实生产 DDL** 建表（不再自造窄表），
+联系方式哨兵写进**两个真实承载列**：`notes`（备注里粘手机号）与第二行客户的 `display_name`
+（微信备注常常直接就是手机号）；跑 gate 之前先**只读回查**（P1–P3）断言哨兵确实在库里，
+否则立即失败。这样 O7 才是在「值真实存在」的前提下证明「输出里没有它」。
+
+### 6. 适配器测试不再直接改 outbox 状态
+
+**根因**：宪法 §1.11 明令「测试与任何调用方都不得直接 `UPDATE outbox_event SET status=...`」，
+但 `scripts/central-sync-adapter-test.ts` 仍有**两处**裸 `UPDATE outbox_event SET status='pending'`
+把已结算的行掰回去——那会绕过权限、审计与状态机。
+
+**修法**：两处全删，**没有放宽任何行为断言**：
+
+- **B9**（同一事实重放不产生第二条指令）改为**新建一条 pending 投递行**承载同一 `eventId`/幂等键
+  （投影路由的 `eventId` 只由 `deviceId + entityType/localRef + aggregateVersion` 决定，**与哪条 outbox 行投递无关**），
+  断言两次 `claimEvent()` 得到**同一把 key**；**B9b** 再断言那条重放行是由状态机自己结算为 `sent` 的。
+- **B10** 改为新建一条合法 pending fixture，让**真实服务路径**把它驱动到 `failed`。
+- 仓库内**已无任何测试直接改 outbox 状态**；剩余的 `UPDATE outbox_event` 只出现在
+  `centralSyncService.ts`（2 处）与 `lanSyncService.ts`（7 处）的**生产状态机**里（条件更新，
+  `WHERE id=? AND status=...`），**未删任何一条合法迁移**。
+
+### 7. 本轮验证（仅计数）
+
+根 `npm run typecheck` 通过（electron 棘轮基线 0）；`central-down-compat-test` **44/0**、
+`central-sync-adapter-test` **98/0**、`central-sync-e2e-test` **88/0**、新增 `central-retry-outcome-test` **20/0**、
+`lan-sync-test` **93/0**、`lan-sync-e2e-test` **42/0**、`p0-3-closed-gate-test` **23/0**、
+`assignment-test` **28/0**、`assignment-batch-count-test` **7/0**、`assignment-full-test` **100/0**、
+`lead-assignment-view-test` **64/0**、`aftersales-transfer-outbox-test` **60/0**；
+`p0-3-closed-gate` **6/0**（真实库运行态，本机只报告计数）；中央侧 `npm --prefix central run typecheck` /
+`npm test`（app 159 / projection 36 / migration 23 / context 6，全 0 失败）/ `npm run build` 通过；
+`git diff --check` 通过。
+
+### 8. 边界与残留（不得描述为通过）
+
+- **Phase 3a 部署、真实 PostgreSQL、双机同步、Windows、SSE、真实消息推送、真实 AI 调用、
+  签名与公证：全部仍未验证。** 中央侧所有测试仍跑在 `MemoryCentralStore` 与 `app.inject` 上，
+  本机侧全部跑在隔离临时目录上。
+- **下行仍携带 `contactNormalized`**（中央 HTTP 固定 6 字段，`contactRaw`/`wechat` 一律 400），
+  **不声称「下行零身份值」**；冲突裁决仍未细化。
+- **升级兼容只覆盖 `transfer`**；历史行若其 `assignmentId` 指向的行已被清理且确实需要补齐，
+  则永久置 `failed` 等人工处置（刻意的：**宁可显式失败，也不猜一个 SLA**）。
+- **`scripts/lead-sla-reset-test.ts` 14/4 为基线既红**，与本轮改动无关，归技术债。
+- **`scripts/assignment-correction-test.ts` 与 `scripts/lead-assignment-restore-test.ts` 本轮未运行**
+  （会复制真实生产库，不得作为中央同步的回归证明）。
+- **本轮结论仍只指代码**：**Phase 3a 代码侧仍未收口**，也不得写成「整个项目已完成」。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -2450,9 +2576,9 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 | `salesQueue.ts` | 串行队列（防WCDB段错误） |
 | `centralSyncClient.ts` | **中央 HTTP 客户端**（§2.104 + §2.105）：HTTPS 强制（仅 `http://127.0.0.1`/`localhost` 例外）、`Bearer` 鉴权、`Idempotency-Key`、超时、非 2xx/非 JSON 响亮报错、**错误串不带令牌**；`claim()` 保留返回的设备令牌，`revokeSelf()` 供解绑先吊销后清本地。**错误按「临时网络失败」与「永久契约错误」分流**（前者保持 pending，后者转 `failed` + 审计） |
 | `centralProjection.ts` | **上行投影注册表**（§2.104 + §2.105）：只读既有结构化表的 9 类投影；**每个 `eventType` 走显式最小字段白名单**；**可变表按 `(updated_at, id)` 复合水位**（append-only 表仍用 id），幂等键带版本 `#[v]<rev>`，`entityId` 由 `scopedRef(deviceId, localRef)` 生成；读返回 `{drafts, watermark, scanned, skipped, full}`，暂不可投影的行**不阻塞后续合法行**且补齐后经台账重扫；客户身份只上行 sha256 哈希 + 展示掩码；审计 `detailMasked` 按**字段名驱动**擦洗（复用 `centralSync.ts` 的禁字段谓词）；judgment 的 `session_id` 先经 `customer_profile.customer_id` 映射，**映射不到直接跳过**（session_id 与客户原话永不出本机） |
-| `centralSyncService.ts` | **Phase 3a 双向同步适配 + 调度器**（§2.104 + §2.105）：上行复用 `outbox_event`（**只有中央确认接收后才结算本机行**；被拒标 failed + 计数 + 审计）；**逐事件定义方向/端点/目标/白名单/终态/重试**——`assign`/`transfer`/`recycle` 走 `command` 下发（**不伪装成上行投影**），其余走投影；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` 工号解析目标，**解析不到显式报错并保持 pending，绝不按姓名猜人**；队列先按类型过滤再取批（不再 `LIMIT 50` 后过滤）；跳过台账 `centralSync:skip:`；下行复用 `lanSyncService.applyDownEventDirect()` 的既有状态机与幂等标记，**且不绕过 `shared/centralDownCommand.ts` 的业务校验**；`supervisor_correction` 落 `notify_inbox` 不静默覆盖、`permission_change` 只记声明不作鉴权；未知类型立即 `invalid`、`nolead` 有界重试 5 次后 `invalid`；**`transfer` 一条 outbox → 两条下行指令**（接收方 `apply` / 原归属 `remove`，幂等键各带投递角色与目标员工），**两个目标都被中央受理才结算 `sent`**，任一目标 4xx 整行 `failed`、网络类失败保持 `pending` 靠顺序重试收敛（已受理目标由中央幂等去重，**不另建发送状态表**）；`payload.lead` 白名单按传输上下文分档（`leadFieldsFor`：中央 HTTP 6 字段 / SMB 8 字段）；绑定必启调度器、解绑安全空转、轮巡间隔实时读取、不重复定时器；**§2.108**：发送前对历史载荷调 `healLegacyDownPayload`（失败即 `failed` + 稳定码，不猜不发）；新增**正式失败重投入口** `retryFailedOutbox(rowId)`（服务层事务内条件更新 failed→pending，重复点击幂等，改状态不改 payload/event_seq/idempotency_key，追加 `sync_outbox_retry` 脱敏审计）与只读 `listFailedOutbox(limit)`（裁剪字段、不回传 payload 原文、原因码经 `SAFE_FAILURE_CODE` 过滤） |
-| `centralSyncIpcHandlers.ts` | 中央同步 IPC（状态 / 绑定认领 / 立即同步 / 解绑，解绑可带 `force` 走「仅清本机凭证」）；**§2.108** 新增 `centralsync:failed`（只读失败列表）与 `centralsync:retryFailed`（逐项重投，只翻状态，投递交由既有 `runCentralSyncOnce()`） |
-| `crmDownPayloadCompat.ts`（§2.108 新建） | **历史下行载荷惰性兼容唯一实现**（发送时补齐，不做全表 UPDATE）：`healLegacyDownPayload(type, payload)` 只为 `transfer` 补齐 `mode` / `sla1Deadline`，**从本机 assignment 行（`payload.assignmentId`）读回移交事实产生时写死的绝对值**，**严禁按当前时间 / 当前 `crmLeadSlaHours` / 接收端配置重算**；不可恢复（assignmentId 非法 / 行不存在 / mode 不在枚举 / sla 非正整数时间戳）返回稳定码，调用方置 `failed` + 脱敏审计；补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**；已合法载荷原对象原样返回。中央 HTTP 发送前自检与 SMB 发送共用此一处 |
+| `centralSyncService.ts` | **Phase 3a 双向同步适配 + 调度器**（§2.104 + §2.105）：上行复用 `outbox_event`（**只有中央确认接收后才结算本机行**；被拒标 failed + 计数 + 审计）；**逐事件定义方向/端点/目标/白名单/终态/重试**——`assign`/`transfer`/`recycle` 走 `command` 下发（**不伪装成上行投影**），其余走投影；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` 工号解析目标，**解析不到显式报错并保持 pending，绝不按姓名猜人**；队列先按类型过滤再取批（不再 `LIMIT 50` 后过滤）；跳过台账 `centralSync:skip:`；下行复用 `lanSyncService.applyDownEventDirect()` 的既有状态机与幂等标记，**且不绕过 `shared/centralDownCommand.ts` 的业务校验**；`supervisor_correction` 落 `notify_inbox` 不静默覆盖、`permission_change` 只记声明不作鉴权；未知类型立即 `invalid`、`nolead` 有界重试 5 次后 `invalid`；**`transfer` 一条 outbox → 两条下行指令**（接收方 `apply` / 原归属 `remove`，幂等键各带投递角色与目标员工），**两个目标都被中央受理才结算 `sent`**，任一目标 4xx 整行 `failed`、网络类失败保持 `pending` 靠顺序重试收敛（已受理目标由中央幂等去重，**不另建发送状态表**）；`payload.lead` 白名单按传输上下文分档（`leadFieldsFor`：中央 HTTP 6 字段 / SMB 8 字段）；绑定必启调度器、解绑安全空转、轮巡间隔实时读取、不重复定时器；**§2.108**：发送前对历史载荷调 `healLegacyDownPayload`（失败即 `failed` + 稳定码，不猜不发）；新增**正式失败重投入口** `retryFailedOutbox(rowId)`（服务层事务内条件更新 failed→pending，重复点击幂等，改状态不改 payload/event_seq/idempotency_key，追加 `sync_outbox_retry` 脱敏审计）与只读 `listFailedOutbox(limit)`（裁剪字段、不回传 payload 原文、原因码经 `SAFE_FAILURE_CODE` 过滤）；**§2.109**：新增 `outboxDeliveryStatusOf(rowId)`（**只读**回读单行状态，非法行号返回 `unknown`）、`retryOutcomeOf(deliveryStatus, syncConfigured)`（纯函数，`unconfigured` 优先于行状态）与 `safeSyncError(error)`（走既有 `maskAuditText` + 令牌隐藏 + 截断 300 字） |
+| `centralSyncIpcHandlers.ts` | 中央同步 IPC（状态 / 绑定认领 / 立即同步 / 解绑，解绑可带 `force` 走「仅清本机凭证」）；**§2.108** 新增 `centralsync:failed`（只读失败列表）与 `centralsync:retryFailed`（逐项重投，只翻状态，投递交由既有 `runCentralSyncOnce()`）；**§2.109**：重投回包改为**回读该 rowId 的最终状态**后按 `retryOutcome` 如实回传（`sent` / `pending` / `failed` / `unconfigured` / `unknown`）+ `deliveryStatus` + `syncConfigured` + **脱敏后**的 `syncError`，**不再用整轮 `pushed`/`rejected` 反推单行结果，也不再回传未脱敏的 `result.error`** |
+| `crmDownPayloadCompat.ts`（§2.108 新建） | **历史下行载荷惰性兼容唯一实现**（发送时补齐，不做全表 UPDATE）：`healLegacyDownPayload(type, payload)` 只为 `transfer` 补齐 `mode` / `sla1Deadline`，**从本机 assignment 行（`payload.assignmentId`）读回移交事实产生时写死的绝对值**，**严禁按当前时间 / 当前 `crmLeadSlaHours` / 接收端配置重算**；不可恢复（assignmentId 非法 / 行不存在 / mode 不在枚举 / sla 非正整数时间戳）返回稳定码，调用方置 `failed` + 脱敏审计；补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**；已合法载荷原对象原样返回。中央 HTTP 发送前自检与 SMB 发送共用此一处。**§2.109**：补齐前**核对一致性**（`payload.leadId` 正整数 + `assignment.lead_id` 相等 + `payload.toSales` 非空 + `assignment.sales_name` 相等，不符即 `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`，**读到行时总是核对，已合法载荷也拦跨线索串档**）；**字符串 SLA 不是合法绝对时间戳**——`sla1Deadline` 只有原始类型为 `number` 且有限正整数才算已合法，字符串数字一律按「未合法」处理并从 assignment 行读回 `number` 覆盖（HTTP 会 `Number()`、SMB 会拒字符串，原样透传会口径漂移）|
 | `salesLogger.ts` | 落盘日志 |
 | `ai/aiApiClient.ts` | 统一AI调用层 |
 | `insightService.ts`（改） | 销售prompt + 高意向预警（P0-2A.4 起 stage 解析仅写 signal 不覆盖 stage）。**沉默扫描/活跃分析/催办识别已按 PRD §5.4（R）删除**，见 §2.98。**AI 见解屏蔽名单闸门在此按 `triggerReason` 裁决**（显式单客户放行、自动/批量受挡，见 §2.99）；`isSessionAllowed` 只管手动 whitelist/blacklist，**不得把黑名单判定加回** |
@@ -2567,8 +2693,9 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 | `sales-context-strip-test.ts` | **P0-3.3 状态条消费 currentView 护栏**（**10/10**，`14eaa07`）：静态（消费 currentView / suggest 保留 / 不直读真源 / item 带 sessionId / 生成后重读顺序）+ 行为（落库→立即可见闭环 / 无 sessionId 断链复现 / manual 跳过去重保留覆盖） |
 | `today-action-consumer-test.ts` | **P0-3.4 今日行动卡消费 currentView 护栏**（**14/14**，`03d994d`）：静态（AIActionCard 消费 judgments / 不渲染 analysis 五字段 / 不直读真源 / 证据走 evidenceGetByKey / store 无 JSON.parse(sig.analysis) / fetchSuggestion 重读顺序 / engine 组装 judgments / 收件箱历史语义）+ 行为（signal.judgments 组装 / 任务字段保留 / 无判断四类 null / 虚拟卡 null / append 后重跑反映最新） |
 | `p0-3-closed-gate.ts` | **P0-3 收口验收**（**6/6 静态 + 真实库运行态**，P0-3 CLOSED）：全仓 src/ 137 文件剥离注释扫描（无 customer_judgment/insight_record/follow_up_task/现场 LLM 直读 + 消费统一走 currentView + 三消费者四卡一致）+ sql.js 只读真实库（判断覆盖/freshness/evidence 可解析/冲突观察）。**§2.108 输出脱敏**：终端只出聚合计数 / 通过失败 / 结构性结论，**不再打印 `session_id` / 判断正文与摘要 / `evidence_text` / `messageKey` 原文 / 客户姓名 / 联系方式 / 库绝对路径**，逐行样例转储整段删除（脚本仍只读）；红线由 `p0-3-closed-gate-test.ts` 强制 |
-| `p0-3-closed-gate-test.ts`（§2.108 新建） | **p0-3 门禁输出脱敏守卫**（**20/0**）：静态 S1–S7 在**剥离注释后**的 gate 源码上禁止「取出来起别名再打印」与「把库路径塞进 console」的回归写法；输出捕获 O0–O12 用**合成库**（哨兵全是编造字符串，建在 /tmp 一次性目录跑完即删）起子进程真跑 gate，断言七类哨兵与合成库绝对路径一个都不出现，**同时断言聚合计数仍在**（脱敏不等于把验收输出砍空）。**不打开真实业务库** |
-| `central-down-compat-test.ts`（§2.108 新建） | **升级前 pending 移交兼容全链**（**31/0**）：A0–A10 补齐语义（含「把当前 `crmLeadSlaHours` 改成 999 后恢复值一字不变」）/ A11–A15 不可恢复稳定码 / B1–B3 两条通道静态共用同一 helper / C1–C4 SMB 落地且文件名与幂等键不变、载荷带恢复值且过 `validateDownEventFile` / D1–D5 隔离件同路径重写后两轮收敛 / E1–E2 `failed` + 脱敏审计键集恰为 `{reason,type}` / F1。隔离临时目录，不读真实生产库 |
+| `p0-3-closed-gate-test.ts`（§2.108 新建） | **p0-3 门禁输出脱敏守卫**（**23/0**）：静态 S1–S7 在**剥离注释后**的 gate 源码上禁止「取出来起别名再打印」与「把库路径塞进 console」的回归写法；输出捕获 O0–O12 用**合成库**（哨兵全是编造字符串，建在 /tmp 一次性目录跑完即删）起子进程真跑 gate，断言七类哨兵与合成库绝对路径一个都不出现，**同时断言聚合计数仍在**（脱敏不等于把验收输出砍空）。**§2.109 消除空断言**：合成 `customer_profile` 改按**真实生产 DDL**（salesDbService）建表，联系方式哨兵同时写进两个真实承载列（`notes` 备注 / 第二行 `display_name` 微信备注），并在跑 gate 前**只读回查**（P1–P3）证明哨兵真的在库里——此前 `S_CONTACT` 只定义、从未落库，O7 是一条**恒真的空断言**。**仍然不打开真实业务库** |
+| `central-down-compat-test.ts`（§2.108 新建） | **升级前 pending 移交兼容全链**（**44/0**）：A0–A10 补齐语义（含「把当前 `crmLeadSlaHours` 改成 999 后恢复值一字不变」）/ A11–A15 不可恢复稳定码 / B1–B3 两条通道静态共用同一 helper / C1–C4 SMB 落地且文件名与幂等键不变、载荷带恢复值且过 `validateDownEventFile` / D1–D5 隔离件同路径重写后两轮收敛 / E1–E2 `failed` + 脱敏审计键集恰为 `{reason,type}` / F1；**§2.109 新增 G1–G13**：字符串数字 SLA **不得**算「已合法」（`"1735689600000"` 被读回为 `number` 覆盖，小数 / `NaN` / `Infinity` / `0` / 负数 / 对象 / 数组 / 布尔 / 空串同样不合法且**无一能把字符串透传出去**）/ 字符串 SLA + 行不可用 → `legacy_transfer_sla_unrecoverable` / 跨线索（`assignment.lead_id ≠ payload.leadId`）→ `legacy_transfer_lead_mismatch` / `toSales` 不匹配与形态非法 → `legacy_transfer_target_mismatch` / **已合法载荷但身份不符同样拒收**（已合法也要拦串档）/ 行不存在且载荷自足 → **原对象原样返回** / 拒收码**不含任何客户值** / 零业务写。隔离临时目录，不读真实生产库 |
+| `central-retry-outcome-test.ts`（§2.109 新建） | **失败行重投的结果口径**（**20/0**）：注册**真实 IPC 处理器**（`registerCentralSyncIpcHandlers` 只依赖 `type IpcMain` 与无 electron 依赖的 salesQueue，可用假 ipcMain 驱动），假 fetch 按路径路由（**不发真实网络请求**）：A `sent`（回读确认行已由状态机结算 `sent`，且该行真的进入中央请求）/ B `pending`（网络故障：翻转被接受但**绝不报成功**，行仍 `pending`，`syncError` 手机号打码 `138****2222` + 令牌显示为 `[已隐藏令牌]`）/ C `failed`（重投后再次 4xx：行回终态 `failed` + 新增本机审计）/ D `unconfigured`（本机零请求，**绝不是成功**）+ 纯函数格（`retryOutcomeOf` / `outboxDeliveryStatusOf` 只读、非法行号 `unknown`）/ E 稳定拒收（非法 rowId / `sent` 行 `not_failed` 不可复活 / 不存在 `not_found`）/ F 静态契约（IPC 回读 rowId、`safeSyncError` 脱敏、设置页四分支且不再读整轮计数、`finally` 仍刷新）。布置用 `INSERT` 终态行，**绝不 `UPDATE ... SET status`** |
 | `customer-event-test.ts` | **P0-3 E3.1 CustomerEvent 基础设施护栏**（**16/16**）：静态 8（五类型枚举完整 / shared 无越界类型（防万能日志表）/ 建表 CHECK 五类型 / message_key 幂等 partial unique / 原语命名 / 类型守卫被引用 / customerEventAdd 单表写四者不互相冒充 / Scope Lock 文档同步）+ 行为 8（append 可读 / 同 key 幂等拒绝 / 无 key 手动事件可重复 / 非法类型抛错 / bySession 倒序 / byType+sinceMs / metadata 往返 / 与判断意向三表独立） |
 | `customer-event-producer-test.ts` | **P0-3 E3.2 最小生产者护栏**（**14/14**）：静态 8（quote_asked/customer_replied 双写点 / closed>0 门控 / 复用 canonical key 不拼 key / evidence 原话非 AI 结论 / helper try/catch+WARN 不阻断 / customerEventAdd 仅 1 处且在 recordUserActionEvent 内（R7 路径零直接事件引用，E3.3 收窄） / crmDbService 零事件污染 / intent_tag_log 零新写点）+ 行为 6（报价双写一致 / 同 key 双幂等 / 回复闭环 customer_replied_at 更新+事件 / closed=0 门控不写 / 写失败不阻断原链仍成功 / metadata 报价详情） |
 | `customer-event-action-test.ts` | **P0-3 E3.3 销售行动事件护栏**（**20/20**）：静态 11（recordUserActionEvent 导出+白名单 / completeAction before 状态检查+follow_up_done 写入 / **P0-4.2.1** follow_up_done 携带 before.id（四参）/ IPC sales:action:recordEvent + taskId 透传（typeof number 才传）/ preload actionRecordEvent 签名含 taskId / AIActionCard 成功点接入 chat_opened+script_copied + **rawTaskId 提取上报** / follow_up_done 不经 IPC / 无第二套 action log / source=manual）+ 行为 9（pending→done 恰好一条 + **task_id=task.id** / 重复完成幂等不新增 / skipped 不写 / script_copied 带 taskId 落库 / 白名单外拒绝不抛 / 空 sessionId 容错 / **无 taskId 上报 → NULL 不伪造**） |
@@ -2670,7 +2797,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | P1 | 复盘页限宽居中 | §2.41 七页中唯一未做（.sr-page 全高滚动布局，需验证后改） |
 | 暂缓 | 触发规则配置 UI | **§2.26 L0-L3 文档化决策**：v1 硬编码，先验证有效再评估，P0 闭环前冻结 |
 | 暂缓 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
-| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）+ 复核收口（§2.106）+ 契约修复（§2.107：移交 SLA 保全 / SMB 接入共享校验 / 建档字段强制 / 4xx 部分成功审计补强）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量 + 移交双目标投递 + 服务端引用闸门 + 中央操作审计 + 移交 SLA 精确落地。已披露残留：**下行指令的线索档案面**（中央 HTTP 固定 6 字段，`contactNormalized` 必然过网；`contactRaw`/`wechat` 一律 400）、冲突裁决未细化。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项。**§2.108（第四轮）另收口**：升级前 pending 移交的惰性兼容（沿用 assignment 里已存的 SLA 绝对值，**不重算**）、失败 outbox 的**正式重投入口**（服务层 + IPC + 设置页；e2e 不再直改数据库）、`mode` 收紧为四值枚举、`entityId` 必须具体引用、p0-3 门禁输出脱敏 + 守卫测试 |
+| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）+ 复核收口（§2.106）+ 契约修复（§2.107：移交 SLA 保全 / SMB 接入共享校验 / 建档字段强制 / 4xx 部分成功审计补强）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量 + 移交双目标投递 + 服务端引用闸门 + 中央操作审计 + 移交 SLA 精确落地。已披露残留：**下行指令的线索档案面**（中央 HTTP 固定 6 字段，`contactNormalized` 必然过网；`contactRaw`/`wechat` 一律 400）、冲突裁决未细化。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项。**§2.108（第四轮）另收口**：升级前 pending 移交的惰性兼容（沿用 assignment 里已存的 SLA 绝对值，**不重算**）、失败 outbox 的**正式重投入口**（服务层 + IPC + 设置页；e2e 不再直改数据库）、`mode` 收紧为四值枚举、`entityId` 必须具体引用、p0-3 门禁输出脱敏 + 守卫测试 ；**§2.109（第五轮）另收口**：历史移交富化的**一致性核对**（lead/目标销售不符即拒收，已合法载荷也拦跨线索串档）与**字符串 SLA 不算合法绝对时间戳**（一律读回 `number` 覆盖，绝不透传字符串）、本机分配 `mode` 与同步接收端**共用同一四值契约**（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）、重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」，`syncError` 脱敏）、p0-3 文案哨兵**真的写进合成库**（消除恒真空断言）、适配器测试**不再直接改 outbox 状态** |
 | 大后期 | CRM 双向同步（业务面） | 传输层已由 §2.104 Phase 3a 打通；此处指更上层的双向业务编排，仍仅预留 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -2691,7 +2818,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
    迁移失败项人工闭环（2026-09-14 新增）：`npx tsx scripts/migration-dismissal-test.ts`（**14/0**——dismissal 往返/幂等、模块② 扫描过滤、词典覆盖、IPC 接线、ENTITIES 白名单）
    消息推送会话类型分类（2026-09-14 新增）：`npx tsx scripts/message-push-session-type-test.ts`（**22/0**——sessionId 形态分类、单聊跳过分支生效与撤回例外、旧写法死路成因反证与防回退静态锁）
-   **Phase 3a 中央同步（2026-09-14 新增 §2.104；2026-09-15 阻断项修复 §2.105、复核收口 §2.106、契约修复 §2.107、收口 §2.108 后复测）**：`npx tsx scripts/central-sync-client-test.ts`（**24/0**——传输约束/鉴权/失败语义/不泄令牌/端点契约，注入假 fetch 不发真实网络）；`npx tsx scripts/central-sync-adapter-test.ts`（**97/0**（§2.108 补 J7–J11 引用具体性正反例）——上行投影与显式白名单/成功才结算/下行状态机/有界重试/解绑三态/调度器与 SMB 互斥/版本化增量与跳过台账；E4–E7 建档契约负例：只有 leadId / 空 contactNormalized / 顶层与子对象 leadId 不一致 / transfer 缺 sla1Deadline+mode 全部终态 invalid 且零业务写零幂等标记）；`npx tsx scripts/central-sync-e2e-test.ts`（**84/0**（§2.108：J11d 改走正式入口 `retryFailedOutbox`，不再直改数据库；补 J11d0/J11e–J11j 边界与 K1–K8 中央 HTTP 历史兼容）——真实业务生产者→outbox→适配器→Fastify `app.inject`→`MemoryCentralStore`→投影/指令→pull→本机状态机→ACK→结算的**完整契约闭环**。除敏感字段不出机、跨设备越权、网络失败重放、幂等、游标跳过外，**J 段是真实移交链**：调用真实 `transferAssignment()` → 一条 outbox（携带本轮真实 `sla1Deadline`/`mode`）→ 两条下行指令（新归属 `apply` / 原归属 `remove`）→ 双目标都受理才置 `sent` → 重放判 duplicate 不新增指令与审计 → 第二目标先瞬时失败保持 `pending`、恢复后补齐；**4xx 部分成功**（第一目标受理 + 第二目标永久 400 → 整行 `failed` + `sync_outbox_failed` 审计带 `failedRole`/`failedTarget`/`delivered`，修复后重投收敛 `sent`）；两个接收端各经既有状态机落地并回 ACK，**sla1Deadline 精确等于发起端指令值、remove 不动 SLA、重放零漂移**；E5–E7 补真实 `runSla1Recycle()` 的 recycle 链（`recycle` **不携带** `lead` 子对象）；**无 Docker 依赖**）。中央服务侧另跑：`cd central && npm run typecheck && npm test`（app **159** / projection 36 / migration 23 / context 6，全 0 失败；M11–M23 = 建档契约与 transfer SLA 正反用例，K7–K10 = `entityId` 具体引用，M24–M27c = `mode` 枚举）与 `cd central && npm run build`。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**——PG 侧只有 P7/P8 源码级契约断言（同事务 / 只在首次写入 / SQL 参数化 / 不记载荷），DDL 约束、并发与事务隔离、`$n::uuid` 运行时行为均未验证。**注意**：`central/` 是独立包，**不在根 `npm run typecheck` 的覆盖范围内**，改中央代码必须另跑这两条。**另注意**：`scripts/central-sync-e2e-test.ts` 与适配器测试均用 `WEFLOW_WORKER` / `WEFLOW_USER_DATA_PATH` / `WEFLOW_CONFIG_CWD` 指向临时目录，**不读真实生产库**；`scripts/assignment-correction-test.ts` 与 `scripts/lead-assignment-restore-test.ts` 会复制真实生产库做基线比对，**不得作为中央同步的回归证明**；**§2.108 新增**：`scripts/central-down-compat-test.ts`（**31/0**——升级前 pending 移交惰性兼容全链）、`scripts/p0-3-closed-gate-test.ts`（**20/0**——门禁输出脱敏静态 + 输出捕获守卫）；`scripts/lan-sync-test.ts` 复测 **93/0**、`scripts/lan-sync-e2e-test.ts` **42/0**、`scripts/p0-3-closed-gate.ts` **6/0**（153 文件）
+   **Phase 3a 中央同步（2026-09-14 新增 §2.104；2026-09-15 阻断项修复 §2.105、复核收口 §2.106、契约修复 §2.107、收口 §2.108 后复测）**：`npx tsx scripts/central-sync-client-test.ts`（**24/0**——传输约束/鉴权/失败语义/不泄令牌/端点契约，注入假 fetch 不发真实网络）；`npx tsx scripts/central-sync-adapter-test.ts`（**97/0**（§2.108 补 J7–J11 引用具体性正反例）——上行投影与显式白名单/成功才结算/下行状态机/有界重试/解绑三态/调度器与 SMB 互斥/版本化增量与跳过台账；E4–E7 建档契约负例：只有 leadId / 空 contactNormalized / 顶层与子对象 leadId 不一致 / transfer 缺 sla1Deadline+mode 全部终态 invalid 且零业务写零幂等标记）；`npx tsx scripts/central-sync-e2e-test.ts`（**84/0**（§2.108：J11d 改走正式入口 `retryFailedOutbox`，不再直改数据库；补 J11d0/J11e–J11j 边界与 K1–K8 中央 HTTP 历史兼容）——真实业务生产者→outbox→适配器→Fastify `app.inject`→`MemoryCentralStore`→投影/指令→pull→本机状态机→ACK→结算的**完整契约闭环**。除敏感字段不出机、跨设备越权、网络失败重放、幂等、游标跳过外，**J 段是真实移交链**：调用真实 `transferAssignment()` → 一条 outbox（携带本轮真实 `sla1Deadline`/`mode`）→ 两条下行指令（新归属 `apply` / 原归属 `remove`）→ 双目标都受理才置 `sent` → 重放判 duplicate 不新增指令与审计 → 第二目标先瞬时失败保持 `pending`、恢复后补齐；**4xx 部分成功**（第一目标受理 + 第二目标永久 400 → 整行 `failed` + `sync_outbox_failed` 审计带 `failedRole`/`failedTarget`/`delivered`，修复后重投收敛 `sent`）；两个接收端各经既有状态机落地并回 ACK，**sla1Deadline 精确等于发起端指令值、remove 不动 SLA、重放零漂移**；E5–E7 补真实 `runSla1Recycle()` 的 recycle 链（`recycle` **不携带** `lead` 子对象）；**无 Docker 依赖**）。中央服务侧另跑：`cd central && npm run typecheck && npm test`（app **159** / projection 36 / migration 23 / context 6，全 0 失败；M11–M23 = 建档契约与 transfer SLA 正反用例，K7–K10 = `entityId` 具体引用，M24–M27c = `mode` 枚举）与 `cd central && npm run build`。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**——PG 侧只有 P7/P8 源码级契约断言（同事务 / 只在首次写入 / SQL 参数化 / 不记载荷），DDL 约束、并发与事务隔离、`$n::uuid` 运行时行为均未验证。**注意**：`central/` 是独立包，**不在根 `npm run typecheck` 的覆盖范围内**，改中央代码必须另跑这两条。**另注意**：`scripts/central-sync-e2e-test.ts` 与适配器测试均用 `WEFLOW_WORKER` / `WEFLOW_USER_DATA_PATH` / `WEFLOW_CONFIG_CWD` 指向临时目录，**不读真实生产库**；`scripts/assignment-correction-test.ts` 与 `scripts/lead-assignment-restore-test.ts` 会复制真实生产库做基线比对，**不得作为中央同步的回归证明**；**§2.108 新增**：`scripts/central-down-compat-test.ts`（**44/0**（§2.109 补 G1–G13 字符串 SLA 拒收与赋值身份核对）——升级前 pending 移交惰性兼容全链）、`scripts/p0-3-closed-gate-test.ts`（**23/0**（§2.109 补 P1–P3 哨兵落库前置断言）——门禁输出脱敏静态 + 输出捕获守卫）；**§2.109 新增**：`scripts/central-retry-outcome-test.ts`（**20/0**——重投四种结果的真实 IPC 级验证）；`scripts/central-sync-adapter-test.ts` 复测 **98/0**、`scripts/central-sync-e2e-test.ts` 复测 **88/0**、`scripts/assignment-full-test.ts` **100/0**（§2.109 补 I1–I9 本机 `mode` 契约）、`scripts/lan-sync-test.ts` 复测 **93/0**、`scripts/lan-sync-e2e-test.ts` **42/0**、`scripts/p0-3-closed-gate.ts` **6/0**（真实库运行态，仅计数）
    ✅ **2026-09-13 红测试归因收口**：上述 5 个套件此前长期红色、被当作「已知恒定失败」接受（其中 `todo-followup`／`crm-logistics` 启动即死）。已逐套归因并全部修复入基线，**本仓库不再有「红了但没人知道为什么」的套件**。归类为：测试滞后于有意变更 2 套（W2a 拒绝按客户批量完成、F1 统一信号流改纯读）、测试基建 2 套（A7 静态断言误伤 SQL 注释、B11 断言开发者真实库 0 行——一次性迁移快照）、真实回归 1 套（W2a 重写误删 `completeUnifiedSignal` 的 `logi:` 分支，已恢复）。逐套根因（含 git 证据）、分类处置与实测输出见 `docs/实施记录/红测试归因与收口-实施记录-claude-20260913.md`
    ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **0 错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
    ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 0**，只准保持 0）。基线史：156（09-13 实测）→ 8 → 7（存量消肿）→ 3 → **0**（同日真 bug 修复与类型清零，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §4）。单独跑主进程门禁：`npm run typecheck:node`。
