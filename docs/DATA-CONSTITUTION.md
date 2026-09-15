@@ -308,8 +308,9 @@
   `validateDownEventFile()` 在投递键 / eventSeq / deliveryRole / 文件名绑定等 SMB 专属检查通过后、
   进入任何业务事务前调用 `validateDownCommand(subject, 'smb')`；SMB 无中央 UUID 目标字段，
   「目标存在」由已验证的本机投递键（`localDeliveryKey`）证明，不伪造业务 UUID。
-- **顶层字段的严格运行时契约（2026-09-15 增补）**：必填（`isBlank`）与**形态**是两件事。
-  `DOWN_COMMAND_SPECS[eventType].fields` 与 eventType 同处一个注册表，两条通道共用，**不各写一套**：
+- **顶层字段的严格运行时契约（2026-09-15 增补）**：缺失、显式 `undefined`、空字符串与**形态**是两件事；
+  显式 `null` 不默认视为省略，而按字段规则拒收。`DOWN_COMMAND_SPECS[eventType].fields` 与 eventType
+  同处一个注册表，两条通道共用，**不各写一套**：
   - `payload.type`：必须是原始非空字符串，且严格等于信封 `eventType`；缺失/空值、非法形态、不一致分别返回
     `missing_field:type`、`invalid_type:type`、`payload_type_mismatch`。`deliveryRole` 也必须按原始类型校验；
     SMB 外层角色是来源，若 payload 同时带角色必须与外层严格一致，禁止 `String()` 洗白或覆盖。
@@ -327,6 +328,15 @@
   禁止 `Number()` 后再比（`Number("41") === Number(41)` 会让跨类型的自相矛盾载荷通过）。
   `required` 里的顶层标量字段若无 `fields` 规则、又不归 `lead` 子对象或 `spec.enums` 的专门校验器管，
   返回 `unregistered_field_rule:<字段>` —— **不给「只判非空就放行」留后门**。
+- **可选字段的 `null` / 省略语义（2026-09-15 P2）**：缺失或 `undefined` 才表示省略；显式 `null`
+  默认非法，不能由任一传输适配器静默改成缺省。`actor:null`、`reason:null` 分别返回
+  `invalid_type:actor` / `invalid_type:reason`；`sla1Deadline:null` 返回
+  `invalid_timestamp:sla1Deadline`；`mode:null` 返回 `invalid_enum:mode`。唯一历史兼容例外是
+  `transfer.oldAssignmentId:null`，由该字段规则明确声明为未提供；不形成全局 `null` 旁路。
+- **`supervisor_correction.detail` 结构（2026-09-15 P2）**：字段可省略或为 `undefined`；出现时必须是
+  非 `null`、非数组的普通 JSON 对象，字符串 / 数字 / 布尔 / 数组统一返回 `invalid_type:detail`。
+  对象仍接受递归下行禁字段扫描（例如 `detail.nested.messageBody` 拒收）。接收端仅对真正省略的 detail
+  使用 `{}` 缺省；合法对象原样 JSON 存入 `notify_inbox.detail`，不得静默丢失。
 - `eventType` 与 `entityType` 不匹配 → 服务端拒收；员工与设备双指定时必须**同属一名员工**；
   畸形目标标识返 **400**，不得落成数据库 500。畸形指令**不写**任何业务行（lead / assignment /
   `notify_inbox` / audit / 幂等标记），**不消耗幂等键**（修正后同 key 可重新受理）。

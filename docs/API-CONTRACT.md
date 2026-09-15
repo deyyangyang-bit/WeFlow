@@ -577,7 +577,7 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 | `transfer` | `assignment` | `apply` / `remove` | `leadId` / `assignmentId` / `toSales` / **`lead`** / **`mode`** / **`sla1Deadline`** | 同上（**两个目标**，见下） |
 | `recycle` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName`（**不含 `lead`**） | 同上 |
 | `sla1_escalate_supervisor` | `assignment` | `notify` | `leadId` / `assignmentId` / `salesName` / `remindCount` / `recycledAt` | **主管**（按稳定工号解析） |
-| `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary` | 同上 |
+| `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary`（`detail` 可选） | 同上 |
 | `permission_change` | `permission` | `apply` | `employeeRef` / `declaredRole` | 同上 |
 
 - **`type` 与 `deliveryRole` 绑定**：每个 payload 都必须带原始字符串 `type`，且必须严格等于信封
@@ -587,8 +587,9 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   两层必须是同一个字符串，否则拒收。角色缺失/空值返回 `missing_field:deliveryRole`，非法形态返回
   `invalid_type:deliveryRole`（SMB 文件外层非法角色在本体校验阶段隔离）。
 
-- **顶层字段的严格运行时契约（2026-09-15 增补）**：必填判定与**形态判定**是两件事。必填只判
-  「有没有」（`isBlank`），随后对非空值按 `DOWN_COMMAND_SPECS[eventType].fields` 的**共享字段规则**判——
+- **顶层字段的严格运行时契约（2026-09-15 增补）**：必填判定与**形态判定**是两件事。缺失、显式
+  `undefined` 或空字符串才按未提供处理；显式 `null` 不默认等同省略，而是按字段的共享规则拒收。
+  随后对出现的值按 `DOWN_COMMAND_SPECS[eventType].fields` 的**共享字段规则**判——
   两条通道（中央 HTTP / SMB）共用同一份规则，**不各写一套**。规则集中登记在
   `shared/centralDownCommand.ts`，与 eventType 同处一个注册表。
 
@@ -621,6 +622,20 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
     （`lead` 子对象走 `validateLeadObject`；出现在 `spec.enums` 里的字段走枚举分支），
     直接返回 `unregistered_field_rule:<字段>`——**不给「只判非空就放行」留后门**。
 
+- **可选字段的 `null` / 省略语义（2026-09-15 P2）**：顶层可选字段在 payload 中缺失或为
+  `undefined` 才是省略；默认显式 `null` 是非法值，不得被发送适配器、中央服务或 SMB 消费端静默
+  转成缺省。典型稳定码为：`actor:null` → `invalid_type:actor`、`sla1Deadline:null` →
+  `invalid_timestamp:sla1Deadline`、`reason:null` → `invalid_type:reason`、`mode:null` →
+  `invalid_enum:mode`。唯一登记的历史兼容例外是 `transfer.oldAssignmentId:null`，按未提供处理；该例外
+  由字段规则显式登记，不扩散为通用 `null` 旁路。
+
+- **`supervisor_correction.detail` 结构（2026-09-15 P2）**：`detail` 可省略；缺失或 `undefined` 合法。
+  一旦出现，必须是非 `null`、非数组的普通 JSON 对象（对象字面量或 null-prototype 对象）；字符串、数字、
+  布尔值、数组均返回统一 `invalid_type:detail`。对象内部继续执行递归下行禁字段扫描，命中例如
+  `detail.nested.messageBody` 即拒收。接收端仅把真正省略的 `detail` 映射为既有 `{}` 缺省；合法对象按原值
+  JSON 存入 `notify_inbox.detail`，不静默丢弃内容。本轮只收口普通对象形态与既有递归禁字段扫描；仓库没有
+  可复用的通用 JSON 复杂度限制，因此未新增独立的字节数 / 深度 / 键数限制，也未引入新依赖。
+
 - **只有 `assign` / `transfer` 携带 `lead` 子对象**（`allowsLead`）。回收与通知/声明类指令**不带**线索档案，
   携带即整事件拒收——`recycle` 的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机，
   不需要线索资料；「所有指令必带 6 字段」是旧口径，已作废。
@@ -640,7 +655,7 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   `assign` 与 `transfer` 共用这份枚举：**字段出现时必须是枚举内的字符串字面量**——
   对象 / 数组 / 数字 / 布尔 / 空串 / 未知字符串一律 `invalid_enum:mode`。**禁止先 `String(value)` 再比对**
   （`{}` 会被拍成 `[object Object]` 从而「看起来合法」）。`transfer` 保持 `mode` 必填
-  （缺失 → `missing_field:mode`）；`assign` 上 `mode` 可选，**发送方应省略而不是发空串**。
+  （缺失 → `missing_field:mode`）；`assign` 上 `mode` 可选，**发送方应省略而不是发空串或显式 `null`**。
   中央 HTTP 发送前自检、SMB 消费入口、中央服务端建指令**三处共用同一份约束**；错误码只带字段名，不带值。
 
   同一份枚举也是**本机生产端**的唯一来源（2026-09-15 增补）：`crmAssignmentService.assignLeads()` 与

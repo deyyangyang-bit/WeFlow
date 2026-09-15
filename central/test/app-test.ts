@@ -413,7 +413,8 @@ const keyClash = await app.inject({ method: 'POST', url: '/api/v1/sync/commands'
 check('K18 同幂等键换 eventId → 409（拒绝语义漂移）', keyClash.statusCode === 409)
 
 const correction = await postCommand({ eventType: 'supervisor_correction', entityId: scoped('assignment:1'),
-  payload: { type: 'supervisor_correction', deliveryRole: 'apply', leadId: 1, assignmentId: 1, title: '主管纠正', summary: '口径修正' } }, 'correction')
+  payload: { type: 'supervisor_correction', deliveryRole: 'apply', leadId: 1, assignmentId: 1, title: '主管纠正', summary: '口径修正',
+    detail: { reasonCode: 'contract_review', source: 'central-app-test' } } }, 'correction')
 check('K19 supervisor_correction 在册且可下发 → 201', correction.statusCode === 201)
 const permissionChange = await postCommand({ eventType: 'permission_change', entityType: 'permission',
   entityId: scoped('permission:1'),

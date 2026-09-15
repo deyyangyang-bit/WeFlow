@@ -111,15 +111,18 @@ const LEAD_FIELD_RULES: Record<string, LeadFieldRule> = {
  *   - `non_negative_int`：原始 number 类型的安全非负整数（计数类）；
  *   - `timestamp`：原始 number 类型的安全正整数毫秒时间戳，所有非法形态统一返回
  *     `invalid_timestamp:<field>`；
- *   - `string`：字符串字面量（可叠加 maxLength / enum）。
+ *   - `string`：字符串字面量（可叠加 maxLength / enum）；
+ *   - `object`：非 null、非数组的普通 JSON 对象。
  */
-export type DownFieldKind = 'positive_int' | 'non_negative_int' | 'timestamp' | 'string'
+export type DownFieldKind = 'positive_int' | 'non_negative_int' | 'timestamp' | 'string' | 'object'
 
 export interface DownFieldRule {
   kind: DownFieldKind
   /** 数值字段的取值范围（含端点；缺省 = 该 kind 的自然边界） */
   min?: number
   max?: number
+  /** 仅有实际历史兼容依据时才允许：显式 null 按省略处理。 */
+  nullMeansAbsent?: boolean
 }
 
 /**
@@ -166,6 +169,12 @@ function checkDeclaredField(field: string, value: unknown, rule: DownFieldRule, 
     if (typeof value !== 'string') return `invalid_type:${field}`
     if (value.length === 0) return `invalid_type:${field}`
     if (maxLength !== undefined && value.length > maxLength) return `too_long:${field}`
+    return null
+  }
+  if (rule.kind === 'object') {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return `invalid_type:${field}`
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return `invalid_type:${field}`
     return null
   }
   return checkNumberField(field, value, rule)
@@ -245,8 +254,9 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
       type: { kind: 'string' },
       leadId: { kind: 'positive_int' },
       assignmentId: { kind: 'positive_int' },
-      // oldAssignmentId 可选（Phase 1 信封恒带），出现即同样是原始 number 正整数
-      oldAssignmentId: { kind: 'positive_int' },
+      // oldAssignmentId 可选（Phase 1 信封恒带）。历史文档明确允许 null/省略表示未提供，
+      // 因此例外必须登记在字段规则里，不能由所有可选字段共用一个 null 旁路。
+      oldAssignmentId: { kind: 'positive_int', nullMeansAbsent: true },
       toSales: { kind: 'string' },
       fromSales: { kind: 'string' },
       reason: { kind: 'string' },
@@ -312,6 +322,8 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
       assignmentId: { kind: 'positive_int' },
       title: { kind: 'string' },
       summary: { kind: 'string' },
+      // 可选；出现时必须是非 null、非数组的普通 JSON 对象。
+      detail: { kind: 'object' },
       actor: { kind: 'string' }
     }
   },
@@ -332,6 +344,36 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
 }
 
 export const DOWN_COMMAND_TYPES = Object.keys(DOWN_COMMAND_SPECS)
+
+/**
+ * 校验注册表中每个 allowed 顶层字段的责任归属。
+ *
+ * allowed 只是白名单，不应成为「登记了但没有任何校验器」的后门。除 fields / enums 外，
+ * `deliveryRole` 由共享角色校验器负责，`lead` 由 validateLeadObject 负责；其它字段必须且只能
+ * 命中一个责任归属。函数导出给纯测试使用，同时在 validateDownCommand 中作为运行时护栏调用。
+ */
+export function downCommandSpecResponsibilityErrors(
+  specs: Record<string, DownCommandSpec> = DOWN_COMMAND_SPECS
+): string[] {
+  const errors: string[] = []
+  for (const [eventType, spec] of Object.entries(specs)) {
+    const entries: Array<{ field: string; source: 'allowed' | 'smb' }> = [
+      ...spec.allowed.map((field) => ({ field, source: 'allowed' as const })),
+      ...(spec.smbAllowedExtra ?? []).map((field) => ({ field, source: 'smb' as const }))
+    ]
+    for (const { field, source } of entries) {
+      const owners: string[] = []
+      if (field === 'deliveryRole') owners.push('deliveryRole')
+      if (field === 'lead' && (spec.allowsLead === true || spec.smbAllowsLead === true)) owners.push('lead')
+      if (spec.fields?.[field]) owners.push('fields')
+      if (spec.enums?.[field]) owners.push('enums')
+      if (owners.length !== 1) {
+        errors.push(`${eventType}:${source}:${field}:${owners.length === 0 ? 'missing' : 'multiple'}`)
+      }
+    }
+  }
+  return errors
+}
 
 export function downCommandSpec(eventType: string): DownCommandSpec | null {
   return Object.prototype.hasOwnProperty.call(DOWN_COMMAND_SPECS, eventType) ? DOWN_COMMAND_SPECS[eventType]! : null
@@ -380,7 +422,8 @@ const LEAD_REQUIRED_FIELDS: Record<DownTransport, readonly string[]> = {
  * 错误码只带字段名，不带字段值。
  */
 function validateLeadObject(lead: unknown, allowsLead: boolean, transport: DownTransport): string | null {
-  if (lead === undefined || lead === null) return null
+  if (lead === undefined) return null
+  if (lead === null) return 'invalid_lead'
   if (!allowsLead) return 'unexpected_lead'
   if (typeof lead !== 'object' || Array.isArray(lead)) return 'invalid_lead'
   const record = lead as Record<string, unknown>
@@ -416,6 +459,8 @@ function validateLeadObject(lead: unknown, allowsLead: boolean, transport: DownT
 export function validateDownCommand(subject: DownCommandSubject, transport: DownTransport = 'central-http'): string | null {
   const spec = downCommandSpec(subject.eventType)
   if (!spec) return 'unknown_down_event_type'
+  const registryError = downCommandSpecResponsibilityErrors().find((error) => error.startsWith(`${subject.eventType}:`))
+  if (registryError) return `unregistered_allowed_field_rule:${registryError}`
   if (!isCentralEntityType(subject.entityType) || subject.entityType !== spec.entityType) {
     return `entity_type_mismatch:${subject.eventType}≠${String(subject.entityType)}`
   }
@@ -463,24 +508,37 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
   const requiredFields = new Set([...spec.required, ...(spec.requiredTimestamps ?? [])])
   for (const field of requiredFields) {
     const rule = fieldRules[field]
-    if (!rule) {
-      if (field !== 'lead' && !enumFields.has(field)) return `unregistered_field_rule:${field}`
-      if (isBlank(payload[field])) return `missing_field:${field}`
-      continue
+    const present = Object.prototype.hasOwnProperty.call(payload, field)
+    const value = payload[field]
+    // JSON 中 undefined 会消失；纯函数层显式 undefined 也视作未提供。空串沿用既有必填缺失口径。
+    if (!present || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+      return `missing_field:${field}`
     }
-    if (isBlank(payload[field])) return `missing_field:${field}`
-    const error = checkDeclaredField(field, payload[field], rule, spec.maxLength?.[field])
+    if (!rule) {
+      if (field === 'lead') {
+        if (value === null) return 'invalid_lead'
+        continue
+      }
+      if (enumFields.has(field)) {
+        if (value === null) return `invalid_enum:${field}`
+        continue
+      }
+      return `unregistered_field_rule:${field}`
+    }
+    const error = checkDeclaredField(field, value, rule, spec.maxLength?.[field])
     if (error) return error
   }
   const payloadType = payload.type
   // type 已先由 fields 规则做「原始字符串 + 非空」校验，这里只做信封一致性判定。
   if (payloadType !== subject.eventType) return 'payload_type_mismatch'
-  // 非必填但已登记规则的字段：出现即不许是 `undefined` / `null`——
-  // 「字段在库里而不是在线上」不该被静默当成「未设置」（发送方应省略，而不是发 {} 或 null）。
+  // 非必填但已登记规则的字段：键不存在或值为 undefined 才是省略；显式 null 默认非法。
+  // 只有字段规则明确登记 nullMeansAbsent 时，才保留历史兼容的 null=未提供语义。
   for (const [field, rule] of Object.entries(fieldRules)) {
     if (requiredFields.has(field)) continue
+    const present = Object.prototype.hasOwnProperty.call(payload, field)
     const value = payload[field]
-    if (value === undefined || value === null) continue
+    if (!present || value === undefined) continue
+    if (value === null && rule.nullMeansAbsent === true) continue
     const error = checkDeclaredField(field, value, rule, spec.maxLength?.[field])
     if (error) return error
   }
@@ -488,7 +546,7 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
     const value = payload[field]
     // ① 未设置与「设置了非法值」是两回事：缺省由 spec.required 判（transfer.mode 在 required 里，
     //    缺了必拒；assign.mode 可选，缺了合法），这里只负责「出现时的形态」。
-    if (value === undefined || value === null) continue
+    if (!Object.prototype.hasOwnProperty.call(payload, field) || value === undefined) continue
     // ② 出现即必须是**字符串字面量**：绝不 `String(value)` 再比对——`{}`/`[]`/`1`/`true`/`false`
     //    都会被 String() 变成一个「看起来合法」的字符串，从而把非法载荷放进业务状态机。
     //    空串同样拒收：发送方应省略可选字段，而不是发空串让接收端各自兜底。

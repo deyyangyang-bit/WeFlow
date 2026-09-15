@@ -419,7 +419,8 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
   if (commandType === 'assign') {
     const out: Record<string, unknown> = {
       ...common, deliveryRole: 'apply', assignmentId: payload.assignmentId,
-      salesName: payload.salesName, actor: payload.actor ?? 'system:sync',
+      // 仅缺失/undefined 使用系统默认；显式 null 必须原样进入共享校验，不能被静默当成省略。
+      salesName: payload.salesName, actor: payload.actor === undefined ? 'system:sync' : payload.actor,
       lead: commandLeadOf(leadId)
     }
     // 可选字段只在原始载荷实际出现时透传；不把对象/数组/数字洗成字符串或时间戳。
@@ -430,7 +431,8 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
   if (commandType === 'recycle') {
     return {
       ...common, deliveryRole: 'apply', assignmentId: payload.assignmentId,
-      salesName: payload.salesName, reason: payload.reason, actor: payload.actor ?? 'system:sync'
+      salesName: payload.salesName, reason: payload.reason,
+      actor: payload.actor === undefined ? 'system:sync' : payload.actor
     }
   }
   // 移交：单条 outbox 行 → 两条下行指令（接收方 apply / 原归属 remove）。
@@ -443,7 +445,8 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
       oldAssignmentId: payload.oldAssignmentId,
       fromSales: payload.fromSales, toSales: payload.toSales,
       reason: payload.reason, mode: payload.mode,
-      sla1Deadline: payload.sla1Deadline, actor: payload.actor ?? 'system:sync',
+      sla1Deadline: payload.sla1Deadline,
+      actor: payload.actor === undefined ? 'system:sync' : payload.actor,
       lead: commandLeadOf(leadId)
     }
   }
@@ -839,7 +842,9 @@ function applyCentralOnlyDown(ev: SyncEventFile): 'applied' | 'invalid' {
   if (ev.type === 'supervisor_correction') {
     return crmDbService.runTx((tx) => {
       if (tx.all('SELECT id FROM notify_inbox WHERE idempotency_key = ?', [key]).length) return 'applied'
-      const detail = ev.payload.detail && typeof ev.payload.detail === 'object' ? ev.payload.detail as Record<string, unknown> : {}
+      // toLocalEvent 已先通过共享 object 规则；这里只把「未携带 detail」映射为既有缺省值，
+      // 不再把任何非法形态静默改成 {}，避免发送端以为内容已投递而接收端丢失。
+      const detail = ev.payload.detail === undefined ? {} : ev.payload.detail as Record<string, unknown>
       tx.run(
         'INSERT INTO notify_inbox (notify_type, idempotency_key, title, body, lead_id, detail, status, source, updated_by, updated_at, version, deleted, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
         ['supervisor_correction', key, String(ev.payload.title || '主管修正待确认'),

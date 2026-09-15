@@ -349,7 +349,8 @@ async function main(): Promise<void> {
   crmDbService.setScanState('centralSync:pullCursor', 0)
   pullQueue = [
     downEvent('ev-correction-1', 'supervisor_correction', {
-      type: 'supervisor_correction', leadId: 9001, title: '主管修正：归属应为乙', summary: '请确认后改派', deliveryRole: 'apply'
+      type: 'supervisor_correction', leadId: 9001, title: '主管修正：归属应为乙', summary: '请确认后改派',
+      deliveryRole: 'apply', detail: { reasonCode: 'assignment_mismatch', source: 'central-sync-adapter' }
     }, 1),
     { ...downEvent('ev-perm-1', 'permission_change', { type: 'permission_change', employeeRef: 'emp-1', declaredRole: 'supervisor', deliveryRole: 'apply' }, 2),
       entityType: 'permission' as const }
@@ -358,7 +359,11 @@ async function main(): Promise<void> {
   resetCapture()
   await service.runCentralSyncOnce()
   const inbox = crmDbService.all("SELECT * FROM notify_inbox WHERE notify_type='supervisor_correction'")
-  ok('D1 主管修正入待确认收件箱（幂等键落库）', inbox.length === 1 && String(inbox[0]!.idempotency_key).startsWith('central:'))
+  const correctionDetail = JSON.parse(String(inbox[0]?.detail || '{}')) as Record<string, unknown>
+  ok('D1 主管修正入待确认收件箱并精确保留 detail（幂等键落库）',
+    inbox.length === 1 && String(inbox[0]!.idempotency_key).startsWith('central:') &&
+    correctionDetail.reasonCode === 'assignment_mismatch' && correctionDetail.source === 'central-sync-adapter',
+    JSON.stringify({ inbox, correctionDetail }))
   const afterAssign = crmDbService.all("SELECT * FROM assignment WHERE lead_id = (SELECT id FROM lead WHERE contact_normalized = ?)", ['13900000001'])
   ok('D2 主管修正不静默覆盖本地归属（本地事实一行未改）',
     JSON.stringify(beforeAssign) === JSON.stringify(afterAssign))

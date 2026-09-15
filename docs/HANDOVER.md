@@ -2394,6 +2394,37 @@ SMB 侧 `requiredTimestamps` 会拒字符串 —— 同一个载荷在两条通�
   （会复制真实生产库，不得作为中央同步的回归证明）。
 - **本轮结论仍只指代码**：**Phase 3a 代码侧仍未收口**，也不得写成「整个项目已完成」。
 
+## 2.112 下行可选字段显式 null 与 supervisor_correction.detail 复核修复（2026-09-15）
+
+本轮只处理最新复核指出的两个 P2，改动与测试高度交织，作为一个本地提交交付：
+
+- **可选字段语义统一**：键缺失或值为 `undefined` 才表示省略；显式 `null` 默认按字段规则拒收。
+  `actor:null` → `invalid_type:actor`，`sla1Deadline:null` → `invalid_timestamp:sla1Deadline`，
+  `reason:null` → `invalid_type:reason`，`mode:null` → `invalid_enum:mode`。唯一历史兼容例外是
+  `transfer.oldAssignmentId:null`，通过 `nullMeansAbsent` 明确登记为未提供；没有把 null 旁路扩散到其它字段。
+  `electron/services/centralSyncService.ts#commandPayloadOf` 只对缺失/undefined 使用系统 actor 默认值，显式 null
+  原样交给共享校验器。
+- **`supervisor_correction.detail`**：可省略或为 `undefined`；出现时必须是非 null、非数组的普通对象，
+  标量与数组统一 `invalid_type:detail`。既有递归禁字段扫描仍执行；接收端只在真正省略时使用 `{}`，合法对象
+  按原值写入 `notify_inbox.detail`。
+- **注册表责任归属**：新增 `downCommandSpecResponsibilityErrors()`，覆盖 `allowed` 与 SMB extra 的每个字段，
+  要求唯一归属到 `fields` / `enums` / `deliveryRole` / `lead`，避免再次出现「已允许但未校验」的 detail 旁路。
+
+### 本轮验证
+
+共享/HTTP/SMB 字段夹具 `central-down-fields-test` **50/0**；`central-down-compat-test` **45/0**；
+`central-sync-adapter-test` **98/0**；`central-sync-e2e-test` **88/0**；`lan-sync-test` **93/0**；
+`lan-sync-e2e-test` **42/0**；`sla1-supervisor-notify-test` **24/0**；`p0-3-closed-gate-test` **23/0**；
+`p0-3-closed-gate` **6/0**；`assignment-test` **28/0**；`assignment-batch-count-test` **7/0**；
+`assignment-full-test` **100/0**；`lead-assignment-view-test` **64/0**；`aftersales-transfer-outbox-test` **60/0**；
+`crm-sla-action-test` **11/0**。根 `npm run typecheck` 通过；中央 app/projection/migration/context 分别
+**159/0、36/0、23/0、6/0**，中央 typecheck/build 通过；`git diff --check` 通过。
+
+HTTP 负例均为 4xx 且不增加 down event；SMB 负例全部 `.failed`、业务表/成功幂等标记/成功 ACK 均为零；
+中央同步接收测试验证合法 detail 的两个键值精确落库且重复拉取不重复入箱。所有验证均为隔离临时库与
+`MemoryCentralStore`/`app.inject`；真实 PostgreSQL、Docker、双机、Windows、SSE、真实推送与部署验收仍未做，
+两个明确禁止的 assignment 基线脚本未运行。**本轮不代表 Phase 3a 或整个项目完成。**
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

@@ -415,15 +415,18 @@ async function main(): Promise<void> {
     eventType: 'supervisor_correction', aggregateVersion: 1, occurredAt: Date.now(),
     targetEmployeeId: supervisor.employeeId,
     payload: { type: 'supervisor_correction', deliveryRole: 'apply', leadId: downLeadId, assignmentId: 9001,
-      title: '主管修正待确认', summary: `客户名应为「${beforeLeadName}」` }
+      title: '主管修正待确认', summary: `客户名应为「${beforeLeadName}」`,
+      detail: { reasonCode: 'name_mismatch', source: 'central-sync-e2e' } }
   })
   resetCapture()
   await service.runCentralSyncOnce()
   const inbox = crmDbService.all("SELECT * FROM notify_inbox WHERE notify_type = 'supervisor_correction'")
+  const correctionDetail = JSON.parse(String(inbox[0]?.detail || '{}')) as Record<string, unknown>
   ok('D5 主管修正落待确认收件箱（人工确认），本地线索事实一行未改',
     correction.status === 201 && inbox.length === 1 &&
+    correctionDetail.reasonCode === 'name_mismatch' && correctionDetail.source === 'central-sync-e2e' &&
     String(crmDbService.all('SELECT name FROM lead WHERE id = ?', [downLeadId])[0]?.name || '') === beforeLeadName,
-    JSON.stringify(correction))
+    JSON.stringify({ correction, correctionDetail }))
 
   console.log('═══ E. SLA1 三次超时的升级通知有明确落点（§三.6）═══')
   const slaAssignmentId = Number(crmDbService.all(

@@ -128,6 +128,10 @@ async function main(): Promise<void> {
     leadId, name: '字段线索甲', contactType: 'phone', contactNormalized: '13900008001',
     contactRaw: '13900008001', wechat: '', source: '测试', note: ''
   }
+  // 中央 HTTP 的 lead 口径固定为 6 字段；SMB 夹具继续使用上面的历史 8 字段口径。
+  const centralLeadSub = {
+    leadId, name: '字段线索甲', contactType: 'phone', contactNormalized: '13900008001', source: '测试', note: ''
+  }
   /** 一条合法的 assign 载荷（逐用例只改一个字段，隔离变量） */
   const assignBase = (): Record<string, unknown> => ({
     type: 'assign', deliveryRole: 'apply', leadId, assignmentId, salesName: SALES,
@@ -167,7 +171,7 @@ async function main(): Promise<void> {
     for (const [tag, bad] of BAD_IDS) {
       const code = String(validateDownCommand(assignSubject(build(bad)), 'smb'))
       const want = (tag === '0' || tag === '负数' || tag === '小数') ? `invalid_integer:${field}`
-        : (tag === '空串' || tag === 'null') ? `missing_field:${field}`
+        : tag === '空串' ? `missing_field:${field}`
         : `invalid_type:${field}`
       idResults.push({ tag: `${field}=${tag}`, code, want })
     }
@@ -289,16 +293,65 @@ async function main(): Promise<void> {
     sameCode('salesName', 'missing_field:salesName'))
   ok('A6b2 可选字符串字段（actor）：显式 undefined 与省略同为「未提供」而合法 —— 不得把可选字段的省略误判成非法形态',
     sameCode('actor', 'null'))
+  const optionalNullCases: Array<[string, string | null, string]> = [
+    ['actor:null', validateDownCommand(assignSubject({ ...assignBase(), actor: null }), 'smb'), 'invalid_type:actor'],
+    ['sla1Deadline:null', validateDownCommand(assignSubject({ ...assignBase(), sla1Deadline: null }), 'smb'), 'invalid_timestamp:sla1Deadline'],
+    ['reason:null', validateDownCommand(transferSubject({ ...transferBase(), reason: null }), 'smb'), 'invalid_type:reason'],
+    ['oldAssignmentId:null', validateDownCommand(transferSubject({ ...transferBase(), oldAssignmentId: null }), 'smb'), null],
+    ['mode:null', validateDownCommand(assignSubject({ ...assignBase(), mode: null }), 'smb'), 'invalid_enum:mode']
+  ]
+  const optionalOmittedCases: Array<[string, Record<string, unknown>, string | null]> = [
+    ['actor', (() => { const p = assignBase(); delete p.actor; return p })(), null],
+    ['sla1Deadline', (() => { const p = assignBase(); delete p.sla1Deadline; return p })(), null],
+    ['reason', (() => { const p = transferBase(); delete p.reason; return p })(), null],
+    ['oldAssignmentId', (() => { const p = transferBase(); delete p.oldAssignmentId; return p })(), null],
+    ['mode', assignBase(), null]
+  ]
+  ok('A6d 可选字段显式 null 不再静默等同省略；唯一历史例外是 transfer.oldAssignmentId:null 合法',
+    optionalNullCases.every(([, got, want]) => got === want), JSON.stringify(optionalNullCases))
+  ok('A6e 上述可选字段完全省略仍合法（undefined 也按省略处理）',
+    optionalOmittedCases.every(([field, payload, want]) => {
+      if (field === 'mode') return validateDownCommand(assignSubject(payload), 'smb') === want
+      if (field === 'reason' || field === 'oldAssignmentId') return validateDownCommand(transferSubject(payload), 'smb') === want
+      return validateDownCommand(assignSubject(payload), 'smb') === want
+    }))
   ok('A6c 白名单外的字段一律 unknown_field 拦截，绝不进入业务写入（不是「未登记所以不查」）',
     ([['reason', {}], ['toSales', []], ['fromSales', {}], ['remindCount', 3]] as Array<[string, unknown]>).every(([field, bad]) =>
       String(validateDownCommand(assignSubject({ ...assignBase(), [field]: bad }), 'smb')) === `unknown_field:${field}`))
 
-  // ── A7 注册表自相矛盾的后门已关闭 ─────────────────────────────────────────────
-  ok('A7 注册表结构自查：每个 required 顶层标量字段都有 fields 规则或已由专门校验器接管（lead 子对象 / enums 字段）',
-    Object.entries(shared.DOWN_COMMAND_SPECS).every(([, spec]) => {
-      const enumFields = new Set(Object.keys(spec.enums ?? {}))
-      return spec.required.every((f) => (spec.fields ?? {})[f] || f === 'lead' || enumFields.has(f))
-    }))
+  // ── A7 注册表责任归属：allowed 不能成为「登记但不校验」的旁路 ────────────────
+  const registryErrors = shared.downCommandSpecResponsibilityErrors()
+  ok('A7 注册表结构自查：每个 allowed 顶层字段都有唯一/明确责任（fields / enums / lead / deliveryRole）',
+    registryErrors.length === 0, JSON.stringify(registryErrors))
+  const brokenSpecs = {
+    ...shared.DOWN_COMMAND_SPECS,
+    assign: { ...shared.DOWN_COMMAND_SPECS.assign, allowed: [...shared.DOWN_COMMAND_SPECS.assign.allowed, 'unregistered'] }
+  }
+  const brokenRegistryErrors = shared.downCommandSpecResponsibilityErrors(brokenSpecs)
+  ok('A7b 注册表新增未登记 allowed 字段时责任自查会明确失败（防止 detail 旁路回归）',
+    brokenRegistryErrors.includes('assign:allowed:unregistered:missing'), JSON.stringify(brokenRegistryErrors))
+
+  // ── A8 supervisor_correction.detail：普通对象结构 + 递归禁字段 ───────────────
+  const correctionBase = (): Record<string, unknown> => ({
+    type: 'supervisor_correction', deliveryRole: 'apply', leadId,
+    assignmentId, title: '主管修正', summary: '请确认'
+  })
+  const correctionSubject = (payload: Record<string, unknown>) => ({
+    eventType: 'supervisor_correction', entityType: 'assignment', payload, localDeliveryKey: 'k-fields'
+  })
+  ok('A8 detail 省略、空对象、普通对象均通过共享校验',
+    validateDownCommand(correctionSubject(correctionBase()), 'smb') === null &&
+    validateDownCommand(correctionSubject({ ...correctionBase(), detail: {} }), 'smb') === null &&
+    validateDownCommand(correctionSubject({ ...correctionBase(), detail: { reasonCode: 'x' } }), 'smb') === null)
+  const detailBadCases: Array<[string, unknown, string]> = [
+    ['null', null, 'invalid_type:detail'], ['array', [], 'invalid_type:detail'],
+    ['string', 'not-an-object', 'invalid_type:detail'], ['number', 1, 'invalid_type:detail'],
+    ['boolean', true, 'invalid_type:detail'],
+    ['nested forbidden', { nested: { messageBody: '客户原话' } }, 'forbidden_field:detail.nested.messageBody']
+  ]
+  ok('A8b detail 的 null/数组/字符串/数字/布尔按唯一错误码拒收，深层禁字段仍由共享扫描拒收',
+    detailBadCases.every(([, value, want]) => validateDownCommand(correctionSubject({ ...correctionBase(), detail: value }), 'smb') === want),
+    JSON.stringify(detailBadCases.map(([name, value, want]) => ({ name, got: validateDownCommand(correctionSubject({ ...correctionBase(), detail: value }), 'smb'), want }))))
 
   // ═══ B. 中央 HTTP：4xx 且库内无痕 ════════════════════════════════════════════
   console.log('\n═══ B. 中央 HTTP /sync/commands：非法顶层字段 → 4xx，且不落下行事件 / 投影 / 审计 ═══')
@@ -347,14 +400,17 @@ async function main(): Promise<void> {
   const storeLike = memory as unknown as { downEventCount: () => number }
   const downBefore = storeLike.downEventCount()
 
+  const centralAssignBase = (): Record<string, unknown> => ({ ...assignBase(), lead: { ...centralLeadSub } })
+  const centralTransferBase = (): Record<string, unknown> => ({ ...transferBase(), lead: { ...centralLeadSub } })
+
   const httpCases: Array<[string, Record<string, unknown>, string, string]> = []
   for (const [tag, bad] of BAD_IDS) {
-    httpCases.push([`assign-leadId-${tag}`, { ...assignBase(), leadId: bad }, 'assign', 'leadId'])
-    httpCases.push([`assign-assignmentId-${tag}`, { ...assignBase(), assignmentId: bad }, 'assign', 'assignmentId'])
+    httpCases.push([`assign-leadId-${tag}`, { ...centralAssignBase(), leadId: bad }, 'assign', 'leadId'])
+    httpCases.push([`assign-assignmentId-${tag}`, { ...centralAssignBase(), assignmentId: bad }, 'assign', 'assignmentId'])
   }
-  httpCases.push(['assign-leadId-missing', { ...assignBase(), leadId: undefined }, 'assign', 'leadId'])
-  httpCases.push(['assign-assignmentId-missing', { ...assignBase(), assignmentId: undefined }, 'assign', 'assignmentId'])
-  httpCases.push(['transfer-oldAssignmentId-object', { ...transferBase(), oldAssignmentId: {} }, 'transfer', 'oldAssignmentId'])
+  httpCases.push(['assign-leadId-missing', { ...centralAssignBase(), leadId: undefined }, 'assign', 'leadId'])
+  httpCases.push(['assign-assignmentId-missing', { ...centralAssignBase(), assignmentId: undefined }, 'assign', 'assignmentId'])
+  httpCases.push(['transfer-oldAssignmentId-object', { ...centralTransferBase(), oldAssignmentId: {} }, 'transfer', 'oldAssignmentId'])
   httpCases.push(['sla1-remindCount-object', {
     type: 'sla1_escalate_supervisor', deliveryRole: 'notify', leadId, assignmentId, salesName: SALES,
     remindCount: {}, recycledAt: NOW
@@ -363,15 +419,19 @@ async function main(): Promise<void> {
     type: 'sla1_escalate_supervisor', deliveryRole: 'notify', leadId, assignmentId, salesName: SALES,
     remindCount: 99, recycledAt: NOW
   }, 'sla1_escalate_supervisor', 'remindCount'])
-  httpCases.push(['assign-slaHours-object', { ...assignBase(), slaHours: {} }, 'assign', 'slaHours'])
-  httpCases.push(['assign-slaHours-overflow', { ...assignBase(), slaHours: 999 }, 'assign', 'slaHours'])
+  httpCases.push(['assign-slaHours-object', { ...centralAssignBase(), slaHours: {} }, 'assign', 'slaHours'])
+  httpCases.push(['assign-slaHours-overflow', { ...centralAssignBase(), slaHours: 999 }, 'assign', 'slaHours'])
+  httpCases.push(['assign-actor-null', { ...centralAssignBase(), actor: null }, 'assign', 'invalid_type:actor'])
+  httpCases.push(['assign-sla1Deadline-null', { ...centralAssignBase(), sla1Deadline: null }, 'assign', 'invalid_timestamp:sla1Deadline'])
+  httpCases.push(['assign-mode-null', { ...centralAssignBase(), mode: null }, 'assign', 'invalid_enum:mode'])
+  httpCases.push(['transfer-reason-null', { ...centralTransferBase(), reason: null }, 'transfer', 'invalid_type:reason'])
   // 跨类型：顶层字符串 vs 子对象数字 —— 在**字段类型层**就被拦（不靠 Number() 相等侥幸放过）
-  httpCases.push(['assign-leadId-string', { ...assignBase(), leadId: '41', lead: { ...leadSub, leadId: 41 } }, 'assign', 'invalid_type:leadId'])
+  httpCases.push(['assign-leadId-string', { ...centralAssignBase(), leadId: '41', lead: { ...centralLeadSub, leadId: 41 } }, 'assign', 'invalid_type:leadId'])
   // 同为 number 但不等 —— 必须走到一致性判定
   const httpLead = (id: number) => ({
     leadId: id, name: '字段线索甲', contactType: 'phone', contactNormalized: '13900008001', source: '测试', note: ''
   })
-  httpCases.push(['assign-leadId-mismatch', { ...assignBase(), leadId, lead: httpLead(leadId2) }, 'assign', 'lead_id_mismatch'])
+  httpCases.push(['assign-leadId-mismatch', { ...centralAssignBase(), leadId, lead: httpLead(leadId2) }, 'assign', 'lead_id_mismatch'])
   const invalidRoleValues: Array<[string, unknown, string]> = [
     ['missing', undefined, 'missing_field:deliveryRole'], ['array', ['apply'], 'invalid_type:deliveryRole'],
     ['object', { 0: 'apply' }, 'invalid_type:deliveryRole'], ['number', 1, 'invalid_type:deliveryRole'],
@@ -379,22 +439,34 @@ async function main(): Promise<void> {
     ['empty', '', 'missing_field:deliveryRole']
   ]
   for (const [tag, role, expect] of invalidRoleValues) {
-    const payload = { ...assignBase(), deliveryRole: role }
+    const payload = { ...centralAssignBase(), deliveryRole: role }
     if (tag === 'missing') delete payload.deliveryRole
     httpCases.push([`assign-deliveryRole-${tag}`, payload, 'assign', expect])
   }
-  const missingType = assignBase()
+  const missingType = centralAssignBase()
   delete missingType.type
   httpCases.push(['assign-type-missing', missingType, 'assign', 'missing_field:type'])
   for (const [tag, value, expect] of [
     ['object', {}, 'invalid_type:type'], ['array', ['assign'], 'invalid_type:type'],
     ['number', 1, 'invalid_type:type'], ['boolean', true, 'invalid_type:type'],
-    ['null', null, 'missing_field:type'], ['empty', '', 'missing_field:type']
+    ['null', null, 'invalid_type:type'], ['empty', '', 'missing_field:type']
   ] as Array<[string, unknown, string]>) {
-    httpCases.push([`assign-type-${tag}`, { ...assignBase(), type: value }, 'assign', expect])
+    httpCases.push([`assign-type-${tag}`, { ...centralAssignBase(), type: value }, 'assign', expect])
   }
-  httpCases.push(['assign-type-mismatch-recycle', { ...assignBase(), type: 'recycle' }, 'assign', 'payload_type_mismatch'])
-  httpCases.push(['transfer-type-mismatch-assign', { ...transferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch'])
+  httpCases.push(['assign-type-mismatch-recycle', { ...centralAssignBase(), type: 'recycle' }, 'assign', 'payload_type_mismatch'])
+  httpCases.push(['transfer-type-mismatch-assign', { ...centralTransferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch'])
+  const correctionHttpBase = (detail?: unknown): Record<string, unknown> => ({
+    type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+    title: '主管修正', summary: '请确认', ...(detail === undefined ? {} : { detail })
+  })
+  for (const [tag, detail, expect] of [
+    ['null', null, 'invalid_type:detail'], ['array', [], 'invalid_type:detail'],
+    ['string', 'not-an-object', 'invalid_type:detail'], ['number', 1, 'invalid_type:detail'],
+    ['boolean', true, 'invalid_type:detail'],
+    ['nested-forbidden', { nested: { messageBody: '客户原话' } }, 'detail.nested.messageBody']
+  ] as Array<[string, unknown, string]>) {
+    httpCases.push([`supervisor-correction-detail-${tag}`, correctionHttpBase(detail), 'supervisor_correction', expect])
+  }
 
   const httpResults: Array<[string, number, string]> = []
   let httpAllReject = true
@@ -429,6 +501,13 @@ async function main(): Promise<void> {
   ok('B3 非法指令不消耗幂等键：修正后同 key 受理 → 201（不把一次探测变成永久卡死）',
     reused.statusCode === 400 && recovered.statusCode === 201,
     JSON.stringify({ reused: reused.statusCode, recovered: recovered.statusCode }))
+  const transferNullOld = await post('transfer-oldAssignmentId-null', {
+    ...centralTransferBase(), oldAssignmentId: null
+  }, 'transfer')
+  const correctionValid = await post('supervisor-correction-detail-valid', correctionHttpBase({ reasonCode: 'name_mismatch', source: 'fields' }), 'supervisor_correction')
+  ok('B4 历史例外 oldAssignmentId:null 仍可受理，普通 detail 对象也可受理 → 201',
+    transferNullOld.statusCode === 201 && correctionValid.statusCode === 201,
+    JSON.stringify({ transferNullOld: transferNullOld.statusCode, correctionValid: correctionValid.statusCode }))
 
   // ═══ C. SMB 文件通道：.failed 隔离 + 零业务写 ═════════════════════════════════
   console.log('\n═══ C. SMB 文件通道：非法顶层字段经真实 consumeDownEvents → .failed 隔离，零业务写 / 零幂等标记 / 零 ACK ═══')
@@ -458,6 +537,10 @@ async function main(): Promise<void> {
     ['assign-slaHours-overflow', { ...assignBase(), slaHours: 999 }, 'assign', 'invalid_integer:slaHours'],
     ['assign-slaHours-numeric-string', { ...assignBase(), slaHours: '24' }, 'assign', 'invalid_type:slaHours'],
     ['transfer-oldAssignmentId-array', { ...transferBase(), oldAssignmentId: [] }, 'transfer', 'invalid_type:oldAssignmentId'],
+    ['assign-actor-null', { ...assignBase(), actor: null }, 'assign', 'invalid_type:actor'],
+    ['assign-sla1Deadline-null', { ...assignBase(), sla1Deadline: null }, 'assign', 'invalid_timestamp:sla1Deadline'],
+    ['assign-mode-null', { ...assignBase(), mode: null }, 'assign', 'invalid_enum:mode'],
+    ['transfer-reason-null', { ...transferBase(), reason: null }, 'transfer', 'invalid_type:reason'],
     ['transfer-lead-id-cross-type', { ...transferBase(), leadId: '41', lead: { ...leadSub, leadId: 41 } }, 'transfer', 'invalid_type:leadId'],
     ['assign-outer-role-missing', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', missingRole],
     ['assign-outer-role-array', { ...assignBase() }, 'assign', 'deliveryRole 缺失或非法', ['apply']],
@@ -477,10 +560,34 @@ async function main(): Promise<void> {
     ['assign-type-array', { ...assignBase(), type: ['assign'] }, 'assign', 'invalid_type:type'],
     ['assign-type-number', { ...assignBase(), type: 1 }, 'assign', 'invalid_type:type'],
     ['assign-type-boolean', { ...assignBase(), type: true }, 'assign', 'invalid_type:type'],
-    ['assign-type-null', { ...assignBase(), type: null }, 'assign', 'missing_field:type'],
+    ['assign-type-null', { ...assignBase(), type: null }, 'assign', 'invalid_type:type'],
     ['assign-type-empty', { ...assignBase(), type: '' }, 'assign', 'missing_field:type'],
     ['assign-type-mismatch-recycle', { ...assignBase(), type: 'recycle' }, 'assign', 'payload_type_mismatch'],
-    ['transfer-type-mismatch-assign', { ...transferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch']
+    ['transfer-type-mismatch-assign', { ...transferBase(), type: 'assign' }, 'transfer', 'payload_type_mismatch'],
+    ['supervisor-correction-detail-null', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: null
+    }, 'supervisor_correction', 'invalid_type:detail'],
+    ['supervisor-correction-detail-array', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: []
+    }, 'supervisor_correction', 'invalid_type:detail'],
+    ['supervisor-correction-detail-string', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: 'not-an-object'
+    }, 'supervisor_correction', 'invalid_type:detail'],
+    ['supervisor-correction-detail-number', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: 1
+    }, 'supervisor_correction', 'invalid_type:detail'],
+    ['supervisor-correction-detail-boolean', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: true
+    }, 'supervisor_correction', 'invalid_type:detail'],
+    ['supervisor-correction-detail-nested-forbidden', {
+      type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+      title: '主管修正', summary: '请确认', detail: { nested: { messageBody: '客户原话' } }
+    }, 'supervisor_correction', 'detail.nested.messageBody']
   ]
   let smbDirectPass = true
   for (const [tag, payload, eventType, expect, outerRole] of smbCases) {
@@ -489,6 +596,17 @@ async function main(): Promise<void> {
     if (!reason.includes(expect)) { smbDirectPass = false; console.log(`    ✗ ${tag}: ${reason}（期望含 ${expect}）`) }
   }
   ok(`C1 ${smbCases.length} 类非法 SMB 载荷在进入状态机前被拒，错误码指向对应字段`, smbDirectPass)
+  const validSmbCorrection = smbFile('supervisor-correction-detail-valid', 901, {
+    type: 'supervisor_correction', deliveryRole: 'apply', leadId, assignmentId,
+    title: '主管修正', summary: '请确认', detail: { reasonCode: 'name_mismatch', source: 'fields' }
+  }, 'supervisor_correction')
+  ok('C1b SMB 普通 detail 对象通过共享校验（非法形态才隔离）',
+    lanSync.validateDownEventFile(validSmbCorrection.body as never, rk, validSmbCorrection.name) === null)
+  const validSmbTransfer = smbFile('transfer-oldAssignmentId-null', 902, {
+    ...transferBase(), oldAssignmentId: null
+  }, 'transfer')
+  ok('C1c SMB 历史例外 oldAssignmentId:null 仍按未提供处理并通过共享校验',
+    lanSync.validateDownEventFile(validSmbTransfer.body as never, rk, validSmbTransfer.name) === null)
 
   /** 把一批事件写进队列目录，跑一轮真实消费，返回结果 */
   const runQueue = (root: string, cases: Array<[string, Record<string, unknown>, string, string, unknown?]>, seq: number) => {
