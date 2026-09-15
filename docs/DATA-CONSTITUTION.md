@@ -111,6 +111,16 @@
 - **写入者**：业务动作埋点；**1.10 阶段只记录不发送**（无发送器）。
 - **AI 档位**：AI 永不直写；由业务代码写入。
 - **映射**：新建表。**崩溃语义已定（9/2）**：sql.js 内存库 500ms 防抖落盘，崩溃丢失的 pending 行 = 事件未发生（1.10 只记录阶段无业务后果）；Phase 3a 上行阶段升级为同步落盘；idempotency_key 保证业务侧可重放。
+- **写入不变式（2026-09-15 澄清）**：`append-only` 指**行集合只增不删**，且 `payload` / `event_seq` /
+  `idempotency_key` 一经写入**永不改写**（改写会把既有事件变成另一个事件，中央据此判重会失效）。
+  **唯一可按状态机迁移的列是 `status`**（`pending → sent` / `pending → failed`）与随之推进的 `updated_at`。
+- **失败重投是正式能力，不是改库（2026-09-15 增补）**：被中央永久拒绝（4xx）的行置 `failed` 后，
+  由 `centralSyncService.retryFailedOutbox(rowId)` 走**受限入口**恢复：只接受 `failed` 行、类型必须已注册、
+  事务内原子条件更新 `failed → pending`（重复调用第二次匹配 0 行，天然幂等），
+  **不改 payload / `event_seq` / `idempotency_key`**，并追加 `audit_event(action='sync_outbox_retry')`
+  （只记 actor / 行号 / 类型，不含客户数据）。设置页经 `centralsync:failed`（只读，字段裁剪，
+  **不回传 payload 原文**）与 `centralsync:retryFailed` 消费。**测试与任何调用方都不得再直接
+  `UPDATE outbox_event SET status=...`** —— 那会绕过权限、审计与状态机。
 
 ### 1.12 audit_event（新建）
 - **定义**：统一审计流水；append-only，无删除、无更新。
@@ -301,6 +311,24 @@
   建档并可能撞 `UNIQUE(contact_type, contact_normalized)`。中央 HTTP 为**固定 6 字段全部存在**
   （`name` / `source` / `note` 允许空串但必须是字符串）；SMB 档兼容历史文件，其余字段存在即校验、
   不强制存在。**顶层 `leadId` 与 `lead.leadId` 必须一致**（`lead_id_mismatch` 拒收，禁止猜）。
+- **`mode` 是四值枚举（2026-09-15 增补）**：唯一枚举源 = `shared/centralDownCommand.ts#ASSIGNMENT_MODES`
+  （`manual` / `weight` / `round_robin` / `load`，口径 = `assignment.mode` 的真实写入语义），
+  `assign` 与 `transfer` 共用。字段**出现时必须是枚举内的字符串字面量**——对象 / 数组 / 数字 / 布尔 /
+  空串 / 未知字符串一律 `invalid_enum:mode`；**禁止先 `String(value)` 再比对**（`{}` 会被拍成
+  `[object Object]` 从而「看起来合法」）。`transfer` 必须携带 `mode`（缺失 → `missing_field:mode`），
+  `assign` 上可选且**应省略而不是发空串**。中央 HTTP 发送前自检、SMB 消费入口、中央服务端建指令三处同源。
+- **`entityId` 必须是具体引用（2026-09-15 增补）**：`validateCentralEntityId` 经
+  `shared/centralSync.ts#isConcreteRef`（**不新造第二个解析器**）要求「含设备命名空间 + 类别与
+  `entityType` 相符 + 冒号后为非空白行号」——`device/customer:`、`device/customer:   ` 与裸 `customer:1`
+  一并拒收（`entity_id_not_concrete` / `entity_id_not_scoped` / `entity_id_kind_mismatch`）。
+  只到类别级别的引用无法跨表关联到任何一行。
+- **升级前 pending 移交的兼容（2026-09-15 增补）**：`mode` / `sla1Deadline` 成为 transfer 必填之前写入的
+  pending 行由发送侧惰性补齐（`electron/services/crmDownPayloadCompat.ts#healLegacyDownPayload`，
+  两条通道共用一处，**不做全表 UPDATE**）：两字段从**本机 assignment 行**读回
+  `assignment.mode` / `assignment.sla1_deadline`，即**移交事实产生时写死的绝对值**；
+  **严禁按当前时间、当前 `crmLeadSlaHours` 或接收端配置重算**（重算即 SLA 漂移，正是本契约要禁止的事）。
+  补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**。
+  不可恢复时**不猜不发**：该行显式置 `failed` + 脱敏审计（`detail` 只有 `{type, reason}`）。
 - **`transfer` 是双目标指令**：新归属设备收 `apply`、原归属设备收 `remove`，两条指令各自带投递角色进幂等键，
   可分别判重；outbox 行只在**两个目标都被中央受理**后结算 `sent`，任一目标 4xx 整行 `failed` 并留
   人工修复审计（`sync_outbox_failed`：`failedRole` / `failedTarget` / `delivered`，不含客户数据），

@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | v3.4 |
 | 日期 | 2026-09-14（实施状态校准；原始评审版 2026-09-02） |
-| 状态 | 现行执行版（P0/P1/P2 已进入实现与验收；**Phase 3a 代码侧已实现，部署与真机验收未做——代码侧仍未收口**；Phase 3b / Phase 4 未启动；管理层最终签字待补） |
+| 状态 | 现行执行版（P0/P1/P2 已进入实现与验收；**Phase 3a 代码侧已实现（含 2026-09-15 四轮修复），部署与真机验收未做——代码侧仍未收口**；Phase 3b / Phase 4 未启动；管理层最终签字待补） |
 | 前置文档 | 总体规划 v3 冻结版（XMind） |
 
 > 本文档是开发执行依据。架构概念见规划导图，本文只写：做什么、谁用、怎么算做完、有什么风险。
@@ -22,6 +22,8 @@
 **2026-09-15 Phase 3a 阻断项修复**：首轮实现暴露的八类 P0/P1 阻断项（敏感字段出机、同工作区跨设备越权、既有 outbox 未真正接通、版本化增量漏更新、过滤行卡游标、中央引用不统一、下行命令校验过弱、缺真实端到端契约测试）已完成修复并通过自动化验证。**此结论仍仅指代码**：部署与真机验收一条未做（原始清单同上，另含 `docker build`），且**下行指令的线索档案面**、**冲突裁决未细化**两项残留已如实披露。审计报告见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**不得据此写成「Phase 3a 已收口」或「全项目代码已完成」。**
 
 **2026-09-15 Phase 3a 复核收口（5 个缺口）**：同日复核又发现 5 个代码/测试缺口并已收口——①`transfer` 中央指令链此前实际断裂（`commandPayloadOf()` 无 `transfer` 分支，outbox 直接落 `failed`），且 e2e 头部「覆盖 transfer」的声明不实；现补齐分支并实现**双目标投递**（新归属 `apply` / 原归属 `remove`，**两个目标都被中央受理才结算 `sent`**，部分成功靠顺序重试 + 中央幂等收敛），e2e 补真实 `transferAssignment()` 全链与真实 `runSla1Recycle()` 回收链；②中央 HTTP 下行 lead 白名单由 8 字段收紧为**按传输上下文分档**（中央 6 字段、SMB 保留 Phase 1 的 8 字段历史口径）；③`/sync/push` 补服务端**实体引用闸门**（实体类别 + 载荷 `*Ref` 形态/类别/命名空间归属）；④补齐**中央 append-only 审计**（邀请码签发、下行指令首次受理，与业务同事务，**幂等重放不追加**）；⑤管理员吊销的畸形 UUID 由 500 改为 **400 E101 且不碰数据库**。**此结论仍仅指代码**：中央侧全部跑在 `MemoryCentralStore` 上，**真实 PostgreSQL 未验证**（PG 侧只有源码级契约断言），`docker build`、双机、Windows、SSE、真实消息推送、反向代理与证书**全部未执行**。**Phase 3a 代码侧仍未收口。**
+
+**2026-09-15 Phase 3a 第四轮收口（升级兼容 / 失败重投 / 契约收紧 / 门禁脱敏）**：同日第四轮——①**修复升级前 pending 移交被永久卡死**的真实缺陷：`mode`/`sla1Deadline` 成为 transfer 必填后，升级前已写入 outbox 的旧格式载荷每轮都被共享校验器拒绝且永不收敛；现发送侧惰性补齐（`crmDownPayloadCompat.healLegacyDownPayload`，两条通道共用一处，**不做全表 UPDATE**），两字段从**本机 assignment 行读回移交事实产生时写死的绝对值**，**严禁按当前时间 / 当前 `crmLeadSlaHours` / 接收端配置重算**，且**不动 `event_seq`/`idempotency_key`/`assignmentId`/`oldAssignmentId`**；不可恢复（assignmentId 非法 / 行不存在 / mode 不在枚举 / sla 非正整数时间戳）一律**不猜不发**，置 `failed` + 脱敏审计；旧 SMB 隔离件在同路径重写后**最多两轮收敛，非永久死锁**。②**失败 outbox 的正式重投入口**：此前双目标部分成功只能靠测试直接 `UPDATE outbox_event SET status='pending'` 恢复——那是改库不是产品能力；现补服务层 `retryFailedOutbox(rowId)`（事务内只接受 `failed` 行、类型须已注册、原子条件更新、重复点击幂等、**不改 payload/event_seq/idempotency_key**）+ 只读 `listFailedOutbox`（字段裁剪、**不回传 payload 原文**）+ IPC `centralsync:failed`/`centralsync:retryFailed` + 设置页「失败同步项」重试按钮 + `sync_outbox_retry` 脱敏审计；e2e 的 SQL 翻转已删除，改走正式入口。③**`mode` 收紧为四值枚举**（`ASSIGNMENT_MODES` = manual/weight/round_robin/load，唯一枚举源）：出现即必须是枚举内字符串，对象/数组/数字/布尔/空串/未知字符串一律 `invalid_enum:mode`，**禁止先 `String()` 再比对**；`transfer` 必填、`assign` 可选（应省略而非发空串）。④**`entityId` 必须具体引用**：复用 `isConcreteRef` 要求「设备命名空间 + 类别与 entityType 相符 + 非空白行号」，`device/customer:`、空白行号、裸 `customer:1`、类别不符一并拒收。⑤**p0-3 收口门禁输出脱敏**：会读真实客户库的门禁脚本此前逐行打印 `session_id`/判断正文/`message_key`/库绝对路径；现只输出聚合计数与结构性结论，并由新增守卫测试（静态 + 合成库输出捕获）强制。**边界同上**：全部跑在 `MemoryCentralStore` 与隔离临时目录上，真实 PostgreSQL / Docker / 双机 / Windows / SSE / 真实消息与 AI 调用**均未验证**；**Phase 3a 代码侧仍未收口。**
 
 **2026-09-15 Phase 3a 契约修复（移交 SLA / SMB 校验 / 建档字段）**：同日第三轮——①修复 **transfer 丢失 SLA1** 的真实缺陷：outbox 与中央指令此前不携带 `sla1Deadline`/`mode`，接收端 `sla1_deadline` 落 NULL；现发起端同事务写入、指令必填（`sla1Deadline` 必须有限正整数）、接收端**精确按指令值落地不重算**、`remove` 不动 SLA、重放零漂移；②SMB `validateDownEventFile()` **真正接入** `validateDownCommand(subject, 'smb')`（此前合法信封配空 payload 也能进状态机；SMB 保留 8 字段 lead、目标存在性用已验证的本机投递键证明，不伪造 UUID）；③中央 assign/transfer **建档字段强制**：lead 必须含最小身份（`leadId` 正整数 / `contactType` 枚举 / `contactNormalized` 非空），中央 HTTP 固定 6 字段全部存在，顶层与子对象 `leadId` 不一致即拒收，被拒指令不消耗幂等键；④双目标 4xx 部分成功：整行 `failed` + 审计补 `failedTarget`，网络/5xx 仍 `pending` 靠幂等重试收敛。**边界同上**：仍全部跑在 `MemoryCentralStore` 与隔离临时目录上，真实 PostgreSQL / Docker / 双机 / Windows / SSE / 真实消息与 AI 调用**均未验证**；下行仍携带 `contactNormalized`，**不声称「下行零身份值」**。**Phase 3a 代码侧仍未收口。**
 
@@ -271,10 +273,26 @@ Phase 3/4 是在现有业务契约上增加中央传输、服务端权限与经�
 - 上行：复用 `outbox_event`；10 类实体落**显式投影表**（禁止通用 JSONB 数据桶）；可变表按 **(updated_at, id) 复合水位**增量，幂等键带实体版本（新版本 → 幂等键不同、`entityId` 稳定、`aggregateVersion` 严格递增）；被过滤行不阻塞后续合法行，补齐后经台账重扫。
 - 下行：`assign`/`transfer`/`recycle` 以**命令**下发并复用 Phase 1 既有状态机与幂等标记（只换传输 adapter）；指令契约唯一真源 = `shared/centralDownCommand.ts`（状态机 SMB 与 HTTP 共用——SMB 入口 `validateDownEventFile` 已真正调用 `validateDownCommand(subject,'smb')`，仅 `payload.lead` 字段集按传输上下文分档：中央 HTTP 6 字段 / SMB 8 字段），`eventType`/`entityType` 不匹配拒收、畸形目标返 400；`supervisor_correction` 落 `notify_inbox` **不静默覆盖**；`permission_change` 只记声明；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` **稳定工号**定目标（**绝不按姓名猜人**）；未知类型立即 `invalid`，`nolead` 有界重试后 `invalid`（**不无限 retry**）。**建档契约**：`assign`/`transfer` 的 `lead` 必须含最小身份（`leadId` 正整数 / `contactType` 枚举 / `contactNormalized` 非空），中央 HTTP 固定 6 字段全部存在，顶层与子对象 `leadId` 必须一致。**`transfer` 一条 outbox → 两条指令**（接收方 `apply` / 原归属 `remove`，幂等键各带投递角色与目标员工），**两个目标都被中央受理才结算 `sent`**，任一目标 4xx 整行 `failed`（审计带 `failedRole`/`failedTarget`/`delivered` 供人工修复）、网络类失败保持 `pending` 靠顺序重试收敛（已受理目标由中央幂等去重，不另建发送状态表）。**`transfer` 的 `sla1Deadline`/`mode` 必填**：sla1Deadline 为发起端移交事实产生时确定的有限正整数时间戳，接收端精确按指令值落地（`assignment.sla1_deadline` = `lead.first_contact_deadline`），**不在接收端重算**；`remove` 不建行也不动 SLA；重放零漂移。
 - 绑定/解绑生命周期与调度器：绑定必启、解绑安全空转、轮巡间隔实时生效、不产生重复定时器；解绑**先请服务端吊销再清本地**，失败时如实报「解绑未完成」，不假装已撤销；**只有中央确认接收后才结算本机 outbox 行**。
+- **升级兼容**：`mode`/`sla1Deadline` 成为 transfer 必填之前写入的 pending 行，由发送侧惰性补齐
+  （`electron/services/crmDownPayloadCompat.ts`，两条通道共用一处，**不做全表 UPDATE**）；两字段从
+  **本机 assignment 行**读回移交事实产生时写死的绝对值，**不按当前时间 / 当前配置 / 接收端重算**；
+  **不动 `event_seq`/`idempotency_key`/`assignmentId`/`oldAssignmentId`**；不可恢复即置 `failed` +
+  脱敏审计（`{type, reason}`），**不猜不发**；旧 SMB 隔离件同路径重写后最多两轮收敛。
+- **失败同步项的正式重投入口**：服务层 `retryFailedOutbox(rowId)`（事务内只接受 `failed` 行、类型须已注册、
+  原子条件更新、重复点击幂等、**不改 payload/`event_seq`/`idempotency_key`**）+ 只读 `listFailedOutbox`
+  （字段裁剪、**不回传 payload 原文**）+ IPC `centralsync:failed` / `centralsync:retryFailed` + 设置页
+  「失败同步项」重试按钮与 `backlogFailed` 计数 + `sync_outbox_retry` 脱敏审计（不含客户数据）。
+  **测试与任何调用方不再直接 `UPDATE outbox_event`。**
+- **契约收紧**：`mode` 为四值枚举（`ASSIGNMENT_MODES` = manual/weight/round_robin/load，唯一枚举源；
+  出现即必须是枚举内字符串，**禁止 `String()` 后比对**）；`entityId` 必须为**具体引用**
+  （设备命名空间 + 类别与 `entityType` 相符 + 非空白行号，复用 `isConcreteRef`，不新造解析器）。
+- **验收输出脱敏**：会读真实客户库的 `scripts/p0-3-closed-gate.ts` 只输出聚合计数 / 通过失败 / 结构性结论，
+  **不打印 `session_id`、客户姓名、联系方式、判断正文与摘要、`evidence_text`、`message_key` 原文与库绝对路径**；
+  由 `scripts/p0-3-closed-gate-test.ts`（静态 + 合成库输出捕获）强制。
 - 传输互斥：`centralSyncEnabled` 为真时 Phase 1 SMB 同步自动停用；关闭时 Phase 1 行为完全不变。
 - **服务端实体引用闸门**：`/sync/push` 逐条校验实体引用类别（`validateCentralEntityId`），并对 `payload` 内已登记的 `*Ref`（`customerRef`/`leadRef`/`opportunityRef`/`employeeRef`）校验形态、类别与命名空间归属，**借用同工作区他机命名空间同样拒绝**；拒收只影响该条事件，同批合法事件照常落库，被拒事件不留 `sync_event`、不留投影、不消耗幂等键。
 - **中央自身操作审计**（`central_audit_event`，append-only，与只读上行投影 `central_audit_projection` 严格分离）：邀请码签发（与签发**同一事务**，不记邀请码明文/哈希）与下行指令**首次**受理（只记 `eventId`/`eventType`/投递目标，**不记载荷**）均已落库；**幂等重放不追加审计、被拒请求不留痕**。
-- 验证（2026-09-15 实测）：`scripts/central-sync-client-test.ts` 24/0、`scripts/central-sync-adapter-test.ts` **86/0**、`scripts/central-sync-e2e-test.ts` **61/0**（真实生产者 → outbox → 适配器 → Fastify `app.inject` → 内存中央库 → 投影/指令 → pull → 本机状态机 → ACK → 结算的完整契约闭环；**J 段为真实移交链**——调用真实 `transferAssignment()` → 一条 outbox → 两条下行指令（`apply`/`remove`）→ 双目标都受理才 `sent` → 重放判 duplicate → 第二目标先瞬时失败保持 `pending`、恢复后补齐 → 两个接收端各经既有状态机落地并回 ACK；**无 Docker 依赖**）；`central/` 侧 app **136** / projection **36** / migration 23 / context 6（全 0 失败），`npm run typecheck` 与 `npm run build` 通过。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**。
+- 验证（2026-09-15 实测）：`scripts/central-sync-client-test.ts` 24/0、`scripts/central-sync-adapter-test.ts` **97/0**、`scripts/central-sync-e2e-test.ts` **84/0**（真实生产者 → outbox → 适配器 → Fastify `app.inject` → 内存中央库 → 投影/指令 → pull → 本机状态机 → ACK → 结算的完整契约闭环；**J 段为真实移交链**——调用真实 `transferAssignment()` → 一条 outbox → 两条下行指令（`apply`/`remove`）→ 双目标都受理才 `sent` → 重放判 duplicate → 第二目标先瞬时失败保持 `pending`、恢复后补齐 → 两个接收端各经既有状态机落地并回 ACK；**无 Docker 依赖**）；`central/` 侧 app **159** / projection **36** / migration 23 / context 6（全 0 失败），`npm run typecheck` 与 `npm run build` 通过；`scripts/central-down-compat-test.ts` **31/0**（升级前 pending 移交兼容全链）、`scripts/p0-3-closed-gate-test.ts` **20/0**（门禁输出脱敏守卫）、`scripts/p0-3-closed-gate.ts` **6/0**（153 文件）、`scripts/lan-sync-test.ts` **93/0**、`scripts/lan-sync-e2e-test.ts` **42/0**。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**。
 
 **已披露残留（不声称已解决）**
 

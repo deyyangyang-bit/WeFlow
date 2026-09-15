@@ -392,6 +392,16 @@
   服务端按 `isRefOwnedByDevice` 校验**上行 `entityId` 必须属 `principal.deviceId` 命名空间**，
   否则拒收 `entity_id_not_owned`。**既有投影只允许原 `source_device_id` 更新**（跨设备改写显式冲突，
   更高 `aggregateVersion` 也不能覆盖）。
+- **`entityId` 必须是具体引用（2026-09-15 增补）**：「有类别」不等于「指向具体一行」。服务端
+  `validateCentralEntityId` 分三步拒收，判定全部复用 `shared/centralSync.ts#isConcreteRef`
+  （**不新造第二个解析器**）：
+  1. 必须含设备命名空间且 `localRef` 带 `kind:` —— 裸 `customer:1` 拒收 `entity_id_not_scoped`；
+  2. 冒号后必须有**非空白**的本地行号 —— `device/customer:` 与 `device/customer:   ` 拒收
+     `entity_id_not_concrete`（只有类别级别的引用无法跨表关联到任何一行）；
+  3. `localRef` 的 kind 必须与 `entityType` 相符（`assignment` → `assignment:<id>`），
+     不符拒收 `entity_id_kind_mismatch:<kind>≠<expected>`。
+
+  既有合法 scoped 引用不受影响；`/sync/push` 仍**逐事件**处理，一条坏事件不会污染同批合法事件。
 
 ### 3.2 角色 → 能力矩阵（`central/src/permissions.ts` 表驱动）
 
@@ -563,7 +573,7 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 
 | eventType | entityType | deliveryRole | 必填载荷（节选） | 目标 |
 |---|---|---|---|---|
-| `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / **`lead`** | 目标员工或设备 |
+| `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / **`lead`**（`mode` **可选**） | 目标员工或设备 |
 | `transfer` | `assignment` | `apply` / `remove` | `leadId` / `assignmentId` / `toSales` / **`lead`** / **`mode`** / **`sla1Deadline`** | 同上（**两个目标**，见下） |
 | `recycle` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName`（**不含 `lead`**） | 同上 |
 | `sla1_escalate_supervisor` | `assignment` | `notify` | `leadId` / `assignmentId` / `salesName` / `remindCount` / `recycledAt` | **主管**（按稳定工号解析） |
@@ -583,6 +593,27 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   `name` / `source` / `note` 允许空串但必须是字符串类型；SMB 档兼容历史生产文件，
   `name` / `source` / `note` / `contactRaw` / `wechat` 存在即校验、不强制存在，但同样不许空身份。
   **顶层 `leadId` 与 `lead.leadId` 必须一致**，不一致即 `lead_id_mismatch` 拒收，禁止按其中一个猜。
+
+- **`mode` 是四值枚举（2026-09-15 增补）**：唯一枚举源 = `shared/centralDownCommand.ts#ASSIGNMENT_MODES`
+  （`manual` / `weight` / `round_robin` / `load`，口径 = `assignment.mode` 的真实写入语义）。
+  `assign` 与 `transfer` 共用这份枚举：**字段出现时必须是枚举内的字符串字面量**——
+  对象 / 数组 / 数字 / 布尔 / 空串 / 未知字符串一律 `invalid_enum:mode`。**禁止先 `String(value)` 再比对**
+  （`{}` 会被拍成 `[object Object]` 从而「看起来合法」）。`transfer` 保持 `mode` 必填
+  （缺失 → `missing_field:mode`）；`assign` 上 `mode` 可选，**发送方应省略而不是发空串**。
+  中央 HTTP 发送前自检、SMB 消费入口、中央服务端建指令**三处共用同一份约束**；错误码只带字段名，不带值。
+
+- **升级前 pending 移交的兼容（2026-09-15 增补）**：`mode` / `sla1Deadline` 成为 transfer 必填之后，
+  **升级前**就已写入 `outbox_event` 的 pending 行携带的是旧格式载荷。发送侧在投递前调用
+  `electron/services/crmDownPayloadCompat.ts#healLegacyDownPayload(type, payload)` **惰性补齐**
+  （中央 HTTP 发送前自检与 SMB 发送共用此一处，**不做全表 UPDATE**）：`mode` 与 `sla1Deadline`
+  从**本机 assignment 行**（`payload.assignmentId`）读回 `assignment.mode` / `assignment.sla1_deadline`，
+  即**移交事实产生时就写死的绝对值**。**严禁按当前时间、当前 `crmLeadSlaHours` 或接收端配置重算**。
+  补齐**不动 `event_seq` / `idempotency_key` / `assignmentId` / `oldAssignmentId`**（否则中央会当成新事件）。
+  不可恢复（`assignmentId` 非法 / assignment 行不存在 / `mode` 不在枚举内 / `sla1_deadline` 不是正整数时间戳）
+  一律**不猜、不发**：该行 outbox 显式置 `failed` + 脱敏审计（`detail` 只有 `{type, reason}`，
+  稳定码 `legacy_transfer_bad_assignment_id` / `legacy_transfer_assignment_missing` /
+  `legacy_transfer_mode_unrecoverable` / `legacy_transfer_sla_unrecoverable`）。已落盘的旧 SMB 文件
+  走既有 `.failed/` 隔离语义，隔离释放路径后下一轮会在**同一路径**写入补齐后的合法文件（最多两轮收敛）。
 
 - **`transfer` 的 SLA 纪律（2026-09-15 增补）**：`sla1Deadline` 与 `mode` 是移交事实**产生时**就确定的
   绝对值，由发起端在同一事务写入 outbox 并随指令传递；`sla1Deadline` 必须是有限正整数时间戳
@@ -613,6 +644,27 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   本机落 `notify_inbox`（`notify_type` 为 SLA 升级类）；`supervisor_correction` 落 `notify_inbox`
   待人工确认，**不静默覆盖**本机事实行。
 
+### 3.5.1 失败同步项的正式重投入口（2026-09-15 增补）
+
+上行 `outbox_event` 行被中央永久拒绝（4xx）后置 `failed`。此前**生产侧没有恢复入口**，
+只能靠人工改库。现提供受限的正式能力，**不允许任意 SQL、不允许任意状态迁移**：
+
+| 层 | 位置 | 语义 |
+|---|---|---|
+| 服务层 | `centralSyncService.retryFailedOutbox(rowId)` | 事务内判定 → 只接受 `status='failed'` 的行 → 类型必须已注册 → 原子条件更新 `failed → pending`（`WHERE id=? AND status='failed'`，**重复点击第二次匹配 0 行，天然幂等**）→ 追加 `audit_event(action='sync_outbox_retry')` |
+| 服务层 | `centralSyncService.listFailedOutbox(limit=50)` | **只读**列表，返回裁剪字段（行号 / 类型 / 稳定原因码 / 时间），**不回传 payload 原文**；原因码经 `SAFE_FAILURE_CODE`（`/^[A-Za-z0-9_:.\-]{1,80}$/`）过滤，形态不符降级为通用码 |
+| IPC | `centralsync:failed` / `centralsync:retryFailed` | preload 与 `src/types/electron.d.ts` 同名桥接 |
+| 设置页 | 同步状态区「失败同步项」 | 逐项**重试**按钮 + `backlogFailed` 计数 |
+
+- **不变式**：重投**不改 payload、不改 `event_seq`、不改 `idempotency_key`**——中央侧 `eventId`
+  只由 `deviceId + idempotency_key` 决定，重投后身份不变，已受理的目标由中央判 duplicate。
+- **稳定返回码**：`ok` / `invalid_row_id`（非正整数或 ≤0）/ `not_found` / `not_failed`（行存在但非 failed）/
+  `unsupported_type`（类型未注册）。不存在的行、`pending` / `sent` 行一律**不改动**。
+- **审计脱敏**：`sync_outbox_retry` 只记 actor / 行号 / 类型，**不记客户联系方式、聊天正文、
+  完整线索资料与令牌**。
+- **双目标部分成功**：已受理的 `apply` 目标重投被判 duplicate，原先 4xx 的 `remove` 目标重新投递，
+  **两个目标都被受理才结算 `sent`**（与网络类失败靠重放收敛同一条路径）。
+
 ### 3.6 Phase 3a 尚未落地的部分
 
 - **HTTPS / 反向代理 / 证书**：服务侧仅支持「由反向代理终结 TLS」（`CENTRAL_TLS_TERMINATED`，
@@ -622,6 +674,11 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   多写者合并策略留待 3a 演练后细化。
 - **WeKnora / 中央 MCP**：属 Phase 3b，见 §4.2，仍为占位规范。
 - **PRD 2.10 / 2.11**：≥100 条商机评测集与官方微信单向推送**均未完成**，与中央节点无关；Phase 4 为未启动 Backlog。
+- **验收输出的脱敏边界（2026-09-15 增补）**：会读**真实客户库**的收口门禁
+  （`scripts/p0-3-closed-gate.ts`）终端只输出**聚合计数 / 通过失败 / 结构性结论**，
+  **不打印 `session_id`、客户姓名、联系方式、判断正文与摘要、`evidence_text`、`message_key` 原文
+  与库绝对路径**（断言失败细节同样不含）。该红线由 `scripts/p0-3-closed-gate-test.ts` 的静态守卫 +
+  合成库输出捕获守卫强制。**中央侧全部测试跑在 `MemoryCentralStore` 上，不能替代真实 PostgreSQL 验证。**
 
 ---
 
