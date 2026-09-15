@@ -9,7 +9,15 @@
  *   - SMB：`emitDownEvents()` 原样展开旧载荷，终端共享校验器拒收并隔离到 `.failed/`。
  *
  * 兼容口径（**惰性富化**，不做全表破坏性 UPDATE、不改幂等键）：
- *   - 只能从本机 `payload.assignmentId` 指向的 assignment 行取值；
+ *   - 只能从本机 `payload.assignmentId` 指向的 assignment 行取值；`assignmentId` 本身必须是
+ *     **原始 number 正整数**——不是就一律拒（无论 mode/SLA 是否已完整），绝不交给下游校验器侥幸处理；
+ *   - **assignment 行必须存在**（`legacy_transfer_assignment_missing`）：本机 assignment 的生命周期是
+ *     「只软删、只改 status」（宪法 §1.3：分配事实 append-only，转派 = 旧行 transferred + 新行 assigned；
+ *     重派 = 旧行 recycled；全仓无任何硬删路径，只有测试夹具 DELETE），因此一条**正常产生**的
+ *     outbox 行永远能定位到自己的来源行。行不存在 = 库被外部改动（换库 / 手工清理 / 恢复错备份），
+ *     此时「载荷是否自足」根本不构成放行理由——契约要求 transfer 的每个身份字段都可核对
+ *     （`leadId` 对线索、`toSales` 对目录），`assignmentId` 对来源行是同一组核对里的一项，
+ *     缺一项就不能声称这条指令描述的移交事实在本机成立；
  *   - **用恢复行前必须核对身份**：该 assignment 必须是**载荷描述的那一次移交**——`assignment.lead_id`
  *     必须等于 `payload.leadId`、`assignment.sales_name` 必须等于 `payload.toSales`。指向别的线索 /
  *     别的销售的 assignment 行不是本次移交的事实，拿它补齐会把 B 线索的 mode/SLA 贴到 A 线索的指令上；
@@ -68,16 +76,16 @@ export function healLegacyDownPayload(type: string, payload: Record<string, unkn
   const hasDeadline = isAbsoluteDeadline(payload.sla1Deadline)
   const needsRecovery = !hasMode || !hasDeadline
   if (!isPositiveInt(payload.assignmentId)) {
-    // 没有可定位的恢复来源：需要恢复就拒（不按线索猜最近一次分配）；载荷自足时不在此判，
-    // 交给下行契约校验器按 missing_field:assignmentId 拒。
-    return needsRecovery ? { ok: false, code: 'legacy_transfer_bad_assignment_id' } : { ok: true, payload }
+    // 没有可定位的恢复来源：不按线索猜最近一次分配。**无条件拒**——`assignmentId: 0` / `{}` /
+    // `"41"` 这类形态无论 mode/SLA 是否已完整都不是一条可核对的移交指令，不能靠下游校验器兜底。
+    return { ok: false, code: 'legacy_transfer_bad_assignment_id' }
   }
   const row = crmDbService.all(
     'SELECT lead_id, sales_name, mode, sla1_deadline FROM assignment WHERE id = ?', [payload.assignmentId])[0]
   if (!row) {
-    // 行不存在：需要恢复时没有可用来源 → 不猜、不发；载荷自足时不拦（没有可恢复的值，
-    // 也没有被猜出来的值——这里不引入一条与「富化」无关的新失败路径）。
-    return needsRecovery ? { ok: false, code: 'legacy_transfer_assignment_missing' } : { ok: true, payload }
+    // 行不存在 = 来源无从核对（见文件头：本机 assignment 只软删/只改状态，正常 outbox 行必能定位）。
+    // **无条件拒**，不因载荷自足而放行；不猜值、不发送。
+    return { ok: false, code: 'legacy_transfer_assignment_missing' }
   }
   // 身份一致性：恢复值只能来自**载荷描述的那一次移交**。行存在却与载荷矛盾 = 指令描述的
   // 本地事实不是它声称的那一条，一律拒（不猜、不发送），无论是否需要恢复。
