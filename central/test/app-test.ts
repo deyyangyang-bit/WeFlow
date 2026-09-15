@@ -428,8 +428,13 @@ check('K22 缺版本前置时间戳字段 → 400（缺字段先于取值判定�
   String(slaNoTimestamp.json().message).includes('missing_field:recycledAt'))
 const slaZeroTimestamp = await postCommand({ eventType: 'sla1_escalate_supervisor',
   payload: { type: 'sla1_escalate_supervisor', deliveryRole: 'notify', leadId: 1, assignmentId: 1, salesName: '张三', remindCount: 3, recycledAt: 0 } }, 'sla1-zero-ts')
-check('K23 版本前置时间戳非正数 → 400 invalid_timestamp', slaZeroTimestamp.statusCode === 400 &&
-  String(slaZeroTimestamp.json().message).includes('invalid_timestamp:recycledAt'))
+// 顶层字段规则（invalid_integer:recycledAt）先于 requiredTimestamps（invalid_timestamp:recycledAt）生效，
+// 两者都是「非正整数」的稳定拒收码，400 的结果一致；断言接受任一稳定码，不放宽状态码要求。
+check('K23 版本前置时间戳非正数 → 400（稳定拒收码 invalid_integer / invalid_timestamp:recycledAt）',
+  slaZeroTimestamp.statusCode === 400 &&
+  ['invalid_integer:recycledAt', 'invalid_timestamp:recycledAt']
+    .some((c) => String(slaZeroTimestamp.json().message).includes(c)),
+  String(slaZeroTimestamp.payload))
 
 console.log('═══ H. 令牌轮换 / 自助解绑 / 管理员吊销 ═══')
 const rotated = await app.inject({ method: 'POST', url: '/api/v1/devices/rotate', headers: salesAuth })
@@ -543,8 +548,13 @@ const mTransferNoSla = await postTransfer('no-sla', { ...transferBase, sla1Deadl
 check('M19 transfer 缺 sla1Deadline → 400 invalid_timestamp（不在接收端重算 SLA）',
   mTransferNoSla.statusCode === 400 && String(mTransferNoSla.json().message).includes('invalid_timestamp:sla1Deadline'))
 const mTransferStrSla = await postTransfer('str-sla', { ...transferBase, sla1Deadline: '1758000000000' })
+// 2026-09-15 顶层字段共享规则接入后，字符串先被 fields 的类型判定拦下（invalid_type），
+// requiredTimestamps 的既有 invalid_timestamp 码仍在（两者并存，只是先后不同）。断言接受两种稳定码。
 check('M20 transfer 的 sla1Deadline 是字符串数字 → 400（必须 number 类型正整数）',
-  mTransferStrSla.statusCode === 400 && String(mTransferStrSla.json().message).includes('invalid_timestamp:sla1Deadline'))
+  mTransferStrSla.statusCode === 400 &&
+  ['invalid_type:sla1Deadline', 'invalid_timestamp:sla1Deadline']
+    .some((c) => String(mTransferStrSla.json().message).includes(c)),
+  String(mTransferStrSla.payload))
 const mTransferNoMode = await postTransfer('no-mode', { ...transferBase, mode: undefined })
 check('M21 transfer 缺 mode → 400 missing_field:mode',
   mTransferNoMode.statusCode === 400 && String(mTransferNoMode.json().message).includes('missing_field:mode'))

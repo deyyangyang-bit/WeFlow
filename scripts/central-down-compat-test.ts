@@ -10,7 +10,7 @@
  * 本脚本覆盖：
  *   A. 富化语义（单元）：从本机 assignment 行取**当时写入的绝对值**；改当前 SLA 配置不改变恢复值；
  *      已合法载荷原样放行不覆盖；重复调用幂等、不就地改入参；不可恢复时返回稳定错误码。
- *   G. 判定口径与身份一致性（2026-09-15 第二轮）：SLA「已合法」是**原始类型**判定（字符串数字
+ *   G. 判定口径与身份一致性（2026-09-15 第二轮；同轮收严「来源行必须存在」）：SLA「已合法」是**原始类型**判定（字符串数字
  *      不算，小数/NaN/Infinity/0/负数/对象/数组同样不算）；用恢复行之前必须核对
  *      `assignment.lead_id === payload.leadId` 且 `assignment.sales_name === payload.toSales`，
  *      不符一律拒（不把别的线索的 mode/SLA 贴到本条指令上）；错误码不含任何客户值。
@@ -251,12 +251,21 @@ async function main(): Promise<void> {
   ok('G10 字段已合法但身份不符 → 仍拒（身份检查不是「需要恢复时才跑」）',
     legalButCrossLead.ok === false && legalButCrossLead.code === 'legacy_transfer_lead_mismatch' &&
     legalButWrongTarget.ok === false && legalButWrongTarget.code === 'legacy_transfer_target_mismatch')
-  // G12：行不存在而载荷自足 → 原样放行（没有可恢复的值，也不引入与「富化」无关的新失败路径）
+  // G12（2026-09-15 收严）：行不存在时**一律拒**，不因载荷自足而放行。
+  // 依据 = 本机 assignment 的真实生命周期：只软删、只改 status（宪法 §1.3 append-only；转派 = 旧行
+  // transferred + 新行 assigned，重派 = 旧行 recycled），全仓无任何硬删路径（DELETE 只出现在测试夹具）。
+  // 因此一条**正常产生**的 transfer outbox 行永远能定位到自己的来源行；定位不到 = 库被外部改动
+  // （换库 / 手工清理 / 恢复错备份）。契约要求 transfer 的每个身份字段都可核对（leadId 对线索、
+  // toSales 对目录），assignmentId 对来源行是同一组核对里的一项——缺了它就不能声称「这条指令描述的
+  // 移交事实在本机成立」，也没有任何本地证据能证明 toSales/leadId 不是伪造的。
   const selfSufficientInput: Record<string, unknown> = { ...alreadyLegal, assignmentId: 987654321 }
   const selfSufficient = healLegacyDownPayload('transfer', selfSufficientInput)
-  ok('G11 行不存在但载荷自足 → 原样放行（返回入参本身，不新造一条失败路径）',
-    selfSufficient.ok === true && selfSufficient.payload === selfSufficientInput &&
-    Number(selfSufficient.payload.assignmentId) === 987654321)
+  ok('G11 行不存在 → 一律拒（载荷自足也不放行：来源行不存在即无从核对身份，不猜、不发）',
+    selfSufficient.ok === false && selfSufficient.code === 'legacy_transfer_assignment_missing')
+  // 同一收严口径也覆盖「assignmentId 形态非法」：不再区分是否真的需要补齐
+  const badIdSelfSufficient = healLegacyDownPayload('transfer', { ...alreadyLegal, assignmentId: 0 })
+  ok('G11b assignmentId 形态非法 + mode/SLA 已完整 → 同样拒（不交给下游校验器侥幸处理）',
+    badIdSelfSufficient.ok === false && badIdSelfSufficient.code === 'legacy_transfer_bad_assignment_id')
 
   // G13：错误码只描述字段与一致性结论，不带客户值 / 销售姓名 / 线索资料
   const gCodes = [crossLead, noLeadId, wrongTarget, stringOnBrokenRow]
