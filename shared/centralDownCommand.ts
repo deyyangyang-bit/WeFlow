@@ -22,7 +22,7 @@
  * 字段集上分叉——避免出现两套会各自漂移的业务规则。
  */
 import {
-  CENTRAL_ENTITY_TYPES, findForbiddenDownlinkField, isCentralEntityType, refKindOf,
+  CENTRAL_ENTITY_TYPES, findForbiddenDownlinkField, isCentralEntityType, isConcreteRef, refKindOf,
   type CentralEntityType, type CentralSyncEvent
 } from './centralSync'
 
@@ -41,6 +41,18 @@ const LEAD_NOTE_MAX = 1000
 const LEAD_CONTACT_NORMALIZED_MAX = 120
 const LEAD_CONTACT_RAW_MAX = 120
 const LEAD_WECHAT_MAX = 120
+
+/**
+ * 分配模式（`assignment.mode`）的**唯一枚举源**：UI、审计与两条同步通道共用这一份，
+ * 禁止各处再写一遍字面量数组后各自漂移。取值口径 = 本机真实写入语义：
+ *   - `manual`     单条指派（assignLeads 缺省值）；
+ *   - `weight`     批量分配按比例权重（分配页缺省）；
+ *   - `round_robin` 轮询分发；
+ *   - `load`       按当前负载均衡。
+ * 该字段在 assign 上是**可选**（出现即必须合法），在 transfer 上是**必填**（见 DOWN_COMMAND_SPECS）。
+ */
+export const ASSIGNMENT_MODES = ['manual', 'weight', 'round_robin', 'load'] as const
+export type AssignmentMode = typeof ASSIGNMENT_MODES[number]
 
 /** 线索联系方式类别（本机 lead.contact_type 的真实枚举，不允许下游自造值） */
 export const LEAD_CONTACT_TYPES = ['phone', 'wechat', 'both'] as const
@@ -127,6 +139,8 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     required: ['leadId', 'assignmentId', 'salesName', 'lead'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'mode', 'sla1Deadline', 'actor', 'slaHours', 'lead'],
     allowsLead: true,
+    // mode 在 assign 上是**可选**（发送方可省略），但**出现即必须是 ASSIGNMENT_MODES 内的字符串**
+    enums: { mode: ASSIGNMENT_MODES },
     maxLength: { salesName: SALES_NAME_MAX }
   },
   transfer: {
@@ -135,6 +149,8 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     required: ['leadId', 'assignmentId', 'toSales', 'lead', 'mode'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'fromSales', 'toSales', 'reason', 'oldAssignmentId', 'actor', 'slaHours', 'mode', 'sla1Deadline', 'lead'],
     allowsLead: true,
+    // transfer 的 mode 必填（见 required）且受同一份枚举约束——禁止「非空字符串即通过」
+    enums: { mode: ASSIGNMENT_MODES },
     maxLength: { toSales: SALES_NAME_MAX, fromSales: SALES_NAME_MAX, reason: REASON_MAX },
     requiredTimestamps: ['sla1Deadline']
   },
@@ -283,8 +299,14 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
     if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) return `invalid_timestamp:${field}`
   }
   for (const [field, values] of Object.entries(spec.enums ?? {})) {
-    if (isBlank(payload[field])) continue
-    if (!values.includes(String(payload[field]))) return `invalid_enum:${field}`
+    const value = payload[field]
+    // ① 未设置与「设置了非法值」是两回事：缺省由 spec.required 判（transfer.mode 在 required 里，
+    //    缺了必拒；assign.mode 可选，缺了合法），这里只负责「出现时的形态」。
+    if (value === undefined || value === null) continue
+    // ② 出现即必须是**字符串字面量**：绝不 `String(value)` 再比对——`{}`/`[]`/`1`/`true`/`false`
+    //    都会被 String() 变成一个「看起来合法」的字符串，从而把非法载荷放进业务状态机。
+    //    空串同样拒收：发送方应省略可选字段，而不是发空串让接收端各自兜底。
+    if (typeof value !== 'string' || !values.includes(value)) return `invalid_enum:${field}`
   }
   for (const [field, max] of Object.entries(spec.maxLength ?? {})) {
     const value = payload[field]
@@ -312,6 +334,14 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
  *  - `entityId` 的 localRef 类别必须与 entityType 相符（`assignment` → `assignment:<id>`）。
  * 只在这些字段出现时检查，不做全量遍历。
  */
+/**
+ * entityId 的引用类别映射。校验分三步（2026-09-15 收紧）：
+ *   ① 必须含设备命名空间且 localRef 有 `kind:` —— 裸 `customer:1` 拒（entity_id_not_scoped）；
+ *   ② 冒号后必须有**非空白**的本地行号 —— `device/customer:` 与 `device/customer:   ` 拒
+ *      （entity_id_not_concrete）；只到类别级别的引用无法跨表关联到任何一行；
+ *   ③ localRef 的 kind 必须与 entityType 相符。
+ * 具体引用判定复用 shared/centralSync.isConcreteRef()，不在这里另写解析器。
+ */
 const ENTITY_ID_KIND: Record<string, string> = {
   customer: 'customer',
   customer_identity: 'identity',
@@ -331,6 +361,9 @@ export function validateCentralEntityId(entityType: string, entityId: string): s
   if (!isCentralEntityType(entityType)) return 'invalid_entity_type'
   const kind = refKindOf(entityId)
   if (!kind) return 'entity_id_not_scoped'
+  // 「有类别」不等于「指向具体一行」：`device/customer:` 过得了前三步却没有任何行号。
+  // 判定与 refKindOf 同源（都来自 shared/centralSync），不新造第三个解析器。
+  if (!isConcreteRef(entityId)) return 'entity_id_not_concrete'
   const expected = ENTITY_ID_KIND[entityType]
   if (expected && kind !== expected) return `entity_id_kind_mismatch:${kind}≠${expected}`
   return null

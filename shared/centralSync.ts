@@ -112,12 +112,17 @@ export function refKindOf(ref: unknown): string | null {
   return colon > 0 ? parsed.localRef.slice(0, colon) : null
 }
 
-/** 引用是否指向某个具体的本机行（`<deviceId>/<kind>:<id>`）。 */
+/**
+ * 引用是否指向某个具体的本机行（`<deviceId>/<kind>:<id>`，且 id 有**非空白**内容）。
+ * 冒号后必须真有内容：`<deviceId>/customer:` 与 `<deviceId>/customer:   ` 都是等价的空引用——
+ * 后者能骗过「长度 > colon+1」，却同样无法跨表关联，也与「本机某一行」无关。
+ */
 export function isConcreteRef(ref: unknown): boolean {
   const parsed = parseScopedRef(ref)
   if (!parsed) return false
   const colon = parsed.localRef.indexOf(':')
-  return colon > 0 && parsed.localRef.length > colon + 1
+  if (colon <= 0) return false
+  return parsed.localRef.slice(colon + 1).trim().length > 0
 }
 
 // ─── 禁上传字段（分方向） ─────────────────────────────────────────────────────

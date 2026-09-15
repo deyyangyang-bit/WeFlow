@@ -18,6 +18,7 @@ import { recordOutboxTx } from './crmOutboxService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { outboxTransportEnabled } from './lanSyncService'
 import { ConfigService } from './config'
+import { ASSIGNMENT_MODES, type AssignmentMode } from '../../shared/centralDownCommand'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 
 /** 当前有效分配状态（宪法 §1.3：最新有效行 = 当前归属；recycled/transferred 即失效） */
@@ -665,11 +666,18 @@ export function listOwnershipHistory(opts: OwnershipHistoryOpts = {}): { ok: boo
 }
 
 // ─── 批量分配（crm:assignment:assignBatch，设计稿屏 3 分配控制台）─────────────
+/**
+ * 批量分配模式 = 共享枚举**去掉 manual**（手动指派不是批量语义）。
+ * 单一枚举源在 shared/centralDownCommand.ASSIGNMENT_MODES，这里只做子集派生，不复写字面量数组。
+ */
+export type BatchAssignmentMode = Exclude<AssignmentMode, 'manual'>
+const BATCH_ASSIGNMENT_MODES = ASSIGNMENT_MODES.filter((m): m is BatchAssignmentMode => m !== 'manual')
+
 export interface AssignBatchInput {
   /** 本次从待分配池取的条数 */
   count: number
   /** 分配模式（落 assignment.mode）：weight=比例权重（默认）/ round_robin=轮询 / load=负载均衡 */
-  mode: 'weight' | 'round_robin' | 'load'
+  mode: BatchAssignmentMode
   /** weight 模式的权重表（销售名 → 0-100；缺省等权） */
   weights?: Record<string, number>
   actor?: string
@@ -680,7 +688,7 @@ export interface AssignBatchData {
   assigned: number
   skipped: Array<{ leadId: number; code: string; reason: string }>
   perSales: Record<string, number>
-  mode: string
+  mode: BatchAssignmentMode
 }
 export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?: string; message?: string }
 
@@ -695,7 +703,11 @@ export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?:
 export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
   const sales = (ConfigService.getInstance().get('crmSalesList') || []).map((s) => String(s).trim()).filter(Boolean)
   if (!sales.length) return { ok: false, code: 'E101', message: '还没有销售名单。请先到线索页「资源池」勾选线索后点击「分配给…」，在弹窗中添加销售姓名。' }
-  const mode = (['weight', 'round_robin', 'load'] as const).includes(input?.mode as never) ? input.mode : 'weight'
+  const requested = input?.mode
+  const mode: BatchAssignmentMode = typeof requested === 'string' &&
+    (BATCH_ASSIGNMENT_MODES as readonly string[]).includes(requested)
+    ? requested as BatchAssignmentMode
+    : 'weight'
   const weights = input?.weights && typeof input.weights === 'object' ? input.weights : {}
   const count = Math.max(1, Math.floor(Number(input?.count) || 0))
 
