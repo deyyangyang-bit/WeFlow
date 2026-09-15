@@ -399,6 +399,7 @@ async function main(): Promise<void> {
   })
   const storeLike = memory as unknown as { downEventCount: () => number }
   const downBefore = storeLike.downEventCount()
+  const centralAuditBefore = memory.auditActions().length
 
   const centralAssignBase = (): Record<string, unknown> => ({ ...assignBase(), lead: { ...centralLeadSub } })
   const centralTransferBase = (): Record<string, unknown> => ({ ...transferBase(), lead: { ...centralLeadSub } })
@@ -480,8 +481,8 @@ async function main(): Promise<void> {
     httpAllReject,
     JSON.stringify(httpResults.filter(([s, c, m]) => c < 400 || c >= 500 || !m.includes(httpCases.find(([x]) => x === s)![3]))))
   ok('B2 全部被拒请求在中央零痕迹：不落下行事件、不留审计（被拒请求不留痕，审计条数不随探测增长）',
-    storeLike.downEventCount() === downBefore,
-    JSON.stringify({ before: downBefore, after: storeLike.downEventCount() }))
+    storeLike.downEventCount() === downBefore && memory.auditActions().length === centralAuditBefore,
+    JSON.stringify({ downBefore, downAfter: storeLike.downEventCount(), centralAuditBefore, centralAuditAfter: memory.auditActions().length }))
   // 不消耗幂等键：修正后的同一 key 必须被受理（否则探测一次就把正常指令永久卡死）
   const reuseKey = 'f-reuse-after-reject'
   const reused = await app.inject({
