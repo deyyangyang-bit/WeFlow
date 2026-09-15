@@ -555,11 +555,16 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 
 **唯一真源 = `shared/centralDownCommand.ts`**：SMB 与 HTTP 两条传输共用同一份纯校验器，
 本机 `applyDownEventDirect` 不得绕过业务校验（禁止各写一套）。
+**SMB 入口已真正接入**（2026-09-15）：`lanSyncService.validateDownEventFile()` 在 SMB 专属检查
+（投递键 / eventSeq / deliveryRole / 文件名绑定 / 主管通知分流）通过后、进入任何业务事务之前，
+调用 `validateDownCommand(subject, 'smb')`——payload 白名单 / 必填 / 类型 / lead 建档契约与中央 HTTP
+同一份规则，仅 lead 字段集按 `smb` 档放宽。SMB 没有中央 UUID 目标字段，「目标存在」由
+**已通过比对的本机投递键**（`localDeliveryKey`）证明，不伪造业务 UUID。
 
 | eventType | entityType | deliveryRole | 必填载荷（节选） | 目标 |
 |---|---|---|---|---|
 | `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / **`lead`** | 目标员工或设备 |
-| `transfer` | `assignment` | `apply` / `remove` | `leadId` / `assignmentId` / `toSales` / **`lead`** | 同上（**两个目标**，见下） |
+| `transfer` | `assignment` | `apply` / `remove` | `leadId` / `assignmentId` / `toSales` / **`lead`** / **`mode`** / **`sla1Deadline`** | 同上（**两个目标**，见下） |
 | `recycle` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName`（**不含 `lead`**） | 同上 |
 | `sla1_escalate_supervisor` | `assignment` | `notify` | `leadId` / `assignmentId` / `salesName` / `remindCount` / `recycledAt` | **主管**（按稳定工号解析） |
 | `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary` | 同上 |
@@ -568,6 +573,23 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 - **只有 `assign` / `transfer` 携带 `lead` 子对象**（`allowsLead`）。回收与通知/声明类指令**不带**线索档案，
   携带即整事件拒收——`recycle` 的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机，
   不需要线索资料；「所有指令必带 6 字段」是旧口径，已作废。
+  （SMB 例外：Phase 1 历史信封在 `recycle` 上也附带 lead 资料与 `slaHours`，仅 `smb` 档放行，
+  中央 HTTP 不放开。）
+
+- **`lead` 子对象建档契约（2026-09-15 增补）**：只带 `leadId` 的指令会让接收端以空身份建档
+  （`contact_normalized` 为空串，破坏身份定位并可能撞 `UNIQUE(contact_type, contact_normalized)`），
+  因此两条通道都强制**最小身份**：`leadId` 正整数 + `contactType ∈ {phone, wechat, both}` +
+  `contactNormalized` 非空字符串。中央 HTTP 口径是**固定 6 字段**——6 项必须**全部存在**，
+  `name` / `source` / `note` 允许空串但必须是字符串类型；SMB 档兼容历史生产文件，
+  `name` / `source` / `note` / `contactRaw` / `wechat` 存在即校验、不强制存在，但同样不许空身份。
+  **顶层 `leadId` 与 `lead.leadId` 必须一致**，不一致即 `lead_id_mismatch` 拒收，禁止按其中一个猜。
+
+- **`transfer` 的 SLA 纪律（2026-09-15 增补）**：`sla1Deadline` 与 `mode` 是移交事实**产生时**就确定的
+  绝对值，由发起端在同一事务写入 outbox 并随指令传递；`sla1Deadline` 必须是有限正整数时间戳
+  （`invalid_timestamp:sla1Deadline` 拒收，字符串数字同样拒收）。接收端落地**精确等于指令值**
+  （新行 `assignment.sla1_deadline` 与 `lead.first_contact_deadline` 同值），**绝不在接收端按当前
+  配置小时数重算**（设备时钟 / 配置不同会漂移）；`remove` 分支只移除权属，不建行也不动 SLA；
+  同一指令重放命中幂等标记，零业务写、SLA 不重启不漂移。
 
 - **指令载荷的线索面（已披露残留）**：`assign` / `transfer` 的 `lead` 子对象按**传输上下文**分档白名单——
   - 中央 HTTP（`central-http`）：只接受 6 个字段（`CENTRAL_LEAD_FIELDS`：`leadId` / `name` / `contactType` /
@@ -581,7 +603,9 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
     **必然过网**——如实登记为已披露残留。**聊天正文两个方向都拦**；本契约**不声称「下行零身份值」**。
 - **`transfer` 是双目标指令**：新归属设备收 `deliveryRole=apply`、原归属设备收 `deliveryRole=remove`，
   每条目标各自的幂等键带投递角色（`…#apply#<员工>` / `…#remove#<员工>`），互不顶替、可分别判重。
-  本机 outbox 行**只在两个目标都被中央受理后才结算 `sent`**；任一目标 4xx 则整行 `failed`，
+  本机 outbox 行**只在两个目标都被中央受理后才结算 `sent`**；任一目标 4xx 则整行 `failed` 并留
+  **人工修复审计**（`sync_outbox_failed`：`failedRole` + `failedTarget`（稳定员工标识）+ `delivered`
+  已送达目标数，**不含客户数据**）——已送达的目标不回滚也不隐瞒，由人工按审计修复；
   网络类失败原样上抛、行保持 `pending` 等重放（已受理的目标靠幂等判重，不产生第二条指令）。
 - **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 的目标由本机配置项
   `centralSyncSupervisorCode`（**稳定工号**）解析；姓名重名或解析不到一律**显式报错并保持 pending**。

@@ -286,15 +286,29 @@
 - **唯一真源** = `shared/centralDownCommand.ts`：逐类型（`assign` / `transfer` / `recycle` /
   `supervisor_correction` / `permission_change` / `sla1_escalate_supervisor`）声明合法 `entityType`、
   必填载荷、`deliveryRole`、目标、枚举与长度上限、版本前置。**SMB 与 HTTP 两条传输共用同一份纯校验器**，
-  本机 `applyDownEventDirect` 不得绕过校验。
+  本机 `applyDownEventDirect` 不得绕过校验。**SMB 入口已真正接入**（2026-09-15 收口）：
+  `validateDownEventFile()` 在投递键 / eventSeq / deliveryRole / 文件名绑定等 SMB 专属检查通过后、
+  进入任何业务事务前调用 `validateDownCommand(subject, 'smb')`；SMB 无中央 UUID 目标字段，
+  「目标存在」由已验证的本机投递键（`localDeliveryKey`）证明，不伪造业务 UUID。
 - `eventType` 与 `entityType` 不匹配 → 服务端拒收；员工与设备双指定时必须**同属一名员工**；
   畸形目标标识返 **400**，不得落成数据库 500。畸形指令**不写**任何业务行（lead / assignment /
-  `notify_inbox` / audit / 幂等标记）。
+  `notify_inbox` / audit / 幂等标记），**不消耗幂等键**（修正后同 key 可重新受理）。
 - **只有 `assign` / `transfer` 携带线索档案子对象**（`allowsLead`）；`recycle` 与通知/声明类指令
   不带 `lead`，携带即整事件拒收。回收的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机。
+  （SMB 例外：Phase 1 历史信封在 `recycle` 上也附带 lead 资料与 `slaHours`，仅 `smb` 档放行。）
+- **`lead` 建档契约（2026-09-15 增补）**：两条通道都强制最小身份——`leadId` 正整数 +
+  `contactType ∈ {phone, wechat, both}` + `contactNormalized` 非空；缺了会以空 `contact_normalized`
+  建档并可能撞 `UNIQUE(contact_type, contact_normalized)`。中央 HTTP 为**固定 6 字段全部存在**
+  （`name` / `source` / `note` 允许空串但必须是字符串）；SMB 档兼容历史文件，其余字段存在即校验、
+  不强制存在。**顶层 `leadId` 与 `lead.leadId` 必须一致**（`lead_id_mismatch` 拒收，禁止猜）。
 - **`transfer` 是双目标指令**：新归属设备收 `apply`、原归属设备收 `remove`，两条指令各自带投递角色进幂等键，
-  可分别判重；outbox 行只在**两个目标都被中央受理**后结算 `sent`，任一目标 4xx 整行 `failed`，
+  可分别判重；outbox 行只在**两个目标都被中央受理**后结算 `sent`，任一目标 4xx 整行 `failed` 并留
+  人工修复审计（`sync_outbox_failed`：`failedRole` / `failedTarget` / `delivered`，不含客户数据），
   网络类失败保持 `pending` 交由重放（已受理目标按幂等去重，不产生第二条指令）。
+- **`transfer` 的 SLA 纪律（2026-09-15 增补）**：`sla1Deadline`（有限正整数，字符串数字也拒收）与
+  `mode` 是移交事实产生时确定的值，必填并随指令传递；接收端**精确按指令值落地**
+  （`assignment.sla1_deadline` = `lead.first_contact_deadline` = 指令值），不按接收端配置/时钟重算；
+  `remove` 分支不建行、不动 SLA；重放命中幂等标记零业务写、SLA 不漂移。
 - **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode`（稳定工号）
   解析；姓名重名或解析不到一律显式报错并保持 pending。
 - **⚠️ 已披露残留（不声称「下行零身份值」）**：`assign` / `transfer` 的 `lead` 子对象在中央 HTTP 通道
