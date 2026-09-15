@@ -19,7 +19,9 @@
 
 **2026-09-14 Phase 3a 首轮实现**：中央服务与 Electron 双向同步适配完成实现与自动化验证（见 §7 Phase 3a「3a 实施状态」及 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md`）。此结论**仅指代码**：真实 PostgreSQL 端到端、反向代理与证书、双机同步演练、离职移交演练、上行延迟实测与 Windows 打包均**未执行**，不得描述为通过。
 
-**2026-09-15 Phase 3a 阻断项修复**：首轮实现暴露的八类 P0/P1 阻断项（敏感字段出机、同工作区跨设备越权、既有 outbox 未真正接通、版本化增量漏更新、过滤行卡游标、中央引用不统一、下行命令校验过弱、缺真实端到端契约测试）已完成修复并通过自动化验证。**此结论仍仅指代码**：部署与真机验收一条未做（原始清单同上，另含 `docker build`），且**下行指令必带 6 字段线索档案面**、**冲突裁决未细化**两项残留已如实披露。审计报告见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**不得据此写成「Phase 3a 已收口」或「全项目代码已完成」。**
+**2026-09-15 Phase 3a 阻断项修复**：首轮实现暴露的八类 P0/P1 阻断项（敏感字段出机、同工作区跨设备越权、既有 outbox 未真正接通、版本化增量漏更新、过滤行卡游标、中央引用不统一、下行命令校验过弱、缺真实端到端契约测试）已完成修复并通过自动化验证。**此结论仍仅指代码**：部署与真机验收一条未做（原始清单同上，另含 `docker build`），且**下行指令的线索档案面**、**冲突裁决未细化**两项残留已如实披露。审计报告见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**不得据此写成「Phase 3a 已收口」或「全项目代码已完成」。**
+
+**2026-09-15 Phase 3a 复核收口（5 个缺口）**：同日复核又发现 5 个代码/测试缺口并已收口——①`transfer` 中央指令链此前实际断裂（`commandPayloadOf()` 无 `transfer` 分支，outbox 直接落 `failed`），且 e2e 头部「覆盖 transfer」的声明不实；现补齐分支并实现**双目标投递**（新归属 `apply` / 原归属 `remove`，**两个目标都被中央受理才结算 `sent`**，部分成功靠顺序重试 + 中央幂等收敛），e2e 补真实 `transferAssignment()` 全链与真实 `runSla1Recycle()` 回收链；②中央 HTTP 下行 lead 白名单由 8 字段收紧为**按传输上下文分档**（中央 6 字段、SMB 保留 Phase 1 的 8 字段历史口径）；③`/sync/push` 补服务端**实体引用闸门**（实体类别 + 载荷 `*Ref` 形态/类别/命名空间归属）；④补齐**中央 append-only 审计**（邀请码签发、下行指令首次受理，与业务同事务，**幂等重放不追加**）；⑤管理员吊销的畸形 UUID 由 500 改为 **400 E101 且不碰数据库**。**此结论仍仅指代码**：中央侧全部跑在 `MemoryCentralStore` 上，**真实 PostgreSQL 未验证**（PG 侧只有源码级契约断言），`docker build`、双机、Windows、SSE、真实消息推送、反向代理与证书**全部未执行**。**Phase 3a 代码侧仍未收口。**
 
 ---
 
@@ -265,14 +267,16 @@ Phase 3/4 是在现有业务契约上增加中央传输、服务端权限与经�
 - **出机字段边界**：每个上行 `eventType` 走**显式最小字段白名单**（不整包投递 outbox 原始载荷）；身份值只上行 sha256 哈希 + 展示掩码（哈希复用既有身份归一规则）；`session_id`、聊天正文与客户原话永不出本机；服务端对投影载荷**严格白名单，多字段即拒收**；拦截与擦洗**只记字段路径与错误码，不记值**。
 - **工作区内的设备命名空间与归属**：上行 `entityId` 必须属本设备命名空间；既有投影只允许**原 `source_device_id`** 更新（跨设备改写显式冲突，更高 `aggregateVersion` 亦不覆盖）；唯一身份冲突落冲突记录；`sales` 只能上传销售设备可合法产出的类别；**bootstrap 管理员无工作区上下文时不得调用常规同步接口**。
 - 上行：复用 `outbox_event`；10 类实体落**显式投影表**（禁止通用 JSONB 数据桶）；可变表按 **(updated_at, id) 复合水位**增量，幂等键带实体版本（新版本 → 幂等键不同、`entityId` 稳定、`aggregateVersion` 严格递增）；被过滤行不阻塞后续合法行，补齐后经台账重扫。
-- 下行：`assign`/`transfer`/`recycle` 以**命令**下发并复用 Phase 1 既有状态机与幂等标记（只换传输 adapter）；指令契约唯一真源 = `shared/centralDownCommand.ts`（SMB 与 HTTP 共用），`eventType`/`entityType` 不匹配拒收、畸形目标返 400；`supervisor_correction` 落 `notify_inbox` **不静默覆盖**；`permission_change` 只记声明；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` **稳定工号**定目标（**绝不按姓名猜人**）；未知类型立即 `invalid`，`nolead` 有界重试后 `invalid`（**不无限 retry**）。
+- 下行：`assign`/`transfer`/`recycle` 以**命令**下发并复用 Phase 1 既有状态机与幂等标记（只换传输 adapter）；指令契约唯一真源 = `shared/centralDownCommand.ts`（状态机 SMB 与 HTTP 共用，仅 `payload.lead` 字段集按传输上下文分档：中央 HTTP 6 字段 / SMB 8 字段），`eventType`/`entityType` 不匹配拒收、畸形目标返 400；`supervisor_correction` 落 `notify_inbox` **不静默覆盖**；`permission_change` 只记声明；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` **稳定工号**定目标（**绝不按姓名猜人**）；未知类型立即 `invalid`，`nolead` 有界重试后 `invalid`（**不无限 retry**）。**`transfer` 一条 outbox → 两条指令**（接收方 `apply` / 原归属 `remove`，幂等键各带投递角色与目标员工），**两个目标都被中央受理才结算 `sent`**，任一目标 4xx 整行 `failed`、网络类失败保持 `pending` 靠顺序重试收敛（已受理目标由中央幂等去重，不另建发送状态表）。
 - 绑定/解绑生命周期与调度器：绑定必启、解绑安全空转、轮巡间隔实时生效、不产生重复定时器；解绑**先请服务端吊销再清本地**，失败时如实报「解绑未完成」，不假装已撤销；**只有中央确认接收后才结算本机 outbox 行**。
 - 传输互斥：`centralSyncEnabled` 为真时 Phase 1 SMB 同步自动停用；关闭时 Phase 1 行为完全不变。
-- 验证（2026-09-15 实测）：`scripts/central-sync-client-test.ts` 24/0、`scripts/central-sync-adapter-test.ts` **86/0**、`scripts/central-sync-e2e-test.ts` **44/0**（真实生产者 → outbox → 适配器 → Fastify `app.inject` → 内存中央库 → 投影/指令 → pull → 本机状态机 → ACK → 结算的完整契约闭环，**无 Docker 依赖**）；`central/` 侧 app **102** / projection **36** / migration 23 / context 6（全 0 失败），`npm run typecheck` 与 `npm run build` 通过。
+- **服务端实体引用闸门**：`/sync/push` 逐条校验实体引用类别（`validateCentralEntityId`），并对 `payload` 内已登记的 `*Ref`（`customerRef`/`leadRef`/`opportunityRef`/`employeeRef`）校验形态、类别与命名空间归属，**借用同工作区他机命名空间同样拒绝**；拒收只影响该条事件，同批合法事件照常落库，被拒事件不留 `sync_event`、不留投影、不消耗幂等键。
+- **中央自身操作审计**（`central_audit_event`，append-only，与只读上行投影 `central_audit_projection` 严格分离）：邀请码签发（与签发**同一事务**，不记邀请码明文/哈希）与下行指令**首次**受理（只记 `eventId`/`eventType`/投递目标，**不记载荷**）均已落库；**幂等重放不追加审计、被拒请求不留痕**。
+- 验证（2026-09-15 实测）：`scripts/central-sync-client-test.ts` 24/0、`scripts/central-sync-adapter-test.ts` **86/0**、`scripts/central-sync-e2e-test.ts` **61/0**（真实生产者 → outbox → 适配器 → Fastify `app.inject` → 内存中央库 → 投影/指令 → pull → 本机状态机 → ACK → 结算的完整契约闭环；**J 段为真实移交链**——调用真实 `transferAssignment()` → 一条 outbox → 两条下行指令（`apply`/`remove`）→ 双目标都受理才 `sent` → 重放判 duplicate → 第二目标先瞬时失败保持 `pending`、恢复后补齐 → 两个接收端各经既有状态机落地并回 ACK；**无 Docker 依赖**）；`central/` 侧 app **136** / projection **36** / migration 23 / context 6（全 0 失败），`npm run typecheck` 与 `npm run build` 通过。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**。
 
 **已披露残留（不声称已解决）**
 
-- **下行指令必带线索档案面**：`assign`/`transfer`/`recycle` 的指令载荷含 6 个线索字段（`CENTRAL_COMMAND_LEAD_FIELDS`），因接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位/创建线索，收窄会破坏既有语义；聊天正文两个方向都拦，此面为有限披露例外。
+- **下行指令的线索档案面**：只有 `assign`/`transfer` 携带 `lead` 子对象（`recycle` 与通知/声明类指令不带，携带即整事件拒收）。中央 HTTP 通道固定 6 个字段（`CENTRAL_LEAD_FIELDS`：`leadId`/`name`/`contactType`/`contactNormalized`/`source`/`note`），`contactRaw`/`wechat` 一律 400 且不落库；SMB 内网文件通道保留 Phase 1 的 8 字段历史口径（已互信局域网，未被收窄）。因接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位/创建线索，`contactNormalized` **必然过网**；聊天正文两个方向都拦，此面为有限披露例外，**不声称「下行零身份值」**。
 - **冲突裁决**：仍为「服务端版本闸门 + 跨设备改写拒绝 + 唯一身份冲突记录 + 客户端 `conflict` 回执」，多写者合并策略未定。
 
 **已实现但待部署验收（代码就绪，需真实环境）**

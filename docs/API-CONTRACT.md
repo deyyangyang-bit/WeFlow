@@ -452,6 +452,8 @@
 - `revoke-self`：无 body；响应 `{ revoked, deviceId }`；只作用于调用者自身设备。
   客户端约定：**先调本接口，成功后才清本地凭证**；网络失败时保持凭证与绑定，如实报「解绑未完成」。
 - `revoke`：body `{ workspaceId? }`（bootstrap-admin 必须显式指定，否则 400 E101）；
+  路径上的 `deviceId` 与 body 里的 `workspaceId` 都必须是合法 UUID，**非法格式返 400 E101 且绝不访问数据库**
+  （不得让 PostgreSQL 的 `22P02` 冒成 500）；合法但不存在/跨工作区的设备返 `revoked: false`（可重入）；
   响应 `{ revoked: boolean }`；跨工作区一律 `revoked: false`（不泄漏他区设备是否存在）。
   自助解绑与管理员吊销都写中央审计（`device_revoke_self` / `device_revoke`）。
 
@@ -461,10 +463,26 @@
 逐条判定，**不做整批拒绝**：单条失败只进 `rejected`，同批有效事件照常落库并返回
 `accepted: [{ eventId, centralSeq, duplicate }]`。拒收原因码：`wrong_direction`（非 up）、
 协议校验错误码、`entity_id_not_owned`（**上行 entityId 不属于本设备命名空间**）、
-`role_not_allowed_entity:<类型>`、`forbidden_field`、`unknown_field:<字段>`（**严格白名单，多字段即拒**）、
+`role_not_allowed_entity:<类型>`、`entity_id_kind_mismatch:<类型>≠<类型>`（**引用类别与 entityType 语义不符**）、
+`forbidden_field`、`unknown_field:<字段>`（**严格白名单，多字段即拒**）、
 `missing_required:<字段>`、`unregistered_entity_type:<类型>`。
 命中禁字段额外写中央审计 `sync_forbidden_field`（只记字段路径）。
-**单条事件的判定顺序**：方向 → 协议校验 → 设备命名空间（`isRefOwnedByDevice`）→ 角色 → 禁字段 → 记录违规。
+**单条事件的判定顺序**：方向 → 协议校验 → 设备命名空间（`isRefOwnedByDevice`）→ 角色 → 实体引用类别
+（`entity_id_kind_mismatch`）→ **载荷引用字段闸门** → 禁字段 → 记录违规。
+
+**载荷引用字段闸门（2026-09-15 增补）**：`payload` 里登记过的 `*Ref` 字段（`customerRef` / `leadRef` /
+`opportunityRef` / `employeeRef`）在服务端按语义校验，错误码只带字段名、不带值：
+
+| 码 | 含义 |
+|---|---|
+| `ref_invalid_type:<字段>` | 引用不是字符串 |
+| `ref_not_scoped:<字段>` | 不是 `<deviceId>/<localRef>` 形态（裸引用无法跨表关联） |
+| `ref_not_concrete:<字段>` | 缺具体行号（`<deviceId>/customer:`） |
+| `ref_kind_mismatch:<字段>` | 引用类别与字段语义不符（如 `customerRef` 指向 `lead:`） |
+| `ref_not_owned:<字段>` | 引用借用他机命名空间（**同工作区内也不行**） |
+
+`employeeRef` 是**身份声明**（显示名/工号）而非本机行号，裸值照常放行；仅当它写成 `<a>/<b>` 形态时才按
+scoped 规则校验。被拒事件不留 `sync_event`、不留投影、**不消耗幂等键**。
 **投影归属闸门**：`(workspace_id, entity_id)` 已存在时只允许**原 `source_device_id`** 更新，
 跨设备一律 `conflict`（更高 `aggregateVersion` 亦不覆盖）；`customer_identity` 唯一身份冲突落冲突记录。
 
@@ -492,6 +510,17 @@
 必填载荷缺失、枚举越界、长度超限一律 400 E103；员工与设备双指定时必须**同属一名员工**；
 畸形目标标识返 **400**（不得落成数据库 500）；同一 `idempotency_key` 重复下发返 409
 `idempotency_key_conflict`。校验不通过的请求**不写**任何业务行与幂等标记。
+
+**线索子对象白名单**：`lead` 只在 `assign` / `transfer` 上被接受，按传输上下文取字段集——
+中央 HTTP 只接受 6 个字段（`contactRaw` / `wechat` 一律 400 `unknown_lead_field:<字段>`），
+不带 `lead` 的指令类型携带它即整事件拒收；校验失败同样**不写**任何业务行与审计。
+
+**中央操作审计**：中央自身的运维动作写 `central_audit_event`（与本机 `audit_event` 的只读上行投影
+`central_audit_projection` 严格分离，互不写入）。当前在册动作：`invite_create`（邀请码签发，与签发
+**同一事务**，只记 `inviteId` / `employeeId` / `role`，**不记邀请码明文与哈希**）、`down_command`
+（下行指令**首次**受理，只记 `eventId` / `eventType` / 投递目标，**不记载荷**）、`sync_forbidden_field`、
+`device_revoke` / `device_revoke_self`、跨设备与身份锚点冲突记录。纪律：同幂等键重放（`duplicate`）
+**不追加**审计，被拒请求**不留**审计——审计条数不随重放或探测增长。
 
 ### 3.4 显式投影表（禁止数据桶）
 
@@ -529,17 +558,31 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 
 | eventType | entityType | deliveryRole | 必填载荷（节选） | 目标 |
 |---|---|---|---|---|
-| `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / `lead` | 目标员工或设备 |
-| `transfer` | `assignment` | `apply` / `remove` | 同上 + `toSales` | 同上 |
-| `recycle` | `assignment` | `apply` | 同上 | 同上 |
-| `sla1_escalate_supervisor` | `assignment` | `notify` | 同上 | **主管**（按稳定工号解析） |
-| `supervisor_correction` | `assignment` | `apply` | 同上 | 同上 |
+| `assign` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName` / **`lead`** | 目标员工或设备 |
+| `transfer` | `assignment` | `apply` / `remove` | `leadId` / `assignmentId` / `toSales` / **`lead`** | 同上（**两个目标**，见下） |
+| `recycle` | `assignment` | `apply` | `leadId` / `assignmentId` / `salesName`（**不含 `lead`**） | 同上 |
+| `sla1_escalate_supervisor` | `assignment` | `notify` | `leadId` / `assignmentId` / `salesName` / `remindCount` / `recycledAt` | **主管**（按稳定工号解析） |
+| `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary` | 同上 |
 | `permission_change` | `permission` | `apply` | `employeeRef` / `declaredRole` | 同上 |
 
-- **指令载荷的线索面（已披露残留）**：`assign` / `transfer` / `recycle` 必带 6 个线索字段
-  （`CENTRAL_COMMAND_LEAD_FIELDS`：`leadId` / `name` / `contactType` / `contactNormalized` / `source` / `note`）——
-  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，收窄会破坏既有 P0/P1 语义。
-  **聊天正文两个方向都拦**；本契约**不声称「下行零身份值」**。
+- **只有 `assign` / `transfer` 携带 `lead` 子对象**（`allowsLead`）。回收与通知/声明类指令**不带**线索档案，
+  携带即整事件拒收——`recycle` 的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机，
+  不需要线索资料；「所有指令必带 6 字段」是旧口径，已作废。
+
+- **指令载荷的线索面（已披露残留）**：`assign` / `transfer` 的 `lead` 子对象按**传输上下文**分档白名单——
+  - 中央 HTTP（`central-http`）：只接受 6 个字段（`CENTRAL_LEAD_FIELDS`：`leadId` / `name` / `contactType` /
+    `contactNormalized` / `source` / `note`）；`contactRaw` / `wechat` 一律 400（`unknown_lead_field:<字段>`），
+    且不在中央留下任何 `sync_event` / 投影 / 审计；
+  - SMB 内网文件通道（`smb`）：保留 Phase 1 历史口径的 8 字段（含 `contactRaw` / `wechat`），
+    该通道是已互信局域网设备之间的文件投递，**不在中央收口范围内，未被收窄**。
+  - 逐字段还有类型/长度/枚举约束（如 `contactType ∈ {phone, wechat, both}`、`name ≤ 120`），
+    违反时返回 `invalid_lead_field:<字段>` / `too_long_lead_field:<字段>`；错误信息只带**字段名 + 稳定短码**，不带值。
+  - 接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，故 `contactNormalized`
+    **必然过网**——如实登记为已披露残留。**聊天正文两个方向都拦**；本契约**不声称「下行零身份值」**。
+- **`transfer` 是双目标指令**：新归属设备收 `deliveryRole=apply`、原归属设备收 `deliveryRole=remove`，
+  每条目标各自的幂等键带投递角色（`…#apply#<员工>` / `…#remove#<员工>`），互不顶替、可分别判重。
+  本机 outbox 行**只在两个目标都被中央受理后才结算 `sent`**；任一目标 4xx 则整行 `failed`，
+  网络类失败原样上抛、行保持 `pending` 等重放（已受理的目标靠幂等判重，不产生第二条指令）。
 - **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 的目标由本机配置项
   `centralSyncSupervisorCode`（**稳定工号**）解析；姓名重名或解析不到一律**显式报错并保持 pending**。
 - **中央投递目标与落地**：`sla1_escalate_supervisor` 投递给主管员工/设备，

@@ -1,15 +1,23 @@
 /**
- * 中央 HTTP 契约测试（内存 store 实现，与 PostgresCentralStore 同款语义）。
+ * 中央 HTTP 契约测试。跑在 **MemoryCentralStore** 上（Fastify 路由、权限、校验、幂等都是真实实现）。
  *
  * 覆盖：health/ready、bootstrap、邀请码一次性、令牌只存哈希、令牌轮换、自助解绑、
- *       管理员吊销、五角色权限矩阵、工作区隔离、推送幂等、批内单事件失败隔离、
+ *       管理员吊销（含畸形标识不落库）、五角色权限矩阵、工作区隔离、推送幂等、批内单事件失败隔离、
  *       拉取目标过滤、ack applied/conflict/invalid/retry、retry 可重拉、非 retry 不再重拉、
- *       递归禁字段拒绝 + 策略违规审计、审计生成。
+ *       递归禁字段拒绝 + 策略违规审计、上行命名空间与载荷引用闸门（§三）、
+ *       下行指令校验与 lead 字段白名单（§二）、中央操作审计（§四）、
+ *       Postgres 审计路径的源码级契约断言（§四/§五）。
+ *
+ * 边界：**没有真实 PostgreSQL**。因此
+ *   - 内存实现通过，不等于 PostgresCentralStore 的 SQL 行为通过；
+ *   - PG 侧只由 P7/P8 的源码级断言锁住「同事务 / 只在首次写入 / SQL 参数化 / 不记载荷」四条纪律，
+ *     DDL 约束、并发与事务隔离、`$n::uuid` 的运行时行为**均未验证**。
  *
  * 用法：cd central && npm test
  */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { buildCentralApp } from '../src/app.js'
 import { MemoryCentralStore } from '../src/memoryStore.js'
 import { secretHash } from '../src/crypto.js'
@@ -429,6 +437,192 @@ check('L1 缺 content-type 的请求体 → 415，不是 500', noContentType.sta
 const shortInvite = await app.inject({ method: 'POST', url: '/api/v1/bindings/claim', payload: { inviteCode: 'short', deviceName: 'x' } })
 check('L2 邀请码长度不合规 → 400 E101（schema 校验，非 500）',
   shortInvite.statusCode === 400 && shortInvite.json().code === 'E101')
+
+console.log('═══ M. 下行 lead 白名单：中央 HTTP 只接受 6 个字段（§二）═══')
+/** 全新设备对，避免与 H 段的令牌轮换/吊销互相影响 */
+const guardSup = await onboard(wsA, 'G001', 'supervisor', '护栏主管')
+const guardSales = await onboard(wsA, 'G002', 'sales', '护栏销售')
+const guardDeviceId = guardSales.principal.deviceId
+const lead6 = { leadId: 41, name: '护栏线索', contactType: 'phone', contactNormalized: '13800001111', source: '巡检', note: '备注' }
+/** 只让 lead 子对象逐项变体的 assign 指令；顶层字段与注册表对齐，隔离出「lead 白名单」这一条规则 */
+const postAssignWithLead = (suffix: string, lead: unknown) => app.inject({
+  method: 'POST', url: '/api/v1/sync/commands', headers: authOf(guardSup.token),
+  payload: {
+    ...downCommand, eventId: `m-${suffix}`, idempotencyKey: `m-${suffix}`, eventType: 'assign',
+    entityId: scoped('assignment:1', guardDeviceId), targetEmployeeId: guardSales.principal.employeeId,
+    payload: { type: 'assign', deliveryRole: 'apply', leadId: 41, assignmentId: 1, salesName: '护栏销售', lead }
+  }
+})
+const mOk = await postAssignWithLead('ok', lead6)
+check('M1 6 字段 lead（含 contactNormalized）被受理 → 201：下行如实携带 contactNormalized，不假装比实际更严',
+  mOk.statusCode === 201 && mOk.json().data.duplicate === false, String(mOk.payload))
+const mBefore = { down: store.downEventCount(), audits: store.auditActions().length, projections: store.projectionRows().length }
+const mRaw = await postAssignWithLead('raw', { ...lead6, contactRaw: '13800001111' })
+check('M2 lead 携带 contactRaw → 400 unknown_lead_field:contactRaw（原始联系号不得走中央下行）',
+  mRaw.statusCode === 400 && String(mRaw.json().message).includes('unknown_lead_field:contactRaw'), String(mRaw.payload))
+const mWechat = await postAssignWithLead('wechat', { ...lead6, wechat: 'wxid_guard' })
+check('M3 lead 携带 wechat → 400 unknown_lead_field:wechat',
+  mWechat.statusCode === 400 && String(mWechat.json().message).includes('unknown_lead_field:wechat'), String(mWechat.payload))
+const mUnknownLead = await postAssignWithLead('unknown-lead', { ...lead6, extraNote: '未登记' })
+check('M4 lead 未登记字段 → 400 unknown_lead_field:extraNote',
+  mUnknownLead.statusCode === 400 && String(mUnknownLead.json().message).includes('unknown_lead_field:extraNote'))
+const mBadLeadId = await postAssignWithLead('bad-lead-id', { ...lead6, leadId: '41' })
+check('M5 lead.leadId 非正整数 → 400 invalid_lead_field:leadId',
+  mBadLeadId.statusCode === 400 && String(mBadLeadId.json().message).includes('invalid_lead_field:leadId'))
+const mBadContactType = await postAssignWithLead('bad-contact-type', { ...lead6, contactType: 'telegram' })
+check('M6 lead.contactType 不在本机枚举（phone/wechat/both）→ 400 invalid_lead_field:contactType',
+  mBadContactType.statusCode === 400 && String(mBadContactType.json().message).includes('invalid_lead_field:contactType'))
+const mLongName = await postAssignWithLead('long-name', { ...lead6, name: '长'.repeat(121) })
+check('M7 lead.name 超长 → 400 too_long_lead_field:name',
+  mLongName.statusCode === 400 && String(mLongName.json().message).includes('too_long_lead_field:name'))
+const mLeadNotObject = await postAssignWithLead('lead-not-object', '不是对象')
+check('M8 lead 非对象 → 400 invalid_lead',
+  mLeadNotObject.statusCode === 400 && String(mLeadNotObject.json().message).includes('invalid_lead'))
+// recycle 的白名单里没有 lead，携带即按「未登记字段」整事件拒收（错误码带字段名、不带值）。
+// 无论走哪条分支，结论一致：recycle 不携带 lead —— 「recycle 必带 6 字段」的旧口径不成立。
+const mRecycleLead = await postCommand({ eventId: 'm-recycle-lead', idempotencyKey: 'm-recycle-lead',
+  payload: { type: 'recycle', deliveryRole: 'apply', leadId: 1, assignmentId: 1, salesName: '张三', lead: lead6 } }, 'recycle-lead')
+check('M9 指令类型不允许 lead（recycle）→ 400 且拒收原因指向 lead 字段（「recycle 必带 6 字段」的旧口径不成立）',
+  mRecycleLead.statusCode === 400 &&
+  ['unknown_field:lead', 'unexpected_lead'].some((code) => String(mRecycleLead.json().message).includes(code)),
+  String(mRecycleLead.payload))
+check('M10 以上被拒的下行载荷不留 sync_event / 投影 / 审计（中央拒收即在库内无痕）',
+  store.downEventCount() === mBefore.down && store.projectionRows().length === mBefore.projections &&
+  store.auditActions().length === mBefore.audits,
+  JSON.stringify([mBefore, store.downEventCount(), store.projectionRows().length, store.auditActions().length]))
+
+console.log('═══ N. 上行载荷引用闸门：类别 / 命名空间 / 形态（§三）═══')
+const guardPush = (idem: string, events: CentralSyncEvent[]) => pushAs(authOf(guardSales.token), idem, events)
+/** 引用闸门用例统一用 customer 事件：customerRef 是注册表里的登记字段，闸门先于投影校验生效 */
+const refEvent = (suffix: string, ref: unknown) => upEvent({
+  eventId: `n-${suffix}`, idempotencyKey: `n-${suffix}`, entityType: 'customer',
+  entityId: scoped(`customer:n-${suffix}`, guardDeviceId), payload: { displayName: '引用闸门客户', customerRef: ref }
+})
+const refCode = (res: { json: () => { data: { rejected: Array<{ code: string }> } } }): string =>
+  String(res.json().data.rejected[0]?.code || '')
+const nOk = await guardPush('n-ok', [refEvent('ok', scoped('customer:1', guardDeviceId))])
+check('N1 合规的 `*Ref` 引用（本机命名空间 + 类别相符 + 完整行号）→ 受理', nOk.json().data.accepted.length === 1)
+const nBare = await guardPush('n-bare', [refEvent('bare', 'customer:1')])
+check('N2 裸引用（缺设备命名空间）→ 拒收 ref_not_scoped:customerRef', refCode(nBare) === 'ref_not_scoped:customerRef')
+const nForeign = await guardPush('n-foreign', [refEvent('foreign', scoped('customer:1', bSales.principal.deviceId))])
+check('N3 引用借用他机命名空间 → 拒收 ref_not_owned:customerRef（同工作区内也不行）',
+  refCode(nForeign) === 'ref_not_owned:customerRef', refCode(nForeign))
+const nKind = await guardPush('n-kind', [refEvent('kind', scoped('lead:1', guardDeviceId))])
+check('N4 引用类别与字段语义不符（customerRef 指向 lead）→ 拒收 ref_kind_mismatch:customerRef',
+  refCode(nKind) === 'ref_kind_mismatch:customerRef')
+const nType = await guardPush('n-type', [refEvent('type', 123)])
+check('N5 引用不是字符串 → 拒收 ref_invalid_type:customerRef', refCode(nType) === 'ref_invalid_type:customerRef')
+const nConcrete = await guardPush('n-concrete', [refEvent('concrete', `${guardDeviceId}/customer:`)])
+check('N6 引用缺具体行号 → 拒收 ref_not_concrete:customerRef', refCode(nConcrete) === 'ref_not_concrete:customerRef')
+/** 权限行里的 employeeRef 是身份声明（显示名/工号），不是本机行号——不得为了形态统一而篡改其语义 */
+const permEvent = (suffix: string, ref: unknown) => upEvent({
+  eventId: `n-${suffix}`, idempotencyKey: `n-${suffix}`, entityType: 'permission',
+  entityId: scoped('permission:1', guardSup.principal.deviceId),
+  payload: { employeeRef: ref, declaredRole: 'sales', authoritySource: 'local_declaration' }
+})
+const nDecl = await pushAs(authOf(guardSup.token), 'n-decl', [permEvent('decl', 'S001')])
+check('N7 身份声明型 employeeRef（裸工号）放行', nDecl.json().data.accepted.length === 1)
+const nDeclForeign = await pushAs(authOf(guardSup.token), 'n-decl-foreign',
+  [permEvent('decl-foreign', scoped('employee:1', bSales.principal.deviceId))])
+check('N8 employeeRef 写成他机命名空间引用 → 拒收 ref_not_owned:employeeRef',
+  refCode(nDeclForeign) === 'ref_not_owned:employeeRef', refCode(nDeclForeign))
+const nMixed = await guardPush('n-mixed', [refEvent('mixed-bad', 'customer:1'), refEvent('mixed-good', scoped('customer:2', guardDeviceId))])
+check('N9 同批一坏一好：坏的分条拒收并带稳定码，好的照常受理（不整批连坐）',
+  nMixed.json().data.rejected.length === 1 && nMixed.json().data.accepted.length === 1 &&
+  refCode(nMixed) === 'ref_not_scoped:customerRef')
+check('N10 被拒事件不留投影（好的那条照常落库）',
+  store.projectionRow('customer', scoped('customer:n-mixed-bad', guardDeviceId)) === undefined &&
+  store.projectionRow('customer', scoped('customer:n-mixed-good', guardDeviceId)) !== undefined)
+const nReuse = await guardPush('n-bare', [refEvent('bare', scoped('customer:1', guardDeviceId))])
+check('N11 被拒事件不消耗幂等键（修正后同 key 仍可受理）', nReuse.json().data.accepted[0]?.duplicate === false)
+
+console.log('═══ O. 中央操作审计：签发与指令留痕、重放不追加、拒收不留痕（§四）═══')
+const oInviteBefore = store.auditActions().filter((a) => a.action === 'invite_create').length
+const oInvite = await app.inject({ method: 'POST', url: '/api/v1/bindings/invitations', headers: authOf(admin.token),
+  payload: { workspaceId: wsA, employeeCode: 'AUD01', displayName: '审计用例', role: 'sales' } })
+const oInviteCode = String(oInvite.json().data.inviteCode || '')
+const oNewInvites = store.auditActions().filter((a) => a.action === 'invite_create').slice(oInviteBefore)
+check('O1 邀请码签发恰好留一条 invite_create 审计，且只记 employeeId / role（不记邀请码明文与哈希）',
+  oNewInvites.length === 1 && oNewInvites[0]!.entityType === 'binding_invite' &&
+  oNewInvites[0]!.entityId === String(oInvite.json().data.inviteId) &&
+  typeof oNewInvites[0]!.detail.employeeId === 'string' && oNewInvites[0]!.detail.role === 'sales' &&
+  !JSON.stringify(oNewInvites).includes(oInviteCode) && !JSON.stringify(oNewInvites).includes(secretHash(oInviteCode)),
+  JSON.stringify(oNewInvites))
+
+const oBeforeCommandAudits = store.auditActions().filter((a) => a.action === 'down_command').length
+const oCmd = await postAssignWithLead('audit-first', lead6)
+const oAuditsAfterFirst = store.auditActions().filter((a) => a.action === 'down_command')
+check('O2 下行指令首次受理留一条 down_command 审计（只记定位元数据，不记载荷）',
+  oCmd.statusCode === 201 && oAuditsAfterFirst.length === oBeforeCommandAudits + 1 &&
+  oAuditsAfterFirst[oAuditsAfterFirst.length - 1]!.detail.eventType === 'assign' &&
+  !JSON.stringify(oAuditsAfterFirst[oAuditsAfterFirst.length - 1]).includes('13800001111'),
+  JSON.stringify(oAuditsAfterFirst.slice(-1)))
+const oReplay = await postAssignWithLead('audit-first', lead6)
+check('O3 同幂等键重放判 duplicate，且不追加审计（审计不随重放增长）',
+  oReplay.json().data.duplicate === true &&
+  store.auditActions().filter((a) => a.action === 'down_command').length === oAuditsAfterFirst.length)
+const oRejectBefore = store.auditActions().length
+await postAssignWithLead('audit-rejected', { ...lead6, contactRaw: '13800001111' })
+check('O4 被拒指令不产生任何审计（拒收即无痕）', store.auditActions().length === oRejectBefore)
+const oAuditDump = JSON.stringify(store.auditActions())
+check('O5 审计流里不出现邀请码明文 / 设备令牌 / 线索联系方式',
+  !oAuditDump.includes(oInviteCode) && !oAuditDump.includes(guardSales.token) && !oAuditDump.includes('13800001111') &&
+  !oAuditDump.includes(secretHash(oInviteCode)), oAuditDump.slice(0, 300))
+
+console.log('═══ P. 吊销入参护栏与 Postgres 审计路径契约（§五 / §四）═══')
+const pAuditsBefore = store.auditActions().length
+const pMalformed = await app.inject({ method: 'POST', url: '/api/v1/devices/not-a-uuid/revoke',
+  headers: authOf(admin.token), payload: {} })
+check('P1 畸形设备标识 → 400 E101（不是 PostgreSQL 22P02 冒出来的 500）',
+  pMalformed.statusCode === 400 && pMalformed.json().code === 'E101', String(pMalformed.payload))
+check('P2 非法标识绝不碰数据库：不产生任何吊销审计', store.auditActions().length === pAuditsBefore)
+const pUnknown = await app.inject({ method: 'POST', url: `/api/v1/devices/${randomUUID()}/revoke`,
+  headers: authOf(admin.token), payload: {} })
+check('P3 合法 UUID 但不存在 → 200 revoked=false（可重入、不报错）',
+  pUnknown.statusCode === 200 && pUnknown.json().data.revoked === false)
+const pNoWorkspace = await app.inject({ method: 'POST', url: `/api/v1/devices/${guardSales.principal.deviceId}/revoke`,
+  headers: adminAuth, payload: {} })
+check('P4 bootstrap-admin 无工作区上下文吊销 → 400 E101（不得静默跨工作区吊销）',
+  pNoWorkspace.statusCode === 400 && pNoWorkspace.json().code === 'E101', String(pNoWorkspace.payload))
+const pBadWorkspace = await app.inject({ method: 'POST', url: `/api/v1/devices/${guardSales.principal.deviceId}/revoke`,
+  headers: adminAuth, payload: { workspaceId: 'not-a-uuid' } })
+check('P5 bootstrap-admin 传畸形 workspaceId → 400 E101（同样不落库）',
+  pBadWorkspace.statusCode === 400 && pBadWorkspace.json().code === 'E101')
+const pSacrifice = await onboard(wsA, 'G003', 'sales', '待吊销销售')
+const pExplicit = await app.inject({ method: 'POST', url: `/api/v1/devices/${pSacrifice.principal.deviceId}/revoke`,
+  headers: adminAuth, payload: { workspaceId: wsA } })
+check('P6 bootstrap-admin 指定合法工作区 + 合法设备 → 吊销成功并留审计',
+  pExplicit.statusCode === 200 && pExplicit.json().data.revoked === true &&
+  store.auditActions().some((a) => a.action === 'device_revoke' && a.entityId === pSacrifice.principal.deviceId))
+
+/**
+ * PostgresCentralStore 的审计路径**无法**在没有真实 PostgreSQL 的测试里执行。
+ * 这里做源码级契约断言，只锁住「同事务 / 只在首次写入 / 参数化 / 不记载荷」四条纪律；
+ * 不用「MemoryStore 通过 ⇒ Postgres 也通过」做等价推理（§六：内存实现不得替代真实库的验证）。
+ */
+const pgStoreSrc = readFileSync(new URL('../src/postgresStore.ts', import.meta.url), 'utf8')
+const sliceBetween = (start: string, end: string): string => {
+  const from = pgStoreSrc.indexOf(start)
+  const to = pgStoreSrc.indexOf(end, from)
+  return from < 0 || to < 0 ? '' : pgStoreSrc.slice(from, to)
+}
+/** 模板字符串里的 SQL 语句（用于断言「SQL 全参数化」；非 SQL 的模板串如 `device:${id}` 不在此列） */
+const sqlLiterals = (span: string): string[] =>
+  (span.match(/`[^`]*`/g) ?? []).filter((literal) => /\b(INSERT|UPDATE|SELECT|DELETE)\b/.test(literal))
+const sqlParameterized = (span: string): boolean =>
+  sqlLiterals(span).length > 0 && sqlLiterals(span).every((sql) => !sql.includes('${'))
+const pgInvite = sliceBetween('async createInvite', 'async claimInvite')
+check('P7 Postgres createInvite：邀请码写入与 invite_create 审计在同一次 BEGIN/COMMIT 内，且 SQL 全参数化',
+  pgInvite.includes('BEGIN') && pgInvite.indexOf('binding_invite') < pgInvite.indexOf("'invite_create'") &&
+  pgInvite.indexOf("'invite_create'") < pgInvite.indexOf('COMMIT') && pgInvite.includes('ROLLBACK') &&
+  pgInvite.includes('to_timestamp($4 / 1000.0)') && sqlParameterized(pgInvite),
+  pgInvite.length ? sqlLiterals(pgInvite).join(' | ') : '未定位到 createInvite')
+const pgDown = sliceBetween('async appendDownEvent', 'CONFLICT_CODES')
+check('P8 Postgres appendDownEvent：审计只在首次写入追加（duplicate 不追加）、同事务、参数化且不记载荷',
+  pgDown.includes('if (!result.duplicate)') && pgDown.includes('BEGIN') &&
+  pgDown.indexOf('if (!result.duplicate)') < pgDown.indexOf("'down_command'") &&
+  pgDown.indexOf("'down_command'") < pgDown.indexOf('COMMIT') && !pgDown.includes('event.payload') &&
+  sqlParameterized(pgDown), pgDown.length ? sqlLiterals(pgDown).join(' | ') : '未定位到 appendDownEvent')
 
 await app.close()
 console.log(`\ncentral app test: ${pass} passed, ${fail} failed`)

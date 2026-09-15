@@ -12,9 +12,18 @@
  *     → /api/v1/sync/pull → 本机既有状态机（applyDownEventDirect）→ /api/v1/sync/ack
  *     → outbox 结算（只有中央受理才置 sent）
  *
- * 覆盖：claim / bind_wx / first_touch / assign / transfer / recycle / 主管升级通知；
- *       敏感字段不出现在任何 HTTP 请求正文；服务端严格投影校验；网络失败重放；幂等；
- *       状态更新再同步；跨设备越权；游标跳过；自助解绑审计。
+ * 覆盖（每条都由真实生产者进入，不停留在「路由表里含某字符串」）：
+ *   - 投影链：claim / bind_wx / first_touch → outbox → /sync/push → 中央投影表；
+ *   - 指令链：assign / recycle / sla1_escalate_supervisor → outbox → /sync/commands →
+ *     中央 down_event → /sync/pull → 本机既有状态机 → /sync/ack；
+ *   - **移交链（J 段）**：真实 transferAssignment() → 一条 outbox → 两条下行指令
+ *     （新归属 apply / 原归属 remove）→ 双目标都被中央受理才结算 sent → 重放去重 →
+ *     第二目标先瞬时失败、恢复后补投 → 两个接收端各自经既有状态机落地并回 ACK。
+ *   另有：敏感字段不出现在任何 HTTP 请求正文；服务端严格投影校验；网络失败重放；幂等；
+ *   状态更新再同步；跨设备越权；游标跳过；自助解绑审计。
+ *
+ * 边界：中央侧是**真实 Fastify 路由 + MemoryCentralStore**（内存实现），不连真实 PostgreSQL，
+ *       也不启动真实节点进程；真实库里已有数据、真实部署、真机（Windows）、SSE 与真实 AI 调用**均未验证**。
  *
  * 隔离：WEFLOW_WORKER + WEFLOW_USER_DATA_PATH + WEFLOW_CONFIG_CWD 指向临时目录，
  *       业务模块一律在 main() 内动态 import。**不读真实生产库、不发真实网络请求**。
@@ -47,7 +56,7 @@ interface AppLike {
 interface StoreLike {
   projectionRow: (entityType: string, entityId: string) => { payload: Record<string, unknown>; sourceDeviceId: string } | undefined
   projectionRows: () => Array<{ entityType: string; entityId: string }>
-  auditActions: () => Array<{ actor: string; action: string; entityType: string; entityId: string }>
+  auditActions: () => Array<{ actor: string; action: string; entityType: string; entityId: string; detail: Record<string, unknown> }>
   conflictRecords: () => Array<{ code: string; entityId: string }>
   policyViolations: () => Array<{ eventId: string; fieldPath: string }>
   downEventCount: () => number
@@ -65,11 +74,22 @@ const DOWN_PHONE = '13800003333'
 const WXID = 'wxid_e2e_alpha_only'
 const SUPERVISOR_NAME = '测试主管甲'
 const SALES_NAME = '测试销售甲'
+/** 移交用例的接收方销售（必须在任何目录拉取之前认领：目录有 5 分钟 TTL 缓存） */
+const SALES2_NAME = '测试销售乙'
+const TRANSFER_PHONE = '13800004444'
+/** 部分成功用例的线索：它的 remove 目标是**从未送达过**的新事件，才能验证「补投失败目标」 */
+const TRANSFER2_PHONE = '13800005555'
 
 let app: AppLike
 let store: StoreLike
 let captured: Array<{ url: string; method: string; body: string; status: number; response: string }> = []
 let netMode: 'ok' | 'fail' = 'ok'
+/**
+ * 定向瞬时失败：只让「投给指定员工的那一条指令」失败**一次**。
+ * 用于验证双目标投递的部分成功语义（目标一已送达、目标二瞬时失败），
+ * 而不是把整批一起打死——那验证不出「已成功目标靠幂等去重、失败目标继续补投」。
+ */
+let failCommandOnceFor: string | null = null
 let crmDbService: (typeof import('../electron/services/crmDbService'))['crmDbService']
 let salesDbService: (typeof import('../electron/services/salesDbService'))['salesDbService']
 let ConfigService: (typeof import('../electron/services/config'))['ConfigService']
@@ -89,6 +109,30 @@ function pushedEvents(): CentralSyncEvent[] {
   }
   return out
 }
+/** 本机为某条中央下行事件回写的 ACK 结果（证明该指令真的被既有状态机消费过，而不是只到了中央） */
+function ackOf(eventId: string): string {
+  for (const call of captured) {
+    if (!call.url.endsWith('/api/v1/sync/ack') || !call.body) continue
+    const body = JSON.parse(call.body) as { acknowledgements: Array<{ eventId: string; outcome: string }> }
+    const hit = body.acknowledgements.find((x) => x.eventId === eventId)
+    if (hit) return hit.outcome
+  }
+  return ''
+}
+
+/** 中央留下的下行指令审计（down_command）：只记定位元数据，不记载荷 */
+function downAudits(): ReturnType<StoreLike['auditActions']> {
+  return store.auditActions().filter((a) => a.action === 'down_command')
+}
+/** 移交类下行指令审计（用于按类型隔离基线，不受同批刷出的其它指令影响） */
+function transferAudits(): ReturnType<StoreLike['auditActions']> {
+  return downAudits().filter((a) => a.detail.eventType === 'transfer')
+}
+/** 本轮发出的下行指令里，被中央判为 duplicate（幂等去重，未新增业务记录）的条数 */
+function duplicateCommandResponses(): number {
+  return captured.filter((c) => c.url.endsWith('/api/v1/sync/commands') && c.response.includes('"duplicate":true')).length
+}
+
 function commandBodies(): CentralSyncEvent[] {
   const out: CentralSyncEvent[] = []
   for (const call of captured) {
@@ -155,6 +199,10 @@ async function main(): Promise<void> {
     const body = init?.body === undefined || init?.body === null ? undefined : String(init.body)
     const call0 = { url, method: String(init?.method || 'GET').toUpperCase(), body: body ?? '', status: 0, response: '' }
     if (netMode === 'fail') throw new Error('network unreachable')
+    if (failCommandOnceFor && url.endsWith('/api/v1/sync/commands') && (body || '').includes(failCommandOnceFor)) {
+      failCommandOnceFor = null
+      throw new Error('network unreachable')
+    }
     captured.push(call0)
     // Headers 实例的键不可枚举：必须走 forEach，否则会丢 content-type，请求语义与真实链路不符
     const forwarded = new Headers(init?.headers || {})
@@ -185,6 +233,9 @@ async function main(): Promise<void> {
     deviceId: principal.deviceId, workspaceId: principal.workspaceId
   }
   const sales = await onboard('S001', SALES_NAME, 'sales')
+  // 移交用例的接收方：必须在**任何**目录拉取之前就存在（fetchDirectory 有 5 分钟 TTL 缓存，
+  // 后认领的员工不在本轮目录快照里，按显示名解析会失败）
+  const sales2 = await onboard('S002', SALES2_NAME, 'sales')
   ok('A1 管理员发邀请码 → 主管机经真实 claimCentralBinding 认领，销售机经邀请码认领，同落一个工作区',
     Boolean(supervisor.token && sales.token) && supervisor.workspaceId === WORKSPACE && sales.workspaceId === WORKSPACE)
   ok('A2 两台设备 deviceId/employeeId 各不相同（设备命名空间互不覆盖）',
@@ -381,6 +432,24 @@ async function main(): Promise<void> {
     store.downEventCount() > 0 && escalateInbox.length >= 1,
     JSON.stringify(escalateInbox))
 
+  // 同一次 runSla1Recycle（第 3 次超时）在同事务里还登记了 recycle 指令 outbox：
+  // 回收事实必须让归属设备知道，不能只发主管通知。这里把整条 recycle 链断言完整，
+  // 而不是只看「outbox 路由表里有 recycle 这个字符串」。
+  const recycleRow = crmDbService.all("SELECT id, status FROM outbox_event WHERE idempotency_key = ?", [`recycle:${slaAssignmentId}`])[0]
+  const recycleCmd = commandBodies().find((e) => e.eventType === 'recycle')
+  const recyclePayload = (recycleCmd?.payload || {}) as Record<string, unknown>
+  ok('E5 真实回收生产者同事务登记 recycle outbox，并被中央受理结算 sent',
+    Boolean(recycleRow) && String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(recycleRow?.id)])[0]?.status) === 'sent',
+    JSON.stringify(recycleRow))
+  ok('E6 recycle 指令载荷/投递目标正确，且按注册表**不携带 lead 子对象**（recycle 必带 6 字段的说法不成立）',
+    Boolean(recycleCmd) && recyclePayload.type === 'recycle' && Number(recyclePayload.assignmentId) === slaAssignmentId &&
+    String(recyclePayload.salesName) === SUPERVISOR_NAME && String(recycleCmd?.targetEmployeeId) === supervisor.employeeId &&
+    recyclePayload.lead === undefined, JSON.stringify(recycleCmd))
+  ok('E7 recycle 指令经既有状态机落地（本机已是回收态 → 状态机按幂等空操作返回 applied）并回 ACK',
+    ackOf(String(recycleCmd?.eventId || '')) === 'applied' &&
+    String(crmDbService.all('SELECT status FROM assignment WHERE id = ?', [slaAssignmentId])[0]?.status) === 'recycled',
+    ackOf(String(recycleCmd?.eventId || '')))
+
   console.log('═══ F. 网络失败重放 + 幂等 ═══')
   const renameTs = Date.now() + 3_000
   crmDbService.runTx((tx) => {
@@ -490,6 +559,193 @@ async function main(): Promise<void> {
     revoke.status === 200 && revokeAudits.length === 1 && revokeAudits[0]!.entityId === supervisor2.deviceId &&
     !store.auditActions().some((a) => a.action === 'device_revoke' && a.entityId === supervisor2.deviceId),
     JSON.stringify(revoke) + JSON.stringify(revokeAudits))
+
+  console.log('═══ J. 真实移交：一条 outbox → 双目标下行指令 → 双目标确认 → 既有状态机落地 ═══')
+  const supervisorCursor = crmDbService.getScanState('centralSync:pullCursor')
+  const supervisorBinding = service.getCentralSyncConfig()
+  /**
+   * 把本机绑定切到另一台设备的**真实身份**（令牌/设备/员工都来自真实邀请码认领流程），
+   * 用于消费发给它的下行指令。这只换「我是谁」，不换任何业务路径：仍然是
+   * runCentralSyncOnce → CentralSyncClient → 真实路由 → /sync/pull → 既有状态机 → /sync/ack。
+   */
+  const bindAs = (target: Onboarded, role: string): void => {
+    const conf = ConfigService.getInstance()
+    conf.set('centralSyncEnabled', true)
+    conf.set('centralSyncBaseUrl', BASE_URL)
+    conf.set('centralSyncDeviceToken', target.token)
+    conf.set('centralSyncWorkspaceId', target.workspaceId)
+    conf.set('centralSyncEmployeeId', target.employeeId)
+    conf.set('centralSyncDeviceId', target.deviceId)
+    conf.set('centralSyncRole', role)
+    conf.set('centralSyncDisplayName', role === 'supervisor' ? SUPERVISOR_NAME : SALES2_NAME)
+    conf.set('centralSyncLastError', '')
+    // 换设备必须回到 0 号游标，否则「发给我这台设备的新指令」会被上一台设备的游标跳过
+    crmDbService.setScanState('centralSync:pullCursor', 0)
+    resetCapture()
+  }
+
+  // 清场：先投完 J 段之前遗留的待发送行，让下面的计数基线只反映「移交本身」
+  await service.runCentralSyncOnce()
+  resetCapture()
+
+  ConfigService.getInstance().set('crmSalesList', [SALES_NAME, SALES2_NAME])
+  const jImported = leadSvc.importLeads('e2e-transfer', 'e2e-transfer.csv',
+    [{ phone: TRANSFER_PHONE, name: '端到端移交线索', source: 'e2e' }])
+  const transferLeadId = Number(crmDbService.all('SELECT id FROM lead WHERE contact_normalized = ?', [TRANSFER_PHONE])[0]?.id || 0)
+  const jAssigned = assignmentSvc.assignLeads([transferLeadId], SALES_NAME, SUPERVISOR_NAME)
+  const oldAssignmentId = Number(assignmentSvc.currentAssignment(transferLeadId)?.id || 0)
+  const moved = assignmentSvc.transferAssignment(oldAssignmentId, SALES2_NAME, 'e2e 移交', SUPERVISOR_NAME)
+  const newAssignmentId = Number((moved.data as { assignmentId?: number } | undefined)?.assignmentId || 0)
+  const transferRow = crmDbService.all('SELECT id, status FROM outbox_event WHERE idempotency_key = ?', [`transfer:${newAssignmentId}`])[0]
+  ok('J1 真实移交生产者 transferAssignment：旧行 transferred + 新行 assigned，同事务登记 transfer outbox',
+    jImported.valid === 1 && jAssigned.ok === true && oldAssignmentId > 0 && moved.ok === true && newAssignmentId > 0 &&
+    String(transferRow?.status) === 'pending' &&
+    String(crmDbService.all('SELECT status FROM assignment WHERE id = ?', [oldAssignmentId])[0]?.status) === 'transferred' &&
+    String(crmDbService.all('SELECT sales_name FROM assignment WHERE id = ?', [newAssignmentId])[0]?.sales_name) === SALES2_NAME,
+    JSON.stringify([jImported, jAssigned, moved]))
+
+  const downEventsBefore = store.downEventCount()
+  const transferAuditsBefore = transferAudits().length
+  const transferRun = await service.runCentralSyncOnce()
+  const transferCmds = commandBodies().filter((e) => e.eventType === 'transfer')
+  const applyCmd = transferCmds.find((e) => ((e.payload || {}) as Record<string, unknown>).deliveryRole === 'apply')
+  const removeCmd = transferCmds.find((e) => ((e.payload || {}) as Record<string, unknown>).deliveryRole === 'remove')
+  ok('J2 一条移交 outbox → 两条下行指令：新归属 apply、原归属 remove，各自带明确投递目标',
+    transferCmds.length === 2 && String(applyCmd?.targetEmployeeId) === sales2.employeeId &&
+    String(removeCmd?.targetEmployeeId) === sales.employeeId,
+    JSON.stringify(transferCmds.map((e) => ({ role: ((e.payload || {}) as Record<string, unknown>).deliveryRole, to: e.targetEmployeeId }))))
+  /** 两条指令都必须与 DOWN_COMMAND_SPECS.transfer 一致，且线索资料来自复用的 commandLeadOf（6 字段） */
+  const transferPayloadOk = (cmd?: CentralSyncEvent): boolean => {
+    const p = (cmd?.payload || {}) as Record<string, unknown>
+    const lead = (p.lead || {}) as Record<string, unknown>
+    return p.type === 'transfer' && Number(p.leadId) === transferLeadId && Number(p.assignmentId) === newAssignmentId &&
+      Number(p.oldAssignmentId) === oldAssignmentId && String(p.fromSales) === SALES_NAME && String(p.toSales) === SALES2_NAME &&
+      String(p.reason) === 'e2e 移交' && Object.keys(lead).length === 6 &&
+      Object.keys(lead).every((k) => allowedLeadKeys.has(k)) && Number(lead.leadId) === transferLeadId
+  }
+  ok('J3 两条指令载荷都符合 transfer 契约（含 6 字段线索资料，复用 commandLeadOf 未另建一份构造逻辑）',
+    transferPayloadOk(applyCmd) && transferPayloadOk(removeCmd),
+    JSON.stringify(transferCmds.map((e) => e.payload)))
+  ok('J4 两条指令都不携带 contactRaw / wechat（中央下行 lead 只允许 6 个字段）',
+    transferCmds.length === 2 && !capturedText().includes('"contactRaw"') && !capturedText().includes('"wechat"') &&
+    !capturedText().includes('chatHistory') && !capturedText().includes('messageRaw'))
+  ok('J5 两个目标的幂等键互不相同且各自绑定投递角色（不会互相顶掉、可分别判重）',
+    Boolean(applyCmd && removeCmd) && applyCmd!.idempotencyKey !== removeCmd!.idempotencyKey &&
+    applyCmd!.idempotencyKey.includes('#apply#') && removeCmd!.idempotencyKey.includes('#remove#') &&
+    applyCmd!.eventId !== removeCmd!.eventId,
+    JSON.stringify([applyCmd?.idempotencyKey, removeCmd?.idempotencyKey]))
+  ok('J6 outbox 只在两个目标都被中央受理后才结算 sent',
+    transferRun.error === undefined && transferRun.rejected === 0 &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transferRow?.id)])[0]?.status) === 'sent',
+    JSON.stringify(transferRun))
+  const newTransferAudits = transferAudits().slice(transferAuditsBefore)
+  const downAfterTransfer = store.downEventCount()
+  ok('J7 中央为两条移交指令各留一条 down_command 审计（只记定位元数据，不记载荷）',
+    newTransferAudits.length === 2 && downAfterTransfer > downEventsBefore &&
+    newTransferAudits.every((a) => a.entityType === 'assignment' && [applyCmd!.eventId, removeCmd!.eventId].includes(String(a.detail.eventId))) &&
+    newTransferAudits.map((a) => String(a.detail.targetEmployeeId)).sort().join() === [sales.employeeId, sales2.employeeId].sort().join() &&
+    !JSON.stringify(newTransferAudits).includes(TRANSFER_PHONE) && !JSON.stringify(newTransferAudits).includes('端到端移交线索'),
+    JSON.stringify(newTransferAudits))
+
+  // 重放：同 eventId + 同幂等键 → 中央判 duplicate，不新增指令、不新增审计
+  crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE id = ?", [Number(transferRow?.id)]) })
+  resetCapture()
+  const replayRun = await service.runCentralSyncOnce()
+  const replayCmds = commandBodies().filter((e) => e.eventType === 'transfer')
+  ok('J8 移交指令重放：eventId 稳定不变、中央判 duplicate、不产生第二条指令也不重复建审计',
+    replayRun.error === undefined && replayCmds.length === 2 && duplicateCommandResponses() === 2 &&
+    replayCmds.map((e) => e.eventId).sort().join() === [applyCmd!.eventId, removeCmd!.eventId].sort().join() &&
+    store.downEventCount() === downAfterTransfer && transferAudits().length === transferAuditsBefore + 2,
+    JSON.stringify({
+      n: replayCmds.length, duplicates: duplicateCommandResponses(), ids: replayCmds.map((e) => e.eventId),
+      want: [applyCmd?.eventId, removeCmd?.eventId], down: [downAfterTransfer, store.downEventCount()],
+      audits: [transferAuditsBefore, transferAudits().length]
+    }))
+
+  // 部分成功语义必须用**从未送达过**的目标来验：上一条移交的两个目标此时都已在中央判重，
+  // 拿它模拟「第二目标失败」验证不出「失败目标恢复后补投」，所以再走一次真实移交（第二条线索）。
+  const imported2 = leadSvc.importLeads('e2e-transfer-2', 'e2e-transfer-2.csv',
+    [{ phone: TRANSFER2_PHONE, name: '端到端移交线索二', source: 'e2e' }])
+  const lead2Id = Number(crmDbService.all('SELECT id FROM lead WHERE contact_normalized = ?', [TRANSFER2_PHONE])[0]?.id || 0)
+  assignmentSvc.assignLeads([lead2Id], SALES_NAME, SUPERVISOR_NAME)
+  // 先把「这次分配」投完（否则它会在失败模拟那一轮抢在移交指令之前被打死）
+  await service.runCentralSyncOnce()
+  resetCapture()
+  const old2AssignmentId = Number(assignmentSvc.currentAssignment(lead2Id)?.id || 0)
+  const moved2 = assignmentSvc.transferAssignment(old2AssignmentId, SALES2_NAME, 'e2e 移交二', SUPERVISOR_NAME)
+  const new2AssignmentId = Number((moved2.data as { assignmentId?: number } | undefined)?.assignmentId || 0)
+  const transfer2Row = crmDbService.all('SELECT id, status FROM outbox_event WHERE idempotency_key = ?', [`transfer:${new2AssignmentId}`])[0]
+  const downEventsBeforePartial = store.downEventCount()
+  const transferAuditsBeforePartial = transferAudits().length
+  failCommandOnceFor = sales.employeeId
+  resetCapture()
+  const partialRun = await service.runCentralSyncOnce()
+  const partialStatus = String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transfer2Row?.id)])[0]?.status)
+  const partialCmds = commandBodies().filter((e) => e.eventType === 'transfer')
+  const partialNewAudits = transferAudits().slice(transferAuditsBeforePartial)
+  ok('J9 第二目标瞬时失败：整行保持 pending、如实上抛错误，绝不假装部分成功已结算',
+    imported2.valid === 1 && Boolean(transfer2Row) && Boolean(partialRun.error) && partialStatus === 'pending',
+    JSON.stringify(partialRun) + partialStatus)
+  ok('J10 失败那一轮：已送达目标确已到中央（新事件 +1，不是半条），未送达目标一条都没到',
+    store.downEventCount() === downEventsBeforePartial + 1 && partialCmds.length === 1 &&
+    partialNewAudits.length === 1 && String(partialNewAudits[0]?.detail.eventId) === String(partialCmds[0]?.eventId),
+    JSON.stringify({
+      down: [downEventsBeforePartial, store.downEventCount()],
+      cmds: partialCmds.map((e) => e.idempotencyKey), audits: partialNewAudits.map((a) => a.detail)
+    }))
+  failCommandOnceFor = null
+  resetCapture()
+  const recoveredRun = await service.runCentralSyncOnce()
+  const recoveredCmds = commandBodies().filter((e) => e.eventType === 'transfer')
+  const recoveredRemove = recoveredCmds.find((e) => ((e.payload || {}) as Record<string, unknown>).deliveryRole === 'remove')
+  ok('J11 恢复后顺序重试即收敛：已成功目标按幂等去重、失败目标补投到中央，两个目标都受理才置 sent',
+    recoveredRun.error === undefined && recoveredCmds.length === 2 && duplicateCommandResponses() === 1 &&
+    String(recoveredRemove?.idempotencyKey || '').includes('#remove#') &&
+    !String(recoveredRemove?.eventId || '').startsWith(String(partialCmds[0]?.eventId || 'x')) &&
+    store.downEventCount() === downEventsBeforePartial + 2 && transferAudits().length === transferAuditsBeforePartial + 2 &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transfer2Row?.id)])[0]?.status) === 'sent',
+    JSON.stringify({
+      run: recoveredRun, cmdIds: recoveredCmds.map((e) => e.eventId), duplicates: duplicateCommandResponses(),
+      down: [downEventsBeforePartial, store.downEventCount()], audits: [transferAuditsBeforePartial, transferAudits().length]
+    }))
+
+  // ── 下游：两条指令必须经**既有 Phase 1 状态机**落到接收端的本机事实 ──
+  // 本机是移交发起端（中枢工作机），库里的移交结果已经落地，不能拿它冒充接收端。
+  // 因此显式把本机事实摆成「接收端库该有的样子」，再用真实的中央指令 + 真实状态机入口消费。
+  // ① 原归属设备（remove）：库里保留该线索与甲名下的有效分配行
+  crmDbService.runTx((tx) => {
+    tx.run("UPDATE assignment SET status = 'transferred' WHERE id = ?", [newAssignmentId])
+    tx.run("UPDATE assignment SET status = 'assigned' WHERE id = ?", [oldAssignmentId])
+  })
+  bindAs(sales, 'sales')
+  const removeRun = await service.runCentralSyncOnce()
+  ok('J12 原归属设备拉到 remove 指令：既有状态机移除甲的有效分配行（不新建行），并回 ACK applied',
+    removeRun.error === undefined && ackOf(String(removeCmd?.eventId || '')) === 'applied' &&
+    String(crmDbService.all('SELECT status FROM assignment WHERE id = ?', [oldAssignmentId])[0]?.status) === 'transferred' &&
+    Number(crmDbService.all('SELECT COUNT(*) AS n FROM assignment WHERE lead_id = ?', [transferLeadId])[0]?.n || 0) === 2,
+    ackOf(String(removeCmd?.eventId || '')))
+
+  // ② 新归属设备（apply）：乙的库里没有这条线索 → 指令携带的 6 字段线索资料就地建档
+  crmDbService.runTx((tx) => {
+    tx.run('DELETE FROM assignment WHERE lead_id = ?', [transferLeadId])
+    tx.run('DELETE FROM lead WHERE id = ?', [transferLeadId])
+  })
+  bindAs(sales2, 'sales')
+  const applyRun = await service.runCentralSyncOnce()
+  const createdLead = crmDbService.all('SELECT id, name, contact_type, contact_normalized FROM lead WHERE contact_normalized = ?', [TRANSFER_PHONE])[0]
+  const createdAssignment = crmDbService.all("SELECT * FROM assignment WHERE lead_id = ? AND source = 'sync:down'", [Number(createdLead?.id || 0)])[0]
+  ok('J13 新归属设备本机没有该线索：apply 指令经既有状态机就地建档（资料只来自指令白名单字段）并回 ACK applied',
+    applyRun.error === undefined && ackOf(String(applyCmd?.eventId || '')) === 'applied' &&
+    String(createdLead?.name) === '端到端移交线索' && String(createdLead?.contact_type) === 'phone',
+    JSON.stringify(createdLead) + ackOf(String(applyCmd?.eventId || '')))
+  ok('J14 apply 落地为乙名下新的有效分配行（source=sync:down，走既有状态机而非复制一份业务语义）',
+    String(createdAssignment?.sales_name) === SALES2_NAME && String(createdAssignment?.status) === 'assigned',
+    JSON.stringify(createdAssignment))
+
+  // 恢复本机绑定（本机 = 主管工作机），避免改变后续任何前置状态
+  bindAs(supervisor, 'supervisor')
+  crmDbService.setScanState('centralSync:pullCursor', supervisorCursor)
+  ConfigService.getInstance().set('centralSyncDisplayName', supervisorBinding.displayName)
 
   await app.close()
   console.log(`\ncentral sync e2e test: ${pass} passed, ${fail} failed`)

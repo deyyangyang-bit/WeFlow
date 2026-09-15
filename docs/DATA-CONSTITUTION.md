@@ -290,12 +290,27 @@
 - `eventType` 与 `entityType` 不匹配 → 服务端拒收；员工与设备双指定时必须**同属一名员工**；
   畸形目标标识返 **400**，不得落成数据库 500。畸形指令**不写**任何业务行（lead / assignment /
   `notify_inbox` / audit / 幂等标记）。
+- **只有 `assign` / `transfer` 携带线索档案子对象**（`allowsLead`）；`recycle` 与通知/声明类指令
+  不带 `lead`，携带即整事件拒收。回收的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机。
+- **`transfer` 是双目标指令**：新归属设备收 `apply`、原归属设备收 `remove`，两条指令各自带投递角色进幂等键，
+  可分别判重；outbox 行只在**两个目标都被中央受理**后结算 `sent`，任一目标 4xx 整行 `failed`，
+  网络类失败保持 `pending` 交由重放（已受理目标按幂等去重，不产生第二条指令）。
 - **目标解析绝不按显示姓名猜人**：`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode`（稳定工号）
   解析；姓名重名或解析不到一律显式报错并保持 pending。
-- **⚠️ 已披露残留（不声称「下行零身份值」）**：`assign` / `transfer` / `recycle` 的指令载荷必带 6 个线索字段
-  （`CENTRAL_COMMAND_LEAD_FIELDS`：`leadId` / `name` / `contactType` / `contactNormalized` / `source` / `note`）——
-  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，收窄该字段会破坏既有 P0/P1 语义。
+- **⚠️ 已披露残留（不声称「下行零身份值」）**：`assign` / `transfer` 的 `lead` 子对象在中央 HTTP 通道
+  固定为 6 个字段（`CENTRAL_LEAD_FIELDS`：`leadId` / `name` / `contactType` / `contactNormalized` /
+  `source` / `note`）——接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或创建线索，
+  收窄该字段会破坏既有 P0/P1 语义。**`contactRaw` / `wechat` 不在中央通道内**（携带即 400），
+  只有 SMB 内网文件通道保留 Phase 1 的 8 字段历史口径（已互信局域网，不在中央收口范围内）。
   **聊天正文两个方向都拦**；该线索档案面属已披露的有限例外。
+- **载荷引用字段闸门（2026-09-15 增补）**：上行 `payload` 里登记过的 `*Ref` 字段在服务端按语义校验
+  （类别匹配、必须是 `<deviceId>/<kind>:<id>` 完整形态、**不得借用他机命名空间**），
+  错误码 `ref_invalid_type` / `ref_not_scoped` / `ref_not_concrete` / `ref_kind_mismatch` / `ref_not_owned`
+  只带字段名不带值；`employeeRef` 是身份声明（显示名/工号），裸值放行。光拦 `entityId` 不够——
+  `entityType=customer` 配 `payload.leadRef` 同样能把线索引用写进客户表。
+- **中央自身操作审计（`central_audit_event`）**：`invite_create`（与签发同事务，不记邀请码明文/哈希）、
+  `down_command`（指令首次受理，只记定位元数据不记载荷）、`sync_forbidden_field`、`device_revoke(_self)`、
+  跨设备/身份锚点冲突。同幂等键重放不追加、被拒请求不留痕。
 
 **版本与幂等（2026-09-15 增补复合水位与归属闸门）**
 

@@ -2,14 +2,23 @@
  * central-sync-adapter-test.ts —— Phase 3a Electron 同步 adapter 验证
  * （electron/services/centralSyncService.ts + centralProjection.ts）。
  *
- * 覆盖：
+ * 覆盖（对照下方实际 section 标题）：
  *   A. 上行投影：只从既有业务表产生事件；禁字段双保险；身份只上哈希+掩码；审计裁剪
- *   B. 推送语义：被接受才置 sent / 失败保留 pending；游标只在受理后推进；幂等键稳定
- *   C. 下行：assign 复用既有状态机；重复投递幂等；nolead 有上限重试后转终态；未知类型直接终态
- *   D. 中央专有下行：主管修正入待确认收件箱（不覆盖本地）；权限变更只作声明
- *   E. 解绑：服务端吊销优先；网络失败不清本地；强制清除如实标注未吊销
- *   F. 调度器：幂等启动/停止、解绑后安全空转、间隔变更即时生效
- *   G. 与 Phase 1 SMB 互斥 + 令牌落 safeStorage 加密字段
+ *   B. 推送语义与游标：被接受才置 sent / 失败保留 pending；游标只在受理后推进；幂等键稳定
+ *   C. 下行：assign 复用既有状态机；重复投递幂等
+ *   D. 下行：中央专有类型（主管修正入待确认收件箱、不覆盖本地；权限变更只作声明）
+ *   E. 下行：终态与不回归（未知类型 / 契约非法直接 invalid，无重试循环、无本机业务痕迹）
+ *   H. 上行指令链：员工目录解析
+ *   I. 版本化增量
+ *   J. 跨表引用统一
+ *   K. 过滤行不阻塞游标
+ *   F. 解绑：服务端吊销优先；网络失败不清本地；强制清除如实标注未吊销
+ *   G. 调度器与互斥：幂等启动/停止、解绑后安全空转、间隔变更即时生效；令牌落 safeStorage
+ *
+ * 边界（不得据此宣称已在真实环境验证）：
+ *   - 中央侧是**假服务**：按路径路由的内存实现，不启动真实中央节点、不连 PostgreSQL、不发真实网络请求；
+ *   - 因此本文件只验证**本机 adapter 侧**的行为。真实 PostgreSQL 落库、真实部署、真机（含 Windows）
+ *     与真实网络链路**均未验证**，由 central/test 的内存契约测试与 scripts/central-sync-e2e-test.ts 补位。
  *
  * 隔离：WEFLOW_WORKER + /tmp 三环境变量在模块顶部设置，业务模块一律动态 import。
  * 运行：npx tsx scripts/central-sync-adapter-test.ts

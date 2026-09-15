@@ -1780,8 +1780,10 @@
 > 完整实施记录（改动清单 / 端点契约 / 逐项验证 / 部署边界）见 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md`。
 > 端点级契约见 `docs/API-CONTRACT.md` §3；中央投影对象入宪见 `docs/DATA-CONSTITUTION.md` §3.1。
 >
-> **⚠️ 本节为历史首轮实现。** 该三刀暴露的八类 P0/P1 阻断项已于 2026-09-15 修复，见 **§2.105**；
-> 本节中的测试计数为**首轮值**（client 24 / adapter 50 / app 55 / projection 19），当前值为 24 / 86 / 102 / 36。
+> **⚠️ 本节为历史首轮实现。** 该三刀暴露的八类 P0/P1 阻断项已于 2026-09-15 修复（见 **§2.105**），
+> 复核又发现的 5 个代码/测试缺口以 **§2.106** 收口。本节中的测试计数为**首轮值**
+> （client 24 / adapter 50 / e2e 尚未建立 / app 55 / projection 19），
+> 当前值为 client 24 / adapter 86 / e2e 61 / app 136 / projection 36。
 > 措辞纪律：**Phase 3a 代码侧仍未收口**——部署与真机验收一条未做，不得写成「Phase 3a 已收口」或「全项目代码已完成」。
 >
 > **本刀只做代码侧**：用户已确认中央机基础安装部署由负责人完成，但**完整部署、真机、Windows、SSE、真实消息推送、
@@ -1878,7 +1880,7 @@ lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
 `scripts/assignment-correction-test.ts` **15/2**：A2/A3 两条断言比对的是 2026-09-05 冻结的真实库快照分布
 （`许丽娟:1511 / 李林辉:1356 / 杨青:981`，现为 `1527/1373/998`），属**既有 live 数据漂移**，
 非本刀改动所致（本刀在未绑定状态下零分配写入）。**未放宽断言**，如实登记为已知红项。
-## 2.105 Phase 3a 阻断项修复：封死敏感字段出机与跨设备越权（2026-09-15，工作区未提交）
+## 2.105 Phase 3a 阻断项修复：封死敏感字段出机与跨设备越权（2026-09-15，已提交 `8e757f7`/`7a4c5fa`/`5024030`/`79fe517`/`0be636b`）
 
 > 完整对照表、两处真实缺陷的复盘与残留清单见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`；
 > 实施记录见 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` §8。
@@ -1917,7 +1919,8 @@ lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
    （SMB 与 HTTP 共用同一份）：逐类型声明合法 `entityType`、必填载荷、`deliveryRole`、目标、枚举与长度上限、版本前置；
    `eventType`/`entityType` 不匹配服务端拒收；员工+设备双指定必须同属一人；畸形目标 UUID 返 **400**（不是 pg 500）；
    `applyDownEventDirect` 不再绕过业务校验；畸形指令**不写** lead / assignment / notify_inbox / audit / 幂等标记。
-8. **真实端到端契约测试（P0 证据）**：新增 `scripts/central-sync-e2e-test.ts`（**44/0**）——真实业务生产者 →
+8. **真实端到端契约测试（P0 证据）**：新增 `scripts/central-sync-e2e-test.ts`（**44/0**，首轮值；现为 **61/0**，
+   见 §2.106）——真实业务生产者 →
    `outbox_event` → `CentralSyncService` → `CentralSyncClient` → Fastify `app.inject` → `MemoryCentralStore` →
    投影/指令 → `pull` → 本机既有状态机 → ACK → outbox 结算。**无 Docker 依赖**。
 
@@ -1951,10 +1954,13 @@ lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
 
 ### ⚠️ 如实披露的残留
 
-- **下行指令必带线索档案面**：`assign`/`transfer`/`recycle` 的指令载荷含 6 个线索字段
-  （`CENTRAL_COMMAND_LEAD_FIELDS`：`leadId`/`name`/`contactType`/`contactNormalized`/`source`/`note`）——
-  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或建线索，收窄会破坏既有语义。
-  聊天正文两个方向都拦；该线索档案面**为已披露残留**，e2e 只断言可执行的保证。
+- **下行指令的线索档案面**（措辞已由 §2.106 校正）：**只有 `assign` / `transfer` 携带 `lead` 子对象**，
+  `recycle` 与通知/声明类指令不带（携带即整事件拒收）。中央 HTTP 通道固定 6 个字段
+  （`CENTRAL_LEAD_FIELDS`：`leadId`/`name`/`contactType`/`contactNormalized`/`source`/`note`），
+  `contactRaw` / `wechat` 一律 400；SMB 内网文件通道保留 Phase 1 的 8 字段历史口径。
+  接收端 Phase 1 状态机按 `(contact_type, contact_normalized)` 定位或建线索，故 `contactNormalized`
+  **必然过网**——聊天正文两个方向都拦，该线索档案面**为已披露残留**，不声称「下行零身份值」。
+  本行原写「`assign`/`transfer`/`recycle` 必带 6 个线索字段」，与代码不符，已在 §2.106 更正。
 - **冲突裁决**：服务端版本闸门 + 跨设备改写拒绝 + 唯一身份冲突记录 + 客户端 `conflict` 回执；
   多写者合并策略仍未定。
 - **未做的验收一条未变**：`docker build`、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练、
@@ -1964,6 +1970,51 @@ lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
 ### 结论措辞
 
 本轮关闭的是**八类阻断项**，不是 Phase 3a 整体。**Phase 3a 代码侧仍未收口**。
+
+## 2.106 Phase 3a 复核收口：移交双目标投递、下行 lead 白名单分档、引用闸门与中央操作审计（2026-09-15，已提交 `6646338`/`862f0fc` 及其后紧随的测试与文档提交）
+
+> 完整对照见 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` §5；
+> 实施记录见 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` §9；端点契约见 `docs/API-CONTRACT.md` §3。
+> 前 8 个提交未被改写，本刀以追加方式落地。
+
+复核在 §2.105 之后又发现 5 个代码/测试缺口，逐一收口：
+
+1. **`transfer` 中央指令链此前是断的**。`commandPayloadOf()` 没有 `transfer` 分支、返回 `{}`，
+   投递时被 `validateDownCommand()` 以缺字段拦下 → 该 outbox 行直接落 `failed`；
+   而 e2e 头部却写着「覆盖 transfer」，实际从未调用 `transferAssignment()`——属**覆盖声明不实**。
+   本刀补齐分支（复用既有 `commandLeadOf()`，不另建一份线索构造），一条 outbox → **两条**下行指令：
+   新归属 `deliveryRole=apply`、原归属 `deliveryRole=remove`，幂等键各带投递角色与目标员工
+   （`…#apply#<员工>` / `…#remove#<员工>`），互不顶替、可分别判重。
+   **部分成功语义**：只有**两个目标都被中央受理**才置 `sent`；任一目标 4xx → 整行 `failed`
+   （如实记 `failedRole` / `delivered`）；网络类失败**保持 pending**，交由下一轮顺序重试——
+   已受理目标由中央幂等去重、未受理目标继续补投，故**无需另建发送状态表**（J9–J11 实证）。
+2. **下行 lead 白名单分档**。`shared/centralDownCommand.ts` 原先只有一份 8 字段白名单，中央 HTTP
+   实际接受 `contactRaw` / `wechat`，与「中央只允许 6 字段」的文档说法不符；持 `command.issue`
+   权限者可直接向 `/sync/commands` 提交这些字段绕过客户端。改为**按传输上下文分档**
+   （`leadFieldsFor(transport)`）：`central-http` = 6 字段（`CENTRAL_LEAD_FIELDS`），
+   `smb` = Phase 1 历史 8 字段口径（`SMB_LEAD_FIELDS`，**未被收窄**）。两档**共用同一份指令状态机**
+   （roles / required / allowed / enums / maxLength），仅在 lead 子对象字段集分叉，避免两套规则漂移；
+   lead 子对象补类型/长度/枚举约束（`contactType ∈ {phone,wechat,both}`、`name ≤ 120` 等），
+   错误码**只带字段名不带值**。
+3. **服务端实体引用闸门**。`/sync/push` 此前只查 `entityId` 是否属本机命名空间，未调
+   `validateCentralEntityId()`，于是 `entityType=customer` + `entityId=<本机>/assignment:1` 能污染客户表。
+   现逐条补实体引用类别校验，并对 `payload` 内已登记的 `*Ref`（`customerRef` / `leadRef` /
+   `opportunityRef` / `employeeRef`）校验形态、类别与命名空间归属（`ref_not_scoped` /
+   `ref_not_concrete` / `ref_kind_mismatch` / `ref_not_owned`），**借用同工作区他机命名空间同样拒绝**；
+   `employeeRef` 是身份声明（显示名/工号），裸值放行。
+4. **中央 append-only 审计补齐**。`invite_create`（与签发**同一事务**，不记邀请码明文/哈希）与
+   `down_command`（指令**首次**受理，只记 `eventId` / `eventType` / 投递目标，**不记载荷**）此前
+   只有宪法声明、没有实现。`MemoryCentralStore` 与 `PostgresCentralStore` 同步补齐；
+   **幂等重放不追加审计、被拒请求不留痕**，审计条数不随重放或探测增长。
+5. **管理员吊销的畸形 UUID**。`/devices/:deviceId/revoke` 原先 schema 只限字符串长度，畸形标识会进
+   `$1::uuid` 让 PostgreSQL 抛 `22P02` 变成 500，把「调用方拼错 URL」记成「中央服务内部错误」。
+   现 schema 用 UUID format + 进 store 前显式复判，畸形返 **400 E101**，
+   **不碰数据库、不写审计、不影响任何设备**。
+
+**本刀边界（不夸大）**：中央侧仍是**真实 Fastify 路由 + `MemoryCentralStore`**，**没有真实 PostgreSQL**——
+`central/test` 的 P7/P8 只是**源码级契约断言**（锁住「同事务 / 只在首次写入 / SQL 参数化 / 不记载荷」四条纪律），
+DDL 约束、并发与事务隔离、`$n::uuid` 的运行时行为**均未验证**。Docker、双机、Windows、SSE、真实消息推送、
+反向代理与证书、真实 AI 调用**全部未执行**。**Phase 3a 代码侧仍未收口。**
 
 ## 3. 已交付功能清单
 
@@ -2223,7 +2274,7 @@ lan-sync 两套 / auto-backup / hermes 系列）全部保持通过。
 | `salesQueue.ts` | 串行队列（防WCDB段错误） |
 | `centralSyncClient.ts` | **中央 HTTP 客户端**（§2.104 + §2.105）：HTTPS 强制（仅 `http://127.0.0.1`/`localhost` 例外）、`Bearer` 鉴权、`Idempotency-Key`、超时、非 2xx/非 JSON 响亮报错、**错误串不带令牌**；`claim()` 保留返回的设备令牌，`revokeSelf()` 供解绑先吊销后清本地。**错误按「临时网络失败」与「永久契约错误」分流**（前者保持 pending，后者转 `failed` + 审计） |
 | `centralProjection.ts` | **上行投影注册表**（§2.104 + §2.105）：只读既有结构化表的 9 类投影；**每个 `eventType` 走显式最小字段白名单**；**可变表按 `(updated_at, id)` 复合水位**（append-only 表仍用 id），幂等键带版本 `#[v]<rev>`，`entityId` 由 `scopedRef(deviceId, localRef)` 生成；读返回 `{drafts, watermark, scanned, skipped, full}`，暂不可投影的行**不阻塞后续合法行**且补齐后经台账重扫；客户身份只上行 sha256 哈希 + 展示掩码；审计 `detailMasked` 按**字段名驱动**擦洗（复用 `centralSync.ts` 的禁字段谓词）；judgment 的 `session_id` 先经 `customer_profile.customer_id` 映射，**映射不到直接跳过**（session_id 与客户原话永不出本机） |
-| `centralSyncService.ts` | **Phase 3a 双向同步适配 + 调度器**（§2.104 + §2.105）：上行复用 `outbox_event`（**只有中央确认接收后才结算本机行**；被拒标 failed + 计数 + 审计）；**逐事件定义方向/端点/目标/白名单/终态/重试**——`assign`/`transfer`/`recycle` 走 `command` 下发（**不伪装成上行投影**），其余走投影；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` 工号解析目标，**解析不到显式报错并保持 pending，绝不按姓名猜人**；队列先按类型过滤再取批（不再 `LIMIT 50` 后过滤）；跳过台账 `centralSync:skip:`；下行复用 `lanSyncService.applyDownEventDirect()` 的既有状态机与幂等标记，**且不绕过 `shared/centralDownCommand.ts` 的业务校验**；`supervisor_correction` 落 `notify_inbox` 不静默覆盖、`permission_change` 只记声明不作鉴权；未知类型立即 `invalid`、`nolead` 有界重试 5 次后 `invalid`；绑定必启调度器、解绑安全空转、轮巡间隔实时读取、不重复定时器 |
+| `centralSyncService.ts` | **Phase 3a 双向同步适配 + 调度器**（§2.104 + §2.105）：上行复用 `outbox_event`（**只有中央确认接收后才结算本机行**；被拒标 failed + 计数 + 审计）；**逐事件定义方向/端点/目标/白名单/终态/重试**——`assign`/`transfer`/`recycle` 走 `command` 下发（**不伪装成上行投影**），其余走投影；`sla1_escalate_supervisor` 按 `centralSyncSupervisorCode` 工号解析目标，**解析不到显式报错并保持 pending，绝不按姓名猜人**；队列先按类型过滤再取批（不再 `LIMIT 50` 后过滤）；跳过台账 `centralSync:skip:`；下行复用 `lanSyncService.applyDownEventDirect()` 的既有状态机与幂等标记，**且不绕过 `shared/centralDownCommand.ts` 的业务校验**；`supervisor_correction` 落 `notify_inbox` 不静默覆盖、`permission_change` 只记声明不作鉴权；未知类型立即 `invalid`、`nolead` 有界重试 5 次后 `invalid`；**`transfer` 一条 outbox → 两条下行指令**（接收方 `apply` / 原归属 `remove`，幂等键各带投递角色与目标员工），**两个目标都被中央受理才结算 `sent`**，任一目标 4xx 整行 `failed`、网络类失败保持 `pending` 靠顺序重试收敛（已受理目标由中央幂等去重，**不另建发送状态表**）；`payload.lead` 白名单按传输上下文分档（`leadFieldsFor`：中央 HTTP 6 字段 / SMB 8 字段）；绑定必启调度器、解绑安全空转、轮巡间隔实时读取、不重复定时器 |
 | `centralSyncIpcHandlers.ts` | 中央同步 IPC（状态 / 绑定认领 / 立即同步 / 解绑，解绑可带 `force` 走「仅清本机凭证」） |
 | `salesLogger.ts` | 落盘日志 |
 | `ai/aiApiClient.ts` | 统一AI调用层 |
@@ -2440,7 +2491,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | P1 | 复盘页限宽居中 | §2.41 七页中唯一未做（.sr-page 全高滚动布局，需验证后改） |
 | 暂缓 | 触发规则配置 UI | **§2.26 L0-L3 文档化决策**：v1 硬编码，先验证有效再评估，P0 闭环前冻结 |
 | 暂缓 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
-| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量。§2.105 另披露两处残留（下行指令必带 6 字段线索档案面、冲突裁决未细化）。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项 |
+| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）+ 复核收口（§2.106）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量 + 移交双目标投递 + 服务端引用闸门 + 中央操作审计。已披露残留：**下行指令的线索档案面**（中央 HTTP 固定 6 字段，`contactNormalized` 必然过网；`contactRaw`/`wechat` 一律 400）、冲突裁决未细化。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项 |
 | 大后期 | CRM 双向同步（业务面） | 传输层已由 §2.104 Phase 3a 打通；此处指更上层的双向业务编排，仍仅预留 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -2461,7 +2512,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
    今日行动 / 统一信号流 / 物流闭环（2026-09-13 红测试归因收口后**全部入基线**）：`npx tsx scripts/todo-followup-test.ts`（**16/0**）、`npx tsx scripts/crm-sla-action-test.ts`（**11/0**）、`npx tsx scripts/customer-event-producer-test.ts`（**15/0**）、`npx tsx scripts/customer-event-closed-gate-test.ts`（**16/0**）、`npx tsx scripts/crm-logistics-test.ts`（**37/0**）
    迁移失败项人工闭环（2026-09-14 新增）：`npx tsx scripts/migration-dismissal-test.ts`（**14/0**——dismissal 往返/幂等、模块② 扫描过滤、词典覆盖、IPC 接线、ENTITIES 白名单）
    消息推送会话类型分类（2026-09-14 新增）：`npx tsx scripts/message-push-session-type-test.ts`（**22/0**——sessionId 形态分类、单聊跳过分支生效与撤回例外、旧写法死路成因反证与防回退静态锁）
-   **Phase 3a 中央同步（2026-09-14 新增 §2.104；2026-09-15 阻断项修复 §2.105 后复测）**：`npx tsx scripts/central-sync-client-test.ts`（**24/0**——传输约束/鉴权/失败语义/不泄令牌/端点契约，注入假 fetch 不发真实网络）；`npx tsx scripts/central-sync-adapter-test.ts`（**86/0**——上行投影与显式白名单/成功才结算/下行状态机/有界重试/解绑三态/调度器与 SMB 互斥/版本化增量与跳过台账）；`npx tsx scripts/central-sync-e2e-test.ts`（**44/0**——真实业务生产者→outbox→适配器→Fastify `app.inject`→`MemoryCentralStore`→投影/指令→pull→本机状态机→ACK→结算的**完整契约闭环**，含敏感字段不出机、跨设备越权、网络失败重放、幂等、游标跳过；**无 Docker 依赖**）。中央服务侧另跑：`cd central && npm run typecheck && npm test`（app 102 / projection 36 / migration 23 / context 6，全 0 失败）与 `cd central && npm run build`。**注意**：`central/` 是独立包，**不在根 `npm run typecheck` 的覆盖范围内**，改中央代码必须另跑这两条。**另注意**：`scripts/central-sync-e2e-test.ts` 与适配器测试均用 `WEFLOW_WORKER` / `WEFLOW_USER_DATA_PATH` / `WEFLOW_CONFIG_CWD` 指向临时目录，**不读真实生产库**；`scripts/assignment-correction-test.ts` 与 `scripts/lead-assignment-restore-test.ts` 会复制真实生产库做基线比对，**不得作为中央同步的回归证明**
+   **Phase 3a 中央同步（2026-09-14 新增 §2.104；2026-09-15 阻断项修复 §2.105、复核收口 §2.106 后复测）**：`npx tsx scripts/central-sync-client-test.ts`（**24/0**——传输约束/鉴权/失败语义/不泄令牌/端点契约，注入假 fetch 不发真实网络）；`npx tsx scripts/central-sync-adapter-test.ts`（**86/0**——上行投影与显式白名单/成功才结算/下行状态机/有界重试/解绑三态/调度器与 SMB 互斥/版本化增量与跳过台账）；`npx tsx scripts/central-sync-e2e-test.ts`（**61/0**——真实业务生产者→outbox→适配器→Fastify `app.inject`→`MemoryCentralStore`→投影/指令→pull→本机状态机→ACK→结算的**完整契约闭环**。除敏感字段不出机、跨设备越权、网络失败重放、幂等、游标跳过外，**J 段是真实移交链**：调用真实 `transferAssignment()` → 一条 outbox → 两条下行指令（新归属 `apply` / 原归属 `remove`）→ 双目标都受理才置 `sent` → 重放判 duplicate 不新增指令与审计 → 第二目标先瞬时失败保持 `pending`、恢复后补齐 → 两个接收端各经既有状态机落地并回 ACK；E5–E7 补真实 `runSla1Recycle()` 的 recycle 链（`recycle` **不携带** `lead` 子对象）；**无 Docker 依赖**）。中央服务侧另跑：`cd central && npm run typecheck && npm test`（app **136** / projection 36 / migration 23 / context 6，全 0 失败）与 `cd central && npm run build`。`central/test/app-test.ts` 跑在 **MemoryCentralStore** 上，**不能替代真实 PostgreSQL 验证**——PG 侧只有 P7/P8 源码级契约断言（同事务 / 只在首次写入 / SQL 参数化 / 不记载荷），DDL 约束、并发与事务隔离、`$n::uuid` 运行时行为均未验证。**注意**：`central/` 是独立包，**不在根 `npm run typecheck` 的覆盖范围内**，改中央代码必须另跑这两条。**另注意**：`scripts/central-sync-e2e-test.ts` 与适配器测试均用 `WEFLOW_WORKER` / `WEFLOW_USER_DATA_PATH` / `WEFLOW_CONFIG_CWD` 指向临时目录，**不读真实生产库**；`scripts/assignment-correction-test.ts` 与 `scripts/lead-assignment-restore-test.ts` 会复制真实生产库做基线比对，**不得作为中央同步的回归证明**
    ✅ **2026-09-13 红测试归因收口**：上述 5 个套件此前长期红色、被当作「已知恒定失败」接受（其中 `todo-followup`／`crm-logistics` 启动即死）。已逐套归因并全部修复入基线，**本仓库不再有「红了但没人知道为什么」的套件**。归类为：测试滞后于有意变更 2 套（W2a 拒绝按客户批量完成、F1 统一信号流改纯读）、测试基建 2 套（A7 静态断言误伤 SQL 注释、B11 断言开发者真实库 0 行——一次性迁移快照）、真实回归 1 套（W2a 重写误删 `completeUnifiedSignal` 的 `logi:` 分支，已恢复）。逐套根因（含 git 证据）、分类处置与实测输出见 `docs/实施记录/红测试归因与收口-实施记录-claude-20260913.md`
    ⚠️ **`npx tsc --noEmit` 只检查 `src/**` 与 `shared/**`，不覆盖 `electron/`**（根 tsconfig 仅 include 这两个目录）。检查主进程需另跑 `npx tsc -p tsconfig.node.json --noEmit --composite false`（现为 **0 错误**，见下条棘轮门禁）。历史：2026-09-13 实测存量 156 个（旧记的 161 系不同命令口径），当日**不能以"零错误"为门禁**、只能比对"不新增"。详见 §2.98。
    ✅ **2026-09-14 棘轮门禁落地**：`npm run typecheck` 现已串联 root 零错误 + `scripts/typecheck-node-ratchet.cjs`（electron/ **棘轮基线 0**，只准保持 0）。基线史：156（09-13 实测）→ 8 → 7（存量消肿）→ 3 → **0**（同日真 bug 修复与类型清零，见 `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` §4）。单独跑主进程门禁：`npm run typecheck:node`。
