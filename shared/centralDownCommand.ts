@@ -103,6 +103,67 @@ const LEAD_FIELD_RULES: Record<string, LeadFieldRule> = {
   note: { kind: 'string', max: LEAD_NOTE_MAX }
 }
 
+/**
+ * 顶层字段的**共享运行时规则**（HTTP 与 SMB 共用同一份，见 DOWN_COMMAND_SPECS.fields）。
+ * 形态取值口径 = 各字段在本机真实业务写入时的形态，不新造语义：
+ *   - `positive_int`：原始 number 类型的有限正整数（行号 / 毫秒绝对时间戳）。绝不 `Number()` 后再判：
+ *     字符串数字、小数、NaN、Infinity、0、负数、对象、数组、布尔一律拒收；
+ *   - `non_negative_int`：原始 number 类型的有限非负整数（计数类）；
+ *   - `string`：字符串字面量（可叠加 maxLength / enum）。
+ */
+export type DownFieldKind = 'positive_int' | 'non_negative_int' | 'string'
+
+export interface DownFieldRule {
+  kind: DownFieldKind
+  /** 数值字段的取值范围（含端点；缺省 = 该 kind 的自然边界） */
+  min?: number
+  max?: number
+}
+
+/**
+ * `remindCount` 的真实值域：上游生产者（`crmAssignmentService` 三次提醒制）**恒发 3**，
+ * 消费端（`crmNotifyService` / 接收端通知正文）按 `N/3` 渲染，`sla1_remind_count` 的列语义本身就是
+ * 「已提醒次数」，永远到不了 3（满 3 即回收）。因此合法区间 = `[0, 3]`：
+ * 越界值会让主管收到的「N/3 次超时未完成首触」变成假话，必须在建指令时拒收而不是静默夹取。
+ * 0 允许：语义是「未提醒过」，与列默认值一致（历史与迁移行可能为 0）。
+ */
+export const REMIND_COUNT_MIN = 0
+export const REMIND_COUNT_MAX = 3
+
+/**
+ * `slaHours` 的真实值域：`crmLeadSlaHours` 配置的可接受区间（`crmAssignmentService.sla1Hours` /
+ * `lanSyncService.slaHoursNow` 同口径：1-72，越界回落 24）。SMB 历史信封额外携带它，
+ * 出现即必须是这一区间内的原始 number 整数——否则会把「发送端写死的 SLA 小时数」变成
+ * 对象 / 字符串 / NaN 之类的伪造值，下游 `Number()` 后静默变成另一段时间。
+ */
+export const SLA_HOURS_MIN = 1
+export const SLA_HOURS_MAX = 72
+
+/** 数值规则 → 稳定错误码；只带字段名，绝不带字段值（被拦下的值可能就是客户数据） */
+function checkNumberField(field: string, value: unknown, rule: DownFieldRule): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return `invalid_type:${field}`
+  // Number.isInteger 已排除 NaN / Infinity / 小数
+  if (!Number.isInteger(value)) return `invalid_integer:${field}`
+  // kind 自带自然下界：positive_int ≥ 1、non_negative_int ≥ 0。显式 min/max 只用于**收窄**，
+  // 绝不能因为没登记 min 就让 0 / 负数溜过去（曾经的缺陷：`assignmentId: 0` 与
+  // `oldAssignmentId: 0` 无下界可用，仍被判为合法）。
+  const floor = rule.min ?? (rule.kind === 'positive_int' ? 1 : rule.kind === 'non_negative_int' ? 0 : undefined)
+  if (floor !== undefined && value < floor) return `invalid_integer:${field}`
+  if (rule.max !== undefined && value > rule.max) return `invalid_integer:${field}`
+  return null
+}
+
+/** 顶层字段规则校验：`declared` 必填/可选由调用方判定，这里只负责「出现时的形态」 */
+function checkDeclaredField(field: string, value: unknown, rule: DownFieldRule, maxLength?: number): string | null {
+  if (rule.kind === 'string') {
+    if (typeof value !== 'string') return `invalid_type:${field}`
+    if (value.length === 0) return `invalid_type:${field}`
+    if (maxLength !== undefined && value.length > maxLength) return `too_long:${field}`
+    return null
+  }
+  return checkNumberField(field, value, rule)
+}
+
 export interface DownCommandSpec {
   entityType: CentralEntityType
   roles: readonly DownDeliveryRole[]
@@ -118,7 +179,18 @@ export interface DownCommandSpec {
   smbAllowsLead?: boolean
   enums?: Record<string, readonly string[]>
   maxLength?: Record<string, number>
-  /** 必填的数值时间戳字段（版本前置条件用）：必须是有限正整数 */
+  /**
+   * 顶层字段的共享运行时规则（2026-09-15 严格化）：必填与非必填字段都登记在这里，
+   * 缺失判定看字段是否出现在 `required`，**出现时**的形态一律按本表判。
+   * 「字段在 `required` 但没登记规则」= 注册表自相矛盾，`validateDownCommand` 直接拒收
+   * （见 `unregistered_field_rule:`），不给「只判非空就放行」留后门。
+   */
+  fields?: Record<string, DownFieldRule>
+  /**
+   * 必填的数值时间戳字段（版本前置条件用）。与 `fields` 中 `positive_int` 规则**同源**：
+   * 一律追加 `invalid_timestamp:<field>` 早退检查（`recycledAt` / `sla1Deadline` 的既有稳定错误码，
+   * 与 `invalid_type:` / `invalid_integer:` 并存，不删不换）。
+   */
   requiredTimestamps?: readonly string[]
 }
 
@@ -141,7 +213,16 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     allowsLead: true,
     // mode 在 assign 上是**可选**（发送方可省略），但**出现即必须是 ASSIGNMENT_MODES 内的字符串**
     enums: { mode: ASSIGNMENT_MODES },
-    maxLength: { salesName: SALES_NAME_MAX }
+    maxLength: { salesName: SALES_NAME_MAX },
+    fields: {
+      leadId: { kind: 'positive_int' },
+      assignmentId: { kind: 'positive_int' },
+      salesName: { kind: 'string' },
+      // assign 的 sla1Deadline 可选（缺失由接收端既有兜底处理），出现即必须是绝对时间戳
+      sla1Deadline: { kind: 'positive_int' },
+      slaHours: { kind: 'positive_int', min: SLA_HOURS_MIN, max: SLA_HOURS_MAX },
+      actor: { kind: 'string' }
+    }
   },
   transfer: {
     entityType: 'assignment',
@@ -152,6 +233,18 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     // transfer 的 mode 必填（见 required）且受同一份枚举约束——禁止「非空字符串即通过」
     enums: { mode: ASSIGNMENT_MODES },
     maxLength: { toSales: SALES_NAME_MAX, fromSales: SALES_NAME_MAX, reason: REASON_MAX },
+    fields: {
+      leadId: { kind: 'positive_int' },
+      assignmentId: { kind: 'positive_int' },
+      // oldAssignmentId 可选（Phase 1 信封恒带），出现即同样是原始 number 正整数
+      oldAssignmentId: { kind: 'positive_int' },
+      toSales: { kind: 'string' },
+      fromSales: { kind: 'string' },
+      reason: { kind: 'string' },
+      sla1Deadline: { kind: 'positive_int' },
+      slaHours: { kind: 'positive_int', min: SLA_HOURS_MIN, max: SLA_HOURS_MAX },
+      actor: { kind: 'string' }
+    },
     requiredTimestamps: ['sla1Deadline']
   },
   recycle: {
@@ -163,7 +256,16 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     // 中央 HTTP 不放开：commandPayloadOf('recycle') 不产 lead，服务端携带即 400。
     smbAllowedExtra: ['lead', 'slaHours'],
     smbAllowsLead: true,
-    maxLength: { salesName: SALES_NAME_MAX, reason: REASON_MAX }
+    maxLength: { salesName: SALES_NAME_MAX, reason: REASON_MAX },
+    fields: {
+      leadId: { kind: 'positive_int' },
+      assignmentId: { kind: 'positive_int' },
+      salesName: { kind: 'string' },
+      reason: { kind: 'string' },
+      // 只在 smb 档开口（central 档由白名单先拦 unknown_field:slaHours）
+      slaHours: { kind: 'positive_int', min: SLA_HOURS_MIN, max: SLA_HOURS_MAX },
+      actor: { kind: 'string' }
+    }
   },
   sla1_escalate_supervisor: {
     entityType: 'assignment',
@@ -172,6 +274,15 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     // contactMasked：跨机投递时通知正文里的联系方式只出**掩码**（原文不出机，PRD §10 R4）
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'remindCount', 'reason', 'recycledAt', 'contactMasked'],
     maxLength: { salesName: SALES_NAME_MAX, reason: REASON_MAX, contactMasked: 40 },
+    fields: {
+      leadId: { kind: 'positive_int' },
+      assignmentId: { kind: 'positive_int' },
+      salesName: { kind: 'string' },
+      remindCount: { kind: 'non_negative_int', min: REMIND_COUNT_MIN, max: REMIND_COUNT_MAX },
+      reason: { kind: 'string' },
+      recycledAt: { kind: 'positive_int' },
+      contactMasked: { kind: 'string' }
+    },
     requiredTimestamps: ['recycledAt']
   },
   supervisor_correction: {
@@ -179,14 +290,27 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
     roles: ['apply'],
     required: ['leadId', 'title', 'summary'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'title', 'summary', 'detail', 'actor'],
-    maxLength: { title: TITLE_MAX, summary: SUMMARY_MAX }
+    maxLength: { title: TITLE_MAX, summary: SUMMARY_MAX },
+    fields: {
+      leadId: { kind: 'positive_int' },
+      assignmentId: { kind: 'positive_int' },
+      title: { kind: 'string' },
+      summary: { kind: 'string' },
+      actor: { kind: 'string' }
+    }
   },
   permission_change: {
     entityType: 'permission',
     roles: ['apply'],
     required: ['employeeRef', 'declaredRole'],
     allowed: ['type', 'deliveryRole', 'employeeRef', 'declaredRole', 'authoritySource', 'displayName'],
-    maxLength: { employeeRef: 120, declaredRole: ROLE_MAX, displayName: SALES_NAME_MAX }
+    maxLength: { employeeRef: 120, declaredRole: ROLE_MAX, displayName: SALES_NAME_MAX },
+    fields: {
+      employeeRef: { kind: 'string' },
+      declaredRole: { kind: 'string' },
+      authoritySource: { kind: 'string' },
+      displayName: { kind: 'string' }
+    }
   }
 }
 
@@ -290,8 +414,34 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) return `unknown_field:${key}`
   }
+  // 顶层字段：缺失判定看 spec.required，**出现时**的形态一律按 spec.fields 的共享规则判。
+  // 两种字段不登记 fields，因为它们已有**更专门**的校验器，重复登记只会制造两份会各自漂移的规则：
+  //   - `lead`：子对象，由 validateLeadObject 按 transport 分档单管（白名单/逐字段/建档必填）；
+  //   - 出现在 spec.enums 里的字段（如 transfer 的 `mode`）：由枚举分支按「字符串字面量」判。
+  // 其余顶层标量字段若在 required 却既无 fields 也无上述专门校验 = 注册表自相矛盾，直接拒收，
+  // 不给「只判非空就放行」留后门（曾经的缺陷：`assignmentId: 0` / `leadId: "41"` /
+  // `remindCount: {}` 全被判为合法）。
+  const fieldRules = spec.fields ?? {}
+  const enumFields = new Set(Object.keys(spec.enums ?? {}))
   for (const field of spec.required) {
+    const rule = fieldRules[field]
+    if (!rule) {
+      if (field !== 'lead' && !enumFields.has(field)) return `unregistered_field_rule:${field}`
+      if (isBlank(payload[field])) return `missing_field:${field}`
+      continue
+    }
     if (isBlank(payload[field])) return `missing_field:${field}`
+    const error = checkDeclaredField(field, payload[field], rule, spec.maxLength?.[field])
+    if (error) return error
+  }
+  // 非必填但已登记规则的字段：出现即不许是 `undefined` / `null`——
+  // 「字段在库里而不是在线上」不该被静默当成「未设置」（发送方应省略，而不是发 {} 或 null）。
+  for (const [field, rule] of Object.entries(fieldRules)) {
+    if (spec.required.includes(field)) continue
+    const value = payload[field]
+    if (value === undefined || value === null) continue
+    const error = checkDeclaredField(field, value, rule, spec.maxLength?.[field])
+    if (error) return error
   }
   for (const field of spec.requiredTimestamps ?? []) {
     // 必须是 number 类型的有限正整数：字符串数字/小数/0/负数一律拒收（SLA 截止时间绝不许漂移）
@@ -321,8 +471,11 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
   const leadObj = payload.lead
   if (leadObj && typeof leadObj === 'object' && !Array.isArray(leadObj)) {
     const subId = (leadObj as Record<string, unknown>).leadId
+    // **原始类型直接比较**，绝不 `Number()` 后再比：`Number("41") === Number(41)` 会让
+    // 「字符串数字的顶层 leadId + 数字的子对象 leadId」被当成一致（同一 id 的两种类型表述，
+    // 下游各自解读必然漂移）。两侧都已在各自规则下通过严格正整数校验，此处只做相等判定。
     if (!isBlank(payload.leadId) && subId !== undefined && subId !== null &&
-      Number(payload.leadId) !== Number(subId)) return 'lead_id_mismatch'
+      payload.leadId !== subId) return 'lead_id_mismatch'
   }
   return null
 }
