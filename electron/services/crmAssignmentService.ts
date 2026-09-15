@@ -236,19 +236,22 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
   const why = String(reason || '').trim() || '移交'
   const now = Date.now()
   const sla1 = now + sla1Ms()
+  const mode = String(row.mode || 'manual')
   const newId = crmDbService.runTx((tx) => {
     tx.run("UPDATE assignment SET status = 'transferred', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
     const nid = tx.run(
       'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [Number(row.lead_id), target, String(row.mode || 'manual'), sla1, '', 'assigned', 'transfer', by, now, 1, 0]
+      [Number(row.lead_id), target, mode, sla1, '', 'assigned', 'transfer', by, now, 1, 0]
     )
     tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
       ['lead', Number(row.lead_id), String(row.sales_name), target, why, by, now])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_transfer', 'lead', Number(row.lead_id), JSON.stringify({ fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid }), now])
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, Number(row.lead_id)])
-    // outbox 登记（下行 transfer 事件，同步设计 §3；key 用新行 id = 每次移交一条事件）
-    recordOutboxTx(tx, 'transfer', `transfer:${nid}`, { leadId: Number(row.lead_id), fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, actor: by }, now)
+    // outbox 登记（下行 transfer 事件，同步设计 §3；key 用新行 id = 每次移交一条事件）。
+    // sla1Deadline/mode 是移交事实产生时就确定的值，必须随指令传递：接收端落地精确等于本值，
+    // 绝不按接收端当前配置/时钟重算（2026-09-15 修复：此前缺这两个字段，接收端 sla1_deadline 落 NULL）。
+    recordOutboxTx(tx, 'transfer', `transfer:${nid}`, { leadId: Number(row.lead_id), fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, mode, sla1Deadline: sla1, actor: by }, now)
     return nid
   })
   return { ok: true, data: { assignmentId: newId } }

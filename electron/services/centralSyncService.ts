@@ -429,12 +429,15 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
   }
   // 移交：单条 outbox 行 → 两条下行指令（接收方 apply / 原归属 remove）。
   // lead 与 assign 走同一个 commandLeadOf()，不另建一份线索构造逻辑。
+  // sla1Deadline/mode 直接透传出事时确定的绝对值（注册表 transfer 已将其列为必填，
+  // 接收端落地精确等于本值，不按接收端配置/时钟重算）。
   if (commandType === 'transfer') {
     return {
       ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
       oldAssignmentId: Number(payload.oldAssignmentId || 0),
       fromSales: String(payload.fromSales || ''), toSales: String(payload.toSales || ''),
-      reason: String(payload.reason || ''), actor: String(payload.actor || 'system:sync'),
+      reason: String(payload.reason || ''), mode: String(payload.mode || ''),
+      sla1Deadline: Number(payload.sla1Deadline || 0) || null, actor: String(payload.actor || 'system:sync'),
       lead: commandLeadOf(leadId)
     }
   }
@@ -564,16 +567,19 @@ async function pushOutboxCommand(
       targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
     }, 'central-http')
     if (invalid) {
-      settleOutboxRow(rowId, 'failed', { reason: invalid, commandType, failedRole: item.role, delivered: pushed })
+      settleOutboxRow(rowId, 'failed', { reason: invalid, commandType, failedRole: item.role, failedTarget: item.target.employeeId, delivered: pushed })
       return { pushed, rejected: 1 }
     }
     try {
       await client.issueCommand(event)
     } catch (error) {
       // 中央明确拒收（4xx）：契约/权限问题，重试无用 —— 整行终态 failed，如实记录已送达几个目标
+      // （failedRole + failedTarget + delivered：人工修复需要知道「谁已受理、谁被拒」，防止
+      //  两个销售设备各持有效归属而无人知晓；审计只带稳定员工标识，不带客户数据）
       if (error instanceof CentralSyncHttpError && error.status >= 400 && error.status < 500) {
         settleOutboxRow(rowId, 'failed', {
-          reason: `http_${error.status}:${error.code}`, commandType, failedRole: item.role, delivered: pushed
+          reason: `http_${error.status}:${error.code}`, commandType, failedRole: item.role,
+          failedTarget: item.target.employeeId, delivered: pushed
         })
         return { pushed, rejected: 1 }
       }

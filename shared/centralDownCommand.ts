@@ -6,9 +6,10 @@
  * 业务规则在两处各写一遍必然漂移。本模块是**唯一**的下行业务校验器，两条入口共用同一份 spec：
  *   - centralSyncService.toLocalEvent   → 中央 HTTP 下行的本机应用侧（transport = 'central-http'）；
  *   - centralSyncService.pushOutboxCommand → 中央 HTTP 上行发送前自检（transport = 'central-http'）；
- *   - central/src/app.ts `/sync/commands`  → 中央侧在建指令时就按同一份 spec 拒收。
- *   - lanSyncService.validateDownEventFile → SMB 文件通道只复用 `downCommandSpec().roles` 与
- *     禁字段表，**不**走本模块的 payload 白名单（见下方 transport 分档说明）。
+ *   - central/src/app.ts `/sync/commands`  → 中央侧在建指令时就按同一份 spec 拒收；
+ *   - lanSyncService.validateDownEventFile → SMB 文件通道（transport = 'smb'）在本体校验通过后、
+ *     进入任何业务事务之前调用 validateDownCommand：payload 白名单/必填/类型/lead 建档契约
+ *     全部走本模块，SMB 专属检查（投递键、文件名绑定、主管通知分流）留在 validateDownEventFile。
  *
  * 纪律：payload 是**严格白名单**——未登记字段一律拒收整事件，不做静默裁剪（静默裁剪会让
  * 发送方误以为已成功投递）。聊天正文与会话标识任何方向都不许出现。
@@ -99,9 +100,13 @@ export interface DownCommandSpec {
   allowed: readonly string[]
   /** 是否允许携带 lead 子对象；false = 携带即拒收 */
   allowsLead?: boolean
+  /** SMB 历史信封额外允许的顶层字段（中央 HTTP 不放开） */
+  smbAllowedExtra?: readonly string[]
+  /** SMB 历史信封允许携带 lead 子对象（中央 HTTP 仍按 allowsLead 拒收） */
+  smbAllowsLead?: boolean
   enums?: Record<string, readonly string[]>
   maxLength?: Record<string, number>
-  /** 必填的数值时间戳字段（版本前置条件用） */
+  /** 必填的数值时间戳字段（版本前置条件用）：必须是有限正整数 */
   requiredTimestamps?: readonly string[]
 }
 
@@ -110,6 +115,10 @@ export interface DownCommandSpec {
  * 投递角色与 Phase 1 SMB 口径一致：assign/recycle → apply；transfer → apply|remove；
  * 主管通知 → notify；本阶段新增的两类中央专有指令 → apply。
  * 各类型的 lead 子对象允许字段由 transport 决定，见 leadFieldsFor()。
+ *
+ * transfer 的 SLA 纪律（2026-09-15 移交 SLA 修复）：sla1Deadline 与 mode 是**移交事实产生时**
+ * 就确定的值，必须随指令传递（required/requiredTimestamps），接收端落地**精确等于指令值**，
+ * 绝不在接收端按「当前配置小时数」重算（设备时钟/配置不同会漂移）。SMB 与中央 HTTP 同一口径。
  */
 export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   assign: {
@@ -123,16 +132,21 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   transfer: {
     entityType: 'assignment',
     roles: ['apply', 'remove'],
-    required: ['leadId', 'assignmentId', 'toSales', 'lead'],
-    allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'fromSales', 'toSales', 'reason', 'oldAssignmentId', 'actor', 'slaHours', 'lead'],
+    required: ['leadId', 'assignmentId', 'toSales', 'lead', 'mode'],
+    allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'fromSales', 'toSales', 'reason', 'oldAssignmentId', 'actor', 'slaHours', 'mode', 'sla1Deadline', 'lead'],
     allowsLead: true,
-    maxLength: { toSales: SALES_NAME_MAX, fromSales: SALES_NAME_MAX, reason: REASON_MAX }
+    maxLength: { toSales: SALES_NAME_MAX, fromSales: SALES_NAME_MAX, reason: REASON_MAX },
+    requiredTimestamps: ['sla1Deadline']
   },
   recycle: {
     entityType: 'assignment',
     roles: ['apply'],
     required: ['leadId', 'assignmentId', 'salesName'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'reason', 'actor'],
+    // SMB 历史信封在 recycle 上也携带 lead 资料与 slaHours（emitDownEvents 统一附加，Phase 1 口径）；
+    // 中央 HTTP 不放开：commandPayloadOf('recycle') 不产 lead，服务端携带即 400。
+    smbAllowedExtra: ['lead', 'slaHours'],
+    smbAllowsLead: true,
     maxLength: { salesName: SALES_NAME_MAX, reason: REASON_MAX }
   },
   sla1_escalate_supervisor: {
@@ -177,15 +191,35 @@ export interface DownCommandSubject {
   payload: Record<string, unknown>
   targetEmployeeId?: string
   targetDeviceId?: string
+  /**
+   * SMB 文件通道没有中央 UUID 目标字段：用**已通过「等于本机投递键」校验**的投递键
+   * 作为「目标是本机」的传输上下文。只在 transport='smb' 时有效，绝不伪造业务 UUID。
+   */
+  localDeliveryKey?: string
 }
 
 /**
- * lead 子对象的字段白名单 + 逐字段类型/长度/枚举校验。返回稳定错误码（null = 通过）。
+ * lead 子对象的建档必填字段（按 transport 分档，2026-09-15 建档契约修复）：
+ *   - 两条通道共同的最小身份：leadId（正整数）+ contactType（枚举）+ contactNormalized（非空）——
+ *     缺任何一项，接收端要么无法定位身份，要么会以空 contact_normalized 建档并撞
+ *     UNIQUE(contact_type, contact_normalized)，一律拒收；
+ *   - central-http：文档口径是「固定 6 字段」，因此 6 项必须**全部存在**；
+ *     name/source/note 允许空串，但必须以正确的字符串类型存在；
+ *   - smb：历史 8 字段口径，name/source/note/contactRaw/wechat 存在即校验、不强制存在
+ *     （既有生产文件由 leadProfileOf 生成恒带 8 字段；强制存在反而可能误杀历史文件）。
+ */
+const LEAD_REQUIRED_FIELDS: Record<DownTransport, readonly string[]> = {
+  smb: ['leadId', 'contactType', 'contactNormalized'],
+  'central-http': CENTRAL_LEAD_FIELDS
+}
+
+/**
+ * lead 子对象的字段白名单 + 逐字段类型/长度/枚举校验 + 建档必填。返回稳定错误码（null = 通过）。
  * 错误码只带字段名，不带字段值。
  */
-function validateLeadObject(lead: unknown, spec: DownCommandSpec, transport: DownTransport): string | null {
+function validateLeadObject(lead: unknown, allowsLead: boolean, transport: DownTransport): string | null {
   if (lead === undefined || lead === null) return null
-  if (!spec.allowsLead) return 'unexpected_lead'
+  if (!allowsLead) return 'unexpected_lead'
   if (typeof lead !== 'object' || Array.isArray(lead)) return 'invalid_lead'
   const record = lead as Record<string, unknown>
   const allowed = new Set(leadFieldsFor(transport))
@@ -204,7 +238,11 @@ function validateLeadObject(lead: unknown, spec: DownCommandSpec, transport: Dow
     if (rule.max !== undefined && value.length > rule.max) return `too_long_lead_field:${key}`
     if (rule.enum && !rule.enum.includes(value)) return `invalid_lead_field:${key}`
   }
-  if (isBlank(record.leadId)) return 'missing_field:lead.leadId'
+  for (const field of LEAD_REQUIRED_FIELDS[transport]) {
+    if (record[field] === undefined || record[field] === null) return `missing_lead_field:${field}`
+  }
+  // contactNormalized 是身份定位与建档的唯一锚点：空串 = 空身份，两条通道都拒收
+  if (isBlank(record.contactNormalized)) return 'missing_lead_field:contactNormalized'
   return null
 }
 
@@ -219,7 +257,10 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
   if (!isCentralEntityType(subject.entityType) || subject.entityType !== spec.entityType) {
     return `entity_type_mismatch:${subject.eventType}≠${String(subject.entityType)}`
   }
-  if (!subject.targetDeviceId && !subject.targetEmployeeId) return 'missing_target'
+  // 「目标存在性」按 transport 判定：中央 HTTP 必须带 UUID 目标；SMB 用已验证的本机投递键
+  const hasTarget = Boolean(subject.targetDeviceId || subject.targetEmployeeId) ||
+    (transport === 'smb' && Boolean(subject.localDeliveryKey))
+  if (!hasTarget) return 'missing_target'
   const payload = subject.payload
   const role = String(payload.deliveryRole ?? '')
   if (!(DOWN_DELIVERY_ROLES as readonly string[]).includes(role)) return `invalid_delivery_role:${role || '(缺失)'}`
@@ -229,6 +270,7 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
   if (forbidden) return `forbidden_field:${forbidden}`
 
   const allowed = new Set(spec.allowed)
+  if (transport === 'smb') for (const extra of spec.smbAllowedExtra ?? []) allowed.add(extra)
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) return `unknown_field:${key}`
   }
@@ -236,8 +278,9 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
     if (isBlank(payload[field])) return `missing_field:${field}`
   }
   for (const field of spec.requiredTimestamps ?? []) {
-    const n = Number(payload[field] ?? 0)
-    if (!Number.isFinite(n) || n <= 0) return `invalid_timestamp:${field}`
+    // 必须是 number 类型的有限正整数：字符串数字/小数/0/负数一律拒收（SLA 截止时间绝不许漂移）
+    const n = payload[field]
+    if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) return `invalid_timestamp:${field}`
   }
   for (const [field, values] of Object.entries(spec.enums ?? {})) {
     if (isBlank(payload[field])) continue
@@ -249,7 +292,17 @@ export function validateDownCommand(subject: DownCommandSubject, transport: Down
     if (typeof value !== 'string') return `invalid_type:${field}`
     if (value.length > max) return `too_long:${field}`
   }
-  return validateLeadObject(payload.lead, spec, transport)
+  const allowsLead = spec.allowsLead === true || (transport === 'smb' && spec.smbAllowsLead === true)
+  const leadError = validateLeadObject(payload.lead, allowsLead, transport)
+  if (leadError) return leadError
+  // 顶层 leadId 与 lead.leadId 必须一致：不一致说明指令本身自相矛盾，禁止按其中一个猜
+  const leadObj = payload.lead
+  if (leadObj && typeof leadObj === 'object' && !Array.isArray(leadObj)) {
+    const subId = (leadObj as Record<string, unknown>).leadId
+    if (!isBlank(payload.leadId) && subId !== undefined && subId !== null &&
+      Number(payload.leadId) !== Number(subId)) return 'lead_id_mismatch'
+  }
+  return null
 }
 
 /**

@@ -59,7 +59,7 @@ import { maskPrivateText } from './crmSla2Service'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { expandHomePath } from '../utils/pathUtils'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
-import { downCommandSpec } from '../../shared/centralDownCommand'
+import { downCommandSpec, validateDownCommand } from '../../shared/centralDownCommand'
 import { findForbiddenDownlinkField } from '../../shared/centralSync'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
@@ -698,7 +698,7 @@ function writeAckFile(root: string, ev: SyncEventFile, base: string, outcome: Ac
 }
 
 /**
- * 下行事件「本体校验」（2026-09-09 并发修复补强）：进入任何业务事务/幂等标记/ACK 之前执行。
+ * 下行事件「本体校验」（2026-09-09 并发修复补强；2026-09-15 接入共享业务校验器）：进入任何业务事务/幂等标记/ACK 之前执行。
  * 校验失败返回原因（不写 lead/assignment/audit_event、不写 syncApplied/syncOutcome、
  * 不生成可被中枢接受的成功 ACK）；文件移入本机队列 .failed/ 保留可审计、计 failed。
  *   - ev.to 必须等于本机投递键（防替换/误放置的文件改写本机业务）；
@@ -706,6 +706,8 @@ function writeAckFile(root: string, ev: SyncEventFile, base: string, outcome: Ac
  *   - deliveryRole 必须显式存在且合法（禁止缺失时默认 apply）；
  *   - type/role 组合必须匹配：assign→apply；recycle→apply；transfer→apply|remove；
  *     sla1_escalate_supervisor 及未知类型不得由终端应用（通知走中枢本机通道）；
+ *   - payload 业务校验走 shared/centralDownCommand.validateDownCommand(transport='smb')：
+ *     白名单/必填/类型/枚举/lead 建档契约与中央 HTTP 同一份规则（lead 字段集按 smb 档 8 字段）；
  *   - 文件名必须与 deliveryFileName(eventSeq, idempotencyKey, role) 完全一致。
  */
 export function validateDownEventFile(ev: SyncEventFile, ownDeliveryKey: string, fileName: string): string | null {
@@ -730,6 +732,16 @@ export function validateDownEventFile(ev: SyncEventFile, ownDeliveryKey: string,
   if (chatLeak) {
     return `载荷含禁止下行字段(${chatLeak})`
   }
+  // 业务校验（2026-09-15 接入共享校验器）：进入任何业务事务/幂等标记/ACK 之前，
+  // payload 白名单/必填/类型/lead 建档契约一律走 shared/centralDownCommand 同一份规则
+  // （transport='smb'：lead 保留历史 8 字段口径；目标存在性用上面已验证的本机投递键证明，
+  //  SMB 没有中央 UUID target 字段，绝不伪造）。此前合法信封配 payload={} 也能进入状态机。
+  const businessError = validateDownCommand({
+    eventType: String(ev.type || ''), entityType: spec.entityType,
+    payload: { ...ev.payload, deliveryRole: role },
+    localDeliveryKey: String(ev.to || '')
+  }, 'smb')
+  if (businessError) return `业务校验失败(${businessError})`
   const expectedName = deliveryFileName(Number(ev.eventSeq), ev.idempotencyKey, role)
   if (fileName !== expectedName) {
     return `文件名(${fileName})与事件内容不一致(应为 ${expectedName})`
