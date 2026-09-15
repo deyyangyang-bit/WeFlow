@@ -39,7 +39,7 @@ function ok(name: string, cond: boolean, detail = ''): void {
 }
 
 import type { CentralSyncEvent } from '../shared/centralSync'
-import { findForbiddenCentralField } from '../shared/centralSync'
+import { findForbiddenCentralField, isConcreteRef, validateCentralEntityId } from '../shared/centralSync'
 import { validateCentralEntityId } from '../shared/centralDownCommand'
 
 let crmDbService: (typeof import('../electron/services/crmDbService'))['crmDbService']
@@ -405,7 +405,17 @@ async function main(): Promise<void> {
     downEvent('ev-transfer-no-sla', 'transfer', {
       leadId: 9105, assignmentId: 9105, oldAssignmentId: 9100, fromSales: '测试销售乙', toSales: '测试销售甲',
       deliveryRole: 'apply', lead: { ...leadBase, leadId: 9105, contactNormalized: '13900000105' } // 缺 sla1Deadline/mode
-    }, 4)
+    }, 4),
+    // mode 出现即必须是枚举内的字符串字面量：发送前自检与中央 HTTP / SMB 入口共用同一份注册表。
+    // 这里逐个形态验证「本机应用侧也不放行」——String({}) / String(1) / String(true) 都不许蒙混过关。
+    ...[
+      ['ev-mode-object', {}], ['ev-mode-array', []], ['ev-mode-number', 1],
+      ['ev-mode-boolean', true], ['ev-mode-unknown', 'teleport'], ['ev-mode-numeric-string', '1']
+    ].map(([eventId, mode], i) => downEvent(String(eventId), 'transfer', {
+      leadId: 9106 + i, assignmentId: 9106 + i, oldAssignmentId: 9100, fromSales: '测试销售乙', toSales: '测试销售甲',
+      mode, sla1Deadline: Date.now() + 86_400_000, deliveryRole: 'apply',
+      lead: { ...leadBase, leadId: 9106 + i, contactNormalized: `1390000020${i}` }
+    }, 5 + i))
   ]
   resetCapture()
   await service.runCentralSyncOnce()
@@ -421,6 +431,14 @@ async function main(): Promise<void> {
     crmDbService.all('SELECT id FROM assignment WHERE lead_id IN (9102, 9103, 9104, 9105)').length === 0)
   ok('E7 被拒指令不消耗幂等标记（修正后重发同 key 仍可应用）',
     crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'syncApplied:central/ev-lead-%'").length === 0)
+  // mode 非法的指令同样终态 invalid：不被 String(value) 变成一个「看起来合法」的枚举值
+  const badgeModeIds = ['ev-mode-object', 'ev-mode-array', 'ev-mode-number', 'ev-mode-boolean', 'ev-mode-unknown', 'ev-mode-numeric-string']
+  ok('E8 mode 非法形态（对象/数组/数字/布尔/未知串/数字串）在本机应用侧全部终态 invalid',
+    badgeModeIds.every((id) => contractAcks.some((a) => a.eventId === id && a.outcome === 'invalid')),
+    JSON.stringify(contractAcks.filter((a) => badgeModeIds.includes(String(a.eventId)))))
+  ok('E9 mode 被拒的指令零业务写、零幂等标记（无效载荷进不了任何状态机）',
+    crmDbService.all("SELECT id FROM lead WHERE contact_type = 'phone' AND contact_normalized LIKE '1390000020%'").length === 0 &&
+    badgeModeIds.every((id) => crmDbService.all("SELECT key FROM scan_state WHERE key LIKE ?", [`syncApplied:central/${id}%`]).length === 0))
 
   console.log('═══ H. 上行指令链：员工目录解析（§三.5）═══')
   configureBinding()
@@ -621,6 +639,28 @@ async function main(): Promise<void> {
     full.filter((e) => e.entityType === 'customer').every((e) => e.entityId.startsWith('dev-1/customer:')))
   ok('J6 每个上行 (entityType, entityId) 都通过中央引用形态校验（本地自检与服务端同一份规则）',
     full.every((e) => validateCentralEntityId(e.entityType, e.entityId) === null))
+  // §四 实体引用「具体性」：有类别 ≠ 指向某一行。判定与上行 *Ref 闸门同源（isConcreteRef），
+  // 不新造第三个解析器——同一份事实在两处各写一遍必然漂移。
+  ok('J7 isConcreteRef 正例：设备命名空间 + 类别 + 非空白行号',
+    isConcreteRef('dev-1/customer:1') && isConcreteRef('dev-1/assignment:42') &&
+    isConcreteRef(`dev-1/customer:${'x'.repeat(64)}`) && isConcreteRef('dev-1/customer: 行号有空格也非空 '))
+  ok('J8 isConcreteRef 反例：空行号 / 全空白行号 / 缺冒号 / 缺命名空间 / 缺类别 / 非字符串一律不具体',
+    !isConcreteRef('dev-1/customer:') && !isConcreteRef('dev-1/customer:   ') && !isConcreteRef('dev-1/customer') &&
+    !isConcreteRef('customer:1') && !isConcreteRef('dev-1/:1') && !isConcreteRef(':1') &&
+    !isConcreteRef(123) && !isConcreteRef(null) && !isConcreteRef(undefined) && !isConcreteRef({}) && !isConcreteRef([]))
+  ok('J9 validateCentralEntityId 正例：完整具体引用放行（既有合法 scoped ref 不受影响）',
+    validateCentralEntityId('customer', 'dev-1/customer:1') === null &&
+    validateCentralEntityId('assignment', 'dev-1/assignment:7') === null &&
+    full.filter((e) => e.entityType === 'customer').every((e) => validateCentralEntityId(e.entityType, e.entityId) === null))
+  ok('J10 validateCentralEntityId 反例：只有类别没有行号 → entity_id_not_concrete',
+    validateCentralEntityId('customer', 'dev-1/customer:') === 'entity_id_not_concrete' &&
+    validateCentralEntityId('customer', 'dev-1/customer:   ') === 'entity_id_not_concrete' &&
+    validateCentralEntityId('assignment', 'dev-1/assignment:') === 'entity_id_not_concrete')
+  ok('J11 validateCentralEntityId 反例：缺命名空间 / 类别不符 / 非字符串 → 各自稳定码',
+    validateCentralEntityId('customer', 'customer:1') === 'entity_id_not_scoped' &&
+    validateCentralEntityId('customer', 'dev-1/lead:1') === 'entity_id_kind_mismatch:lead≠customer' &&
+    validateCentralEntityId('customer', 123 as unknown as string) === 'entity_id_not_scoped' &&
+    validateCentralEntityId('teleport' as never, 'dev-1/customer:1') === 'invalid_entity_type')
 
   console.log('═══ K. 过滤行不阻塞游标（§五）═══')
   // 台账键 = centralSync:skip:<投影名>:<本地引用>，而本地引用本身已带 customer: 前缀

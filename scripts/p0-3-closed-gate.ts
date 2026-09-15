@@ -10,6 +10,15 @@
  * ② 真实库运行态：sql.js 字节进内存纯只读（不写回原文件），
  *    统计 customer_judgment 覆盖 / freshness / evidence 可用性 / 冲突观察（复用 p0-2-real-db-audit 先例）
  *
+ * **输出脱敏红线（2026-09-15 收紧）**：本脚本会读到真实客户库，因此**只许打印聚合计数、
+ * 通过/失败与结构性结论**。以下内容一律不得出现在 stdout/stderr（断言失败细节也不例外）：
+ *   - session_id / 客户姓名 / 任何联系方式；
+ *   - 判断正文与摘要（value / summary / evidence_text）；
+ *   - evidence 的 message_key 原文；
+ *   - 真实库的绝对路径（只报「库文件是否存在」）。
+ * 「判断样例」这类逐行转储已删除：它是把真实客户内容直接写到终端，验收价值由聚合计数完全覆盖。
+ * 该红线由 scripts/p0-3-closed-gate-test.ts 的静态守卫 + 输出捕获守卫强制。
+ *
  * 运行：npx tsx scripts/p0-3-closed-gate.ts [dbPath]
  * 默认库：~/Library/Application Support/weflow/weflow-sales.db
  */
@@ -79,7 +88,8 @@ async function main(): Promise<void> {
   // ── ② 真实库运行态验收（sql.js 只读）─────────────────────────────────────
   console.log('\n── ② 真实库运行态验收（sql.js 只读）──')
   if (!existsSync(dbPath)) {
-    console.error(`DB 不存在: ${dbPath}`)
+    // 只报「不存在 + 能否定位到库」，不打印绝对路径（路径本身会暴露用户名与目录结构）
+    console.error('FAIL: 业务库文件不存在（未传入可用路径，或默认位置尚无库）；不打印路径')
     process.exit(1)
   }
   const SQL = await initSqlJs({
@@ -125,14 +135,18 @@ async function main(): Promise<void> {
     console.log(`stale（>24h 或无时间戳）${stale}/${totalJudgments}——stale 仍返回并标「较旧」，属契约语义非缺陷`)
 
     sep('evidence 可用性')
-    const withKey = q('SELECT COUNT(*) AS c FROM customer_judgment WHERE message_key IS NOT NULL AND TRIM(message_key) != \'\'')[0]?.c
-    const keys = q('SELECT message_key AS k FROM customer_judgment WHERE message_key IS NOT NULL AND TRIM(message_key) != \'\'')
-    const parseable = keys.filter((r) => parseEvidenceKey(String(r.k)).kind !== 'unknown').length
-    console.log(`message_key 非空 ${withKey}/${totalJudgments}（ok）；可解析 ${parseable}/${keys.length}（P0-2B 格式）`)
+    const withKey = one("SELECT COUNT(*) AS c FROM customer_judgment WHERE message_key IS NOT NULL AND TRIM(message_key) != ''")
+    // key 原文只在本地参与解析计数，**不落任何输出**（message_key 含会话标识）
+    const keyCount = one("SELECT COUNT(*) AS c FROM customer_judgment WHERE message_key IS NOT NULL AND TRIM(message_key) != ''")
+    // 不起别名：`AS k` 这类「取出来便于打印」的写法是回归信号，静态守卫直接禁止
+    const parseable = q("SELECT message_key FROM customer_judgment WHERE message_key IS NOT NULL AND TRIM(message_key) != ''")
+      .filter((r) => parseEvidenceKey(String(r.message_key)).kind !== 'unknown').length
+    console.log(`message_key 非空 ${withKey}/${totalJudgments}（ok）；可解析 ${parseable}/${keyCount}（P0-2B 格式）`)
 
     sep('四类全齐客户（今日行动卡面板最完整场景）')
-    const full = q('SELECT session_id FROM customer_judgment GROUP BY session_id HAVING COUNT(DISTINCT judgment_type) = 4 LIMIT 5')
-    console.log(full.length > 0 ? full.map((r) => r.session_id).join(' / ') : '无（部分类型未覆盖属正常）')
+    // 只报计数：客户标识属私有内容，终端不留痕
+    const fullCount = one('SELECT COUNT(*) AS c FROM (SELECT session_id FROM customer_judgment GROUP BY session_id HAVING COUNT(DISTINCT judgment_type) = 4)')
+    console.log(`四类型全齐客户数 ${fullCount}（部分类型未覆盖属正常）`)
 
     sep('冲突观察（判断 × 客户状态）')
     const oppWonLost = one("SELECT COUNT(*) AS c FROM customer_judgment j JOIN customer_profile p ON p.session_id = j.session_id WHERE j.judgment_type IN ('opportunity') AND p.stage IN ('won','lost')")
@@ -140,10 +154,8 @@ async function main(): Promise<void> {
     const orphan = one("SELECT COUNT(*) AS c FROM customer_judgment j LEFT JOIN customer_profile p ON p.session_id = j.session_id WHERE p.session_id IS NULL")
     console.log(`opportunity × won/lost=${oppWonLost} risk × won/lost=${riskWonLost} orphan（无客户行）=${orphan}`)
 
-    sep('判断样例（最新 3 条）')
-    for (const r of q('SELECT session_id AS s, judgment_type AS t, value AS v, message_key AS k FROM customer_judgment ORDER BY COALESCE(generated_at, created_at) DESC, id DESC LIMIT 3')) {
-      console.log(`  ${r.s} ${r.t}: ${String(r.v).slice(0, 40)} key=${r.k || '(unavailable)'}`)
-    }
+    // 逐行样例（session_id / 判断正文 / message_key）**故意不打印**：真实客户内容不进终端。
+    // 需要看内容请打开应用界面（受账号隔离与脱敏约束），而不是在这里转储。
   }
 
   console.log(`\np0-3-closed-gate: ${pass} passed, ${fail} failed（静态）；运行态验收见上`)

@@ -681,19 +681,26 @@ async function main(): Promise<void> {
     !JSON.stringify(newTransferAudits).includes(TRANSFER_PHONE) && !JSON.stringify(newTransferAudits).includes('端到端移交线索'),
     JSON.stringify(newTransferAudits))
 
-  // 重放：同 eventId + 同幂等键 → 中央判 duplicate，不新增指令、不新增审计
-  crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE id = ?", [Number(transferRow?.id)]) })
+  // 重放抑制：**不再**由测试手改 outbox 状态来「复活」已结算的行——生产上没有这种入口
+  // （正式重投入口 retryFailedOutbox 只受理 failed 行，sent 行不可复活）。这里断言的是那层保障本身：
+  // 已结算的行不会被再次投递，既不重复送达、也不对中央发起多余的判重请求。
+  // 「同 eventId + 同幂等键 → 中央判 duplicate」由 J9→J11 的真实瞬断重试覆盖（apply 目标被真实重投），
+  // 发起端身份稳定性 stableEventId(deviceId, key) 由 J11 逐字比对覆盖。
   resetCapture()
   const replayRun = await service.runCentralSyncOnce()
   const replayCmds = commandBodies().filter((e) => e.eventType === 'transfer')
-  ok('J8 移交指令重放：eventId 稳定不变、中央判 duplicate、不产生第二条指令也不重复建审计',
-    replayRun.error === undefined && replayCmds.length === 2 && duplicateCommandResponses() === 2 &&
-    replayCmds.map((e) => e.eventId).sort().join() === [applyCmd!.eventId, removeCmd!.eventId].sort().join() &&
+  // 注意：不能用 `run.pushed === 0` 判——pushUp 还包含权限声明与本地投影，它们与本行无关。
+  // 要断的是**这一行**的投递身份没有再次出机：两条指令的 eventId 不得出现在本轮任何请求里。
+  const replayTraffic = capturedText()
+  ok('J8 已结算（sent）的移交行不会被再次投递：不新增指令、不新增判重请求、不重复建审计',
+    replayRun.error === undefined && replayCmds.length === 0 &&
+    !replayTraffic.includes(String(applyCmd?.eventId || 'x')) && !replayTraffic.includes(String(removeCmd?.eventId || 'y')) &&
+    duplicateCommandResponses() === 0 &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transferRow?.id)])[0]?.status) === 'sent' &&
     store.downEventCount() === downAfterTransfer && transferAudits().length === transferAuditsBefore + 2,
     JSON.stringify({
-      n: replayCmds.length, duplicates: duplicateCommandResponses(), ids: replayCmds.map((e) => e.eventId),
-      want: [applyCmd?.eventId, removeCmd?.eventId], down: [downAfterTransfer, store.downEventCount()],
-      audits: [transferAuditsBefore, transferAudits().length]
+      run: replayRun, n: replayCmds.length, duplicates: duplicateCommandResponses(),
+      down: [downAfterTransfer, store.downEventCount()], audits: [transferAuditsBefore, transferAudits().length]
     }))
 
   // 部分成功语义必须用**从未送达过**的目标来验：上一条移交的两个目标此时都已在中央判重，
@@ -732,14 +739,19 @@ async function main(): Promise<void> {
   const recoveredRun = await service.runCentralSyncOnce()
   const recoveredCmds = commandBodies().filter((e) => e.eventType === 'transfer')
   const recoveredRemove = recoveredCmds.find((e) => ((e.payload || {}) as Record<string, unknown>).deliveryRole === 'remove')
+  const recoveredApply = recoveredCmds.find((e) => ((e.payload || {}) as Record<string, unknown>).deliveryRole === 'apply')
   ok('J11 恢复后顺序重试即收敛：已成功目标按幂等去重、失败目标补投到中央，两个目标都受理才置 sent',
     recoveredRun.error === undefined && recoveredCmds.length === 2 && duplicateCommandResponses() === 1 &&
+    // 身份稳定性：重投的 apply 与首轮送达的 apply eventId 逐字相同（stableEventId(deviceId, 幂等键)），
+    // 中央正是靠这个身份判 duplicate——若 eventId 每次重算，判重就失效、会重复建指令。
+    String(recoveredApply?.eventId) === String(partialCmds[0]?.eventId) &&
     String(recoveredRemove?.idempotencyKey || '').includes('#remove#') &&
     !String(recoveredRemove?.eventId || '').startsWith(String(partialCmds[0]?.eventId || 'x')) &&
     store.downEventCount() === downEventsBeforePartial + 2 && transferAudits().length === transferAuditsBeforePartial + 2 &&
     String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transfer2Row?.id)])[0]?.status) === 'sent',
     JSON.stringify({
-      run: recoveredRun, cmdIds: recoveredCmds.map((e) => e.eventId), duplicates: duplicateCommandResponses(),
+      run: recoveredRun, cmdIds: recoveredCmds.map((e) => e.eventId),
+      firstApplyId: partialCmds[0]?.eventId, duplicates: duplicateCommandResponses(),
       down: [downEventsBeforePartial, store.downEventCount()], audits: [transferAuditsBeforePartial, transferAudits().length]
     }))
 
@@ -773,8 +785,15 @@ async function main(): Promise<void> {
     String(failDetail4xx.failedTarget) === sales.employeeId && Number(failDetail4xx.delivered) === 1 &&
     !JSON.stringify(failDetail4xx).includes(TRANSFER3_PHONE),
     JSON.stringify(failDetail4xx))
-  // 人工修复后重投：已送达的 apply 按幂等键判 duplicate，未送达的 remove 补投成功，整行才收敛 sent
-  crmDbService.runTx((tx) => { tx.run("UPDATE outbox_event SET status='pending' WHERE id = ?", [Number(transfer3Row?.id)]) })
+  // 人工修复后重投：走**正式生产入口** retryFailedOutbox（settings 页「重试失败同步项」背后的同一条
+  // service 方法），不再由测试直接 UPDATE outbox_event 改状态——测试不得持有生产没有的写库能力。
+  // 该入口只受理 failed 行、只做 failed → pending 的原子翻转，且不动 payload / event_seq / 幂等键。
+  const beforeRetry = crmDbService.all('SELECT event_seq, idempotency_key, payload FROM outbox_event WHERE id = ?', [Number(transfer3Row?.id)])[0]
+  const retry4xx = service.retryFailedOutbox(Number(transfer3Row?.id || 0))
+  ok('J11d0 正式重投入口受理该 failed 行：原子翻转 failed → pending，返回稳定码 ok',
+    retry4xx.ok === true && retry4xx.code === 'ok' && retry4xx.rowId === Number(transfer3Row?.id) &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transfer3Row?.id)])[0]?.status) === 'pending',
+    JSON.stringify(retry4xx))
   resetCapture()
   const recover4xxRun = await service.runCentralSyncOnce()
   ok('J11d 修复后顺序重投收敛：apply 判 duplicate、remove 补投到中央，双目标受理后才置 sent',
@@ -782,6 +801,48 @@ async function main(): Promise<void> {
     store.downEventCount() === downBefore4xx + 2 &&
     String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [Number(transfer3Row?.id)])[0]?.status) === 'sent',
     JSON.stringify({ run: recover4xxRun, down: [downBefore4xx, store.downEventCount()], duplicates: duplicateCommandResponses() }))
+
+  // ── 正式重投入口的边界契约：只翻转 failed 行，只动 status/updated_at ──────────
+  const afterRetry = crmDbService.all('SELECT status, event_seq, idempotency_key, payload FROM outbox_event WHERE id = ?', [Number(transfer3Row?.id)])[0]
+  const retryAgain = service.retryFailedOutbox(Number(transfer3Row?.id || 0))
+  const afterAgain = crmDbService.all('SELECT status, event_seq, idempotency_key, payload FROM outbox_event WHERE id = ?', [Number(transfer3Row?.id)])[0]
+  ok('J11e 重投只翻转状态：event_seq / 幂等键 / payload 逐字不变（身份字段不可被重投改写）',
+    String(afterRetry?.event_seq) === String(beforeRetry?.event_seq) &&
+    String(afterRetry?.idempotency_key) === String(beforeRetry?.idempotency_key) &&
+    String(afterRetry?.payload) === String(beforeRetry?.payload) &&
+    String(afterRetry?.idempotency_key) === `transfer:${new3AssignmentId}`,
+    JSON.stringify({ before: beforeRetry, after: { seq: afterRetry?.event_seq, key: afterRetry?.idempotency_key } }))
+  ok('J11f 重复点击幂等：行已收敛（sent）时再次重投被稳定拒收，状态与身份字段一律不变',
+    retryAgain.ok === false && retryAgain.code === 'not_failed' &&
+    String(afterAgain?.status) === 'sent' &&
+    String(afterAgain?.event_seq) === String(afterRetry?.event_seq) &&
+    String(afterAgain?.idempotency_key) === String(afterRetry?.idempotency_key) &&
+    String(afterAgain?.payload) === String(afterRetry?.payload),
+    JSON.stringify({ retryAgain, status: afterAgain?.status }))
+  ok('J11g 非法 rowId 被稳定拒收：0 / 负数 / 小数都返回 invalid_row_id，不做任何状态变更',
+    [0, -1, 1.5].every((bad) => {
+      const r = service.retryFailedOutbox(bad)
+      return r.ok === false && r.code === 'invalid_row_id'
+    }))
+  ok('J11h 不存在的 rowId 返回 not_found（不静默当成成功）',
+    (() => { const r = service.retryFailedOutbox(99999999); return r.ok === false && r.code === 'not_found' })())
+  // 未注册类型的 failed 行：入口必须拒绝（正式入口只服务已登记的下行类型，不是万能 SQL 执行器）。
+  // 这里直接造一条 fixture 行——是**测试布置**，不是给测试开一条生产没有的恢复能力。
+  const unknownRow = crmDbService.runTx((tx) => {
+    tx.run("INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+      [999999, 'e2e-unknown-type-fixture', JSON.stringify({ type: 'e2e_unknown_type' }), 'failed', 'e2e', Date.now(), Date.now()])
+    return Number(tx.all("SELECT id FROM outbox_event WHERE idempotency_key = 'e2e-unknown-type-fixture'")[0]?.id || 0)
+  })
+  const unknownRetry = service.retryFailedOutbox(unknownRow)
+  const auditRetryBefore = crmDbService.all("SELECT id FROM audit_event WHERE action = 'sync_outbox_retry'").length
+  ok('J11i 未注册类型的 failed 行被稳定拒收（unsupported_type），且行仍停在 failed、不产生重投审计',
+    unknownRetry.ok === false && unknownRetry.code === 'unsupported_type' &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [unknownRow])[0]?.status) === 'failed' &&
+    crmDbService.all("SELECT id FROM audit_event WHERE action = 'sync_outbox_retry'").length === auditRetryBefore)
+  ok('J11j 成功重投已追审计（actor/action/entity 固定，detail 只带类型，不含客户联系方式与线索内容）',
+    crmDbService.all("SELECT * FROM audit_event WHERE action = 'sync_outbox_retry' AND entity_id = ?", [String(Number(transfer3Row?.id))]).length === 1 &&
+    !JSON.stringify(crmDbService.all("SELECT detail FROM audit_event WHERE action = 'sync_outbox_retry'")).includes(TRANSFER3_PHONE) &&
+    !JSON.stringify(crmDbService.all("SELECT detail FROM audit_event WHERE action = 'sync_outbox_retry'")).includes('端到端移交线索三'))
 
   // ── 下游：两条指令必须经**既有 Phase 1 状态机**落到接收端的本机事实 ──
   // 本机是移交发起端（中枢工作机），库里的移交结果已经落地，不能拿它冒充接收端。
@@ -839,6 +900,94 @@ async function main(): Promise<void> {
     Number(crmDbService.all('SELECT first_contact_deadline FROM lead WHERE id = ?', [Number(createdLead?.id || 0)])[0]?.first_contact_deadline) === jSla1 &&
     Number(crmDbService.all('SELECT COUNT(*) AS c FROM assignment WHERE lead_id = ?', [Number(createdLead?.id || 0)])[0]?.c || 0) === asgCountBeforeReplay,
     String(replayOutcome))
+
+  // 恢复本机绑定（本机 = 主管工作机），避免改变后续任何前置状态
+  bindAs(supervisor, 'supervisor')
+
+  console.log('═══ K. 升级兼容：升级前写出的 pending transfer（缺 mode/sla1Deadline）经中央 HTTP 通道自愈 ═══')
+  // 被验证的真实缺陷：7278d61 之前 transferAssignment 只把 mode/sla1_deadline 写进新的 assignment 行，
+  // 没写进 outbox payload；共享契约随后把两者列为 transfer 必填 → 升级后这些历史 pending 行
+  // 在发送前自检即判非法、永远发不出去。修复口径见 electron/services/crmDownPayloadCompat.ts：
+  // 从本机 assignment 行取**当时写入的绝对值**，绝不按当前时间/当前 crmLeadSlaHours 重算。
+  const K_PHONE = '13800007777'
+  const kImported = leadSvc.importLeads('e2e-legacy-transfer', 'e2e-legacy-transfer.csv',
+    [{ phone: K_PHONE, name: '升级兼容线索', source: 'e2e' }])
+  const kLeadId = Number(crmDbService.all('SELECT id FROM lead WHERE contact_normalized = ?', [K_PHONE])[0]?.id || 0)
+  assignmentSvc.assignLeads([kLeadId], SALES_NAME, SUPERVISOR_NAME)
+  await service.runCentralSyncOnce() // 先把这条 assign 投完，隔离本轮计数
+  resetCapture()
+  const kOldAssignmentId = Number(assignmentSvc.currentAssignment(kLeadId)?.id || 0)
+  const kMoved = assignmentSvc.transferAssignment(kOldAssignmentId, SALES2_NAME, 'e2e 升级兼容移交', SUPERVISOR_NAME)
+  const kNewAssignmentId = Number((kMoved.data as { assignmentId?: number } | undefined)?.assignmentId || 0)
+  const kAssignmentRow = crmDbService.all('SELECT mode, sla1_deadline FROM assignment WHERE id = ?', [kNewAssignmentId])[0]
+  const kMode = String(kAssignmentRow?.mode || '')
+  const kSla = Number(kAssignmentRow?.sla1_deadline || 0)
+  const kKey = `transfer:${kNewAssignmentId}`
+  const kStateMachineRow = crmDbService.all('SELECT event_seq FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]
+  // 把状态机写出的「新写法」行改写成**升级前那一刻库里的真实行形态**：payload 里没有 mode/sla1Deadline。
+  // 这是测试布置（重建历史行），不是给测试开一条生产没有的写库能力。
+  const kSeq = Number(kStateMachineRow?.event_seq || 0)
+  crmDbService.runTx((tx) => {
+    tx.run('DELETE FROM outbox_event WHERE idempotency_key = ?', [kKey])
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+      [kSeq, kKey, JSON.stringify({
+        type: 'transfer', leadId: kLeadId, assignmentId: kNewAssignmentId, oldAssignmentId: kOldAssignmentId,
+        fromSales: SALES_NAME, toSales: SALES2_NAME, reason: 'e2e 升级兼容移交', actor: `system:${SUPERVISOR_NAME}`
+      }), 'pending', 'e2e', Date.now(), Date.now()])
+  })
+  const kLegacyFrozen = String(crmDbService.all('SELECT payload FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]?.payload)
+  const kDownBefore = store.downEventCount()
+  resetCapture()
+  const kRun = await service.runCentralSyncOnce()
+  const kCmds = commandBodies().filter((e) => e.eventType === 'transfer')
+  ok('K1 前置：真实的 assignment 行确实带 mode 与 sla1_deadline（富化的唯一数据来源）',
+    kImported.valid === 1 && kMoved.ok === true && kMode.length > 0 && kSla > 0,
+    JSON.stringify({ imported: kImported.valid, moved: kMoved.ok, kMode, kSla }))
+  ok('K2 升级前的 pending 行本轮成功投出两条指令（不再在发送前自检被判非法）',
+    kRun.error === undefined && kRun.rejected === 0 && kCmds.length === 2 && store.downEventCount() === kDownBefore + 2,
+    JSON.stringify({ run: kRun, n: kCmds.length, down: [kDownBefore, store.downEventCount()] }))
+  ok('K3 两条指令都带上了富化后的 mode 与 sla1Deadline，且逐值等于本机 assignment 行（不重算、不漂移）',
+    kCmds.every((e) => {
+      const pl = (e.payload || {}) as Record<string, unknown>
+      return String(pl.mode) === kMode && Number(pl.sla1Deadline) === kSla
+    }), JSON.stringify(kCmds.map((e) => ({ role: (e.payload as Record<string, unknown>).deliveryRole, mode: (e.payload as Record<string, unknown>).mode, sla: (e.payload as Record<string, unknown>).sla1Deadline }))))
+  ok('K4 富化不写回 outbox：库里那行 payload 保持升级前原样（惰性兼容，不做破坏性整表 UPDATE）',
+    String(crmDbService.all('SELECT payload FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]?.payload) === kLegacyFrozen)
+  ok('K5 幂等键与 event_seq 未被改写（补的是同一条事实，不是新造一条）',
+    String(crmDbService.all('SELECT idempotency_key FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]?.idempotency_key) === kKey &&
+    Number(crmDbService.all('SELECT event_seq FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]?.event_seq) === kSeq)
+  ok('K6 双目标都被中央受理后整行结算 sent',
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE idempotency_key = ?', [kKey])[0]?.status) === 'sent')
+
+  // 不可恢复：不猜值、不发送，整行终态 failed + 脱敏审计（只有行号 / 类型 / 稳定错误码）
+  const kBadKey = 'transfer:e2e-legacy-unrecoverable'
+  const kFailedAuditsBefore = crmDbService.all("SELECT id FROM audit_event WHERE action = 'sync_outbox_failed'").length
+  const kBadRowId = crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO outbox_event (event_seq, idempotency_key, payload, status, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+      [kSeq + 1, kBadKey, JSON.stringify({
+        type: 'transfer', leadId: kLeadId, assignmentId: 987654321, oldAssignmentId: kOldAssignmentId,
+        fromSales: SALES_NAME, toSales: SALES2_NAME, reason: 'e2e 升级兼容移交', actor: `system:${SUPERVISOR_NAME}`,
+        lead: { leadId: kLeadId, name: '升级兼容线索', contactType: 'phone', contactNormalized: K_PHONE, source: 'e2e', note: '' }
+      }), 'pending', 'e2e', Date.now(), Date.now()])
+    return Number(tx.all('SELECT id FROM outbox_event WHERE idempotency_key = ?', [kBadKey])[0]?.id || 0)
+  })
+  const kDownBeforeBad = store.downEventCount()
+  resetCapture()
+  const kBadRun = await service.runCentralSyncOnce()
+  const kBadAudit = crmDbService.all("SELECT * FROM audit_event WHERE action = 'sync_outbox_failed' ORDER BY id DESC LIMIT 1")[0]
+  const kBadDetail = JSON.parse(String(kBadAudit?.detail || '{}')) as Record<string, unknown>
+  ok('K7 恢复不了的升级前 pending 行：不猜值、不发送，整行终态 failed，中央一条都没收到',
+    kBadRun.error === undefined && kBadRun.rejected === 1 &&
+    String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [kBadRowId])[0]?.status) === 'failed' &&
+    store.downEventCount() === kDownBeforeBad && commandBodies().filter((e) => e.eventType === 'transfer').length === 0,
+    JSON.stringify({ run: kBadRun, status: crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [kBadRowId])[0]?.status }))
+  ok('K8 脱敏审计：只有行号 + 类型 + 稳定错误码，不含联系方式 / 线索资料 / 聊天内容',
+    ackOf(String(kBadRowId)) === '' &&
+    crmDbService.all("SELECT id FROM audit_event WHERE action = 'sync_outbox_failed'").length === kFailedAuditsBefore + 1 &&
+    String(kBadDetail.reason) === 'legacy_transfer_assignment_missing' && String(kBadDetail.commandType) === 'transfer' &&
+    Object.keys(kBadDetail).sort().join() === 'commandType,reason' &&
+    !JSON.stringify(kBadAudit).includes(K_PHONE) && !JSON.stringify(kBadAudit).includes('升级兼容线索'),
+    JSON.stringify(kBadDetail))
 
   // 恢复本机绑定（本机 = 主管工作机），避免改变后续任何前置状态
   bindAs(supervisor, 'supervisor')

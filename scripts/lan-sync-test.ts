@@ -771,6 +771,52 @@ async function main(): Promise<void> {
     (() => { const a = gCounts(); return a.lead === jBefore.lead && a.asg === jBefore.asg && a.aud === jBefore.aud })() &&
     jCases.every(([tag]) => crmDbService.getScanState(`syncApplied:assign:j-${tag}#apply`) <= 0),
     JSON.stringify(jRound))
+
+  // ── mode 枚举收紧：SMB 入口与中央 HTTP 共用同一份注册表（§七.6 单一校验器）────
+  // 出现即必须是枚举内的字符串字面量，绝不 String(value) 再比对。
+  const jModeLead = { leadId: 888890, name: 'J枚举线索', contactType: 'phone', contactNormalized: '13999990003', contactRaw: '13999990003', wechat: '', source: '同步', note: '' }
+  const jModeFile = (tag: string, mode: unknown): { name: string; body: Record<string, unknown> } => ({
+    name: deliveryFileName(802, `transfer:j-mode-${tag}`, 'apply'),
+    body: { eventSeq: 802, idempotencyKey: `transfer:j-mode-${tag}`, type: 'transfer', deliveryRole: 'apply', to: rk,
+      payload: { type: 'transfer', leadId: 888890, assignmentId: 888891, oldAssignmentId: 888890, fromSales: SALES2,
+        toSales: SALES, mode, sla1Deadline: NOW + 86400000, lead: jModeLead },
+      emittedAt: NOW }
+  })
+  const jModeIllegal: Array<[string, unknown, string]> = [
+    ['object', {}, 'invalid_enum:mode'],
+    ['array', [], 'invalid_enum:mode'],
+    ['number', 1, 'invalid_enum:mode'],
+    ['boolean', true, 'invalid_enum:mode'],
+    // 空串在 transfer 上先被「必填字段不得为空」拦下——两条路都拒收，语义等价（发送方应省略）
+    ['empty', '', 'missing_field:mode'],
+    ['unknown', 'teleport', 'invalid_enum:mode'],
+    ['numeric-string', '1', 'invalid_enum:mode']
+  ]
+  ok('J2b mode 四个合法取值（manual / weight / round_robin / load）在 SMB 入口全部通过',
+    ['manual', 'weight', 'round_robin', 'load'].every((m) => {
+      const f = jModeFile(`ok-${m}`, m)
+      return validateDownEventFile(f.body as never, rk, f.name) === null
+    }))
+  ok('J2c mode 非法形态（对象/数组/数字/布尔/空串/未知串/数字串）在 SMB 入口逐项拒收，错误码只带字段名',
+    jModeIllegal.every(([tag, mode, expect]) => {
+      const f = jModeFile(tag, mode)
+      const reason = String(validateDownEventFile(f.body as never, rk, f.name))
+      return reason.includes(expect) && !reason.includes('teleport')
+    }))
+  // 落地证明：全部真实走 consumeDownEvents → .failed 隔离、零业务写、零幂等标记、零 ACK
+  const jModeBefore = gCounts()
+  for (const [tag, mode] of jModeIllegal) {
+    const f = jModeFile(tag, mode)
+    writeFileSync(join(noleadDir, f.name), JSON.stringify(f.body))
+  }
+  const jModeRound = consumeDownEvents(shared)
+  const jModeFailedDir = join(noleadDir, '.failed')
+  ok('J2d mode 非法文件全部 .failed 隔离：零业务写、零幂等标记、零 ACK',
+    jModeRound.failed === jModeIllegal.length && jModeRound.applied === 0 &&
+    jModeIllegal.every(([tag]) => existsSync(join(jModeFailedDir, jModeFile(tag, null).name))) &&
+    (() => { const a = gCounts(); return a.lead === jModeBefore.lead && a.asg === jModeBefore.asg && a.aud === jModeBefore.aud })() &&
+    jModeIllegal.every(([tag]) => crmDbService.getScanState(`syncApplied:transfer:j-mode-${tag}#apply`) <= 0),
+    JSON.stringify(jModeRound))
   // 正反对照：合法的 8 字段 assign / transfer（apply+remove）继续通过
   const jTransferLead = { leadId: 888889, name: 'J移交线索', contactType: 'wechat', contactNormalized: 'wxid_j_transfer', contactRaw: 'wxid_j_transfer', wechat: 'wxid_j_transfer', source: '同步', note: '' }
   ok('J3 合法 8 字段 assign/transfer（含 contactRaw/wechat 的 SMB 历史口径）继续通过校验',

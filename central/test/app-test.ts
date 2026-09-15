@@ -336,6 +336,29 @@ check('K3 entityId 类别与 entityType 不符 → 400',
 const kUpDirection = await postCommand({ direction: 'up' }, 'up-direction')
 check('K4 非 direction=down 的指令 → 400', kUpDirection.statusCode === 400)
 
+// entityId 必须指向**具体的本机一行**：有类别还不够，冒号后要有非空白行号。
+// 判定与上行引用闸门同源（shared/centralSync.isConcreteRef），不新造第三个解析器。
+const kEmptyId = await postCommand({ entityId: scoped('assignment:') }, 'empty-id')
+check('K7 entityId 只有类别没有行号（`assignment:`）→ 400 entity_id_not_concrete',
+  kEmptyId.statusCode === 400 && String(kEmptyId.json().message).includes('entity_id_not_concrete'),
+  String(kEmptyId.payload))
+const kBlankId = await postCommand({ entityId: `${sales.principal.deviceId}/assignment:   ` }, 'blank-id')
+check('K7b entityId 冒号后全空白 → 400 entity_id_not_concrete（空白行号等价的空引用，不得蒙混）',
+  kBlankId.statusCode === 400 && String(kBlankId.json().message).includes('entity_id_not_concrete'),
+  String(kBlankId.payload))
+const kBareAssignment = await postCommand({ entityId: 'assignment:1' }, 'bare-assignment')
+check('K8 entityId 缺设备命名空间（裸 `assignment:1`）→ 400 entity_id_not_scoped',
+  kBareAssignment.statusCode === 400 && String(kBareAssignment.json().message).includes('entity_id_not_scoped'),
+  String(kBareAssignment.payload))
+const kNonStringId = await postCommand({ entityId: 12345 as unknown as string }, 'non-string-id')
+check('K9 entityId 不是字符串 → 400（不是 PostgreSQL 500，也不按值猜引用）',
+  kNonStringId.statusCode === 400 && String(kNonStringId.json().message).includes('entity_id_not_scoped'),
+  String(kNonStringId.payload))
+// 合法形态仍然放行：K2 / C2 已覆盖 scoped('assignment:1')，这里补一条显式的正例锚点
+const kConcreteOk = await postCommand({ entityId: scoped('assignment:1') }, 'concrete-ok')
+check('K10 完整具体引用（设备命名空间 + 类别 + 行号）→ 201（收紧不误伤既有合法引用）',
+  kConcreteOk.statusCode === 201, String(kConcreteOk.payload))
+
 const kBadEmployee = await postCommand({ targetEmployeeId: 'not-a-uuid' }, 'bad-employee')
 check('K5 非法 targetEmployeeId → 400（不是 PostgreSQL 500）', kBadEmployee.statusCode === 400)
 const kBadDevice = await postCommand({ targetDeviceId: 'not-a-uuid' }, 'bad-device')
@@ -549,6 +572,56 @@ check('M22 建档拒收不消耗幂等键（同 key 修正后 → 201 受理）'
 const mTransferOk = await postTransfer('ok', transferBase)
 check('M23 合法 transfer（sla1Deadline 有限正整数 + mode + 6 字段 lead）→ 201',
   mTransferOk.statusCode === 201, String(mTransferOk.payload))
+
+// mode 的出现即必须是**枚举内的字符串字面量**：绝不 String(value) 再比对——`{}`/`[]`/`1`/`true`
+// 都会被 String() 变成一个「看起来合法」的字符串，把非法载荷放进接收端业务状态机。
+// 枚举唯一源 = shared/centralDownCommand.ASSIGNMENT_MODES。
+const mModeLegal = await Promise.all(['manual', 'weight', 'round_robin', 'load']
+  .map((m) => postTransfer(`mode-legal-${m}`, { ...transferBase, mode: m })))
+check('M24 mode 四个合法取值（manual / weight / round_robin / load）全部受理 → 201',
+  mModeLegal.every((r) => r.statusCode === 201), JSON.stringify(mModeLegal.map((r) => [r.statusCode, r.payload])))
+// 快照取在「合法取值已被受理」之后：只度量非法载荷这一批是否零写入、零幂等标记
+const mEnumBefore = { down: store.downEventCount(), projections: store.projectionRows().length, audits: store.auditActions().length }
+const MODE_ILLEGAL: Array<[string, unknown, string]> = [
+  ['object', {}, 'invalid_enum:mode'],
+  ['array', [], 'invalid_enum:mode'],
+  ['number', 1, 'invalid_enum:mode'],
+  ['boolean', true, 'invalid_enum:mode'],
+  // 空串在 transfer 上先被「必填字段不得为空」拦下（assign 上 mode 可选，空串由枚举拦下，见 M27）
+  ['empty', '', 'missing_field:mode'],
+  ['unknown', 'teleport', 'invalid_enum:mode'],
+  // 数字转字符串后才合法：`String(1)` 不合法，但 `'1'` 是合法字符串形态的未知值 → 仍拒
+  ['numeric-string', '1', 'invalid_enum:mode']
+]
+const mModeIllegal = await Promise.all(MODE_ILLEGAL.map(([name, value]) => postTransfer(`mode-bad-${name}`, { ...transferBase, mode: value })))
+check('M25 mode 非法形态（对象/数组/数字/布尔/空串/未知串/数字串）全部 400，且错误码只带字段名不带值',
+  mModeIllegal.every((r, i) => r.statusCode === 400 &&
+    String(r.json().message).includes(MODE_ILLEGAL[i]![2]) &&
+    !String(r.json().message).includes('teleport') && !String(r.json().message).includes('mode=')),
+  JSON.stringify(mModeIllegal.map((r) => [r.statusCode, r.payload])))
+check('M26 mode 被拒的事件零业务写入、零幂等标记（无效载荷进不了任何状态机）',
+  store.downEventCount() === mEnumBefore.down && store.projectionRows().length === mEnumBefore.projections &&
+  store.auditActions().length === mEnumBefore.audits,
+  JSON.stringify([mEnumBefore, store.downEventCount(), store.projectionRows().length, store.auditActions().length]))
+// assign 的 mode 是可选字段：缺省合法；出现则同样必须合法（空串 ≠ 未设置）
+const postAssignMode = (suffix: string, mode: unknown) => app.inject({
+  method: 'POST', url: '/api/v1/sync/commands', headers: authOf(guardSup.token),
+  payload: { ...downCommand, eventId: `m-am-${suffix}`, idempotencyKey: `m-am-${suffix}`, eventType: 'assign',
+    entityId: scoped('assignment:1', guardDeviceId), targetEmployeeId: guardSales.principal.employeeId,
+    payload: { type: 'assign', deliveryRole: 'apply', leadId: 41, assignmentId: 1, salesName: '护栏销售', lead: lead6, mode } }
+})
+const mAssignNoMode = await postAssignMode('absent', undefined)
+check('M27a assign 省略 mode 合法（可选字段：缺省即未设置，不等于发了空串）', mAssignNoMode.statusCode === 201,
+  String(mAssignNoMode.payload))
+const mAssignEmptyMode = await postAssignMode('empty', '')
+check('M27b assign 发空串 mode → 400 invalid_enum:mode（发送方应省略，而不是让接收端各自兜底）',
+  mAssignEmptyMode.statusCode === 400 && String(mAssignEmptyMode.json().message).includes('invalid_enum:mode'),
+  String(mAssignEmptyMode.payload))
+const mAssignObjectMode = await postAssignMode('object', {})
+check('M27c assign 的 mode 给对象 → 400 invalid_enum:mode（不被 String({}) 蒙混过关）',
+  mAssignObjectMode.statusCode === 400 && String(mAssignObjectMode.json().message).includes('invalid_enum:mode'),
+  String(mAssignObjectMode.payload))
+
 
 console.log('═══ N. 上行载荷引用闸门：类别 / 命名空间 / 形态（§三）═══')
 const guardPush = (idem: string, events: CentralSyncEvent[]) => pushAs(authOf(guardSales.token), idem, events)
