@@ -373,8 +373,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
 
   // ── 线索分配（Phase 1 完整版，API-CONTRACT §1.14 契约五端点，统一信封）──
   // actor 兜底链：显式 > 身份档案 getActorLabel() > 「分配员」（仅署名，宪法 §1.12）
-  ipcMain.handle('crm:assignment:assign', async (_, req: { leadIds?: number[]; salesName?: string; mode?: string; actor?: string }) =>
-    assignLeads(Array.isArray(req?.leadIds) ? req.leadIds : [], String(req?.salesName || ''), String(req?.actor || ''), String(req?.mode || 'manual')))
+  // mode 原样透传给 service（`unknown`）：**不在 IPC 层 `String()`**——那会把对象/数组/数字/布尔
+  // 洗成「看起来合法」的字符串，服务层的运行时校验就永远看不到真实类型。校验与 E101 都在 service。
+  ipcMain.handle('crm:assignment:assign', async (_, req: { leadIds?: number[]; salesName?: string; mode?: unknown; actor?: string }) =>
+    assignLeads(Array.isArray(req?.leadIds) ? req.leadIds : [], String(req?.salesName || ''), String(req?.actor || ''), req?.mode))
   ipcMain.handle('crm:assignment:claim', async (_, req: { leadId?: number; actor?: string }) =>
     claimLead(Number(req?.leadId), String(req?.actor || '')))
   ipcMain.handle('crm:assignment:recycle', async (_, req: { assignmentId?: number; reason?: string; actor?: string }) =>
@@ -383,8 +385,9 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     transferAssignment(Number(req?.assignmentId), String(req?.toSales || ''), String(req?.reason || ''), String(req?.actor || '')))
   ipcMain.handle('crm:assignment:list', async (_, opts) => listAssignments((opts || {}) as any))
   // 批量分配（设计稿屏 3 分配控制台）：按模式从待分配池取 N 条分给名单，逐条走 assignLeads 同事务语义
-  ipcMain.handle('crm:assignment:assignBatch', async (_, req: { count?: number; mode?: string; weights?: Record<string, number>; actor?: string }) =>
-    assignBatchLeads({ count: Number(req?.count) || 0, mode: (String(req?.mode || 'weight') as 'weight' | 'round_robin' | 'load'), weights: req?.weights || {}, actor: String(req?.actor || '') }))
+  // 同上：mode 不做 `String()` 掩盖；缺省由 service 按「未设置」处理，显式非法值由 service 返回 E101
+  ipcMain.handle('crm:assignment:assignBatch', async (_, req: { count?: number; mode?: unknown; weights?: Record<string, number>; actor?: string }) =>
+    assignBatchLeads({ count: Number(req?.count) || 0, mode: req?.mode, weights: req?.weights || {}, actor: String(req?.actor || '') }))
 
   // ── 加好友判定（PRD 1.4a 手动路，API-CONTRACT §1.14 契约端点）──────────────
   // 绑定微信：写 customer_identity(source='manual', confidence=1.0) + 停 SLA1 表 + lead→WX_ADDED + 审计；

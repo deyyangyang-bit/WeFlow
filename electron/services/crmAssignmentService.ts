@@ -31,6 +31,23 @@ function sla1Hours(): number {
 }
 function sla1Ms(): number { return sla1Hours() * 3600_000 }
 
+/**
+ * 分配模式的**运行时**解析（本机生产者侧）。单一枚举源 = `shared/centralDownCommand.ASSIGNMENT_MODES`，
+ * 这里只做形态校验，不另建第二套枚举。
+ *   - `undefined` / `null` → 用 fallback（语义是「未设置」，调用方省略参数时的缺省）；
+ *   - 其余一律必须是枚举内的**字符串字面量**。绝不先 `String(value)` 再比对：`String({})` =
+ *     `'[object Object]'`、`String(true)` = `'true'`、`String(1)` = `'1'`，都会把非法输入洗成
+ *     「看起来合法」的字符串，于是非法 mode 先落进 `assignment.mode`，要等到同步层才被拒 ——
+ *     制造出「本机成功、中央失败」的坏数据（2026-09-15 实测：`assignLeads(..., 'teleport')`
+ *     返回成功并落库）；
+ *   - 空串同样非法：调用方应当省略参数，而不是发空串让下游各自兜底。
+ * 返回 null = 非法：调用方必须返回 E101，且**在任何事务与业务写之前**退出。
+ */
+function parseAssignmentMode<T extends string>(value: unknown, fallback: T, allowed: readonly T[]): T | null {
+  if (value === undefined || value === null) return fallback
+  return typeof value === 'string' && allowed.includes(value as T) ? value as T : null
+}
+
 // ─── 分配（crm:assignment:assign）──────────────────────────────────────────
 export interface AssignSkipped { leadId: number; code: 'E201' | 'E301'; reason: string }
 export interface AssignData { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: AssignSkipped[] }
@@ -50,7 +67,11 @@ export function currentAssignment(leadId: number): CrmRow | null {
  * 可分配的线索在**同一事务**内写 assignment + ownership_history + audit_event，全部成功才提交。
  * 幂等（契约 U）：同 lead 已有当前有效行则拒绝，重放不产生重复归属。
  */
-export function assignLeads(leadIds: number[], salesName: string, actor: string, mode = 'manual'): AssignResult {
+export function assignLeads(leadIds: number[], salesName: string, actor: string, mode?: unknown): AssignResult {
+  // 非法 mode 必须在**任何业务写之前**被拒：先于事务、先于 assignment / ownership_history /
+  // audit_event / outbox 的任何一行（否则本机留下一条中央必然拒收的归属事实）
+  const m = parseAssignmentMode<AssignmentMode>(mode, 'manual', ASSIGNMENT_MODES)
+  if (m === null) return { ok: false, code: 'E101', message: 'mode 必须是 manual / weight / round_robin / load 之一' }
   const name = String(salesName || '').trim()
   // actor 仅署名用途（宪法 §1.12）：显式传入 > 本地身份档案「姓名（角色）」（PRD §1.2a）> 未建档兜底「分配员」
   const by = String(actor || '').trim() || getActorLabel() || '分配员'
@@ -61,7 +82,6 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
   // 分配起计时（PRD 1.4 第一段「加了没有」）：sla1_deadline = now + crmLeadSlaHours；
   // 已分配 lead 的 first_contact_deadline 从 2100 哨兵改为同一期限（scanLeadSla 现有机制继续工作）
   const sla1 = now + sla1Ms()
-  const m = String(mode || 'manual')
   const data = crmDbService.runTx((tx) => {
     const assignments: Array<{ leadId: number; assignmentId: number }> = []
     const skipped: AssignSkipped[] = []
@@ -676,8 +696,12 @@ const BATCH_ASSIGNMENT_MODES = ASSIGNMENT_MODES.filter((m): m is BatchAssignment
 export interface AssignBatchInput {
   /** 本次从待分配池取的条数 */
   count: number
-  /** 分配模式（落 assignment.mode）：weight=比例权重（默认）/ round_robin=轮询 / load=负载均衡 */
-  mode: BatchAssignmentMode
+  /**
+   * 分配模式（落 assignment.mode）：weight=比例权重（缺省）/ round_robin=轮询 / load=负载均衡。
+   * 类型是 `unknown` 而不是联合类型：**由 service 做真实运行时校验**（IPC 不得先 `String()` 洗一遍
+   * 再传进来，那会把对象/数组/数字/布尔洗成「看起来合法」的字符串）。显式非法值返回 E101，不回退。
+   */
+  mode?: unknown
   /** weight 模式的权重表（销售名 → 0-100；缺省等权） */
   weights?: Record<string, number>
   actor?: string
@@ -701,13 +725,13 @@ export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?:
  *   权重调整属 C 类操作（宪法 §1.3），调整在前端写 config crmAssignWeights（应用内审计另行记录，本函数只读权重）。
  */
 export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
+  // 模式校验先于一切查询与业务写：显式非法值一律 E101，**不再静默回退 weight**——
+  // 回退等于无声的语义篡改（调用方以为按负载分配，实际落的是 weight），且和「本机成功、
+  // 中央拒收」是同一类坏数据。缺省（未传）仍是 weight，见 parseAssignmentMode。
+  const mode = parseAssignmentMode<BatchAssignmentMode>(input?.mode, 'weight', BATCH_ASSIGNMENT_MODES)
+  if (mode === null) return { ok: false, code: 'E101', message: 'mode 必须是 weight / round_robin / load 之一' }
   const sales = (ConfigService.getInstance().get('crmSalesList') || []).map((s) => String(s).trim()).filter(Boolean)
   if (!sales.length) return { ok: false, code: 'E101', message: '还没有销售名单。请先到线索页「资源池」勾选线索后点击「分配给…」，在弹窗中添加销售姓名。' }
-  const requested = input?.mode
-  const mode: BatchAssignmentMode = typeof requested === 'string' &&
-    (BATCH_ASSIGNMENT_MODES as readonly string[]).includes(requested)
-    ? requested as BatchAssignmentMode
-    : 'weight'
   const weights = input?.weights && typeof input.weights === 'object' ? input.weights : {}
   const count = Math.max(1, Math.floor(Number(input?.count) || 0))
 

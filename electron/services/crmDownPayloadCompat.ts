@@ -10,10 +10,19 @@
  *
  * 兼容口径（**惰性富化**，不做全表破坏性 UPDATE、不改幂等键）：
  *   - 只能从本机 `payload.assignmentId` 指向的 assignment 行取值；
+ *   - **用恢复行前必须核对身份**：该 assignment 必须是**载荷描述的那一次移交**——`assignment.lead_id`
+ *     必须等于 `payload.leadId`、`assignment.sales_name` 必须等于 `payload.toSales`。指向别的线索 /
+ *     别的销售的 assignment 行不是本次移交的事实，拿它补齐会把 B 线索的 mode/SLA 贴到 A 线索的指令上；
  *   - 用的是**当时已经写入那一行的绝对 SLA 值**，绝不按当前时间 / 当前 `crmLeadSlaHours` /
  *     接收端配置重算——重算会让历史移交的期限整体漂移（设备时钟与配置各不相同）；
  *   - 两个字段已经合法时原样放行（幂等：重复富化结果不变）；
  *   - 无法可靠恢复时**不猜值、不发送**：返回稳定错误码，由调用方把该行置终态 failed + 脱敏审计。
+ *
+ * 「已经合法」的判定是**原始类型**判定（2026-09-15 第二轮）：`sla1Deadline` 只有本身是 number
+ * 且为有限正整数才算合法。字符串数字（`"123456"`）**不算**——两条通道会各自解读它
+ * （中央 `commandPayloadOf` 会 `Number()` 成数字，SMB 原样保留字符串后被 `requiredTimestamps`
+ * 拒收），同一行在两条通道上一条通过一条被拒，是必须消除的口径漂移。字符串、小数、NaN、
+ * Infinity、0、负数、对象、数组一律按「不可用」处理，能恢复就恢复成 number，恢复不了就拒收。
  *
  * 两条发射端（`centralSyncService.pushOutboxCommand` 与 `lanSyncService.emitDownEvents`）
  * **共用本模块**，不各写一套兼容逻辑。
@@ -26,13 +35,18 @@ export type DownPayloadHeal =
   | { ok: true; payload: Record<string, unknown> }
   | { ok: false; code: string }
 
-function isConcreteAssignmentId(value: unknown): boolean {
+/** 正整数（assignmentId / leadId 的形态判定；两端共用，不各写一遍） */
+function isPositiveInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
 }
 
-/** 绝对 SLA 截止时间：有限正整数时间戳（毫秒）。NULL / 0 / 字符串数字一律视为不可用。 */
-function isAbsoluteDeadline(value: number): boolean {
-  return Number.isInteger(value) && value > 0
+/**
+ * 绝对 SLA 截止时间：**原始类型必须是 number** 且为有限正整数（毫秒）。
+ * `Number.isInteger` 已排除 NaN / Infinity / 小数；字符串（含 `"123456"` 这种数字串）一律不算，
+ * 否则「已合法」的判定会在中央 HTTP 与 SMB 两条通道上分叉。
+ */
+function isAbsoluteDeadline(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
 }
 
 function isKnownMode(value: unknown): value is AssignmentMode {
@@ -44,19 +58,41 @@ function isKnownMode(value: unknown): value is AssignmentMode {
  *
  * 只处理 `transfer`：`assign` 的 `mode` 不是必填、`sla1Deadline` 缺失时接收端按既有
  * `sla1 || lead.first_contact_deadline` 兜底，历史 assign 行没有兼容问题，不在此扩张改动面。
- * 返回的 payload 是**新对象**，原 payload 不被就地修改（重复调用结果一致）。
+ * 返回的 payload 是**新对象**（仅当真的补了值），原 payload 不被就地修改。
+ *
+ * 错误码只描述**字段与一致性结论**，不带客户值、销售姓名或联系方式。
  */
 export function healLegacyDownPayload(type: string, payload: Record<string, unknown>): DownPayloadHeal {
   if (type !== 'transfer') return { ok: true, payload }
   const hasMode = isKnownMode(payload.mode)
-  const hasDeadline = isAbsoluteDeadline(Number(payload.sla1Deadline ?? NaN))
-  if (hasMode && hasDeadline) return { ok: true, payload }
-  if (!isConcreteAssignmentId(payload.assignmentId)) return { ok: false, code: 'legacy_transfer_bad_assignment_id' }
-  const row = crmDbService.all('SELECT mode, sla1_deadline FROM assignment WHERE id = ?', [payload.assignmentId])[0]
-  if (!row) return { ok: false, code: 'legacy_transfer_assignment_missing' }
+  const hasDeadline = isAbsoluteDeadline(payload.sla1Deadline)
+  const needsRecovery = !hasMode || !hasDeadline
+  if (!isPositiveInt(payload.assignmentId)) {
+    // 没有可定位的恢复来源：需要恢复就拒（不按线索猜最近一次分配）；载荷自足时不在此判，
+    // 交给下行契约校验器按 missing_field:assignmentId 拒。
+    return needsRecovery ? { ok: false, code: 'legacy_transfer_bad_assignment_id' } : { ok: true, payload }
+  }
+  const row = crmDbService.all(
+    'SELECT lead_id, sales_name, mode, sla1_deadline FROM assignment WHERE id = ?', [payload.assignmentId])[0]
+  if (!row) {
+    // 行不存在：需要恢复时没有可用来源 → 不猜、不发；载荷自足时不拦（没有可恢复的值，
+    // 也没有被猜出来的值——这里不引入一条与「富化」无关的新失败路径）。
+    return needsRecovery ? { ok: false, code: 'legacy_transfer_assignment_missing' } : { ok: true, payload }
+  }
+  // 身份一致性：恢复值只能来自**载荷描述的那一次移交**。行存在却与载荷矛盾 = 指令描述的
+  // 本地事实不是它声称的那一条，一律拒（不猜、不发送），无论是否需要恢复。
+  const leadId = payload.leadId
+  if (!isPositiveInt(leadId) || !isPositiveInt(row.lead_id) || Number(row.lead_id) !== leadId) {
+    return { ok: false, code: 'legacy_transfer_lead_mismatch' }
+  }
+  const toSales = payload.toSales
+  if (typeof toSales !== 'string' || toSales.trim() === '' || String(row.sales_name) !== toSales) {
+    return { ok: false, code: 'legacy_transfer_target_mismatch' }
+  }
+  if (!needsRecovery) return { ok: true, payload }
   const mode = row.mode
   if (!isKnownMode(mode)) return { ok: false, code: 'legacy_transfer_mode_unrecoverable' }
-  const sla1Deadline = Number(row.sla1_deadline ?? NaN)
+  const sla1Deadline = row.sla1_deadline
   if (!isAbsoluteDeadline(sla1Deadline)) return { ok: false, code: 'legacy_transfer_sla_unrecoverable' }
   const next: Record<string, unknown> = { ...payload }
   if (!hasMode) next.mode = mode
