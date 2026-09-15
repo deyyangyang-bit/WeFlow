@@ -363,6 +363,19 @@ export interface LanSyncStatus {
   backlogIncoming: number
 }
 
+/** 失败 outbox 行（只读视图）：payload 原文不下发到渲染进程 */
+export interface FailedOutboxItem {
+  rowId: number
+  /** 登记的 outbox 事件类型 */
+  type: string
+  eventSeq: number
+  /** 最近一次失败审计的动作名（本机稳定标识） */
+  failureAction: string
+  /** 稳定错误码；审计原因为自由文本时为空串 */
+  failureCode: string
+  updatedAt: number
+}
+
 export interface CentralSyncStatus {
   enabled: boolean
   configured: boolean
@@ -375,6 +388,8 @@ export interface CentralSyncStatus {
   /** 员工展示名（绑定返回，缺失时回退本地身份档案） */
   displayName: string
   backlogPending: number
+  /** 终态失败、可经「重试失败同步项」正式重投的行数 */
+  backlogFailed: number
   pullCursor: number
   lastUpAt: number
   lastDownAt: number
@@ -678,6 +693,10 @@ export interface ElectronAPI {
     /** 解绑：revoked=服务端是否确认吊销；localCleared=本机凭证是否已清；两者不同时为真即表示解绑未完成 */
     disconnect: (payload?: { force?: boolean }) => Promise<{ success: boolean; revoked?: boolean; localCleared?: boolean; error?: string }>
     runNow: () => Promise<{ success: boolean; result?: { enabled: boolean; pushed: number; rejected: number; applied: number; error?: string }; error?: string }>
+    /** 失败项清单（字段已裁剪：无 payload 原文，只有行号/类型/序号/失败分类/稳定码） */
+    failed: (payload?: { limit?: number }) => Promise<{ success: boolean; items?: FailedOutboxItem[]; error?: string }>
+    /** 正式重投：只把 failed 行原子翻回 pending，随后跑一拍同步；重复点击幂等 */
+    retryFailed: (payload: { rowId: number }) => Promise<{ success: boolean; rowId?: number; code?: string; result?: { enabled: boolean; pushed: number; rejected: number; applied: number; error?: string }; error?: string }>
   }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>

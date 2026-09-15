@@ -2,7 +2,8 @@
 import type { IpcMain } from 'electron'
 import { enqueueSalesTask } from './salesQueue'
 import {
-  centralSyncStatus, claimCentralBinding, disconnectCentralBinding, runCentralSyncOnce
+  centralSyncStatus, claimCentralBinding, disconnectCentralBinding, listFailedOutbox,
+  retryFailedOutbox, runCentralSyncOnce
 } from './centralSyncService'
 
 export function registerCentralSyncIpcHandlers(ipcMain: IpcMain): void {
@@ -30,5 +31,20 @@ export function registerCentralSyncIpcHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('centralsync:run', async () => {
     try { return { success: true, result: await enqueueSalesTask(async () => runCentralSyncOnce()) } }
     catch (error) { return { success: false, error: String(error) } }
+  })
+  // 失败项只读清单：字段已在 service 层裁剪（不含 payload 原文），UI 只用于展示与选行
+  ipcMain.handle('centralsync:failed', async (_event, payload?: { limit?: number }) => {
+    try { return { success: true, items: listFailedOutbox(Number(payload?.limit || 50)) } }
+    catch (error) { return { success: false, error: String(error) } }
+  })
+  // 正式重投入口：只翻转 failed → pending（原子、幂等、追审计），不接受任意 SQL / 任意状态变更。
+  // 翻转成功后立刻跑一拍同步，让用户点一次就能看到结果；失败原因由 runCentralSyncOnce 如实回填。
+  ipcMain.handle('centralsync:retryFailed', async (_event, payload?: { rowId?: number }) => {
+    try {
+      const retry = retryFailedOutbox(Number(payload?.rowId || 0))
+      if (!retry.ok) return { success: false, ...retry, error: retry.code }
+      const result = await enqueueSalesTask(async () => runCentralSyncOnce())
+      return { success: true, ...retry, result }
+    } catch (error) { return { success: false, error: String(error) } }
   })
 }

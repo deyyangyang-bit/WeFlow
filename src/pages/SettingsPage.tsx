@@ -18,7 +18,7 @@ import {
 import { removeInsightBlacklistEntry, type InsightBlacklistEntry, type InsightBlacklistSource } from '../../shared/insightBlacklist'
 import groupSummaryPrompt from '../../shared/groupSummaryPrompt.json'
 import type { ChatSession, ContactInfo } from '../types/models'
-import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, CentralSyncStatus, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
+import type { InsightProfileStatus, AutoBackupStatus, LanSyncStatus, CentralSyncStatus, FailedOutboxItem, RecoveryKeyOutcome, AiUsageBudgetSnapshot, AiUsageGetPayload } from '../types/electron'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -443,7 +443,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [centralSyncStatus, setCentralSyncStatus] = useState<CentralSyncStatus | null>(null)
   const [centralBaseUrl, setCentralBaseUrl] = useState('')
   const [centralInviteCode, setCentralInviteCode] = useState('')
-  const [centralSyncBusy, setCentralSyncBusy] = useState<'' | 'claim' | 'run' | 'disconnect'>('')
+  const [centralSyncBusy, setCentralSyncBusy] = useState<'' | 'claim' | 'run' | 'disconnect' | 'retry'>('')
+  // 终态失败同步项（只读视图：无 payload 原文）；重投走正式入口，不手工改库
+  const [centralFailedItems, setCentralFailedItems] = useState<FailedOutboxItem[]>([])
   // 相对时间心跳：只用来让「3 分钟前」随时间推进重算，不参与任何判断，也不写盘
   const [relativeTimeTick, setRelativeTimeTick] = useState(0)
 
@@ -1296,8 +1298,43 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       if (res.success && res.status) {
         setCentralSyncStatus(res.status)
         if (res.status.baseUrl) setCentralBaseUrl(res.status.baseUrl)
+        // 只有真有失败行时才去取明细，避免每次刷新都多跑一次 IPC
+        if ((res.status.backlogFailed || 0) > 0) await refreshCentralFailedItems()
+        else setCentralFailedItems([])
       }
     } catch { /* 状态读取失败静默，不阻塞设置页 */ }
+  }
+
+  const refreshCentralFailedItems = async () => {
+    try {
+      const res = await window.electronAPI.centralSync.failed({ limit: 20 })
+      setCentralFailedItems(res.success && res.items ? res.items : [])
+    } catch { /* 明细读取失败静默，状态卡片仍可用 */ }
+  }
+
+  /**
+   * 失败重投：走正式生产入口（服务端只做 failed → pending 的原子翻转 + 追审计）。
+   * 不合法行 / 非 failed 行由后端返回稳定结果码，这里如实提示，绝不静默当作成功。
+   */
+  const handleCentralRetryFailed = async (rowId: number) => {
+    if (centralSyncBusy) return
+    setCentralSyncBusy('retry')
+    try {
+      const res = await window.electronAPI.centralSync.retryFailed({ rowId })
+      if (!res.success) {
+        const code = res.code || res.error || 'unknown'
+        showMessage(`未能重投第 ${rowId} 行（${code}）`, false)
+        return
+      }
+      const pushed = res.result?.pushed || 0
+      const rejected = res.result?.rejected || 0
+      showMessage(`已重投第 ${rowId} 行：上传 ${pushed}${rejected ? `，仍被拒 ${rejected}（详见本机审计）` : ''}`, rejected === 0)
+    } catch (e) {
+      showMessage(`重投失败：${e instanceof Error ? e.message : String(e)}`, false)
+    } finally {
+      setCentralSyncBusy('')
+      await refreshCentralSyncStatus()
+    }
   }
 
   const handleCentralClaim = async () => {
@@ -3362,6 +3399,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                     <div className="s-stat__k">下行游标</div>
                     <div className="s-stat__v">{centralSyncStatus.pullCursor || 0}</div>
                   </div>
+                  <div className="s-stat">
+                    <div className="s-stat__k">失败项</div>
+                    <div className={`s-stat__v ${(centralSyncStatus.backlogFailed || 0) > 0 ? 'is-warn' : ''}`}>
+                      {centralSyncStatus.backlogFailed || 0}
+                    </div>
+                  </div>
                 </div>
                 <div className="s-row">
                   <div>
@@ -3408,6 +3451,37 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                     </div>
                     <div className="s-row__ctrl">
                       <span className="s-mono">{centralSyncStatus.lastErrorAt ? new Date(centralSyncStatus.lastErrorAt).toLocaleString() : '—'}</span>
+                    </div>
+                  </div>
+                ) : null}
+                {centralFailedItems.length > 0 ? (
+                  <div className="s-row">
+                    <div>
+                      <div className="s-row__label">失败同步项</div>
+                      <div className="s-row__desc">
+                        已停止自动重试，需要人工重投；重投只翻回待发送，不改动事件内容与幂等键
+                      </div>
+                    </div>
+                    <div className="s-row__ctrl" style={{ flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                      {centralFailedItems.slice(0, 5).map((item) => (
+                        <div key={item.rowId} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className="s-mono">
+                            #{item.rowId} · {item.type} · seq {item.eventSeq}
+                            {item.failureCode ? ` · ${item.failureCode}` : ''}
+                          </span>
+                          <button
+                            className="btn btn-secondary"
+                            onClick={() => void handleCentralRetryFailed(item.rowId)}
+                            disabled={centralSyncBusy !== ''}
+                          >
+                            {centralSyncBusy === 'retry' ? <Loader2 size={16} className="spin" /> : <RotateCcw size={16} />}
+                            重试
+                          </button>
+                        </div>
+                      ))}
+                      {centralFailedItems.length > 5 ? (
+                        <span className="s-row__desc">另有 {centralFailedItems.length - 5} 条未显示，请查看本机审计</span>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}

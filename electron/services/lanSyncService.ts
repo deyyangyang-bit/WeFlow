@@ -61,6 +61,7 @@ import { expandHomePath } from '../utils/pathUtils'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import { downCommandSpec, validateDownCommand } from '../../shared/centralDownCommand'
 import { findForbiddenDownlinkField } from '../../shared/centralSync'
+import { healLegacyDownPayload } from './crmDownPayloadCompat'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
 export type LanSyncRole = 'hub' | 'terminal'
@@ -338,6 +339,26 @@ export function emitDownEvents(root: string): EmitResult {
         r.failed++
         continue
       }
+      // 升级兼容（惰性，与中央 HTTP 发射端**共用同一个 helper**）：升级前写出的 pending transfer
+      // 载荷缺 mode/sla1Deadline，按注册表已属必填。从本机 assignment 行恢复当时写入的绝对值，
+      // 不改幂等键、不改 event_seq —— 文件名仍由 (event_seq, key, role) 决定，故富化后目标文件名不变：
+      // 升级前写出的旧文件会被终端本体校验判非法、隔离进 .failed/（移出队列目录），路径随之空出，
+      // 本轮即可补写合法文件；writeEventFile 在路径占用时跳过，因此最坏两轮收敛，不会永久死锁。
+      // 恢复不了则不猜值、不落盘：本行终态 failed + 脱敏审计（只有行号、类型与稳定错误码）。
+      // 置于投递键冲突检查**之后**：冲突行的真实病因是路由（两个身份共用一个队列目录），
+      // 那个诊断更具体、更可操作，不该被「载荷缺字段」盖掉。
+      const healed = healLegacyDownPayload(type, payload)
+      if (!healed.ok) {
+        const at = Date.now()
+        crmDbService.runTx((tx) => {
+          tx.run("UPDATE outbox_event SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'pending'", [at, Number(row.id)])
+          tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+            ['system:sync', 'sync_down_payload_unrecoverable', 'outbox', Number(row.id), JSON.stringify({ type, reason: healed.code }), at])
+        })
+        r.failed++
+        continue
+      }
+      payload = healed.payload
       lead = leadProfileOf(payload.leadId)
       const recipients = routeDownRecipients(type, payload)
       if (!recipients.length) {

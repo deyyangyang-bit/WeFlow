@@ -26,6 +26,7 @@ import { validateCentralEntityId, validateDownCommand } from '../../shared/centr
 import { maskContact as maskLeadContact } from './crmLeadImportCore'
 import { ConfigService } from './config'
 import { crmDbService, type CrmRow } from './crmDbService'
+import { healLegacyDownPayload } from './crmDownPayloadCompat'
 import { getTerminalId, applyDownEventDirect, maskAuditText, type DeliveryRole, type SyncEventFile } from './lanSyncService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { CentralSyncClient, CentralSyncHttpError, type CentralPrincipal } from './centralSyncClient'
@@ -85,6 +86,8 @@ export interface CentralSyncStatus {
   role: string
   displayName: string
   backlogPending: number
+  /** 终态失败、可经「重试失败同步项」正式重投的行数 */
+  backlogFailed: number
   pullCursor: number
   lastUpAt: number
   lastDownAt: number
@@ -413,9 +416,13 @@ function commandLeadOf(leadId: unknown): Record<string, unknown> | null {
 function commandPayloadOf(commandType: string, payload: Record<string, unknown>, leadId: number): Record<string, unknown> {
   const common = { type: commandType, leadId }
   if (commandType === 'assign') {
+    const mode = String(payload.mode || '')
     return {
       ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
-      salesName: String(payload.salesName || ''), mode: String(payload.mode || ''),
+      salesName: String(payload.salesName || ''),
+      // mode 在 assign 上是可选字段：本地没写就**省略**，绝不发空串——
+      // 注册表对 mode 的约束是「出现即必须是枚举内的字符串」，`''` 会被判非法而不是「未设置」。
+      ...(mode ? { mode } : {}),
       sla1Deadline: Number(payload.sla1Deadline || 0) || null, actor: String(payload.actor || 'system:sync'),
       lead: commandLeadOf(leadId)
     }
@@ -534,8 +541,17 @@ async function pushOutboxCommand(
   commandType: string, payload: Record<string, unknown>
 ): Promise<{ pushed: number; rejected: number }> {
   const rowId = Number(row.id)
-  const leadId = Number(payload.leadId || 0)
-  const targets = commandTargetsOf(commandType, payload)
+  // 升级兼容（惰性）：升级前产生的 pending transfer 载荷缺 mode/sla1Deadline，而注册表已把它们列为
+  // 必填。这里从本机 assignment 行恢复**当时已写入的绝对值**，绝不按当前时间/当前 SLA 配置重算。
+  // 恢复不了就**不猜值、不发送**：整行终态 failed + 脱敏审计（只带行号与稳定错误码），等人工处理。
+  const healed = healLegacyDownPayload(commandType, payload)
+  if (!healed.ok) {
+    settleOutboxRow(rowId, 'failed', { reason: healed.code, commandType })
+    return { pushed: 0, rejected: 1 }
+  }
+  const body0 = healed.payload
+  const leadId = Number(body0.leadId || 0)
+  const targets = commandTargetsOf(commandType, body0)
   if (!targets.length) {
     settleOutboxRow(rowId, 'failed', { reason: 'missing_target_sales', commandType })
     return { pushed: 0, rejected: 1 }
@@ -559,7 +575,7 @@ async function pushOutboxCommand(
   // 只有**全部**目标都被中央确认受理才置 sent；任一目标失败都不许假装整行成功。
   let pushed = 0
   for (const item of recipients) {
-    const body = commandPayloadOf(commandType, payload, leadId)
+    const body = commandPayloadOf(commandType, body0, leadId)
     body.deliveryRole = item.role
     const event = commandEnvelope(cfg, commandType, body, item.target, row)
     const invalid = validateDownCommand({
@@ -997,6 +1013,107 @@ export async function disconnectCentralBinding(options: { force?: boolean } = {}
   return { revoked, localCleared: true, error }
 }
 
+// ─── 失败项查询与正式重投（§2：生产入口，替代手工改库）────────────────────────
+
+/**
+ * 失败项只读视图。字段**严格裁剪**：只给行号、类型、序号、失败分类与稳定错误码，
+ * **绝不返回 payload 原文**（上行载荷含线索资料，UI 只需要「哪一行为什么失败」）。
+ */
+export interface FailedOutboxItem {
+  rowId: number
+  /** 登记的 outbox 事件类型；未登记类型不进本清单（它们不可重投） */
+  type: string
+  eventSeq: number
+  /** 最近一次失败审计的动作名（本机稳定标识，不是自由文本） */
+  failureAction: string
+  /** 稳定错误码：仅当审计 reason 是机器码形态时透出，否则留空（自由文本一律不外传） */
+  failureCode: string
+  updatedAt: number
+}
+
+/** 失败审计动作白名单（覆盖中央 HTTP 与 SMB 两条通道的终态结算） */
+const FAILURE_ACTIONS = [
+  'sync_outbox_failed', 'sync_down_fail', 'sync_down_payload_unrecoverable',
+  'sync_down_unroutable', 'sync_down_delivery_key_conflict', 'sync_employee_unresolved'
+] as const
+
+/** 机器码形态白名单：审计里的 reason 只有长得像稳定码才透出，中文说明等自由文本一律丢弃 */
+const SAFE_FAILURE_CODE = /^[A-Za-z0-9_:.\-]{1,80}$/
+
+function failureCodeOf(detailRaw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(detailRaw)
+    const reason = (parsed as { reason?: unknown } | null)?.reason
+    return typeof reason === 'string' && SAFE_FAILURE_CODE.test(reason) ? reason : ''
+  } catch { return '' }
+}
+
+/** 终态失败行（只读）：按 event_seq 顺序最多 limit 条，字段裁剪见 FailedOutboxItem */
+export function listFailedOutbox(limit = 50): FailedOutboxItem[] {
+  const cap = Math.max(1, Math.min(200, Math.floor(limit) || 50))
+  const placeholders = FAILURE_ACTIONS.map(() => '?').join(',')
+  const out: FailedOutboxItem[] = []
+  const rows = crmDbService.all(
+    "SELECT id, event_seq, payload, updated_at FROM outbox_event WHERE status='failed' ORDER BY event_seq LIMIT ?", [cap])
+  for (const row of rows) {
+    const routed = routeOutboxRow(row)
+    if (!routed) continue // 未登记类型不可重投，不列进可操作清单
+    const auditRow = crmDbService.all(
+      `SELECT action, detail FROM audit_event WHERE entity_type IN ('outbox_event','outbox') AND entity_id = ?` +
+      ` AND action IN (${placeholders}) ORDER BY id DESC LIMIT 1`,
+      [String(row.id), ...FAILURE_ACTIONS])[0]
+    out.push({
+      rowId: Number(row.id), type: routed.type, eventSeq: Number(row.event_seq || 0),
+      failureAction: String(auditRow?.action || ''),
+      failureCode: failureCodeOf(String(auditRow?.detail || '')),
+      updatedAt: Number(row.updated_at || 0)
+    })
+  }
+  return out
+}
+
+export interface OutboxRetryResult {
+  ok: boolean
+  rowId: number
+  /** 稳定结果码：`ok` / `invalid_row_id` / `not_found` / `not_failed` / `unsupported_type` */
+  code: string
+}
+
+/**
+ * 「失败重投」正式入口（替代 e2e / 运维直接 `UPDATE outbox_event SET status='pending'`）。
+ * 约束（PRD §7.1 与审计要求）：
+ *   - 只接受**正整数 rowId**：不做任意 SQL、不接受任意状态变更，没有批量改库入口；
+ *   - 只对 `status='failed'` 且**类型已登记**的行生效；其余返回稳定码且**零写入**；
+ *   - 一个事务内原子翻转 failed → pending；`payload` / `event_seq` / `idempotency_key`
+ *     **一字不改**——改幂等键会让中央把同一次业务动作算成两笔，改 event_seq 会打乱队列顺序；
+ *   - 同一事务内清零尝试计数：否则重投后第一次 defer 就因超限再次判失败，重投等于没投；
+ *   - 重复点击幂等：第二次命中 `not_failed`，无写入、无审计；
+ *   - 追加式审计只记行号与类型，不含客户联系方式 / 聊天正文 / 整条线索数据 / token。
+ *
+ * 双目标部分成功（transfer 的 apply 已受理、remove 被 4xx 拒）重投后：中央按 per-target
+ * 幂等键把已受理的 apply 判 duplicate（不写重复业务行），remove 重新投递；两个目标都被受理
+ * 才由既有 `pushOutboxCommand` 把整行置 sent —— 不需要另建「部分成功」状态表。
+ */
+export function retryFailedOutbox(rowId: number): OutboxRetryResult {
+  if (!Number.isInteger(rowId) || rowId <= 0) return { ok: false, rowId: 0, code: 'invalid_row_id' }
+  const outcome = crmDbService.runTx((tx) => {
+    const row = tx.all('SELECT id, status, payload FROM outbox_event WHERE id = ?', [rowId])[0]
+    if (!row) return { code: 'not_found', type: '' }
+    if (String(row.status || '') !== 'failed') return { code: 'not_failed', type: '' }
+    const routed = routeOutboxRow(row)
+    if (!routed) return { code: 'unsupported_type', type: '' }
+    const now = Date.now()
+    tx.run("UPDATE outbox_event SET status = 'pending', updated_at = ? WHERE id = ? AND status = 'failed'", [now, rowId])
+    tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
+      [`centralSync:outboxAttempt:${rowId}`, 0])
+    tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
+      [String(ConfigService.getInstance().get('identityName') || 'unknown'), 'sync_outbox_retry', 'outbox_event',
+        String(rowId), JSON.stringify({ type: routed.type }), now])
+    return { code: 'ok', type: routed.type }
+  })
+  return { ok: outcome.code === 'ok', rowId, code: outcome.code }
+}
+
 // ─── 单次同步 / 调度器 / 状态 ─────────────────────────────────────────────────
 
 export async function runCentralSyncOnce(): Promise<CentralSyncRunResult> {
@@ -1023,6 +1140,7 @@ export function centralSyncStatus(): CentralSyncStatus {
     workspaceId: cfg.workspaceId, employeeId: cfg.employeeId, deviceId: cfg.deviceId,
     role: cfg.role, displayName: cfg.displayName || String(conf.get('identityName') || ''),
     backlogPending: Number(crmDbService.all("SELECT COUNT(*) AS c FROM outbox_event WHERE status='pending'")[0]?.c || 0),
+    backlogFailed: Number(crmDbService.all("SELECT COUNT(*) AS c FROM outbox_event WHERE status='failed'")[0]?.c || 0),
     pullCursor: crmDbService.getScanState(K_PULL_CURSOR), lastUpAt: crmDbService.getScanState(K_LAST_UP),
     lastDownAt: crmDbService.getScanState(K_LAST_DOWN),
     lastError: String(conf.get('centralSyncLastError') || ''), lastErrorAt: Number(conf.get('centralSyncLastErrorAt') || 0),

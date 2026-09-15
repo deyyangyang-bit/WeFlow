@@ -77,7 +77,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: () => ipcRenderer.invoke('centralsync:status'),
     claim: (payload: { baseUrl: string; inviteCode: string; deviceName?: string }) => ipcRenderer.invoke('centralsync:claim', payload),
     disconnect: (payload?: { force?: boolean }) => ipcRenderer.invoke('centralsync:disconnect', payload),
-    runNow: () => ipcRenderer.invoke('centralsync:run')
+    runNow: () => ipcRenderer.invoke('centralsync:run'),
+    // 失败项清单（字段已裁剪，不含 payload 原文）与正式重投入口
+    failed: (payload?: { limit?: number }) => ipcRenderer.invoke('centralsync:failed', payload),
+    retryFailed: (payload: { rowId: number }) => ipcRenderer.invoke('centralsync:retryFailed', payload)
   },
 
 
