@@ -1315,6 +1315,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   /**
    * 失败重投：走正式生产入口（服务端只做 failed → pending 的原子翻转 + 追审计）。
    * 不合法行 / 非 failed 行由后端返回稳定结果码，这里如实提示，绝不静默当作成功。
+   *
+   * 翻转成功**不等于同步成功**：判定只看后端回读的**该行最终状态** retryOutcome
+   * （sent / pending / failed / unconfigured），不再拿整轮 pushed 计数猜这一行的结果
+   * ——网络故障时整轮 pushed=0 但这一行只是排回队列，必须是 warning「等待下一轮」而不是绿色成功。
    */
   const handleCentralRetryFailed = async (rowId: number) => {
     if (centralSyncBusy) return
@@ -1326,9 +1330,17 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         showMessage(`未能重投第 ${rowId} 行（${code}）`, false)
         return
       }
-      const pushed = res.result?.pushed || 0
-      const rejected = res.result?.rejected || 0
-      showMessage(`已重投第 ${rowId} 行：上传 ${pushed}${rejected ? `，仍被拒 ${rejected}（详见本机审计）` : ''}`, rejected === 0)
+      const detail = res.syncError ? `：${res.syncError}` : ''
+      if (res.retryOutcome === 'sent') {
+        showMessage(`第 ${rowId} 行已完成同步`, true)
+      } else if (res.retryOutcome === 'unconfigured') {
+        showMessage(`第 ${rowId} 行已重新排队，但中央同步未配置，暂不上传${detail}`, false)
+      } else if (res.retryOutcome === 'failed') {
+        showMessage(`第 ${rowId} 行重投后仍被拒绝，请查看审计${detail}`, false)
+      } else {
+        // pending（网络/服务错误，留给下一轮）与 unknown（状态未确认）一律按「未完成」提示
+        showMessage(`第 ${rowId} 行已重新排队，等待网络/下一轮同步${detail}`, false)
+      }
     } catch (e) {
       showMessage(`重投失败：${e instanceof Error ? e.message : String(e)}`, false)
     } finally {

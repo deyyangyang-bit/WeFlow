@@ -3,7 +3,7 @@ import type { IpcMain } from 'electron'
 import { enqueueSalesTask } from './salesQueue'
 import {
   centralSyncStatus, claimCentralBinding, disconnectCentralBinding, listFailedOutbox,
-  retryFailedOutbox, runCentralSyncOnce
+  outboxDeliveryStatusOf, retryFailedOutbox, retryOutcomeOf, runCentralSyncOnce, safeSyncError
 } from './centralSyncService'
 
 export function registerCentralSyncIpcHandlers(ipcMain: IpcMain): void {
@@ -38,13 +38,30 @@ export function registerCentralSyncIpcHandlers(ipcMain: IpcMain): void {
     catch (error) { return { success: false, error: String(error) } }
   })
   // 正式重投入口：只翻转 failed → pending（原子、幂等、追审计），不接受任意 SQL / 任意状态变更。
-  // 翻转成功后立刻跑一拍同步，让用户点一次就能看到结果；失败原因由 runCentralSyncOnce 如实回填。
+  // 翻转成功后立刻跑一拍同步，让用户点一次就能看到结果。
+  //
+  // **关键口径**：「重新排队成功」≠「同步成功」。整轮的 pushed/rejected 是**所有行**的合计，
+  // 不能拿来判定用户点的那一行（网络故障时整轮 pushed=0，但该行仍可能是 pending，应显示「等待下一轮」；
+  // 未配置中央同步时整轮 enabled=false 且根本没发请求，绝不能显示成功）。所以这里在同步之后
+  // **回读该 rowId 的最终状态**，返回 retryOutcome / deliveryStatus 供 UI 直接判定；网络或服务错误
+  // 经 safeSyncError 脱敏后单独回传（不含 token、载荷原文、联系方式）。
   ipcMain.handle('centralsync:retryFailed', async (_event, payload?: { rowId?: number }) => {
     try {
-      const retry = retryFailedOutbox(Number(payload?.rowId || 0))
+      const rowId = Number(payload?.rowId || 0)
+      const retry = retryFailedOutbox(rowId)
       if (!retry.ok) return { success: false, ...retry, error: retry.code }
       const result = await enqueueSalesTask(async () => runCentralSyncOnce())
-      return { success: true, ...retry, result }
-    } catch (error) { return { success: false, error: String(error) } }
+      const syncConfigured = Boolean(result?.enabled)
+      const deliveryStatus = outboxDeliveryStatusOf(rowId)
+      return {
+        success: true, rowId, code: retry.code, retryCode: retry.code, deliveryStatus,
+        retryOutcome: retryOutcomeOf(deliveryStatus, syncConfigured), syncConfigured,
+        syncError: safeSyncError(result?.error),
+        result: {
+          enabled: syncConfigured, pushed: Number(result?.pushed || 0),
+          rejected: Number(result?.rejected || 0), applied: Number(result?.applied || 0)
+        }
+      }
+    } catch (error) { return { success: false, error: safeSyncError(error) } }
   })
 }

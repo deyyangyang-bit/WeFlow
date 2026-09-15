@@ -1114,6 +1114,48 @@ export function retryFailedOutbox(rowId: number): OutboxRetryResult {
   return { ok: outcome.code === 'ok', rowId, code: outcome.code }
 }
 
+/** 某 outbox 行当前的投递状态（只读；行不存在或状态值异常 → unknown） */
+export type OutboxDeliveryStatus = 'pending' | 'failed' | 'sent' | 'unknown'
+
+export function outboxDeliveryStatusOf(rowId: number): OutboxDeliveryStatus {
+  if (!Number.isInteger(rowId) || rowId <= 0) return 'unknown'
+  const status = String(crmDbService.all('SELECT status FROM outbox_event WHERE id = ?', [rowId])[0]?.status || '')
+  return status === 'pending' || status === 'failed' || status === 'sent' ? status : 'unknown'
+}
+
+/**
+ * 重投的**结论码**（UI 据此显示，不再拿整轮 pushed/rejected 反推指定行）：
+ *   - `sent`         该行已经中央受理并结算 sent；
+ *   - `pending`      failed → pending 已完成，但本轮没把它送出去（网络/服务错误，留给下一轮）；
+ *   - `failed`       重投后再次被契约拒绝（4xx），需要人工处理；
+ *   - `unconfigured` 已重新排队，但中央同步未配置（本机根本没发起请求）；
+ *   - `unknown`      行状态不可读（异常路径，一律按「未确认」处理）。
+ * 「重新排队」只是本机状态翻转，**不等于同步成功**——这正是本函数存在的理由。
+ */
+export type OutboxRetryOutcome = 'sent' | 'pending' | 'failed' | 'unconfigured' | 'unknown'
+
+export function retryOutcomeOf(deliveryStatus: OutboxDeliveryStatus, syncConfigured: boolean): OutboxRetryOutcome {
+  if (!syncConfigured) return 'unconfigured'
+  return deliveryStatus === 'sent' || deliveryStatus === 'failed' || deliveryStatus === 'pending'
+    ? deliveryStatus
+    : 'unknown'
+}
+
+/**
+ * 对外回传的同步错误：复用既有脱敏（`maskAuditText`：手机号/wxid/证件号打码 + 私有文本擦洗）
+ * 并裁剪长度。绝不外传 token、载荷原文或联系方式。
+ *
+ * 令牌另做一道兜底：它是 bearer 凭据，本机不主动往错误里写，但 HTTP 客户端 / 代理库 / 服务端
+ * 回显都可能把它拼进错误串——只要出现就整段替换，避免「设置页把设备令牌显示出来」。
+ */
+export function safeSyncError(error: unknown): string {
+  if (error === undefined || error === null || error === '') return ''
+  const raw = error instanceof Error ? error.message : String(error)
+  const masked = maskAuditText(raw).slice(0, 300)
+  const token = getCentralSyncConfig().token
+  return token.length >= 8 && masked.includes(token) ? masked.split(token).join('[已隐藏令牌]') : masked
+}
+
 // ─── 单次同步 / 调度器 / 状态 ─────────────────────────────────────────────────
 
 export async function runCentralSyncOnce(): Promise<CentralSyncRunResult> {

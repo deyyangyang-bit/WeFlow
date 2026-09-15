@@ -1,6 +1,8 @@
 import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
 // 商机阶段分析载荷（与 electron/services/opportunityAnalysisService.ts 同源；纯类型，无运行时代码）
 import type { OpportunityAnalysisResult } from '../../shared/opportunitySignals'
+// 分配模式的唯一来源（与 electron/services/crmAssignmentService.ts 同源）
+import type { AssignmentMode } from '../../shared/centralDownCommand'
 
 // ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
 export interface HermesEvidenceItem {
@@ -696,7 +698,18 @@ export interface ElectronAPI {
     /** 失败项清单（字段已裁剪：无 payload 原文，只有行号/类型/序号/失败分类/稳定码） */
     failed: (payload?: { limit?: number }) => Promise<{ success: boolean; items?: FailedOutboxItem[]; error?: string }>
     /** 正式重投：只把 failed 行原子翻回 pending，随后跑一拍同步；重复点击幂等 */
-    retryFailed: (payload: { rowId: number }) => Promise<{ success: boolean; rowId?: number; code?: string; result?: { enabled: boolean; pushed: number; rejected: number; applied: number; error?: string }; error?: string }>
+    /**
+     * 失败行重投。`success` 只表示「failed → pending 的翻转被接受」；**是否同步成功必须看 `retryOutcome`**
+     * （sent/pending/failed/unconfigured/unknown，由主进程回读该行最终状态得出）。`syncError` 已脱敏。
+     */
+    retryFailed: (payload: { rowId: number }) => Promise<{
+      success: boolean; rowId?: number; code?: string; retryCode?: string
+      deliveryStatus?: 'pending' | 'failed' | 'sent' | 'unknown'
+      retryOutcome?: 'sent' | 'pending' | 'failed' | 'unconfigured' | 'unknown'
+      syncConfigured?: boolean; syncError?: string
+      result?: { enabled: boolean; pushed: number; rejected: number; applied: number }
+      error?: string
+    }>
   }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
@@ -2048,13 +2061,15 @@ export interface ElectronAPI {
     leadSlaSkip: (taskId: number) => Promise<boolean>
     leadDeadReasons: () => Promise<string[]>
     // 线索分配（Phase 1 完整版五端点，统一信封 { ok, data } / { ok:false, code, message }，API-CONTRACT §1.14）
-    assignmentAssign: (req: { leadIds: number[]; salesName: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: Array<{ leadId: number; code: string; reason: string }> }; code?: string; message?: string }>
+    // mode 显式传入时必须是四种合法值之一；非法值在 service 层被拒（E101），IPC 不做 String() 掩盖
+    assignmentAssign: (req: { leadIds: number[]; salesName: string; mode?: AssignmentMode; actor?: string }) => Promise<{ ok: boolean; data?: { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: Array<{ leadId: number; code: string; reason: string }> }; code?: string; message?: string }>
     assignmentClaim: (req: { leadId: number; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentRecycle: (req: { assignmentId: number; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentTransfer: (req: { assignmentId: number; toSales: string; reason?: string; actor?: string }) => Promise<{ ok: boolean; data?: { assignmentId: number }; code?: string; message?: string }>
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => Promise<{ ok: boolean; data: { rows: AssignmentRow[]; total: number } }>
     // 批量分配（设计稿屏 3 分配控制台）：批次号 = '#A'+批次审计行号
-    assignmentAssignBatch: (req: { count: number; mode: 'weight' | 'round_robin' | 'load'; weights?: Record<string, number>; actor?: string }) => Promise<{ ok: boolean; data?: { batchNo: string; assigned: number; skipped: Array<{ leadId: number; code: string; reason: string }>; perSales: Record<string, number>; mode: string }; code?: string; message?: string }>
+    // 批量分配只接受三种自动模式；显式非法值一律 E101，不再静默回退 weight
+    assignmentAssignBatch: (req: { count: number; mode?: Exclude<AssignmentMode, 'manual'>; weights?: Record<string, number>; actor?: string }) => Promise<{ ok: boolean; data?: { batchNo: string; assigned: number; skipped: Array<{ leadId: number; code: string; reason: string }>; perSales: Record<string, number>; mode: string }; code?: string; message?: string }>
     // 加好友判定（PRD 1.4a 手动路，契约 crm:identity:bind）：写 customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => Promise<{ ok: boolean; data?: { identityId: number; customerId: number | null; alreadyBound: boolean; slaStopped: boolean }; code?: string; message?: string }>
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论统一写入口径（assignment.sla2_scan_ref + 审计）
