@@ -427,6 +427,17 @@ function commandPayloadOf(commandType: string, payload: Record<string, unknown>,
       actor: String(payload.actor || 'system:sync')
     }
   }
+  // 移交：单条 outbox 行 → 两条下行指令（接收方 apply / 原归属 remove）。
+  // lead 与 assign 走同一个 commandLeadOf()，不另建一份线索构造逻辑。
+  if (commandType === 'transfer') {
+    return {
+      ...common, deliveryRole: 'apply', assignmentId: Number(payload.assignmentId || 0),
+      oldAssignmentId: Number(payload.oldAssignmentId || 0),
+      fromSales: String(payload.fromSales || ''), toSales: String(payload.toSales || ''),
+      reason: String(payload.reason || ''), actor: String(payload.actor || 'system:sync'),
+      lead: commandLeadOf(leadId)
+    }
+  }
   if (commandType === 'sla1_escalate_supervisor') {
     const lead = crmDbService.all('SELECT contact_type, contact_normalized FROM lead WHERE id = ?', [leadId])[0]
     // 通知正文里的联系方式只出**掩码**（与 SMB 落地口径一致：掩码是 PRD §10 R4 允许上线的形态）
@@ -541,6 +552,8 @@ async function pushOutboxCommand(
     if ('error' in resolved) return deferUnresolvedTarget(rowId, commandType, resolved.error)
     recipients.push({ target: resolved.employee, role: item.role })
   }
+  // 逐目标投递：一条 outbox 行可能对应多个接收方（transfer 的 apply + remove）。
+  // 只有**全部**目标都被中央确认受理才置 sent；任一目标失败都不许假装整行成功。
   let pushed = 0
   for (const item of recipients) {
     const body = commandPayloadOf(commandType, payload, leadId)
@@ -551,10 +564,24 @@ async function pushOutboxCommand(
       targetEmployeeId: event.targetEmployeeId, targetDeviceId: event.targetDeviceId
     })
     if (invalid) {
-      settleOutboxRow(rowId, 'failed', { reason: invalid, commandType })
+      settleOutboxRow(rowId, 'failed', { reason: invalid, commandType, failedRole: item.role, delivered: pushed })
       return { pushed, rejected: 1 }
     }
-    await client.issueCommand(event)
+    try {
+      await client.issueCommand(event)
+    } catch (error) {
+      // 中央明确拒收（4xx）：契约/权限问题，重试无用 —— 整行终态 failed，如实记录已送达几个目标
+      if (error instanceof CentralSyncHttpError && error.status >= 400 && error.status < 500) {
+        settleOutboxRow(rowId, 'failed', {
+          reason: `http_${error.status}:${error.code}`, commandType, failedRole: item.role, delivered: pushed
+        })
+        return { pushed, rejected: 1 }
+      }
+      // 瞬时失败（网络 / 5xx）：**保持 pending** 交给下一轮。已送达目标由中央按幂等键去重
+      // （同 eventId + 同 key → duplicate），未送达目标在下一轮继续投递，
+      // 因此顺序重试本身就能收敛「部分成功」，无需另建发送状态表。
+      throw error
+    }
     pushed++
   }
   settleOutboxRow(rowId, 'sent', { commandType, recipients: recipients.length })

@@ -218,3 +218,56 @@ export function findForbiddenCentralField(value: unknown, path = ''): string | n
 export function findForbiddenDownlinkField(value: unknown, path = ''): string | null {
   return scanForbidden(value, FORBIDDEN_CHAT_FIELDS, path, true)
 }
+
+// ─── 载荷引用字段类型闸门（§三）───────────────────────────────────────────────
+
+/**
+ * 上行 payload 中**登记过**的 `*Ref` 字段语义：
+ *  - `kind`：引用的实体类别，必须与字段语义一致（`customerRef` 只能是客户引用，
+ *    否则 `{entityType:'customer'}` + `playload.leadRef` 就能把线索引用写进客户表）；
+ *  - `scoped`：该字段是否必须是设备命名空间引用（`<deviceId>/<kind>:<id>`）。
+ *
+ * `employeeRef` 是**身份声明**而非投影引用 —— 权限行里存的是本机显示名 / 员工编号
+ * （见 centralSyncService.pushPermissionDeclaration），不是某台设备上的行号。
+ * 为了「形态统一」而强行要求它是 scoped ref，等于篡改权限行语义，
+ * 因此这里只要求：非空字符串；**若**写成 `<a>/<b>` 形态则必须是本机合法引用。
+ */
+export const CENTRAL_REF_FIELD_KINDS: Record<string, { kind: string; scoped: boolean }> = {
+  customerRef: { kind: 'customer', scoped: true },
+  leadRef: { kind: 'lead', scoped: true },
+  opportunityRef: { kind: 'opportunity', scoped: true },
+  employeeRef: { kind: 'employee', scoped: false }
+}
+
+/**
+ * 载荷引用字段校验（§三.2 / §三.3）。返回稳定错误码（null = 通过），错误码只带字段名、不带值。
+ *
+ * 三条规则：
+ *  ① scoped 引用必须是完整形态：`<deviceId>/<kind>:<id>`（裸 `customer:1` 说明发送方漏了
+ *     scopedRef，中央无法跨表关联；`<deviceId>/customer:` 缺行号同样是坏引用）；
+ *  ② 引用类别必须与字段语义一致；
+ *  ③ **本地上行投影不得借用他机命名空间**：同工作区内也不行，否则 A 机可以借 B 机的引用
+ *     把事实写到别人的投影上（与 `crossDeviceConflict` 是同一类越权的两道门）。
+ */
+export function validateCentralRefFields(payload: unknown, deviceId: string): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  for (const [field, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (!Object.prototype.hasOwnProperty.call(CENTRAL_REF_FIELD_KINDS, field)) continue
+    const rule = CENTRAL_REF_FIELD_KINDS[field]!
+    if (value === undefined || value === null || value === '') continue
+    if (typeof value !== 'string') return `ref_invalid_type:${field}`
+    if (!rule.scoped) {
+      // 声明型引用：显示名 / 员工编号照常放行，仅当它长得像 scoped ref 时才按 scoped 规则校验
+      if (!value.includes(SCOPED_REF_DELIMITER)) continue
+      if (!parseScopedRef(value)) return `ref_not_scoped:${field}`
+      if (!isRefOwnedByDevice(deviceId, value)) return `ref_not_owned:${field}`
+      continue
+    }
+    const parsed = parseScopedRef(value)
+    if (!parsed) return `ref_not_scoped:${field}`
+    if (!isConcreteRef(value)) return `ref_not_concrete:${field}`
+    if (refKindOf(value) !== rule.kind) return `ref_kind_mismatch:${field}`
+    if (parsed.deviceId !== deviceId) return `ref_not_owned:${field}`
+  }
+  return null
+}

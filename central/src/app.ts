@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   CENTRAL_ENTITY_TYPES, CENTRAL_SYNC_PROTOCOL_VERSION, findForbiddenCentralField, findForbiddenDownlinkField,
-  isRefOwnedByDevice, validateCentralSyncEvent,
+  isRefOwnedByDevice, validateCentralRefFields, validateCentralSyncEvent,
   type CentralAckRequest, type CentralEntityType, type CentralPushRequest, type CentralSyncEvent
 } from '../../shared/centralSync.js'
 import {
@@ -227,6 +227,20 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
         // §二.5：销售设备不得上传越权类别的投影
         if (principal.role === 'sales' && !SALES_UPLINK_ENTITY_TYPES.includes(event.entityType)) {
           rejected.push({ eventId: event.eventId, code: `role_not_allowed_entity:${event.entityType}`, message: '当前角色不得上传该类别投影' })
+          continue
+        }
+        // §三.1：光有设备前缀还不够——`entityType=customer` + `entityId=<dev>/assignment:1` 会污染
+        // 客户表。引用类别必须与 entityType 语义一致，且必须是完整 scoped 引用。
+        const entityKindError = validateCentralEntityId(event.entityType, event.entityId)
+        if (entityKindError) {
+          rejected.push({ eventId: event.eventId, code: entityKindError, message: '上行实体引用与 entityType 不符' })
+          continue
+        }
+        // §三.2/§三.3：载荷内登记过的 `*Ref` 字段同样要闸：类别必须与字段语义一致，
+        // 且本地上行投影不得借用他机命名空间（同工作区内也不行）。
+        const refError = validateCentralRefFields(event.payload, principal.deviceId)
+        if (refError) {
+          rejected.push({ eventId: event.eventId, code: refError, message: '上行载荷引用字段非法' })
           continue
         }
         const forbidden = findForbiddenCentralField(event.payload)
