@@ -2192,6 +2192,55 @@ D1–D5 隔离件同路径重写后两轮收敛、E1–E2 `failed` + 脱敏审�
 **Phase 3a 代码侧仍未收口**。
 （`scripts/lead-sla-reset-test.ts` 14/4 为基线既红——本刀前后结果一致，与本改动无关。）
 
+## 2.110 下行指令顶层字段的严格运行时契约（2026-09-15 第六轮）
+
+**根因**：`validateDownCommand()` 的顶层必填只做 `isBlank()` 判定，**形态完全不判**。于是
+`assignmentId: 0`、`assignmentId: {}`、`leadId: "41"`、`remindCount: {}` 全部被判为合法并返回 `null`。
+中央 `/sync/commands` 依赖该共享校验器，校验通过即保存指令；本机接收状态机随后对部分值 `Number()`
+转换、或根本不使用远端 `assignmentId` —— 畸形指令在业务写入前**不被终止**，产生真实的分配 / 移交 /
+回收 / 通知。同一条缺陷也在 `crmDownPayloadCompat.healLegacyDownPayload()`：transfer 的 mode/SLA
+已合法时，非正整数或指向不存在行的 `assignmentId` 会被放行。
+
+**修法**：`DOWN_COMMAND_SPECS` 新增 `fields?: Record<string, DownFieldRule>`，与 eventType 同处一个
+注册表，**HTTP 与 SMB 共用同一份规则，不新增第二套校验器、不引入新依赖**。
+`DownFieldKind = 'positive_int' | 'non_negative_int' | 'string'`。
+
+- **`kind` 自带自然下界**：`checkNumberField` 此前只在显式登记 `min` 时才判下界，而
+  `leadId` / `assignmentId` / `oldAssignmentId` 都没登记 `min` —— 于是 `0` 与负数仍然通过。
+  现在 `positive_int` ≥ 1、`non_negative_int` ≥ 0 由 kind 承担，显式 `min` / `max` **只用于收窄**
+  （`remindCount` → 3、`slaHours` → 72）。`Number.isInteger` 同时覆盖小数 / `NaN` / `Infinity`。
+- **值域的业务依据（读生产者与消费者得到，非猜测）**：`remindCount` **0–3** ——
+  `assignment.sla1_remind_count` 的语义是「已提醒次数」（0 = 从未提醒），三次提醒制下生产者
+  `crmAssignmentService` 恒发 `3`、接收端 `crmNotifyService` 按 `N/3` 渲染；越界会让主管看到假次数。
+  `slaHours` **1–72** —— 口径 = `crmLeadSlaHours` 可接受区间（`crmAssignmentService.sla1Hours()` 与
+  `lanSyncService.slaHoursNow()` 同口径，缺省 24）。
+- **顶层 `leadId` 与 `lead.leadId` 按原始值直接比较**（原先 `Number(a) !== Number(b)`）：
+  `Number("41") === Number(41)` 会让 `leadId: "41"` + `lead.leadId: 41` 这种「上层字符串、下层数字」
+  的自相矛盾载荷通过。跨类型现已先被 `invalid_type:leadId` 拦下，不会走到一致性判定。
+- **注册表自相矛盾即拒收**：`required` 里的顶层标量字段若既无 `fields` 规则、又不归 `lead` 子对象
+  （`validateLeadObject`）或 `spec.enums` 的专门校验器管，返回 `unregistered_field_rule:<字段>` ——
+  不给「只判非空就放行」留后门。
+- **`requiredTimestamps` 与 `fields` 并存**（未合并）：`invalid_timestamp:` 系列码被既有测试断言，
+  合并会制造码漂移；反之 `recycledAt: 0` / 字符串 `sla1Deadline` 现在会先命中 `fields` 的
+  `invalid_integer:` / `invalid_type:`。**两者都是稳定拒绝码、HTTP 状态码同样 400**，断言接受任一。
+  这是刻意的：字段规则先于版本前置生效，语义是「先判形态，再判版本前置的取值」。
+
+**历史移交（`healLegacyDownPayload`）**：`assignmentId` 形态非法 → 无条件拒；**assignment 行不存在 →
+无条件拒**（`legacy_transfer_assignment_missing`）。依据：本机 assignment 只软删 / 只改 status
+（宪法 §1.3，append-only；全仓无硬删路径，`DELETE FROM assignment` 只在测试夹具），
+因此一条正常产生的 outbox 行**永远能定位到自己的来源行**；定位不到只可能是库被外部改动。
+「载荷自足」不构成放行理由 —— 契约要求 transfer 的每个身份字段都可核对（`leadId` 对线索、
+`toSales` 对目录），`assignmentId` 对来源行是同一组核对里的一项，缺一项就不能声称这条指令描述的
+移交事实在本机成立。身份核对（`lead_id` / `sales_name`）**总是执行**，含「不需要补齐」的载荷。
+
+**新增测试**：`scripts/central-down-fields-test.ts`（41 项，四层）。A 层共享校验器逐字段负例；
+B 层真实 Fastify `/sync/commands`（**签发者必须是有 `command.issue` 的主管**，销售设备只作投递目标
+——用销售身份签发会在 preHandler 403，测到的是权限而不是字段契约）；C 层真实 `consumeDownEvents`
+→ `.failed/` 隔离（**SMB 根目录与业务库根必须分开**，否则 `up/` 与 `down/` 扫描互相干扰）；
+D 层历史 transfer 富化（**合法载荷的来源行 = 新行**，即 `sales_name === toSales`，与
+`crmAssignmentService.transferAssignment()` 的写法一致）。每个负例都要求零副作用：不写
+lead / assignment / audit_event / notify_inbox，不写成功幂等标记，不生成可被中枢接受的成功 ACK。
+
 ## 2.109 Phase 3a 中央同步收口：富化一致性 + 字符串 SLA 拒收 + 本机 mode 契约 + 重投结果口径 + 守卫补真（2026-09-15 第五轮）
 
 第四轮（§2.108）收口后第 5 项仍未闭合：**历史移交富化只按 `assignmentId` 取行，不核对线索与目标销售**，
@@ -2214,9 +2263,9 @@ A 的 `mode` 与 SLA 富化到 B 线索的 transfer 指令上，接收端据此�
 
 - **核对总是执行**：只要 assignment 行读到了就核对，**包括「两个字段都已合法、本不需要补齐」的载荷**
   ——已合法的载荷同样可能是串档来的，不能因为「不需要补齐」就跳过。
-- **读不到行则无从核对**：此时按「是否真的需要补齐」决定放行还是拒收（不需要补齐 → 原对象原样返回，
-  不因 `assignmentId` 形态额外拒收；需要补齐 → `legacy_transfer_bad_assignment_id` /
-  `legacy_transfer_assignment_missing`）。
+- **`assignmentId` 形态非法 → 无条件拒**（`legacy_transfer_bad_assignment_id`），与 `mode` / SLA 是否
+  已完整无关；**assignment 行不存在 → 同样无条件拒**（`legacy_transfer_assignment_missing`），
+  不因「载荷自足」而放行。**「读不到行则按是否需要补齐决定放行」的口径已作废**（见 §2.110）。
 - **错误码只带稳定码**：不含客户值、销售姓名、联系方式；审计 `detail` 仍只有 `{type, reason}`。
 
 ### 2. 字符串 SLA 不是合法绝对时间戳
@@ -2559,7 +2608,7 @@ SMB 侧 `requiredTimestamps` 会拒字符串 —— 同一个载荷在两条通�
 | `hermesErrorMessages.ts` | **Hermes 生命周期错误文案唯一真源**（§2.91）：Main/Renderer 共用 `agent_starting` / `agent_unavailable` / `agent_missing` / `protocol_mismatch` / `timeout` / `not_configured` 等稳定错误码的人话映射 |
 | `crmRepeat.ts` | **复购归并口径与等级唯一语义源**（交付售后配套，零依赖纯模块）：`crmCustomerKey`（customer_id 优先退 account_id）+ `crmCustomerKeyForOpportunity` + `computeRepeatLevel`（≥3 高频复购·升A / =2 复购老客 / 否则首购）+ `crmRepeatLevel`（旧名兼容）。前端 `src/utils/crmDealKey.ts` re-export 收敛到此，后端 crmAftersalesService.wonDeals / crmDeliveryService.recomputeRepeatLevel 同用，禁止各自手写阈值 |
 | `centralSync.ts` | **中央同步协议唯一真源**（§2.104 + §2.105，零依赖纯模块）：协议版本 1、`CentralSyncEvent` 信封、10 类实体 `CENTRAL_ENTITY_TYPES`、`validateCentralSyncEvent`、`findForbiddenCentralField`（**递归**命中 `chat*`/`message*`/`conversation`/`session_id`/`wcdb_path` 即拒收）、**`scopedRef(deviceId, localRef)` / `isRefOwnedByDevice`（引用命名空间唯一规则）**、**导出的字段名谓词 `isForbiddenChatFieldName` / `isForbiddenIdentityFieldName`（本机审计擦洗与中央校验共用同一份清单）**。中央服务与 Electron 两端共用，禁字段规则只此一处，不得各写一套；**§2.108**：`isConcreteRef` 收紧为「`<deviceId>/<kind>:` 之后必须是非空白行号」，`device/customer:` 与空白行号一律 false（具体引用判定唯一实现，不新造第二个解析器） |
-| `centralDownCommand.ts` | **下行指令业务校验唯一真源**（§2.105，207 行）：`DOWN_COMMAND_SPECS` 逐类型声明合法 `entityType` / 必填载荷 / `deliveryRole` / 目标 / 枚举与长度上限 / 版本前置；`validateDownCommand()` 与 `validateCentralEntityId()` 为纯函数，**SMB 与 HTTP 两条传输共用同一份校验**，禁止各写一套；**§2.108**：新增**枚举唯一源 `ASSIGNMENT_MODES`**（manual / weight / round_robin / load），`assign` 与 `transfer` 的 `mode` **出现即必须是枚举内字符串**（对象 / 数组 / 数字 / 布尔 / 空串 / 未知字符串全拒，**禁止先 `String()` 再比对**）；`validateCentralEntityId` 改为经 `isConcreteRef` 要求「设备命名空间 + 类别与 entityType 相符 + 非空白行号」 |
+| `centralDownCommand.ts` | **下行指令业务校验唯一真源**（§2.105）：`DOWN_COMMAND_SPECS` 逐类型声明合法 `entityType` / 必填载荷 / `deliveryRole` / 目标 / 枚举与长度上限 / 版本前置；**§2.110**：新增 `fields?: Record<string, DownFieldRule>`（`positive_int` / `non_negative_int` / `string`），**HTTP 与 SMB 共用同一份顶层字段形态规则**；`kind` 自带自然下界（`positive_int` ≥ 1、`non_negative_int` ≥ 0），显式 `min`/`max` 只用于收窄（`remindCount` ≤ 3、`slaHours` 1–72）；`leadId`/`assignmentId`/`oldAssignmentId` 必须是**原始 number 正整数**，禁止校验前 `Number()`/`String()`；顶层 `leadId` 与 `lead.leadId` **按原始值直接比较**（原 `Number()` 相等会让跨类型自相矛盾载荷通过）；`required` 里既无 `fields` 又不归 `lead`/`enums` 专门校验器的字段返回 `unregistered_field_rule:<字段>`；`validateDownCommand()` 与 `validateCentralEntityId()` 为纯函数，**SMB 与 HTTP 两条传输共用同一份校验**，禁止各写一套；**§2.108**：新增**枚举唯一源 `ASSIGNMENT_MODES`**（manual / weight / round_robin / load），`assign` 与 `transfer` 的 `mode` **出现即必须是枚举内字符串**（对象 / 数组 / 数字 / 布尔 / 空串 / 未知字符串全拒，**禁止先 `String()` 再比对**）；`validateCentralEntityId` 改为经 `isConcreteRef` 要求「设备命名空间 + 类别与 entityType 相符 + 非空白行号」 |
 
 ### 后端 `electron/services/`
 | 文件 | 说明 |

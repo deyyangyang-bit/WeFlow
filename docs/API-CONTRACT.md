@@ -580,6 +580,39 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
 | `supervisor_correction` | `assignment` | `apply` | `leadId` / `assignmentId` / `title` / `summary` | 同上 |
 | `permission_change` | `permission` | `apply` | `employeeRef` / `declaredRole` | 同上 |
 
+- **顶层字段的严格运行时契约（2026-09-15 增补）**：必填判定与**形态判定**是两件事。必填只判
+  「有没有」（`isBlank`）；形态一律按 `DOWN_COMMAND_SPECS[eventType].fields` 的**共享字段规则**判——
+  两条通道（中央 HTTP / SMB）共用同一份规则，**不各写一套**。规则集中登记在
+  `shared/centralDownCommand.ts`，与 eventType 同处一个注册表。
+
+  | 字段 | kind | 值域 | 出现即必须 | 违反时稳定码 |
+  |---|---|---|---|---|
+  | `leadId` | `positive_int` | ≥ 1，安全整数 | 原始 `number`，非字符串 / 对象 / 数组 / 布尔 | 缺失 `missing_field`／形态 `invalid_type`／越界或小数 `invalid_integer` |
+  | `assignmentId` | `positive_int` | ≥ 1，安全整数 | 同上 | 同上 |
+  | `oldAssignmentId` | `positive_int`（**可选**） | ≥ 1，安全整数 | 同上；`null` / 省略 = 未提供（合法） | 同上 |
+  | `remindCount` | `non_negative_int` | **0 – 3** | 原始 `number` 整数 | 越界 `invalid_integer:remindCount` |
+  | `slaHours` | `positive_int` | **1 – 72** | 原始 `number` 整数 | 越界 `invalid_integer:slaHours` |
+  | `sla1Deadline` / `recycledAt` | `positive_int` | ≥ 1，有限正整数毫秒 | 原始 `number` | `invalid_timestamp:<字段>`（`requiredTimestamps`）或 `invalid_integer:<字段>` |
+  | `salesName` / `toSales` / `fromSales` / `reason` / `actor` / `title` / `summary` / `employeeRef` / `declaredRole` / `authoritySource` / `displayName` / `contactMasked` | `string` | 非空（另有 `maxLength` 上限） | 原始 `string` 字面量 | `invalid_type:<字段>`／过长 `too_long:<字段>` |
+
+  **纪律**：
+  - **禁止在校验之前 `Number(value)` / `String(value)`**——那会把 `{}`（→ `[object Object]`）、
+    `"41"`、`true`、`[]`「洗白」成看起来合法的值。所有形态判定都基于**原始类型**。
+  - **`kind` 自带自然下界**：`positive_int` ≥ 1、`non_negative_int` ≥ 0。显式 `min` / `max` 只用于**收窄**
+    （`remindCount` 收窄到 3、`slaHours` 收窄到 72），**绝不因为没登记 `min` 就让 `0` / 负数溜过去**。
+  - **`remindCount` 值域 0–3 的业务依据**：`assignment.sla1_remind_count` 的语义是「已提醒次数」
+    （0 = 从未提醒），三次提醒制下**生产者 `crmAssignmentService` 恒发 `remindCount: 3`**，
+    接收端 `crmNotifyService` 按 `N/3` 渲染。越界值会让主管收到的「N/3 次」变成假话，故拒收。
+  - **`slaHours` 值域 1–72 的业务依据**：口径 = `crmLeadSlaHours` 配置的可接受区间
+    （`crmAssignmentService.sla1Hours()` 与 `lanSyncService.slaHoursNow()` 同口径，缺省 24）。
+  - **顶层 `leadId` 与 `lead.leadId` 按原始值直接比较**：两侧都通过正整数校验后，`payload.leadId !== subId`
+    即 `lead_id_mismatch`。**禁止 `Number()` 后再比**——`Number("41") === Number(41)` 会让
+    `leadId: "41"` + `lead.leadId: 41` 这种「上层是字符串、下层是数字」的自相矛盾载荷通过。
+    注意跨类型本身已先被 `invalid_type:leadId` 拦下，不会走到一致性判定。
+  - **注册表自相矛盾即拒收**：`required` 里的顶层标量字段若既无 `fields` 规则、又不由专门校验器接管
+    （`lead` 子对象走 `validateLeadObject`；出现在 `spec.enums` 里的字段走枚举分支），
+    直接返回 `unregistered_field_rule:<字段>`——**不给「只判非空就放行」留后门**。
+
 - **只有 `assign` / `transfer` 携带 `lead` 子对象**（`allowsLead`）。回收与通知/声明类指令**不带**线索档案，
   携带即整事件拒收——`recycle` 的下行语义是「归属已回收」，接收端按 `assignmentId` 落既有状态机，
   不需要线索资料；「所有指令必带 6 字段」是旧口径，已作废。
@@ -628,19 +661,30 @@ DDL 见 `central/migrations/002_central_projections.sql`）。缺注册项直接
   一律按「未合法」处理（**不是**「看起来能转数字就放过」）。
 
 - **富化前必须核对一致性（2026-09-15 增补）**：`payload.assignmentId` 指向的 assignment 行**存在时**
-  一律先核对四项——`payload.leadId` 为正整数、`assignment.lead_id === payload.leadId`、
-  `payload.toSales` 为非空字符串、`assignment.sales_name === payload.toSales`；任一不符即拒收，
+  一律先核对三项——`assignment.lead_id === payload.leadId`、`assignment.sales_name === payload.toSales`
+  （两者都要求为正整数 / 非空字符串，形态不符同样拒收）；任一不符即拒收，
   稳定码 `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`。
   **理由**：只按 `assignmentId` 取行、不核对线索与目标销售，会把**别的线索**的 `mode` / SLA 富化到
   这条指令上（跨线索串档），接收端据此建出的移交事实是错的。核对**在读到该行时总是执行**——
-  包括「两个字段都已合法、本不需要补齐」的载荷（已合法也要拦串档）；读不到行则无从核对，
-  此时按「是否真的需要补齐」决定放行还是拒收。
+  包括「两个字段都已合法、本不需要补齐」的载荷（已合法也要拦串档）。
+  行**读不到即为终态失败**（见下一条），不存在「读不到行就按是否需要补齐决定放行」的分支。
+  ⚠️ `assignment.sales_name` 是**本次移交写下的新行**的归属（= `payload.toSales`），
+  由 `crmAssignmentService.transferAssignment()` 在同一事务内如此写入；旧行归原持有者，不参与核对。
 
-- **不可恢复即显式失败、不猜不发（2026-09-15 增补）**：需要补齐而 `assignmentId` 形态非法 /
-  assignment 行不存在 / `mode` 不在枚举内 / `sla1_deadline` 不是有限正整数时间戳 → 该行 outbox 显式置
+- **不可恢复即显式失败、不猜不发（2026-09-15 增补）**：`assignmentId` 形态非法（**无条件拒，与
+  `mode` / `sla1Deadline` 是否已完整无关**）/ assignment 行不存在（**同样无条件拒：载荷自足不构成放行理由**）/
+  需要补齐而 `mode` 不在枚举内 / 需要补齐而 `sla1_deadline` 不是有限正整数时间戳 → 该行 outbox 显式置
   `failed` + 脱敏审计（`detail` 只有 `{type, reason}`）。稳定码：`legacy_transfer_bad_assignment_id` /
   `legacy_transfer_assignment_missing` / `legacy_transfer_mode_unrecoverable` /
   `legacy_transfer_sla_unrecoverable` / `legacy_transfer_lead_mismatch` / `legacy_transfer_target_mismatch`。
+
+  **「行不存在即无条件拒」的依据（2026-09-15）**：本机 `assignment` 的生命周期是**只软删、只改 status**
+  （见 `docs/DATA-CONSTITUTION.md` §1.3：分配事实 append-only，转派 = 旧行 `transferred` + 新行 `assigned`，
+  重派 = 旧行 `recycled`；全仓无任何硬删路径，`DELETE FROM assignment` 只出现在测试夹具）。因此一条
+  **正常产生**的 outbox 行永远能定位到自己的来源行；定位不到只可能是库被外部改动（换库 / 手工清理 /
+  恢复错备份）。此时「载荷是否自足」不构成放行理由——transfer 的每个身份字段都必须可核对
+  （`leadId` 对线索、`toSales` 对目录），`assignmentId` 对来源行是同一组核对里的一项，缺一项就不能
+  声称这条指令描述的移交事实在本机成立。
   **错误码只带稳定码，不携带客户值、销售姓名或联系方式**（审计 `detail` 亦同）。
   已落盘的旧 SMB 文件走既有 `.failed/` 隔离语义，隔离释放路径后下一轮会在**同一路径**写入补齐后的
   合法文件（最多两轮收敛）。

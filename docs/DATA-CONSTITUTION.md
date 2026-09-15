@@ -308,6 +308,20 @@
   `validateDownEventFile()` 在投递键 / eventSeq / deliveryRole / 文件名绑定等 SMB 专属检查通过后、
   进入任何业务事务前调用 `validateDownCommand(subject, 'smb')`；SMB 无中央 UUID 目标字段，
   「目标存在」由已验证的本机投递键（`localDeliveryKey`）证明，不伪造业务 UUID。
+- **顶层字段的严格运行时契约（2026-09-15 增补）**：必填（`isBlank`）与**形态**是两件事。
+  `DOWN_COMMAND_SPECS[eventType].fields` 与 eventType 同处一个注册表，两条通道共用，**不各写一套**：
+  - `leadId` / `assignmentId` / `oldAssignmentId`：`positive_int`（≥ 1，原始 `number` 整数）；
+  - `remindCount`：`non_negative_int` **0–3**（依据：`assignment.sla1_remind_count` 是「已提醒次数」，
+    三次提醒制下生产者恒发 3、接收端按 `N/3` 渲染；越界会让主管看到假次数）；
+  - `slaHours`：`positive_int` **1–72**（口径 = `crmLeadSlaHours` 可接受区间，缺省 24）；
+  - `sla1Deadline` / `recycledAt`：有限正整数毫秒时间戳；
+  - 其余登记字段为**非空字符串字面量**（另有长度上限）。
+  **`kind` 自带自然下界**（`positive_int` ≥ 1、`non_negative_int` ≥ 0），显式 `min` / `max` 只用于收窄——
+  绝不因为没登记 `min` 就让 `0` / 负数溜过去。**禁止在校验之前 `Number()` / `String()`**（会把 `{}`→
+  `[object Object]`、`"41"`、`true`、`[]` 洗白）。**顶层 `leadId` 与 `lead.leadId` 按原始值直接比较**，
+  禁止 `Number()` 后再比（`Number("41") === Number(41)` 会让跨类型的自相矛盾载荷通过）。
+  `required` 里的顶层标量字段若无 `fields` 规则、又不归 `lead` 子对象或 `spec.enums` 的专门校验器管，
+  返回 `unregistered_field_rule:<字段>` —— **不给「只判非空就放行」留后门**。
 - `eventType` 与 `entityType` 不匹配 → 服务端拒收；员工与设备双指定时必须**同属一名员工**；
   畸形目标标识返 **400**，不得落成数据库 500。畸形指令**不写**任何业务行（lead / assignment /
   `notify_inbox` / audit / 幂等标记），**不消耗幂等键**（修正后同 key 可重新受理）。
