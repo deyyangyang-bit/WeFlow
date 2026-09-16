@@ -15,3 +15,6 @@ caddy_config/
 *.pfx
 *.log
 *.pid
+
+# 隔离测试的沙箱（WeFlowNative.Tests.ps1 运行时创建，含夹具文件与回显子进程产物）
+.test-sandbox/

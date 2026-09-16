@@ -1,27 +1,42 @@
-<#
+﻿<#
 .SYNOPSIS
-  原生 Windows Caddy —— 端点诊断（只读，不做任何变更）。
+  原生 Windows Caddy —— 端点诊断（只读，不做任何系统变更）。
 
 .DESCRIPTION
-  用 Windows 自带 Schannel 对 /health 与 /ready 做真实 TLS 校验。
-  必须传 -CaCertPath 指向本轮导出的公开 root.crt；脚本不接受跳过校验的用法，
-  因为跳过校验就无法证明证书链与主机名断言，等于没验收。
+  对 /health 与 /ready 做「完整证书链 + 主机名」校验的 HTTPS 探测，全部为进程级信任：
+    - 优先 curl.exe：--cacert <root.crt> --resolve <host>:443:<bindIp>；
+    - 后端不适用（如 schannel 无法判定内部 CA 的吊销状态）时回落 python 标准库 ssl；
+    - 两条后端都做完整校验，脚本没有、也不会提供跳过校验的开关（禁止 -k / --insecure）。
+
+  本脚本不改 DNS、不改 hosts、不改 NRPT（旧版曾调用 Add-DnsClientNrptRule，已删除），
+  域名解析只通过本次连接的 --resolve / server_hostname 完成。
+
+  退出码（全部非零即失败。判定与 Start-NativeCaddy 的启动验收共用同一份实现）：
+    0 = 两个端点均为 200 且响应契约匹配
+    1 = 参数或配置错误
+    3 = 既无 curl 也无 python，无法在不跳过校验的前提下探测
+    4 = TLS 校验失败（链或主机名）
+    5 = 连接失败
+    6 = HTTP 状态不是 200
+    7 = 响应体不符合既有契约（含 JSON 非法、缺字段、字段类型错误、协议版本不符）
+    8 = 来源门禁拒绝（403）—— 不算通过
+    9 = 响应协议错误（畸形 / 截断 / 超出大小上限）
 
 .PARAMETER PackageRoot
   交付包解压根目录。
 .PARAMETER NativeEnvPath
-  native.env 路径。
+  native.env 路径，默认 $PackageRoot\native.env。
 .PARAMETER CaCertPath
   本轮原生 CA 的公开根证书路径（root.crt）。只导出公开证书，私钥不出 PKI 目录。
-.PARAMETER SkipDnsOverride
-  默认会给本次请求临时加一条 `IP 域名` 的 DNS 映射（不改 hosts 文件）。
+.PARAMETER SelfTest
+  仅显式用于测试：只加载函数定义，不执行任何探测。正常部署不要带此开关。
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)][string]$PackageRoot,
+  [string]$PackageRoot,
   [string]$NativeEnvPath,
-  [Parameter(Mandatory)][string]$CaCertPath,
-  [switch]$SkipDnsOverride
+  [string]$CaCertPath,
+  [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -29,37 +44,94 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'WeFlowNative.Common.ps1')
 
-if (-not (Test-Path -LiteralPath $CaCertPath -PathType Leaf)) {
-  throw "找不到根证书：$CaCertPath（未完成证书导出的情况下无法做正常 TLS 校验，拒绝以跳过校验代替）"
-}
+function Invoke-NativeCaddyEndpointDiagnostics {
+  <#
+  .SYNOPSIS
+    执行完整端点诊断，返回退出码（0 = 全部通过）。
+  #>
+  param(
+    [Parameter(Mandatory)][string]$PackageRoot,
+    [Parameter(Mandatory)][string]$NativeEnvPath,
+    [Parameter(Mandatory)][string]$CaCertPath
+  )
 
-$templatePath = Join-Path $PackageRoot 'central\windows-caddy\Caddyfile.template'
-if (-not $NativeEnvPath) { $NativeEnvPath = Join-Path $PackageRoot 'native.env' }
-$config = Read-WeFlowNativeEnv -Path $NativeEnvPath -CaddyfileTemplatePath $templatePath
-
-Write-Host "== TLS 与端点诊断 ==" -ForegroundColor Cyan
-Write-Host "  目标     : https://$($config.Hostname):443"
-Write-Host "  绑定地址 : $($config.BindIp)"
-Write-Host "  根证书   : $CaCertPath"
-
-# 不修改 hosts：只在本次 TCP 连接上把域名指向配置的物理 IPv4。
-if (-not $SkipDnsOverride) {
-  Add-DnsClientNrptRule -Namespace $config.Hostname -NameServers '127.0.0.1' -ErrorAction SilentlyContinue | Out-Null
-  Write-Host '  已加临时 NRPT 规则；如端点仍不可达，请确认域名解析或改用 -SkipDnsOverride 配合已有 DNS。'
-}
-
-foreach ($path in @('/health', '/ready')) {
-  try {
-    $response = Invoke-WebRequest -Uri "https://$($config.Hostname)$path" `
-      -CertificateThumbprint (Get-Item $CaCertPath).FullName `
-      -TimeoutSec 10 -UseBasicParsing 2>$null
-    Write-Host "  GET $path -> HTTP $([int]$response.StatusCode)" -ForegroundColor Green
-  } catch {
-    Write-Host "  GET $path -> 失败：$($_.Exception.Message)" -ForegroundColor Red
+  if (-not (Test-WeFlowPathExists -Path $CaCertPath -Leaf)) {
+    Write-Host "找不到根证书：$CaCertPath" -ForegroundColor Red
+    Write-Host '未完成证书导出的情况下无法做正常 TLS 校验；本脚本拒绝以跳过校验代替。' -ForegroundColor Red
+    return 1
   }
+
+  $templatePath = Join-Path $PackageRoot 'central\windows-caddy\Caddyfile.template'
+  try {
+    $config = Read-WeFlowNativeEnv -Path $NativeEnvPath -CaddyfileTemplatePath $templatePath
+  } catch {
+    Write-Host ("配置校验失败：{0}" -f $_.Exception.Message) -ForegroundColor Red
+    return 1
+  }
+
+  Write-Host '== TLS 与端点诊断（完整校验，无跳过开关） ==' -ForegroundColor Cyan
+  Write-Host "  目标     : https://$($config.Hostname):443"
+  Write-Host "  绑定地址 : $($config.BindIp)（通过本次连接的 --resolve / server_hostname 映射，不改系统解析）"
+  Write-Host "  根证书   : $CaCertPath"
+
+  # 判定统一走 Invoke-WeFlowEndpointAcceptance：与 Start-NativeCaddy 的启动验收
+  # 共用同一份「TLS 校验 + HTTP 200 + 响应契约」标准，这里不另立第二套阈值。
+  $acceptance = Invoke-WeFlowEndpointAcceptance -Config $config -CaCertPath $CaCertPath
+
+  foreach ($item in $acceptance.Items) {
+    $probe = $item.Probe
+    switch ($item.ExitCode) {
+      0 {
+        Write-Host ("  GET {0} -> HTTP 200，契约匹配（后端 {1}）" -f $item.Path, $probe.Backend) -ForegroundColor Green
+      }
+      3 {
+        Write-Host ("  GET {0} -> 无法探测：{1}" -f $item.Path, $probe.Message) -ForegroundColor Red
+      }
+      4 {
+        Write-Host ("  GET {0} -> TLS 校验失败：{1}" -f $item.Path, $probe.Message) -ForegroundColor Red
+      }
+      5 {
+        Write-Host ("  GET {0} -> 连接失败：{1}" -f $item.Path, $probe.Message) -ForegroundColor Red
+      }
+      6 {
+        Write-Host ("  GET {0} -> HTTP {1}（非 200）" -f $item.Path, $probe.HttpStatus) -ForegroundColor Red
+      }
+      7 {
+        Write-Host ("  GET {0} -> HTTP 200 但响应契约不匹配：{1}" -f $item.Path, $item.Reason) -ForegroundColor Red
+      }
+      8 {
+        Write-Host ("  GET {0} -> HTTP 403：来源门禁拒绝（remote_ip 未落在允许网段），不算通过" -f $item.Path) -ForegroundColor Red
+        Write-Host ("            后端 {0}；证书链与主机名校验已通过（{1}）" -f $probe.Backend, $probe.Message) -ForegroundColor Yellow
+      }
+      9 {
+        Write-Host ("  GET {0} -> 响应协议错误（畸形 / 截断 / 超出大小上限）：{1}" -f $item.Path, $probe.Message) -ForegroundColor Red
+      }
+      default {
+        Write-Host ("  GET {0} -> 未通过：{1}" -f $item.Path, $item.Reason) -ForegroundColor Red
+      }
+    }
+  }
+
+  $worstExit = $acceptance.ExitCode
+
+  Write-Host ''
+  if ($worstExit -eq 0) {
+    Write-Host '端点诊断通过：/health 与 /ready 均为 200 且契约匹配。' -ForegroundColor Green
+  } else {
+    Write-Host ("端点诊断失败（退出码 {0}）。" -f $worstExit) -ForegroundColor Red
+  }
+  Write-Host '说明：本机自测只代表 Windows 侧链路；第二台 LAN 客户端仍需单独验收。'
+  return $worstExit
 }
 
-Write-Host ''
-Write-Host '说明：Schannel 的信任判定与 Python/curl 的 --cacert 是两条独立路径。'
-Write-Host '本机自测通过只代表 Windows 侧链路可用；第二台 LAN 客户端仍需单独验收。'
-Write-Host '若 -CertificateThumbprint 不接受该文件，请改用 curl.exe 并显式指定 --cacert；不得跳过证书校验。'
+if ($SelfTest) {
+  # 只加载函数定义，供隔离测试调用；不做任何探测。
+  return
+}
+
+if (-not $PackageRoot) { throw '缺少 -PackageRoot 参数' }
+if (-not $NativeEnvPath) { $NativeEnvPath = Join-Path $PackageRoot 'native.env' }
+if (-not $CaCertPath) { throw '缺少 -CaCertPath 参数（本脚本不接受跳过证书校验的用法）' }
+
+$exitCode = Invoke-NativeCaddyEndpointDiagnostics -PackageRoot $PackageRoot -NativeEnvPath $NativeEnvPath -CaCertPath $CaCertPath
+exit $exitCode

@@ -112,34 +112,39 @@ function stripBlockComments(source: string): string {
 }
 
 /**
- * Extract the argument list of every real Compose invocation.
+ * Extract the argument list of every Compose invocation.
  *
- * The scripts write each invocation as `& docker compose -p ... -f ... <sub>`,
- * with the flags continued onto the next physical line. Joining PowerShell line
- * continuations first lets the guard see the same single command the shell does.
+ * The merged layer no longer spells `& docker compose ...` at each call site:
+ * every invocation goes through `Invoke-WeFlowDocker -ComposeArgs @(...)`, and the
+ * fixed scope (`-p weflow-test`, the two `-f` files, `--env-file`) is built in
+ * exactly one place. The guard therefore collects the wrapper call sites — those
+ * are the only places a subcommand can come from — and pins the scope separately.
  */
 function collectComposeScope(codeOnly: string): string[] {
   const joined = codeOnly.replace(/`\s*\n\s*/g, ' ')
-  return joined
-    .split('\n')
-    .filter((line) => /&\s*docker compose\b/.test(line))
-    .map((line) => line.replace(/\s+/g, ' ').trim())
+  return [...joined.matchAll(/Invoke-WeFlowDocker\s+[^\n]*?-ComposeArgs\s+@\(([^)]*)\)/g)]
+    .map((match) => match[1].replace(/\s+/g, ' ').trim())
 }
 
 /**
- * True when every real Compose invocation pins both compose files.
+ * True when every Compose invocation pins both compose files.
  *
- * Acceptance is by literal filename, not by variable name: `-f $someOtherFile`
- * must fail, and so must an invocation that hard-codes a different pair. The
- * service file may name the literal directly when it must (the rollback branch
- * does), so both spellings are accepted — but only these two files.
+ * The scope comes from `ConvertTo-WeFlowComposeInvocation`, which must name the
+ * project, both compose files and the env file as literals; call sites may only
+ * add a subcommand. Acceptance is by literal filename, not by variable name.
  */
 function composeScopePinsBothFiles(codeOnly: string): boolean {
-  const invocations = collectComposeScope(codeOnly)
-  if (invocations.length === 0) return false
-  const base = /-f\s+(\$composeFileBase|docker-compose\.central\.yml)\b/
-  const tls = /-f\s+(\$composeFileTls|docker-compose\.central\.tls\.yml)\b/
-  return invocations.every((line) => base.test(line) && tls.test(line))
+  const hasScope = /function ConvertTo-WeFlowComposeInvocation/.test(codeOnly)
+  if (!hasScope) return false
+  const pinsProject = codeOnly.includes("'-p', 'weflow-test'")
+  const pinsBase = codeOnly.includes("'docker-compose.central.yml'")
+  const pinsTls = codeOnly.includes("'docker-compose.central.tls.yml'")
+  const pinsEnv = codeOnly.includes("'--env-file', 'central/proxy.env'")
+  const subcommandsAllowed = collectComposeScope(codeOnly).every((args) => {
+    const first = args.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') ?? ''
+    return ['stop', 'start', 'ps', 'config'].includes(first)
+  })
+  return pinsProject && pinsBase && pinsTls && pinsEnv && subcommandsAllowed
 }
 
 /**
@@ -251,32 +256,38 @@ try {
   check('可复现性：未改动的正例仍然渲染成功', renderNativeCaddyfile(goodValues) !== undefined)
 
   console.log('\n== 部署脚本安全边界 ==')
-  // Only actual invocations count. The string "docker compose" also appears in
-  // Write-Host guidance and in <# #> docstrings; those are text, not commands,
-  // and treating them as invocations would make the boundary assertions both
-  // wrong and unfalsifiable.
-  const codeLines = scripts
+  // Only the five deploy scripts count here. `Test-DeploymentContract.ps1` is the
+  // Windows-side guard — by design it spells out the constructs it forbids — and
+  // `WeFlowNative.Tests.ps1` contains mutation strings on purpose; either would
+  // make every "must not appear" probe fail on a description rather than on real
+  // code. Within the deploy scripts, `#` comments and `<# #>` blocks are stripped
+  // so guidance text is not mistaken for an invocation.
+  // Block comments are removed *before* the per-line `#` heuristic: cutting at the
+  // first `#` would eat the `<#` delimiter and leave the docstring body in place,
+  // which is exactly how guidance text ("禁止 --insecure") would turn into a
+  // false positive.
+  const codeOnly = stripBlockComments(readDeployScripts())
     .split('\n')
     .map((line) => {
       const comment = line.indexOf('#')
       return comment >= 0 ? line.slice(0, comment) : line
     })
-  const codeOnly = stripBlockComments(codeLines.join('\n'))
-  const invocations = codeLines.filter((line) => /(^|\s)&\s*docker compose\b/.test(line.replace(/^\s*/, ' ')))
+    .join('\n')
   const composeArgs = collectComposeScope(codeOnly)
-  check('脚本中存在真实 Compose 调用', invocations.length > 0, `${invocations.length} 处`)
+  check(
+    'Compose 调用统一经包装层（Invoke-WeFlowDocker），不存在散落的 & docker compose',
+    !/(^|\s)&\s*docker compose\b/m.test(codeOnly) && /Invoke-WeFlowDocker/.test(read(scriptsDir, 'WeFlowNative.Common.ps1'))
+  )
   check(
     '所有 Compose 调用显式固定 -p weflow-test',
-    !/composeArgs/.test(codeOnly) &&
-      codeOnly.includes("& docker compose -p $composeProject") &&
-      codeOnly.includes("$composeProject  = 'weflow-test'")
+    /ConvertTo-WeFlowComposeInvocation/.test(codeOnly) && codeOnly.includes("'-p', 'weflow-test'")
   )
   check(
     '所有 Compose 调用固定同一组两个 -f 文件',
-    !/composeArgs/.test(codeOnly) &&
-      composeScopePinsBothFiles(codeOnly) &&
-      codeOnly.includes("$composeFileBase = 'docker-compose.central.yml'") &&
-      codeOnly.includes("$composeFileTls  = 'docker-compose.central.tls.yml'")
+    composeScopePinsBothFiles(codeOnly) &&
+      codeOnly.includes("'docker-compose.central.yml'") &&
+      codeOnly.includes("'docker-compose.central.tls.yml'") &&
+      codeOnly.includes("'--env-file', 'central/proxy.env'")
   )
   check(
     '脚本从不执行 compose down（含 down -v）',
@@ -290,7 +301,12 @@ try {
   check('脚本只对 caddy 服务操作，不对全部服务 up', composeArgs.every((line) => !/(^|\s)up(\s|$)/.test(line) || /\bcaddy\s*$/.test(line.trim())))
   check('脚本不按映像名宽泛杀进程', !/taskkill\s+\/IM/i.test(codeOnly))
   check('脚本只按记录 PID 结束进程', /Stop-Process -Id/.test(codeOnly))
-  check('停止前核对 PID 可执行路径与本轮记录一致', /-ne \$state\.ExecutablePath/.test(codeOnly))
+  check(
+    '停止前核对 PID 可执行路径与启动时间与本轮记录一致',
+    /Get-WeFlowNativeProcessOwnership/.test(read(scriptsDir, 'WeFlowNative.Common.ps1')) &&
+      /\[string\]::Equals\(\$actualPath, \$expectedPath/.test(read(scriptsDir, 'WeFlowNative.Common.ps1')) &&
+      /Test-WeFlowStartTimeMatches/.test(read(scriptsDir, 'WeFlowNative.Common.ps1'))
+  )
   check('不注册 Windows 服务或计划任务', !/New-Service|Register-ScheduledTask|sc\.exe\s+create|nssm/i.test(codeOnly))
   check('不修改 hosts 文件', !/drivers\\etc\\hosts/i.test(codeOnly))
   check(
@@ -300,12 +316,69 @@ try {
   )
   check('不停用防火墙或改网络配置', !/Set-NetFirewallProfile|netsh\s+advfirewall|New-NetIPAddress/i.test(codeOnly))
   check('启动脚本未授权时以非零码空跑', /exit 2/.test(codeOnly) && /-Authorized/.test(codeOnly))
-  check('预检脚本不执行任何停止/删除动作', !/&\s*docker compose/.test(read(scriptsDir, 'Install-NativeCaddy.ps1').replace(/<#[\s\S]*?#>/g, '')))
+  check('预检脚本不执行任何停止/删除动作', !/(^|\s)&\s*docker compose/.test(read(scriptsDir, 'Install-NativeCaddy.ps1').replace(/<#[\s\S]*?#>/g, '')))
   check('启动前先落到 staged 文件并 validate 通过后才生效', /Caddyfile\.staged/.test(read(scriptsDir, 'Install-NativeCaddy.ps1')))
-  check('诊断脚本强制要求根证书、无跳过校验开关', /Mandatory\)\]\[string\]\$CaCertPath/.test(read(scriptsDir, 'Test-NativeCaddyEndpoint.ps1')) && !/SkipCertificateCheck|-insecure|--insecure/i.test(codeOnly))
+  check(
+    '诊断脚本要求根证书、无跳过校验开关',
+    /\$CaCertPath/.test(read(scriptsDir, 'Test-NativeCaddyEndpoint.ps1')) &&
+      !/SkipCertificateCheck|-insecure|--insecure/i.test(codeOnly)
+  )
   check('未启动长期服务（无 nssm / sc create）', !/nssm|New-Service/i.test(codeOnly))
   check('正向证据：诊断脚本确实带 -CaCertPath 校验参数', /-CaCertPath/.test(read(scriptsDir, 'Test-NativeCaddyEndpoint.ps1')))
-  check('正向证据：停止脚本确实核对 PID 路径后才 Stop-Process', /actualPath/.test(read(scriptsDir, 'Stop-NativeCaddy.ps1')))
+  check(
+    '正向证据：停止脚本经 Stop-WeFlowOwnedProcess 结束进程',
+    /Stop-WeFlowOwnedProcess/.test(read(scriptsDir, 'Stop-NativeCaddy.ps1'))
+  )
+
+  console.log('\n== 本轮四处修复的不变量 ==')
+  const commonSource = read(scriptsDir, 'WeFlowNative.Common.ps1')
+  const startSource = read(scriptsDir, 'Start-NativeCaddy.ps1')
+  const endpointSource = read(scriptsDir, 'Test-NativeCaddyEndpoint.ps1')
+  const probeSource = read(scriptsDir, 'WeFlowNative.HttpsProbe.py')
+  check(
+    'P1 记账失败后的进程回收：启动后立即采集内存身份',
+    /function New-WeFlowProcessIdentityRecord/.test(commonSource) && /New-WeFlowProcessIdentityRecord -Id/.test(startSource)
+  )
+  check(
+    'P1 回退优先用内存身份、磁盘记账仅兜底',
+    /LaunchedIdentity/.test(startSource) && /Source = 'memory'|source = 'memory'/.test(startSource) &&
+      /state-file/.test(startSource)
+  )
+  check(
+    'P1 结束后确认进程退出，且拒绝结束身份不明的进程',
+    /still-running/.test(commonSource) && /identity-unknown/.test(commonSource) && /WEFLOW|拒绝结束/.test(commonSource)
+  )
+  check('P1 回退结论用布尔值合并（不搜索中文消息）', /Ok = \$ok; ProcessStep/.test(startSource) && !/回退结果.*-match/.test(startSource))
+  check(
+    'P2 参数按 MSVCRT 规则构造，不再把数组交给 Start-Process',
+    /function ConvertTo-WeFlowWindowsArgument/.test(commonSource) &&
+      /-ArgumentList \$argumentLine/.test(commonSource) &&
+      !/-ArgumentList \$Arguments/.test(commonSource)
+  )
+  check(
+    'P2 启动验收与端点诊断共用同一份判定',
+    /function Invoke-WeFlowEndpointAcceptance/.test(commonSource) &&
+      (commonSource.match(/Invoke-WeFlowEndpointAcceptance/g) ?? []).length >= 1 &&
+      /Invoke-WeFlowEndpointAcceptance/.test(startSource) &&
+      /Invoke-WeFlowEndpointAcceptance/.test(endpointSource)
+  )
+  check(
+    'P2 启动验收覆盖 /health 与 /ready，403 不算通过',
+    /@\('\/health', '\/ready'\)/.test(commonSource) && /'gate-403'\s*\{\s*return 8/.test(commonSource)
+  )
+  check(
+    'P2 契约判定做类型检查（不用强制转换洗白）',
+    /-isnot \[bool\]/.test(commonSource) && /-is \[int\]/.test(commonSource)
+  )
+  check(
+    'P2 Python 后端用 http.client 解析并设响应上限',
+    /import http\.client/.test(probeSource) && /MAX_BODY_BYTES/.test(probeSource) && !/partition\(/.test(probeSource)
+  )
+  check(
+    'P2 Python 后端在关闭连接前取得 TLS 信息',
+    /weflow_tls_version/.test(probeSource) && probeSource.indexOf('weflow_tls_version =') < probeSource.indexOf('def emit')
+  )
+  check('P2 Python 后端测试入口随包交付', existsSync(join(scriptsDir, 'WeFlowNative.HttpsProbe.Tests.py')))
 
   console.log('\n== 参数示例取值 ==')
   check('示例绑定为显式物理 IPv4', envExample.includes(`WEFLOW_NATIVE_BIND_IP=${fixtureBind}`))
