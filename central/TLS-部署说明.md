@@ -26,7 +26,7 @@ Central / PostgreSQL；现有 `central/.env`、数据库 secret、数据卷和�
 3. 使用 `--env-file` 让 Compose 同时完成宿主端口插值和 Caddy 容器变量注入：
 
    ```powershell
-   docker compose --env-file central/proxy.env -f docker-compose.central.yml -f docker-compose.central.tls.yml up -d
+   docker compose --env-file central/proxy.env -f docker-compose.central.yml -f docker-compose.central.tls.yml up --pull never -d
    docker compose --env-file central/proxy.env -f docker-compose.central.yml -f docker-compose.central.tls.yml ps
    ```
 
