@@ -2,11 +2,11 @@
  * 构建上下文（.dockerignore）测试。
  *
  * docker-compose.central.yml 的 build.context 是**仓库根**，所以 .dockerignore 必须放在仓库根。
- * 本机 Docker daemon 不可用时无法真跑 `docker build`，因此这里用与 Docker 一致的匹配语义
+ * 该套件不直接启动 Docker，因此这里用与 Docker 一致的匹配语义
  * 静态验证两件事：
  *  1. Dockerfile 真正需要的文件没有被忽略（否则镜像构建会缺文件而失败）；
  *  2. node_modules / dist / 日志 / 密钥 / 客户数据库 / 前端与 Electron 源码确实被排除。
- * 真机 `docker build` 与镜像体积核查仍属于部署验收。
+ * 真机 `docker build` 与镜像体积核查由独立部署验收执行。
  *
  * 用法：cd central && npm run test:context
  */

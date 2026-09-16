@@ -6,7 +6,7 @@
 >
 > **当前需求文档 = `docs/规划/weflow-hermes-PRD-v3.4.md`**（Phase 0 数据宪法 / Phase 1 单机可靠性 / Phase 2 Hermes 与知识治理；开发约定见 `AGENTS.md`）。
 > **上一阶段主线「AI 销售副驾驶」（§2.26）已于 2026-08-24 P0-4 CLOSED 后收口**，成果仍在主干运行（`customer_judgment` + `getCustomerCurrentView()`、`customer_event` + `task_id`、双漏斗 UI）。§2.26 的 P0-5（L0-L3 文档化）从未产出，已作废。**新会话不要按 §2.26 路线继续开发。**
-> **Phase 3a 中央同步（当前重点）**：首轮实现 = `160786e` / `b295155` / `ae6903b`；2026-09-15 阻断项修复 = `8e757f7`（中央协议与服务端闸门）/ `7a4c5fa`（本机侧出机白名单、双向投递与版本化增量）/ `5024030`（真实契约闭环测试）/ `aa73c26`（文档校准）。详见 **§2.104 / §2.105** 与 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**Phase 3a 代码侧仍未收口**——部署、真机、Windows、SSE、真实消息推送验收全部未做。第四轮收口（§2.108：升级前 pending 移交惰性兼容 / 失败 outbox 正式重投入口（替换测试里的 SQL 翻转）/ `mode` 四值枚举收紧 / `entityId` 必须具体引用 / p0-3 门禁输出脱敏）已完成并通过自动化验证。第五轮收口（§2.109：历史移交富化的**一致性核对**与字符串 SLA 拒收 / 本机分配 `mode` 与同步接收端共用同一四值契约（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）/ 重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」）/ p0-3 文案哨兵**真的写进合成库**（消除空断言）/ 适配器测试**不再直接改 outbox 状态**）已完成并通过自动化验证。
+> **Phase 3a 中央同步（当前重点）**：首轮实现 = `160786e` / `b295155` / `ae6903b`；2026-09-15 阻断项修复 = `8e757f7`（中央协议与服务端闸门）/ `7a4c5fa`（本机侧出机白名单、双向投递与版本化增量）/ `5024030`（真实契约闭环测试）/ `aa73c26`（文档校准）。详见 **§2.104 / §2.105** 与 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**Phase 3a 代码侧仍未收口**——2026-09-16 已完成真实 linux/amd64 Docker 镜像与隔离 PostgreSQL 验收；Windows 导入复验、双机、SSE、真实消息推送等真机验收仍未做。第四轮收口（§2.108：升级前 pending 移交惰性兼容 / 失败 outbox 正式重投入口（替换测试里的 SQL 翻转）/ `mode` 四值枚举收紧 / `entityId` 必须具体引用 / p0-3 门禁输出脱敏）已完成并通过自动化验证。第五轮收口（§2.109：历史移交富化的**一致性核对**与字符串 SLA 拒收 / 本机分配 `mode` 与同步接收端共用同一四值契约（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）/ 重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」）/ p0-3 文案哨兵**真的写进合成库**（消除空断言）/ 适配器测试**不再直接改 outbox 状态**）已完成并通过自动化验证。
 > 基线 commit `d40cd4d`；（历史）AI 销售副驾驶 §2.26 已收口，见文件头；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（已提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（已提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，已提交）；最近提交 **P0-4.4 打磨修正**（`828b6bb` 固定比例梯形 + svg 圆角渐变 + 主题蓝箭头 + 映射 tooltip + 删跳级；`a21fc2e` 文档；见 §2.38）+ **P0-4.4 双漏斗 UI 统一视觉体系**（`e0736b3` 四档窗口 + 蓝系渐变 + 行动漏斗 HTML/CSS 自绘梯形 + 映射 tooltip，纯 UI，见 §2.38）+ P0-4.3 UI/KPI 消费（`94f1bbb` 五段漏斗 + 6 KPI + 点击下钻可追溯 + breakdown 下钻原语共享判定行，25/25，**P0-4 CLOSED**，见 §2.37）+ P0-4.2.3（`e431221` 护栏 17/17 + 验收文档 `docs/实施记录/P0-4.2-收口-契约验收.md`，**P0-4.2 CLOSED**，见 §2.36）+ P0-4.2.2（`20ddc3f` getActionFunnel Task-level 只读组装层：六段去重 / sources 逐段 / rate null 守卫 / superseded 排除 / 时序守卫 / days 只过滤 created，19/19 + 真实库验收 5/5，见 §2.36）+ P0-4.2.1（`4292d06` correlation 补齐：customer_event.task_id + 三写点带 task_id，20/20，见 §2.36）+ E3 收口（`d97f663`，16/16，见 §2.35）+ P0-3 收口（`scripts/p0-3-closed-gate.ts` + `docs/实施记录/P0-3-收口-契约验收.md`，**P0-3 CLOSED**，见 §2.34）+ `03d994d`（P0-3.4：今日行动卡判断展示消费 currentView，analysis JSON 不再冒充当前判断，见 §2.33）+ `14eaa07`（P0-3.3：SalesContextStrip 消费 currentView + suggest 主动生成保留 + 落库断链修复，见 §2.32）+ `9a375b3`（P0-3.2：Customer 360 判断卡消费 currentView，360 不再现场调 LLM，见 §2.31）+ `7950ca6`（P0-3 第一刀：customer current view 只读组装层 + 独立 IPC，见 §2.30）+ `2ce99fc`（P0-2 收口 runtime CLOSED）+ `2932195`（P0-3 Current Judgment Consumer 盘点）+ `35519a1`（P0-2 收口：真实库只读盘点 + 契约验收封板）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）+ `fc654b2`（P0-2C.2 summary 判断落库）+ `07241f4`（P0-2C.1 customer_judgment 基础设施）+ `21fd148`（P0-2B evidence resolver）+ `04dbaec`（P0-2B messageKey 集中化）；`3ff3f1f`（P0-2A.6 manual/deal 写者元数据收口）；`ef100ed`（2026-08-23 漏斗改造：历史累计流转 + canonical 语义层 + 下钻修复，见 §2.24）；P0-1 AI 证据链 `4338921`——intent_tag_log 证据列 message_key/evidence_text + follow_up_task.source_message_id，三件运行时验证通过，见 §2.26；P0-2A 六刀已全部提交：`6bf1ff6` intentScore 两 bug → `a3f3479` canonical read model（真实库并行验证 0 漏斗变化）→ `308d5d9` action rules 阶段口径归一 → `53ee94b` insightService 禁写 stage 降 signal → `2933a2d` generic upsert 移除 stage 资格（IPC 运行时剥离 + TS 类型删除双保险，tags/notes 仍正常更新）→ `3ff3f1f` manual/deal rule 写者元数据收口（manual 校验值合法性 + changedAt；deal rule 补写 intent_tag_log + changedAt）；**P0-2 数据契约盘点完成**（`docs/实施记录/P0-2-数据契约盘点.md`；**P0-2A Canonical State 设计已定稿**，`docs/P0-2A-Canonical-State-设计.md`——canonical stage 6 值 + activityState 拆 dormant + unknown 异常位；写者资格 classifier/intent/manual/deal 保留、insightService 禁写 stage 降 signal、generic upsert 移除、dormant 规则写 activityState；intentScore 只修两 bug 不重做算法；**六刀已全部提交**）；**P0-2B Evidence Resolver 两刀已提交**（`04dbaec` messageKey 构造集中 + `21fd148` 统一证据读入口，45 测试断言含只读验证，设计 docs/P0-2B-Evidence-Resolver-设计.md）；**P0-2C AI Judgment Persistence 三刀已全部提交**：`07241f4`（P0-2C.1 customer_judgment 基础设施，盘点 docs/P0-2C-AI-Judgment-Persistence-盘点.md）+ `fc654b2`（P0-2C.2 summary 落库，接入 generateInsightForSession）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）；**P0-2 已收口 CLOSED**（静态契约验收全绿 + 真实库只读盘点 + 8 条架构护栏封死，见 §2.29，下一动作 = P0-3 Current Judgment Consumer Layer））；客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环 `068a403`，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/归档/交接旧版/HANDOVER-20260818-CRM零操作改造与产品库.md）。
 > `npx tsc --noEmit` 零错误；crm 全系单测：workbench **50/50**、golden **45/45**、claim **17/17**、autoconfirm **58/58**、docgen **68/68**、enrich **55/55**、lead **53/53**、logistics **37/37**、opportunity **45/45**、funnel **40/40**（历史累计流转漏斗 + P0-1 证据断言）、todo-followup **11/11**（手动待办）、report-review **33/33**（销售复盘）、message-key **17/17**（P0-2B messageKey 构造集中）、evidence-resolver **45/45**（P0-2B 证据统一读入口，含只读断言）、customer-judgment **40/40**（P0-2C.1 AI 判断基础设施，禁 stage 硬门禁 + 证据诚实）、summary-judgment **33/33**（P0-2C.2 summary 落库：证据诚实 / append-only 去重 / 手动覆盖权利）、action-analysis-judgment **37/37**（P0-2C.3 三调用点统一落 judgment：任务锚点证据 / 兜底链路 / 按类型去重 / suggest 手动覆盖 / 三层分离）、current-view **30/30**（P0-3 第一刀只读组装层：空态 / 投影 / freshness 窗口 / analysis 不并入）、customer360-consumer **13/13**（P0-3.2 360 消费 currentView：无现场 LLM / 无 advice 直读 / UI 不直读真源）、sales-context-strip **10/10**（P0-3.3 状态条消费 currentView：suggest 主动生成保留 / sessionId 断链修复 / 生成后立即重读闭环）、today-action-consumer **14/14**（P0-3.4 今日行动卡消费 currentView：analysis JSON 不再冒充 / 虚拟卡 judgments null / 生成后重读闭环 / 收件箱保留历史语义）、p0-3-closed-gate **6/6 静态 + 真实库运行态**（P0-3 收口：全仓 137 文件历史载体零冒充 / 真实库 18 判断 6 客户全 fresh 证据可解析，见 §2.34）、customer-event **16/16**（P0-3 E3.1 CustomerEvent 基础设施：五类型 CHECK 门禁 / message_key 幂等 / 单表写四者不互相冒充 / 无 key 手动事件可重复，见 §2.35）、customer-event-producer **15/15**（P0-3 E3.2 最小生产者：quote_asked/customer_replied 双写不改变原链路 / closed>0 门控 / 复用 canonical key / 写失败不阻断 / 三表零污染 / **无名 session 门控**（accountId=0 不写 customer_event——观察期防污染），见 §2.35）、insight-unnamed-session **6/6**（无名 session 跳过见解链：沉默扫描 + blacklist 活跃分析无客户档案会话不入队 + 零 this.isSessionIdLike 模块函数护栏，见 §2.37、2026-08-24 isSessionIdLike 修复）、customer-event-action **20/20**（P0-3 E3.3 销售行动事件：script_copied/chat_opened/follow_up_done 挂在动作成功点 / follow_up_done 状态转换幂等 / 写失败不阻断 UI / 无第二套 action log；**P0-4.2.1** 行动事件带 task_id correlation（before.id / 前端 rawTaskId / 无 task 上下文 NULL 不伪造），见 §2.35、§2.36）、customer-event-closed-gate **16/16**（P0-3 E3 收口：全仓静态 13 项契约 + 真实库运行态 3 项，E3 已 CLOSED，见 §2.35；**P0-4.2.2 起 A2 更新为「事件查询原语仅 Action Funnel 消费」**——getActionFunnel 为唯一正当只读消费者，四消费者仍不迁）、action-funnel **25/25**（P0-4.2.2 六段只读组装 + **P0-4.3 breakdown 下钻**：executed/responded 事件类型计数精确 + 最近任务样本降序去重 / 与聚合共享 collectTaskRows 判定行口径严格一致，见 §2.36、§2.37）、action-funnel-closed-gate **17/17**（P0-4.2.3 收口护栏：静态 8 + 真实库运行态 7——created 口径闭合 1217+1601=2818 / won=26 / 窗口结构不变量 / executed+responded+progressed 0 样本属部署时序，见 §2.36；**P0-4.3 起 A2 升级为整文件检查**——collectTaskRows 提取后读方法移出 getActionFunnel 体，改查全文件零写方法 + 读访问仅白名单三原语，更严格）。
 > Mac + Windows 双平台打包验证通过。
@@ -1792,7 +1792,7 @@
 
 ### 新增：中央服务 `central/`（Fastify 5 + PostgreSQL，Docker Compose）
 
-- **形态**：独立 Node 服务（`central/src/`），`type: module` + NodeNext + tsx；**未换技术栈**（沿用既定 Fastify / PostgreSQL / node-postgres）。
+- **形态**：独立 Node 服务（`central/src/`），`type: module` + `ES2022` / `Bundler` + tsx；**未换技术栈**（沿用既定 Fastify / PostgreSQL / node-postgres）。
 - **文件**：`index.ts`（入口）/ `app.ts`（路由与鉴权）/ `config.ts`（环境变量，缺失即拒绝启动）/
   `crypto.ts`（`createSecret` / `secretHash` / `safeSecretEqual`）/ `permissions.ts`（角色→能力表驱动矩阵）/
   `projections.ts`（显式投影注册表）/ `store.ts`（接口）/ `postgresStore.ts`（生产实现）/ `memoryStore.ts`（测试实现）。
@@ -2425,6 +2425,31 @@ HTTP 负例均为 4xx 且不增加 down event；SMB 负例全部 `.failed`、业
 `MemoryCentralStore`/`app.inject`；真实 PostgreSQL、Docker、双机、Windows、SSE、真实推送与部署验收仍未做，
 两个明确禁止的 assignment 基线脚本未运行。**本轮不代表 Phase 3a 或整个项目完成。**
 
+## 2.113 Phase 3a P0 启动修复：Central 产物 ESM/CJS 混用与真实容器验收（2026-09-16）
+
+> 详细实施记录见 `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` §16；审计复核见
+> `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` §12。
+
+- **真实根因**：`central/tsconfig.json` 使用 `NodeNext`，Central 自己的 `type: module` 包边界输出 ESM，仓库根
+  没有 `"type":"module"`，位于包边界外的 `shared` 输出 CommonJS；Central 运行时加载 shared 时出现
+  `does not provide an export named CENTRAL_ENTITY_TYPES`。`centralDownCommand.ts` 的 `centralSync` 相对导入也补缺了
+  Node ESM 所需的 `.js` 后缀。
+- **修复**：Central 专用配置改为 `ES2022` + `Bundler`；共享导入改为 `./centralSync.js`。不改根包模块类型、不切换
+  Electron、不加 CJS/ESM 兼容旁路；Electron、本机同步和中央仍共用同一份 `shared` 契约。
+- **永久守卫**：新增 `central/verify-dist.mjs`，接入 `npm --prefix central run build` 的 tsc 后步骤，真实动态 import
+  `dist/central/src/app.js`、`dist/shared/centralSync.js`、`dist/shared/centralDownCommand.js`，断言
+  `buildCentralApp`、非空 `CENTRAL_ENTITY_TYPES`、`validateDownCommand`；失败非零，不启动服务、不连数据库、不读凭据。
+  `central/test/build-guard-test.ts` 用临时 ESM 夹具验证 1 个正例和 3 个缺导出负例，共 **8/0**，不是恒真断言。
+- **本轮验证**：根 typecheck 0；Central typecheck 0；Central app/projection/migration/context/build-guard 为
+  **159/0、36/0、23/0、6/0、8/0**；build 后守卫与独立 Node 动态 import 均成功；两个 shared 产物无 CJS
+  `exports.*` / `Object.defineProperty(exports, ...)`。
+- **真实部署验收**：官方 `node:22-alpine` 的 linux/amd64 镜像构建成功，镜像内三模块 import 成功，元数据为
+  `User=node`、正确 CMD、`8787/tcp`，敏感/客户数据路径无命中；官方 `postgres:17.6-alpine` 隔离验收中 migrations
+  001/002、pgcrypto、基础表/显式投影表、health/ready、业务初始 0 行、Central 稳定运行均已验证。临时容器、网络、卷
+  已清理。
+- **边界**：Windows 部署机尚待导入修复 commit 制作的新镜像并复验；双机、SSE、真实消息推送、反向代理/证书、备份
+  恢复、公证签名和冲突裁决演练仍未验证。未 push，也未触碰 Windows 既有 PostgreSQL/卷/.env/secret。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -2725,10 +2750,11 @@ HTTP 负例均为 4xx 且不增加 down event；SMB 负例全部 `.failed`、业
 | `src/crypto.ts` | `createSecret`（明文一次性）/ `secretHash`（**只存 sha256 哈希**）/ `safeSecretEqual`（定时安全比较） |
 | `src/config.ts` | 环境变量读取与校验（含 `CENTRAL_LOG_LEVEL` 真正传给 Fastify logger、`CENTRAL_TLS_TERMINATED` 影响 `trustProxy`） |
 | `migrations/001_initial.sql` / `002_central_projections.sql` | 初始表（工作区/员工/设备/邀请码/事件/回执/审计）+ 10 张显式投影表；单事务按序应用并登记 `schema_migration` |
-| `test/*.ts` | `app-test` 55 / `projection-test` 19 / `migration-test` 23 / `context-test` 6（后者校验仓库根 `.dockerignore` 的构建上下文） |
+| `test/*.ts` | `app-test` 159 / `projection-test` 36 / `migration-test` 23 / `context-test` 6 / `build-guard-test` 8；后两者分别校验构建上下文与真实动态 import 守卫 |
 
-> 部署件在仓库根：`docker-compose.central.yml` + `.dockerignore`。**尚未执行 `docker build`**（本机无 Docker daemon），
-> 镜像构建与体积属部署验收项。
+> 部署件在仓库根：`docker-compose.central.yml` + `.dockerignore`。2026-09-16 已用官方 `node:22-alpine` 完成
+> `docker build --platform linux/amd64 -f central/Dockerfile ...`，并完成镜像内动态 import 与隔离 PostgreSQL 验收；
+> Windows 测试机仍待导入新镜像并复验。
 
 ### 后端 `electron/hermes/`（§2.87 UtilityProcess 架构）
 | 文件 | 说明 |
@@ -2944,8 +2970,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/规划/weflow-hermes-PRD-v3.4.md` | **当前需求文档（开发执行依据）** |
 | `docs/规划/AI简报与按需识别-PRD-v1.0.md` | AI 简报/按需识别的实施契约（§2.98 的依据） |
 | `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` | 迁移失败项人工闭环 + tsc 棘轮门禁与存量消肿（含疑似真 bug 清单） |
-| `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` | **§2.104 的实施记录 + §2.105 的追补记录**：改动清单 / 11 端点契约 / 逐项验证输出 / 明确区分「已实现且自动化验证」与「需部署或真机才能完成」；§8 = 2026-09-15 八类阻断项修复（改动 / 测试 / 残留披露 / 结论措辞）；**§10 = 同日第三轮契约修复**、**§11 = 同日第四轮收口（§2.108）** |
-| `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` | **§2.105 的审计报告**：八类阻断项处置对照 / 两处真实缺陷复盘（`readVersioned` 优先级错误、审计投影泄漏 wxid）/ 明确残留清单 / 本轮真实验证输出；**§6 = 同日第三轮**、**§7 = 同日第四轮（§2.108）的缺陷复盘与验证输出** |
+| `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` | **§2.104 的实施记录 + §2.105 的追补记录**：改动清单 / 11 端点契约 / 逐项验证输出 / 明确区分「已实现且自动化验证」与「需部署或真机才能完成」；§8 = 2026-09-15 八类阻断项修复（改动 / 测试 / 残留披露 / 结论措辞）；**§10 = 同日第三轮契约修复**、**§11 = 同日第四轮收口（§2.108）**；**§16 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门、真实 Docker 与隔离 PostgreSQL 验收** |
+| `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` | **§2.105 的审计报告**：八类阻断项处置对照 / 两处真实缺陷复盘（`readVersioned` 优先级错误、审计投影泄漏 wxid）/ 明确残留清单 / 本轮真实验证输出；**§6 = 同日第三轮**、**§7 = 同日第四轮（§2.108）的缺陷复盘与验证输出**；**§12 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门与真实容器验收** |
 | `docs/规划/AI调用入口与消费清单.md` | **AI 调用点与 purpose 对照表**（唯一采集层、价格表与上限规则；新增 AI 调用点必读） |
 | `docs/实施记录/AI简报与按需识别-实施记录-claude-20260912.md` | §2.98 的实施记录（验收逐条自查 / 真实输出 / 遗留项）＋ §6.8 = §2.99 屏蔽名单重定义（含开工前提证伪核实、闸门决策落点、遗留项） |
 | `docs/实施记录/合同与报价录入加速-实施记录-claude-20260912.md` | 合同/报价录入加速（PRD v1.4）的实施记录（改动清单 / §10 逐条自查 / 真实输出 / 未实测项） |

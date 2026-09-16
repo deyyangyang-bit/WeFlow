@@ -24,7 +24,7 @@
 import {
   CENTRAL_ENTITY_TYPES, findForbiddenDownlinkField, isCentralEntityType, isConcreteRef, refKindOf,
   type CentralEntityType, type CentralSyncEvent
-} from './centralSync'
+} from './centralSync.js'
 
 export const DOWN_DELIVERY_ROLES = ['apply', 'remove', 'notify'] as const
 export type DownDeliveryRole = typeof DOWN_DELIVERY_ROLES[number]
