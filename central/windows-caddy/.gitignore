@@ -1,0 +1,17 @@
+# 原生 Windows Caddy 的运行期落点：真实参数、日志与 PKI 一律不进 Git。
+# 真实文件在 F:\WeFlow-Test 下，仓库内只保留 *.example 与模板。
+native.env
+*.staged
+logs/
+state/
+pki/
+caddy-data/
+caddy-config/
+caddy_data/
+caddy_config/
+*.crt
+*.key
+*.p12
+*.pfx
+*.log
+*.pid

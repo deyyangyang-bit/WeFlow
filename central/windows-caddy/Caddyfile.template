@@ -1,0 +1,63 @@
+# WeFlow Central —— 原生 Windows Caddy（宿主直连，不经 Docker 端口转发）
+#
+# 用途：在 Windows 测试机上以宿主进程方式终结 TLS，让 `remote_ip` 看到真实的
+# LAN 客户端地址，而不是 Docker Desktop 的网桥网关（172.18.0.1）。这是容器方案
+# 无法按真实来源放行的唯一原因，本文件不改变该安全策略，只是把来源恢复成真实 peer。
+#
+# 本文件是模板，不是可直接运行的配置：下面所有花括号占位符都由
+# scripts\Install-NativeCaddy.ps1 在部署时替换成显式值，渲染后若仍残留
+# 占位符则拒绝启动。守卫脚本 Test-DeploymentContract.ps1 会对渲染结果逐项断言。
+#
+# 交付包内不含任何私钥、证书、令牌、客户数据或真实运行配置。
+
+{
+	# 关掉 admin API（默认 127.0.0.1:2019）：本方案不需要运行时改配置，
+	# 少一个本地可写控制面。
+	admin off
+
+	# 只做 TLS 终结，不生成任何 HTTP→HTTPS 跳转，因此不会隐式监听 80。
+	auto_https disable_redirects
+
+	# 只签发内部 CA 证书，但绝不自动把根证书装进 Windows 受信任根存储。
+	# 安装根信任必须由人工在验收阶段显式执行。
+	skip_install_trust
+
+	# 证书、私钥与本地 CA 全部落在 F 盘显式目录；不使用 Caddy 在 Windows 上
+	# 的默认存储位置（%AppData%\Caddy），避免 PKI 跑到用户配置目录里。
+	storage file_system "{$WEFLOW_NATIVE_PKI_DIR}"
+
+	# 只保留错误级日志：认证头、会话票据、请求体与业务载荷都不落盘。
+	log {
+		output file "{$WEFLOW_NATIVE_LOG_DIR}\caddy.log" {
+			roll_size 10MiB
+			roll_keep 3
+		}
+		level ERROR
+	}
+}
+
+# 站点地址只写主机名：端口由全局 https_port 决定，全局只有一处可改。
+# 用 https:// 显式前缀锁定 TLS，避免依赖 automatic HTTPS 的隐式判定。
+https://{$WEFLOW_NATIVE_HOSTNAME} {
+
+	# 绑定到配置的物理 IPv4。绝不写 0.0.0.0 / :: ，也绝不省略 bind
+	# （省略即监听全部接口）。
+	bind {$WEFLOW_NATIVE_BIND_IP}
+
+	# 使用 Caddy 内部 CA 签发本域名证书；不走公网 ACME，不需要出网。
+	tls internal
+
+	# 只按「直接连接对端」判定来源：remote_ip 读的是 socket 的 immediate peer，
+	# 与请求头无关，因此客户端伪造转发头不会影响判定结果。
+	# 本配置刻意不引入任何"从请求头推导真实 IP"的机制，也不设可信网关列表。
+	@allowed_lan remote_ip {$WEFLOW_NATIVE_ALLOWED_CIDR}
+	handle @allowed_lan {
+		# 上游只有回环上的 Central；PostgreSQL 与 8787 都不对 LAN 开放。
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# 未匹配允许网段一律 fail closed。
+	handle {
+		respond "forbidden" 403
+	}
+}

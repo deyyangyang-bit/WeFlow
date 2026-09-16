@@ -60,3 +60,10 @@ release
 **/.cache
 **/uploads
 **/exports
+
+# 原生 Windows Caddy 部署件（宿主方案，不进容器构建上下文）
+**/windows-caddy/native.env
+**/windows-caddy/logs
+**/windows-caddy/state
+**/windows-caddy/pki
+**/windows-caddy/*.staged

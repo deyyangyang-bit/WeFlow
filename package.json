@@ -24,6 +24,7 @@
     "test:autoconfirm": "npx tsx scripts/crm-autoconfirm-test.ts",
     "test:docgen": "npx tsx scripts/crm-docgen-test.ts",
     "test:central-tls": "npx tsx scripts/central-tls-deployment-test.ts",
+    "test:central-native-tls": "npx tsx scripts/central-native-caddy-test.ts",
     "typecheck:node": "node scripts/typecheck-node-ratchet.cjs"
   },
   "dependencies": {

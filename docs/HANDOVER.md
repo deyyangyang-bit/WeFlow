@@ -5,7 +5,8 @@
 > **文档导航入口 = `docs/CURRENT.md`**（现行权威文档清单 + 冲突优先级）。本文档头部之后的 §2.x 是**按时间记录的历史流水，仅作追溯**，不代表当前状态。
 >
 > **当前需求文档 = `docs/规划/weflow-hermes-PRD-v3.4.md`**（Phase 0 数据宪法 / Phase 1 单机可靠性 / Phase 2 Hermes 与知识治理；开发约定见 `AGENTS.md`）。
-> **2026-09-16 临时内网 TLS 层**：新增官方 `caddy:2.11.4-alpine` 的版本化 Compose 覆盖、Caddyfile 和代理配置模板；macOS 已在随机 Compose 项目 + 隔离 PostgreSQL + `weflow-central:4d4e170` 上验证 HTTPS 443、Caddy 内部 CA、允许 CIDR / 非允许 CIDR、`/health`、`/ready`、无 80/5432、只读根文件系统与最小能力集。Windows 尚待离线导入 Caddy 镜像、安装公开根证书/hosts 并做真机 443 复验；当前 DHCP、临时域名、Private 防火墙与时间同步均不能视为正式上线基线。
+> **2026-09-16 临时内网 TLS 层**：新增官方 `caddy:2.11.4-alpine` 的版本化 Compose 覆盖、Caddyfile 和代理配置模板；macOS 已在随机 Compose 项目 + 隔离 PostgreSQL + `weflow-central:4d4e170` 上验证 HTTPS 443、Caddy 内部 CA、允许 CIDR / 非允许 CIDR、`/health`、`/ready`、无 80/5432、只读根文件系统与最小能力集。
+> **2026-09-16 宿主原生 Windows Caddy（§2.115）**：容器方案的 TLS 链与主机名验证已成功，但 `/health`、`/ready` 返回 403——Docker Desktop 端口转发把容器看到的直接对端变成网桥网关 `172.18.0.1`，`remote_ip` 因此 fail closed（这是预期行为，不是配置错误）。新增 `central/windows-caddy/` 原生宿主部署层：官方 Windows amd64 `v2.11.4` 归档（SHA-512 与官方清单一致、cosign 签名 Verified OK、**无 Authenticode 签名，已如实记录**）、配置模板、五个最小 PowerShell 脚本与两侧契约守卫。安全策略不变：只允许 `192.168.1.0/24`、其余 403、不加 `172.18.0.1` 白名单、不信任 `X-Forwarded-For`。**本轮只完成 Mac 侧准备**：Windows 原生运行、真实 443 LAN 端点、真实 LAN peer、证书信任与长期服务**均未验证**；Windows 切换前仍需采样第二台客户端 `192.168.1.53` 经 Docker 转发后的 peer。
 > **上一阶段主线「AI 销售副驾驶」（§2.26）已于 2026-08-24 P0-4 CLOSED 后收口**，成果仍在主干运行（`customer_judgment` + `getCustomerCurrentView()`、`customer_event` + `task_id`、双漏斗 UI）。§2.26 的 P0-5（L0-L3 文档化）从未产出，已作废。**新会话不要按 §2.26 路线继续开发。**
 > **Phase 3a 中央同步（当前重点）**：首轮实现 = `160786e` / `b295155` / `ae6903b`；2026-09-15 阻断项修复 = `8e757f7`（中央协议与服务端闸门）/ `7a4c5fa`（本机侧出机白名单、双向投递与版本化增量）/ `5024030`（真实契约闭环测试）/ `aa73c26`（文档校准）。详见 **§2.104 / §2.105** 与 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md`。**Phase 3a 代码侧仍未收口**——2026-09-16 已完成真实 linux/amd64 Docker 镜像与隔离 PostgreSQL 验收；Windows 导入复验、双机、SSE、真实消息推送等真机验收仍未做。第四轮收口（§2.108：升级前 pending 移交惰性兼容 / 失败 outbox 正式重投入口（替换测试里的 SQL 翻转）/ `mode` 四值枚举收紧 / `entityId` 必须具体引用 / p0-3 门禁输出脱敏）已完成并通过自动化验证。第五轮收口（§2.109：历史移交富化的**一致性核对**与字符串 SLA 拒收 / 本机分配 `mode` 与同步接收端共用同一四值契约（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）/ 重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」）/ p0-3 文案哨兵**真的写进合成库**（消除空断言）/ 适配器测试**不再直接改 outbox 状态**）已完成并通过自动化验证。
 > 基线 commit `d40cd4d`；（历史）AI 销售副驾驶 §2.26 已收口，见文件头；客户名真相源修复（微信号名回填微信真实备注）见 §2.25（已提交）；漏斗改造（历史累计流转 + canonical 语义层 + 下钻修复）见 §2.24（已提交）；物流群扫描失效修复见 §2.23（getMessages 升序 + 传 startTime 扫增量，已提交）；最近提交 **P0-4.4 打磨修正**（`828b6bb` 固定比例梯形 + svg 圆角渐变 + 主题蓝箭头 + 映射 tooltip + 删跳级；`a21fc2e` 文档；见 §2.38）+ **P0-4.4 双漏斗 UI 统一视觉体系**（`e0736b3` 四档窗口 + 蓝系渐变 + 行动漏斗 HTML/CSS 自绘梯形 + 映射 tooltip，纯 UI，见 §2.38）+ P0-4.3 UI/KPI 消费（`94f1bbb` 五段漏斗 + 6 KPI + 点击下钻可追溯 + breakdown 下钻原语共享判定行，25/25，**P0-4 CLOSED**，见 §2.37）+ P0-4.2.3（`e431221` 护栏 17/17 + 验收文档 `docs/实施记录/P0-4.2-收口-契约验收.md`，**P0-4.2 CLOSED**，见 §2.36）+ P0-4.2.2（`20ddc3f` getActionFunnel Task-level 只读组装层：六段去重 / sources 逐段 / rate null 守卫 / superseded 排除 / 时序守卫 / days 只过滤 created，19/19 + 真实库验收 5/5，见 §2.36）+ P0-4.2.1（`4292d06` correlation 补齐：customer_event.task_id + 三写点带 task_id，20/20，见 §2.36）+ E3 收口（`d97f663`，16/16，见 §2.35）+ P0-3 收口（`scripts/p0-3-closed-gate.ts` + `docs/实施记录/P0-3-收口-契约验收.md`，**P0-3 CLOSED**，见 §2.34）+ `03d994d`（P0-3.4：今日行动卡判断展示消费 currentView，analysis JSON 不再冒充当前判断，见 §2.33）+ `14eaa07`（P0-3.3：SalesContextStrip 消费 currentView + suggest 主动生成保留 + 落库断链修复，见 §2.32）+ `9a375b3`（P0-3.2：Customer 360 判断卡消费 currentView，360 不再现场调 LLM，见 §2.31）+ `7950ca6`（P0-3 第一刀：customer current view 只读组装层 + 独立 IPC，见 §2.30）+ `2ce99fc`（P0-2 收口 runtime CLOSED）+ `2932195`（P0-3 Current Judgment Consumer 盘点）+ `35519a1`（P0-2 收口：真实库只读盘点 + 契约验收封板）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）+ `fc654b2`（P0-2C.2 summary 判断落库）+ `07241f4`（P0-2C.1 customer_judgment 基础设施）+ `21fd148`（P0-2B evidence resolver）+ `04dbaec`（P0-2B messageKey 集中化）；`3ff3f1f`（P0-2A.6 manual/deal 写者元数据收口）；`ef100ed`（2026-08-23 漏斗改造：历史累计流转 + canonical 语义层 + 下钻修复，见 §2.24）；P0-1 AI 证据链 `4338921`——intent_tag_log 证据列 message_key/evidence_text + follow_up_task.source_message_id，三件运行时验证通过，见 §2.26；P0-2A 六刀已全部提交：`6bf1ff6` intentScore 两 bug → `a3f3479` canonical read model（真实库并行验证 0 漏斗变化）→ `308d5d9` action rules 阶段口径归一 → `53ee94b` insightService 禁写 stage 降 signal → `2933a2d` generic upsert 移除 stage 资格（IPC 运行时剥离 + TS 类型删除双保险，tags/notes 仍正常更新）→ `3ff3f1f` manual/deal rule 写者元数据收口（manual 校验值合法性 + changedAt；deal rule 补写 intent_tag_log + changedAt）；**P0-2 数据契约盘点完成**（`docs/实施记录/P0-2-数据契约盘点.md`；**P0-2A Canonical State 设计已定稿**，`docs/P0-2A-Canonical-State-设计.md`——canonical stage 6 值 + activityState 拆 dormant + unknown 异常位；写者资格 classifier/intent/manual/deal 保留、insightService 禁写 stage 降 signal、generic upsert 移除、dormant 规则写 activityState；intentScore 只修两 bug 不重做算法；**六刀已全部提交**）；**P0-2B Evidence Resolver 两刀已提交**（`04dbaec` messageKey 构造集中 + `21fd148` 统一证据读入口，45 测试断言含只读验证，设计 docs/P0-2B-Evidence-Resolver-设计.md）；**P0-2C AI Judgment Persistence 三刀已全部提交**：`07241f4`（P0-2C.1 customer_judgment 基础设施，盘点 docs/P0-2C-AI-Judgment-Persistence-盘点.md）+ `fc654b2`（P0-2C.2 summary 落库，接入 generateInsightForSession）+ `057f8aa`（P0-2C.3 action analysis 三调用点统一落 judgment）；**P0-2 已收口 CLOSED**（静态契约验收全绿 + 真实库只读盘点 + 8 条架构护栏封死，见 §2.29，下一动作 = P0-3 Current Judgment Consumer Layer））；客户名称读取侧统一 + 同名不跨会话 + logi 签收闭环 `068a403`，见 §2.20；SLA 首触卡移出主卡流 `c90e6c9`，见 §2.17；今日行动/待办职责分工 `d5b9f62`，归档 FollowUpPage，见 §2.19；AI 回写 model/sourceId 溯源 `223c158`，见 §2.18；SLA 卡置顶+提分 `678e3f0`，见 §2.17；线索池排序 `3156910`；SLA/Action 接通 `5ba531b`，见 §2.17；Customer 360 统一时间线 `6c439bf`，见 §2.16；侧边栏导航收口 7 模块 `09d5600`，见 §2.15；信息待确认迁至工作台客户 tab `57c4e0f`；跟单中心物流卡两行化 `bfed14d`；新建合同选型号 `3e44a12`；复盘排除非销售联系人 `ed510df`；销售复盘改造 `9a9fbaf`；AI 见解 24h 去重+非客户黑名单 `f02b13c`；今日行动新建待办 `8085dc2`；漏斗深链 `11359fe`；漏斗数据 `c719678`；P0 见 `0eab71f`；阶段性交接见 docs/归档/交接旧版/HANDOVER-20260818-CRM零操作改造与产品库.md）。
@@ -2516,6 +2517,73 @@ Windows 尚待导入新的 Caddy 离线镜像、安装 `root.crt` 到测试客�
 地址也尚未真机确认，当前 `remote_ip` 设计在无法确认来源时会 fail closed。DHCP 保留、内部 DNS、时间同步、
 Private 防火墙基线和正式证书/运维方案仍未完成；本轮未 push。
 
+## 2.115 Phase 3a 宿主原生 Windows Caddy 交付层（2026-09-16）
+
+### 2.115.1 问题与方向
+
+容器 Caddy 的 TLS 链与主机名验证**已成功**，但 `/health`、`/ready` 返回 **403**：主机自测时容器内
+Caddy 看到的直接对端是 Docker 网桥网关 `172.18.0.1`，而 `central/Caddyfile` 的 `remote_ip` 按「直接
+连接对端」判定来源，于是连来自 `192.168.1.0/24` 的请求也被判为不允许网段。**这是设计上的 fail
+closed**，不是配置缺陷。
+
+处置方向不是放宽策略，而是把 TLS 终结**移到宿主网络栈**，让 socket 对端恢复为 LAN 客户端本身。
+安全策略完全不变：只允许 `192.168.1.0/24`、其余 403、不添加 `172.18.0.1` 白名单、不信任
+`X-Forwarded-For`、不启用 `client_ip` 兜底。不开放 80、8787、5432、2019。
+
+> **切换前仍需采集的证据**：第二台 LAN 客户端 `192.168.1.53` 经 Docker 转发后被呈现成哪个 peer，
+> 需在 Windows 侧配合采样一次。该证据到手前**不得断言容器方案必然不可用**。
+
+### 2.115.2 新增部署层
+
+`central/windows-caddy/`：`Caddyfile.template`、`native.env.example`、`原生部署说明.md`、
+`.gitignore`，以及 `scripts/` 下 `WeFlowNative.Common.ps1`（参数校验与渲染）、`Install-NativeCaddy.ps1`
+（只读预检 + 渲染 + 官方 `validate`，先 staged 后生效）、`Start-NativeCaddy.ps1`（受控切换）、
+`Stop-NativeCaddy.ps1`（精确 PID 停止与回退）、`Test-NativeCaddyEndpoint.ps1`（端点诊断）、
+`Test-DeploymentContract.ps1`（Windows 侧契约守卫）。Mac 侧守卫为
+`scripts/central-native-caddy-test.ts`（`npm run test:central-native-tls`）。
+
+**未覆盖** `central/Caddyfile`，**未改动** `docker-compose.central.tls.yml`，未改 Central 业务逻辑、
+数据库迁移或同步协议。
+
+配置语义：`bind {$WEFLOW_NATIVE_BIND_IP}`（显式物理 IPv4）；`tls internal`；
+`auto_https disable_redirects`；`admin off`；`skip_install_trust`；
+`@allowed_lan remote_ip <CIDR>` + 未匹配 `handle` 返回 403；上游 `reverse_proxy 127.0.0.1:8787`；
+不配 `trusted_proxies`、不用 `client_ip`、不读转发头；PKI 用 Caddy 官方支持的
+`storage file_system "F:\WeFlow-Test\pki"`；日志级别 `ERROR`。程序、配置、日志、PKI 全在 `F:\WeFlow-Test`。
+
+脚本安全边界：Compose 统一 `-p weflow-test` 与同一组两个 `-f`；只 `stop caddy` / `start caddy`，
+**从不 `down`、从不 `rm`**；原生进程按 `state\native-caddy.current.json` 的**精确 PID** 结束且先核对
+可执行路径；**不使用 `taskkill /IM caddy.exe`**；未带 `-Authorized` 时非零空跑；启动失败自动回退；
+本轮**不注册** Windows 服务或计划任务、不改 hosts、不停用防火墙、不导出根私钥。
+
+### 2.115.3 官方二进制供应链核验
+
+来源为 caddyserver 官方发布仓库 tag `v2.11.4`（2026-06-03 发布，与稳定运行的容器镜像同为 Caddy
+v2.11.4），用 `gh release download` 从官方 release 直接获取，未使用第三方下载站或自定义插件构建。
+归档 `caddy_2.11.4_windows_amd64.zip` 的 **SHA-512 与官方清单逐字符一致**；归档仅三条目、无路径穿越
+与符号链接、CRC 全通过、`caddy.exe` 为 PE32+ x86-64、许可证 Apache-2.0。
+cosign：`checksums.txt` 与归档的 ECDSA P-256 签名**均 Verified OK**，证书由
+`/O=sigstore.dev/CN=sigstore-intermediate` 签发；但**本机未安装 cosign**，未复现 Fulcio/Rekor 完整
+信任链与透明日志核对，不主张该部分。
+
+**Authenticode：`caddy.exe` 不带证书表，没有数字签名**（PE 可选头 Certificate Table 的 RVA 与 size
+均为 0）。按"有签名则核验、无签名则如实记录"的要求**如实记录，未伪造"签名通过"**；完整性依据是官方
+归档摘要。未在 macOS 执行该 exe，也未用 macOS 结果冒充 Windows 验收。
+
+### 2.115.4 验证输出与边界
+
+`npm run test:central-native-tls` 一次真实输出 **89 passed, 0 failed**：模板安全语义、**官方 Linux
+Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配置验证**）、11 条危险取值负例（绑定缺失/
+空/`0.0.0.0`/`::`/主机名，网段缺失/`0.0.0.0/0`/`::/0`/公网段，PKI 目录缺失，域名缺失）、
+脚本安全边界与文档边界声明。变异测试把 `bind` 改成 `0.0.0.0` 后降为 **82 passed, 3 failed**，
+证明门禁非恒真（已还原）。既有容器守卫 `npm run test:central-tls` 复测 **52 passed, 0 failed** 未被破坏。
+
+**本轮只完成 Mac 侧源码与交付准备。以下全部未验证**：Windows 原生 `caddy.exe` 运行、Windows 监听
+行为、真实 LAN peer 采样、真实 443 端点、Windows PKI 实际落点、Windows 进程记账与回退真机行为、
+证书信任（系统根 / Schannel / Electron）、DHCP 保留、内部 DNS、时间同步、Private 防火墙基线、
+长期服务化运行。DHCP 动态地址意味着 `WEFLOW_NATIVE_BIND_IP` 换网后失效，验收前必须重新确认。
+本方案是**临时测试，不是正式上线**；**Phase 3a 代码侧仍未收口**，本节不主张任何阶段完成。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |
@@ -2998,7 +3066,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | P1 | 复盘页限宽居中 | §2.41 七页中唯一未做（.sr-page 全高滚动布局，需验证后改） |
 | 暂缓 | 触发规则配置 UI | **§2.26 L0-L3 文档化决策**：v1 硬编码，先验证有效再评估，P0 闭环前冻结 |
 | 暂缓 | 灵感信箱合并到今日行动 | 等 insightService 与规则引擎产生实际冲突后再评估 |
-| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）+ 复核收口（§2.106）+ 契约修复（§2.107：移交 SLA 保全 / SMB 接入共享校验 / 建档字段强制 / 4xx 部分成功审计补强）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量 + 移交双目标投递 + 服务端引用闸门 + 中央操作审计 + 移交 SLA 精确落地。已披露残留：**下行指令的线索档案面**（中央 HTTP 固定 6 字段，`contactNormalized` 必然过网；`contactRaw`/`wechat` 一律 400）、冲突裁决未细化。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项。**§2.108（第四轮）另收口**：升级前 pending 移交的惰性兼容（沿用 assignment 里已存的 SLA 绝对值，**不重算**）、失败 outbox 的**正式重投入口**（服务层 + IPC + 设置页；e2e 不再直改数据库）、`mode` 收紧为四值枚举、`entityId` 必须具体引用、p0-3 门禁输出脱敏 + 守卫测试 ；**§2.109（第五轮）另收口**：历史移交富化的**一致性核对**（lead/目标销售不符即拒收，已合法载荷也拦跨线索串档）与**字符串 SLA 不算合法绝对时间戳**（一律读回 `number` 覆盖，绝不透传字符串）、本机分配 `mode` 与同步接收端**共用同一四值契约**（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）、重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」，`syncError` 脱敏）、p0-3 文案哨兵**真的写进合成库**（消除恒真空断言）、适配器测试**不再直接改 outbox 状态** |
+| **P3a 收口** | **中央节点 Phase 3a 部署验收** | **Phase 3a 代码侧仍未收口。** 首轮实现（§2.104）+ 阻断项修复（§2.105）+ 复核收口（§2.106）+ 契约修复（§2.107：移交 SLA 保全 / SMB 接入共享校验 / 建档字段强制 / 4xx 部分成功审计补强）已完成并通过自动化验证：中央服务 + HTTP 双向同步 + 绑定/吊销/权限 + 显式投影 + 敏感字段出机封锁 + 跨设备越权拒绝 + 版本化增量 + 移交双目标投递 + 服务端引用闸门 + 中央操作审计 + 移交 SLA 精确落地。已披露残留：**下行指令的线索档案面**（中央 HTTP 固定 6 字段，`contactNormalized` 必然过网；`contactRaw`/`wechat` 一律 400）、冲突裁决未细化。**尚未做**：`docker build` 与镜像体积、真实 PostgreSQL 端到端、反向代理与证书、双机同步演练（改→断网→改→恢复无丢无误）、离职移交全流程演练、档案上行延迟 ≤5 分钟——均为部署/真机验收项。**§2.115（2026-09-16 宿主原生 Windows Caddy）**：容器 Caddy 因 Docker 端口转发把对端 NAT 成网桥网关 `172.18.0.1`，`remote_ip` 按直接对端判定导致来自允许网段的请求也 403（预期 fail closed）；新增 `central/windows-caddy/` 原生宿主部署层恢复真实来源判定，安全策略不变。**仅完成 Mac 侧准备**：Windows 原生运行、真实 443 LAN 端点、真实 LAN peer、证书信任、进程记账与长期服务**全部未验证**；切换前仍需采样第二台客户端 `192.168.1.53` 的容器 peer。**§2.108（第四轮）另收口**：升级前 pending 移交的惰性兼容（沿用 assignment 里已存的 SLA 绝对值，**不重算**）、失败 outbox 的**正式重投入口**（服务层 + IPC + 设置页；e2e 不再直改数据库）、`mode` 收紧为四值枚举、`entityId` 必须具体引用、p0-3 门禁输出脱敏 + 守卫测试 ；**§2.109（第五轮）另收口**：历史移交富化的**一致性核对**（lead/目标销售不符即拒收，已合法载荷也拦跨线索串档）与**字符串 SLA 不算合法绝对时间戳**（一律读回 `number` 覆盖，绝不透传字符串）、本机分配 `mode` 与同步接收端**共用同一四值契约**（`assignLeads` 非法值零写入、批量**不再静默回退** `weight`）、重投结果按**该行自己的最终状态**判定（「重新排队」≠「同步成功」，`syncError` 脱敏）、p0-3 文案哨兵**真的写进合成库**（消除恒真空断言）、适配器测试**不再直接改 outbox 状态** |
 | 大后期 | CRM 双向同步（业务面） | 传输层已由 §2.104 Phase 3a 打通；此处指更上层的双向业务编排，仍仅预留 |
 | 大后期 | 向量数据库 | 知识库>1000条时考虑 |
 
@@ -3038,8 +3106,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 | `docs/规划/weflow-hermes-PRD-v3.4.md` | **当前需求文档（开发执行依据）** |
 | `docs/规划/AI简报与按需识别-PRD-v1.0.md` | AI 简报/按需识别的实施契约（§2.98 的依据） |
 | `docs/实施记录/技术债收口-实施记录-kimi-20260914.md` | 迁移失败项人工闭环 + tsc 棘轮门禁与存量消肿（含疑似真 bug 清单） |
-| `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` | **§2.104 的实施记录 + §2.105 的追补记录**：改动清单 / 11 端点契约 / 逐项验证输出 / 明确区分「已实现且自动化验证」与「需部署或真机才能完成」；§8 = 2026-09-15 八类阻断项修复（改动 / 测试 / 残留披露 / 结论措辞）；**§10 = 同日第三轮契约修复**、**§11 = 同日第四轮收口（§2.108）**；**§16 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门、真实 Docker 与隔离 PostgreSQL 验收**；**§17 = 同日临时 Caddy TLS 层、官方镜像身份与 macOS 隔离验收** |
-| `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` | **§2.105 的审计报告**：八类阻断项处置对照 / 两处真实缺陷复盘（`readVersioned` 优先级错误、审计投影泄漏 wxid）/ 明确残留清单 / 本轮真实验证输出；**§6 = 同日第三轮**、**§7 = 同日第四轮（§2.108）的缺陷复盘与验证输出**；**§12 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门与真实容器验收**；**§13 = 同日 Caddy TLS 配置与 macOS 隔离验收** |
+| `docs/实施记录/中央节点同步通道-实施记录-claude-20260914.md` | **§2.104 的实施记录 + §2.105 的追补记录**：改动清单 / 11 端点契约 / 逐项验证输出 / 明确区分「已实现且自动化验证」与「需部署或真机才能完成」；§8 = 2026-09-15 八类阻断项修复（改动 / 测试 / 残留披露 / 结论措辞）；**§10 = 同日第三轮契约修复**、**§11 = 同日第四轮收口（§2.108）**；**§16 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门、真实 Docker 与隔离 PostgreSQL 验收**；**§17 = 同日临时 Caddy TLS 层、官方镜像身份与 macOS 隔离验收**；**§18 = 同日宿主原生 Windows Caddy 交付层、官方 Windows 二进制供应链核验与跨平台守卫** |
+| `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` | **§2.105 的审计报告**：八类阻断项处置对照 / 两处真实缺陷复盘（`readVersioned` 优先级错误、审计投影泄漏 wxid）/ 明确残留清单 / 本轮真实验证输出；**§6 = 同日第三轮**、**§7 = 同日第四轮（§2.108）的缺陷复盘与验证输出**；**§12 = 2026-09-16 ESM/CJS 启动修复、构建产物硬门与真实容器验收**；**§13 = 同日 Caddy TLS 配置与 macOS 隔离验收**；**§14 = 同日宿主原生 Windows Caddy 交付层与本轮未验证边界** |
 | `docs/规划/AI调用入口与消费清单.md` | **AI 调用点与 purpose 对照表**（唯一采集层、价格表与上限规则；新增 AI 调用点必读） |
 | `docs/实施记录/AI简报与按需识别-实施记录-claude-20260912.md` | §2.98 的实施记录（验收逐条自查 / 真实输出 / 遗留项）＋ §6.8 = §2.99 屏蔽名单重定义（含开工前提证伪核实、闸门决策落点、遗留项） |
 | `docs/实施记录/合同与报价录入加速-实施记录-claude-20260912.md` | 合同/报价录入加速（PRD v1.4）的实施记录（改动清单 / §10 逐条自查 / 真实输出 / 未实测项） |
