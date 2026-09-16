@@ -2466,7 +2466,12 @@ HTTP 负例均为 4xx 且不增加 down event；SMB 负例全部 `.failed`、业
   Docker 日志配置 `json-file` 10 MiB × 3。没有访问 Central `.env`、数据库 secret、Token 或客户数据的挂载。
 - `central/proxy.env.example` 记录当前临时测试值：`192.168.1.57`、`weflow-central.test`、
   `192.168.1.0/24`；真实 `central/proxy.env` 已加入 `central/.gitignore` 与根 `.dockerignore`，本轮没有创建或提交。
-  Compose 操作必须带 `--env-file central/proxy.env`，让宿主绑定地址插值与 Caddy 容器变量保持一致。
+  Compose 操作固定使用项目名 `weflow-test` 与同一组两个 `-f` 文件，并带 `--env-file central/proxy.env`：
+  `docker compose -p weflow-test --env-file central/proxy.env -f docker-compose.central.yml -f docker-compose.central.tls.yml`。
+  项目名决定实际卷名（`weflow-test_weflow-postgres`）；初次添加 TLS **只启动 caddy**——
+  `up -d --no-deps --no-build --pull never caddy`，不对全部服务执行 `up`，也不重建/重启 Central 与 PostgreSQL；
+  回退禁止 `down -v`。`WEFLOW_CENTRAL_HTTPS_BIND` 采用 `${VAR:?错误信息}` 形式，缺失或为空时 `docker compose config`
+  非零退出，不会退化成监听全部宿主接口。
 
 ### 2.114.2 官方镜像身份与许可证
 
@@ -2490,6 +2495,13 @@ digest 三项为准。
 - 根 `package.json` 新增 `npm run test:central-tls`，复用已有 `tsx`，不新增 npm 依赖。测试通过 Docker
   `compose config --format json` 读取合并后的实际模型，并让官方 Caddy 对真实 Caddyfile 执行 `validate`；断言
   443/回环 8787/无 80/5432、网络、挂载、capability、日志限制、变量和敏感路径，而不是只扫描字符串。
+  守卫固定以 `-p weflow-test` 渲染，因此能断言数据卷真实键为 `config.volumes['weflow-postgres']`、实际卷名为
+  `weflow-test_weflow-postgres`，并断言 PostgreSQL 的 `/var/lib/postgresql/data` 挂载确实引用该卷；比较前先断言
+  基础与合并配置均存在该定义，杜绝 `undefined === undefined` 恒真。新增真实负例：绑定变量缺失与为空时
+  `config` 必须非零失败（正例断言 `host_ip` 精确等于配置地址）；删除/改名数据卷定义、或把数据目录改挂其他卷时
+  守卫必须失败（并有"未改动基线本身通过"的可复现性断言证明负例不是恒假）。守卫同时校验 `central/TLS-部署说明.md`
+  的每条 fenced Compose 命令都带 `-p weflow-test` 与同一组两个 `-f`，且每个 `up` 都只指向 caddy。一次真实输出为
+  `central TLS deployment guard: 52 passed, 0 failed`。
 - macOS 本轮使用随机 Compose 项目、临时 bridge 网络、临时命名卷与随机测试凭据，启动官方
   `postgres:17.6-alpine`、已有 `weflow-central:4d4e170` 和 Caddy。PostgreSQL healthy、Central running 且重启
   0、Caddy running 且重启 0；内部测试容器以导出的公开 `root.crt` 校验 `/health=200`、`/ready=200`，另一个

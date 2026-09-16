@@ -9,7 +9,10 @@ services:
     env_file:
       - ./central/proxy.env
     ports:
-      - "${WEFLOW_CENTRAL_HTTPS_BIND}:443:443"
+      # Compose-level fail closed: this form makes `docker compose config` exit
+      # non-zero when the variable is missing or empty. A blank value would
+      # interpolate to ":443:443" and bind every host interface.
+      - "${WEFLOW_CENTRAL_HTTPS_BIND:?set WEFLOW_CENTRAL_HTTPS_BIND in central/proxy.env to the exact host IPv4 address for the HTTPS listener}:443:443"
     volumes:
       - ./central/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

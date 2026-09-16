@@ -50,7 +50,7 @@
 | `docs/规划/weflow-hermes-Phase0-启动细化.md` | Phase 0 执行层唯一依据 |
 | `docs/规划/weflow-hermes-开发流程计划.md` | 开发流程与排期 |
 | `docs/规划/Phase1-内网同步最小版-设计.md` | Phase 1 内网同步设计（已实施） |
-| `docs/规划/中央节点采购方案.md` | 中央节点采购与部署规范（基础安装已完成；macOS 隔离 Caddy TLS 验收已记录，Windows 真机导入与正式网络基线仍待回填） |
+| `docs/规划/中央节点采购方案.md` | 中央节点采购与部署规范（基础安装已完成；macOS 隔离 Caddy TLS 验收已记录，Windows 真机导入与正式网络基线仍待回填。TLS 层 Compose 命令前缀唯一：`-p weflow-test` + 同一组两个 `-f`，初次添加 TLS 只启动 caddy） |
 | `docs/规划/AI项目开发流程-产品经理版.md` | 产品经理视角的开发流程 |
 | `docs/规划/AI调用入口与消费清单.md` | AI 调用入口清单，**随代码变更同步维护** |
 
