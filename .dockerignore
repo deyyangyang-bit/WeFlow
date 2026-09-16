@@ -34,7 +34,12 @@
 **/.env
 **/.env.*
 !**/.env.example
+**/proxy.env
 **/secrets
+**/caddy-data
+**/caddy-config
+**/caddy_data
+**/caddy_config
 **/*.pem
 **/*.key
 **/*.crt

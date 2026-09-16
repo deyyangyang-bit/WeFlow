@@ -1,0 +1,21 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+# Temporary Windows LAN test endpoint. The hostname and CIDR are supplied by
+# central/proxy.env; do not put Central credentials or customer data here.
+https://{$WEFLOW_CENTRAL_HOSTNAME} {
+	tls internal
+
+	@allowed remote_ip {$WEFLOW_CENTRAL_ALLOWED_CIDR}
+	handle @allowed {
+		reverse_proxy central:8787
+	}
+
+	# Fail closed for peers outside the explicitly allowed LAN CIDR.
+	handle {
+		respond "forbidden" 403
+	}
+}

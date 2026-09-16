@@ -1,4 +1,7 @@
 .env
+proxy.env
 dist/
 node_modules/
 secrets/
+caddy-data/
+caddy-config/
