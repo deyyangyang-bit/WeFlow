@@ -16,7 +16,7 @@
     "postinstall": "electron-builder install-app-deps && node scripts/prepare-electron-runtime.cjs",
     "rebuild": "electron-rebuild",
     "dev": "node scripts/clean-dist-electron.cjs && node scripts/prepare-electron-runtime.cjs && vite",
-    "typecheck": "tsc --noEmit && node scripts/typecheck-node-ratchet.cjs",
+    "typecheck": "tsc -b tsconfig.node.json && tsc --noEmit && node scripts/typecheck-node-ratchet.cjs",
     "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && node scripts/verify-electron-bundle.cjs && electron-builder",
     "preview": "vite preview",
     "electron:dev": "node scripts/clean-dist-electron.cjs && node scripts/prepare-electron-runtime.cjs && vite --mode electron",
