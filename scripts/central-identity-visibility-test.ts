@@ -380,6 +380,36 @@ async function main(): Promise<void> {
     String(landed(newLeadZ)?.status) === 'assigned' && String(landed(decoyId)?.status) === 'assigned',
     JSON.stringify({ a: landed(newLeadA)?.status, z: landed(newLeadZ)?.status, decoy: landed(decoyId)?.status }))
 
+  // E2.6/E2.7（第三轮复核负例）：中央通道在**映射缺失**或**映射失效**时必须返回未解析
+  // （recycle 走 leadUnknown 空操作审计），绝不回落裸 id 命中同号诱饵。
+  const nowE2 = Date.now()
+  crmDbService.runTx((tx) => {
+    tx.run("INSERT INTO lead (contact_type, contact_normalized, name, source, status, first_contact_deadline, created_at, updated_at) VALUES ('phone','13900000301','裸 id 诱饵（李四）','test','NEW',?,?,?)", [LEAD_SLA_UNASSIGNED_SENTINEL, nowE2, nowE2])
+  })
+  const rawDecoyId = localLeadByContact('13900000301')
+  assignmentService.assignLeads([rawDecoyId], '李四', '测试操作', 'manual')
+  // E2.6 无映射：来源 dev-A 从未为本 hubLeadId 落过 assign → 无映射；裸 id 恰好命中诱饵
+  pullQueue = [downEvent('ev-nomap', 'recycle', { type: 'recycle', leadId: rawDecoyId, assignmentId: 999999, salesName: '李四', reason: '无映射回收', deliveryRole: 'apply' }, 9, 'dev-A')]
+  resetCapture()
+  const noMapRun = await service.runCentralSyncOnce()
+  const noMapAudit = crmDbService.all("SELECT detail FROM audit_event WHERE action='sync_apply' AND detail LIKE '%recycle_noop%' ORDER BY id DESC LIMIT 1")[0]
+  ok('E2.6 无映射＋同号诱饵：中央通道返回未解析（leadUnknown 空操作），诱饵未被回收',
+    noMapRun.applied === 1 && String(landed(rawDecoyId)?.status) === 'assigned' && !!noMapAudit,
+    JSON.stringify({ decoy: landed(rawDecoyId)?.status, audit: noMapAudit?.detail }))
+  // E2.7 失效映射：映射指向的行已不存在（置一个不存在的本地 id），裸 id 仍恰好命中诱饵
+  crmDbService.runTx((tx) => {
+    tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
+      [`centralSync:hubLead:dev-A:${rawDecoyId}`, 987654321])
+  })
+  pullQueue = [downEvent('ev-deadmap', 'recycle', { type: 'recycle', leadId: rawDecoyId, assignmentId: 999999, salesName: '李四', reason: '失效映射回收', deliveryRole: 'apply' }, 10, 'dev-A')]
+  resetCapture()
+  const deadMapRun = await service.runCentralSyncOnce()
+  const deadMapNoopCount = crmDbService.all("SELECT COUNT(*) AS c FROM audit_event WHERE action='sync_apply' AND detail LIKE '%recycle_noop%'")[0]?.c
+  ok('E2.7 失效映射＋同号诱饵：映射指向已不存在的行 → 仍不回落裸 id，诱饵未被回收',
+    deadMapRun.applied === 1 && String(landed(rawDecoyId)?.status) === 'assigned' &&
+    Number(deadMapNoopCount || 0) >= 2,
+    JSON.stringify({ decoy: landed(rawDecoyId)?.status, noop: deadMapNoopCount }))
+
   console.log('═══ F. 资源卡与回收分段（中央名归属）═══')
   const recycleTargetAssignmentId = Number(landed(localLeadId(8003))?.id)
   pullQueue = [downEvent('ev-vis-4', 'recycle', { type: 'recycle', leadId: 8003, assignmentId: recycleTargetAssignmentId, salesName: '测试销售甲', reason: '测试回收', deliveryRole: 'apply' }, 5)]

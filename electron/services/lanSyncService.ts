@@ -574,14 +574,15 @@ export interface ConsumeResult { applied: number; skippedDup: number; conflict: 
 
 /**
  * 按身份解析本机 lead（跨机 id 不可信，主锚点 = contact_type+contact_normalized）。
- * 解析顺序（2026-09-17 修订：映射先于裸 id，且按来源设备命名；裸 id 只兜底「无 lead 载荷」的指令）：
+ * 解析顺序（2026-09-17 三轮收口：中央通道 fail closed，裸 id 兼容仅保留给历史通道）：
  *   ① 联系方式锚点（assign/transfer 载荷带 lead 资料时的唯一权威锚点）；带锚点而未命中 =
  *      本机没有该 lead（联系方式即身份），调用方据此建档——**绝不**回落裸 id（不同设备的
  *      本地行号空间互不相通，同号只是巧合，命中即错线索）；
- *   ② 来源设备命名空间下的 hub leadId → 本地 id 映射（中央下行 assign/transfer-apply 落地时
- *      同事务写下；recycle 载荷不带 lead 资料，靠它解析本机建档的线索）；
- *   ③ 裸 hubLeadId 当本地 id 查：仅当载荷**没有** lead 锚点（中央 recycle / Phase 1 历史
- *      recycle 异常形态）时兜底，兼容两端同源导入、行号对齐的既有部署；未命中走 noop/nolead。
+ *   ② 中央通道（带 sourceDeviceId）：**只有**来源设备命名空间下的映射
+ *      `centralSync:hubLead:<src>:<hubId>` 能建立对应；映射缺失或指向已不存在的行 →
+ *      返回未解析（调用方按 noop/审计处理），绝不回落裸 id；
+ *   ③ Phase 1 SMB 历史通道（无 sourceDeviceId）且无 lead 锚点：保留**明确允许**的裸 id
+ *      兼容（两端同库/同源导入、行号对齐的既有部署口径，行为不变）；未命中走 noop/nolead。
  */
 function findLocalLead(
   tx: { all: (sql: string, params?: unknown[]) => CrmRow[] },
@@ -600,14 +601,23 @@ function findLocalLead(
   const fid = Number(fallbackLeadId)
   if (!Number.isSafeInteger(fid) || fid <= 0) return null
   if (sourceDeviceId) {
-    // 中央通道：该 hubLeadId 属于「来源设备的行号空间」，映射优先且命中即唯一结论
+    // 中央通道（fail closed，2026-09-17 第三轮收口）：裸 hubLeadId 属于「来源设备的行号空间」，
+    // 与本地行号空间互不相通——**只有映射**能建立与本地行的对应。映射缺失、或映射指向的行
+    // 已不存在 → 返回未解析（调用方按 noop/审计处理）；绝不回落裸 id：同号只是巧合，
+    // 命中即错线索（诱饵负例：无映射＋同号、失效映射＋同号）。
+    // 已知边界：本修复上线**之前**经中央分配的存量线索没有映射，其后续 recycle 会落
+    // 「leadUnknown 空操作」审计（线索滞留，不误回收）；持久修法 = recycle 载荷带 lead 资料
+    // （下行契约变更，另轮处理）。
     const mapped = Number(tx.all('SELECT last_scan AS v FROM scan_state WHERE key = ?',
       [`centralSync:hubLead:${sourceDeviceId}:${fid}`])[0]?.v || 0)
     if (mapped > 0) {
       const hit = tx.all('SELECT * FROM lead WHERE id = ?', [mapped])
       if (hit.length) return hit[0]
     }
+    return null
   }
+  // Phase 1 SMB 历史通道（无来源设备命名空间）：**明确允许**的裸 id 兼容——
+  // 两端同库/同源导入、行号对齐的既有部署口径，行为不变。
   const hit = tx.all('SELECT * FROM lead WHERE id = ?', [fid])
   if (hit.length) return hit[0]
   return null

@@ -45,8 +45,9 @@ export function buildOwnerMap(rows: Array<Pick<AssignmentRow, 'id' | 'lead_id' |
 }
 
 /**
- * 认领按钮可见性：已建档 + 该 lead 当前归属销售 = 本人（署名或绑定别名）+ 分配处于 assigned 态。
- * （后端 claim 的「本人」判定 = actor 姓名或身份档案姓名/归属别名 === sales_name，前端同名口径提前隐藏。）
+ * 认领按钮可见性：已建档 + 该 lead 当前归属 = 本人（shared/ownerFilter.isOwnedLead 唯一口径：
+ * 行带 owner_employee_id → 绑定 employeeId 权威；未带 → 姓名集合 署名∪别名）+ assigned 态。
+ * （后端 claimLead 调用同一共享函数；仅历史行另有「actor 姓名」兼容分支，中央行不适用。）
  * 未建档（姓名空）→ 永不可见；已 claimed 的不再出现（状态机也会拒）。
  */
 export function canClaimLead(identity: IdentityLike, owner?: LeadOwnerInfo): boolean {

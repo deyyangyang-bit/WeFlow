@@ -14,7 +14,7 @@
  */
 import { crmDbService, type CrmRow } from './crmDbService'
 import { getIdentity, getActorLabel, getBoundEmployeeId, getOwnershipAliases } from './identityService'
-import { isOwnedLead, isOwnedName } from '../../shared/ownerFilter'
+import { isOwnedLead } from '../../shared/ownerFilter'
 import { recordOutboxTx } from './crmOutboxService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { outboxTransportEnabled } from './lanSyncService'
@@ -159,14 +159,16 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
   if (String(row.status) !== 'assigned') return { ok: false, code: 'E201', message: `当前状态 ${String(row.status)} 不可认领` }
   const me = getIdentity()
   const mine = { name: me?.name || '', role: me?.role || '', nameAliases: getOwnershipAliases(), employeeId: getBoundEmployeeId() }
-  // 「本人」核对（与前端 canClaimLead 同一口径 shared/ownerFilter.isOwnedLead）：
+  // 「本人」核对唯一实现 = shared/ownerFilter.isOwnedLead（与前端 canClaimLead 同一函数，不再各自复写）：
   // 行带 owner_employee_id（中央下行落地行）→ 绑定 employeeId 权威核对（同名员工不串线，显示名不参与）；
-  // 行未带（历史/本地/SMB）→ actor 姓名或姓名集合（署名 ∪ 别名）回退。
+  // 行未带（历史/本地/SMB）→ 姓名集合（署名 ∪ 别名）。
+  // 历史兼容分支（明确隔离）：仅对**未带** owner_employee_id 的行，沿用 API-CONTRACT 契约 S
+  // 既有口径「actor 姓名可认领本人分配」（actor 署名形如「姓名（角色）」按完整 label 相等判定）；
+  // 中央行（带 owner_employee_id）不适用 actor 兜底——显示名/署名不参与其判定。
   const rowEmp = String(row.owner_employee_id || '').trim()
-  const myEmp = String(mine.employeeId || '').trim()
   const isMine = rowEmp
-    ? !!myEmp && rowEmp === myEmp
-    : (String(row.sales_name) === by || isOwnedName(mine, String(row.sales_name)))
+    ? isOwnedLead(mine, { salesName: String(row.sales_name), ownerEmployeeId: rowEmp })
+    : (String(row.sales_name) === by || isOwnedLead(mine, { salesName: String(row.sales_name), ownerEmployeeId: '' }))
   if (!isMine) {
     return { ok: false, code: 'E201', message: `非本人分配（归属 ${String(row.sales_name)}）` }
   }
