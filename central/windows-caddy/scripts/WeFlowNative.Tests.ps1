@@ -139,6 +139,7 @@ function New-World {
     FailOn         = @{}
     StopProcessCalls = @()
     StartArgumentLines = @()
+    WriteAttempts  = @()
     AutoListenerOnNativeProcess = $false
   }
 }
@@ -201,6 +202,9 @@ function Install-SystemLeafMocks {
   Install-WeFlowMock -Name 'Write-WeFlowTextFile' -Body {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
     $full = Get-SandboxPath -Path $Path
+    # 先记录「尝试写入」这一事实本身（G8 要证明写入确实被尝试并被夹具失败，
+    # 不能靠退出码反推），再按 FailOn 夹具决定成败。
+    $script:World.WriteAttempts += $full
     if ($script:World.FailOn.ContainsKey('Write-WeFlowTextFile') -and $full -match $script:World.FailOn['Write-WeFlowTextFile']) {
       throw ("模拟写入失败：{0}" -f $full)
     }
@@ -965,6 +969,58 @@ function Test-ContractGuard {
   [System.IO.File]::WriteAllText($commonPath, $commonText, (New-Object System.Text.UTF8Encoding($false)))
   $code = Invoke-WeFlowDeploymentContract -PackageRoot $badProject -NativeEnvPath (Join-Path $badProject 'native.env') -ScriptsRoot (Join-Path $badProject 'central\windows-caddy\scripts') -TemplatePath (Join-Path $badProject 'central\windows-caddy\Caddyfile.template') -SkipRuntime $true
   Assert-True -Condition ($code -ne 0) -Name '变异：项目名不是 weflow-test 被拦下' -Detail ("exit=$code")
+
+  # ---- 四条内容敏感不变量的针对性变异负例（对应守卫「本轮修复的不变量」） ----
+  # 6bed1ca 版的教训：这四条断言在去字符串视图上匹配含字符串内容的模式，恒不命中（守卫假阴性）。
+  # 修复后它们改用「保留字符串」视图并锚定真实代码形状；下面每条变异证明：
+  # 目标行为删除或退化后，守卫退出码非零，且失败项正是对应断言（-contains 精确匹配）。
+
+  # 变异 5：验收默认端点退化（去掉 /ready）
+  $noReady = Join-Path $script:SandboxRootPath 'guard-no-ready'
+  Copy-Item -LiteralPath $fixtureRoot -Destination $noReady -Recurse -Force
+  $commonNoReady = Join-Path $noReady 'central\windows-caddy\scripts\WeFlowNative.Common.ps1'
+  $noReadyText = Get-Content -LiteralPath $commonNoReady -Raw
+  $pathsNeedle = "[string[]]" + '$Paths' + " = @('/health', '/ready')"
+  if (-not $noReadyText.Contains($pathsNeedle)) { throw ('守卫变异夹具漂移：未找到 Paths 默认值原文：' + $pathsNeedle) }
+  [System.IO.File]::WriteAllText($commonNoReady, $noReadyText.Replace($pathsNeedle, "[string[]]" + '$Paths' + " = @('/health')"), (New-Object System.Text.UTF8Encoding($false)))
+  $code = Invoke-WeFlowDeploymentContract -PackageRoot $noReady -NativeEnvPath (Join-Path $noReady 'native.env') -ScriptsRoot (Join-Path $noReady 'central\windows-caddy\scripts') -TemplatePath (Join-Path $noReady 'central\windows-caddy\Caddyfile.template') -SkipRuntime $true
+  Assert-True -Condition ($code -ne 0) -Name '变异：验收默认端点退化（去掉 /ready）被拦下' -Detail ("exit=$code")
+  Assert-True -Condition ($script:FailMessages -contains '验收默认覆盖 /health 与 /ready 两个端点') -Name '变异定向：失败项正是「验收默认覆盖 /health 与 /ready」'
+
+  # 变异 6：403 不再映射为非零退出码（gate-403 分支改为 return 0）
+  $gateZero = Join-Path $script:SandboxRootPath 'guard-gate-zero'
+  Copy-Item -LiteralPath $fixtureRoot -Destination $gateZero -Recurse -Force
+  $commonGate = Join-Path $gateZero 'central\windows-caddy\scripts\WeFlowNative.Common.ps1'
+  $gateText = Get-Content -LiteralPath $commonGate -Raw
+  if (-not ($gateText -match "'gate-403'\s*\{\s*return\s+8\s*\}")) { throw '守卫变异夹具漂移：未找到 gate-403 分支原文' }
+  $gateZeroText = [regex]::Replace($gateText, "'gate-403'\s*\{\s*return\s+8\s*\}", "'gate-403' { return 0 }")
+  [System.IO.File]::WriteAllText($commonGate, $gateZeroText, (New-Object System.Text.UTF8Encoding($false)))
+  $code = Invoke-WeFlowDeploymentContract -PackageRoot $gateZero -NativeEnvPath (Join-Path $gateZero 'native.env') -ScriptsRoot (Join-Path $gateZero 'central\windows-caddy\scripts') -TemplatePath (Join-Path $gateZero 'central\windows-caddy\Caddyfile.template') -SkipRuntime $true
+  Assert-True -Condition ($code -ne 0) -Name '变异：403 门禁映射退化为 0 被拦下' -Detail ("exit=$code")
+  Assert-True -Condition ($script:FailMessages -contains '403 来源门禁映射为非零退出码') -Name '变异定向：失败项正是「403 来源门禁映射为非零退出码」'
+
+  # 变异 7：超时分支谎报「停止成功」（确认退出退化）
+  $fakeStop = Join-Path $script:SandboxRootPath 'guard-fake-stop'
+  Copy-Item -LiteralPath $fixtureRoot -Destination $fakeStop -Recurse -Force
+  $commonFakeStop = Join-Path $fakeStop 'central\windows-caddy\scripts\WeFlowNative.Common.ps1'
+  $stopText = Get-Content -LiteralPath $commonFakeStop -Raw
+  $stopNeedle = "Ok = " + '$false' + "; Status = " + "'still-running'"
+  if (-not $stopText.Contains($stopNeedle)) { throw '守卫变异夹具漂移：未找到 still-running 失败分支原文' }
+  [System.IO.File]::WriteAllText($commonFakeStop, $stopText.Replace($stopNeedle, "Ok = " + '$true' + "; Status = " + "'still-running'"), (New-Object System.Text.UTF8Encoding($false)))
+  $code = Invoke-WeFlowDeploymentContract -PackageRoot $fakeStop -NativeEnvPath (Join-Path $fakeStop 'native.env') -ScriptsRoot (Join-Path $fakeStop 'central\windows-caddy\scripts') -TemplatePath (Join-Path $fakeStop 'central\windows-caddy\Caddyfile.template') -SkipRuntime $true
+  Assert-True -Condition ($code -ne 0) -Name '变异：超时分支谎报停止成功被拦下' -Detail ("exit=$code")
+  Assert-True -Condition ($script:FailMessages -contains '结束进程后确认其确实消失（still-running 判定）') -Name '变异定向：失败项正是「结束进程后确认其确实消失」'
+
+  # 变异 8：回退诊断记录的文件名漂移（路径还在、但不再是 rollback.json）
+  $noRollback = Join-Path $script:SandboxRootPath 'guard-no-rollback'
+  Copy-Item -LiteralPath $fixtureRoot -Destination $noRollback -Recurse -Force
+  $startNoRollback = Join-Path $noRollback 'central\windows-caddy\scripts\Start-NativeCaddy.ps1'
+  $startText = Get-Content -LiteralPath $startNoRollback -Raw
+  if (-not $startText.Contains("'native-caddy.rollback.json'")) { throw '守卫变异夹具漂移：未找到 rollback 报告路径原文' }
+  [System.IO.File]::WriteAllText($startNoRollback, $startText.Replace("'native-caddy.rollback.json'", "'native-caddy.rollback.old.json'"), (New-Object System.Text.UTF8Encoding($false)))
+  $code = Invoke-WeFlowDeploymentContract -PackageRoot $noRollback -NativeEnvPath (Join-Path $noRollback 'native.env') -ScriptsRoot (Join-Path $noRollback 'central\windows-caddy\scripts') -TemplatePath (Join-Path $noRollback 'central\windows-caddy\Caddyfile.template') -SkipRuntime $true
+  Assert-True -Condition ($code -ne 0) -Name '变异：回退诊断记录路径漂移被拦下' -Detail ("exit=$code")
+  Assert-True -Condition ($script:FailMessages -contains '回退失败保留诊断记录（rollback.json）') -Name '变异定向：失败项正是「回退失败保留诊断记录」'
 }
 
 function Invoke-GuardChildProcess {
@@ -979,6 +1035,70 @@ function Invoke-GuardChildProcess {
   )
   $process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
   return $process.ExitCode
+}
+
+function Invoke-G8BookkeepingFailureCase {
+  <#
+  .SYNOPSIS
+    G8：记账写盘失败 → 凭内存身份回收本轮进程并恢复容器（子用例可独立执行）。
+  .DESCRIPTION
+    夹具要点（6bed1ca 版的缺陷是：启动前就把 443 置为占用，启动脚本在预检阶段即中止，
+    记账路径从未被执行；且更早子用例残留的 current.json 让「没有落盘」断言不成立）：
+      - 443 初始**无监听**，只在 mock 原生进程启动后才有监听（AutoListenerOnNativeProcess），
+        启动脚本因此能通过预检、真正走到记账失败路径；
+      - 沙箱记账文件在用例开始时明确重置，并断言 current.json 不存在（不依赖前一用例残留）；
+      - Write-WeFlowTextFile 对 native-caddy.current.json 的写入按夹具失败（FailOn）。
+    每条显式断言对应一个必须被证明的事实，全部基于 mock 世界里的结构化证据，
+    不靠退出码或日志文本反推：
+      1) 本轮进程确实被创建：本轮 StartArgumentLines 恰好 1 条且 PID 序列恰好前进 1；
+      2) current.json 写入确实被尝试并按夹具失败：WriteAttempts 命中 + 文件未落盘；
+      3) 失败后的进程确实被回收：StopProcessCalls 命中本轮 PID 且进程已消失；
+      4) 原先运行的容器被恢复：最后一次 Compose 调用是 start caddy；
+      5) 返回正确的失败码 3（不得声称启动成功），并留下结构化回退诊断记录。
+  #>
+  param(
+    [Parameter(Mandatory)][string]$Root,
+    [Parameter(Mandatory)][string]$EnvPath,
+    [Parameter(Mandatory)][string]$Label
+  )
+  New-World
+  # 443 初始无监听；mock 原生进程启动后 AutoListener 才让 443 出现监听。
+  $script:World.AutoListenerOnNativeProcess = $true
+  Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1  caddy  Up 5 minutes'
+  Add-DockerResult -ExitCode 0                                     # stop caddy
+  Add-DockerResult -ExitCode 0                                     # 回退时 start caddy
+  New-FixtureCaddyfile -Root $Root
+  New-FakeExe -Root $Root
+  Remove-WeFlowTestStateFiles -Root $Root
+  $currentPath = Join-Path $Root 'state\native-caddy.current.json'
+  Assert-True -Condition (-not (Test-Path -LiteralPath $currentPath)) -Name ("{0}：开始时 current.json 不存在" -f $Label)
+  $script:World.FailOn['Write-WeFlowTextFile'] = 'native-caddy\.current\.json'
+
+  $nextPidBefore = [int]$script:World.NextPid
+  $code = Invoke-NativeCaddyStart -PackageRoot $Root -ReleaseDir $Root -NativeEnvPath $EnvPath
+  $launchedPid = $nextPidBefore
+
+  # 5) 失败码：回退成功时 Start 的退出码是 3。
+  Assert-Equal -Expected 3 -Actual $code -Name ("{0}：记账写入失败 → 回退（退出码 3）" -f $Label)
+  # 1) 本轮进程确实被创建（在预检阶段就中止的话这里会是 0）
+  Assert-Equal -Expected 1 -Actual $script:World.StartArgumentLines.Count -Name ("{0}：本轮原生进程确实被启动" -f $Label)
+  Assert-Equal -Expected ($nextPidBefore + 1) -Actual ([int]$script:World.NextPid) -Name ("{0}：本轮恰好创建了一个新进程（PID 序列前进 1）" -f $Label)
+  # 2) 写入确实被尝试并按夹具失败
+  Assert-True -Condition (@($script:World.WriteAttempts | Where-Object { $_ -like '*native-caddy.current.json' }).Count -ge 1) `
+    -Name ("{0}：current.json 写入确实被尝试" -f $Label)
+  Assert-True -Condition (-not (Test-Path -LiteralPath $currentPath)) `
+    -Name ("{0}：写入按夹具失败，current.json 未落盘（复现磁盘记账不可用的真实故障）" -f $Label)
+  # 3) 失败后的进程确实被回收（凭内存身份，不是磁盘记账）
+  Assert-True -Condition ($script:World.StopProcessCalls -contains $launchedPid) `
+    -Name ("{0}：失败后确实按本轮 PID 结束了原生进程（PID {1}）" -f $Label, $launchedPid)
+  Assert-True -Condition ($null -eq (Get-WeFlowProcessById -Id $launchedPid)) `
+    -Name ("{0}：本轮进程已确认消失" -f $Label)
+  # 4) 原先运行的容器被恢复
+  Assert-True -Condition ($script:World.DockerCalls.Count -ge 3) -Name ("{0}：容器调用序列完整（状态读取 / stop / start）" -f $Label)
+  Assert-Equal -Expected 'start' -Actual $script:World.DockerCalls[-1].ComposeArgs[0] -Name ("{0}：原先运行的容器被恢复（compose start caddy）" -f $Label)
+  # 5) 结构化诊断记录已产出
+  Assert-True -Condition (Test-Path -LiteralPath (Join-Path $Root 'state\native-caddy.rollback.json')) `
+    -Name ("{0}：回退产出了结构化诊断记录" -f $Label)
 }
 
 function Test-StartScript {
@@ -1033,9 +1153,13 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
   $existingAfter = Get-Content -LiteralPath (Join-Path $stateDir 'native-caddy.current.json') -Raw | ConvertFrom-Json
   Assert-Equal -Expected 4242 -Actual $existingAfter.Pid -Name '既有有效记账未被覆盖'
 
-  # G4：陈旧记账（PID 不存在）→ 允许继续
+  # G4：陈旧记账（PID 不存在）→ 允许继续（子用例自播种陈旧记账，不依赖前一用例残留）
+  Remove-WeFlowTestStateFiles -Root $root
+  $stateDir = Join-Path $root 'state'
+  New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+  $stale = [ordered]@{ Pid = 5555; ExecutablePath = (Join-Path $root 'bin\caddy.exe'); ConfigPath = (Join-Path $root 'config\Caddyfile'); StartedAt = (Get-Date).ToString('o') }
+  [System.IO.File]::WriteAllText((Join-Path $stateDir 'native-caddy.current.json'), ($stale | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
   New-World
-  $script:World.Processes.Clear()
   $script:World.AutoListenerOnNativeProcess = $true
   $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
   Add-ExternalResult -ExitCode 0 -StdOut ($healthBody + "`n__WEFLOW_STATUS__200")
@@ -1044,9 +1168,12 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
   Add-DockerResult -ExitCode 0
   $code = Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath
   Assert-Equal -Expected 0 -Actual $code -Name '陈旧记账可被覆盖（退出码 0）'
+  $g4State = Get-Content -LiteralPath (Join-Path $stateDir 'native-caddy.current.json') -Raw | ConvertFrom-Json
+  Assert-True -Condition ([int]$g4State.Pid -ne 5555) -Name '陈旧记账已被本轮新记账覆盖'
 
   # G5：stop 失败 → 回退 → 退出码 3
   New-World
+  Remove-WeFlowTestStateFiles -Root $root
   Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
   Add-DockerResult -ExitCode 1 -StdErr 'stop failed'
   Add-DockerResult -ExitCode 0   # rollback start
@@ -1056,6 +1183,7 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
 
   # G6：进程启动后立即退出 → 回退 → 3
   New-World
+  Remove-WeFlowTestStateFiles -Root $root
   Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
   Add-DockerResult -ExitCode 0
   Add-DockerResult -ExitCode 0
@@ -1065,6 +1193,7 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
 
   # G7：监听迟迟不出现 → 回退 → 3（含结束本轮进程）
   New-World
+  Remove-WeFlowTestStateFiles -Root $root
   Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
   Add-DockerResult -ExitCode 0
   Add-DockerResult -ExitCode 0
@@ -1076,25 +1205,18 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
   Assert-Equal -Expected 3 -Actual $code -Name '无监听证据 → 回退（退出码 3）'
   Assert-True -Condition ($script:World.StopProcessCalls.Count -ge 1) -Name '回退时结束了本轮原生进程'
 
-  # G8：记账写入失败 → 回退 → 3（且必须凭内存身份回收本轮进程）
-  New-World
-  Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
-  Add-DockerResult -ExitCode 0
-  Add-DockerResult -ExitCode 0
-  $script:World.Listeners[443] = @('192.168.1.57')
-  $script:World.StopProcessCalls = @()
-  $script:World.FailOn['Write-WeFlowTextFile'] = 'native-caddy\.current\.json'
-  $code = Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath
-  Assert-Equal -Expected 3 -Actual $code -Name '记账写入失败 → 回退（退出码 3）'
-  Assert-Equal -Expected 0 -Actual $script:World.Processes.Count -Name '记账写盘失败时仍凭内存身份回收了本轮进程'
-  Assert-True -Condition ($script:World.StopProcessCalls.Count -ge 1) -Name '记账写盘失败时确实结束了本轮进程'
-  Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.current.json'))) `
-    -Name '记账确实没有落盘（复现「磁盘记账不可用」的真实故障）'
-  Assert-True -Condition (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.rollback.json')) `
-    -Name '回退产出了结构化诊断记录'
+  # G8：记账写入失败 → 回退（且必须凭内存身份回收本轮进程）。
+  # 顺序变化检查：第一遍跟在 G1~G7 之后跑（沙箱里留着更早用例的记账文件，
+  # 用例自己重置并断言起点干净）；第二遍在全新独立根上跑（等价于单独执行）。
+  # 两遍都必须全绿，证明该用例不依赖任何前一用例的磁盘状态。
+  Invoke-G8BookkeepingFailureCase -Root $root -EnvPath $envPath -Label 'G8（随组执行）'
+  $g8Root = Join-Path $script:SandboxRootPath 'start-g8-standalone'
+  $envPathG8 = New-FixturePackage -Root $g8Root
+  Invoke-G8BookkeepingFailureCase -Root $g8Root -EnvPath $envPathG8 -Label 'G8（独立根）'
 
   # G9：回退也失败 → 4 且保留状态
   New-World
+  Remove-WeFlowTestStateFiles -Root $root
   Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
   Add-DockerResult -ExitCode 0
   Add-DockerResult -ExitCode 1 -StdErr 'start failed'
@@ -1132,6 +1254,7 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
 
   # G12：停容器阶段就失败（尚未启动进程）→ 回退不算「回收失败」，退出码 3
   New-World
+  Remove-WeFlowTestStateFiles -Root $root
   Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
   Add-DockerResult -ExitCode 1 -StdErr 'stop failed'
   Add-DockerResult -ExitCode 0   # rollback start
@@ -1155,6 +1278,23 @@ function New-FakeExe {
   $binDir = Join-Path $Root 'bin'
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $binDir 'caddy.exe'), 'stub-exe', (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Remove-WeFlowTestStateFiles {
+  <#
+  .SYNOPSIS
+    清空一个夹具部署根的记账/回退状态文件（沙箱内）。
+  .DESCRIPTION
+    依赖 state 文件的子用例必须先明确重置磁盘状态，只重置内存 World 不够：
+    更早的子用例会把 native-caddy.current.json 留在沙箱里。
+  #>
+  param([Parameter(Mandatory)][string]$Root)
+  $stateDir = Join-Path $Root 'state'
+  if (Test-Path -LiteralPath $stateDir) {
+    foreach ($name in @('native-caddy.current.json', 'native-caddy.state.json', 'native-caddy.rollback.json')) {
+      Remove-Item -LiteralPath (Join-Path $stateDir $name) -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 function Test-StopScript {

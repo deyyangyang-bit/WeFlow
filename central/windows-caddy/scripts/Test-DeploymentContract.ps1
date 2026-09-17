@@ -227,6 +227,27 @@ function Get-WeFlowComposeSubcommand {
   return ''
 }
 
+function Get-WeFlowFunctionBody {
+  <#
+  .SYNOPSIS
+    从合并后的代码文本中切出某个函数的定义体（到下一个顶层 function 为止）。
+  .DESCRIPTION
+    供「必须检查实际分支」的断言使用：对单个函数体做模式匹配，
+    避免别的函数里恰好出现同样的词造成假阳性。生产脚本没有嵌套函数定义，
+    顶层 `function ` 行即边界。
+  #>
+  param(
+    [Parameter(Mandatory)][AllowEmptyString()][string]$Code,
+    [Parameter(Mandatory)][string]$FunctionName
+  )
+  $start = $Code.IndexOf("function $FunctionName")
+  if ($start -lt 0) { return '' }
+  $next = $Code.IndexOf([Environment]::NewLine + 'function ', $start + 1)
+  if ($next -lt 0) { $next = $Code.IndexOf("`nfunction ", $start + 1) }
+  if ($next -lt 0) { $next = $Code.Length }
+  return $Code.Substring($start, $next - $start)
+}
+
 # =====================================================================
 # 主检查流程
 # =====================================================================
@@ -387,17 +408,40 @@ function Invoke-WeFlowDeploymentContract {
   Write-Host ''
   Write-Host '== 本轮修复的不变量（静态断言） ==' -ForegroundColor Cyan
   # 1) 启动验收与端点诊断必须共用同一份判定，避免出现两套阈值。
+  #    函数名不含字符串内容，仍用「去字符串」视图；端点名单、403 映射等
+  #    断言语义本身依赖字符串内容，必须用「保留字符串」视图（注释已剥离，
+  #    且每条模式锚定真实代码形状：参数默认值 / switch 分支 / 失败分支赋值 /
+  #    Join-Path 赋值与实际传参，守卫自身规则不在被扫文件里，不会自我命中）。
   $acceptanceSites = ([regex]::Matches($codeWithoutStrings, 'Invoke-WeFlowEndpointAcceptance')).Count
   Check -Name '存在统一的端点验收函数（Common）' -Condition ($codeWithoutStrings -match 'function\s+Invoke-WeFlowEndpointAcceptance')
   Check -Name '启动脚本与诊断脚本都调用同一验收函数' -Condition ($acceptanceSites -ge 2) -Detail ("调用点 {0} 处" -f $acceptanceSites)
-  Check -Name '验收默认覆盖 /health 与 /ready 两个端点' -Condition ($codeWithoutStrings -match "@\('/health',\s*'/ready'\)")
-  Check -Name '403 来源门禁映射为非零退出码' -Condition ($codeWithoutStrings -match "'gate-403'\s*\{\s*return 8")
+  # 验收的端点集 = 该函数的默认参数值；同时断言两个调用点都没有另传 -Paths 覆盖默认值。
+  Check -Name '验收默认覆盖 /health 与 /ready 两个端点' -Condition (
+    ($codeWithStrings -match "\[string\[\]\]\s*\`$Paths\s*=\s*@\(\s*'/health'\s*,\s*'/ready'\s*\)") -and
+    (-not ($codeWithStrings -match 'Invoke-WeFlowEndpointAcceptance[^
+]*-Paths\s'))
+  )
+  # 403 必须映射到非零退出码：这是 switch 的真实分支，不是出现某个词。
+  Check -Name '403 来源门禁映射为非零退出码' -Condition ($codeWithStrings -match "'gate-403'\s*\{\s*return\s+8\s*\}")
 
   # 2) 进程回收：内存身份 + 结束确认，不依赖磁盘记账。
   Check -Name '启动后立即采集内存身份（New-WeFlowProcessIdentityRecord）' -Condition ($codeWithoutStrings -match 'New-WeFlowProcessIdentityRecord')
   Check -Name '回退按记录结束进程并确认退出（Stop-WeFlowOwnedProcess）' -Condition ($codeWithoutStrings -match 'Stop-WeFlowOwnedProcess')
-  Check -Name '结束进程后确认其确实消失（still-running 判定）' -Condition ($codeWithoutStrings -match 'still-running')
-  Check -Name '回退失败保留诊断记录（rollback.json）' -Condition ($codeWithoutStrings -match 'native-caddy\.rollback\.json')
+  # 「确认消失」看 Stop-WeFlowOwnedProcess 的函数体：结束请求之后必须有带截止时间的
+  # 轮询复核（仍按本轮 PID 查询），且超时分支把「仍然存活」记为失败（Ok=$false）。
+  $stopOwnedBody = Get-WeFlowFunctionBody -Code $codeWithStrings -FunctionName 'Stop-WeFlowOwnedProcess'
+  Check -Name '结束进程后确认其确实消失（still-running 判定）' -Condition (
+    ($stopOwnedBody -match 'while\s*\(\(Get-Date\)\s*-lt\s*\$deadline\)') -and
+    ($stopOwnedBody -match "Ok\s*=\s*\`$false[^\r
+]*Status\s*=\s*'still-running'") -and
+    ($stopOwnedBody -match 'Get-WeFlowProcessById\s+-Id\s+\(\[int\]\$Record\.Pid\)')
+  )
+  # 回退失败保留诊断记录：报告路径必须既被赋值为 rollback.json，又被实际传给回退入口。
+  Check -Name '回退失败保留诊断记录（rollback.json）' -Condition (
+    ($codeWithStrings -match "\`$rollbackReportPath\s*=\s*Join-Path[^
+]*'native-caddy\.rollback\.json'") -and
+    ($codeWithStrings -match '-ReportPath\s+\$rollbackReportPath')
+  )
 
   # 3) 参数传递：必须构造单条命令行，不允许把数组直接交给 Start-Process。
   Check -Name '参数经 ConvertTo-WeFlowWindowsArgumentLine 构造' -Condition ($codeWithoutStrings -match 'ConvertTo-WeFlowWindowsArgumentLine')
