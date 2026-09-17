@@ -11,7 +11,7 @@ import { Briefcase, FileText, RefreshCw, Truck, Plus, Handshake, X, Trash2, User
 import { useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
 import { useCrmStore } from '../stores/crmStore'
-import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
+import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
 import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'
 import DeliveryAftersales from '../components/crm/DeliveryAftersales'
 // 阶段分布/管道图色板单一真源（红线 3）：Apple 蓝渐变族
@@ -28,7 +28,7 @@ export default function CrmWorkbenchPage() {
   const { workbench, fetchWorkbench, notice, setNotice, products, fetchProducts } = useCrmStore()
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人（经 account JOIN 带出）或未归属；展示层便利，非安全边界（宪法 §1.12）
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
-  useEffect(() => { void window.electronAPI.identity.get().then((idt) => setIdentity({ name: String(idt?.name || ''), role: String(idt?.role || '') })).catch(() => undefined) }, [])
+  useEffect(() => { void window.electronAPI.identity.get().then((idt) => setIdentity(identityLikeFromIpc(idt))).catch(() => undefined) }, [])
   const myWorkbench = filterByOwner(workbench, identity)
   const [selected, setSelected] = useState<any>(null)
   const [quotations, setQuotations] = useState<any[]>([])

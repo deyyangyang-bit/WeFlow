@@ -15,39 +15,43 @@ export interface LeadOwnerInfo {
   status: 'assigned' | 'claimed'
   /** SLA1 停表时刻（PRD 1.4a：加好友命中后非空；0/null=计时中） */
   sla1MetAt: number
+  /** 中央归属员工 id（owner_employee_id；中央下行落地行非空，历史/本地/SMB 行为空） */
+  ownerEmployeeId: string
 }
 
 // 刀 5 起 IdentityLike/isSalesView/filterByOwner 迁 shared/ownerFilter.ts（主进程问数据模板与前端页面共用，
 // 一处定义两处消费）；此处 re-export 保持既有 import 路径全部兼容（本模块内部调用走下面的值导入）。
-export { isSalesView, filterByOwner, type IdentityLike } from '../../shared/ownerFilter'
-import { isSalesView, filterByOwner, type IdentityLike } from '../../shared/ownerFilter'
+// isOwnedName（2026-09-17）：归属匹配 = 本人署名 ∪ 绑定别名（中央 displayName），见 shared/ownerFilter。
+// isOwnedLead（2026-09-17 同日修订）：行带 owner_employee_id 时以绑定 employeeId 权威核对（同名员工不串线）；
+// 未带该列的行回退姓名集合。两口径见 shared/ownerFilter。
+export { isSalesView, filterByOwner, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
+import { isSalesView, filterByOwner, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
 
 /**
  * 当前归属映射：leadId → 最新有效分配行。
  * assignmentList 返回按 id DESC，首个 assigned/claimed 命中即最新；为防乱序仍按 id 取大。
  */
-export function buildOwnerMap(rows: Array<Pick<AssignmentRow, 'id' | 'lead_id' | 'sales_name' | 'status' | 'sla1_met_at'>>): Record<number, LeadOwnerInfo> {
+export function buildOwnerMap(rows: Array<Pick<AssignmentRow, 'id' | 'lead_id' | 'sales_name' | 'status' | 'sla1_met_at'> & { owner_employee_id?: string | null }>): Record<number, LeadOwnerInfo> {
   const map: Record<number, LeadOwnerInfo> = {}
   for (const r of rows) {
     if (r.status !== 'assigned' && r.status !== 'claimed') continue
     const lid = Number(r.lead_id)
     const cur = map[lid]
     if (!cur || Number(r.id) > cur.assignmentId) {
-      map[lid] = { assignmentId: Number(r.id), salesName: String(r.sales_name || ''), status: r.status, sla1MetAt: Number(r.sla1_met_at || 0) }
+      map[lid] = { assignmentId: Number(r.id), salesName: String(r.sales_name || ''), status: r.status, sla1MetAt: Number(r.sla1_met_at || 0), ownerEmployeeId: String((r as { owner_employee_id?: string | null }).owner_employee_id || '') }
     }
   }
   return map
 }
 
 /**
- * 认领按钮可见性：已建档 + 该 lead 当前归属销售 = 本人姓名 + 分配处于 assigned 态。
- * （后端 claim 的「本人」判定 = actor 姓名或身份档案姓名 === sales_name，前端同名口径提前隐藏。）
+ * 认领按钮可见性：已建档 + 该 lead 当前归属销售 = 本人（署名或绑定别名）+ 分配处于 assigned 态。
+ * （后端 claim 的「本人」判定 = actor 姓名或身份档案姓名/归属别名 === sales_name，前端同名口径提前隐藏。）
  * 未建档（姓名空）→ 永不可见；已 claimed 的不再出现（状态机也会拒）。
  */
 export function canClaimLead(identity: IdentityLike, owner?: LeadOwnerInfo): boolean {
-  const name = identity.name.trim()
-  if (!name || !owner) return false
-  return owner.status === 'assigned' && owner.salesName === name
+  if (!owner) return false
+  return owner.status === 'assigned' && isOwnedLead(identity, owner)
 }
 
 /**
@@ -67,30 +71,37 @@ export function canManageAssignment(identity: IdentityLike, owner?: LeadOwnerInf
 export function canBindWxid(identity: IdentityLike, owner?: LeadOwnerInfo): boolean {
   if (!owner) return false
   if (!isSalesView(identity)) return true
-  return owner.salesName === identity.name.trim()
+  return isOwnedLead(identity, owner)
 }
 
 /**
- * 销售视角下的列表过滤：只保留当前归属 = 本人姓名的线索。
- * 未分配资源池对销售不可见（不混入）。管理视角返回原列表。
+ * 销售视角下的列表过滤：只保留当前归属 = 本人的线索（employeeId 权威 / 姓名集合回退，
+ * 见 shared/ownerFilter.isOwnedLead）。未分配资源池对销售不可见（不混入）。管理视角返回原列表。
  */
 export function filterLeadsForView<T extends { id: number }>(leads: T[], ownerByLead: Record<number, LeadOwnerInfo>, identity: IdentityLike): T[] {
   if (!isSalesView(identity)) return leads
-  const name = identity.name.trim()
-  return leads.filter((l) => ownerByLead[l.id]?.salesName === name)
+  return leads.filter((l) => isOwnedLead(identity, ownerByLead[l.id] ?? {}))
 }
 
 /**
  * 归属筛选 chips 可见集合。
  * 管理视角：全部归属 / 未分配 / 各销售名；销售视角：只留「我的」（未分配 chip 不渲染）。
+ * 可选第三参 owners（leadId → 行核对入参）：提供时「我的」计数按 isOwnedLead 精确统计
+ * （含 employeeId 权威行，即使其 salesName 不在姓名集合内）；缺省退回姓名集合计数（既有调用方兼容）。
  */
 export function visibleOwnerChips(
   identity: IdentityLike,
-  counts: { unassigned: number; names: Array<{ value: string; count: number }> }
+  counts: { unassigned: number; names: Array<{ value: string; count: number }> },
+  owners?: Record<number, { salesName?: string | null; ownerEmployeeId?: string | null }>
 ): Array<{ value: string; label: string; count?: number }> {
   if (isSalesView(identity)) {
-    const name = identity.name.trim()
-    const mine = counts.names.find((n) => n.value === name)?.count ?? 0
+    if (owners) {
+      const mine = Object.values(owners).reduce((sum, o) => (isOwnedLead(identity, o) ? sum + 1 : sum), 0)
+      return [{ value: '我的', label: '我的', count: mine }]
+    }
+    // 「我的」计数 = 全部归属名里指本人的计数之和（署名 + 绑定别名；同名不重复计，别名==署名时去重）
+    const seen = new Set<string>([identity.name.trim(), ...(identity.nameAliases || []).map((a) => String(a || '').trim())].filter(Boolean))
+    const mine = counts.names.reduce((sum, n) => (seen.has(String(n.value || '').trim()) ? sum + Number(n.count || 0) : sum), 0)
     return [{ value: '我的', label: '我的', count: mine }]
   }
   return [
@@ -301,7 +312,6 @@ export function buildMyCards<T extends { id: number; status: string }>(
   identity: IdentityLike,
   now: number
 ): MyCardsResult<T> {
-  const name = identity.name.trim()
   const wait: Array<MyLeadCard<T>> = []
   const active: Array<MyLeadCard<T>> = []
   const recycled: Array<MyLeadCard<T>> = []
@@ -311,7 +321,11 @@ export function buildMyCards<T extends { id: number; status: string }>(
     const latestStatus = String(latest?.status || '')
     const latestSales = String(latest?.sales_name || '')
     const isRecycled = latestStatus === 'recycled'
-    const mine = isRecycled ? latestSales === name : own?.salesName === name
+    // 「本人」核对：行带 owner_employee_id 时按绑定 employeeId 权威判定（同名员工不串线），
+    // 未带该列的行回退姓名集合（署名或绑定别名）——shared/ownerFilter.isOwnedLead 唯一口径
+    const mine = isRecycled
+      ? isOwnedLead(identity, { salesName: latestSales, ownerEmployeeId: String(latest?.owner_employee_id || '') })
+      : isOwnedLead(identity, own ?? {})
     if (!mine) continue
     const cd = sla1Countdown({
       status: String(own?.status || latestStatus || ''),
@@ -333,5 +347,15 @@ export function buildMyCards<T extends { id: number; status: string }>(
 
 /**
  * 页面过滤档 filterByOwner / isSalesView：语义源已迁 shared/ownerFilter.ts（本文件 re-export，上方）。
- * 契约不变：销售视角 = owner_sales 本人或空；管理视角原样；展示层便利过滤非安全边界（宪法 §1.12）。
+ * 契约不变：销售视角 = owner_sales 本人（含绑定别名）或空；管理视角原样；展示层便利过滤非安全边界（宪法 §1.12）。
  */
+
+/** identity:get 回包 → 过滤档 IdentityLike：nameAliases 缺省 []、employeeId 缺省 ''（防御旧回包/异常路径），别名逐项 String + 去空 */
+export function identityLikeFromIpc(p: { name?: string; role?: string; nameAliases?: string[]; employeeId?: string } | null | undefined): IdentityLike {
+  return {
+    name: String(p?.name || ''),
+    role: String(p?.role || ''),
+    nameAliases: Array.isArray(p?.nameAliases) ? p.nameAliases.map((a) => String(a || '')).filter(Boolean) : [],
+    employeeId: String(p?.employeeId || '')
+  }
+}

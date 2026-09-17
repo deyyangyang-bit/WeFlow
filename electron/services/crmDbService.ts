@@ -591,6 +591,11 @@ class CrmDbService {
     // ①''' assignment.claimed_at（PRD 2.4 认领满 24h 首次分类触发轴，宪法 §1.3 修订 2026-09-10）：
     //     认领时刻毫秒，NULL=未认领；claimLead 单点写入；存量 NULL 不回填（不拿过去时刻当触发基点）
     try { this.db.run('ALTER TABLE assignment ADD COLUMN claimed_at INTEGER') } catch { /* 列已存在 */ }
+    // ①'''' assignment.owner_employee_id（2026-09-17 销售视图可见性修复，宪法 §1.3 补列登记）：
+    //     中央下行 assign/transfer 落地时写入指令声明的中央归属员工 id（信封 targetEmployeeId，
+    //     服务端按它路由到本设备）；非空行的归属核对以本机绑定 employeeId 为权威（同名员工不串线），
+    //     历史/本地/SMB 行保持 NULL 走既有姓名集合口径。幂等 ALTER 只加列，不改写任何存量归属。
+    try { this.db.run('ALTER TABLE assignment ADD COLUMN owner_employee_id TEXT') } catch { /* 列已存在 */ }
     // ② opportunity 补列（宪法 §1.5：发现来源 / 整车改装类型 / 多币种金额 / 主车型 / 订单与发货量 /
     //    预期发货窗口 / 报价版本与 customer 挂接；逻辑外键，不建 FK 约束——跨库与既有表铁律）
     const oppPhase0Cols: Array<[string, string]> = [

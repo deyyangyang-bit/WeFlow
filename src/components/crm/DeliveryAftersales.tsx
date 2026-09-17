@@ -21,7 +21,7 @@ import type { CustomerEquipmentRecord, OpportunityRecord } from '../../types/ele
 import { computeRepeatLevel, crmCustomerKeyForOpportunity } from '../../utils/crmDealKey'
 // 归属过滤档（与父页面 CrmWorkbenchPage 同一语义源；展示层便利过滤，非安全边界 宪法 §1.12）
 import { filterByOwner, filterCustomerTasks, buildCustomerOwners, countWonByCustomerKey, type DeliveryAccountOwner } from '../../utils/deliveryAftersalesView'
-import { isSalesView, type IdentityLike } from '../../utils/leadAssignmentView'
+import { isSalesView, identityLikeFromIpc, type IdentityLike } from '../../utils/leadAssignmentView'
 import { fmtDate, fmtQty, toDateInput, fromDateInput } from '../../utils/formatBiz'
 import './DeliveryAftersales.scss'
 
@@ -112,7 +112,7 @@ export default function DeliveryAftersales() {
   useEffect(() => {
     let alive = true
     void window.electronAPI.identity.get().then((idt) => {
-      if (alive) setIdentity({ name: String(idt?.name || ''), role: String(idt?.role || '') })
+      if (alive) setIdentity(identityLikeFromIpc(idt))
     }).catch(() => {
       if (alive) setIdentity({ name: '', role: '' })
     })

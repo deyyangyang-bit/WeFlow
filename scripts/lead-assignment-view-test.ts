@@ -53,9 +53,9 @@ function main(): void {
   check('姓名空格 = 管理视角', isSalesView({ name: '  ', role: '销售' }) === false)
 
   console.log('\n═══ C. canClaimLead 认领按钮可见性 ═══')
-  const mine: LeadOwnerInfo = { assignmentId: 11, salesName: '张三', status: 'assigned' }
-  const mineClaimed: LeadOwnerInfo = { assignmentId: 11, salesName: '张三', status: 'claimed' }
-  const others: LeadOwnerInfo = { assignmentId: 12, salesName: '李四', status: 'assigned' }
+  const mine: LeadOwnerInfo = { assignmentId: 11, salesName: '张三', status: 'assigned', ownerEmployeeId: '' }
+  const mineClaimed: LeadOwnerInfo = { assignmentId: 11, salesName: '张三', status: 'claimed', ownerEmployeeId: '' }
+  const others: LeadOwnerInfo = { assignmentId: 12, salesName: '李四', status: 'assigned', ownerEmployeeId: '' }
   check('本人+assigned → 可见', canClaimLead(SALES, mine) === true)
   check('本人+claimed → 不可见（已认领）', canClaimLead(SALES, mineClaimed) === false)
   check('他人+assigned → 不可见', canClaimLead(SALES, others) === false)
@@ -74,8 +74,8 @@ function main(): void {
   console.log('\n═══ E. filterLeadsForView 销售视角过滤 ═══')
   const leads = [{ id: 1 }, { id: 2 }, { id: 3 }]
   const owners: Record<number, LeadOwnerInfo> = {
-    1: { assignmentId: 11, salesName: '张三', status: 'assigned' },
-    2: { assignmentId: 12, salesName: '李四', status: 'claimed' }
+    1: { assignmentId: 11, salesName: '张三', status: 'assigned', ownerEmployeeId: '' },
+    2: { assignmentId: 12, salesName: '李四', status: 'claimed', ownerEmployeeId: '' }
     // 3 未分配
   }
   const salesLeads = filterLeadsForView(leads, owners, SALES)

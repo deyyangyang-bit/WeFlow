@@ -17,7 +17,7 @@ import * as XLSX from 'exceljs'
 import type { LeadRow, FirstClassifyRoundRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
-import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
+import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, identityLikeFromIpc, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import { parseJsonObject, parseJsonArray } from '../../shared/safeJson'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
@@ -251,7 +251,7 @@ export default function CrmLeadPage() {
     setLeads(ls || [])
     setOverview(ov || null)
     setSalesList(sales)
-    setIdentity({ name: idt?.name || '', role: idt?.role || '' })
+    setIdentity(identityLikeFromIpc(idt))
     // 当前归属 = 该 lead 最新一条有效分配行（宪法 §1.3）；含 assignmentId 供调派/回收用
     setOwnerByLead(buildOwnerMap(asg?.data?.rows || []))
     setAsgRows((asg?.data?.rows || []) as unknown as Array<Record<string, unknown>>)
@@ -332,7 +332,8 @@ export default function CrmLeadPage() {
     return { unassigned, names: names.map((value) => ({ value, count: counts.get(value) || 0 })) }
   }, [leads, ownerByLead, salesList])
   // 销售视角只留「我的」（未分配资源池不渲染、不混入，宪法 §1.12 展示层便利过滤）
-  const ownerChipsVisible = useMemo(() => visibleOwnerChips(identity, ownerChips), [identity, ownerChips])
+  // 「我的」计数按 isOwnedLead 精确统计（含 employeeId 权威行，即使其姓名不在署名/别名集合内）
+  const ownerChipsVisible = useMemo(() => visibleOwnerChips(identity, ownerChips, ownerByLead), [identity, ownerChips, ownerByLead])
   // 标签筛选 chips：按 tag 计数倒序（tag=需求标签，Excel 导入语义；归属语义已随决策 B 退役）
   const tagChips = useMemo(() => {
     const counts = new Map<string, number>()

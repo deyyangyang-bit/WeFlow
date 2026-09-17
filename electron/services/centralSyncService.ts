@@ -21,7 +21,7 @@
 import { createHash } from 'crypto'
 import { hostname } from 'os'
 import type { CentralAckRequest, CentralSyncEvent } from '../../shared/centralSync'
-import { findForbiddenCentralField, scopedRef } from '../../shared/centralSync'
+import { findForbiddenCentralField, isRefOwnedByDevice, parseScopedRef, scopedRef } from '../../shared/centralSync'
 import { validateCentralEntityId, validateDownCommand } from '../../shared/centralDownCommand'
 import { maskContact as maskLeadContact } from './crmLeadImportCore'
 import { ConfigService } from './config'
@@ -35,6 +35,7 @@ import { LOCAL_PROJECTIONS, projectionByKey, type ProjectionDraft, type Projecti
 const K_PULL_CURSOR = 'centralSync:pullCursor'
 const K_LAST_UP = 'centralSync:lastUpAt'
 const K_LAST_DOWN = 'centralSync:lastDownAt'
+/** 权限声明已结算（成功发送 / 销售设备按契约不发 / 信封自检失败），解绑清零后重新声明 */
 const K_PERMISSION_SENT = 'centralSync:permissionSent'
 const K_AUDIT_CURSOR = 'centralSync:auditCursor'
 /** 审计投影的游标键沿用 Phase 1 既有 key，避免升级后重放整表 */
@@ -763,16 +764,39 @@ async function pushProjection(client: CentralSyncClient, cfg: CentralSyncConfig,
   return { pushed, rejected }
 }
 
-/** 一次性声明本机身份档案声明的角色（**展示与审计用，绝不作为权限依据**） */
+/**
+ * 一次性声明本机身份档案声明的角色（**展示与审计用，绝不作为权限依据**）。
+ * 契约对齐（2026-09-17，对照 central/src/app.ts 真实校验链）：
+ *   - §二.5 `SALES_UPLINK_ENTITY_TYPES` 不含 permission：权限声明由主管/分配侧产生，
+ *     销售设备上传即被 `role_not_allowed_entity:permission` 拒收——销售设备不发、直接置终态标记
+ *     （解绑清标记，换绑角色后重新声明），不每轮空试；
+ *   - entityId 必须是**具体引用** `<deviceId>/permission:<id>`：裸 `<deviceId>/permission`
+ *     过不了服务端 `validateCentralEntityId`（entity_id_not_scoped），central_permission 永远为 0。
+ *     id 取 deviceId（一份声明对应一台设备的绑定，businessKey=workspace+entity_id 天然一机一行）。
+ * 构造后先过本地同源校验（isRefOwnedByDevice + validateCentralEntityId），失败即终态 + 明确错误，
+ * 绝不把已知非法信封反复投给中央。
+ */
 async function pushPermissionDeclaration(client: CentralSyncClient, cfg: CentralSyncConfig): Promise<number> {
   if (crmDbService.getScanState(K_PERMISSION_SENT) > 0) return 0
   const conf = ConfigService.getInstance()
   const employeeRef = String(conf.get('identityName') || '').trim() || cfg.employeeId
   const declaredRole = cfg.role || String(conf.get('identityRole') || '').trim() || 'sales'
+  if (cfg.role === 'sales') {
+    crmDbService.setScanState(K_PERMISSION_SENT, Date.now())
+    return 0
+  }
   const idempotencyKey = `${cfg.deviceId}/permission/${declaredRole}#v1`
+  const entityId = scopedRef(cfg.deviceId, `permission:${cfg.deviceId}`)
+  const owned = isRefOwnedByDevice(cfg.deviceId, entityId)
+  const badId = owned ? validateCentralEntityId('permission', entityId) : 'entity_id_not_owned'
+  if (!owned || badId) {
+    recordError(new Error(`权限声明信封非法：${badId || 'entity_id_not_owned'}（不投递）`))
+    crmDbService.setScanState(K_PERMISSION_SENT, Date.now())
+    return 0
+  }
   const event: CentralSyncEvent = {
     protocolVersion: 1, eventId: stableEventId(cfg.deviceId, idempotencyKey), eventSeq: 1, idempotencyKey,
-    direction: 'up', entityType: 'permission', entityId: scopedRef(cfg.deviceId, 'permission'),
+    direction: 'up', entityType: 'permission', entityId,
     eventType: 'permission_declared', aggregateVersion: 1,
     payload: { employeeRef, declaredRole, authoritySource: 'local_declaration' },
     occurredAt: Date.now()
@@ -823,7 +847,11 @@ function toLocalEvent(event: CentralSyncEvent & { centralSeq: number }): SyncEve
   return {
     eventSeq: event.eventSeq, idempotencyKey: event.idempotencyKey, type: event.eventType,
     deliveryRole: payload.deliveryRole as DeliveryRole,
-    to: getTerminalId(), payload, emittedAt: event.occurredAt
+    to: getTerminalId(), payload, emittedAt: event.occurredAt,
+    // 来源设备 = 信封 entityId 的设备命名空间前缀（发送方本地行号空间的命名依据）；
+    // targetEmployeeId = 指令声明的中央归属员工（落 assignment.owner_employee_id，同名员工的权威核对依据）
+    sourceDeviceId: parseScopedRef(event.entityId)?.deviceId,
+    targetEmployeeId: event.targetEmployeeId ? String(event.targetEmployeeId) : undefined
   }
 }
 

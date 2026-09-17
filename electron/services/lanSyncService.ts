@@ -161,6 +161,15 @@ export interface SyncEventFile {
   emittedAt: number
   /** 上行事件的发出终端标识（下行无） */
   from?: string
+  /**
+   * 下行指令的**来源设备**（中央 HTTP 通道独有：取自信封 entityId 的设备命名空间前缀）。
+   * 用途：① hub leadId → 本地 lead id 映射必须按来源设备命名（不同发送设备的本地行号空间
+   * 互不相通，裸 hubLeadId 撞号会回收错线索）；② 该员工的中央归属 id（targetEmployeeId）
+   * 落库到 assignment.owner_employee_id，作为同名员工的权威归属核对依据。
+   * SMB 文件通道不携带（历史口径），两个字段缺省 = 既有行为。
+   */
+  sourceDeviceId?: string
+  targetEmployeeId?: string
 }
 
 const DOWN_TYPES = ['assign', 'transfer', 'recycle', 'sla1_escalate_supervisor'] as const
@@ -563,20 +572,61 @@ export function processUpAcks(root: string): AckConsumeResult {
 // ─── 下行消费（终端）：只读自己的队列 → 应用 → 幂等标记 → ACK → 清理 ──────────
 export interface ConsumeResult { applied: number; skippedDup: number; conflict: number; nolead: number; invalid: number; failed: number }
 
-/** 按联系方式身份解析本机 lead（跨机 id 不可信，身份 = contact_type+contact_normalized） */
-function findLocalLead(tx: { all: (sql: string, params?: unknown[]) => CrmRow[] }, lead: Record<string, unknown> | null | undefined, fallbackLeadId: unknown): CrmRow | null {
+/**
+ * 按身份解析本机 lead（跨机 id 不可信，主锚点 = contact_type+contact_normalized）。
+ * 解析顺序（2026-09-17 修订：映射先于裸 id，且按来源设备命名；裸 id 只兜底「无 lead 载荷」的指令）：
+ *   ① 联系方式锚点（assign/transfer 载荷带 lead 资料时的唯一权威锚点）；带锚点而未命中 =
+ *      本机没有该 lead（联系方式即身份），调用方据此建档——**绝不**回落裸 id（不同设备的
+ *      本地行号空间互不相通，同号只是巧合，命中即错线索）；
+ *   ② 来源设备命名空间下的 hub leadId → 本地 id 映射（中央下行 assign/transfer-apply 落地时
+ *      同事务写下；recycle 载荷不带 lead 资料，靠它解析本机建档的线索）；
+ *   ③ 裸 hubLeadId 当本地 id 查：仅当载荷**没有** lead 锚点（中央 recycle / Phase 1 历史
+ *      recycle 异常形态）时兜底，兼容两端同源导入、行号对齐的既有部署；未命中走 noop/nolead。
+ */
+function findLocalLead(
+  tx: { all: (sql: string, params?: unknown[]) => CrmRow[] },
+  lead: Record<string, unknown> | null | undefined,
+  fallbackLeadId: unknown,
+  sourceDeviceId?: string
+): CrmRow | null {
   const ct = String(lead?.contactType || '').trim()
   const cn = String(lead?.contactNormalized || '').trim()
   if (ct && cn) {
     const hit = tx.all('SELECT * FROM lead WHERE contact_type = ? AND contact_normalized = ?', [ct, cn])
     if (hit.length) return hit[0]
+    // 有身份锚点而未命中 = 本机没有该 lead（建档由调用方决定）；不再回落裸 id 撞同号行
+    return null
   }
   const fid = Number(fallbackLeadId)
-  if (Number.isInteger(fid) && fid > 0) {
-    const hit = tx.all('SELECT * FROM lead WHERE id = ?', [fid])
-    if (hit.length) return hit[0]
+  if (!Number.isSafeInteger(fid) || fid <= 0) return null
+  if (sourceDeviceId) {
+    // 中央通道：该 hubLeadId 属于「来源设备的行号空间」，映射优先且命中即唯一结论
+    const mapped = Number(tx.all('SELECT last_scan AS v FROM scan_state WHERE key = ?',
+      [`centralSync:hubLead:${sourceDeviceId}:${fid}`])[0]?.v || 0)
+    if (mapped > 0) {
+      const hit = tx.all('SELECT * FROM lead WHERE id = ?', [mapped])
+      if (hit.length) return hit[0]
+    }
   }
+  const hit = tx.all('SELECT * FROM lead WHERE id = ?', [fid])
+  if (hit.length) return hit[0]
   return null
+}
+
+/**
+ * 落地事务内记录「来源设备 + hub leadId → 本地 lead id」映射（下行后续 recycle/remove 的兜底
+ * 身份锚点）。中央 HTTP 通道恒带 sourceDeviceId；SMB 历史文件不带 → 不写映射、行为不变。
+ */
+function recordHubLeadMappingTx(
+  tx: { run: (sql: string, params?: unknown[]) => number },
+  sourceDeviceId: string | undefined,
+  hubLeadId: unknown,
+  localLeadId: number
+): void {
+  const hubId = Number(hubLeadId)
+  if (!sourceDeviceId || !Number.isSafeInteger(hubId) || hubId <= 0 || !(localLeadId > 0)) return
+  tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
+    [`centralSync:hubLead:${sourceDeviceId}:${hubId}`, localLeadId])
 }
 
 const ACTIVE_STATUS_SQL = "status IN ('assigned','claimed')"
@@ -607,7 +657,7 @@ function applyDownEventTx(
   const actor = String(p.actor || 'system:sync')
   const sla1 = Number(p.sla1Deadline || 0) || 0
 
-  let lead = findLocalLead(tx, leadInfo, p.leadId)
+  let lead = findLocalLead(tx, leadInfo, p.leadId, ev.sourceDeviceId)
   if (ev.type === 'assign') {
     if (!lead && leadInfo) {
       // 终端本机没有该 lead → 随下行事件建档（lead 基础资料齐备，设计 §3）
@@ -616,6 +666,7 @@ function applyDownEventTx(
     }
     if (!lead) return 'nolead'
     const leadId = Number(lead.id)
+    recordHubLeadMappingTx(tx, ev.sourceDeviceId, p.leadId, leadId)
     const cur = tx.all(`SELECT id FROM assignment WHERE lead_id = ? AND deleted = 0 AND ${ACTIVE_STATUS_SQL} ORDER BY id DESC LIMIT 1`, [leadId])
     if (cur.length) return 'conflict' // 已有有效归属，中枢指令与本地状态打架 → 不覆盖，留人工
     // 既有 lead：补全空资料 + 首触期限跟中枢 sla1（分配起计时口径同 assignLeads）
@@ -623,9 +674,11 @@ function applyDownEventTx(
       "UPDATE lead SET name = CASE WHEN name = '' OR name IS NULL THEN ? ELSE name END, wechat = CASE WHEN wechat = '' OR wechat IS NULL THEN ? ELSE wechat END, first_contact_deadline = ?, updated_at = ? WHERE id = ?",
       [String(leadInfo?.name || ''), String(leadInfo?.wechat || ''), sla1 || Number(lead.first_contact_deadline || LEAD_SLA_UNASSIGNED_SENTINEL), now, leadId]
     )
+    // owner_employee_id = 指令声明的中央归属员工 id（信封 targetEmployeeId，服务端按它路由）：
+    // 同名员工各自设备只认自己的 id；SMB 历史文件不带 → 落 NULL，走既有姓名集合口径
     tx.run(
-      'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [leadId, String(p.salesName || ''), String(p.mode || 'manual'), sla1 || null, '', 'assigned', 'sync:down', actor, now, 1, 0]
+      'INSERT INTO assignment (lead_id, sales_name, owner_employee_id, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [leadId, String(p.salesName || ''), String(ev.targetEmployeeId || ''), String(p.mode || 'manual'), sla1 || null, '', 'assigned', 'sync:down', actor, now, 1, 0]
     )
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'assign', idempotencyKey: ev.idempotencyKey, salesName: String(p.salesName || ''), hubLeadId: Number(p.leadId || 0) }), now])
@@ -654,6 +707,8 @@ function applyDownEventTx(
       return 'nolead'
     }
     const leadId = Number(lead.id)
+    // transfer-apply 也登记来源设备命名空间的 hub→本地映射（后续 recycle/remove 依赖它解析）
+    recordHubLeadMappingTx(tx, ev.sourceDeviceId, p.leadId, leadId)
     const cur = tx.all(`SELECT * FROM assignment WHERE lead_id = ? AND deleted = 0 AND ${ACTIVE_STATUS_SQL} ORDER BY id DESC LIMIT 1`, [leadId])[0]
     if (ev.type === 'recycle') {
       if (cur) {
@@ -677,8 +732,8 @@ function applyDownEventTx(
     }
     if (cur) return 'conflict' // 新销售已有有效归属，中枢移交与本地状态冲突，不覆盖本地权属
     tx.run(
-      'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [leadId, String(p.toSales || ''), String(p.mode || 'manual'), sla1 || null, '', 'assigned', 'sync:down', actor, now, 1, 0]
+      'INSERT INTO assignment (lead_id, sales_name, owner_employee_id, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [leadId, String(p.toSales || ''), String(ev.targetEmployeeId || ''), String(p.mode || 'manual'), sla1 || null, '', 'assigned', 'sync:down', actor, now, 1, 0]
     )
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1 || Number(lead.first_contact_deadline || LEAD_SLA_UNASSIGNED_SENTINEL), now, leadId])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',

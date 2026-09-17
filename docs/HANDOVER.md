@@ -2584,6 +2584,56 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 长期服务化运行。DHCP 动态地址意味着 `WEFLOW_NATIVE_BIND_IP` 换网后失效，验收前必须重新确认。
 本方案是**临时测试，不是正式上线**；**Phase 3a 代码侧仍未收口**，本节不主张任何阶段完成。
 
+## 2.116 销售视图可见性修复：本地署名 ≠ 中央身份（2026-09-17）
+
+### 2.116.1 问题与根因
+
+绑定中央销售身份的设备收到中央 assign（ACK=applied、线索已落库），但销售视图看不到，
+此前只能「改本地署名或切主管」绕过。代码链核实根因：下行 assign 落地的
+`assignment.sales_name` = 中央目录**显示名**，而销售视图全部按本地身份档案署名（`identityName`）
+精确匹配（`isSalesView` + `filterLeadsForView`/`buildMyCards`/`visibleOwnerChips`/`claimLead`/
+`filterByOwner`）——两个名字不同时，销售恰好看不见属于自己的分配。切主管 = 管理视角看全部的
+绕过，不是修复；本轮**未**按该现象改任何角色权限。
+
+### 2.116.2 修复口径（第二轮修订：归属核对以 employeeId 为权威，映射带来源设备命名空间）
+
+- **中央落地行的归属核对 = 绑定 employeeId 权威**：assignment 新增 `owner_employee_id` 列
+  （幂等 ALTER 加列，不改写存量归属；中央下行 assign/transfer 落地写入指令声明的
+  `targetEmployeeId`）。行带该列 → 以本机绑定 employeeId 核对（显示名不参与判定，同名员工
+  不串线；未绑定一律不可见/不可认领）；行未带（历史/本地/SMB）→ 姓名集合回退
+  （署名 ∪ 绑定别名，`identityService.getOwnershipAliases()` 仅中央同步启用且持员工 id 时
+  返回中央 displayName，解绑即清）。**「同名不混淆」仅对 owner_employee_id 非空行成立，
+  历史行与本地行无法追溯区分同名（如实标注）**；
+- 消费点统一 `shared/ownerFilter.isOwnedName / isOwnedLead`（新增）+ `IdentityLike.nameAliases?/employeeId?`：
+  页面过滤档、线索页三视角、认领（前端按钮 + `claimLead` 后端，两处共用同一口径）、
+  绑定微信按钮、chips 计数（按 isOwnedLead 精确统计）、`identity:get` IPC（新增
+  `nameAliases`/`employeeId` 回传，前端 5 页经 `identityLikeFromIpc` 装载）、hermes 两处；
+  视角判定 `isSalesView` 仍只看本地档案（中央声明不提权）；
+- **hub→本地 id 映射带来源设备命名空间**：`centralSync:hubLead:<sourceDeviceId>:<hubId>`
+  （`sourceDeviceId` 取自信封 entityId 设备前缀；SMB 文件不带 → 不写映射、行为不变）；
+  `findLocalLead` 解析顺序 = 联系方式锚点 → 来源设备映射 → 裸 id 兜底（**兜底仅用于无 lead
+  载荷的指令**；带锚点的 assign/transfer 联系方式未命中即建档，绝不回落裸 id——旧行为会把
+  指令附着到本地同号行，属既有缺陷，本轮一并修正）；
+- 附带两缺陷（详 `docs/audit/中央同步-阻断项修复-审计报告-claude-20260915.md` §15/§15.5）：
+  ① `permission_declared` entityId 缺具体引用 + 销售设备违反中央 §二.5 → 改为
+  `<deviceId>/permission:<deviceId>` 同源自检后发送，销售设备不发并置终态标记；central
+  app-test N7b/N7c 以客户端真实形状实测服务端接受并落库；② 中央 HTTP 下行 recycle 不带
+  lead 资料 → 上述命名空间映射兜底，回收不再被判「leadUnknown 空操作」滞留。
+
+### 2.116.3 验证与状态
+
+- 隔离夹具 `scripts/central-identity-visibility-test.ts` **59/0**（mode/sla1 毫秒逐值、幂等、
+  可见性、**同名/employeeId 权威核对 H1-H7、撞号负例 E2**、targetEmployeeId 路由、不提权、
+  解绑回退、permission 契约）；20 套件回归全绿（central-sync-adapter 98/0 按新契约更新）；
+  central 五套 233 断言全绿 + central tsc 0；`npm run typecheck` 全绿；**干净 worktree
+  typecheck 复现**（排除 ignored 产物假阳性）；
+- 生产库复制类测试（lead-assignment-restore 等）即日停用，改由隔离夹具承担（本轮曾运行过一次，
+  已核实为 /tmp 副本 dry-run、live 零写入）；
+- **Windows 第二台真机复验未执行**：复验指令见
+  `docs/实施记录/Windows复验指令-身份可见性-20260917.md`（含绑定不被覆盖 / 我的合成线索可见 /
+  他人合成线索不可见三项硬检查）；未执行前不得写「已修复完成」的系统级结论；
+- 排查中发现 git-ignored 过期产物 `shared/ownerFilter.d.ts` 遮蔽 .ts，已按 .ts 同步刷新（不入库）。
+
 ## 3. 已交付功能清单
 
 | # | 功能 | 入口 | 关键文件 | 状态 |

@@ -227,9 +227,9 @@ async function main(): Promise<void> {
   ok('A15 outbox 事件清单全量登记：每个类型都有明确方向与落点，不存在未登记类型（§三.1/§三.11）',
     ['assign', 'transfer', 'recycle', 'claim', 'bind_wx', 'first_touch', 'sla1_escalate_supervisor']
       .every((t) => service.OUTBOX_ROUTED_TYPES.includes(t)) && service.OUTBOX_ROUTED_TYPES.length === 7)
-  ok('A9 分配 / 归属 / 商机 / 审计 / outbox 均被上行',
+  ok('A9 分配 / 归属 / 商机 / 审计 / outbox 均被上行（本机为销售角色：按中央契约 §二.5 不上行 permission 投影）',
     byType('assignment').length >= 1 && byType('ownership').length === 1 &&
-    byType('opportunity').length === 1 && byType('audit_event').length === 1 && byType('permission').length === 1)
+    byType('opportunity').length === 1 && byType('audit_event').length === 1 && byType('permission').length === 0)
   ok('A9b 未归并 account 的归属/商机显式跳过并记原因，不硬造 customerRef',
     !events.some((e) => e.payload.customerRef !== undefined && !String(e.payload.customerRef).startsWith('dev-1/customer:')) &&
     crmDbService.all("SELECT key FROM scan_state WHERE key LIKE 'centralSync:skip:ownership:%'").length === 1 &&
@@ -248,8 +248,8 @@ async function main(): Promise<void> {
   const offenders = events.filter((e) => findForbiddenCentralField(e.payload) !== null)
   ok('A13 全部上行事件通过禁字段扫描（聊天/消息/session_id/wcdb 路径）', offenders.length === 0,
     offenders.map((e) => e.entityType).join(','))
-  ok('A14 权限声明标注来源为本地声明（服务端不得当授权依据）',
-    byType('permission')[0]!.payload.authoritySource === 'local_declaration')
+  ok('A14 销售设备不发权限声明（中央 SALES_UPLINK_ENTITY_TYPES 拒收 permission，2026-09-17 契约对齐）',
+    byType('permission').length === 0 && crmDbService.getScanState('centralSync:permissionSent') > 0)
 
   console.log('═══ B. 推送语义与游标 ═══')
   const outboxRow = () => crmDbService.all("SELECT * FROM outbox_event WHERE idempotency_key='claim:501'")[0]

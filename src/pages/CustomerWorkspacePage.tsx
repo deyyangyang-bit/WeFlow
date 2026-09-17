@@ -21,7 +21,7 @@ import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { Users, RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Clock, Bot, Ban } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
 import { Avatar } from '../components/Avatar'
-import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
+import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCrmStore } from '../stores/crmStore'
@@ -70,8 +70,8 @@ export default function CustomerWorkspacePage() {
   // 拉取客户列表 + 行动信号（一次刷新两路数据）
   const fetchAll = async () => {
     const rows = (await window.electronAPI.crm.customers()) || []
-    const idt = await window.electronAPI.identity.get().catch(() => ({ name: '', role: '' }))
-    const idLike = { name: String(idt?.name || ''), role: String(idt?.role || '') }
+    const idt = await window.electronAPI.identity.get().catch(() => ({ name: '', role: '', nameAliases: [] }))
+    const idLike = identityLikeFromIpc(idt)
     setIdentity(idLike)
     setCustomers(filterByOwner(rows, idLike))
     try {

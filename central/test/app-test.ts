@@ -657,6 +657,22 @@ const permEvent = (suffix: string, ref: unknown) => upEvent({
 })
 const nDecl = await pushAs(authOf(guardSup.token), 'n-decl', [permEvent('decl', 'S001')])
 check('N7 身份声明型 employeeRef（裸工号）放行', nDecl.json().data.accepted.length === 1)
+// N7b（2026-09-17 补）：客户端 pushPermissionDeclaration 修复后的**真实载荷形态**——
+// entityId = `<deviceId>/permission:<deviceId>`（具体引用，id 取设备自身）、
+// payload = { employeeRef, declaredRole, authoritySource }（displayName 缺省省略）。
+// 该用例钉住服务端对这一形状的接受与落库，防止客户端与服务端再次漂移。
+const clientShapeDecl = upEvent({
+  eventId: 'n-decl-client', idempotencyKey: 'n-decl-client', entityType: 'permission',
+  entityId: scoped(`permission:${guardSup.principal.deviceId}`, guardSup.principal.deviceId),
+  payload: { employeeRef: '现场署名甲', declaredRole: 'supervisor', authoritySource: 'local_declaration' }
+})
+const nDeclClient = await pushAs(authOf(guardSup.token), 'n-decl-client', [clientShapeDecl])
+check('N7b 客户端真实形状的 permission_declared（具体引用 + 声明载荷）被服务端接受',
+  nDeclClient.json().data.accepted.length === 1,
+  JSON.stringify(nDeclClient.json().data))
+check('N7c 该声明落 central_permission（businessKey=workspace+entity_id 一机一行）',
+  store.projectionRow('permission', scoped(`permission:${guardSup.principal.deviceId}`, guardSup.principal.deviceId)) !== undefined &&
+  String(store.projectionRow('permission', scoped(`permission:${guardSup.principal.deviceId}`, guardSup.principal.deviceId))?.payload.employeeRef) === '现场署名甲')
 const nDeclForeign = await pushAs(authOf(guardSup.token), 'n-decl-foreign',
   [permEvent('decl-foreign', scoped('employee:1', bSales.principal.deviceId))])
 check('N8 employeeRef 写成他机命名空间引用 → 拒收 ref_not_owned:employeeRef',

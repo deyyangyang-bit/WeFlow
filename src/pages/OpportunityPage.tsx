@@ -13,7 +13,7 @@ import GeneratedFileResult from '../components/crm/GeneratedFileResult'
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { filterByOwner, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
+import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { buildNextStep, RISK_TYPE_LABEL, RISK_SEVERITY_LABEL } from '../utils/oppNextStep'
 import { fmtDate, fmtQty, toDateInput, fromDateInput } from '../utils/formatBiz'
@@ -492,9 +492,9 @@ export default function OpportunityPage() {
       const [list, st, idt] = await Promise.all([
         window.electronAPI.crm.opportunityList({ status: 'active' }),
         window.electronAPI.crm.opportunityStats(),
-        window.electronAPI.identity.get().catch(() => ({ name: '', role: '' }))
+        window.electronAPI.identity.get().catch(() => ({ name: '', role: '', nameAliases: [] }))
       ])
-      const idLike = { name: String(idt?.name || ''), role: String(idt?.role || '') }
+      const idLike = identityLikeFromIpc(idt)
       setIdentity(idLike)
       setOpps(filterByOwner(list || [], idLike))
       setStats(st || null)

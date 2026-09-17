@@ -18,7 +18,7 @@ import { crmDbService } from './crmDbService'
 import { morningDigestService } from './morningDigestService'
 import { callChatCompletion, getAiModelConfig, isAiConfigured } from './ai/aiApiClient'
 import type { ConfigService } from './config'
-import { getIdentity } from './identityService'
+import { getOwnerIdentity } from './identityService'
 import { filterByOwner, isSalesView, type IdentityLike } from '../../shared/ownerFilter'
 import { trackProposalEvent, trackDataAskViewed } from './proposalEventTracking'
 import { askKeyOf } from './hermesAskService'
@@ -265,7 +265,7 @@ export async function askData(
     configured?: boolean
     /** 测试注入：替换 callChatCompletion */
     completion?: (system: string, user: string) => Promise<string>
-    /** 测试注入：身份档案（缺省 getIdentity()） */
+    /** 测试注入：身份档案（缺省 getOwnerIdentity()，含归属别名） */
     identity?: IdentityLike
     /** 测试注入：当前时间（沉默天数/月起点口径） */
     now?: number
@@ -280,7 +280,7 @@ export async function askData(
     return { ...base, text: '这个问题我还不会查，知识库里也没有。你可以在知识库登记一条知识提案，或联系管理员扩充查询能力。' }
   }
   const template = HERMES_DATA_TEMPLATES.find((t) => t.id === intent.templateId)!
-  const identity: IdentityLike = opts?.identity ?? getIdentity() ?? { name: '', role: '' }
+  const identity: IdentityLike = opts?.identity ?? getOwnerIdentity() ?? { name: '', role: '' }
   const now = opts?.now ?? Date.now()
 
   let out: TemplateOutput

@@ -679,8 +679,10 @@ export interface ElectronAPI {
     isLockMode: () => Promise<boolean>
   }
   identity: {
-    get: () => Promise<{ name: string; role: string; actorLabel: string; shouldPromptOnboarding: boolean }>
-    set: (payload: { name: string; role?: string }) => Promise<{ ok: boolean; data?: { name: string; role: string; actorLabel: string }; code?: string; message?: string }>
+    /** nameAliases = 归属别名（绑定中央身份时为该中央 displayName，解绑/未绑定为 []）；
+     *  employeeId = 绑定的中央员工 id（owner_employee_id 权威归属核对依据，未绑定为 ''） */
+    get: () => Promise<{ name: string; role: string; actorLabel: string; shouldPromptOnboarding: boolean; nameAliases: string[]; employeeId: string }>
+    set: (payload: { name: string; role?: string }) => Promise<{ ok: boolean; data?: { name: string; role: string; actorLabel: string; nameAliases: string[]; employeeId: string }; code?: string; message?: string }>
     dismissOnboarding: () => Promise<{ ok: boolean }>
   }
   /** 内网同步（Phase 1 最小版，设计 §5 刀3）：lansync:status / lansync:run */

@@ -13,7 +13,8 @@
  *   A 档引擎动作（规则驱动非 LLM，宪法 §1.3），审计照写（actor='system:sla'）。
  */
 import { crmDbService, type CrmRow } from './crmDbService'
-import { getIdentity, getActorLabel } from './identityService'
+import { getIdentity, getActorLabel, getBoundEmployeeId, getOwnershipAliases } from './identityService'
+import { isOwnedLead, isOwnedName } from '../../shared/ownerFilter'
 import { recordOutboxTx } from './crmOutboxService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { outboxTransportEnabled } from './lanSyncService'
@@ -140,7 +141,10 @@ export interface AssignActionResult { ok: boolean; data?: { assignmentId: number
 
 /**
  * 认领：assigned → claimed（契约 S：重复 claim 被状态机拒）。
- * E301 无分配行；E201 非 assigned 态 / 非本人（actor 或身份档案姓名 ≠ sales_name）。
+ * E301 无分配行；E201 非 assigned 态 / 非本人。
+ * 「本人」核对与前端 canClaimLead 共用 shared/ownerFilter.isOwnedLead 口径：
+ * 行带 owner_employee_id（中央下行落地行）→ 本机绑定 employeeId 权威核对（同名员工不串线，
+ * 显示名不参与判定）；行未带 → actor 姓名或姓名集合（署名 ∪ 绑定别名）回退。
  * 归属没变 → 不写 ownership_history，只写 assignment 状态 + audit_event（action=lead_claim）。
  * 同事务写 claimed_at=now（宪法 §1.3 修订 2026-09-10：认领计时唯一基准，PRD 2.4 首次分类触发轴；
  * 禁止用 updated_at 反推——提醒/回收等动作会刷新 updated_at）。
@@ -153,8 +157,17 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
   if (!rows.length) return { ok: false, code: 'E301', message: '该线索无分配行' }
   const row = rows[0]
   if (String(row.status) !== 'assigned') return { ok: false, code: 'E201', message: `当前状态 ${String(row.status)} 不可认领` }
-  const me = getIdentity()?.name || ''
-  if (String(row.sales_name) !== by && (!me || String(row.sales_name) !== me)) {
+  const me = getIdentity()
+  const mine = { name: me?.name || '', role: me?.role || '', nameAliases: getOwnershipAliases(), employeeId: getBoundEmployeeId() }
+  // 「本人」核对（与前端 canClaimLead 同一口径 shared/ownerFilter.isOwnedLead）：
+  // 行带 owner_employee_id（中央下行落地行）→ 绑定 employeeId 权威核对（同名员工不串线，显示名不参与）；
+  // 行未带（历史/本地/SMB）→ actor 姓名或姓名集合（署名 ∪ 别名）回退。
+  const rowEmp = String(row.owner_employee_id || '').trim()
+  const myEmp = String(mine.employeeId || '').trim()
+  const isMine = rowEmp
+    ? !!myEmp && rowEmp === myEmp
+    : (String(row.sales_name) === by || isOwnedName(mine, String(row.sales_name)))
+  if (!isMine) {
     return { ok: false, code: 'E201', message: `非本人分配（归属 ${String(row.sales_name)}）` }
   }
   const now = Date.now()

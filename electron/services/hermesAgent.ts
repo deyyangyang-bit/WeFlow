@@ -11,7 +11,7 @@
  */
 import { callChatCompletion, getAiModelConfig, isAiConfigured } from './ai/aiApiClient'
 import { ConfigService } from './config'
-import { getIdentity } from './identityService'
+import { getOwnerIdentity } from './identityService'
 import { maskPrivateText } from './crmSla2Service'
 import {
   HERMES_TOOLS,
@@ -124,7 +124,8 @@ export class HermesAgentService {
       okToolCalls: 0,
       unresolvedToolFailure: false,
       dataRetries: 0,
-      identity: getIdentity() ?? { name: '', role: '' },
+      // 归属别名随身份一并下发（中央下行归属用中央显示名落地，署名可以不同；问数据过滤与页面同口径）
+      identity: getOwnerIdentity() ?? { name: '', role: '' },
       contextKind: ctx.kind,
       accountId: ctx.kind === 'customer' ? Number(ctx.accountId || 0) || undefined : undefined,
       sessionId: 'sessionId' in ctx ? String(ctx.sessionId || '') || undefined : undefined
