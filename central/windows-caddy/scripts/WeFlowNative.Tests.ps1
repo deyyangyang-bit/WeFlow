@@ -140,6 +140,7 @@ function New-World {
     StopProcessCalls = @()
     StartArgumentLines = @()
     WriteAttempts  = @()
+    LastArgumentLine = ''
     AutoListenerOnNativeProcess = $false
   }
 }
@@ -192,12 +193,21 @@ function Install-SystemLeafMocks {
   Install-WeFlowMock -Name 'Test-WeFlowPathExists' -Body {
     param([Parameter(Mandatory)][string]$Path, [switch]$Leaf)
     $full = Get-ReadablePath -Path $Path
+    # FailOn：模拟「存在性检查本身抛异常」（如句柄被占用导致的系统调用失败）。
+    if ($script:World.FailOn.ContainsKey('Test-WeFlowPathExists') -and $full -match $script:World.FailOn['Test-WeFlowPathExists']) {
+      throw ("模拟存在性检查失败：{0}" -f $full)
+    }
     if ($Leaf) { return (Test-Path -LiteralPath $full -PathType Leaf) }
     return (Test-Path -LiteralPath $full)
   }
   Install-WeFlowMock -Name 'Read-WeFlowTextFile' -Body {
     param([Parameter(Mandatory)][string]$Path)
-    [System.IO.File]::ReadAllText((Get-ReadablePath -Path $Path), (New-Object System.Text.UTF8Encoding($false)))
+    $full = Get-ReadablePath -Path $Path
+    # FailOn：模拟「文件存在但读取抛 IOException」（如正被刚启动的进程占用）。
+    if ($script:World.FailOn.ContainsKey('Read-WeFlowTextFile') -and $full -match $script:World.FailOn['Read-WeFlowTextFile']) {
+      throw ("模拟读取失败（文件正被另一进程使用）：{0}" -f $full)
+    }
+    [System.IO.File]::ReadAllText($full, (New-Object System.Text.UTF8Encoding($false)))
   }
   Install-WeFlowMock -Name 'Write-WeFlowTextFile' -Body {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
@@ -830,6 +840,94 @@ function Test-EndpointScript {
   Assert-Equal -Expected 6 -Actual $code -Name 'health 通过但 ready 500 → 非零退出'
 }
 
+function Test-RealArgumentConstruction {
+  <#
+  .SYNOPSIS
+    P. 真实参数构造组合测试（mock 下沉到进程执行，参数构造不 mock）。
+  .DESCRIPTION
+    ee2ee77 真实切换的教训：旧隔离测试把 Invoke-WeFlowExternalCommand 整个 mock 掉，
+    绕过了 ConvertTo-WeFlowWindowsArgumentLine 的 CR/LF 拒绝规则——curl -w 参数里的
+    真实换行符在 Windows 上必然抛异常而测试全绿（假覆盖）。
+    本组换上「构造器友好」的外部命令 mock：参数构造**真实执行**，只把进程执行
+    替换为队列结果。探测函数给出的真实参数数组编码不出来，本组立即失败。
+  #>
+  Start-Case 'P. 真实参数构造组合测试（mock 下沉到进程执行叶子）'
+  Install-WeFlowMock -Name 'Invoke-WeFlowExternalCommand' -Body {
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory)
+    # 与生产一致：先真实执行参数构造（CR/LF 等非法参数在这里 throw），再把进程执行替换为队列结果。
+    $script:World.LastArgumentLine = ConvertTo-WeFlowWindowsArgumentLine -Arguments $Arguments
+    $script:World.ExternalCalls += [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory }
+    if ($script:World.ExternalQueue.Count -eq 0) { throw '模拟外部命令队列已空（测试用例未提供结果）' }
+    return $script:World.ExternalQueue.Dequeue()
+  }
+
+  $root = Join-Path $script:SandboxRootPath 'real-args'
+  $envPath = New-FixturePackage -Root $root
+  $certPath = Join-Path $root 'native-root.crt'
+  [System.IO.File]::WriteAllText($certPath, 'stub-cert', (New-Object System.Text.UTF8Encoding($false)))
+  $config = Read-WeFlowNativeEnv -Path $envPath -CaddyfileTemplatePath (Join-Path $root 'central\windows-caddy\Caddyfile.template')
+  $healthBody = '{"ok":true,"data":{"service":"weflow-central","protocolVersion":1}}'
+  $readyBody = '{"ok":true,"data":{"database":"ready"}}'
+
+  # P1：curl 探测的真实参数数组（含 -w 格式参数）必须能通过真实参数构造
+  New-World
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  Add-ExternalResult -ExitCode 0 -StdOut ($healthBody + "`n__WEFLOW_STATUS__200")
+  Add-ExternalResult -ExitCode 0 -StdOut ($readyBody + "`n__WEFLOW_STATUS__200")
+  $code = Invoke-NativeCaddyEndpointDiagnostics -PackageRoot $root -NativeEnvPath $envPath -CaCertPath $certPath
+  Assert-Equal -Expected 0 -Actual $code -Name 'curl 探测的真实参数数组通过真实参数构造 → 退出码 0'
+  Assert-True -Condition ($script:World.LastArgumentLine.Length -gt 0) -Name '参数构造真实执行并产出命令行' -Detail $script:World.LastArgumentLine
+  Assert-True -Condition ($script:World.LastArgumentLine -match '--cacert') -Name '构造的命令行带完整证书校验参数'
+  Assert-True -Condition ($script:World.LastArgumentLine -match [regex]::Escape('\n__WEFLOW_STATUS__%{http_code}')) `
+    -Name '-w 格式参数以「字面量反斜杠 + n」编码进命令行' -Detail $script:World.LastArgumentLine
+  $badArgs = @($script:World.ExternalCalls[0].Arguments | Where-Object { $_ -match "[\r\n]" })
+  Assert-Equal -Expected 0 -Actual $badArgs.Count -Name 'curl 参数数组逐项不含真实 CR/LF'
+  Assert-Equal -Expected 2 -Actual $script:World.ExternalCalls.Count -Name '诊断验收确实探测了两个端点'
+
+  # P2：状态码与 body 正确分离；正文里出现相同标记文本不干扰解析
+  New-World
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  $trickyBody = '前缀 __WEFLOW_STATUS__500 ' + $healthBody
+  Add-ExternalResult -ExitCode 0 -StdOut ($trickyBody + "`n__WEFLOW_STATUS__200")
+  Add-ExternalResult -ExitCode 0 -StdOut ($readyBody + "`n__WEFLOW_STATUS__200")
+  $acceptance = Invoke-WeFlowEndpointAcceptance -Config $config -CaCertPath $certPath
+  $healthItem = @($acceptance.Items | Where-Object { $_.Path -eq '/health' })[0]
+  Assert-Equal -Expected 200 -Actual ([int]$healthItem.Probe.HttpStatus) -Name '状态码只从 stdout 末尾提取（正文中的相同标记不干扰）'
+  Assert-True -Condition (([string]$healthItem.Probe.Body).Contains('__WEFLOW_STATUS__500')) -Name '正文里的标记文本保留在 body 中（不误删、不误判状态）'
+  Assert-True -Condition (([string]$healthItem.Probe.Body).EndsWith($healthBody)) -Name 'body 与末尾状态标记正确分离（无残留换行/标记）'
+  Assert-Equal -Expected 0 -Actual ([int]$acceptance.ExitCode) -Name '正文含标记时端点验收仍按末尾状态码判定通过'
+
+  # P3：真正非法的 CR/LF 仍被参数构造拒绝（规则未被绕过或放宽）
+  Assert-Throws -Name '真实 CR/LF 参数仍被真实参数构造拒绝' `
+    -Action { Invoke-WeFlowExternalCommand -FilePath 'C:\fake\curl.exe' -Arguments @('--silent', "bad`nvalue") } `
+    -MessagePattern 'CR/LF'
+  Assert-Throws -Name '真实 CR 参数同样被拒绝' `
+    -Action { ConvertTo-WeFlowWindowsArgumentLine -Arguments @("a`rb") } `
+    -MessagePattern 'CR/LF'
+
+  # P4（变异负例）：把 -w 格式参数改回真实 LF（转录自 ee2ee77 之前的实现），
+  # 走真实探测调用 → 必须在真实参数构造处失败；否则 P1 的「构造通过」就是假覆盖。
+  Install-WeFlowMock -Name 'Invoke-WeFlowEndpointProbe' -Body {
+    param([Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$CaCertPath, [Parameter(Mandatory)][string]$Path, [int]$TimeoutSec = 15)
+    # 变异体：与 ee2ee77 之前完全相同的参数构造（含真实换行的 -w）
+    $legacyArguments = @(
+      '--silent', '--show-error', '--max-time', [string]$TimeoutSec,
+      '--cacert', $CaCertPath,
+      '--resolve', ("{0}:443:{1}" -f $Config.Hostname, $Config.BindIp),
+      '-o', '-', '-w', "`n__WEFLOW_STATUS__%{http_code}",
+      ("https://{0}{1}" -f $Config.Hostname, $Path)
+    )
+    return Invoke-WeFlowExternalCommand -FilePath 'C:\fake\curl.exe' -Arguments $legacyArguments
+  }
+  Assert-Throws -Name '变异：-w 格式参数改回真实 LF → 真实参数构造拒绝（对应「构造通过」断言必然失败）' `
+    -Action { Invoke-WeFlowEndpointProbe -Config $config -CaCertPath $certPath -Path '/health' } `
+    -MessagePattern 'CR/LF'
+
+  # 恢复标准叶子实现（本组的构造器友好 mock 一并还原）
+  Restore-WeFlowMocks
+  Install-SystemLeafMocks
+}
+
 function Test-WindowsArgumentEchoChild {
   <#
   .SYNOPSIS
@@ -908,6 +1006,30 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   Assert-Throws -Name '含 CR/LF 的参数在启动前被拒绝' `
     -Action { Start-WeFlowCaddyProcess -ExePath $powershell -Arguments @('run', "bad`nvalue") -StdOutPath (Join-Path $workDir 'x.out') -StdErrPath (Join-Path $workDir 'x.err') } `
     -MessagePattern 'CR/LF'
+
+  # 真实外部命令包装层端到端（Invoke-WeFlowExternalCommand，不经任何 mock）：
+  # 以无害回显子进程核对「curl -w 的字面量 \n 格式参数」等真实参数逐值到达。
+  $wrapperStdout = Join-Path $workDir 'wrapper.out.txt'
+  $wrapperStderr = Join-Path $workDir 'wrapper.err.txt'
+  Remove-WeFlowFilePath -Path $wrapperStdout
+  Remove-WeFlowFilePath -Path $wrapperStderr
+  $wrapperArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childPath,
+    '-w', '\n__WEFLOW_STATUS__%{http_code}', '--config', 'F:\WeFlow-Test\path with space\Caddyfile')
+  $wrapperResult = Invoke-WeFlowExternalCommand -FilePath $powershell -Arguments $wrapperArgs
+  $wrapperPayload = $null
+  try {
+    $wrapperPayload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($wrapperResult.StdOut.Trim())) | ConvertFrom-Json
+  } catch { $wrapperPayload = $null }
+  if ($null -eq $wrapperPayload) {
+    Assert-True -Condition $false -Name '真实外部命令包装层回显子进程返回可解析参数' `
+      -Detail ("stdout='{0}' stderr='{1}'" -f $wrapperResult.StdOut.Trim(), $wrapperResult.StdErr.Trim())
+  } else {
+    Assert-Equal -Expected $wrapperArgs.Count -Actual ([int]$wrapperPayload.Count) -Name '真实包装层：参数个数逐值一致'
+    for ($index = 0; $index -lt $wrapperArgs.Count; $index++) {
+      $actual = if ($index -lt @($wrapperPayload.Values).Count) { [string]@($wrapperPayload.Values)[$index] } else { '<缺失>' }
+      Assert-Equal -Expected $wrapperArgs[$index] -Actual $actual -Name ("真实包装层：参数 #{0} 逐值一致" -f ($index + 1))
+    }
+  }
 }
 
 function Test-ContractGuard {
@@ -1227,6 +1349,9 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
   $script:WeFlowListenerWaitSeconds = $savedWait2
   Assert-Equal -Expected 4 -Actual $code -Name '回退失败 → 退出码 4'
   Assert-True -Condition (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.current.json')) -Name '回退失败时保留状态文件'
+  Assert-True -Condition ($script:World.StopProcessCalls.Count -ge 1) -Name '回退失败时本轮进程确实被回收（容器失败不跳过进程回收）'
+  Assert-True -Condition ($script:World.DockerCalls[-1].ComposeArgs[0] -eq 'start') -Name '容器恢复确实被尝试（失败也保留尝试证据）'
+  Assert-True -Condition (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.rollback.json')) -Name '回退失败仍产出结构化诊断记录'
 
   # G10：绑定地址不属于本机 → 1
   New-World
@@ -1261,6 +1386,94 @@ weflow-test-caddy-1  caddy  Up 5 minutes'
   $code = Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath
   Assert-Equal -Expected 3 -Actual $code -Name '未启动进程即失败 → 回退成功（退出码 3）'
   Assert-Equal -Expected 0 -Actual $script:World.StopProcessCalls.Count -Name '未启动进程时不结束任何进程'
+
+  # G13：stderr 日志存在但被占用（读取抛 IOException）→ 诊断失败不得打断回退
+  #（ee2ee77 真实切换：旧实现在回退前读日志被占用，IOException 逃逸，自动回退根本没执行）
+  New-World
+  Remove-WeFlowTestStateFiles -Root $root
+  $logsDir = Join-Path $root 'logs'
+  New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $logsDir 'native-caddy.stderr.log'), 'stub stderr content', (New-Object System.Text.UTF8Encoding($false)))
+  $script:World.AutoListenerOnNativeProcess = $true
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
+  Add-DockerResult -ExitCode 0                                     # stop caddy
+  Add-DockerResult -ExitCode 0                                     # 回退时 start caddy
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  $script:World.FailOn['Read-WeFlowTextFile'] = 'native-caddy\.stderr\.log'
+  New-FixtureCaddyfile -Root $root
+  New-FakeExe -Root $root
+  $nextPidBefore = [int]$script:World.NextPid
+  $code = Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath
+  $launchedPid = $nextPidBefore
+  Assert-Equal -Expected 3 -Actual $code -Name 'stderr 日志被占用（读取抛异常）→ 回退仍完整执行（退出码 3）'
+  Assert-True -Condition ($script:World.StopProcessCalls -contains $launchedPid) `
+    -Name ("日志读取失败时本轮进程仍被回收（PID {0}）" -f $launchedPid) `
+    -Detail ("StopProcessCalls={0}" -f ($script:World.StopProcessCalls -join ','))
+  Assert-True -Condition ($null -eq (Get-WeFlowProcessById -Id $launchedPid)) -Name '本轮进程已确认消失'
+  Assert-Equal -Expected 'start' -Actual $script:World.DockerCalls[-1].ComposeArgs[0] -Name '原容器仍被恢复（compose start caddy）'
+  Assert-True -Condition (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.rollback.json')) -Name '回退诊断记录已落盘'
+
+  # G14：stderr 日志的存在性检查本身抛异常 → 同样不得阻断回退
+  New-World
+  Remove-WeFlowTestStateFiles -Root $root
+  New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $logsDir 'native-caddy.stderr.log'), 'stub', (New-Object System.Text.UTF8Encoding($false)))
+  $script:World.AutoListenerOnNativeProcess = $true
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
+  Add-DockerResult -ExitCode 0
+  Add-DockerResult -ExitCode 0
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  $script:World.FailOn['Test-WeFlowPathExists'] = 'native-caddy\.stderr\.log'
+  New-FixtureCaddyfile -Root $root
+  New-FakeExe -Root $root
+  $nextPidBefore = [int]$script:World.NextPid
+  $code = Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath
+  $launchedPid = $nextPidBefore
+  Assert-Equal -Expected 3 -Actual $code -Name '日志存在性检查抛异常 → 回退仍完整执行（退出码 3）'
+  Assert-True -Condition ($script:World.StopProcessCalls -contains $launchedPid) -Name '存在性检查失败时本轮进程仍被回收'
+  Assert-Equal -Expected 'start' -Actual $script:World.DockerCalls[-1].ComposeArgs[0] -Name '原容器仍被恢复'
+  Assert-True -Condition (Test-Path -LiteralPath (Join-Path $root 'state\native-caddy.rollback.json')) -Name '回退诊断记录已落盘'
+
+  # G15（变异）：把失败处理退回「先读日志（无防御）再回退」的旧流程（转录自 ee2ee77 之前的实现）——
+  # 相同场景下旧流程会在读被占用日志时抛异常、回退根本没有执行；新用例（G13）必然抓住这种退化。
+  Install-WeFlowMock -Name 'Invoke-WeFlowStartFailureHandling' -Body {
+    param($Config, $ReleaseDir, $Reason, $ContainerWasRunning, $ProcessAttempted, $LaunchedIdentity, $CurrentStatePath, $RollbackReportPath)
+    Write-Host ("切换过程中发生异常：{0}" -f $Reason) -ForegroundColor Red
+    # 旧实现：诊断在回退之前，且无任何防御 —— 读取失败时 IOException 逃逸出 catch 块
+    $stderrLog = Join-Path $Config.LogDir 'native-caddy.stderr.log'
+    if (Test-WeFlowPathExists -Path $stderrLog -Leaf) {
+      Read-WeFlowTextFile -Path $stderrLog | Select-Object -Last 40 | Write-Host
+    }
+    return Invoke-WeFlowStartRollback -ReleaseDir $ReleaseDir -ContainerWasRunning $ContainerWasRunning `
+      -ProcessAttempted $ProcessAttempted -LaunchedIdentity $LaunchedIdentity `
+      -CurrentStatePath $CurrentStatePath -Reason $Reason -ReportPath $RollbackReportPath
+  }
+  New-World
+  Remove-WeFlowTestStateFiles -Root $root
+  New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $logsDir 'native-caddy.stderr.log'), 'stub', (New-Object System.Text.UTF8Encoding($false)))
+  $script:World.AutoListenerOnNativeProcess = $true
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  Add-DockerResult -ExitCode 0 -StdOut 'weflow-test-caddy-1 Up'
+  Add-DockerResult -ExitCode 0
+  Add-DockerResult -ExitCode 0
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  Add-ExternalResult -ExitCode 0 -StdOut ("boom`n__WEFLOW_STATUS__500")
+  $script:World.FailOn['Read-WeFlowTextFile'] = 'native-caddy\.stderr\.log'
+  New-FixtureCaddyfile -Root $root
+  New-FakeExe -Root $root
+  $threw = $false
+  try { Invoke-NativeCaddyStart -PackageRoot $root -ReleaseDir $root -NativeEnvPath $envPath | Out-Null } catch { $threw = $true }
+  Assert-True -Condition $threw -Name '变异：旧诊断流程下读取被占用日志的异常逃逸出失败处理（新用例会抓住）'
+  Assert-Equal -Expected 0 -Actual $script:World.StopProcessCalls.Count -Name '变异：旧流程下进程未被回收（「进程已回收」断言在此退化下必然失败）'
+  Assert-True -Condition ($script:World.DockerCalls[-1].ComposeArgs[0] -eq 'stop') -Name '变异：旧流程下容器未被恢复'
+  # 恢复真实实现与其余标准叶子 mock
+  Restore-WeFlowMocks
+  Install-SystemLeafMocks
 }
 
 function New-FixtureCaddyfile {
@@ -1528,6 +1741,7 @@ try {
   Test-ProcessReclaim
   Test-StartAcceptanceContract
   Test-EndpointContractStrict
+  Test-RealArgumentConstruction
 
   # 真实子进程用例必须在 mock 之外运行：先恢复所有叶子实现、关闭测试模式，
   # 再让生产代码真的 CreateProcess 一次（只启动无害的回显子进程）。

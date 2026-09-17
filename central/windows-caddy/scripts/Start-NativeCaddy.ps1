@@ -191,6 +191,55 @@ function Wait-WeFlowTcpListener {
   return $false
 }
 
+function Invoke-WeFlowStartFailureHandling {
+  <#
+  .SYNOPSIS
+    切换失败处理：**回退优先**，stderr 日志等非关键诊断殿后且全部防御。
+  .DESCRIPTION
+    ee2ee77 真实切换的教训：旧实现在回退**之前**读取 native-caddy.stderr.log，
+    该文件正被刚启动的原生进程占用时 Read 抛 IOException，异常逃逸出 catch 块，
+    自动回退整体没有执行（进程留在系统里、容器停在停止状态）。
+    现在的顺序：原始异常 → 回退（进程回收 / 容器恢复在 Invoke-WeFlowStartRollback
+    内部**各自**捕获失败，一步失败不跳过另一步，并总是产出结构化诊断记录）→
+    stderr 日志诊断（存在性检查 / 读取 / 输出任何一步失败都只记录警告，绝不逃逸）。
+    返回约定退出码：3 = 已回退；4 = 回退未完全成功。
+  #>
+  param(
+    [Parameter(Mandatory)][hashtable]$Config,
+    [Parameter(Mandatory)][string]$ReleaseDir,
+    [Parameter(Mandatory)][string]$Reason,
+    [Parameter(Mandatory)][bool]$ContainerWasRunning,
+    [Parameter(Mandatory)][bool]$ProcessAttempted,
+    [AllowNull()]$LaunchedIdentity,
+    [Parameter(Mandatory)][string]$CurrentStatePath,
+    [Parameter(Mandatory)][string]$rollbackReportPath
+  )
+  Write-Host ("切换过程中发生异常：{0}" -f $Reason) -ForegroundColor Red
+
+  # --- 回退优先：先于任何诊断执行 ---
+  $rollback = Invoke-WeFlowStartRollback -ReleaseDir $ReleaseDir -ContainerWasRunning $ContainerWasRunning `
+    -ProcessAttempted $ProcessAttempted -LaunchedIdentity $LaunchedIdentity `
+    -CurrentStatePath $CurrentStatePath -Reason $Reason -ReportPath $rollbackReportPath
+  Write-Host ("回退结果：{0}" -f $rollback.Detail) -ForegroundColor Yellow
+
+  # --- 诊断殿后（独立防御 try/catch）：日志可能正被刚启动的原生进程占用 ---
+  try {
+    $stderrLog = Join-Path $Config.LogDir 'native-caddy.stderr.log'
+    if (Test-WeFlowPathExists -Path $stderrLog -Leaf) {
+      Read-WeFlowTextFile -Path $stderrLog | Select-Object -Last 40 | Write-Host
+    }
+  } catch {
+    Write-Host ("  [警告] stderr 日志诊断失败（不影响回退结论与退出码）：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
+  }
+
+  if ($rollback.Ok) {
+    Write-Host '本轮切换已回退（本轮原生进程已确认退出）；状态文件保留供人工核对。' -ForegroundColor Yellow
+    return 3
+  }
+  Write-Host '回退未完全成功：请人工核对容器 caddy 与原生进程状态；诊断记录与记账文件均已保留。' -ForegroundColor Red
+  return 4
+}
+
 function Invoke-NativeCaddyStart {
   <#
   .SYNOPSIS
@@ -373,22 +422,11 @@ function Invoke-NativeCaddyStart {
     Write-Host '退出本终端不会结束该进程；需要停止请执行 Stop-NativeCaddy.ps1（它只结束上面这个 PID）。'
     return 0
   } catch {
-    $reason = $_.Exception.Message
-    Write-Host ("切换过程中发生异常：{0}" -f $reason) -ForegroundColor Red
-    $stderrLog = Join-Path $config.LogDir 'native-caddy.stderr.log'
-    if (Test-WeFlowPathExists -Path $stderrLog -Leaf) {
-      Read-WeFlowTextFile -Path $stderrLog | Select-Object -Last 40 | Write-Host
-    }
-    $rollback = Invoke-WeFlowStartRollback -ReleaseDir $ReleaseDir -ContainerWasRunning $containerWasRunning `
-      -ProcessAttempted $processLaunchAttempted -LaunchedIdentity $launchedIdentity `
-      -CurrentStatePath $statePath -Reason $reason -ReportPath $rollbackReportPath
-    Write-Host ("回退结果：{0}" -f $rollback.Detail) -ForegroundColor Yellow
-    if ($rollback.Ok) {
-      Write-Host '本轮切换已回退（本轮原生进程已确认退出）；状态文件保留供人工核对。' -ForegroundColor Yellow
-      return 3
-    }
-    Write-Host '回退未完全成功：请人工核对容器 caddy 与原生进程状态；诊断记录与记账文件均已保留。' -ForegroundColor Red
-    return 4
+    # 失败处理整体交给 Invoke-WeFlowStartFailureHandling：回退优先、诊断殿后且全防御，
+    # 诊断失败不会逃逸出本 catch 打断回退（ee2ee77 教训）。
+    return Invoke-WeFlowStartFailureHandling -Config $config -ReleaseDir $ReleaseDir -Reason ($_.Exception.Message) `
+      -ContainerWasRunning $containerWasRunning -ProcessAttempted $processLaunchAttempted `
+      -LaunchedIdentity $launchedIdentity -CurrentStatePath $statePath -RollbackReportPath $rollbackReportPath
   }
 }
 

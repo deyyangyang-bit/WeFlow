@@ -1026,19 +1026,24 @@ function Invoke-WeFlowEndpointProbe {
   $lastMessage = ''
   foreach ($backend in $backends) {
     if ($backend.Name -eq 'curl') {
+      # -w 的格式参数写的是「字面量反斜杠 + n」两个字符（不含真实 CR/LF），
+      # curl 自己会把 \n 解释成输出里的换行，因此既能分隔正文与状态标记，
+      # 又能通过 ConvertTo-WeFlowWindowsArgument 的 CR/LF 拒绝规则（ee2ee77 真实切换的教训）。
       $arguments = @(
         '--silent', '--show-error', '--max-time', [string]$TimeoutSec,
         '--cacert', $CaCertPath,
         '--resolve', ("{0}:443:{1}" -f $Config.Hostname, $Config.BindIp),
-        '-o', '-', '-w', "`n__WEFLOW_STATUS__%{http_code}",
+        '-o', '-', '-w', '\n__WEFLOW_STATUS__%{http_code}',
         ("https://{0}{1}" -f $Config.Hostname, $Path)
       )
       $result = Invoke-WeFlowExternalCommand -FilePath $backend.Path -Arguments $arguments
       $stdOut = $result.StdOut
       $stdErr = $result.StdErr
+      # 状态标记只从 stdout **末尾**提取：正则要求标记之后直到结尾只剩空白，
+      # 因此响应正文里出现的相同文本不会干扰解析（curl 自己写出的才是最后一个标记）。
       $status = $null
-      if ($stdOut -match '__WEFLOW_STATUS__(\d{3})') { $status = [int]$Matches[1] }
-      $body = ($stdOut -replace '(?s)\n?__WEFLOW_STATUS__\d{3}\s*$', '')
+      if ($stdOut -match '__WEFLOW_STATUS__(\d{3})\s*$') { $status = [int]$Matches[1] }
+      $body = ($stdOut -replace '(?s)\r?\n?__WEFLOW_STATUS__\d{3}\s*$', '')
 
       if ($result.ExitCode -eq 0) {
         return [pscustomobject]@{ Backend = 'curl'; ExitCode = 0; HttpStatus = $status; Body = $body; Category = 'transport-ok'; Message = ("HTTP {0}" -f $status) }
