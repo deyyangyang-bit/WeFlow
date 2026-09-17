@@ -338,8 +338,11 @@ function Install-SystemLeafMocks {
     return $null
   }
   Install-WeFlowMock -Name 'Invoke-WeFlowExternalCommand' -Body {
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory)
-    $script:World.ExternalCalls += [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory }
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory,
+      [System.Text.Encoding]$OutputEncoding)
+    # 形参必须与生产实现保持一致（含可选的 -OutputEncoding），否则生产调用一旦指定编码，
+    # mock 会以「找不到参数」抛错——这正是本 mock 需要跟随生产签名演进的原因。
+    $script:World.ExternalCalls += [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory; OutputEncoding = $OutputEncoding }
     if ($script:World.ExternalQueue.Count -eq 0) { throw '模拟外部命令队列已空（测试用例未提供结果）' }
     return $script:World.ExternalQueue.Dequeue()
   }
@@ -853,10 +856,11 @@ function Test-RealArgumentConstruction {
   #>
   Start-Case 'P. 真实参数构造组合测试（mock 下沉到进程执行叶子）'
   Install-WeFlowMock -Name 'Invoke-WeFlowExternalCommand' -Body {
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory)
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [string]$WorkingDirectory,
+      [System.Text.Encoding]$OutputEncoding)
     # 与生产一致：先真实执行参数构造（CR/LF 等非法参数在这里 throw），再把进程执行替换为队列结果。
     $script:World.LastArgumentLine = ConvertTo-WeFlowWindowsArgumentLine -Arguments $Arguments
-    $script:World.ExternalCalls += [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory }
+    $script:World.ExternalCalls += [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments; WorkingDirectory = $WorkingDirectory; OutputEncoding = $OutputEncoding }
     if ($script:World.ExternalQueue.Count -eq 0) { throw '模拟外部命令队列已空（测试用例未提供结果）' }
     return $script:World.ExternalQueue.Dequeue()
   }
@@ -884,18 +888,32 @@ function Test-RealArgumentConstruction {
   Assert-Equal -Expected 0 -Actual $badArgs.Count -Name 'curl 参数数组逐项不含真实 CR/LF'
   Assert-Equal -Expected 2 -Actual $script:World.ExternalCalls.Count -Name '诊断验收确实探测了两个端点'
 
-  # P2：状态码与 body 正确分离；正文里出现相同标记文本不干扰解析
+  # P2：状态码与 body 正确分离；正文里出现相同标记文本不干扰解析。
+  # 标记文本放在**合法 JSON 的字符串字段**里，正文仍是有效 JSON，health 契约可满足，
+  # 同时证明内联标记不干扰末尾状态提取。
+  # （旧夹具把 `前缀 __WEFLOW_STATUS__500 ` 直接拼在 JSON 前面，正文必然不是合法 JSON，
+  #   与「验收通过」断言自相矛盾——失败的是夹具，不是判定规则。）
   New-World
   $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
-  $trickyBody = '前缀 __WEFLOW_STATUS__500 ' + $healthBody
+  $trickyBody = '{"ok":true,"data":{"service":"weflow-central","protocolVersion":1},"echo":"__WEFLOW_STATUS__500"}'
   Add-ExternalResult -ExitCode 0 -StdOut ($trickyBody + "`n__WEFLOW_STATUS__200")
   Add-ExternalResult -ExitCode 0 -StdOut ($readyBody + "`n__WEFLOW_STATUS__200")
   $acceptance = Invoke-WeFlowEndpointAcceptance -Config $config -CaCertPath $certPath
   $healthItem = @($acceptance.Items | Where-Object { $_.Path -eq '/health' })[0]
   Assert-Equal -Expected 200 -Actual ([int]$healthItem.Probe.HttpStatus) -Name '状态码只从 stdout 末尾提取（正文中的相同标记不干扰）'
+  Assert-True -Condition (([string]$healthItem.Probe.Body) -ceq $trickyBody) -Name '正文逐字符完整保留（内联标记与 JSON 结构均未被破坏）'
   Assert-True -Condition (([string]$healthItem.Probe.Body).Contains('__WEFLOW_STATUS__500')) -Name '正文里的标记文本保留在 body 中（不误删、不误判状态）'
-  Assert-True -Condition (([string]$healthItem.Probe.Body).EndsWith($healthBody)) -Name 'body 与末尾状态标记正确分离（无残留换行/标记）'
   Assert-Equal -Expected 0 -Actual ([int]$acceptance.ExitCode) -Name '正文含标记时端点验收仍按末尾状态码判定通过'
+
+  # P2b（负例）：正文不是合法 JSON 时必须返回契约失败 7 —— 判定规则没有被放宽。
+  New-World
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  Add-ExternalResult -ExitCode 0 -StdOut ('not-a-json-body' + "`n__WEFLOW_STATUS__200")
+  Add-ExternalResult -ExitCode 0 -StdOut ($readyBody + "`n__WEFLOW_STATUS__200")
+  $badAcceptance = Invoke-WeFlowEndpointAcceptance -Config $config -CaCertPath $certPath
+  $badHealthItem = @($badAcceptance.Items | Where-Object { $_.Path -eq '/health' })[0]
+  Assert-Equal -Expected 7 -Actual ([int]$badHealthItem.ExitCode) -Name '负例：非 JSON 正文 → /health 契约失败退出码 7'
+  Assert-Equal -Expected 7 -Actual ([int]$badAcceptance.ExitCode) -Name '负例：非 JSON 正文时端点验收整体非零（退出码 7）'
 
   # P3：真正非法的 CR/LF 仍被参数构造拒绝（规则未被绕过或放宽）
   Assert-Throws -Name '真实 CR/LF 参数仍被真实参数构造拒绝' `
@@ -904,6 +922,24 @@ function Test-RealArgumentConstruction {
   Assert-Throws -Name '真实 CR 参数同样被拒绝' `
     -Action { ConvertTo-WeFlowWindowsArgumentLine -Arguments @("a`rb") } `
     -MessagePattern 'CR/LF'
+
+  # P5：编码契约的调用方边界——只给有明确 UTF-8 契约的后端指定，其余保持既有行为。
+  # curl 因 Schannel 无法判定吊销状态而不适用时会回落到 python 后端，正是真实切换走过的路径。
+  New-World
+  $script:World.CommandPaths['curl.exe'] = 'C:\fake\curl.exe'
+  $script:World.CommandPaths['python.exe'] = 'C:\fake\python.exe'
+  Add-ExternalResult -ExitCode 60 -StdErr 'schannel: CertGetCertificateChain trust error CERT_TRUST_REVOCATION_STATUS_UNKNOWN'
+  Add-ExternalResult -ExitCode 0 -StdOut '{"status":200,"body":"{}","category":"transport-ok","message":"HTTP 200"}'
+  $probeP5 = Invoke-WeFlowEndpointProbe -Config $config -CaCertPath $certPath -Path '/health'
+  Assert-Equal -Expected 'python' -Actual ([string]$probeP5.Backend) -Name 'P5 curl 吊销状态不适用 → 回落到 python 后端'
+  $pyCalls = @($script:World.ExternalCalls | Where-Object { $_.FilePath -like '*python*' })
+  $pyCall = if ($pyCalls.Count -gt 0) { $pyCalls[$pyCalls.Count - 1] } else { $null }
+  Assert-True -Condition ($null -ne $pyCall -and $null -ne $pyCall.OutputEncoding -and $pyCall.OutputEncoding.CodePage -eq 65001) `
+    -Name 'P5 python 后端调用显式指定 UTF-8 解码（CodePage 65001）'
+  $curlCalls = @($script:World.ExternalCalls | Where-Object { $_.FilePath -like '*curl*' })
+  $curlCall = if ($curlCalls.Count -gt 0) { $curlCalls[$curlCalls.Count - 1] } else { $null }
+  Assert-True -Condition ($null -ne $curlCall -and $null -eq $curlCall.OutputEncoding) `
+    -Name 'P5 curl 调用不指定编码（未把外部程序无差别统一成 UTF-8）'
 
   # P4（变异负例）：把 -w 格式参数改回真实 LF（转录自 ee2ee77 之前的实现），
   # 走真实探测调用 → 必须在真实参数构造处失败；否则 P1 的「构造通过」就是假覆盖。
@@ -1009,12 +1045,16 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
   # 真实外部命令包装层端到端（Invoke-WeFlowExternalCommand，不经任何 mock）：
   # 以无害回显子进程核对「curl -w 的字面量 \n 格式参数」等真实参数逐值到达。
+  # launcherArgs 与 payloadArgs 必须分开：powershell.exe 会消耗自身开关
+  # （-NoProfile -ExecutionPolicy Bypass -File <child>），子脚本 $args 只收到载荷部分，
+  # 因此逐值断言只与 payloadArgs 比较（旧用例拿整条数组比对，必然整体偏移 5 项）。
+  $launcherArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childPath)
+  $payloadArgs = @('-w', '\n__WEFLOW_STATUS__%{http_code}', '--config', 'F:\WeFlow-Test\path with space\Caddyfile')
+  $wrapperArgs = $launcherArgs + $payloadArgs
   $wrapperStdout = Join-Path $workDir 'wrapper.out.txt'
   $wrapperStderr = Join-Path $workDir 'wrapper.err.txt'
   Remove-WeFlowFilePath -Path $wrapperStdout
   Remove-WeFlowFilePath -Path $wrapperStderr
-  $wrapperArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childPath,
-    '-w', '\n__WEFLOW_STATUS__%{http_code}', '--config', 'F:\WeFlow-Test\path with space\Caddyfile')
   $wrapperResult = Invoke-WeFlowExternalCommand -FilePath $powershell -Arguments $wrapperArgs
   $wrapperPayload = $null
   try {
@@ -1024,10 +1064,132 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     Assert-True -Condition $false -Name '真实外部命令包装层回显子进程返回可解析参数' `
       -Detail ("stdout='{0}' stderr='{1}'" -f $wrapperResult.StdOut.Trim(), $wrapperResult.StdErr.Trim())
   } else {
-    Assert-Equal -Expected $wrapperArgs.Count -Actual ([int]$wrapperPayload.Count) -Name '真实包装层：参数个数逐值一致'
-    for ($index = 0; $index -lt $wrapperArgs.Count; $index++) {
+    Assert-Equal -Expected $payloadArgs.Count -Actual ([int]$wrapperPayload.Count) -Name '真实包装层：子脚本实收参数个数与载荷一致'
+    for ($index = 0; $index -lt $payloadArgs.Count; $index++) {
       $actual = if ($index -lt @($wrapperPayload.Values).Count) { [string]@($wrapperPayload.Values)[$index] } else { '<缺失>' }
-      Assert-Equal -Expected $wrapperArgs[$index] -Actual $actual -Name ("真实包装层：参数 #{0} 逐值一致" -f ($index + 1))
+      Assert-Equal -Expected $payloadArgs[$index] -Actual $actual -Name ("真实包装层：载荷 #{0} 逐值一致" -f ($index + 1))
+    }
+  }
+}
+
+function Test-SubprocessEncodingRoundTrip {
+  <#
+  .SYNOPSIS
+    Q. 真实子进程编码往返（UTF-8 契约；不经 mock）。
+  .DESCRIPTION
+    c95e4a3 在 Windows 真实切换时暴露的第三处缺陷：Invoke-WeFlowExternalCommand 未指定
+    StandardOutputEncoding，PowerShell 5.1 因而按控制台代码页（中文环境为 CP936）解码子进程
+    stdout。Python 探测后端输出 UTF-8 JSON，解码错乱后一个尾随的双字节序列会连同字符串的
+    闭合引号一起被吞掉，ConvertFrom-Json 必然失败——端点探测被误判为「无有效输出」，
+    进而触发回退。旧隔离测试完全看不出来：子进程输出全是 ASCII，编码环节未被覆盖。
+
+    本组用**真实子进程**验证两侧编码契约一致（不 mock 掉编码读取环节）：
+      Q1 子进程直写 UTF-8 字节，包装层显式按 UTF-8 解码 → JSON 可解析且中文 / 引号 /
+         反斜杠 / 全角标点逐值一致；
+      Q2 变异负例：同一字节流改用显式 CP936 解码 → 必须无法原样还原，证明用例能抓住退化；
+      Q3 不指定编码时旧调用路径仍正常返回（保持旧调用兼容，未强制统一 UTF-8）；
+      Q4 实际 Python 探测后端（WeFlowNative.HttpsProbe.py 真实子进程）→ 输出可解析为 JSON，
+         且 message 字段含非 ASCII（其消息前缀恒为中文，故与操作系统语言无关）。
+    本组必须在 mock 之外运行，且不依赖任何真实服务（Q4 对着未监听的本机端口探测）。
+  #>
+  Start-Case 'Q. 真实子进程编码往返（UTF-8 契约；不经 mock）'
+  if ($env:OS -ne 'Windows_NT') {
+    Add-SkipResult -Name '真实子进程编码往返测试' -Reason ('当前平台 {0} 无法验证 Windows 控制台代码页解码路径' -f $env:OS)
+    return
+  }
+  $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if (-not (Test-Path -LiteralPath $powershell)) {
+    Add-SkipResult -Name '真实子进程编码往返测试' -Reason '找不到 Windows PowerShell 5.1'
+    return
+  }
+
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  $workDir = Join-Path $script:SandboxRootPath 'encoding'
+  New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+  Write-Host ("    系统默认代码页 : {0}" -f ([int][System.Text.Encoding]::Default.CodePage)) -ForegroundColor DarkGray
+
+  # 子进程脚本含中文，必须以 UTF-8 **with BOM** 落盘：否则 PowerShell 5.1 会按代码页
+  # 读取子脚本自身源码，子进程侧就先损坏了，测不到包装层的解码行为。
+  $childPath = Join-Path $workDir 'emit-utf8-json.ps1'
+  $childSource = @'
+$obj = [ordered]@{ name = '中文测试'; quote = 'say "hi"'; path = 'F:\WeFlow-Test\路径\caddy.exe'; note = '括号（）与逗号，' }
+$json = ($obj | ConvertTo-Json -Compress)
+$bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+$out = [Console]::OpenStandardOutput()
+$out.Write($bytes, 0, $bytes.Length)
+$out.Flush()
+'@
+  [System.IO.File]::WriteAllText($childPath, $childSource, (New-Object System.Text.UTF8Encoding($true)))
+  $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $childPath)
+
+  # Q1：真实子进程 + 真实包装层 + 显式 UTF-8 解码 → 可解析且逐值一致
+  $good = Invoke-WeFlowExternalCommand -FilePath $powershell -Arguments $childArgs -OutputEncoding $utf8
+  $goodPayload = $null
+  try { $goodPayload = $good.StdOut | ConvertFrom-Json } catch { $goodPayload = $null }
+  Assert-True -Condition ($null -ne $goodPayload) -Name 'Q1 非 ASCII JSON 经真实包装层 + UTF-8 解码可解析' `
+    -Detail ("stdout='{0}'" -f $good.StdOut.Trim())
+  if ($null -ne $goodPayload) {
+    Assert-Equal -Expected '中文测试' -Actual ([string]$goodPayload.name) -Name 'Q1 中文字段逐值一致'
+    Assert-Equal -Expected 'say "hi"' -Actual ([string]$goodPayload.quote) -Name 'Q1 内嵌双引号逐值一致'
+    Assert-Equal -Expected 'F:\WeFlow-Test\路径\caddy.exe' -Actual ([string]$goodPayload.path) -Name 'Q1 中文路径与反斜杠逐值一致'
+    Assert-Equal -Expected '括号（）与逗号，' -Actual ([string]$goodPayload.note) -Name 'Q1 全角标点逐值一致'
+  }
+
+  # Q2：变异负例——同一字节流改用显式 CP936 解码，必须无法原样还原
+  $cp936 = $null
+  try { $cp936 = [System.Text.Encoding]::GetEncoding(936) } catch { $cp936 = $null }
+  if ($null -eq $cp936) {
+    Add-SkipResult -Name 'Q2 错误解码变异负例' -Reason '本机未提供 CP936 代码页，无法构造错误解码对照'
+  } else {
+    $bad = Invoke-WeFlowExternalCommand -FilePath $powershell -Arguments $childArgs -OutputEncoding $cp936
+    $badPayload = $null
+    try { $badPayload = $bad.StdOut | ConvertFrom-Json } catch { $badPayload = $null }
+    $roundTrips = ($null -ne $badPayload) -and ([string]$badPayload.name -ceq '中文测试')
+    Assert-True -Condition (-not $roundTrips) `
+      -Name 'Q2 变异：改用 CP936 解码同一字节流 → 无法原样还原（退化必被抓住）' `
+      -Detail ("parsed={0}" -f ($null -ne $badPayload))
+  }
+
+  # Q3：不指定编码（既有调用方的默认路径）必须仍然可用——旧调用未被强制改成 UTF-8
+  $legacy = Invoke-WeFlowExternalCommand -FilePath $powershell -Arguments $childArgs
+  Assert-Equal -Expected 0 -Actual ([int]$legacy.ExitCode) -Name 'Q3 不指定编码时旧调用路径仍正常返回退出码'
+
+  # Q4：实际 Python 探测后端（真实子进程）
+  $python = $null
+  foreach ($candidate in @('python.exe', 'python3.exe', 'python', 'python3')) {
+    $found = Get-Command -Name $candidate -ErrorAction SilentlyContinue
+    if ($found) { $python = $found.Source; break }
+  }
+  $openssl = Get-Command -Name 'openssl' -ErrorAction SilentlyContinue
+  if (-not $python) {
+    Add-SkipResult -Name 'Q4 实际 Python 探测后端编码往返' -Reason '本机找不到 python 解释器'
+  } elseif (-not $openssl) {
+    Add-SkipResult -Name 'Q4 实际 Python 探测后端编码往返' -Reason '本机找不到 openssl，无法生成一次性测试证书供探测脚本加载'
+  } else {
+    $certPath = Join-Path $workDir 'probe-ca.crt'
+    $keyPath = Join-Path $workDir 'probe-ca.key'
+    $gen = Invoke-WeFlowExternalCommand -FilePath $openssl.Source `
+      -Arguments @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', $keyPath, '-out', $certPath,
+        '-days', '2', '-subj', '/CN=weflow-probe-encoding-test')
+    if ($gen.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $certPath)) {
+      Add-SkipResult -Name 'Q4 实际 Python 探测后端编码往返' -Reason ("openssl 生成一次性证书失败（退出码 {0}）" -f $gen.ExitCode)
+    } else {
+      # 对着未监听的本机端口探测：不会碰到任何真实服务，但探测脚本仍会产出含中文的 JSON。
+      $probeScript = Join-Path $script:ProdScriptsRoot 'WeFlowNative.HttpsProbe.py'
+      $probeArgs = @($probeScript, '127.0.0.1', 'weflow-probe-encoding.test', '/health', $certPath, '3', '1')
+      $probeResult = Invoke-WeFlowExternalCommand -FilePath $python -Arguments $probeArgs -OutputEncoding $utf8
+      $probePayload = $null
+      try { $probePayload = $probeResult.StdOut | ConvertFrom-Json } catch { $probePayload = $null }
+      Assert-True -Condition ($null -ne $probePayload) `
+        -Name 'Q4 实际 Python 探测后端输出经 UTF-8 解码可解析为 JSON' `
+        -Detail ("stdout='{0}' stderr='{1}'" -f $probeResult.StdOut.Trim(), $probeResult.StdErr.Trim())
+      if ($null -ne $probePayload) {
+        Assert-True -Condition (([string]$probePayload.category).Length -gt 0) -Name 'Q4 探测结果含 category 字段'
+        $nonAscii = @(([string]$probePayload.message).ToCharArray() | Where-Object { [int]$_ -gt 127 })
+        Assert-True -Condition ($nonAscii.Count -gt 0) `
+          -Name 'Q4 message 含非 ASCII（真实覆盖 CP936 控制台下的解码路径）' `
+          -Detail ("message='{0}'" -f ([string]$probePayload.message))
+      }
     }
   }
 }
@@ -1748,6 +1910,7 @@ try {
   Restore-WeFlowMocks
   Set-WeFlowNativeTestMode -Enabled $false -Caller 'WeFlowNative.Tests.ps1 (echo child)'
   Test-WindowsArgumentEchoChild
+  Test-SubprocessEncodingRoundTrip
 
   $passed = @($script:Results | Where-Object { $_.Passed }).Count
   $failed = @($script:Results | Where-Object { -not $_.Passed }).Count

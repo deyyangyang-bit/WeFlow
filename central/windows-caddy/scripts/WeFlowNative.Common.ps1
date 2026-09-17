@@ -326,11 +326,23 @@ function Invoke-WeFlowExternalCommand {
   .DESCRIPTION
     返回 [pscustomobject]@{ ExitCode; StdOut; StdErr }。不使用管道，避免输出与退出码纠缠。
     参数按 Windows 规则显式加引号（见 ConvertTo-WeFlowWindowsArgumentLine）。
+
+    .PARAMETER OutputEncoding
+    **可选**。指定后同时用于解码子进程的 stdout 与 stderr。不指定则保持 .NET 默认行为
+    （按控制台代码页解码），既有调用方语义完全不变。
+
+    只给「输出编码有明确契约」的调用方指定，不要无差别统一：
+      - Python 探测后端（WeFlowNative.HttpsProbe.py）声明 stdout/stderr 为 UTF-8
+        （见该脚本 configure_stdio()），必须传 UTF-8，否则在 CP936 控制台下
+        含中文的 JSON 会被解码破坏，甚至吞掉字符串闭合引号导致 ConvertFrom-Json 失败；
+      - docker / curl.exe / caddy.exe 的输出编码取决于这些工具自身与运行环境，
+        没有可依赖的固定契约，因此**不指定**，保持原行为。
   #>
   param(
     [Parameter(Mandatory)][string]$FilePath,
     [string[]]$Arguments = @(),
-    [string]$WorkingDirectory
+    [string]$WorkingDirectory,
+    [System.Text.Encoding]$OutputEncoding
   )
   Assert-WeFlowNativeRealSystemAllowed -Operation ("Invoke-WeFlowExternalCommand({0})" -f $FilePath)
 
@@ -344,6 +356,10 @@ function Invoke-WeFlowExternalCommand {
   $info.RedirectStandardOutput = $true
   $info.RedirectStandardError = $true
   if ($WorkingDirectory) { $info.WorkingDirectory = $WorkingDirectory }
+  if ($null -ne $OutputEncoding) {
+    $info.StandardOutputEncoding = $OutputEncoding
+    $info.StandardErrorEncoding = $OutputEncoding
+  }
 
   $process = New-Object System.Diagnostics.Process
   $process.StartInfo = $info
@@ -1068,7 +1084,10 @@ function Invoke-WeFlowEndpointProbe {
       continue
     }
     $arguments = @($scriptPath, $Config.BindIp, $Config.Hostname, $Path, $CaCertPath, [string]$TimeoutSec)
-    $result = Invoke-WeFlowExternalCommand -FilePath $backend.Path -Arguments $arguments
+    # Python 后端声明 stdout/stderr 为 UTF-8（见其 configure_stdio()），这里显式按 UTF-8 解码。
+    # 不依赖控制台代码页：中文环境下控制台为 CP936，按代码页解码会破坏 JSON 并吞掉闭合引号。
+    $result = Invoke-WeFlowExternalCommand -FilePath $backend.Path -Arguments $arguments `
+      -OutputEncoding (New-Object System.Text.UTF8Encoding($false))
     $payload = $null
     try { $payload = $result.StdOut | ConvertFrom-Json } catch { $payload = $null }
     if ($null -eq $payload) {

@@ -26,6 +26,13 @@ category ∈ transport-ok / gate-403 / http-error / tls-failure / connection-fai
 退出码：0 = 完成 HTTP 交互（含非 200）；2 = 参数错误；4 = TLS 校验失败；
         5 = 连接失败；6 = 响应协议错误（畸形 / 截断 / 超限）。
 
+**机器输出编码契约**：本脚本的 stdout / stderr 一律为 **UTF-8**，由 configure_stdio()
+显式设置，不依赖控制台代码页（Windows 控制台在中文环境下常为 CP936/GBK）。
+调用方必须按 UTF-8 解码本脚本输出：PowerShell 侧通过
+`Invoke-WeFlowExternalCommand -OutputEncoding <UTF-8>` 显式指定。两侧必须一致——
+否则非 ASCII 内容会被解码破坏，实测中一个尾随的双字节序列会连同 JSON 字符串的
+闭合引号一起被吞掉，导致 ConvertFrom-Json 失败。
+
 用法：
   python WeFlowNative.HttpsProbe.py <bindIp> <hostname> <path> <cacert> [timeoutSec] [port]
 """
@@ -201,6 +208,21 @@ def classify(status, body_bytes, tls_version, cipher_name):
     return 'http-error', 'HTTP {0}'.format(status), 0
 
 
+def configure_stdio():
+    """机器输出契约：stdout / stderr 一律 UTF-8，不依赖控制台代码页。
+
+    调用方（PowerShell 包装层 Invoke-WeFlowExternalCommand）在调用本后端时显式按
+    UTF-8 解码。两侧必须一致：Windows 控制台代码页在中文环境常为 CP936/GBK，
+    若任一侧按代码页处理，含中文的 JSON 会被解码破坏——实测中一个尾随的双字节
+    序列会连同字符串的闭合引号一起被吞掉，使 JSON 结构不合法、ConvertFrom-Json 失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', newline='\n')
+        except Exception:
+            pass
+
+
 def emit(status, body, category, message, exit_code, extra=None):
     payload = {
         'status': status,
@@ -232,6 +254,7 @@ def describe_error(exc):
 
 
 def run(argv):
+    configure_stdio()
     if len(argv) < 5:
         emit(None, '', 'connection-failure',
              'usage: WeFlowNative.HttpsProbe.py <bindIp> <hostname> <path> <cacert> [timeoutSec] [port]', 2)
