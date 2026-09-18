@@ -177,6 +177,20 @@
 
   h3 { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; margin-bottom: 12px; }
 }
+/* 详情弹窗壳（P0 修复「✕ 随滚动消失」）：flex 列壳 = 固定头栏 + 独立滚动正文——
+   头栏不进滚动区（flex:none + 实底背景 + 发丝底边盖住正文），下滑后 ✕ 始终可点。
+   成交/丢单/建待办表单弹窗仍走上面的旧 __body 内滚样式，不受影响。 */
+.opp-page .opp-modal__body--split {
+  display: flex; flex-direction: column; overflow: hidden; padding: 0;
+}
+.opp-page .opp-modal__head {
+  flex: none; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 14px 22px 12px; background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-divider);
+
+  h3 { display: block; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.opp-page .opp-modal__scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 22px 20px; }
 /* 主操作行：推进 = 轻 primary（本屏唯一），成交 = 描边，丢单 = quiet */
 .opp-page .opp-actions { display: flex; gap: 8px; margin-bottom: 14px; }
 /* 「AI 建议下一步」：去 tint 底，改左 2px accent 条（同 .notice 语法） */

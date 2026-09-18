@@ -542,6 +542,14 @@ export default function OpportunityPage() {
   }
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
 
+  // 详情弹窗 Esc 关闭（P0）：成交/丢单/建待办子表单弹窗打开时让位，避免一次按键连关两层
+  useEffect(() => {
+    if (!selected || dealFormOpp || lostFormOpp || todoFormOpp) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelected(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected, dealFormOpp, lostFormOpp, todoFormOpp])
+
   const switchView = (next: OppView) => {
     if (next === view) return
     const scroller = scrollParentOf(pageRef.current)
@@ -967,12 +975,14 @@ export default function OpportunityPage() {
       )}
 
       {selected && (
-        <div className="opp-modal">
-          <div className="opp-modal__body">
-            <h3>
-              {selected.main_model || selected.product || selected.name}
+        <div className="opp-modal" onClick={() => setSelected(null)}>
+          <div className="opp-modal__body opp-modal__body--split" onClick={(e) => e.stopPropagation()}>
+            {/* 头栏不参与滚动（P0 修复）：标题与 ✕ 固定在弹窗顶部，正文单独滚动，下滑后仍可关闭 */}
+            <div className="opp-modal__head">
+              <h3>{selected.main_model || selected.product || selected.name}</h3>
               <button className="iconbtn" aria-label="关闭" onClick={() => setSelected(null)}><X size={15} /></button>
-            </h3>
+            </div>
+            <div className="opp-modal__scroll">
             {/* 「AI 建议下一步」（设计稿屏 1）：内容从现有数据投影，零 LLM 零新接口；P2.1b 去 tint 底改左 2px accent 条 */}
             <div className="opp-next-step">
               <span className="opp-next-step__tag">AI 建议下一步</span>
@@ -1066,6 +1076,7 @@ export default function OpportunityPage() {
                 </div>
               ))}
               {!events.length && <div className="opp-empty">暂无事件</div>}
+            </div>
             </div>
           </div>
         </div>
