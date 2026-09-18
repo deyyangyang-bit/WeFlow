@@ -54,6 +54,7 @@ const ADVANCED_GROUPS: Array<{ group: string; rows: Array<{ tab: string; label: 
   {
     group: '系统',
     rows: [
+      { tab: 'appearance', label: '外观 / 主题色', desc: '配色可选「默认 · Apple 蓝」「云上舞白」等 8 套', icon: Palette },
       { tab: 'antiRevoke', label: '防撤回', desc: '对方撤回的消息仍可见', icon: RotateCcw },
       { tab: 'notification', label: '通知细节', desc: '通知位置 / 黑白名单维护 / 免打扰', icon: Bell },
       { tab: 'analytics', label: '分析', desc: '使用统计', icon: BarChart2 },
