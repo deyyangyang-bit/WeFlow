@@ -133,10 +133,36 @@
 }
 
 // ── 开工简报（概念稿 .notice：左 2px 语义条，替代整块 tint 底 + 边框）──
+// 简报只讲前提：六态口径 + 覆盖区间 + 生成时间 + 事项计数。
+// 原先在这里排的 5 条事项、为列表服务的「展开其余 N 个」与历史状态折叠已撤 —— 那批线索 ID
+// 与右侧「今日待办」同源，同一屏出现两遍；事项本身交给下方「信号」与右侧待办。
+// 六态轻重落在左边那条 2px 上（accent / warn / stop 由 TSX 的 digestTone() 按态与真实覆盖缺口选择）。
 .signal-notice {
   &--digest {
     align-items: flex-start;
     margin: 14px 0;
+
+    // 标题行 + 动作（概念稿 .notice--brief .notice__row / .notice__acts）：动作与标题同排
+    .notice__row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .notice__row .notice__h { margin-bottom: 0; }
+
+    .notice__acts {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: none;
+      margin-left: 4px;
+      padding-left: 8px;
+      border-left: 1px solid var(--color-divider);
+    }
+
+    .btn--sm { padding: 0 8px; font-size: 11.5px; }
   }
 
   // 收起后的重开入口（digestDismissed 时渲染）：小按钮，不引入第二套样式
@@ -155,33 +181,40 @@
 
     p { margin: 0; line-height: 1.68; }
     small { color: var(--color-text-tertiary); font-size: 11px; }
-    // 列向 flex 会把按钮拉满整行（看起来像分隔条）：动作按钮只占自身宽度，
-    // 事项行（.signal-notice__digest-item）仍整行可点
+    // 列向 flex 会把按钮拉满整行（看起来像分隔条）：动作按钮只占自身宽度
     > .btn { align-self: flex-start; }
   }
 
   &__digest-coverage {
     color: var(--color-text-tertiary);
   }
+}
 
-  &__digest-item {
-    background: none;
-    border: none;
-    padding: 2px 0;
-    font-size: 12.5px;
+// 事项计数（概念稿 .brief__count）：只报数量，不报标题；点它滚到下方信号列表
+.brief__count {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+
+  b {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-secondary);
     font-weight: 500;
-    color: var(--color-accent);
-    text-align: left;
-    cursor: pointer;
-
-    &:hover { text-decoration: underline; }
   }
+}
 
-  &__digest-acts {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
-  }
+.brief__count-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover { color: var(--color-text-primary); }
 }
 
 // ── 数据概览：降级为细线段落（概念稿把「来源/紧急度/阶段」移出首屏卡片；本页保留入口与内容，只去掉卡片外观）──

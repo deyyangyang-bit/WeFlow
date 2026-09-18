@@ -1,121 +1,124 @@
-// SalesContextStrip — 聊天页销售上下文条
-// 2026-09-02 UI 美化（批次 B）：旧族 var(--bg-*/--text-*) 与字面 hex → 前进视觉 tokens。纯样式。
+// SalesContextStrip — 聊天页右栏「销售上下文」
+// 2026-09-18 概念稿 P1：由顶部一条折叠条改为侧栏分段（.side-block / .side-head / .verdicts）。
+// 判断段直接用全局 .verdicts；本文件只放「侧栏里怎么排」和依据行两件私有事。
+// 旧族 var(--bg-*/--text-*) 与字面 hex 一律不用，颜色全走 --color-*。
 .sales-context-strip {
-  border-bottom: 1px solid var(--color-divider);
-  background: var(--color-bg-surface-muted);
   font-size: 12px;
 
-  &__bar {
+  // 侧栏分段的间距与 .side-block 全局规则一致（22px），这里只补首段与栏头的贴合
+  > .side-block:first-child { margin-top: 0; }
+
+  // ── 紧凑元信息（阶段 / 沉默天数）：从旧的整行 top-strip 主 UI 降下来 ──
+  &__meta {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 16px;
-    cursor: pointer;
-    user-select: none;
-    &:hover { background: var(--color-bg-hover); }
-  }
-
-  // 阶段 pill：底色由 TSX 按阶段内联注入（彩色面），字面白文字保留
-  &__stage {
-    color: #fff;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 1px 7px;
-    border-radius: 999px;
-    flex-shrink: 0;
+    gap: 7px;
+    flex: none;
   }
 
   &__silent {
-    color: var(--color-text-secondary);
-    flex-shrink: 0;
-    &.warn { color: var(--color-danger); font-weight: 600; }
-  }
-
-  &__reason {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
     color: var(--color-text-tertiary);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
+
+    &.is-warn { color: var(--color-danger); font-weight: 600; }
   }
 
-  &__toggle {
+  // 前提行：最近意向 / 备注（等宽小字，不抢判断栏的注意力）
+  &__reason {
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    line-height: 1.6;
     color: var(--color-text-tertiary);
-    flex-shrink: 0;
-    margin-left: auto;
-  }
-
-  &__detail {
-    padding: 8px 16px 10px;
-    border-top: 1px dashed var(--color-divider);
+    overflow-wrap: anywhere;
   }
 
   &__notes {
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    margin-bottom: 8px;
-    line-height: 1.4;
+    margin-top: 3px;
   }
 
-  &__suggestion {
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    padding: 10px 12px;
-    position: relative;
+  &__count {
+    font-size: 10.5px;
+    color: var(--color-text-tertiary);
+  }
 
-    &-text {
-      font-size: 13px;
-      color: var(--color-text-primary);
-      line-height: 1.5;
-      padding-right: 50px;
+  // 判断为空时的说明：沿用全局 .coverage 底，只把 22px 上边距收到侧栏节奏里
+  .coverage {
+    margin-top: 8px;
+  }
+
+  // ── 依据（概念稿 .evidence / .ev：细线行，点一行回查一行原话）──
+  &__evidence {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__ev {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    padding: 9px 0;
+    border: none;
+    border-bottom: 1px solid var(--color-divider);
+    background: none;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: opacity 0.15s, color 0.15s;
+
+    &:last-child { border-bottom: 0; }
+    &:hover { opacity: 0.75; color: var(--color-accent); }
+    &.is-open .sales-context-strip__ev-q { color: var(--color-text-primary); }
+  }
+
+  &__ev-t {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--color-text-tertiary);
+    padding-top: 2px;
+  }
+
+  &__ev-q {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--color-text-secondary);
+    // 收起来时两行封顶（概念稿 .ev__q）；展开显示原话时由 is-open 放开
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+
+    .sales-context-strip__ev.is-open & {
+      display: block;
+      -webkit-line-clamp: unset;
     }
   }
 
-  &__copy {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    background: var(--color-bg-surface-muted);
+  // ── 回复建议（概念稿 .draft：surface 底 + 1px 描边 + .draft__acts 动作行）──
+  &__suggestion {
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: var(--color-bg-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-small);
-    padding: 2px 7px;
-    cursor: pointer;
-    &:hover { background: var(--color-bg-hover); }
   }
 
-  // AI 建议按钮：蓝 = 信息（原紫色 → 品牌 accent 近似）
-  &__suggest-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
-    color: var(--color-accent);
-    background: var(--color-accent-bg);
-    border: 1px solid var(--color-accent-border);
-    border-radius: var(--radius-small);
-    padding: 5px 12px;
-    cursor: pointer;
-    transition: background 0.12s;
-    &:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-    &:disabled { opacity: 0.5; cursor: not-allowed; }
+  &__suggestion-text {
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--color-text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
-  /* P0-3.3 AI 当前判断卡（消费 currentView.judgments；evidence 点击才回查 P0-2B） */
-  &__judgments { margin: 4px 0 8px; }
-  &__j-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
-  &__j-label { flex-shrink: 0; color: var(--color-accent); font-weight: 500; min-width: 48px; }
-  &__j-value { color: var(--color-text-primary); line-height: 1.5; }
-  &__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-size: 11px; vertical-align: 1px; }
-  &__j-badge--stale { background: var(--color-warning-bg); color: var(--color-warning); }
-  &__j-badge--manual { background: var(--color-accent-bg); color: var(--color-accent); }
-  &__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: none; border-radius: var(--radius-small); cursor: pointer; }
-  &__j-evidence:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-  &__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: var(--radius-small); font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
-  &__empty { color: var(--color-text-tertiary); font-size: 12px; margin-bottom: 8px; }
+  &__draft-acts {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
 }

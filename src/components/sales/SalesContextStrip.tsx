@@ -1,12 +1,19 @@
 /**
  * SalesContextStrip.tsx
  *
- * 聊天页顶部轻量上下文条（PRD v2 P2）。
- * 始终可见（非群聊时），一行显示：阶段标签 + 沉默天数 + 最近意向 + 快捷操作。
- * 不弹窗、不打断，纯被动展示。点击展开可查看 AI 建议。
+ * 聊天页右栏「销售上下文」（PRD v2 P2）。
+ * 挂在 aside.chat-rail 里，按概念稿 .side-block 分三段：判断 / 依据 / 回复建议。
+ * 常驻展开，不再是顶部一条折叠条 —— 右栏本身已是专属栏位，没有可折叠的必要。
+ * 数据全部来自本组件自身的读取，不补默认值；没识别过就如实显示「尚未识别」。
+ *
+ * 判断段与客户档案（CustomerWorkspacePage）同一套 .verdicts / .verdict / .ahead 标记，
+ * 字段名同 customerCurrentView.judgments 投影（summary / opportunity / risk / nextAction）。
+ * 依据段只列判断里带 messageKey 的锚点，点击才走 P0-2B 拉原话（与 360 同语义）；
+ * 当前会话的消息高亮（flashNewMessages）只存在于 ChatPage 内部，未做跨组件接线，
+ * 因此保留内联证据文案这条既有路径。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronUp, Copy, Check, Sparkles, TrendingUp } from 'lucide-react'
+import { Copy, Check, Sparkles } from 'lucide-react'
 import './SalesContextStrip.scss'
 
 const STAGE_MAP: Record<string, { label: string; color: string }> = {
@@ -47,7 +54,6 @@ export default function SalesContextStrip({ sessionId }: Props) {
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const [latestIntent, setLatestIntent] = useState<IntentData | null>(null)
   const [judgments, setJudgments] = useState<any>(null)
-  const [expanded, setExpanded] = useState(false)
   const [suggestion, setSuggestion] = useState('')
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -146,90 +152,126 @@ export default function SalesContextStrip({ sessionId }: Props) {
   const lastContact = profile?.last_contact_at ?? 0
   const silentDays = lastContact > 0 ? Math.max(0, Math.floor((nowSec - lastContact) / 86400)) : 0
 
+  // 四栏判断（与客户档案同一投影）：缺哪栏就如实标「尚未识别」，不用空字符串占位
+  const rows: Array<[string, any]> = [
+    ['摘要', judgments?.summary],
+    ['机会', judgments?.opportunity],
+    ['风险', judgments?.risk],
+    ['下一步', judgments?.nextAction]
+  ]
+  const hasAnyJudgment = rows.some(([, v]) => v)
+  // 依据锚点：只有带 messageKey 的判断才有原话可回查，没有就不编一条出来
+  const anchors = rows.filter(([, v]) => v && v.evidenceStatus === 'ok' && v.messageKey)
+
   return (
     <div className="sales-context-strip">
-      <div className="sales-context-strip__bar" onClick={() => setExpanded(!expanded)}>
-        <span className="sales-context-strip__stage" style={{ background: stageInfo.color }}>
-          {stageInfo.label}
-        </span>
-
-        {silentDays > 0 && (
-          <span className={`sales-context-strip__silent ${silentDays > 7 ? 'warn' : ''}`}>
-            {silentDays}天未联系
+      {/* 判断（概念稿 .side-block：侧栏分段；与客户档案同一个 .verdicts 组件） */}
+      <div className="side-block">
+        <div className="side-head">
+          <span className="side-head__t">本机判断</span>
+          {/* 阶段 / 沉默天数从旧的整行 top-strip 主 UI 降为栏内紧凑元信息 */}
+          <span className="sales-context-strip__meta">
+            <span className="pill" style={{ background: `${stageInfo.color}1A`, color: stageInfo.color }}>{stageInfo.label}</span>
+            {silentDays > 0 && (
+              <span className={`sales-context-strip__silent${silentDays > 7 ? ' is-warn' : ''}`}>{silentDays} 天未联系</span>
+            )}
           </span>
-        )}
+        </div>
 
-        {latestIntent?.reason && (
-          <span className="sales-context-strip__reason">{latestIntent.reason}</span>
-        )}
+        {/* 最近意向与备注都是前提（这份判断基于什么），压在栏内紧凑行里，不另起分段 */}
+        {latestIntent?.reason && <p className="sales-context-strip__reason">最近意向 · {latestIntent.reason}</p>}
+        {profile?.notes && <p className="sales-context-strip__reason sales-context-strip__notes">备注 · {profile.notes}</p>}
 
-        <span className="sales-context-strip__toggle">
-          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </span>
-      </div>
-
-      {expanded && (
-        <div className="sales-context-strip__detail">
-          {profile?.notes && (
-            <div className="sales-context-strip__notes">📝 {profile.notes}</div>
-          )}
-
-          {/* P0-3.3：AI 当前判断（被动消费 currentView.judgments，与 360 同语义：空态不补/stale 标较旧/证据点击回查） */}
-          {judgments && (
-            <div className="sales-context-strip__judgments">
-              {(() => {
-                const cards = [
-                  { label: '总结', v: judgments.summary },
-                  { label: '机会', v: judgments.opportunity },
-                  { label: '风险', v: judgments.risk },
-                  { label: '下一步', v: judgments.nextAction }
-                ]
-                const present = cards.filter((c) => c.v)
-                if (!present.length) {
-                  return <div className="sales-context-strip__empty">暂无 AI 判断（可点击下方按钮主动生成）</div>
-                }
-                return present.map((c) => (
-                  <div key={c.label} className="sales-context-strip__j-row">
-                    <span className="sales-context-strip__j-label">{c.label}</span>
-                    <span className="sales-context-strip__j-value">
-                      {String(c.v.value || '')}
-                      {c.v.freshness === 'stale' && <span className="sales-context-strip__j-badge sales-context-strip__j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
-                      {c.v.source === 'manual' && <span className="sales-context-strip__j-badge sales-context-strip__j-badge--manual">人工</span>}
-                      {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
-                        <button className="sales-context-strip__j-evidence" onClick={() => void toggleEvidence(c.v)}>
-                          {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '有据可查'}
-                        </button>
-                      )}
-                    </span>
-                    {evidenceKey === c.v.messageKey && evidenceMsg && (
-                      <div className="sales-context-strip__j-evidence-text">{evidenceMsg}</div>
+        {judgments && hasAnyJudgment ? (
+          <div className="verdicts">
+            {rows.map(([label, v]) => (
+              <div key={label} className={`verdict${v ? '' : ' verdict--muted'}`}>
+                <div className="verdict__k">{label}</div>
+                <div>
+                  <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
+                  <div className="verdict__meta">
+                    {!v && <span className="ahead"><i className="ahead__i" />尚未识别</span>}
+                    {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
+                    {v && v.source !== 'manual' && (
+                      <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
+                        <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
+                      </span>
                     )}
                   </div>
-                ))
-              })()}
-            </div>
-          )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="coverage">
+            {judgments
+              ? '暂无 AI 判断（可点下方「AI 跟进建议」主动生成）。'
+              : '本次会话尚未识别。识别只在本机运行，聊天内容不会上传。'}
+          </p>
+        )}
+      </div>
 
-          {suggestion ? (
-            <div className="sales-context-strip__suggestion">
-              <div className="sales-context-strip__suggestion-text">{suggestion}</div>
-              <button className="sales-context-strip__copy" onClick={handleCopy}>
-                {copied ? <Check size={12} /> : <Copy size={12} />}
-                {copied ? '已复制' : '复制'}
-              </button>
-            </div>
-          ) : (
-            <button
-              className="sales-context-strip__suggest-btn"
-              onClick={handleSuggest}
-              disabled={loadingSuggestion}
-            >
-              <Sparkles size={13} />
-              {loadingSuggestion ? '生成中...' : 'AI 跟进建议'}
-            </button>
-          )}
+      {/* 依据（概念稿 .evidence：细线行，点一行回查一行原话） */}
+      {anchors.length > 0 && (
+        <div className="side-block">
+          <div className="side-head">
+            <span className="side-head__t">依据消息</span>
+            <span className="num sales-context-strip__count">{anchors.length} 条</span>
+          </div>
+          <div className="sales-context-strip__evidence">
+            {anchors.map(([label, v]) => {
+              const open = evidenceKey === v.messageKey
+              return (
+                <button
+                  key={`${label}:${v.messageKey}`}
+                  type="button"
+                  className={`sales-context-strip__ev${open ? ' is-open' : ''}`}
+                  title={open ? '收起原话' : '点击回查这一栏的原话'}
+                  onClick={() => void toggleEvidence(v)}
+                >
+                  <span className="sales-context-strip__ev-t">{label}</span>
+                  <span className="sales-context-strip__ev-q">{open && evidenceMsg ? evidenceMsg : String(v.value || '')}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
+
+      {/* 回复建议（概念稿 .draft）：正文 + 复制；无建议时保留生成按钮 */}
+      <div className="side-block">
+        <div className="side-head">
+          <span className="side-head__t">回复建议</span>
+        </div>
+        {suggestion ? (
+          <>
+            <div className="sales-context-strip__suggestion">
+              <div className="sales-context-strip__suggestion-text">{suggestion}</div>
+            </div>
+            <div className="sales-context-strip__draft-acts">
+              <button className="btn btn--sm btn--primary" onClick={handleCopy}>
+                {copied ? <Check size={13} strokeWidth={1.6} /> : <Copy size={13} strokeWidth={1.6} />}
+                {copied ? '已复制' : '复制建议'}
+              </button>
+              <button className="btn btn--sm btn--quiet" onClick={() => void handleSuggest()} disabled={loadingSuggestion}>
+                {loadingSuggestion ? '生成中…' : '换一版'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="sales-context-strip__draft-acts">
+            {/* profile 未就绪时 suggest 会直接跳过（无客户可定位），按钮如实禁用而不是空点 */}
+            <button
+              className="btn btn--sm btn--primary"
+              onClick={() => void handleSuggest()}
+              disabled={loadingSuggestion || !profile}
+            >
+              <Sparkles size={13} strokeWidth={1.6} />
+              {loadingSuggestion ? '生成中…' : 'AI 跟进建议'}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -46,10 +46,15 @@ function SourceTag({ source }: { source: SignalSource }) {
   )
 }
 
-export default function AIActionCard({ item }: { item: ActionItem }) {
+/**
+ * @param lead 主张卡档（概念稿 .lead-card）：排序首位提升到索引上方时用。
+ *   数据、判断、证据回查与动作全部沿用细线行那一套，只是外壳与头部换成「一句话答案」的排布，
+ *   并且四栏判断默认摊开 —— 完整判断只留给被主张的这一位。
+ */
+export default function AIActionCard({ item, lead = false }: { item: ActionItem; lead?: boolean }) {
   const { completeItem, fetchSuggestion } = useTodayActionStore()
   const navigate = useNavigate()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(lead)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
   const [copied, setCopied] = useState(false)
   // P0-3.4 证据回查：判断只带 messageKey 锚点，点击才走 P0-2B 拉原话（与 360/上下文条同语义）
@@ -151,43 +156,10 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
   // 均无聊天对象 → 隐藏「打开聊天」按钮（SLA 卡 displayName 已含脱敏联系方式，销售自行微信搜索）
   const isVirtualTodo = ['todo:', 'lead:', 'logi:'].some((p) => String(item.sessionId || '').startsWith(p))
 
-  return (
-    <div className={`sig ${tierClass} ${expanded ? 'is-open' : ''}`}>
-      {/* 整行可点：展开/收起四栏判断（原「AI深度分析」入口同语义，键盘可达） */}
-      <button
-        type="button"
-        className="sigrow signal-sigrow"
-        aria-expanded={expanded}
-        onClick={() => { if (hasAnalysis) setExpanded(!expanded) }}
-      >
-        <span className={`dot ${tier === 'normal' ? '' : `dot--${tier}`}`} />
-        <span className="sigrow__main">
-          <span
-            className="sigrow__name signal-card__name--link"
-            title="查看客户 360 档案"
-            onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
-          >{item.displayName}</span>
-          <span className="sigrow__sub">
-            <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
-              {stage.text}
-            </span>
-            <span className="sigrow__tags">
-              {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
-            </span>
-            <span className="sigrow__silent">{item.silentDays} 天未互动</span>
-          </span>
-        </span>
-        <span className={`score ${tier === 'normal' ? '' : `score--${tier}`}`}>
-          <span className="score__n">{item.priorityScore}<small>分</small></span>
-          <span className="score__bar"><i style={{ width: `${scorePct * 100}%` }} /></span>
-        </span>
-        <ChevronDown size={16} strokeWidth={1.6} className="chev" />
-      </button>
-
-      {/* P0-3.4 折叠面板：判断只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
-          空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断） */}
-      {expanded && hasAnalysis && (
-        <div className="sigdetail">
+  // P0-3.4 判断面板：只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
+  // 空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断）。
+  // 细线行档收在 .sigdetail 里按需展开，主张卡档直接摊在卡内 —— 内容同一份，只有外壳不同。
+  const panel = <>
           {hasJudgments && (
             <div className="verdicts">
               {([
@@ -236,11 +208,64 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
               </div>
             </div>
           )}
+  </>
+
+  return (
+    <div className={lead ? 'lead-card' : `sig ${tierClass} ${expanded ? 'is-open' : ''}`}>
+      {lead ? (
+        /* 主张卡头部（概念稿 .lead-card__top）：名字 + 阶段 + 沉默/优先级，右侧标明它是被引擎置顶的那一条 */
+        <div className="lead-card__top">
+          <div className="lead-card__who">
+            <span
+              className="lead-card__name signal-card__name--link"
+              title="查看客户 360 档案"
+              onClick={() => navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`)}
+            >{item.displayName}</span>
+            <span className="pill" style={{ background: `${stage.color}1A`, color: stage.color }}>{stage.text}</span>
+            <span className="lead-card__meta">沉默 {item.silentDays} 天 · 优先级 {item.priorityScore}</span>
+          </div>
+          <span className="tag tag--plain">引擎置顶</span>
         </div>
+      ) : (
+        /* 整行可点：展开/收起四栏判断（原「AI深度分析」入口同语义，键盘可达） */
+        <button
+          type="button"
+          className="sigrow signal-sigrow"
+          aria-expanded={expanded}
+          onClick={() => { if (hasAnalysis) setExpanded(!expanded) }}
+        >
+          <span className={`dot ${tier === 'normal' ? '' : `dot--${tier}`}`} />
+          <span className="sigrow__main">
+            <span
+              className="sigrow__name signal-card__name--link"
+              title="查看客户 360 档案"
+              onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
+            >{item.displayName}</span>
+            <span className="sigrow__sub">
+              <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
+                {stage.text}
+              </span>
+              <span className="sigrow__tags">
+                {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
+              </span>
+              <span className="sigrow__silent">{item.silentDays} 天未互动</span>
+            </span>
+          </span>
+          <span className={`score ${tier === 'normal' ? '' : `score--${tier}`}`}>
+            <span className="score__n">{item.priorityScore}<small>分</small></span>
+            <span className="score__bar"><i style={{ width: `${scorePct * 100}%` }} /></span>
+          </span>
+          <ChevronDown size={16} strokeWidth={1.6} className="chev" />
+        </button>
       )}
 
+      {/* 主张卡档摊开判断，细线行档按需展开 */}
+      {lead
+        ? (hasAnalysis && panel)
+        : (expanded && hasAnalysis && <div className="sigdetail">{panel}</div>)}
+
       {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致 */}
-      <div className="sigdetail__acts signal-card__actions">
+      <div className={lead ? 'lead-card__acts' : 'sigdetail__acts signal-card__actions'}>
         {!isVirtualTodo && (
           <button className="btn btn--sm" onClick={handleOpenChat}>
             <MessageCircle size={14} strokeWidth={1.6} /> 打开聊天

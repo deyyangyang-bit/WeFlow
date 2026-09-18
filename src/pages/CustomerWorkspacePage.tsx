@@ -847,12 +847,13 @@ export default function CustomerWorkspacePage() {
                                   </span>
                                 )}
                                 {v && v.evidenceStatus === 'ok' && v.messageKey && (
-                                  <button className="ahead ahead--src cws-ahead-btn" onClick={() => void toggleEvidence(v)}>
+                                  <button className="ahead ahead--src ahead--btn" onClick={() => void toggleEvidence(v)}>
                                     <i className="ahead__i" />{open ? (evidenceMsg && evidenceMsg.startsWith('正在') ? '回查中…' : '收起') : '依据消息'}
                                   </button>
                                 )}
                               </div>
-                              {open && evidenceMsg && <div className="cws-verdict__evi">{evidenceMsg}</div>}
+                              {/* 与聊天侧栏同一份证据样式（main.scss .verdict__evi），不再各写一套 */}
+                              {open && evidenceMsg && <div className="verdict__evi">{evidenceMsg}</div>}
                             </div>
                           </div>
                         )

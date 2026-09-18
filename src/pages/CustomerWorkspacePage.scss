@@ -177,16 +177,8 @@
 /* 分节标题右侧的等宽/小字补充（概念稿 seclabel 右侧位） */
 .cws-seclabel__h { font-size: 11px; color: var(--color-text-tertiary); }
 
-/* 判断栏出处标记：可点的「依据消息」按钮压平到 .ahead 语法 */
-.cws-ahead-btn {
-  border: none; background: none; padding: 0; font-family: inherit; cursor: pointer;
-  &:hover { color: var(--color-accent); }
-}
-.cws-verdict__evi {
-  margin-top: 6px; padding: 6px 10px; background: var(--color-bg-surface-muted);
-  border-left: 2px solid var(--color-accent-border);
-  font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all;
-}
+/* 判断栏出处标记与证据回查：已收进 main.scss 的 .ahead--btn / .verdict__evi，
+   与聊天侧栏共用同一份 —— 判断栏跨屏是同一个组件，不再各写一套 .cws-* 皮肤。 */
 
 /* 档案定义网格（概念稿 .defs/.def）：客户类型行 + 12 字段，点击可编辑 */
 .cws-typerow { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
