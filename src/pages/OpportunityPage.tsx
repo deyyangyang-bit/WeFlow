@@ -10,6 +10,9 @@ import GeneratedFileResult from '../components/crm/GeneratedFileResult'
  *   - 非 CNY 单要求原币金额 + 汇率说明；旧数据空字段统一显示「未登记」。
  *   - 丢单保持原因表单（预设原因 + 补充说明，必填）。
  *   - 报价历史只读展示（版本/生效期/总额/文件/哈希状态，宪法 §1.6 append-only）。
+ *
+ * 2026-09-18 P2.1b：纯视觉对齐（按钮接共享档位 / 漏斗条改 .rail / 列表安静 tag / 详情弹窗压平），
+ * 数据链路、字段与契约不变。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -23,15 +26,16 @@ import type { OpportunityDealRegistration, OpportunityRecord, QuotationRecord } 
 import type { OpportunityAnalysisResult, OppAssessment } from '../../shared/opportunitySignals'
 import OpportunityStageAnalysis from '../components/crm/OpportunityStageAnalysis'
 import { RefreshCw, X, CheckCircle2, XCircle, Lock, BarChart3, List } from 'lucide-react'
-// 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
-import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT } from '../../shared/funnelPalette'
+// 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变。P2.1b 起段色只作安静 tag 文字与
+// rail 圆点点缀，不再整块铺色；unknown 无段色，回落 CSS tertiary。
+import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
 import './OpportunityPage.scss'
 
 // 商机阶段（复用客户漏斗 5 档：了解/比价/决策 进漏斗；成交=won / 流失=lost 单独展示）
 const STAGE_ORDER = ['了解', '比价', '决策'] as const
 const STAGE_COLORS: Record<string, string> = {
   了解: FUNNEL_STAGE_COLORS[0], 比价: FUNNEL_STAGE_COLORS[1], 决策: FUNNEL_STAGE_COLORS[2],
-  成交: FUNNEL_STAGE_COLORS[4], 流失: FUNNEL_NEUTRAL, unknown: FUNNEL_NEUTRAL_LIGHT
+  成交: FUNNEL_STAGE_COLORS[4], 流失: FUNNEL_NEUTRAL
 }
 // 阶段推进路径：了解 → 比价 → 决策 → 成交
 const NEXT_STAGE: Record<string, string> = { 了解: '比价', 比价: '决策', 决策: '成交' }
@@ -180,7 +184,7 @@ function DealForm({ opp, onClose, onDone }: {
       <div className="opp-modal__body opp-form" onClick={e => e.stopPropagation()}>
         <h3>
           正式成交登记 · {opp.account_name || '未命名客户'}
-          <button className="opp-btn" onClick={onClose}><X size={14} /></button>
+          <button className="iconbtn" aria-label="关闭" onClick={onClose}><X size={15} /></button>
         </h3>
 
         <div className="opp-form__grid">
@@ -257,8 +261,8 @@ function DealForm({ opp, onClose, onDone }: {
           <span className="opp-form__hint">
             {isNonCny ? '非 CNY 单需填写原币金额与汇率说明' : '成交字段、关单事件与审计将一次提交'}
           </span>
-          <button className="opp-btn" onClick={onClose} disabled={saving}>取消</button>
-          <button className="opp-btn opp-btn--primary" onClick={() => void submit()} disabled={!canSubmit}>
+          <button className="btn btn--plain" onClick={onClose} disabled={saving}>取消</button>
+          <button className="btn btn--primary" onClick={() => void submit()} disabled={!canSubmit}>
             {saving ? '登记中…' : '确认成交'}
           </button>
         </div>
@@ -295,7 +299,7 @@ function LostReasonForm({ opp, onClose, onDone }: {
       <div className="opp-modal__body opp-form" onClick={e => e.stopPropagation()}>
         <h3>
           丢单登记 · {opp.account_name || '未命名客户'}
-          <button className="opp-btn" onClick={onClose}><X size={14} /></button>
+          <button className="iconbtn" aria-label="关闭" onClick={onClose}><X size={15} /></button>
         </h3>
         <div className="opp-form__grid">
           <label className="opp-form__label">丢单原因 *</label>
@@ -309,8 +313,8 @@ function LostReasonForm({ opp, onClose, onDone }: {
         </div>
         <div className="opp-form__actions">
           <span className="opp-form__hint">丢单原因必填（沉底留档）</span>
-          <button className="opp-btn" onClick={onClose} disabled={saving}>取消</button>
-          <button className="opp-btn opp-btn--lose" onClick={() => void submit()} disabled={saving || !reason}>
+          <button className="btn btn--plain" onClick={onClose} disabled={saving}>取消</button>
+          <button className="btn btn--plain btn--lose" onClick={() => void submit()} disabled={saving || !reason}>
             确认丢单
           </button>
         </div>
@@ -324,8 +328,11 @@ function LostReasonForm({ opp, onClose, onDone }: {
 function QuoteHistory({ quotations, boundVersionId }: { quotations: QuotationRecord[]; boundVersionId: number }) {
   if (!quotations.length) return null
   return (
-    <div className="opp-quotes">
-      <h4>报价历史 <span className="opp-quotes__hint"><Lock size={10} /> 历史版本只读（append-only 版本链）</span></h4>
+    <div className="box opp-quotes">
+      <div className="box__t">
+        报价历史
+        <span className="box__h opp-quotes__hint"><Lock size={10} /> 历史版本只读（append-only 版本链）</span>
+      </div>
       <table className="opp-quotes__table">
         <thead>
           <tr><th>版本</th><th>生效期</th><th>总额</th><th>文件</th><th>哈希状态</th></tr>
@@ -383,7 +390,7 @@ function TodoForm({ assessment, onClose, onDone }: {
       <div className="opp-modal__body opp-form" onClick={e => e.stopPropagation()}>
         <h3>
           建待办 · {assessment.displayName}
-          <button className="opp-btn" onClick={onClose}><X size={14} /></button>
+          <button className="iconbtn" aria-label="关闭" onClick={onClose}><X size={15} /></button>
         </h3>
         <div className="opp-form__grid">
           <label className="opp-form__label">待办标题 *</label>
@@ -394,8 +401,8 @@ function TodoForm({ assessment, onClose, onDone }: {
         </div>
         <div className="opp-form__actions">
           <span className="opp-form__hint">截止日期 = 你自己承诺的时间；到期后该商机会进入优先处理名单</span>
-          <button className="opp-btn" onClick={onClose} disabled={saving}>取消</button>
-          <button className="opp-btn opp-btn--primary" onClick={() => void submit()} disabled={saving || !title.trim()}>
+          <button className="btn btn--plain" onClick={onClose} disabled={saving}>取消</button>
+          <button className="btn btn--primary" onClick={() => void submit()} disabled={saving || !title.trim()}>
             {saving ? '创建中…' : '创建待办'}
           </button>
         </div>
@@ -514,22 +521,19 @@ export default function OpportunityPage() {
   // 切微信号 = 换库（§2.40）：账号切换后重查（两个视图都要重查，否则阶段分析停在旧号数据）
   useWxidRefresh(() => { void fetch(); void fetchAnalysis() })
 
-  // 漏斗（2026-08-29 对齐设计稿：HTML/CSS 阶段条替代 ECharts，同源 stageDist，点击阶段仍筛选列表）
+  // 阶段筛选（P2.1b 降权）：渐变实心漏斗条改共享 .rail（发丝底 / 选中 2px / mono 计数），
+  // 段色只留圆点；递进率收进行尾 sum。点击阶段筛选列表的行为与口径（stats.stageDist）不变。
   const funnelStages = useMemo(() => {
     if (!stats || !stats.stageDist.length) return []
     const data = STAGE_ORDER
       .map((stage) => {
         const row = stats.stageDist.find((d: any) => d.stage === stage)
-        const idx = STAGE_ORDER.indexOf(stage as (typeof STAGE_ORDER)[number])
         const color = STAGE_COLORS[stage] || FUNNEL_NEUTRAL
-        const light = idx >= 0 ? FUNNEL_STAGE_GRADIENT_LIGHT[idx] : '#CBD5E1'
-        return { stage, count: Number(row?.count ?? 0), color, gradient: `linear-gradient(135deg, ${light}, ${color})` }
+        return { stage, count: Number(row?.count ?? 0), amount: Number(row?.amount ?? 0), color }
       })
     if (!data.some((d) => d.count > 0)) return []
-    const max = Math.max(...data.map((d) => d.count), 1)
     return data.map((d, i) => ({
       ...d,
-      width: `${Math.max(18, Math.round((d.count / max) * 100))}%`,
       rate: i > 0 && data[i - 1].count > 0 && d.count > 0 ? Math.round((d.count / data[i - 1].count) * 100) : null
     }))
   }, [stats])
@@ -539,6 +543,10 @@ export default function OpportunityPage() {
     .filter((o) => !pendingOnly || Number(o.amount) <= 0)
   const pendingAmount = opps.filter((o) => Number(o.amount) <= 0).length
   const decisionCount = opps.filter((o) => o.status === 'active' && o.stage === '决策').length
+  // 统计条（概念稿 .stats 四格）口径：金额/决策段取 opportunityStats（与 hero 同源），
+  // 高分意向按本机引擎的意向评分投影，不新增 IPC
+  const decisionAmount = Number(stats?.stageDist.find((d: any) => d.stage === '决策')?.amount ?? 0)
+  const highIntentCount = opps.filter((o) => (scores[o.id]?.score ?? 0) >= 80).length
 
   // 详情：拉事件时间线 + 客户风险 + 报价历史（只读）；先清上一商机的残留，避免慢 IPC 时闪现旧数据
   const openDetail = async (o: OppRow) => {
@@ -652,27 +660,53 @@ export default function OpportunityPage() {
           </p>
         </div>
         <div className="shead__actions">
-          {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点 */}
-          <div className="opp-viewseg" role="tablist" aria-label="商机视图">
+          {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点。P2.1b 接共享 .chipbar */}
+          <div className="chipbar" role="tablist" aria-label="商机视图">
             <button
               role="tab"
               aria-selected={view === 'list'}
-              className={view === 'list' ? 'on' : ''}
+              className={`chip${view === 'list' ? ' is-on' : ''}`}
               onClick={() => switchView('list')}
             ><List size={13} /> 列表</button>
             <button
               role="tab"
               aria-selected={view === 'analysis'}
-              className={view === 'analysis' ? 'on' : ''}
+              className={`chip${view === 'analysis' ? ' is-on' : ''}`}
               onClick={() => switchView('analysis')}
             ><BarChart3 size={13} /> 阶段分析</button>
           </div>
           {notice && <span className="opp-notice">{notice}</span>}
-          <button className="opp-btn opp-btn--ghost" onClick={() => void refreshAll()} disabled={loading}>
+          <button className="btn btn--quiet" onClick={() => void refreshAll()} disabled={loading}>
             <RefreshCw size={14} /> 刷新
           </button>
         </div>
       </div>
+
+      {/* 统计条（概念稿 deals 屏 .stats 四格）：mono 数字 / 发丝分隔，口径全部来自既有数据投影 */}
+      {view === 'list' && stats && stats.total > 0 && (
+        <div className="stats opp-stats">
+          <div className="stat">
+            <div className="stat__n">{stats.totalAmount > 0 ? `¥${stats.totalAmount.toLocaleString()}` : '—'}</div>
+            <div className="stat__l">在谈金额</div>
+            <div className="stat__d">{stats.total} 个商机</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{decisionCount}</div>
+            <div className="stat__l">决策中</div>
+            <div className="stat__d">{decisionAmount > 0 ? `¥${decisionAmount.toLocaleString()}` : '金额待确认'}</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{pendingAmount}</div>
+            <div className="stat__l">金额待确认</div>
+            <div className="stat__d">点上方摘要行筛出</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{Object.keys(scores).length > 0 ? highIntentCount : '—'}</div>
+            <div className="stat__l">高分意向</div>
+            <div className="stat__d">意向评分 ≥ 80</div>
+          </div>
+        </div>
+      )}
 
       {view === 'analysis' && (
         <OpportunityStageAnalysis
@@ -685,26 +719,30 @@ export default function OpportunityPage() {
       )}
 
       {view === 'list' && (funnelStages.length > 0 ? (
-        <div className="opp-funnel-block">
+        <div className="opp-rail-block">
           <div className="seclabel">
-            <span className="seclabel__t">商机阶段漏斗</span>
+            <span className="seclabel__t">商机阶段</span>
             <span className="opp-hint">点击阶段筛选下方列表</span>
           </div>
-          <div className="opp-funnel">
-            {funnelStages.map((d, i) => (
-              <div key={d.stage}>
-                {i > 0 && <div className="opp-funnel__arrow">{d.rate !== null ? <>▼ 递进 <b>{d.rate}%</b></> : '▼'}</div>}
-                <button
-                  className={`opp-funnel__stage${stageFilter === d.stage ? ' active' : ''}`}
-                  style={{ width: d.width, background: d.gradient }}
-                  onClick={() => setStageFilter(stageFilter === d.stage ? '' : d.stage)}
-                  title={`${d.stage}：${d.count} 个 · 点击筛选列表`}
-                >
-                  <span className="opp-funnel__name">{d.stage}</span>
-                  <span className="opp-funnel__count">{d.count}</span>
-                </button>
-              </div>
+          <div className="rail" role="group" aria-label="按阶段筛选">
+            {funnelStages.map((d) => (
+              <button
+                key={d.stage}
+                type="button"
+                className={`rail__item${stageFilter === d.stage ? ' is-on' : ''}`}
+                onClick={() => setStageFilter(stageFilter === d.stage ? '' : d.stage)}
+                title={`${d.stage}：${d.count} 个 · ${d.amount > 0 ? `金额 ¥${d.amount.toLocaleString()}` : '金额待确认'} · 点击筛选列表`}
+              >
+                <i className="opp-rail__dot" style={{ background: d.color }} aria-hidden />
+                {d.stage}
+                <span className="rail__n">{d.count}</span>
+              </button>
             ))}
+            {funnelStages.some((d) => d.rate !== null) && (
+              <span className="rail__sum">
+                递进 {funnelStages.filter((d) => d.rate !== null).map((d) => `${d.stage} ${d.rate}%`).join(' · ')}
+              </span>
+            )}
           </div>
         </div>
       ) : (
@@ -713,8 +751,8 @@ export default function OpportunityPage() {
 
       {view === 'list' && stageFilter && (
         <div className="opp-filter">
-          当前筛选：{stageFilter}
-          <button className="opp-btn" onClick={() => setStageFilter('')}>清除</button>
+          <span>当前筛选：<b>{stageFilter}</b></span>
+          <button className="btn btn--sm btn--quiet" onClick={() => setStageFilter('')}>清除</button>
         </div>
       )}
 
@@ -734,15 +772,18 @@ export default function OpportunityPage() {
               <span className="opp-row__avatar" aria-hidden>{(String(o.account_name || '').trim()[0]) || '客'}</span>
               <span className="opp-row__main">
                 <span className="opp-row__name">{o.account_name || '未命名客户'}</span>
-                <span className="opp-row__sub">
+                <span className="opp-row__sub num">
                   {[
                     o.main_model || o.product || o.name,
                     Number(o.order_qty) > 0 ? `×${o.order_qty}` : Number(o.quantity) > 0 ? `×${o.quantity}` : '',
+                    scores[o.id] ? `意向 ${scores[o.id].score}` : '',
                     `最近信号 ${fmtTime(Number(o.last_signal_at))}`
                   ].filter(Boolean).join(' · ')}
                 </span>
               </span>
-              <span className="opp-row__stage"><span className="opp-badge" style={{ background: STAGE_COLORS[o.stage] || FUNNEL_NEUTRAL }}>{o.stage}</span></span>
+              <span className="opp-row__stage">
+                <span className="opp-qtag" style={STAGE_COLORS[o.stage] ? { color: STAGE_COLORS[o.stage] } : undefined}>{o.stage}</span>
+              </span>
               <span className={`opp-row__amt${Number(o.amount) > 0 ? '' : ' opp-row__amt--pending'}`}>
                 {Number(o.amount) > 0 ? fmtAmount(Number(o.amount)) : '金额待确认'}
               </span>
@@ -758,42 +799,56 @@ export default function OpportunityPage() {
           <div className="opp-modal__body">
             <h3>
               {selected.main_model || selected.product || selected.name}
-              <button className="opp-btn" onClick={() => setSelected(null)}><X size={14} /></button>
+              <button className="iconbtn" aria-label="关闭" onClick={() => setSelected(null)}><X size={15} /></button>
             </h3>
-            {/* 「AI 建议下一步」置顶蓝块（设计稿屏 1）：内容从现有数据投影，零 LLM 零新接口 */}
+            {/* 「AI 建议下一步」（设计稿屏 1）：内容从现有数据投影，零 LLM 零新接口；P2.1b 去 tint 底改左 2px accent 条 */}
             <div className="opp-next-step">
               <span className="opp-next-step__tag">AI 建议下一步</span>
               <p>{buildNextStep({ stage: selected.stage, nextStage: NEXT_STAGE[selected.stage], risks, score: scores[selected.id] || null })}</p>
             </div>
+            {/* 主操作行：推进 = 轻 primary（本屏唯一），成交 = 描边，丢单 = quiet */}
+            <div className="opp-actions">
+              {NEXT_STAGE[selected.stage] && (
+                <button className="btn btn--sm btn--primary-soft" onClick={() => void advance()}>
+                  推进到 {NEXT_STAGE[selected.stage]}
+                </button>
+              )}
+              <button className="btn btn--sm btn--plain" onClick={() => setDealFormOpp(selected)}><CheckCircle2 size={13} /> 成交</button>
+              <button className="btn btn--sm btn--quiet" onClick={() => setLostFormOpp(selected)}><XCircle size={13} /> 丢单</button>
+            </div>
+            {/* 基本信息键值行（共享 .kv，两列排布） */}
             <div className="opp-detail">
-              <div className="opp-detail__row"><span>客户</span><b>{selected.account_name || '—'}</b></div>
-              <div className="opp-detail__row"><span>产品</span><b>{selected.product || '—'}</b></div>
-              <div className="opp-detail__row"><span>数量</span><b>{selected.quantity > 0 ? `${selected.quantity} 台` : '—'}</b></div>
-              <div className="opp-detail__row"><span>阶段</span><b>{selected.stage}</b></div>
-              <div className="opp-detail__row"><span>最近信号</span><b>{fmtTime(Number(selected.last_signal_at))}</b></div>
-              <div className="opp-detail__row"><span>意向评分</span><b>{scores[selected.id] ? `${scores[selected.id].score} / 100 · ${scores[selected.id].level}` : '—'}</b></div>
+              <div className="kv"><span className="kv__k">客户</span><span className="kv__v">{selected.account_name || '—'}</span></div>
+              <div className="kv"><span className="kv__k">产品</span><span className="kv__v">{selected.product || '—'}</span></div>
+              <div className="kv"><span className="kv__k">数量</span><span className="kv__v num">{selected.quantity > 0 ? `${selected.quantity} 台` : '—'}</span></div>
+              <div className="kv"><span className="kv__k">阶段</span><span className="kv__v">{selected.stage}</span></div>
+              <div className="kv"><span className="kv__k">最近信号</span><span className="kv__v num">{fmtTime(Number(selected.last_signal_at))}</span></div>
+              <div className="kv"><span className="kv__k">意向评分</span><span className="kv__v num">{scores[selected.id] ? `${scores[selected.id].score} / 100 · ${scores[selected.id].level}` : '—'}</span></div>
             </div>
             {/* 成交/交付登记信息（宪法 §1.5 D3 列）：空字段统一「未登记」，旧数据可见、可回填 */}
-            <div className="opp-detail opp-detail--deal">
-              <div className="opp-detail__row"><span>金额（CNY 结算）</span><b>{Number(selected.amount_cny) > 0 ? `¥${Number(selected.amount_cny).toLocaleString()}` : fmtAmount(Number(selected.amount))}</b></div>
-              {Number(selected.original_amount) > 0 && (selected.original_currency || 'CNY') !== 'CNY' && (
-                <>
-                  <div className="opp-detail__row"><span>原币金额（{selected.original_currency}）</span><b>{Number(selected.original_amount).toLocaleString()}</b></div>
-                  <div className="opp-detail__row"><span>汇率说明</span><b>{selected.rate_note || '未登记'}</b></div>
-                </>
-              )}
-              <div className="opp-detail__row"><span>产品型号</span><b>{selected.main_model || '未登记'}</b></div>
-              <div className="opp-detail__row"><span>补充型号</span><b>{supplementaryModels(selected) || '未登记'}</b></div>
-              <div className="opp-detail__row"><span>订单量</span><b>{fmtQty(selected.order_qty)}</b></div>
-              <div className="opp-detail__row"><span>预计发运区间</span><b>{fmtRange(selected.expected_ship_start, selected.expected_ship_end)}</b></div>
-              <div className="opp-detail__row"><span>交付日期</span><b>{fmtDate(selected.delivery_date)}</b></div>
-              <div className="opp-detail__row"><span>整车/改装</span><b>{selected.type || '未登记'}</b></div>
-              <div className="opp-detail__row"><span>报价版本</span><b>{Number(selected.quote_version_id) > 0 ? `#${selected.quote_version_id}` : '未登记'}</b></div>
+            <div className="box">
+              <div className="box__t">成交与交付登记 <span className="box__h">空字段统一「未登记」，旧数据可回填</span></div>
+              <div className="opp-detail opp-detail--flush">
+                <div className="kv"><span className="kv__k">金额（CNY 结算）</span><span className="kv__v num">{Number(selected.amount_cny) > 0 ? `¥${Number(selected.amount_cny).toLocaleString()}` : fmtAmount(Number(selected.amount))}</span></div>
+                {Number(selected.original_amount) > 0 && (selected.original_currency || 'CNY') !== 'CNY' && (
+                  <>
+                    <div className="kv"><span className="kv__k">原币金额（{selected.original_currency}）</span><span className="kv__v num">{Number(selected.original_amount).toLocaleString()}</span></div>
+                    <div className="kv"><span className="kv__k">汇率说明</span><span className="kv__v">{selected.rate_note || '未登记'}</span></div>
+                  </>
+                )}
+                <div className="kv"><span className="kv__k">产品型号</span><span className="kv__v">{selected.main_model || '未登记'}</span></div>
+                <div className="kv"><span className="kv__k">补充型号</span><span className="kv__v">{supplementaryModels(selected) || '未登记'}</span></div>
+                <div className="kv"><span className="kv__k">订单量</span><span className="kv__v num">{fmtQty(selected.order_qty)}</span></div>
+                <div className="kv"><span className="kv__k">预计发运区间</span><span className="kv__v num">{fmtRange(selected.expected_ship_start, selected.expected_ship_end)}</span></div>
+                <div className="kv"><span className="kv__k">交付日期</span><span className="kv__v num">{fmtDate(selected.delivery_date)}</span></div>
+                <div className="kv"><span className="kv__k">整车/改装</span><span className="kv__v">{selected.type || '未登记'}</span></div>
+                <div className="kv"><span className="kv__k">报价版本</span><span className="kv__v num">{Number(selected.quote_version_id) > 0 ? `#${selected.quote_version_id}` : '未登记'}</span></div>
+              </div>
             </div>
             <QuoteHistory quotations={quotations} boundVersionId={Number(selected.quote_version_id) || 0} />
             {scores[selected.id] && (
-              <div className="opp-factors">
-                <h4>意向评分依据</h4>
+              <div className="box opp-factors">
+                <div className="box__t">意向评分依据</div>
                 {/* 意向度分数条从列表挪进详情弹窗（设计稿屏 1） */}
                 <div className="opp-factors__score">
                   <span className="opp-score" title={scores[selected.id].factors.map((f) => `${f.label} ${f.delta >= 0 ? '+' : ''}${f.delta}：${f.reason}`).join('\n')}>
@@ -810,14 +865,14 @@ export default function OpportunityPage() {
                 ))}
               </div>
             )}
-            <div className="opp-risks">
-              <h4>风险预警</h4>
+            <div className="box opp-risks">
+              <div className="box__t">风险预警</div>
               {risks.map((r) => (
                 <div key={r.id} className={`opp-risk opp-risk--${r.severity} ${r.status === 'resolved' ? 'is-resolved' : ''}`}>
                   <div className="opp-risk__head">
                     <span className="opp-risk__type">{RISK_TYPE_LABEL[r.risk_type] || r.risk_type}</span>
                     <span className="opp-risk__severity">{RISK_SEVERITY_LABEL[r.severity] || r.severity}</span>
-                    <span className="opp-risk__time">{fmtTime(Number(r.created_at))}</span>
+                    <span className="opp-risk__time num">{fmtTime(Number(r.created_at))}</span>
                     {r.status === 'active' && (
                       <button className="opp-risk__resolve" onClick={() => void resolveRisk(r.id)}>确认处理</button>
                     )}
@@ -828,23 +883,14 @@ export default function OpportunityPage() {
               ))}
               {!risks.length && <div className="opp-empty">暂无风险信号</div>}
             </div>
-            <div className="opp-actions">
-              {NEXT_STAGE[selected.stage] && (
-                <button className="opp-btn opp-btn--primary" onClick={() => void advance()}>
-                  推进到 {NEXT_STAGE[selected.stage]}
-                </button>
-              )}
-              <button className="opp-btn opp-btn--win" onClick={() => setDealFormOpp(selected)}><CheckCircle2 size={14} /> 成交</button>
-              <button className="opp-btn opp-btn--lose" onClick={() => setLostFormOpp(selected)}><XCircle size={14} /> 丢单</button>
-            </div>
-            <div className="opp-events">
-              <h4>商机事件</h4>
+            <div className="box opp-events">
+              <div className="box__t">商机事件</div>
               {events.map((e) => (
                 <div key={e.id} className="opp-event">
                   <span className="opp-event__tag">{EVENT_LABEL[e.event_type] || e.event_type}</span>
-                  {e.stage && <span className="opp-event__stage">{e.stage}</span>}
+                  {e.stage && <span className="opp-event__stage num">{e.stage}</span>}
                   <span className="opp-event__detail">{e.detail}</span>
-                  <span className="opp-event__time">{fmtTime(Number(e.created_at))}</span>
+                  <span className="opp-event__time num">{fmtTime(Number(e.created_at))}</span>
                 </div>
               ))}
               {!events.length && <div className="opp-empty">暂无事件</div>}
