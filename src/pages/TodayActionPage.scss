@@ -104,6 +104,18 @@
     font-size: 11.5px;
     color: var(--color-text-tertiary);
   }
+
+  // P1.6 开工简报再安静一档（仅本页作用域；简报整件在 main.scss，聊天侧栏 / 客户档案
+  // 同语法调用不受影响）：覆盖 tag 收发丝边并去加重，brief__meta 的坐标数值降 tertiary ——
+  // 简报是「这份判断基于什么」的前提行，不该比正文更响；态的轻重仍由左 2px 色条承担。
+  .notice--brief .tag--plain {
+    border-color: var(--color-divider);
+    font-weight: 400;
+  }
+
+  .brief__meta b {
+    color: var(--color-text-tertiary);
+  }
 }
 
 // 空状态：细线框，不再白卡浮起

@@ -5,6 +5,10 @@
  *       → KPI 单行条(.stats) → 主主张(.lead-card)
  *       → 主两栏(左:筛选chips+信号卡流 | 右:待办侧栏)
  *       → 可折叠「数据概览」(来源/紧急度/阶段)
+ *
+ * 2026-09-18 P1.6（观感细修，纯视觉）：顶栏动作全降次要档（复盘/重算 quiet、新建描边）；
+ * 信号行动作行降文字链档（AIActionCard），右栏待办对齐 Chat/客户 side-head 节奏；
+ * 简报覆盖 tag / meta 数值再安静一档（本页 scss 作用域）。骨架、口径、逻辑均不变。
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
@@ -297,13 +301,15 @@ export default function TodayActionPage() {
           </p>
         </div>
         <div className="shead__actions">
+          {/* P1.6：顶栏动作全部降为次要档（复盘/重算 quiet、新建描边），页头不放实心主色 ——
+              今日页的主张是信号本身，动作不抢（新建待办在弹窗内仍走主按钮档） */}
           <button className="btn btn--quiet" onClick={() => navigate('/sales-report')}>
             <BarChart3 size={14} strokeWidth={1.6} /> 销售复盘
           </button>
-          <button className="btn btn--plain" onClick={() => void handleRefresh()} disabled={refreshing}>
+          <button className="btn btn--quiet" onClick={() => void handleRefresh()} disabled={refreshing}>
             <RefreshCw size={14} className={refreshing ? 'spinning' : ''} strokeWidth={1.6} /> 重算今日信号
           </button>
-          <button className="btn btn--primary" onClick={() => void openTodoModal()}>
+          <button className="btn btn--plain" onClick={() => void openTodoModal()}>
             <Plus size={14} strokeWidth={1.6} /> 新建待办
           </button>
         </div>

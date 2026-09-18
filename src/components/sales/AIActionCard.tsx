@@ -5,6 +5,10 @@
  * - 右列：等宽数字 + 2px 细刻度（概念稿 .score；原环形 gauge 按稿子设计说明去掉）
  * - 点整行展开：四栏判断（概念稿 .verdicts：摘要 / 机会 / 风险 / 下一步，含出处标记与证据回查，语义未变）
  * - 动作行（打开聊天 / 复制话术 / 完成 / 跳过 / AI 深度分析）常驻可见，行为与文案不变
+ *
+ * 2026-09-18 P1.6（观感细修，纯视觉）：动作行全部降档 —— 文字项走 quiet 文字钮，「完成」为
+ * 唯一轻 primary（.btn--primary-soft）；信号行档默认再压平为文字链、行指向/展开才升 accent
+ * 字色（同客户 P1.4b）。出处按钮与证据块对齐客户/聊天侧栏同一套（.ahead--btn / .verdict__evi）。
  */
 import { useCallback, useState } from 'react'
 import { Check, ChevronDown, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
@@ -197,13 +201,16 @@ export default function AIActionCard({ item, lead = false }: { item: ActionItem;
                         {v.source === 'manual' ? '人工确认' : v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
                       </span>
                       {v.evidenceStatus === 'ok' && v.messageKey && (
-                        <button className="signal-card__j-evidence" onClick={(e) => { e.stopPropagation(); void toggleEvidence(v) }}>
+                        /* P1.6：出处按钮压平到客户 360 同一个 .ahead--btn 语法（tertiary 字，hover accent），
+                            不再自带蓝底小按钮 —— 判断栏在今日行动 / 客户 / 聊天侧栏是同一套 */
+                        <button className="ahead ahead--src ahead--btn" onClick={(e) => { e.stopPropagation(); void toggleEvidence(v) }}>
+                          <i className="ahead__i" />
                           {evidenceKey === v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
                         </button>
                       )}
                     </div>
                     {evidenceKey === v.messageKey && evidenceMsg && (
-                      <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
+                      <div className="verdict__evi">{evidenceMsg}</div>
                     )}
                   </div>
                 </div>
@@ -280,17 +287,20 @@ export default function AIActionCard({ item, lead = false }: { item: ActionItem;
         ? panel
         : (expanded && hasAnalysis && <div className="sigdetail">{panel}</div>)}
 
-      {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致 */}
+      {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致。
+          P1.6 观感降档：文字链档（打开聊天 / 复制话术 / 跳过 / AI 分析都是 quiet 文字钮），
+          主操作只留「完成」一档轻 primary（.btn--primary-soft）；信号行档在 scss 里再压平为
+          文字链、hover/is-open 才升 accent 字色（同客户 P1.4b），列表里不摆色块。 */}
       <div className={lead ? 'lead-card__acts' : 'sigdetail__acts signal-card__actions'}>
         {!isVirtualTodo && (
-          <button className="btn btn--sm" onClick={handleOpenChat}>
+          <button className="btn btn--sm btn--quiet" onClick={handleOpenChat}>
             <MessageCircle size={14} strokeWidth={1.6} /> 打开聊天
           </button>
         )}
-        <button className="btn btn--sm" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+        <button className="btn btn--sm btn--quiet" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
           {copied ? <Check size={14} strokeWidth={1.6} /> : <Copy size={14} strokeWidth={1.6} />} {copied ? '已复制' : '复制话术'}
         </button>
-        <button className="btn btn--sm btn--primary" onClick={handleComplete}>
+        <button className="btn btn--sm btn--primary-soft" onClick={handleComplete}>
           <Check size={14} strokeWidth={1.6} /> 完成
         </button>
         <button className="btn btn--sm btn--quiet" onClick={handleSkip}>

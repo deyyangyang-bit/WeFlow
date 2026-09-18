@@ -57,7 +57,9 @@ export default function TodoSidebar() {
         <span className="side-head__t">今日待办</span>
         <span className="num todo-sidebar__count">未完成 {pending.length}</span>
       </div>
-      <div className="bar todo-sidebar__bar" aria-hidden="true">
+      {/* P1.6：进度细刻度转中性色（bar--mute）——右栏抬头是安静索引，accent 色条只留给
+          语义强调；完成进度仍由下方等宽小字如实报数 */}
+      <div className="bar bar--mute todo-sidebar__bar" aria-hidden="true">
         <i style={{ width: `${progressPct}%` }} />
       </div>
       <div className="num todo-sidebar__progress">已完成 {doneCount} / 共 {total}</div>
