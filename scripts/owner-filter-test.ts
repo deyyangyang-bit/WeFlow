@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     ok(`c3 ${tag} 销售视角提示行`, src.includes('仅显示我名下及未归属的数据') && src.includes('isSalesView'))
   }
   const dbSrc = readFileSync(join(ROOT, 'electron/services/crmDbService.ts'), 'utf-8')
-  ok('c4 合同 SQL 带 owner 字段（LEFT JOIN account.owner_sales）', dbSrc.includes('a.owner_sales AS owner_sales FROM contract c LEFT JOIN account a'))
+  ok('c4 合同 SQL 带 owner 字段（LEFT JOIN account.owner_sales）', dbSrc.includes('a.owner_sales AS owner_sales, a.name AS account_name FROM contract c LEFT JOIN account a'))
   const scssSrc = readFileSync(join(ROOT, 'src/styles/main.scss'), 'utf-8')
   ok('c5 提示行样式零硬编码 hex（--color-* 族）', scssSrc.includes('.owner-filter-hint') && !/\.owner-filter-hint\s*\{[^}]*#[0-9a-fA-F]{3,8}/.test(scssSrc))
   // 写路径零改动：filterByOwner 只读过滤（静态：filterByOwner 函数体无 set/update/create 调用）

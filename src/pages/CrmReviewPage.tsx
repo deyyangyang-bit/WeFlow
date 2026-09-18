@@ -2,12 +2,16 @@ import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/G
 /**
  * CrmReviewPage.tsx —— 跟单中心：到款认领（7 天一页，销售认领+开票状态）/ 物流跟单（7 天一页，待认领+待签收+已签收）/ 发票待开
  * 2026-08-24 改造：去掉 AI 自动确认（销售手动认领），到款按天分组展示，认领后显示开票状态（订单群 PDF 发票解析）。
+ * 2026-09-19 §2.80 销售归属收口（§2.78 屏 4 认领三区不动的延续）：identity 接入 + 展示层视图档——
+ * 销售默认「只看我的」（未认领池 ∪ 本人认领，shared/ownerFilter 唯一姓名口径），可切「全员」临时看全库；
+ * 列表 / 四格 / hero / rail 角标全部用同一批过滤后数组（数字同源）；发票为一等队列档；页器收进节标题行。
  */
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { RefreshCw, Radio, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import { getCrmLogisticsOverdueHours } from '../services/config'
 import CustomerPicker from '../components/sales/CustomerPicker'
+import { filterByOwner, filterByOwnerOf, filterPaymentsForView, identityLikeFromIpc, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import './CrmReviewPage.scss'
 
 // 一页七天（到款认领 / 物流三队列共用）：以今天为基准滚动 7 天窗口分页（第 0 页 = 今天往前 6 天，如 8/18~8/24），
@@ -26,6 +30,12 @@ const weekDaysOf = (page: number): number[] => {
   const start = today - (page + 1) * WEEK_MS + DAY_MS
   return [...Array(7)].map((_, i) => start + i * DAY_MS)
 }
+/** 最老一条所在页（翻页下限）；无数据 = 0。列表内页器与节标题行页器共用同一上限口径 */
+const weekMaxPageOf = (items: any[], timeOf: (it: any) => number): number => {
+  if (items.length === 0) return 0
+  const oldest = Math.min(...items.map((it) => dayStartOf(timeOf(it))))
+  return Math.max(0, Math.floor((dayStartOf(Date.now()) - oldest) / WEEK_MS))
+}
 /** 日标签：8/24（今天）· 8/23（昨天）· 8/16 */
 const dayLabelOf = (start: number): string => {
   const diff = Math.round((dayStartOf(Date.now()) - start) / DAY_MS)
@@ -36,8 +46,25 @@ const dayLabelOf = (start: number): string => {
 }
 
 /**
+ * 7 天窗口翻页器：列表底部（完整窗口范围）与节标题行（compact，只留页码）共用一个皮。
+ * 布局收编（§2.80）：款项认领的页器放节标题行（不再插在日分组与已确认到款之间），物流三队列留在各自列表底部。
+ */
+function DayPager(props: { cur: number; maxPage: number; days?: number[]; onPage: (p: number) => void }) {
+  const { cur, maxPage, days, onPage } = props
+  if (maxPage <= 0) return null
+  return (
+    <div className={`crm-pager${days ? '' : ' crm-pager--compact'}`}>
+      <button className="btn btn--plain btn--sm" disabled={cur >= maxPage} onClick={() => onPage(cur + 1)}>上一页</button>
+      <span className="crm-pager-info">{days ? `${dayLabelOf(days[0])} ~ ${dayLabelOf(days[6])} · ` : ''}第 {cur + 1} / {maxPage + 1} 页</span>
+      <button className="btn btn--plain btn--sm" disabled={cur <= 0} onClick={() => onPage(cur - 1)}>下一页</button>
+    </div>
+  )
+}
+
+/**
  * 一页七天折叠列表（到款认领 / 物流三队列共用）：每页 7 个自然日，每天一行（默认折叠，点 header 展开当天明细）；
  * 翻页按 7 天窗口前移，上限 = 最老一条所在页；forceOpen 用于筛选模式强制全展开。
+ * 分页收编（§2.80）：传受控 page/onPageChange 时行内不再渲染页器（页器上提到节标题行），否则留在列表底部。
  */
 function WeekDayGroups(props: {
   items: any[]
@@ -45,11 +72,15 @@ function WeekDayGroups(props: {
   render: (it: any) => ReactNode
   headerInfo?: (list: any[]) => ReactNode
   forceOpen?: boolean
+  page?: number
+  onPageChange?: (p: number) => void
 }) {
   const { items, timeOf, render, headerInfo, forceOpen } = props
-  const [page, setPage] = useState(0) // 0 = 最近 7 天窗口
+  const [innerPage, setInnerPage] = useState(0) // 0 = 最近 7 天窗口
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set()) // 用户显式展开的天 key
   if (items.length === 0) return null
+  const page = props.page ?? innerPage
+  const setPage = (p: number) => (props.onPageChange ? props.onPageChange(p) : setInnerPage(p))
   // 按天分组（key = 日零点时间戳）
   const byDay = (() => {
     const m = new Map<string, any[]>()
@@ -62,8 +93,7 @@ function WeekDayGroups(props: {
     return m
   })()
   // 最老一条所在页（翻页下限）；当前页越界自动收敛
-  const oldest = Math.min(...items.map((it) => dayStartOf(timeOf(it))))
-  const maxPage = Math.max(0, Math.floor((dayStartOf(Date.now()) - oldest) / WEEK_MS))
+  const maxPage = weekMaxPageOf(items, timeOf)
   const cur = Math.min(page, maxPage)
   const days = weekDaysOf(cur)
   // 页内倒序展示（最新/今天在最上）；pager 标签仍用升序窗口范围
@@ -90,12 +120,8 @@ function WeekDayGroups(props: {
           </div>
         )
       })}
-      {maxPage > 0 && (
-        <div className="crm-pager">
-          <button className="btn btn--plain btn--sm" disabled={cur >= maxPage} onClick={() => setPage(cur + 1)}>上一页</button>
-          <span className="crm-pager-info">{dayLabelOf(days[0])} ~ {dayLabelOf(days[6])} · 第 {cur + 1} / {maxPage + 1} 页</span>
-          <button className="btn btn--plain btn--sm" disabled={cur <= 0} onClick={() => setPage(cur - 1)}>下一页</button>
-        </div>
+      {props.onPageChange === undefined && (
+        <DayPager cur={cur} maxPage={maxPage} days={days} onPage={setPage} />
       )}
     </div>
   )
@@ -116,6 +142,8 @@ export default function CrmReviewPage() {
   const { queues, fetchQueues, scanNow, loading, notice, setNotice } = useCrmStore()
   const [contracts, setContracts] = useState<any[]>([])
   const [groups, setGroups] = useState<any[]>([])
+  // ── 身份档案（§2.80 A1，同 CrmWorkbenchPage）：identity.get → IdentityLike，销售归属收口的唯一核对依据 ──
+  const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [showPick, setShowPick] = useState(false)
   const [pickSearch, setPickSearch] = useState('')
   const [groupSessions, setGroupSessions] = useState<any[]>([])
@@ -123,29 +151,35 @@ export default function CrmReviewPage() {
   const [invoiceContract, setInvoiceContract] = useState<Record<number, string>>({})
   const [invoiceAmount, setInvoiceAmount] = useState<Record<number, string>>({}) // invoiceId → 金额输入
   // ── 每日到款：按天分组清单 + 认领控件 state ─────────────────────────────────
-  const [payments, setPayments] = useState<any[]>([]) // paymentsByDay 平铺（带认领/开票状态）
+  const [paymentsAll, setPaymentsAll] = useState<any[]>([]) // paymentsByDay 全库平铺（带认领/开票状态）；视图档过滤后为 payments
   const [claimCustomer, setClaimCustomer] = useState<Record<number, string>>({}) // paymentId → 客户名（匹配已有客户或直接建档）
   const [claimContract, setClaimContract] = useState<Record<number, string>>({}) // paymentId → 合同 id
   const [claimSales, setClaimSales] = useState<Record<number, string>>({}) // paymentId → 认领销售（不填=默认本人，认领不一定是自己的）
-  const [onlyUnclaimed, setOnlyUnclaimed] = useState(false) // 只看未认领
-  // 2026-08-29 对齐设计稿：款项认领 / 物流跟单 分 Tab（默认款项认领）
-  const [reviewTab, setReviewTab] = useState<'payments' | 'logistics'>('payments')
-  const [claimedOpen, setClaimedOpen] = useState(true) // 已确认到款默认展开、可折叠（header 复用每日分组样式，须真实可点）
+  const [onlyUnclaimed, setOnlyUnclaimed] = useState(false) // 只看未认领（销售视角默认开启，见下方 identity effect）
+  // 2026-08-29 对齐设计稿：款项认领 / 物流跟单 分 Tab（默认款项认领）；§2.80 发票升一等队列档
+  const [reviewTab, setReviewTab] = useState<'payments' | 'logistics' | 'invoices'>('payments')
+  // 视图档（§2.80 A3）：销售默认「只看我的」（未认领池 ∪ 本人），可切「全员」临时看全库；管理视角隐藏开关（恒全量）
+  const [viewAll, setViewAll] = useState(false)
+  // 已确认到款默认折叠（认领优先级：未认领 > 已确认；header 复用每日分组样式，须真实可点）
+  const [claimedOpen, setClaimedOpen] = useState(false)
+  // 款项认领页器（§2.80 分页收编：放节标题行，受控分页传给 WeekDayGroups）
+  const [payPage, setPayPage] = useState(0)
   const [salesTeam, setSalesTeam] = useState<Array<{ name: string; orderCount: number; amount: number }>>([]) // 销售团队名单
   const [addSalesName, setAddSalesName] = useState('') // 添加销售输入
   // 「管理」折叠区（设计稿屏 4：扫描群聊设置 + 销售团队，默认收起，功能原样）
   const [manageOpen, setManageOpen] = useState(false)
   // ── 物流跟单 ─────────────────────────────────────────────────────────────
-  const [logiLinked, setLogiLinked] = useState<any[]>([]) // 已认领待签收
-  const [logiSigned, setLogiSigned] = useState<any[]>([]) // 已签收
+  const [logiLinkedAll, setLogiLinkedAll] = useState<any[]>([]) // 已认领待签收（全库；视图档过滤后为 logiLinked）
+  const [logiSignedAll, setLogiSignedAll] = useState<any[]>([]) // 已签收（全库；视图档过滤后为 logiSigned）
   const [logiContract, setLogiContract] = useState<Record<number, string>>({}) // logisticsId → 合同 id（认领下拉，可选）
   const [logiCustomer, setLogiCustomer] = useState<Record<number, string>>({}) // logisticsId → 客户名（匹配已有客户或直接建档）
   const [logiSales, setLogiSales] = useState<Record<number, string>>({}) // logisticsId → 认领销售（不填=默认本人）
-  const [mySalesName, setMySalesName] = useState('') // 当前登录账户显示名（认领销售自动带，单人团队不用手输）
+  const [savedSalesName, setSavedSalesName] = useState('') // currentSalesName 持久默认（微信显示名；未建档身份的兜底）
+  const [mySalesName, setMySalesName] = useState('') // 认领默认名（§2.80 A1：与身份档案对齐，勿与可见性核对双口径打架）
   const [logiOverdueHours, setLogiOverdueHours] = useState(24) // 超期阈值（设置页配置）
   const [logiNotice, setLogiNotice] = useState('') // 物流区行内反馈（认领/签收结果就近显示，避免顶部 notice 被滚动遮挡）
   const [contractName, setContractName] = useState<Record<number, string>>({}) // contract_id → 名称（跟单视图展示）
-  const [accounts, setAccounts] = useState<any[]>([]) // 全部客户（认领下拉 + 待签收/已签收客户名展示）
+  const [accounts, setAccounts] = useState<any[]>([]) // 全部客户（认领下拉 + 待签收/已签收客户名展示 + 发票归属推导）
   const [accountName, setAccountName] = useState<Record<number, string>>({}) // account_id → 客户名
   const displayNameOf = (c: any) => String(c?.profile_display_name || '') || String(c?.name || '')
   // 客户名 → 已有客户 id（精确匹配）；无匹配返回 undefined（认领时按输入名建档）
@@ -185,12 +219,12 @@ export default function CrmReviewPage() {
       window.electronAPI.crm.logisticsList({ filter: 'pending' }),
       window.electronAPI.crm.logisticsList({ filter: 'signed' }),
     ])
-    setLogiLinked((pending || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
-    setLogiSigned((signed || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
+    setLogiLinkedAll((pending || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
+    setLogiSignedAll((signed || []).map((l: any) => ({ ...l, _overdueHours: overdueHoursOf(l, hours) })))
   }
 
   // ── 款项认领清单：平铺按 pay_time 7 天窗口分组（组内时间倒序）────
-  const fetchPayments = async () => setPayments((await window.electronAPI.crm.paymentsByDay(30)) || [])
+  const fetchPayments = async () => setPaymentsAll((await window.electronAPI.crm.paymentsByDay(30)) || [])
   // 销售团队名单（header 下拉）：历史认领人名词条 + 当前登录账户，可新增/移除（离职）
   const fetchSalesTeam = async () => {
     const r = await window.electronAPI.crm.salesTeam()
@@ -209,24 +243,53 @@ export default function CrmReviewPage() {
     if (!r?.ok) { setNotice(`移除失败：${r?.reason || '未知错误'}`); return }
     await fetchSalesTeam()
   }
+  // ── 视图档派生（§2.80 A2/A4）：拉全量后前端 filter，一份过滤结果喂 列表 + 四格 + hero + rail（数字同源）──
+  // 销售视角（isSalesView）：到款 = 未认领 ∪ 本人（allocation.sales_name）；物流 = 未归属 ∪ 本人（owner_sales，
+  // 直接复用 filterByOwner——与合同台账同一口径，勿新造第二套）；发票无归属列，经「直接挂客户 → 关联合同的客户」
+  // 推导 owner 后走同一规则（推导不了 = 未归属公共池，诚实保留可见，不做猜测）。管理 / 未建档视角全量。
+  const salesScope = isSalesView(identity) && !viewAll
+  // 归属推导底表：account_id → owner_sales；contract_id → account_id（contracts 为台账 200 条窗口，窗口外推导不了按未归属保留）
+  const accountOwnerById: Record<number, string> = {}
+  for (const a of accounts) if (a?.id) accountOwnerById[Number(a.id)] = String(a.owner_sales || '')
+  const contractAccountById: Record<number, number> = {}
+  for (const c of contracts) if (c?.id && c.account_id) contractAccountById[Number(c.id)] = Number(c.account_id)
+  const invoiceOwnerSalesOf = (inv: any): string => {
+    const accId = Number(inv?.account_id) || contractAccountById[Number(inv?.contract_id)] || 0
+    return accountOwnerById[accId] || ''
+  }
+  const payments = salesScope ? filterPaymentsForView(paymentsAll, identity) : paymentsAll
+  const logiUnlinked = salesScope ? filterByOwner(queues.logistics, identity) : queues.logistics
+  const logiLinked = salesScope ? filterByOwner(logiLinkedAll, identity) : logiLinkedAll
+  const logiSigned = salesScope ? filterByOwner(logiSignedAll, identity) : logiSignedAll
+  const invoices = salesScope ? filterByOwnerOf(queues.invoices, identity, invoiceOwnerSalesOf) : queues.invoices
+  // 视图档切换（销售 only，管理视角整行不渲染）：切档回该档默认——我的 = 只看未认领；全员 = 看全库
+  // （验收口径：切「全员」须能看到他人已认领，不能被「只看未认领」叠着挡住）
+  const switchScope = (all: boolean) => { setViewAll(all); setOnlyUnclaimed(!all) }
+
   // 可认领 = 无归属 / 归属待确认 / 旧自动确认遗留（confirmed 但未挂客户合同）
   const isClaimable = (p: any) => !p.alloc_status || p.alloc_status === 'pending' || (p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id)
   // 已确认到款 = 已认领且挂上客户或合同（确认收到款项集中罗列，与每日流水分开）
   const claimedPayments = payments.filter((p) => p.alloc_status === 'confirmed' && (p.account_id || p.contract_id))
   // 只看未认领：行数已很少，强制全展开（折叠不挡筛选结果）
   const claimablePayments = payments.filter(isClaimable)
-  // 「今天要办」摘要（设计稿屏 4）：今日到款待认领 = 现有 claimable 口径 + pay_time 落在今天（与按天分组同口径），零新查询
+  // 「今天要办」verdict（设计稿屏 4）：今日到款待认领 = 现有 claimable 口径 + pay_time 落在今天（与按天分组同口径），
+  // 零新查询；§2.80 起基于视图档过滤后的 claimablePayments（hero/四格/rail 数字同源）
   const todayClaimable = claimablePayments.filter((p) => dayStartOf(Number(p.pay_time)) === dayStartOf(Date.now())).length
-  // 待认领笔数（与原「款项认领」标题内联同一口径，提到变量供视图栏与本段共用）
+  // 待认领笔数（与 rail 档位角标 / 四格副行共用同一口径）
   const unclaimedCount = payments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length
+  // 款项认领页器数据（页器在节标题行，受控分页；上限随当前过滤结果收敛）
+  const payItems = onlyUnclaimed ? claimablePayments : payments
+  const payMaxPage = weekMaxPageOf(payItems, (p) => Number(p.pay_time))
+  const payCur = Math.min(payPage, payMaxPage)
   // 开票状态：认领后按订单群 PDF 发票解析结果展示（invoice_status='issued' 即已开票）；
   // 旧自动确认遗留（confirmed 无客户合同）补认领前不显示开票状态
   const invoiceBadgeOf = (p: any) => {
     if (!p.alloc_status || p.alloc_status === 'pending') return null
     if (p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id) return null
     if (p.invoice_status === 'issued') return <em className="logi-card__time invoice-ok">已开票 {p.invoice_no ? `· ${p.invoice_no}` : ''}</em>
-    if (p.invoice_status) return <em className="logi-card__time">开票中</em>
-    return <em className="logi-card__time">未开票</em>
+    // 未开票 / 开票中：安静发丝 tag（§2.80 视觉收口，与 .logi-overdue 同一族）
+    if (p.invoice_status) return <em className="review-tag">开票中</em>
+    return <em className="review-tag">未开票</em>
   }
   // 到款显示金额：拆单认领场景 credited_amount 是解析出的客户实际付款额（银行聚合流水拆单），
   // 未认领/无拆单时回退 amount_net——统计卡（SUM credited_amount）与清单口径一致
@@ -251,6 +314,7 @@ export default function CrmReviewPage() {
     void fetchQueues()
     void fetchGroups()
     void fetchPayments()
+    void window.electronAPI.identity.get().then((idt) => setIdentity(identityLikeFromIpc(idt))).catch(() => undefined)
     void window.electronAPI.crm.list('contract', { limit: 200 }).then((rows) => {
       setContracts(rows || [])
       const map: Record<number, string> = {}
@@ -264,11 +328,22 @@ export default function CrmReviewPage() {
       for (const c of list) map[Number(c.id)] = displayNameOf(c)
       setAccountName(map)
     })
-    void window.electronAPI.crm.currentSalesName().then((n) => { if (n) setMySalesName(n) })
+    void window.electronAPI.crm.currentSalesName().then((n) => { if (n) setSavedSalesName(n) })
     void fetchSalesTeam()
     void fetchLogi(logiOverdueHours)
     void getCrmLogisticsOverdueHours().then((h) => { setLogiOverdueHours(h); void fetchLogi(h) })
   }, [fetchQueues])
+
+  // 认领默认名与身份档案对齐（§2.80 A1）：可见性按 identity 姓名集合核对，认领默认必须落在同一姓名上——
+  // 档案有名字用档案名；未建档（管理视角）回落 currentSalesName。团队名单点选仍可手动改（A5 认领写入不动）。
+  useEffect(() => {
+    if (identity.name.trim()) setMySalesName(identity.name.trim())
+    else if (savedSalesName) setMySalesName(savedSalesName)
+  }, [identity.name, savedSalesName])
+  // 销售视角默认「只看我的」+「只看未认领」（§2.80 A3/C2）；管理视角不翻这两个默认
+  useEffect(() => {
+    if (isSalesView(identity)) setOnlyUnclaimed(true)
+  }, [identity.role, identity.name])
 
   // 物流区行内提示（认领/签收操作反馈就近展示，滚动到列表下方时也能看到）
   const logiToast = (msg: string) => { setLogiNotice(msg) }
@@ -314,19 +389,19 @@ export default function CrmReviewPage() {
     logiToast(r.ok ? `已确认签收 ${l.receiver}` : `确认失败：${r.reason || ''}`)
     await fetchQueues(); await fetchLogi(logiOverdueHours)
   }
-  // 超期未签收统计（顶部徽章）
+  // 超期未签收统计（顶部徽章 / 四格，随视图档过滤）
   const logiOverdueCount = logiLinked.filter((l: any) => l._overdueHours > 0).length
-  const invoiceUnlinked = queues.invoices.filter((i) => !i.contract_id).length // 四格副行：未挂合同的发票张数
+  const invoiceUnlinked = invoices.filter((i) => !i.contract_id).length // 四格副行：未挂合同的发票张数（过滤后口径）
   const noAccount = accounts.length === 0 // 无任何客户 → 认领不可行，给引导
 
   return (
     <div className="crm-review-page">
-      {/* 页眉（概念稿 .shead）：eyebrow 按真实队列命名；hero 用页内既有计数（今日待认领到款 + 待签收），
-          不写「承诺」腔；右侧 刷新 quiet + 立即扫描 轻 primary（本屏唯一主操作档） */}
+      {/* 页眉（概念稿 .shead）：eyebrow 保持真实队列命名；hero = 「今天要办」三计数 verdict（设计稿屏 4），
+          全部来自视图档过滤后数组（数字同源，A4）；右侧 刷新 quiet + 立即扫描 轻 primary（本屏唯一主操作档） */}
       <div className="shead">
         <div>
           <p className="eyebrow">跟单 · 款项与物流</p>
-          <h1 className="hero">今天待办 {todayClaimable + logiLinked.length} 件，物流超期 {logiOverdueCount} 件</h1>
+          <h1 className="hero">今天要办：<b>{todayClaimable}</b> 笔到款待认领 · <b>{logiLinked.length}</b> 单物流待签收 · <b>{invoices.length}</b> 张发票待开</h1>
           <p className="sub">到款与物流来自本机扫描的群消息，需人工认领 / 签收，不会自动确认</p>
         </div>
         <div className="shead__actions">
@@ -334,7 +409,16 @@ export default function CrmReviewPage() {
           <button className="btn btn--primary-soft" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
         </div>
       </div>
-      {/* 四格概览（概念稿 .stats）：全部取页内既有队列计数，不新造口径；超期危险色仅 >0 */}
+      {/* 视图档（§2.80 A3）：quiet chipbar 同合同台「工作台/交付售后」降级写法，shead 下单独一行；管理视角不渲染 */}
+      {isSalesView(identity) && (
+        <div className="crm-view-row">
+          <div className="chipbar" role="tablist" aria-label="数据范围">
+            <button role="tab" aria-selected={!viewAll} className={`chip${!viewAll ? ' is-on' : ''}`} onClick={() => switchScope(false)}>只看我的</button>
+            <button role="tab" aria-selected={viewAll} className={`chip${viewAll ? ' is-on' : ''}`} onClick={() => switchScope(true)}>全员</button>
+          </div>
+        </div>
+      )}
+      {/* 四格概览（概念稿 .stats 发丝顶底）：全部取过滤后队列计数；超期危险色仅 >0；「近 30 天」只进副行小字 */}
       <div className="stats">
         <div className="stat">
           <div className={`stat__n${logiOverdueCount > 0 ? ' stat__n--danger' : ''}`}>{logiOverdueCount}</div>
@@ -349,15 +433,15 @@ export default function CrmReviewPage() {
         <div className="stat">
           <div className="stat__n">{logiLinked.length}</div>
           <div className="stat__l">待签收物流</div>
-          <div className="stat__d">待认领 {queues.logistics.length} 单</div>
+          <div className="stat__d">待认领 {logiUnlinked.length} 单</div>
         </div>
         <div className="stat">
-          <div className="stat__n">{queues.invoices.length}</div>
+          <div className="stat__n">{invoices.length}</div>
           <div className="stat__l">发票待开</div>
           <div className="stat__d">{invoiceUnlinked > 0 ? `${invoiceUnlinked} 张未关联合同` : '均已关联合同'}</div>
         </div>
       </div>
-      {/* 视图栏（概念稿 .rail）：两个队列档位 + 右侧弱汇总（只留四格没有的近 30 天到款笔数，不与四格重复） */}
+      {/* 队列栏（概念稿 .rail）：§2.80 三档 款项 | 物流 | 发票（三区一等公民）+ 右侧弱汇总（近 30 天只在此小字，不与四格大数字抢戏） */}
       <div className="rail" role="tablist" aria-label="跟单队列">
         <button type="button" role="tab" aria-selected={reviewTab === 'payments'}
           className={`rail__item${reviewTab === 'payments' ? ' is-on' : ''}`} onClick={() => setReviewTab('payments')}>
@@ -365,7 +449,11 @@ export default function CrmReviewPage() {
         </button>
         <button type="button" role="tab" aria-selected={reviewTab === 'logistics'}
           className={`rail__item${reviewTab === 'logistics' ? ' is-on' : ''}`} onClick={() => setReviewTab('logistics')}>
-          物流跟单<span className="rail__n">{queues.logistics.length}</span>
+          物流跟单<span className="rail__n">{logiUnlinked.length}</span>
+        </button>
+        <button type="button" role="tab" aria-selected={reviewTab === 'invoices'}
+          className={`rail__item${reviewTab === 'invoices' ? ' is-on' : ''}`} onClick={() => setReviewTab('invoices')}>
+          发票待开<span className="rail__n">{invoices.length}</span>
         </button>
         <span className="rail__sum">近 30 天到款 <b>{payments.length}</b> 笔</span>
       </div>
@@ -376,20 +464,20 @@ export default function CrmReviewPage() {
         <div className="review-sec__head">
           <span className="review-sec__t">物流跟单</span>
           <em className="logi-stats">
-            待认领 {queues.logistics.length} · 待签收 {logiLinked.length}
+            待认领 {logiUnlinked.length} · 待签收 {logiLinked.length}
             <span className={logiOverdueCount > 0 ? 'logi-stats__overdue' : ''}>{logiOverdueCount > 0 ? ` · 超期 ${logiOverdueCount}` : ''}</span>
           </em>
         </div>
         {logiNotice && <div className="logi-notice">{logiNotice}</div>}
         <div className="logi-queue">
-          <h4 className="review-queue__h">待认领<span className="review-queue__n">{queues.logistics.length}</span></h4>
-          {noAccount && queues.logistics.length > 0 && (
+          <h4 className="review-queue__h">待认领<span className="review-queue__n">{logiUnlinked.length}</span></h4>
+          {noAccount && logiUnlinked.length > 0 && (
             <div className="logi-notice logi-notice--warn">
               暂无客户，无法认领物流。请先在「客户工作台」创建客户。
             </div>
           )}
-          {queues.logistics.length === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
-          <WeekDayGroups items={queues.logistics} timeOf={(l) => Number(l.latest_update_at)} render={(l) => {
+          {logiUnlinked.length === 0 && <div className="crm-card crm-card--empty">暂无待认领物流</div>}
+          <WeekDayGroups items={logiUnlinked} timeOf={(l) => Number(l.latest_update_at)} render={(l) => {
             const selAcc = logiCustomer[l.id]?.trim() ? customerIdOf(logiCustomer[l.id]) : undefined
             const accContracts = selAcc ? contracts.filter((c) => Number(c.account_id) === selAcc) : []
             const claimReady = Boolean(logiCustomer[l.id]?.trim() || logiContract[l.id])
@@ -456,13 +544,19 @@ export default function CrmReviewPage() {
         <div className="review-sec__head">
           <span className="review-sec__t">款项认领（7 天一页）</span>
           <em className="logi-stats">近 30 天 {payments.length} 笔 · 待认领 {unclaimedCount} 笔</em>
+          {/* 页器收进节标题行（§2.80 分页收编：不再插在日分组与已确认到款之间） */}
+          <span className="review-sec__pager">
+            <DayPager cur={payCur} maxPage={payMaxPage} onPage={setPayPage} />
+          </span>
           <button className={`btn btn--quiet btn--sm review-only-unclaimed${onlyUnclaimed ? ' is-on' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
         </div>
-        {payments.length === 0 && <div className="crm-card crm-card--empty">近 30 天无到款记录</div>}
+        {payItems.length === 0 && <div className="crm-card crm-card--empty">{onlyUnclaimed ? '没有待认领的到款' : '近 30 天无到款记录'}</div>}
         <WeekDayGroups
-          items={onlyUnclaimed ? claimablePayments : payments}
+          items={payItems}
           timeOf={(p) => Number(p.pay_time)}
           forceOpen={onlyUnclaimed}
+          page={payPage}
+          onPageChange={setPayPage}
           headerInfo={(list) => {
             const dayTotal = list.reduce((s, p) => s + shownAmountOf(p), 0)
             const unclaimed = list.filter(isClaimable).length
@@ -541,16 +635,17 @@ export default function CrmReviewPage() {
       </section>
       )}
 
-      {reviewTab === 'payments' && (
+      {reviewTab === 'invoices' && (
       <section className="review-sec">
         <div className="review-sec__head">
           <span className="review-sec__t">发票待开</span>
-          <em className="logi-stats">{queues.invoices.length} 张</em>
+          <em className="logi-stats">{invoices.length} 张{invoiceUnlinked > 0 ? ` · ${invoiceUnlinked} 张未关联合同` : ''}</em>
         </div>
-        {queues.invoices.map((i) => (
+        {invoices.length === 0 && <div className="crm-card crm-card--empty">暂无待开发票</div>}
+        {invoices.map((i) => (
           <div key={i.id} className="crm-card">
             <span>{i.buyer} · 发票号 {i.invoice_no || '-'} · 金额 ¥{Number(i.amount ?? 0).toLocaleString()}
-              <em className="crm-card__src">{i.contract_id ? '已关联合同' : '未关联合同'}</em>
+              <em className={`review-tag${i.contract_id || i.account_id ? '' : ' review-tag--warn'}`}>{i.contract_id || i.account_id ? '已关联合同' : '未关联合同'}</em>
             </span>
             <input className="crm-card__amt" type="number" min="0" placeholder="填写金额" value={invoiceAmount[i.id] ?? ''}
               onChange={(e) => setInvoiceAmount((m) => ({ ...m, [i.id]: e.target.value }))} />

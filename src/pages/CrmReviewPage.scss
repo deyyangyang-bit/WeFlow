@@ -56,6 +56,10 @@
 .claim-ok { font-weight: 500; color: var(--color-text-primary); }
 .invoice-ok { font-style: normal; background: transparent; color: var(--color-success); border: 1px solid var(--color-success-border);
   border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 17px; font-weight: 500; }
+/* 安静中性 tag（未开票 / 开票中 / 未关联合同等中间态）：发丝边灰字，warn 变体琥珀字（§2.80 视觉收口） */
+.review-tag { font-style: normal; flex: none; background: transparent; color: var(--color-text-tertiary); border: 1px solid var(--color-border);
+  border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 17px; font-weight: 400; margin-left: 6px; }
+.review-tag--warn { color: var(--color-warning); border-color: var(--color-warning-border); }
 .logi-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px;
   margin-bottom: 8px; font-size: 13px; color: var(--color-accent); }
 .logi-notice--warn { background: var(--color-warning-bg); border-color: var(--color-warning-border); color: var(--color-warning); }
@@ -108,12 +112,18 @@
 
 /* ─── 页眉（概念稿 .shead）：布局交给共享类，本页只管与四格的呼吸 ─── */
 .crm-review-page .shead { margin-bottom: 16px; }
-/* 四格概览（概念稿 .stats 发丝顶底）：副行短句；超期 >0 才上危险色 */
+/* 「今天要办」verdict：三计数着 accent（设计稿屏 4 verdict b 档，衬线主张句内加重） */
+.crm-review-page .hero b { color: var(--color-accent); font-weight: 600; }
+
+/* ─── 视图档 chipbar（§2.80 销售归属收口）：同合同台 .crm-view-row 降级写法，shead 下单独一行 ─── */
+.crm-review-page .crm-view-row { display: flex; margin: 0 0 12px; }
+
+/* ─── 四格概览（概念稿 .stats 发丝顶底）：副行短句；超期 >0 才上危险色 ─── */
 .crm-review-page .stats { margin-top: 0; }
 .crm-review-page .stat__n--danger { color: var(--color-danger); }
 .crm-review-page .stat__d { margin-top: 2px; }
 
-/* ─── 视图栏：队列档位 + 右侧弱汇总（.rail 本体在 main.scss）─── */
+/* ─── 视图栏：队列三档 + 右侧弱汇总（.rail 本体在 main.scss）─── */
 .crm-review-page .rail { margin-top: 16px; margin-bottom: 12px; }
 
 /* ─── 分节行：标题 + 统计/动作同一行，细线分隔 ─── */
@@ -125,6 +135,14 @@
 .crm-review-page .review-sec__t { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--color-text-secondary); }
 .crm-review-page .review-sec__head .logi-stats { margin-left: 0; }
 .crm-review-page .review-sec__head .btn { margin-left: auto; }
+/* 节标题行内页器（款项认领 7 天窗口）：吃掉 flex 空白推到右侧，与「只看未认领」同组；
+   compact 皮去掉纵向呼吸，页码小字弱化 */
+.crm-review-page .review-sec__pager { margin-left: auto; display: flex; align-items: center; min-width: 0; }
+.crm-review-page .review-sec__pager .crm-pager,
+.crm-review-page .crm-pager--compact { padding: 0; }
+.crm-review-page .crm-pager--compact { gap: 6px; }
+.crm-review-page .crm-pager--compact .crm-pager-info { font-size: 11px; }
+.crm-review-page .review-sec__head .review-only-unclaimed { margin-left: 0; }
 /* 「只看未认领」开关：quiet 档，开启态只用 accent 字提示（不再上实心） */
 .crm-review-page .review-only-unclaimed.is-on { color: var(--color-accent); }
 .crm-review-page .review-queue__h {

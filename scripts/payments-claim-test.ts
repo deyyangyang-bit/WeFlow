@@ -11,6 +11,8 @@
  *     3  CrmReviewPage 零 AI 自动确认（autoSummary/runAutoConfirm/undoAutoConfirm 不再被引用）
  *     4  CrmReviewPage 每日到款：paymentsByDay 调用 + invoiceBadgeOf 开票状态 + paymentClaim 认领
  *     5  桥接齐全：preload/electron.d.ts 均有 paymentsByDay + paymentClaim
+ *     16-18 销售归属收口 + 布局收编（§2.80，2026-09-19）：identity 视图档过滤（未认领∪本人，isOwnedName
+ *           唯一姓名口径）/ rail 三档发票一等 / 页器入节标题行 / 已确认默认折叠 / 安静徽标
  *   B 真实库只读（sql.js 字节进内存，同款 SQL 与 crmDbService.paymentsByDay 同步维护）：
  *     11 近 30 天到款可查，字段带认领/开票轴（account_name/invoice_no/invoice_status）
  *     12 已认领（alloc_status='confirmed'）行有客户名，开票状态可读
@@ -109,9 +111,10 @@ async function main(): Promise<void> {
     /已确认到款/.test(pageSrc) && /claimedPayments\.map/.test(pageSrc) &&
     /invoiceBadgeOf\(p\)/.test(pageSrc))
 
-  // A11: 物流三队列统一一页七天（WeekDayGroups 三处：待认领/待签收/已签收 + 按 latest_update_at 分组 + day-arrow 折叠箭头）
-  ok('A11 物流三队列一页七天（WeekDayGroups items=\{queues.logistics|logiLinked|logiSigned\} 三处 + timeOf 按 latest_update_at）',
-    /WeekDayGroups items=\{queues\.logistics\}/.test(pageSrc) &&
+  // A11: 物流三队列统一一页七天（WeekDayGroups 三处：待认领/待签收/已签收 + 按 latest_update_at 分组 + day-arrow 折叠箭头；
+  // §2.80 起待认领为视图档过滤后的 logiUnlinked）
+  ok('A11 物流三队列一页七天（WeekDayGroups items={logiUnlinked|logiLinked|logiSigned} 三处 + timeOf 按 latest_update_at）',
+    /WeekDayGroups items=\{logiUnlinked\}/.test(pageSrc) &&
     /WeekDayGroups items=\{logiLinked\}/.test(pageSrc) &&
     /WeekDayGroups items=\{logiSigned\}/.test(pageSrc) &&
     /timeOf=\{\(l\) => Number\(l\.latest_update_at\)\}/.test(pageSrc) &&
@@ -135,11 +138,13 @@ async function main(): Promise<void> {
     /list\.reduce\(\(s, p\) => s \+ shownAmountOf\(p\), 0\)/.test(pageSrc) &&
     /credited_amount \?\? p\.amount_net/.test(pageSrc))
 
-  // A14: 「今天要办」摘要行（设计稿屏 4）：三计数全部来自现有数据（claimable+pay_time 今天 / logiLinked / queues.invoices），零新接口
-  ok('A14 今天要办摘要行（今日到款待认领 / 物流待签收 / 发票待开，与按天分组同口径 dayStartOf）',
+  // A14: 「今天要办」verdict 行（设计稿屏 4）：三计数全部来自现有数据（claimable+pay_time 今天 / logiLinked / invoices），
+  // 零新接口；§2.80 起三计数均为视图档过滤后口径（{invoices.length} = 过滤后发票队列，不再是全库 queues.invoices）
+  ok('A14 今天要办 verdict（今日到款待认领 / 物流待签收 / 发票待开，与按天分组同口径 dayStartOf，且全部过滤后）',
     /今天要办/.test(pageSrc) &&
     /dayStartOf\(Number\(p\.pay_time\)\) === dayStartOf\(Date\.now\(\)\)/.test(pageSrc) &&
-    /\{logiLinked\.length\}/.test(pageSrc) && /\{queues\.invoices\.length\}/.test(pageSrc))
+    /\{logiLinked\.length\}/.test(pageSrc) && /\{invoices\.length\}/.test(pageSrc) &&
+    !/queues\.invoices\.length/.test(pageSrc) && !/items=\{queues\.logistics\}/.test(pageSrc))
 
   // A15: 「管理」折叠区（扫描群聊设置 + 销售团队收编，默认收起，功能原样；认领三区/7 天页不动）
   ok('A15 管理折叠区（review-fold 默认收起 manageOpen useState(false)；群聊开关/筛选与销售团队管理功能原样保留）',
@@ -148,6 +153,41 @@ async function main(): Promise<void> {
     /groupsSave/.test(pageSrc) && /groupsUpdate/.test(pageSrc) && /openPick/.test(pageSrc) &&
     /salesTeamAdd\(n\)/.test(pageSrc) && /removeSalesMember/.test(pageSrc) &&
     /sales-team-drop--inline/.test(pageSrc))
+
+  // A16: 销售归属收口（§2.80，2026-09-19）：identity 接入 + 展示层视图档——到款/物流/发票拉全量后前端 filter，
+  // 一份过滤结果喂 列表+四格+hero+rail；禁止手写 === 姓名比对（唯一口径 shared/ownerFilter.isOwnedName）
+  const ownerFilterSrc = strip(readFileSync(join(ROOT, 'shared/ownerFilter.ts'), 'utf8'))
+  ok('A16 销售归属收口（identity.get→identityLikeFromIpc + filterPaymentsForView/filterByOwner/filterByOwnerOf 视图档派生，payments/logiUnlinked/logiLinked/logiSigned/invoices 全部走过滤结果）',
+    /identity\.get\(\)/.test(pageSrc) && /identityLikeFromIpc/.test(pageSrc) &&
+    /filterPaymentsForView/.test(pageSrc) && /filterByOwner\(/.test(pageSrc) && /filterByOwnerOf/.test(pageSrc) &&
+    /const payments = salesScope \? filterPaymentsForView\(paymentsAll, identity\) : paymentsAll/.test(pageSrc) &&
+    /const logiUnlinked = salesScope \? filterByOwner\(queues\.logistics, identity\) : queues\.logistics/.test(pageSrc) &&
+    /const invoices = salesScope \? filterByOwnerOf\(queues\.invoices, identity, invoiceOwnerSalesOf\) : queues\.invoices/.test(pageSrc) &&
+    !/=== mySalesName|=== identity\.name|sales_name ===/.test(pageSrc))
+  ok('A16b ownerFilter 语义源（filterPaymentsForView/filterByOwnerOf 定义于 shared/ownerFilter，姓名核对复用 isOwnedName）',
+    /export function filterPaymentsForView/.test(ownerFilterSrc) &&
+    /export function filterByOwnerOf/.test(ownerFilterSrc) &&
+    /!sales \|\| isOwnedName\(identity, sales\)/.test(ownerFilterSrc) &&
+    /!owner \|\| isOwnedName\(identity, owner\)/.test(ownerFilterSrc))
+
+  // A17: 视图档 chipbar（§2.80 A3）：销售默认「只看我的」可切「全员」（quiet chips，isSalesView 才渲染，管理视角隐藏）；
+  // 认领默认名与身份档案对齐（A1 勿双口径打架），currentSalesName 仅作未建档兜底
+  ok('A17 视图档 chipbar（只看我的/全员，isSalesView 才渲染；switchScope 切档回默认）+ 认领默认名对齐档案',
+    /只看我的/.test(pageSrc) && />全员<\/button>/.test(pageSrc) &&
+    /isSalesView\(identity\) && \(/.test(pageSrc) &&
+    /const switchScope = \(all: boolean\)/.test(pageSrc) &&
+    /if \(identity\.name\.trim\(\)\) setMySalesName\(identity\.name\.trim\(\)\)/.test(pageSrc) &&
+    /currentSalesName\(\)/.test(pageSrc))
+
+  // A18: 布局收编（§2.80）：rail 三档（发票为一等队列档）+ 款项页器上提节标题行（受控分页）+ 已确认到款默认折叠 +
+  // 未开票/未关联合同安静 tag + 销售视角默认只看未认领
+  ok('A18 布局收编（rail 发票档 + DayPager 节标题行受控分页 + claimedOpen 默认 false + review-tag 安静徽标 + 销售默认只看未认领）',
+    /'invoices'>\('payments'\)/.test(pageSrc) &&
+    /发票待开<span className="rail__n">\{invoices\.length\}<\/span>/.test(pageSrc) &&
+    /onPageChange=\{setPayPage\}/.test(pageSrc) && /review-sec__pager/.test(pageSrc) &&
+    /const \[claimedOpen, setClaimedOpen\] = useState\(false\)/.test(pageSrc) &&
+    /review-tag/.test(pageSrc) && /未关联合同/.test(pageSrc) &&
+    /if \(isSalesView\(identity\)\) setOnlyUnclaimed\(true\)/.test(pageSrc))
 
   // ── B. 真实库只读（与 crmDbService.paymentsByDay 同款 SQL，同步维护）──────────
   const SQL = await initSqlJs()

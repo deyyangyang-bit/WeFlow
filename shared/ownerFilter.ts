@@ -83,3 +83,32 @@ export function filterByOwner<T extends { owner_sales?: string | null }>(rows: T
     return !owner || isOwnedName(identity, owner)
   })
 }
+
+/**
+ * 到款过滤档（§2.80 跟单中心收口，2026-09-19）：到款归属 = allocation.sales_name（paymentsByDay 带出），
+ * 销售视角可见 ⟺ !sales_name（未认领，公共认领池）∪ isOwnedName(identity, sales_name)。
+ * 物流（owner_sales）与客户/商机/合同直接用 filterByOwner，勿为同语义再造第三个函数。
+ */
+export function filterPaymentsForView<T extends { sales_name?: string | null }>(rows: T[], identity: IdentityLike): T[] {
+  if (!isSalesView(identity)) return rows
+  if (!identity.name.trim()) return rows
+  return rows.filter((p) => {
+    const sales = String(p.sales_name || '').trim()
+    return !sales || isOwnedName(identity, sales)
+  })
+}
+
+/**
+ * owner 由调用方推导的过滤档：发票等无归属列的实体（invoice 只有 account_id/contract_id），
+ * 页面经「直接挂客户 → 关联合同的客户」推导出 owner 姓名后走同一条可见规则；
+ * 推导不了（无客户无合同）= 空 = 未归属公共池，销售可见、诚实保留（不做猜测归属）。
+ * 核对仍走 isOwnedName，不新造第二套姓名匹配。
+ */
+export function filterByOwnerOf<T>(rows: T[], identity: IdentityLike, ownerOf: (row: T) => string | null | undefined): T[] {
+  if (!isSalesView(identity)) return rows
+  if (!identity.name.trim()) return rows
+  return rows.filter((r) => {
+    const owner = String(ownerOf(r) ?? '').trim()
+    return !owner || isOwnedName(identity, owner)
+  })
+}

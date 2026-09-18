@@ -24,8 +24,9 @@ export interface LeadOwnerInfo {
 // isOwnedName（2026-09-17）：归属匹配 = 本人署名 ∪ 绑定别名（中央 displayName），见 shared/ownerFilter。
 // isOwnedLead（2026-09-17 同日修订）：行带 owner_employee_id 时以绑定 employeeId 权威核对（同名员工不串线）；
 // 未带该列的行回退姓名集合。两口径见 shared/ownerFilter。
-export { isSalesView, filterByOwner, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
-import { isSalesView, filterByOwner, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
+// filterPaymentsForView / filterByOwnerOf（2026-09-19 §2.80 跟单中心收口）：到款 / 推导型 owner（发票）过滤档。
+export { isSalesView, filterByOwner, filterPaymentsForView, filterByOwnerOf, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
+import { isSalesView, filterByOwner, filterPaymentsForView, filterByOwnerOf, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
 
 /**
  * 当前归属映射：leadId → 最新有效分配行。
