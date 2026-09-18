@@ -13,7 +13,9 @@
      分段节奏 22 → 32px、客户信息长文案字段通栏。只动本页排版，不动 DOM / 文案 / 数据。）
      （2026-09-18 P1.3c 首屏降压迫 + 网格再松一档：客户信息默认收起（与时间线/画像/业务同一套
      .cws-fold）、跟进待办只先露 3 条、.def 内边距 13/14 → 16/18、格子 gap 1 → 2px；
-     折叠仍是扁平侧栏内的分段，不引入白卡 / 阴影 / 浮层。） */
+     折叠仍是扁平侧栏内的分段，不引入白卡 / 阴影 / 浮层。）
+     （2026-09-18 P1.3c 续（纯样式）：水平留白由外层 .cws-side 下沉到滚动容器 .cws-side__panel，
+     滚动条不再被外层 22px 内边距挤进栏内一节。留白数值不变，仍是左右各 22px。） */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -128,15 +130,18 @@
      窗口纵向压缩时档案跟着它走，不会跟着长列表被推出视野。 */
   position: sticky; top: 0;
   align-self: start; min-width: 0;
-  /* 栏内左右各 22px：左侧与发丝线留气口，右侧不再贴到内容区边缘（外壳 32px 之外再让出一档） */
-  border-left: 1px solid var(--color-divider); padding: 0 22px;
+  /* 水平留白不写在外层：外层带左右 padding 时，子级 .cws-side__panel 的滚动条会长在
+     外层内容盒里、被挤进栏内约 22px（下面 panel 自己的 padding 才是留白来源）。 */
+  border-left: 1px solid var(--color-divider); padding: 0;
 }
 .cws-side__panel {
   /* 46 标题栏 + 24 上留白 + 24 下留白 + 2 外框线：档案列整体落在可视区内，
      超出时才出现自身滚动条——否则「档案比窗口高就永远看不到底部」是更差的失败。 */
   max-height: calc(100vh - 96px);
   overflow-y: auto;
-  padding: 0 0 26px;
+  /* 栏内左右各 22px 放在滚动容器自己身上（左侧与发丝线留气口，右侧不贴内容区边缘）：
+     滚动条因此落在栏的右边缘，而不是被外层的 padding 往里推。 */
+  padding: 0 22px 26px;
   .crm-detail { margin-top: 0; }
   /* 栏头不吸顶、不铺白条：客户名独占一行，动作收成下面一行（可换行），权重次于客户名 */
   .crm-detail-head {
@@ -168,10 +173,11 @@
   .cws-cols.has-detail .cws-index { padding-right: 0; }
 
   .cws-side {
-    /* 落到索引下方：上沿一条发丝线 + 与桌面档同档的左右 22px 留白（不是只有宽窗才放宽） */
+    /* 落到索引下方：上沿一条发丝线 + 22px 上图气口；左右仍由 .cws-side__panel 的 padding 给，
+       外层只留纵向，避免和 panel 叠成双份水平留白（窄窗 panel 不滚，也没有滚动条问题） */
     position: static;
     border-left: 0; border-top: 1px solid var(--color-divider);
-    padding: 22px 22px 0;
+    padding: 22px 0 0;
   }
   .cws-side__panel { max-height: none; overflow: visible; }
 }
