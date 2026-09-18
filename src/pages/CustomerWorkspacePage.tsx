@@ -121,6 +121,21 @@ export default function CustomerWorkspacePage() {
   // ─── 展示 helper ──────────────────────────────────────────────────────────
   // 名称双轨读取侧统一：优先取画像最新微信备注（跟随备注改名），account.name 作兜底（导入时刻冻结）
   const displayNameOf = (c: any) => String(c.profile_display_name || '') || String(c.name || '')
+  /**
+   * 备注名里的日期前缀（销售常把微信备注写成「26.8.14 张伟」这类）。
+   * 列表行主行只显示人名，日期退到次行 meta —— 纯展示，store 字段与检索口径都不动：
+   * 搜索仍按原始 displayNameOf 匹配，改备注名后这里跟着变。
+   * 整名就是一个日期时不拆（拆了主行会空），原样显示。
+   */
+  const namePartsOf = (raw: string): { main: string; date: string } => {
+    const full = String(raw || '').trim()
+    const m = /^(?:[[(（【])?((?:\d{2}|\d{4})[.\-/]\d{1,2}[.\-/]\d{1,2})(?:[\])）】])?[\s·\-—–,，、|]*/.exec(full)
+    const rest = m ? full.slice(m[0].length).trim() : ''
+    if (!m || !rest) return { main: full, date: '' }
+    return { main: rest, date: m[1] }
+  }
+  const nameOnlyOf = (raw: string) => namePartsOf(raw).main
+  const nameDateOf = (raw: string) => namePartsOf(raw).date
   // 阶段统一走漏斗档位语义层（与销售漏斗同源）：profile_stage 或回退 sales_stage，过 stageToFunnel 归桶
   // 历史漏斗计「窗口内曾进入」，下钻列表是「当前阶段为该档位」——穿过该档位但现已流失/删除的客户不在列表，属正常
   const rowStage = (c: any) => stageToFunnel(String(c.profile_stage || '') || String(c.sales_stage ?? ''))
@@ -210,8 +225,9 @@ export default function CustomerWorkspacePage() {
         : st === '成交' ? 'pill pill--won'
           : 'pill'
   )
-  // 行动卡 pill（来源语义由 buildActionQueue 给出）→ 全局 .pill 族
-  const queuePillClass = (p: string) => (p === 'amber' ? 'pill pill--quote' : 'pill pill--new')
+  // 行动卡状态标记（来源语义由 buildActionQueue 给出）→ 本页安静 tag：
+  // 发丝边 + 语义色字，不上实心底（P1.4b：列表行里「待跟进」「AI 发现」不该是彩色实心块）
+  const queuePillClass = (p: string) => (p === 'amber' ? 'cws-q__tag cws-q__tag--follow' : 'cws-q__tag cws-q__tag--insight')
 
   // ─── 客户 360 档案 ─────────────────────────────────────────────────────────
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
@@ -691,8 +707,11 @@ export default function CustomerWorkspacePage() {
               >
                 <span className="cws-ix__who">
                   <span className="cws-ix__main">
-                    <span className="tc-n">{displayNameOf(c)}</span>
-                    <span className="tc-s">{c.company || '未填公司'}</span>
+                    <span className="tc-n">{nameOnlyOf(displayNameOf(c))}</span>
+                    <span className="cws-ix__sub">
+                      <span className="tc-s">{c.company || '未填公司'}</span>
+                      {nameDateOf(displayNameOf(c)) && <span className="cws-rowdate">{nameDateOf(displayNameOf(c))}</span>}
+                    </span>
                   </span>
                 </span>
                 <span><span className={stagePillClass(rowStage(c))}>{rowStage(c)}</span></span>
@@ -735,8 +754,11 @@ export default function CustomerWorkspacePage() {
               <div key={it.key} className={`trow cws-q__row${selectedCustomer && it.customer && Number(selectedCustomer.id) === Number(it.customer.id) ? ' is-on' : ''}`} onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
                 <span className="cws-q__who">
                   <span className="cws-q__name">
-                    <span className="tc-n">{it.displayName}</span>
-                    <span className={queuePillClass(it.pill)}>{it.pillText}</span>
+                    <span className="tc-n">{nameOnlyOf(it.displayName)}</span>
+                    <span className="cws-q__sub">
+                      <span className={queuePillClass(it.pill)}>{it.pillText}</span>
+                      {nameDateOf(it.displayName) && <span className="cws-rowdate">{nameDateOf(it.displayName)}</span>}
+                    </span>
                   </span>
                 </span>
                 <span className="cws-q__why">
@@ -803,8 +825,9 @@ export default function CustomerWorkspacePage() {
               </div>
             </div>
             <div className="crm-detail-actions">
-              {/* AI 识别这个客户（PRD §5.2）：主按钮。单飞作用域全局——任一识别进行中，所有入口按钮全部禁用 */}
-              <button className="btn btn--sm btn--primary" onClick={() => void runIdentify()}
+              {/* AI 识别这个客户（PRD §5.2）：与旁边几个入口同一档的次要按钮——右栏第一视觉留给客户名，
+                  识别是常规动作不是「今天先做这个」。单飞作用域全局——任一识别进行中，所有入口按钮全部禁用 */}
+              <button className="btn btn--sm" onClick={() => void runIdentify()}
                 disabled={identifyBusy || !selectedCustomer.session_id}
                 title={!selectedCustomer.session_id ? '未关联微信会话，无法识别' : identifyBusy ? '正在识别中，请稍候' : '读取该客户最近聊天，抽取跟进承诺'}>
                 <Sparkles size={14} /> {identifyBusy ? '识别中…' : 'AI 识别这个客户'}

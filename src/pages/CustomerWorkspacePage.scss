@@ -22,7 +22,13 @@
      行内动作默认降为文字按钮（不再带图标），行被指向（hover / focus）或选中时主操作才升回强调档；
      右栏分段补充字（.cws-side__meta）与概念 .seclabel 右侧同一档（10.5px 等宽 tertiary），
      标题到内容的间距收到 4px（稿里标题就是贴着它那条细线）。
-     按钮本体、顺序、点击行为与筛选语义均不变。） */
+     按钮本体、顺序、点击行为与筛选语义均不变。）
+     （2026-09-18 P1.4b 观感续作（仍纯视觉）：
+     行内主操作 hover / is-on 只升「文字链」档（accent 字色，不再给实心蓝底）——选中靠行背景强调；
+     「待跟进 / AI 发现」状态标记改本页 .cws-q__tag：发丝边 + 语义色字、无实心底；
+     右栏「AI 识别这个客户」降为次要按钮（.btn 默认档），右栏第一视觉留给客户名；
+     备注名的日期前缀（26.8.14 之类）从主行退到次行 meta（.cws-rowdate，纯展示，检索仍按原始名）。
+     阶段 .rail 未动（本体即概念稿：2px 选中底边 / mono 计数，本轮只复核）。） */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -82,6 +88,10 @@
 }
 .cws-ix__who { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .cws-ix__main { display: flex; flex-direction: column; min-width: 0; }
+/* 索引行第二行：公司 + 备注日期（.cws-rowdate）同一条 meta 线；.tc-s 自带的 3px 上边距
+   在 flex 行里会把它顶得不齐，这里收掉，行距交给 .cws-ix__main 的列距 */
+.cws-ix__sub { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cws-ix__sub .tc-s { margin-top: 0; }
 .cws-ix__silent { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
 .cws-ix__empty { padding: 22px 10px; font-size: 12.5px; color: var(--color-text-tertiary); }
 
@@ -114,8 +124,9 @@
 }
 .cws-q__ops { row-gap: 4px; }   /* 「处理中…」这类瞬时文案变长时允许折一行，不外溢 */
 
-/* 行内动作（去聊天 / 完成待办 / 已处理 / 采纳 / 放弃…）：默认是安静的次要文字按钮，
-   行被指向（hover / 键盘 focus）或该客户已在右栏打开（is-on）时，才把这一行的主操作升回强调档。
+/* 行内动作（去聊天 / 完成待办 / 已处理 / 采纳 / 放弃…）：全程是安静的次要文字按钮。
+   行被指向（hover / 键盘 focus）或该客户已在右栏打开（is-on）时，主操作只升到「文字链」档
+   （accent 字色，仍不上实心底）——选中的强调交给行背景，不给列表塞一颗大蓝按钮。
    按钮本体、顺序与点击行为都不动，只换视觉档位。 */
 .cws-page .cws-q__ops {
   gap: 2px;
@@ -131,11 +142,27 @@
 .cws-page .cws-q__row:hover .cws-q__ops .btn--primary,
 .cws-page .cws-q__row:focus-within .cws-q__ops .btn--primary,
 .cws-page .cws-q__row.is-on .cws-q__ops .btn--primary {
-  background: var(--color-accent); border-color: var(--color-accent); color: var(--color-text-on-accent);
+  background: none; border-color: transparent; color: var(--color-accent);
 }
-.cws-page .cws-q__row:hover .cws-q__ops .btn--primary:hover {
-  background: var(--color-accent-hover); border-color: var(--color-accent-hover);
+
+/* 行内状态标记（待跟进 / AI 发现）：发丝边 + 语义色字，无实心底——比全局 .pill 安静一档，
+   列表扫读时不再被彩色块拽住视线（概念稿 .tag--plain 的路子，只留一点语义色） */
+.cws-q__tag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border: 1px solid var(--color-border); border-radius: 4px;
+  font-size: 11px; line-height: 1; white-space: nowrap;
+  color: var(--color-text-secondary);
 }
+.cws-q__tag--follow { border-color: var(--color-warning-border); color: var(--color-warning); }
+.cws-q__tag--insight { border-color: var(--color-accent-border); color: var(--color-accent); }
+
+/* 备注名里的日期前缀（26.8.14 之类）：从主行退到次行 meta，等宽小字，与公司 / 状态同一行 */
+.cws-rowdate {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 10.5px; color: var(--color-text-tertiary); white-space: nowrap;
+}
+/* 名字下面的第二行：状态标记 + 日期（队列行）/ 公司 + 日期（索引行） */
+.cws-q__sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 3px; min-width: 0; }
 
 /* ─── 空态（细线，不落卡）──────────────────────────────── */
 .cws-done { text-align: center; padding: 46px 0 52px; }
