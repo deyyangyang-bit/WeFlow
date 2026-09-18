@@ -457,7 +457,8 @@ function DealCard({ o, score, dragging, onOpen, onDragStart, onDragEnd }: {
       title={`${o.account_name || '未命名客户'} · ${isWon ? '已赢单' : o.stage} · 点击查看详情`}
     >
       <div className="deal__n">
-        <span className="deal__nt">{nameOnlyOf(o.account_name || o.name)}</span>
+        {/* 主标题与列表行对齐：只认 account_name，缺失显「未命名客户」；o.name（新商机/产品采购）不顶客户名，留副行 */}
+        <span className="deal__nt">{nameOnlyOf(o.account_name || '未命名客户')}</span>
         {!isWon && o.stage === '成交' && <span className="deal__reg">待成交登记</span>}
       </div>
       <div className="deal__d">{[model, qty].filter(Boolean).join(' · ')}</div>
