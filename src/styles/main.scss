@@ -630,6 +630,42 @@ body {
 .notice--stop .icon { color: var(--color-danger); }
 .notice__h { display: block; color: var(--color-text-primary); font-weight: 600; margin-bottom: 2px; }
 
+// ---- 开工简报（概念稿 .notice--brief）：整屏的前提，不是又一份列表 ----
+// 它讲的是「上面这份判断基于什么」：六态口径 + 覆盖区间 + 生成时间 + 事项计数。
+// 事项与右侧「今日待办」同源，同屏出现两遍等于把列表读两次 —— 块里不再列事项标题。
+// 六态轻重落在左 2px 语义条（accent 核验通过 / warn 覆盖不全·旧快照 / stop 失败·阻断），态名另用文字标出。
+.notice--brief { margin: 16px 0 14px; }
+.notice--brief .notice__row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.notice--brief .notice__row .notice__h { margin-bottom: 0; }
+.notice--brief .notice__acts {
+  display: flex; align-items: center; gap: 4px; flex: none;
+  margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--color-divider);
+}
+.notice--brief .btn--sm { padding: 0 8px; font-size: 11.5px; }
+.notice--brief .tag { font-weight: 500; }
+.brief__meta { margin: 3px 0 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--color-text-tertiary); }
+.brief__meta b { color: var(--color-text-secondary); font-weight: 500; }
+// 覆盖缺口 / 失败原因 / 旧快照：概念稿块外的补充行，只在 warn·stop 态与覆盖未核验时出现
+.brief__note { margin: 3px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--color-text-secondary); }
+.brief__count { margin: 2px 0 0; font-size: 11.5px; color: var(--color-text-tertiary); }
+.brief__count b { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-weight: 500; }
+// 计数行本身可点（滚到下方信号列表）：按钮不当第二套皮肤，只接 .brief__count 的排版
+.brief__count-link { padding: 0; border: none; background: none; font: inherit; font-size: 11.5px; color: inherit; cursor: pointer; text-align: left; }
+.brief__count-link:hover { color: var(--color-text-primary); }
+// 收起后只留这一行入口：前提跟着它走，别让「收起」顺手把前提抹掉
+.brief-reopen {
+  display: inline-flex; align-items: center; gap: 6px; margin: 16px 0 0; padding: 0;
+  background: none; border: 0; font: inherit; font-size: 12px; color: var(--color-text-secondary);
+  cursor: pointer; transition: color .15s;
+}
+.brief-reopen:hover { color: var(--color-text-primary); }
+.brief-reopen .icon { width: 14px; height: 14px; color: var(--color-text-tertiary); }
+// 简报正文列（图标列右侧一格）：段落间距按概念稿的紧贴节奏，最长串按需断行
+.brief__body { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.brief__body p { margin: 0; line-height: 1.68; }
+.brief__body .brief__meta { margin: 3px 0 0; }
+.brief__body .brief__count { margin: 2px 0 0; }
+
 // ---- 输入框（唯一入口：旧页面各写一套 input 皮肤，新页一律走 .field）----
 .field {
   display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px;
@@ -746,6 +782,33 @@ body {
   border-left: 2px solid var(--color-accent-border);
   font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all;
 }
+
+// ---- 依据条（概念稿 .evidence / .ev：细线行，点一行回查一行原话）----
+// 聊天侧栏与客户档案共用；文本超出两行封顶，is-open 时放开显示原话。
+.evidence { display: flex; flex-direction: column; }
+.ev {
+  display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 10px; width: 100%; text-align: left;
+  padding: 9px 0; transition: opacity .15s;
+  // 概念稿的 button 全局 reset 在本项目不全局开放（旧按钮依赖默认外观），逐件补齐
+  border: 0; border-bottom: 1px solid var(--color-divider); background: none; font-family: inherit; cursor: pointer;
+}
+.ev:last-child { border-bottom: 0; }
+.ev:hover { opacity: .72; }
+.ev__t { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-text-tertiary); padding-top: 2px; }
+.ev__q {
+  font-size: 12px; line-height: 1.55; color: var(--color-text-secondary);
+  overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.ev.is-open .ev__q { display: block; -webkit-line-clamp: unset; color: var(--color-text-primary); }
+
+// ---- 回复建议（概念稿 .draft：surface 底 + 1px 描边 + .draft__acts 动作行）----
+.draft {
+  margin-top: 8px; padding: 12px; background: var(--color-bg-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-small); font-size: 12.5px; line-height: 1.65;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.draft__acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 // ---- 通用行表（线索池 / 合同 / 产品库 / 通讯录复用）----
 // 维度差：旧表是 <table> 骨架，这里是 Grid 行长；网格列模板由各页 .grid-* 提供。

@@ -2,8 +2,9 @@
  * SalesContextStrip.tsx
  *
  * 聊天页右栏「销售上下文」（PRD v2 P2）。
- * 挂在 aside.chat-rail 里，按概念稿 .side-block 分三段：判断 / 依据 / 回复建议。
- * 常驻展开，不再是顶部一条折叠条 —— 右栏本身已是专属栏位，没有可折叠的必要。
+ * 挂在 aside.chat-rail 里，按概念稿 .side-block 分三段：本机识别 / 依据消息 / 回复建议；
+ * 三段都用概念稿基础件（.verdicts / .evidence+.ev / .draft+.draft__acts，定义在 src/styles/main.scss），
+ * 组件自己不再带一层皮肤。常驻展开，不再是顶部一条折叠条 —— 右栏本身已是专属栏位，没有可折叠的必要。
  * 数据全部来自本组件自身的读取，不补默认值；没识别过就如实显示「尚未识别」。
  *
  * 判断段与客户档案（CustomerWorkspacePage）同一套 .verdicts / .verdict / .ahead 标记，
@@ -168,7 +169,7 @@ export default function SalesContextStrip({ sessionId }: Props) {
       {/* 判断（概念稿 .side-block：侧栏分段；与客户档案同一个 .verdicts 组件） */}
       <div className="side-block">
         <div className="side-head">
-          <span className="side-head__t">本机判断</span>
+          <span className="side-head__t">本机识别</span>
           {/* 阶段 / 沉默天数从旧的整行 top-strip 主 UI 降为栏内紧凑元信息 */}
           <span className="sales-context-strip__meta">
             <span className="pill" style={{ background: `${stageInfo.color}1A`, color: stageInfo.color }}>{stageInfo.label}</span>
@@ -218,19 +219,19 @@ export default function SalesContextStrip({ sessionId }: Props) {
             <span className="side-head__t">依据消息</span>
             <span className="num sales-context-strip__count">{anchors.length} 条</span>
           </div>
-          <div className="sales-context-strip__evidence">
+          <div className="evidence">
             {anchors.map(([label, v]) => {
               const open = evidenceKey === v.messageKey
               return (
                 <button
                   key={`${label}:${v.messageKey}`}
                   type="button"
-                  className={`sales-context-strip__ev${open ? ' is-open' : ''}`}
+                  className={`ev${open ? ' is-open' : ''}`}
                   title={open ? '收起原话' : '点击回查这一栏的原话'}
                   onClick={() => void toggleEvidence(v)}
                 >
-                  <span className="sales-context-strip__ev-t">{label}</span>
-                  <span className="sales-context-strip__ev-q">{open && evidenceMsg ? evidenceMsg : String(v.value || '')}</span>
+                  <span className="ev__t">{label}</span>
+                  <span className="ev__q">{open && evidenceMsg ? evidenceMsg : String(v.value || '')}</span>
                 </button>
               )
             })}
@@ -245,10 +246,8 @@ export default function SalesContextStrip({ sessionId }: Props) {
         </div>
         {suggestion ? (
           <>
-            <div className="sales-context-strip__suggestion">
-              <div className="sales-context-strip__suggestion-text">{suggestion}</div>
-            </div>
-            <div className="sales-context-strip__draft-acts">
+            <div className="draft">{suggestion}</div>
+            <div className="draft__acts">
               <button className="btn btn--sm btn--primary" onClick={handleCopy}>
                 {copied ? <Check size={13} strokeWidth={1.6} /> : <Copy size={13} strokeWidth={1.6} />}
                 {copied ? '已复制' : '复制建议'}
@@ -259,7 +258,7 @@ export default function SalesContextStrip({ sessionId }: Props) {
             </div>
           </>
         ) : (
-          <div className="sales-context-strip__draft-acts">
+          <div className="draft__acts">
             {/* profile 未就绪时 suggest 会直接跳过（无客户可定位），按钮如实禁用而不是空点 */}
             <button
               className="btn btn--sm btn--primary"

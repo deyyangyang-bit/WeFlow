@@ -1,11 +1,12 @@
 /**
  * TodayActionPage.tsx — 统一信号流首页(v4 布局)
  *
- * 结构：header(标题+销售复盘+刷新) → KPI 单行条 → 高意向提示条
+ * 结构：header(标题 + 销售复盘 / 重算 / 新建待办) → 开工简报(.notice--brief：这份判断基于什么)
+ *       → KPI 单行条(.stats) → 主主张(.lead-card)
  *       → 主两栏(左:筛选chips+信号卡流 | 右:待办侧栏)
  *       → 可折叠「数据概览」(来源/紧急度/阶段)
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -35,15 +36,6 @@ const STAGE_COLORS: Record<string, string> = {
 /** 简报六态（PRD §6.1）——键必须覆盖 coverage.state 的全部取值，避免漏态回退到错误结论 */
 type DigestStateKey = 'empty_account' | 'crm_only' | 'pending_data' | 'all_covered_clear' | 'failed_or_blocked' | 'stale_snapshot'
 
-const DIGEST_STATE_HINT: Record<DigestStateKey, string> = {
-  empty_account: '本账号暂无沟通数据',
-  crm_only: '仅业务事实（无聊天依据）',
-  pending_data: '数据已覆盖，正在梳理会话',
-  all_covered_clear: '已覆盖核对完成',
-  failed_or_blocked: '分析未完成 —— 下方为空不代表无人需要跟进',
-  stale_snapshot: '仅旧快照 —— 非今日最新结论'
-}
-
 /** 六态 → 左侧 2px 色条的轻重（概念稿：核验通过 accent / 覆盖不全与旧快照 warn / 失败与阻断 stop）。
  *  此前六态共用一条蓝，失败态看起来和成功态一样 —— 轻重必须由色条承担，态名另用文字标出。
  *  注意 pending_data 是「有事项」的常态（覆盖完整也走这一态），只有真的漏了或失败了会话才降级为 warn；
@@ -53,6 +45,30 @@ function digestTone(state: string | undefined, coverage: any): string {
   if (state === 'crm_only' || state === 'stale_snapshot') return 'notice--warn'
   if (state === 'pending_data' && ((coverage?.pending || 0) > 0 || (coverage?.failedSessions || 0) > 0)) return 'notice--warn'
   return 'notice--accent'
+}
+
+/** 覆盖态 tag（概念稿 .notice__row 里的 .tag）：与 digestTone 同一套分档 —— 色条与态名不许说两件事。
+ *  无 coverage（未核验）也必须有态名，否则「没看」会看起来像「看过了」 */
+function digestTagLabel(state: string | undefined, coverage: any): string {
+  switch (state) {
+    case 'empty_account': return '本账号暂无沟通数据'
+    case 'crm_only': return '仅业务事实'
+    case 'all_covered_clear': return '已核对完成'
+    case 'failed_or_blocked': return '分析未完成'
+    case 'stale_snapshot': return '仅旧快照'
+    case 'pending_data':
+      return (coverage?.pending || 0) > 0 || (coverage?.failedSessions || 0) > 0 ? '覆盖不全' : '覆盖完整'
+    default: return '覆盖未核验'
+  }
+}
+
+/** 简报坐标时间（概念稿 .brief__meta）：区间到分钟、生成时刻到秒；无效值返回空串 —— 不伪造时间 */
+function fmtBriefTime(ms: number, withSeconds = false): string {
+  if (!ms || !Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${withSeconds ? `${hm}:${p(d.getSeconds())}` : hm}`
 }
 
 export default function TodayActionPage() {
@@ -213,12 +229,42 @@ export default function TodayActionPage() {
     [restItems, curPage],
   )
 
-  // 简报的事项计数（前提的一部分）：事项本身交给下方信号列表与右侧待办，简报只报数量
-  const digestPending = useMemo(() => {
-    if (!digest?.items) return 0
-    return (digest.items as any[]).filter((it) => !it.status || it.status === 'pending').length
-  }, [digest])
+  // 简报只报数量，不报标题：事项本身交给下方信号列表与右侧待办，同屏出现两遍等于把列表读两次
+  const digestItemCount = digest?.items?.length || 0
   const digestToneClass = digestTone(digest?.coverage?.state, digest?.coverage)
+  // 覆盖态 tag：色条说轻重，文字说态名（概念稿「态名另用文字标出」）
+  const digestTag = digestTagLabel(digest?.coverage?.state, digest?.coverage)
+  // 简报坐标（概念稿 .brief__meta）：只填真取到的字段，缺哪段略哪段 —— 不补默认值、不假造区间
+  const briefMeta = useMemo(() => {
+    if (!digest) return [] as ReactNode[]
+    const cov = digest.coverage
+    const parts: ReactNode[] = []
+    if (cov?.activeSessions > 0) parts.push(<>已核对 <b>{cov.analyzedSessions}</b> / <b>{cov.activeSessions}</b> 段会话</>)
+    const from = fmtBriefTime(Number(cov?.from || 0) * 1000)
+    const to = fmtBriefTime(Number(cov?.to || 0) * 1000)
+    if (from && to) parts.push(<>区间 <b>{from}</b> – <b>{to}</b></>)
+    const generatedAt = fmtBriefTime(Number(digest.createdAt || 0), true)
+    if (generatedAt) parts.push(<>生成于 <b>{generatedAt}</b></>)
+    return parts
+  }, [digest])
+  // 覆盖缺口与失败原因（概念稿块外的补充行）：accent 常态下与 .brief__meta 同源重复，只在 warn·stop 与未核验时出现
+  const briefNote = digest
+    ? (digestToneClass === 'notice--accent' && digest.coverage
+      ? ''
+      : String(digest.coverage?.message || '聊天分析覆盖尚未核验，不代表已分析全部消息'))
+    : ''
+  // 收起后的入口文案：把「不可当作已核对」的口径带在入口上，收起不等于结论已成立
+  const reopenNote = digest?.coverage?.pending > 0
+    ? `仍有 ${digest.coverage.pending} 段会话未核对，不代表「无需跟进」`
+    : digest?.coverage?.state === 'failed_or_blocked' ? '有未完成分析'
+      : digest?.coverage?.state === 'stale_snapshot' ? '仅旧快照' : ''
+  /** 未核对的会话数（未处理 + 失败）：只用于把「查看未核对会话」的去向说清，不做第二份列表 */
+  const unverifiedSessions = (digest?.coverage?.pending || 0) + (digest?.coverage?.failedSessions || 0)
+  // 简报上的两个入口（查看未核对会话 / 事项计数）都落到同一处：下方信号与右侧待办。
+  // 覆盖暂无「未核对会话」的逐条列表或深链，按既有 UI 就地滚过去 —— 不新造后端，也不假造一份列表。
+  const revealSignals = useCallback(() => {
+    document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
 
   // chips 计数
   const chipCounts = useMemo(() => ({
@@ -263,7 +309,92 @@ export default function TodayActionPage() {
         </div>
       </div>
 
-      {/* 四格数字条（概念稿 .stats/.stat）：等宽数字 + 语义只由文字承担 */}
+      {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除）
+          PRD §6.1 六态 + §6.2 单飞：任何失败/额度阻断都不得显示为「无风险/无需跟进/全部跟完」 */}
+      {/* 收起后的重开入口（概念稿 .brief-reopen）：前提跟着入口走，收起不等于结论已成立 */}
+      {digestDismissed && (
+        <button className="brief-reopen" onClick={() => setDigestDismissed(false)}>
+          <Sunrise size={14} strokeWidth={1.6} /> 展开开工简报{reopenNote ? ` · ${reopenNote}` : ''}
+        </button>
+      )}
+      {/* 开工简报（概念稿 .notice--accent.notice--brief / #digestBox）：整屏的前提，不是又一份列表 ——
+          六态口径 + 覆盖区间 + 生成时间 + 事项计数；事项本身交给下方「信号」与右侧「今日待办」，
+          那是同一批线索 ID，不该在同一屏出现两遍。 */}
+      {!digestDismissed && <section className={`notice ${digestToneClass} notice--brief`} aria-label="当前账号开工简报">
+        <Sunrise size={16} strokeWidth={1.6} />
+        <div className="brief__body">
+          {/* 标题行 + 动作（概念稿 .notice__row）：态名跟在标题后，动作与标题同排 */}
+          <div className="notice__row">
+            <span className="notice__h">
+              开工简报 · 仅当前账号
+              <span className="tag tag--plain" style={{ marginLeft: 6 }}>{digestTag}</span>
+            </span>
+            <span className="notice__acts">
+              <button className="btn btn--sm btn--quiet" onClick={revealSignals}
+                title={unverifiedSessions > 0
+                  ? `另有 ${unverifiedSessions} 段会话未核对，先看下方信号与待办`
+                  : '本次覆盖已核对完成，下方为已记录的事项'}>
+                查看未核对会话
+              </button>
+              {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
+              <button className="btn btn--sm btn--quiet" disabled={digestRegenerating || identifyBusy}
+                title={identifyBusy ? '正在识别中，请稍候' : undefined}
+                onClick={() => void regenerateDigest()}>
+                {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
+              </button>
+              <button className="btn btn--sm btn--quiet" onClick={() => setDigestDismissed(true)}>收起</button>
+            </span>
+          </div>
+          {/* 一行能拿去核对的等宽坐标：已核对 a/b · 区间 · 生成于；缺字段略该段（不假造） */}
+          {briefMeta.length > 0 && (
+            <p className="brief__meta">
+              {briefMeta.map((part, i) => <Fragment key={i}>{i > 0 && ' · '}{part}</Fragment>)}
+            </p>
+          )}
+          {/* 态一/二/三/四/五/六：coverage 决定展示口径；无 coverage 时按「未核验」处理 */}
+          {briefNote && <p className="brief__note">{briefNote}</p>}
+          {/* 首屏时间预算：>2s 明确加载态，10s 明确报错 —— 都不伪装成空 */}
+          {!digest && !digestTimedOut && (
+            <p>{digestPhase === 'frame' ? '正在打开开工简报…'
+              : digestPhase === 'local' ? `本地事项 ${items.length} 条；正在梳理近期会话…`
+                : '本地事项已就绪，仍在梳理近期会话（分析进行中，可先处理下方事项）'}</p>
+          )}
+          {digestTimedOut && (
+            <p role="alert">{digestNotReady
+              ? '业务库尚未就绪（正在打开当前账号数据），暂无简报。'
+              : '简报生成超时（10s 未返回）。'}未完成的聊天分析不会被当作「无需跟进」。
+              <button className="btn btn--sm btn--quiet" onClick={() => { setDigestPhase('frame'); void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }}>重试</button>
+            </p>
+          )}
+          {digestError && <p role="alert">{digestError} <button className="btn btn--sm btn--quiet" onClick={() => void fetchDigest()}>重试</button></p>}
+          {/* 简报只讲前提：计数一行说清有几条，标题不在块里再列一遍（概念稿 .brief__count） */}
+          {digest && digestItemCount > 0 && (
+            <p className="brief__count">
+              <button type="button" className="brief__count-link" onClick={revealSignals}>
+                简报共 <b>{digestItemCount}</b> 条事项 · 全部列在下方信号列表
+              </button>
+            </p>
+          )}
+          {digest && digestItemCount === 0 && (() => {
+            const st = digest.coverage?.state as DigestStateKey | undefined
+            return <>
+              {/* 态四：全部覆盖且无有效待办；态一：新账号空态（提供建客户/建待办入口，不调 AI 凑摘要） */}
+              {st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
+              {st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
+                <button className="btn btn--sm btn--quiet" onClick={() => navigate('/customers')}>去绑定客户</button>
+                <button className="btn btn--sm btn--quiet" onClick={() => void openTodoModal()}>新建待办</button>
+              </p>}
+              {(st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
+                <p>暂无已记录的事项。注意：{digest.coverage?.reason || '聊天分析未完成'}，
+                  这不代表「无需跟进」。</p>
+              )}
+              {!st && <p>当前暂无已记录的待办；聊天分析覆盖尚未核验，不代表「无需跟进」。</p>}
+            </>
+          })()}
+        </div>
+      </section>}
+
+      {/* 四格数字条（概念稿 .stats/.stat）：整屏前提（简报）之后才是数字与列表 */}
       {stats && (
         <div className="stats">
           <div className="stat">
@@ -284,83 +415,6 @@ export default function TodayActionPage() {
           </div>
         </div>
       )}
-
-      {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除）
-          PRD §6.1 六态 + §6.2 单飞：任何失败/额度阻断都不得显示为「无风险/无需跟进/全部跟完」 */}
-      {/* 收起后的重开入口：把「不可当作已核对」的两态带在按钮上，收起不等于结论已成立 */}
-      {digestDismissed && (
-        <button className="btn btn--sm signal-notice--digest-reopen" onClick={() => setDigestDismissed(false)}>
-          展开开工简报{digest?.coverage?.state === 'failed_or_blocked' ? '（有未完成分析）'
-            : digest?.coverage?.state === 'stale_snapshot' ? '（仅旧快照）' : ''}
-        </button>
-      )}
-      {!digestDismissed && <section className={`notice ${digestToneClass} signal-notice signal-notice--digest`} aria-label="当前账号开工简报">
-        <Sunrise size={16} strokeWidth={1.6} />
-        <div className="signal-notice__digest-body">
-          {/* 标题行 + 动作（概念稿 .notice__row）：简报讲前提，不讲清单 */}
-          <div className="notice__row">
-            <span className="notice__h">开工简报 · 仅当前账号</span>
-            <span className="notice__acts">
-              <button className="btn btn--sm btn--quiet" onClick={() => setDigestDismissed(true)}>收起</button>
-              {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
-              <button className="btn btn--sm btn--quiet" disabled={digestRegenerating || identifyBusy}
-                title={identifyBusy ? '正在识别中，请稍候' : undefined}
-                onClick={() => void regenerateDigest()}>
-                {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
-              </button>
-            </span>
-          </div>
-          {/* 态一/二/三/四/五/六：coverage.state 决定展示口径；无 coverage 时按「未核验」处理 */}
-          {digest && <p>{DIGEST_STATE_HINT[digest.coverage?.state as DigestStateKey] || '聊天分析覆盖尚未核验，不代表已分析全部消息'}</p>}
-          {digest?.coverage?.message && <p className="signal-notice__digest-coverage">{digest.coverage.message}</p>}
-          {digest && <small>生成于 {new Date(digest.createdAt).toLocaleString()}
-            {digest.coverage?.state === 'stale_snapshot' ? '（旧快照，非今日结论）' : ''}</small>}
-          {/* 首屏时间预算：>2s 明确加载态，10s 明确报错 —— 都不伪装成空 */}
-          {!digest && !digestTimedOut && (
-            <p>{digestPhase === 'frame' ? '正在打开开工简报…'
-              : digestPhase === 'local' ? `本地事项 ${items.length} 条；正在梳理近期会话…`
-                : '本地事项已就绪，仍在梳理近期会话（分析进行中，可先处理下方事项）'}</p>
-          )}
-          {digestTimedOut && (
-            <p role="alert">{digestNotReady
-              ? '业务库尚未就绪（正在打开当前账号数据），暂无简报。'
-              : '简报生成超时（10s 未返回）。'}未完成的聊天分析不会被当作「无需跟进」。
-              <button className="btn btn--sm btn--quiet" onClick={() => { setDigestPhase('frame'); void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }}>重试</button>
-            </p>
-          )}
-          {digestError && <p role="alert">{digestError} <button className="btn btn--sm btn--quiet" onClick={() => void fetchDigest()}>重试</button></p>}
-          {/* 简报只讲前提：六态口径 + 覆盖区间 + 生成时间 + 事项计数。
-              事项本身（原先在这里排 5 条、配「展开其余 N 个」与历史状态）交给下方「信号」与右侧「今日待办」——
-              那是同一批线索 ID，不该在同一屏出现两遍。 */}
-          {digest && digestPending > 0 && (
-            <p className="brief__count">
-              <button
-                type="button"
-                className="brief__count-link"
-                onClick={() => document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior: 'smooth' })}
-              >
-                待跟进 <b>{digestPending}</b> 项 · 详见下方信号列表
-              </button>
-            </p>
-          )}
-          {digest && digestPending === 0 && (() => {
-            const st = digest.coverage?.state as DigestStateKey | undefined
-            return <>
-              {/* 态四：全部覆盖且无有效待办；态一：新账号空态（提供建客户/建待办入口，不调 AI 凑摘要） */}
-              {st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
-              {st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
-                <button className="btn btn--sm btn--quiet" onClick={() => navigate('/customers')}>去绑定客户</button>
-                <button className="btn btn--sm btn--quiet" onClick={() => void openTodoModal()}>新建待办</button>
-              </p>}
-              {(st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
-                <p>暂无已记录的事项。注意：{digest.coverage?.reason || '聊天分析未完成'}，
-                  这不代表「无需跟进」。</p>
-              )}
-              {!st && <p>当前暂无已记录的待办；聊天分析覆盖尚未核验，不代表「无需跟进」。</p>}
-            </>
-          })()}
-        </div>
-      </section>}
 
       {/* 主主张（概念稿 .lead-card 挂载点）：整幅浮在索引上方，四栏判断直接摊开。
           完整判断只留给被主张的这一位；其余信号仍是细线行，同一批线索不在同一屏出现两遍。 */}
