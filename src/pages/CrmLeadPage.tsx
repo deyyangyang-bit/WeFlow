@@ -758,15 +758,15 @@ export default function CrmLeadPage() {
         </div>
         <div className="shead__actions">
           {!salesView && managerTab === 'pool' && (
-            <button className="btn btn--plain" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
+            <button className="btn btn--quiet" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
           )}
           {!salesView && selected.size > 0 && managerTab === 'pool' && (
-            <button className="btn btn--primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
+            <button className="btn btn--primary-soft" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
           )}
           {!salesView && (
-            <button className="btn btn--plain" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
+            <button className="btn btn--quiet" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
           )}
-          {!salesView && <button className="btn btn--primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
+          {!salesView && <button className="btn btn--plain" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
         </div>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -774,18 +774,16 @@ export default function CrmLeadPage() {
       {view === 'sales' ? (
         /* ── 屏 4：销售 · 我的资源卡 ── */
         <div className="lp-sales">
-          <div className="lp-seg-wrap">
-            <div className="chipbar">
-              {salesSegDefs.map((d) => (
-                <button key={d.id} className={`chip ${salesSeg === d.id ? 'is-on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label}<span className="chip__n">{d.count}</span></button>
-              ))}
-            </div>
-            <span className="lp-hint">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
+          <div className="rail lp-tabs" aria-label="我的资源分段">
+            {salesSegDefs.map((d) => (
+              <button key={d.id} className={`rail__item ${salesSeg === d.id ? 'is-on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label}<span className="rail__n">{d.count}</span></button>
+            ))}
+            <span className="rail__sum">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
           </div>
           {myCardsShown.map(({ lead: l, cd, recycled, sla2 }) => (
             <div key={l.id} className="lp-card" onClick={() => void openDetail(l.id)}>
               <div className="lp-card__main">
-                <div className="lp-card__t1 num">{maskLead(l)} <span className={`pill pill--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
+                <div className="lp-card__t1 num">{maskLead(l)} <span className={`lp-qtag lp-qtag--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
                 <div className="lp-card__t2">{String(l.source || '')}{l.tag ? ` · ${l.tag}` : ''}{l.note ? ` · ${l.note}` : ''} · 分配于 {fmtTime(Number(latestAsg[l.id]?.created_at || 0))}</div>
               </div>
               <div className={`lp-card__countdown ${cd.tier === 'wait_claim' ? 'ok' : cd.tier}`}>
@@ -793,23 +791,23 @@ export default function CrmLeadPage() {
                 <div className="l">{recycled ? '已回资源池，等待改派' : cd.label}</div>
               </div>
               {!recycled && cd.tier === 'wait_claim' && (
-                <button className="btn btn--primary" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
+                <button className="btn btn--sm btn--primary-soft" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
               )}
               {!recycled && (cd.tier === 'ok' || cd.tier === 'warn' || cd.tier === 'over') && (
-                <button className="btn btn--plain" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
+                <button className="btn btn--sm btn--quiet" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
               )}
               {!recycled && cd.tier !== 'wait_claim' && (
-                <button className="btn btn--plain" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
+                <button className="btn btn--sm btn--quiet" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
               )}
               {!recycled && cd.tier === 'done' && (
-                <button className="btn btn--quiet" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
+                <button className="btn btn--sm btn--quiet" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
               )}
               {cd.tier === 'done' && (
                 <div className="lp-sla2" onClick={(e) => e.stopPropagation()}>
                   {sla2 ? (
-                    <span className={`pill pill--${sla2.pill}`}>{sla2.label}</span>
+                    <span className={`lp-qtag lp-qtag--${sla2.pill}`}>{sla2.label}</span>
                   ) : (
-                    <span className="pill pill--neutral">待扫描</span>
+                    <span className="lp-qtag">待扫描</span>
                   )}
                   <div className="lp-sla2__text">
                     {maskLead(l)} · {sla2 ? sla2.note : '暂无第二段结论，等规则/LLM 扫描或人工标记'}
@@ -823,14 +821,14 @@ export default function CrmLeadPage() {
         </div>
       ) : (
         <>
-          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左）：互斥视图，走概念稿分段控件 */}
-          <div className="chipbar lp-tabs">
-            <button className={`chip ${managerTab === 'pool' ? 'is-on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
-            <button className={`chip ${managerTab === 'console' ? 'is-on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
-            <button className={`chip ${managerTab === 'reassign' ? 'is-on' : ''}`} onClick={() => setManagerTab('reassign')}>
+          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左）：互斥视图，走概念稿分段控件 .rail（发丝底 / 选中 2px / mono 计数） */}
+          <div className="rail lp-tabs">
+            <button className={`rail__item ${managerTab === 'pool' ? 'is-on' : ''}`} onClick={() => setManagerTab('pool')}>资源池<span className="rail__n">{ov?.total ?? 0}</span></button>
+            <button className={`rail__item ${managerTab === 'console' ? 'is-on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台<span className="rail__n">{poolCounts.pool}</span></button>
+            <button className={`rail__item ${managerTab === 'reassign' ? 'is-on' : ''}`} onClick={() => setManagerTab('reassign')}>
               回收改派
-              {poolCounts.recycledN > 0 && <span className="chip__n">{poolCounts.recycledN}</span>}
-              {notifyUnread > 0 && <span className="chip__n">升级提醒 {notifyUnread}</span>}
+              {poolCounts.recycledN > 0 && <span className="rail__n">{poolCounts.recycledN}</span>}
+              {notifyUnread > 0 && <span className="rail__n">提醒 {notifyUnread}</span>}
             </button>
           </div>
 
@@ -1004,7 +1002,7 @@ export default function CrmLeadPage() {
             <>
           {notifies.length > 0 && (
             <div className="box">
-              <div className="box__t">升级提醒 <span className="pill pill--danger num">{notifyUnread}</span> <span className="box__h">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
+              <div className="box__t">升级提醒 <span className="lp-qtag lp-qtag--danger num">{notifyUnread}</span> <span className="box__h">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
               <div className="lead-timeline">
                 {notifies.map((n) => {
                   let d: Record<string, unknown> = {}
@@ -1026,7 +1024,7 @@ export default function CrmLeadPage() {
             </div>
           )}
             <div className="box">
-              <div className="box__t">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="box__h">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
+              <div className="box__t">待改派 <span className="lp-qtag lp-qtag--danger num">{reassignLeads.length}</span> <span className="box__h">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
               <div className="tbl">
                 <div className="thead lp-own-grid"><span>线索</span><span>原归属</span><span>回收原因</span><span>建议改派给</span><span className="tc-r">动作</span></div>
                 {reassignLeads.map((l) => {
@@ -1039,13 +1037,13 @@ export default function CrmLeadPage() {
                         <span className="psub lp-ell">{String(l.source || '')}{l.note ? ` · ${l.note}` : ''}</span>
                       </span>
                       <span className="lp-ell">{from || '-'}</span>
-                      <span className="lp-ell"><span className="pill pill--danger">{recycleReasons[l.id] || '人工回收'}</span></span>
+                      <span className="lp-ell"><span className="lp-qtag lp-qtag--danger">{recycleReasons[l.id] || '人工回收'}</span></span>
                       <span className="lp-cell">
                         {sug ? <span className="tag tag--neutral">{sug}（建议）</span> : <span className="psub">名单无其他人，请先补充销售名单</span>}
                         {sug ? <span className="psub">在手 {loads[sug] ?? 0} 条 · 非原归属</span> : null}
                       </span>
                       <span className="tc-a">
-                        <button className="btn btn--sm btn--primary" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
+                        <button className="btn btn--sm btn--primary-soft" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
                           {reassignBusy === l.id ? '改派中…' : '确认改派'}
                         </button>
                       </span>
