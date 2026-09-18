@@ -20,7 +20,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { RefreshCw, Plus, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
-import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -691,7 +690,6 @@ export default function CustomerWorkspacePage() {
                 onClick={() => void openCustomer(c)}
               >
                 <span className="cws-ix__who">
-                  <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={28} />
                   <span className="cws-ix__main">
                     <span className="tc-n">{displayNameOf(c)}</span>
                     <span className="tc-s">{c.company || '未填公司'}</span>
@@ -736,7 +734,6 @@ export default function CustomerWorkspacePage() {
             {actionQueue.map((it: ActionCardItem) => (
               <div key={it.key} className={`trow cws-q__row${selectedCustomer && it.customer && Number(selectedCustomer.id) === Number(it.customer.id) ? ' is-on' : ''}`} onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
                 <span className="cws-q__who">
-                  <Avatar src={(it.customer as any)?.avatarUrl} name={it.displayName} size={28} />
                   <span className="cws-q__name">
                     <span className="tc-n">{it.displayName}</span>
                     <span className={queuePillClass(it.pill)}>{it.pillText}</span>
