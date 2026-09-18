@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { RefreshCw, Plus, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
+import { RefreshCw, Plus, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
@@ -203,8 +203,14 @@ export default function CustomerWorkspacePage() {
   // 阶段栏计数（概念稿 .rail__n）：口径 = 本页已过滤的客户全集，与 indexRows 同源
   const stageCounts: Record<string, number> = {}
   for (const c of customers) { const st = rowStage(c); stageCounts[st] = (stageCounts[st] || 0) + 1 }
-  // 阶段 pill 语义档 → 全局 .pill 族（流失=中性 / 成交=won / 其余=new）
-  const stagePillClass = (st: string) => (st === '流失' ? 'pill' : st === '成交' ? 'pill pill--won' : 'pill pill--new')
+  // 阶段 pill 语义档 → 全局 .pill 族（概念稿 CRM 索引行口径：只有「在谈」的阶段带颜色，
+  // 比价=warning / 决策=danger / 成交=success，了解·流失·未知一律中性档，安静不抢注意力）
+  const stagePillClass = (st: string) => (
+    st === '比价' ? 'pill pill--quote'
+      : st === '决策' ? 'pill pill--nego'
+        : st === '成交' ? 'pill pill--won'
+          : 'pill'
+  )
   // 行动卡 pill（来源语义由 buildActionQueue 给出）→ 全局 .pill 族
   const queuePillClass = (p: string) => (p === 'amber' ? 'pill pill--quote' : 'pill pill--new')
 
@@ -656,7 +662,7 @@ export default function CustomerWorkspacePage() {
             {st}<span className="rail__n">{stageCounts[st] || 0}</span>
           </button>
         ))}
-        <span className="rail__sum">显示 <b>{searchActive ? searchResults.length : actionQueue.length}</b> / {customers.length} · 本机业务库</span>
+        <span className="rail__sum">显示 <b>{searchActive ? searchResults.length : actionQueue.length} / {customers.length}</b> · 本机业务库</span>
       </div>
 
       {/* 客户索引 + 当前档案（概念稿 .crm）：宽窗两栏并排，窄窗档案转为浮层；选择/关闭/遮罩行为与旧抽屉一致 */}
@@ -728,7 +734,7 @@ export default function CustomerWorkspacePage() {
               <span>客户</span><span>为什么现在看</span><span className="tc-r">操作</span>
             </div>
             {actionQueue.map((it: ActionCardItem) => (
-              <div key={it.key} className="trow cws-q__row" onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
+              <div key={it.key} className={`trow cws-q__row${selectedCustomer && it.customer && Number(selectedCustomer.id) === Number(it.customer.id) ? ' is-on' : ''}`} onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
                 <span className="cws-q__who">
                   <Avatar src={(it.customer as any)?.avatarUrl} name={it.displayName} size={28} />
                   <span className="cws-q__name">
@@ -740,16 +746,17 @@ export default function CustomerWorkspacePage() {
                   <span className="cws-q__reason">{it.reason}</span>
                   <span className="cws-q__suggest">{it.suggest}</span>
                 </span>
+                {/* 行内动作（概念稿行内按钮口径：文字按钮，不带图标；默认安静，行被指向/选中时主操作才升档） */}
                 <span className="cws-q__ops tc-a" onClick={(e) => e.stopPropagation()}>
                   {it.kind === 'follow' && (
                     <>
-                      <button className="btn btn--sm btn--primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 去聊天</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}>去聊天</button>
                       {pendingTodoIdOf(it) > 0 && (
                         <button className="btn btn--sm" disabled={completingTodo === pendingTodoIdOf(it)} onClick={() => void completeTodoOfCard(it, pendingTodoIdOf(it))} title="该客户有待办未完成，点此直接闭环">
-                          {completingTodo === pendingTodoIdOf(it) ? <RotateCw size={13} className="spinning" /> : <ClipboardCheck size={13} />} {completingTodo === pendingTodoIdOf(it) ? '完成中…' : '完成待办'}
+                          {completingTodo === pendingTodoIdOf(it) ? '完成中…' : '完成待办'}
                         </button>
                       )}
-                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}>{completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
                     </>
                   )}
                   {it.kind === 'info' && (
@@ -757,14 +764,14 @@ export default function CustomerWorkspacePage() {
                       <label className="cws-info-check" title="勾选后可批量采纳">
                         <input type="checkbox" checked={selectedInfoKeys.has(it.key)} onChange={(e) => toggleInfoSelect(it.key, e.target.checked)} />
                       </label>
-                      <button className="btn btn--sm btn--primary" onClick={() => void handleInfo(it, 'accept')}>✓ 采纳</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => void handleInfo(it, 'accept')}>采纳</button>
                       <button className="btn btn--sm" onClick={() => void handleInfo(it, 'reject')}>放弃</button>
                     </>
                   )}
                   {it.kind === 'insight' && (
                     <>
-                      <button className="btn btn--sm btn--primary" onClick={() => it.sessionId ? void openChat(it.customer) : void openCustomer(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 看原话</button>
-                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => it.sessionId ? void openChat(it.customer) : void openCustomer(it.customer)} disabled={!it.sessionId}>看原话</button>
+                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}>{completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
                     </>
                   )}
                 </span>

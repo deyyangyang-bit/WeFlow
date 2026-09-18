@@ -15,7 +15,14 @@
      .cws-fold）、跟进待办只先露 3 条、.def 内边距 13/14 → 16/18、格子 gap 1 → 2px；
      折叠仍是扁平侧栏内的分段，不引入白卡 / 阴影 / 浮层。）
      （2026-09-18 P1.3c 续（纯样式）：水平留白由外层 .cws-side 下沉到滚动容器 .cws-side__panel，
-     滚动条不再被外层 22px 内边距挤进栏内一节。留白数值不变，仍是左右各 22px。） */
+     滚动条不再被外层 22px 内边距挤进栏内一节。留白数值不变，仍是左右各 22px。）
+     （2026-09-18 P1.4a 观感对齐概念稿「档案索引 + 扁平详情」（纯视觉，不改 IA / 数据 / 路由）：
+     左列行收成概念索引行的层级——名字独占一行、状态（pill）作第二行小标记、行高 78px 定死、行间仍是发丝线；
+     「为什么现在看」降为次要灰字（12px secondary + 11.5px tertiary 双层，两行 / 一行封顶）；
+     行内动作默认降为文字按钮（不再带图标），行被指向（hover / focus）或选中时主操作才升回强调档；
+     右栏分段补充字（.cws-side__meta）与概念 .seclabel 右侧同一档（10.5px 等宽 tertiary），
+     标题到内容的间距收到 4px（稿里标题就是贴着它那条细线）。
+     按钮本体、顺序、点击行为与筛选语义均不变。） */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -82,15 +89,53 @@
 .cws-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0 0; }
 .cws-pager__info { font-size: 12px; color: var(--color-text-secondary); }
 
-/* ─── 行动队列（细线行；卡片降级为 1px 发丝）──────────────────── */
-.cws-q, .cws-q__row { grid-template-columns: minmax(190px, 0.85fr) minmax(0, 1.5fr) auto; }
-.cws-q__row { cursor: pointer; }
+/* ─── 行动队列（概念索引行：名字 + 状态是主角，理由降为灰字，动作安静）────────
+   行高按「两行理由 + 一行建议」定死 78px：与概念 .irow 的定高同一用意（每行同高、行间只有发丝线），
+   数值更大是因为本页每行多一条「为什么现在看」，不是又一档宽松。
+   动作列写死宽度（表头与数据行同一套轨道，列才对得上），「为什么现在看」拿剩下的：
+   它是灰字副文，宁可折行，也不去挤客户名那一列。 */
+.cws-q, .cws-q__row { grid-template-columns: minmax(216px, 1.15fr) minmax(0, 1.5fr) 176px; }
+.cws-q__row { cursor: pointer; min-height: 78px; }
 .cws-q__who { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.cws-q__name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.cws-q__why { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.cws-q__reason { font-size: 12.5px; color: var(--color-text-primary); line-height: 1.5; }
-.cws-q__suggest { font-size: 11.5px; color: var(--color-text-tertiary); line-height: 1.5; }
-.cws-q__ops { flex-wrap: wrap; row-gap: 6px; }
+/* 名字在上、状态在下（概念稿信号行 .sigrow / .sigrow__sub 的两行结构）：
+   名字独占整列宽度不再被状态挤到省略号，状态作为第二行的小标记，不跟名字抢主位 */
+.cws-q__name { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.cws-q__name .tc-n { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cws-q__why { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* 理由两行封顶、建议一行封顶：行高据此定死（每行同高＝索引行该有的密度），
+   与前缀表 .ev__q / .verdict__evi 同一套行数封顶语法，不改数据只收显示高度 */
+.cws-q__reason {
+  font-size: 12px; color: var(--color-text-secondary); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cws-q__suggest {
+  font-size: 11.5px; color: var(--color-text-tertiary); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cws-q__ops { row-gap: 4px; }   /* 「处理中…」这类瞬时文案变长时允许折一行，不外溢 */
+
+/* 行内动作（去聊天 / 完成待办 / 已处理 / 采纳 / 放弃…）：默认是安静的次要文字按钮，
+   行被指向（hover / 键盘 focus）或该客户已在右栏打开（is-on）时，才把这一行的主操作升回强调档。
+   按钮本体、顺序与点击行为都不动，只换视觉档位。 */
+.cws-page .cws-q__ops {
+  gap: 2px;
+
+  .btn {
+    height: 26px; padding: 0 6px; font-size: 11.5px;
+    white-space: nowrap;   /* 列宽收紧时按钮文字不许在按钮内部折行 */
+    border-color: transparent; background: none; color: var(--color-text-tertiary);
+  }
+  .btn:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .btn--primary { color: var(--color-text-secondary); font-weight: 500; }
+}
+.cws-page .cws-q__row:hover .cws-q__ops .btn--primary,
+.cws-page .cws-q__row:focus-within .cws-q__ops .btn--primary,
+.cws-page .cws-q__row.is-on .cws-q__ops .btn--primary {
+  background: var(--color-accent); border-color: var(--color-accent); color: var(--color-text-on-accent);
+}
+.cws-page .cws-q__row:hover .cws-q__ops .btn--primary:hover {
+  background: var(--color-accent-hover); border-color: var(--color-accent-hover);
+}
 
 /* ─── 空态（细线，不落卡）──────────────────────────────── */
 .cws-done { text-align: center; padding: 46px 0 52px; }
@@ -153,7 +198,9 @@
      本机判断 / 跟进待办 / 客户信息三段之间留出清晰气口，不糊成一块。
      只在本页档案列作用域内覆写，聊天右栏与今日行动仍是全局 22px。 */
   .side-block + .side-block { margin-top: 32px; }
-  .side-block > .side-head { margin-bottom: 10px; }
+  /* 标题贴着它管的细线（概念稿 .seclabel 就是 2px 上沿；聊天右栏同样是「标题 → 紧接内容」），
+     段与段之间的气口由上面的 32px 给，不该再在标题下面叠一层 */
+  .side-block > .side-head { margin-bottom: 4px; }
   /* 深度分析是第二个 .crm-profile：并排时也要接上 .side-block 的分段节奏 */
   .crm-profile + .crm-profile { margin-top: 32px; }
   /* 共享类的细线化覆写（只作用于本页档案列，不改 CrmWorkbenchPage.scss 自身） */
@@ -182,19 +229,17 @@
   .cws-side__panel { max-height: none; overflow: visible; }
 }
 
-/* 并排后索引列变窄：动作列收窄换行，先保「为什么现在看」那列的可读宽度 */
-@media (min-width: 1280px) {
-  .cws-cols.has-detail .cws-q,
-  .cws-cols.has-detail .cws-q__row { grid-template-columns: minmax(150px, 0.9fr) minmax(0, 1.2fr) minmax(0, 210px); }
-}
-
 /* 档案头：概念稿 .detail__name / .detail__sub */
 .cws-detail__id { min-width: 0; }
 .cws-detail__name { font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
 .cws-detail__sub { font-size: 11.5px; color: var(--color-text-tertiary); font-family: var(--font-mono); margin-top: 5px; }
 
-/* 分段标题右侧的小字补充（概念稿 .side-head 右侧位；段内数字再叠 .num 走等宽） */
-.cws-side__meta { font-size: 11px; color: var(--color-text-tertiary); }
+/* 分段标题右侧的小字补充（概念稿 .side-head 右侧位；稿里这一档整条走等宽 10.5px，
+   与聊天右栏的「09:41 · 覆盖 214 条」是同一档，不是各页一套） */
+.cws-side__meta {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 10.5px; color: var(--color-text-tertiary);
+}
 
 /* 判断栏出处标记与证据回查：已收进 main.scss 的 .ahead--btn / .verdict__evi，
    与聊天侧栏共用同一份 —— 判断栏跨屏是同一个组件，不再各写一套 .cws-* 皮肤。 */
