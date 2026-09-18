@@ -812,16 +812,20 @@ export default function CustomerWorkspacePage() {
           <div className="crm-detail-head">
             <div className="cws-detail__id">
               <div className="cws-detail__name">
-                {displayNameOf(selectedCustomer)}
+                {/* 与列表行同一套拆分：备注名里的日期前缀不进大标题（纯展示；识别 / Hermes 等
+                    入参仍传原始 displayNameOf，存库名不动）。整名就是日期时 namePartsOf 兜底不拆 */}
+                {nameOnlyOf(displayNameOf(selectedCustomer))}
                 {rowStage(selectedCustomer) && <span className={stagePillClass(rowStage(selectedCustomer))}>{rowStage(selectedCustomer)}</span>}
               </div>
-              {/* 核心客户信息一行（阶段在上面胶囊里）：公司 / 归属 / 最近互动，全部取索引行同源字段，不新增查询 */}
+              {/* 核心客户信息一行（阶段在上面胶囊里）：备注日期 / 公司 / 归属 / 最近互动，
+                  全部取索引行同源字段，不新增查询；日期有才显示，缺省不造空节点 */}
               <div className="cws-detail__sub">
                 {[
+                  nameDateOf(displayNameOf(selectedCustomer)),
                   selectedCustomer.company || '未填公司',
                   selectedCustomer.owner_sales ? `归属 ${selectedCustomer.owner_sales}` : '未归属',
                   silentTextOf(selectedCustomer)
-                ].join(' · ')}
+                ].filter(Boolean).join(' · ')}
               </div>
             </div>
             <div className="crm-detail-actions">
