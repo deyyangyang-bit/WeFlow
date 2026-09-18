@@ -239,16 +239,22 @@
   }
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-text-tertiary);
-  transition: all 0.3s;
+// 步骤指示点（欢迎页导航用，8px 灰点）：收进本页根类。
+// 2026-09-18：原先以裸 .dot 定义，与 main.scss 基础件的 .dot（7px 紧急度点，今日行动信号行在用）
+// 同名同性度 —— 访问过欢迎页后会把全站 .dot 改成 8px/灰点。收进 .welcome-page 后本页视觉不变，
+// 其它页面回到基础件定义（现随组件归 AIActionCard.scss）。
+.welcome-page {
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-text-tertiary);
+    transition: all 0.3s;
 
-  .nav-item.active & {
-    background: #ffffff; // accent 彩色面上的字面白
-    transform: scale(1.2);
+    .nav-item.active & {
+      background: #ffffff; // accent 彩色面上的字面白
+      transform: scale(1.2);
+    }
   }
 }
 

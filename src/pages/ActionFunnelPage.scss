@@ -1,10 +1,14 @@
 // ActionFunnelPage —— P0-4.3 Action Funnel 展示（沿用商机/客户漏斗的同一套视觉语言）
 // 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
-.af-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
-.af-header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;
-  h2 { font-size: 16px; font-weight: 700; margin-right: 4px; }
-}
-.af-header__sub { font-size: 12px; color: var(--color-text-secondary); margin-right: auto; }
+// 页边留白由外壳 .content 提供（24px 32px），本页不再叠加整页 padding；
+// 限宽 1280 居中沿用 main.scss 页面组（.af-page 已在组内）。
+.af-page { color: var(--color-text-primary); font-family: var(--font-app); min-width: 0; }
+// 页眉：结构走概念稿 .shead（左说明块 / 右动作区），本页只调间距与标题行宽
+.af-header { margin-bottom: 16px; }
+.af-header__lead { min-width: 0; }
+.af-header__title { font-size: clamp(21px, 2.1vw, 26px); } /* 与其它页 h1.hero 同档，页内说明置底 */
+.af-header__sub { margin-top: 2px; }
+.af-header__actions { gap: 10px; flex-wrap: wrap; }
 .af-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 12px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; transition: background .15s;
   &:hover { background: var(--color-bg-inset); }
   &:disabled { opacity: .6; cursor: default; } }
@@ -16,30 +20,34 @@
 .af-days__btn { border: 0; background: transparent; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--color-text-secondary); border-radius: 7px; transition: color .15s; }
 .af-days__btn--active { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); }
 
+// 正文容器：KPI 条 → 漏斗卡 → 口径注，统一由一处 gap 控制间距（原先三段各自 margin，叠起来不好对）
+.af-body { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
 // KPI 卡（可点击 = 有下钻）；统计卡语言与销售漏斗同规格：白卡浮起 + 标签在上 + 26px/700 tabular
-.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.af-kpi { display: flex; flex-direction: column; gap: 4px; text-align: left; background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card); padding: 14px 18px; cursor: default; box-shadow: var(--shadow-card); transition: box-shadow .15s, border-color .15s;
+.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.af-kpi { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: 14px 18px; cursor: default; box-shadow: var(--shadow-card); transition: box-shadow .15s, border-color .15s;
   &--clickable { cursor: pointer; &:hover { border-color: var(--color-accent-border); box-shadow: var(--shadow-card); } }
   &--star { border-color: var(--color-warning-border); background: var(--color-warning-bg);
     .af-kpi__label { color: var(--color-warning); }
   }
 }
-.af-kpi__label { font-size: 12px; color: var(--color-text-secondary); display: inline-flex; align-items: center; gap: 4px; }
+.af-kpi__label { font-size: 12px; color: var(--color-text-secondary); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .af-kpi__star { color: var(--color-warning); font-size: 13px; }
-.af-kpi__value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
-.af-kpi__note { font-size: 11px; color: var(--color-text-secondary); }
+.af-kpi__value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--color-text-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.af-kpi__note { font-size: 11px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
 
 // 曝光段（G1 未埋点，诚实 N/A）
-.af-exposed { display: flex; align-items: baseline; gap: 8px; background: var(--color-bg-inset); border: 1px dashed var(--color-chart-neutral); border-radius: var(--radius-small); padding: 8px 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.af-exposed { display: flex; align-items: baseline; gap: 8px; background: var(--color-bg-inset); border: 1px dashed var(--color-chart-neutral); border-radius: var(--radius-small); padding: 8px 14px; flex-wrap: wrap; }
 .af-exposed__label { font-size: 12px; color: var(--color-text-secondary); font-weight: 600; }
 .af-exposed__value { font-size: 13px; color: var(--color-text-tertiary); font-weight: 600; }
 .af-exposed__hint { font-size: 12px; color: var(--color-text-tertiary); }
 
 // 五段漏斗卡片（容器规格与销售漏斗 funnel-chart 一致：限宽 860 居中 + 16 圆角 + shadow-card；
 // 内部为共用组件 FunnelCylinder（A048 立体圆柱），样式自含于 components/FunnelCylinder.scss）
-.af-chart { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 12px; margin: 20px auto 0; max-width: 860px; }
+// 不设 overflow：组件内的口径 tooltip 是绝对定位浮层，裁切会切掉提示
+.af-chart { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 12px; margin: 0 auto; max-width: 860px; width: 100%; min-width: 0; }
 
-.af-footnote { font-size: 12px; color: var(--color-text-secondary); margin-top: 16px; line-height: 1.7; overflow-wrap: break-word; }
+.af-footnote { font-size: 12px; color: var(--color-text-secondary); line-height: 1.7; overflow-wrap: break-word; }
 
 // 下钻弹层（毛玻璃背景 + 入场动效 + 层级/排版精修；纯样式，零逻辑/结构改动）
 .af-modal { position: fixed; inset: 0; background: var(--color-overlay); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; animation: af-fade-in .18s ease-out; }
@@ -60,11 +68,12 @@
   &:active { transform: scale(.94); } }
 
 // 数据行：加大留白与数字层级（tabular-nums 对齐），hover 微反馈
+// 标签可长（「事实来源」等），给 min-width:0 让标签换行、数字保持完整不被挤掉
 .af-modal__rows { display: flex; flex-direction: column; gap: 8px; }
-.af-modal__row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 10px 12px; border-radius: var(--radius-control); background: var(--color-bg-inset); transition: background .15s;
+.af-modal__row { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; padding: 10px 12px; border-radius: var(--radius-control); background: var(--color-bg-inset); transition: background .15s;
   &:hover { background: var(--color-bg-inset-strong); }
-  span { color: var(--color-text-secondary); }
-  b { font-size: 17px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; } }
+  span { color: var(--color-text-secondary); min-width: 0; overflow-wrap: anywhere; }
+  b { font-size: 17px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; flex-shrink: 0; text-align: right; max-width: 62%; overflow-wrap: anywhere; } }
 
 .af-modal__events { margin-top: 16px; }
 .af-modal__samples { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -75,9 +84,9 @@
 // 任务样本卡：hover 轻浮起 + 会话 ID 等宽字体
 .af-modal__sample { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 10px 12px; transition: border-color .15s, box-shadow .15s;
   &:hover { border-color: var(--color-accent-border); box-shadow: var(--shadow-card); } }
-.af-modal__sample-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); line-height: 1.5; margin-bottom: 6px; }
-.af-modal__sample-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--color-text-tertiary); flex-wrap: wrap;
-  span:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.2px; } }
+.af-modal__sample-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); line-height: 1.5; margin-bottom: 6px; overflow-wrap: anywhere; }
+.af-modal__sample-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--color-text-tertiary); flex-wrap: wrap; min-width: 0;
+  span:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.2px; overflow-wrap: anywhere; } }
 .af-modal__sample-tags { display: inline-flex; gap: 4px; }
 .af-modal__tag { font-style: normal; background: var(--color-accent-bg); color: var(--color-accent); border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 500; }
 

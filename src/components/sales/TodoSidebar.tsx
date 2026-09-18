@@ -8,7 +8,7 @@
  * 行为：散任务 pending 列表（分页 10 条/页）+ 完成进度统计；checkbox 点击即完成。
  */
 import { useEffect, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, ListTodo } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useTodayActionStore, type TodoTask } from '../../stores/todayActionStore'
 import './TodoSidebar.scss'
 
@@ -37,7 +37,10 @@ export default function TodoSidebar() {
   // 分母排除 superseded（自动顶替，非用户行为）、ignored/dismissed（中性），避免虚高
   const pending = scattered.filter(t => t.status === 'pending' || t.status === 'overdue')
   const doneCount = scattered.filter(t => t.status === 'done' || t.status === 'skipped' || t.status === 'manual_done').length
-  const total = Math.max(1, pending.length + doneCount)
+  // 真实总数（未完成 + 已完成）：空列表就是 0，不用 Math.max(1, …) 把保护值当真实数量展示
+  const total = pending.length + doneCount
+  // 仅进度条做除零保护；两个展示数字都取真实值
+  const progressPct = total > 0 ? (doneCount / total) * 100 : 0
 
   // 分页：10 条/页，完成/数据变化后自动钳制回合法页
   const pageCount = Math.max(1, Math.ceil(pending.length / PAGE_SIZE))
@@ -46,33 +49,34 @@ export default function TodoSidebar() {
   useEffect(() => { if (page > pageCount) setPage(pageCount) }, [pageCount, page])
 
   return (
-    <div className="todo-sidebar">
-      <div className="todo-sidebar__header">
-        <span className="todo-sidebar__title"><ListTodo size={14} /> 待办清单</span>
-        <span className="todo-sidebar__meta">{pending.length} 项未完成</span>
+    <div className="side todo-sidebar">
+      {/* 右栏抬头：细线 + 等宽进度数字（概念稿侧栏语法）。
+          两个数字都取真实值：未完成 = 真实待办条数（空态显示 0，不再显示 0 / 1）；
+          已完成/共 = 真实分子分母（总数 = 未完成 + 已完成）。 */}
+      <div className="side-head">
+        <span className="side-head__t">今日待办</span>
+        <span className="num todo-sidebar__count">未完成 {pending.length}</span>
       </div>
-
-      {/* 进度条：纯视觉轨道（数字移到下方统计行，避免窄段文字溢出重叠） */}
-      <div className="todo-sidebar__progress">
-        <div className="todo-sidebar__progress-active" style={{ width: `${(pending.length / total) * 100}%` }} />
-        <div className="todo-sidebar__progress-done" style={{ width: `${(doneCount / total) * 100}%` }} />
+      <div className="bar todo-sidebar__bar" aria-hidden="true">
+        <i style={{ width: `${progressPct}%` }} />
       </div>
-      <div className="todo-sidebar__stat">已完成 {doneCount} · 共 {total}</div>
+      <div className="num todo-sidebar__progress">已完成 {doneCount} / 共 {total}</div>
 
       <div className="todo-sidebar__list">
         {pageItems.length === 0 && <div className="todo-sidebar__empty">暂无未完成待办</div>}
         {pageItems.map((t) => (
-          <div key={t.id ?? t.title} className="todo-sidebar__item">
+          <div key={t.id ?? t.title} className="todo">
             <button
-              className="todo-sidebar__checkbox"
+              className="checkbox todo-sidebar__checkbox"
               title="标记完成"
+              aria-label="标记完成"
               onClick={() => { if (t.id) void completeTodo(t.id) }}
             >
-              <Check size={11} />
+              <Check size={11} strokeWidth={2.4} />
             </button>
-            <div className="todo-sidebar__item-body">
-              <div className="todo-sidebar__item-title">{t.title}</div>
-              <div className="todo-sidebar__item-meta">
+            <div>
+              <div className="todo__t">{t.title}</div>
+              <div className="todo__m">
                 {t.display_name || '未知'} · {TRIGGER_LABELS[t.trigger_type || ''] || t.trigger_type || '待办'}
               </div>
             </div>
@@ -84,16 +88,16 @@ export default function TodoSidebar() {
       {pending.length > PAGE_SIZE && (
         <div className="todo-sidebar__pagination">
           <button
-            className="todo-sidebar__page-btn"
+            className="iconbtn todo-sidebar__page-btn"
             disabled={curPage === 1}
             onClick={() => setPage(curPage - 1)}
             aria-label="上一页"
           >
             <ChevronLeft size={12} />
           </button>
-          <span className="todo-sidebar__page-info">{curPage} / {pageCount}</span>
+          <span className="num todo-sidebar__page-info">{curPage} / {pageCount}</span>
           <button
-            className="todo-sidebar__page-btn"
+            className="iconbtn todo-sidebar__page-btn"
             disabled={curPage === pageCount}
             onClick={() => setPage(curPage + 1)}
             aria-label="下一页"

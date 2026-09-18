@@ -25,6 +25,7 @@
     "test:docgen": "npx tsx scripts/crm-docgen-test.ts",
     "test:central-tls": "npx tsx scripts/central-tls-deployment-test.ts",
     "test:central-native-tls": "npx tsx scripts/central-native-caddy-test.ts",
+    "test:local-owner-id": "npx tsx scripts/local-write-owner-id-test.ts",
     "typecheck:node": "node scripts/typecheck-node-ratchet.cjs"
   },
   "dependencies": {

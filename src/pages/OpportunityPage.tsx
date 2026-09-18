@@ -22,7 +22,7 @@ import { useCrmStore } from '../stores/crmStore'
 import type { OpportunityDealRegistration, OpportunityRecord, QuotationRecord } from '../types/electron'
 import type { OpportunityAnalysisResult, OppAssessment } from '../../shared/opportunitySignals'
 import OpportunityStageAnalysis from '../components/crm/OpportunityStageAnalysis'
-import { RefreshCw, X, CheckCircle2, XCircle, Target, FileText, Lock, BarChart3, List } from 'lucide-react'
+import { RefreshCw, X, CheckCircle2, XCircle, Lock, BarChart3, List } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变（红/橙退出阶段色，红只留语义）
 import { FUNNEL_STAGE_COLORS, FUNNEL_STAGE_GRADIENT_LIGHT, FUNNEL_NEUTRAL, FUNNEL_NEUTRAL_LIGHT } from '../../shared/funnelPalette'
 import './OpportunityPage.scss'
@@ -630,42 +630,48 @@ export default function OpportunityPage() {
   return (
     <div className="opp-page" ref={pageRef}>
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
-      <div className="opp-header">
-        <div className="opp-header__main">
-          <h2><Target size={18} /> 商机</h2>
-          {stats && (
-            <span className="opp-summary">
-              活跃 {stats.total} · 决策中 {decisionCount} ·{' '}
-              <button
-                type="button"
-                className={`opp-summary__pending${pendingOnly ? ' on' : ''}`}
-                aria-pressed={pendingOnly}
-                onClick={() => setPendingOnly((v) => !v)}
-              >
-                金额待确认 {pendingAmount}{pendingOnly ? '（再点取消）' : '（点我筛出来）'}
-              </button>
-            </span>
-          )}
+      {/* 页眉（概念稿 .shead）：小标 → 主张句 → 已有口径的一行摘要；右侧视图分段 + 刷新 */}
+      <div className="shead">
+        <div>
+          <p className="eyebrow">CRM · 商机</p>
+          <h1 className="hero">{stats ? `在谈 ${stats.total} 个商机` : '在谈商机'}</h1>
+          <p className="sub">
+            {stats ? (
+              <>
+                决策中 <span className="num">{decisionCount}</span> ·{' '}
+                <button
+                  type="button"
+                  className={`opp-summary__pending${pendingOnly ? ' on' : ''}`}
+                  aria-pressed={pendingOnly}
+                  onClick={() => setPendingOnly((v) => !v)}
+                >
+                  金额待确认 <span className="num">{pendingAmount}</span>{pendingOnly ? '（再点取消）' : '（点我筛出来）'}
+                </button>
+              </>
+            ) : '客户在微信里表达采购意向（如「要几台」「多少钱」）后自动创建'}
+          </p>
         </div>
-        {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点 */}
-        <div className="opp-viewseg" role="tablist" aria-label="商机视图">
-          <button
-            role="tab"
-            aria-selected={view === 'list'}
-            className={view === 'list' ? 'on' : ''}
-            onClick={() => switchView('list')}
-          ><List size={13} /> 列表</button>
-          <button
-            role="tab"
-            aria-selected={view === 'analysis'}
-            className={view === 'analysis' ? 'on' : ''}
-            onClick={() => switchView('analysis')}
-          ><BarChart3 size={13} /> 阶段分析</button>
+        <div className="shead__actions">
+          {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点 */}
+          <div className="opp-viewseg" role="tablist" aria-label="商机视图">
+            <button
+              role="tab"
+              aria-selected={view === 'list'}
+              className={view === 'list' ? 'on' : ''}
+              onClick={() => switchView('list')}
+            ><List size={13} /> 列表</button>
+            <button
+              role="tab"
+              aria-selected={view === 'analysis'}
+              className={view === 'analysis' ? 'on' : ''}
+              onClick={() => switchView('analysis')}
+            ><BarChart3 size={13} /> 阶段分析</button>
+          </div>
+          {notice && <span className="opp-notice">{notice}</span>}
+          <button className="opp-btn opp-btn--ghost" onClick={() => void refreshAll()} disabled={loading}>
+            <RefreshCw size={14} /> 刷新
+          </button>
         </div>
-        {notice && <span className="opp-notice">{notice}</span>}
-        <button className="opp-btn opp-btn--ghost" onClick={() => void refreshAll()} disabled={loading}>
-          <RefreshCw size={14} /> 刷新
-        </button>
       </div>
 
       {view === 'analysis' && (
@@ -679,8 +685,11 @@ export default function OpportunityPage() {
       )}
 
       {view === 'list' && (funnelStages.length > 0 ? (
-        <div className="opp-chart">
-          <h4 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 600 }}>商机阶段漏斗 <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400, marginLeft: 6 }}>点击阶段筛选下方列表</span></h4>
+        <div className="opp-funnel-block">
+          <div className="seclabel">
+            <span className="seclabel__t">商机阶段漏斗</span>
+            <span className="opp-hint">点击阶段筛选下方列表</span>
+          </div>
           <div className="opp-funnel">
             {funnelStages.map((d, i) => (
               <div key={d.stage}>
@@ -710,29 +719,36 @@ export default function OpportunityPage() {
       )}
 
       {view === 'list' && (
-      <div className="card opp-list-card">
-        <h4>商机列表{stageFilter ? ` · ${stageFilter}` : ''}{pendingOnly ? ' · 金额待确认' : ''} <span className="opp-list-count">{filtered.length} 条</span></h4>
-        <div className="opp-list">
-        {filtered.map((o) => (
-          <div key={o.id} className="opp-row" onClick={() => void openDetail(o)}>
-            <span className="opp-row__avatar" aria-hidden>{(String(o.account_name || '').trim()[0]) || '客'}</span>
-            <div className="opp-row__main">
-              <div className="opp-row__name">{o.account_name || '未命名客户'}</div>
-              <div className="opp-row__sub">
-                {[
-                  o.main_model || o.product || o.name,
-                  Number(o.order_qty) > 0 ? `×${o.order_qty}` : Number(o.quantity) > 0 ? `×${o.quantity}` : '',
-                  `最近信号 ${fmtTime(Number(o.last_signal_at))}`
-                ].filter(Boolean).join(' · ')}
-              </div>
-            </div>
-            <span className="opp-badge" style={{ background: STAGE_COLORS[o.stage] || FUNNEL_NEUTRAL }}>{o.stage}</span>
-            <span className={`opp-row__amt${Number(o.amount) > 0 ? '' : ' opp-row__amt--pending'}`}>
-              {Number(o.amount) > 0 ? fmtAmount(Number(o.amount)) : '金额待确认'}
-            </span>
+      <div className="opp-list-block">
+        {/* 细线行表（概念稿 .tbl/.thead/.trow）：行内网格列模板按页定义，整行点击开详情 */}
+        <div className="seclabel">
+          <span className="seclabel__t">商机列表{stageFilter ? ` · ${stageFilter}` : ''}{pendingOnly ? ' · 金额待确认' : ''}</span>
+          <span className="opp-list-count num">{filtered.length} 条</span>
+        </div>
+        <div className="tbl">
+          <div className="thead opp-head">
+            <span>客户 · 产品 / 最近信号</span><span>阶段</span><span className="tc-r">金额</span>
           </div>
-        ))}
-        {!filtered.length && <div className="opp-empty">该阶段暂无商机</div>}
+          {filtered.map((o) => (
+            <div key={o.id} className="trow opp-grid" onClick={() => void openDetail(o)}>
+              <span className="opp-row__avatar" aria-hidden>{(String(o.account_name || '').trim()[0]) || '客'}</span>
+              <span className="opp-row__main">
+                <span className="opp-row__name">{o.account_name || '未命名客户'}</span>
+                <span className="opp-row__sub">
+                  {[
+                    o.main_model || o.product || o.name,
+                    Number(o.order_qty) > 0 ? `×${o.order_qty}` : Number(o.quantity) > 0 ? `×${o.quantity}` : '',
+                    `最近信号 ${fmtTime(Number(o.last_signal_at))}`
+                  ].filter(Boolean).join(' · ')}
+                </span>
+              </span>
+              <span className="opp-row__stage"><span className="opp-badge" style={{ background: STAGE_COLORS[o.stage] || FUNNEL_NEUTRAL }}>{o.stage}</span></span>
+              <span className={`opp-row__amt${Number(o.amount) > 0 ? '' : ' opp-row__amt--pending'}`}>
+                {Number(o.amount) > 0 ? fmtAmount(Number(o.amount)) : '金额待确认'}
+              </span>
+            </div>
+          ))}
+          {!filtered.length && <div className="opp-empty">该阶段暂无商机</div>}
         </div>
       </div>
       )}
@@ -858,7 +874,7 @@ export default function OpportunityPage() {
       )}
 
       {/* 降级/结果提示（设计稿状态 5「不静默」）：页面内浮层，自动消失 */}
-      {toast && <div className="opp-toast" role="status">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   )
 }

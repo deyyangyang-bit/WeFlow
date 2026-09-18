@@ -300,18 +300,24 @@
   }
 }
 
-// pill 五语义（蓝=信息 / 绿=正常 / 琥珀=待办 / 红=异常 / 灰=中性）
-.pill {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 999px;
-  padding: 2px 8px;
-  white-space: nowrap;
+// pill 五语义（蓝=信息 / 绿=正常 / 琥珀=待办 / 红=异常 / 灰=中性）——只作用于本组件。
+// 2026-09-18：原先以裸 .pill 定义，与 main.scss 基础件的 .pill（客户工作台/线索池在用）
+// 同名同性度，谁生效取决于懒加载顺序（进过设置页就会把全站 .pill 改成这一套）。
+// 收进 .audit-trail 作用域后：本组件内仍是这一套（选择器更具体，视觉一字不改），
+// 其他页面回到基础件定义，结果由页面自己决定、不再受访问顺序影响。
+.audit-trail {
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
 
-  &--info { background: var(--color-accent-bg); color: var(--color-accent); }
-  &--success { background: var(--color-success-bg); color: var(--color-success); }
-  &--warning { background: var(--color-warning-bg); color: var(--color-warning); }
-  &--danger { background: var(--color-danger-bg); color: var(--color-danger); }
-  &--neutral { background: var(--color-bg-inset); color: var(--color-text-secondary); }
+    &--info { background: var(--color-accent-bg); color: var(--color-accent); }
+    &--success { background: var(--color-success-bg); color: var(--color-success); }
+    &--warning { background: var(--color-warning-bg); color: var(--color-warning); }
+    &--danger { background: var(--color-danger-bg); color: var(--color-danger); }
+    &--neutral { background: var(--color-bg-inset); color: var(--color-text-secondary); }
+  }
 }

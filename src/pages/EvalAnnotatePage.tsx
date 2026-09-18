@@ -121,31 +121,45 @@ function EvalCard(props: {
         )}
       </div>
 
-      {item.evidence_text ? <div className="ec-evidence">信号原文：{item.evidence_text}</div> : null}
-
-      <div className="ec-msgs">
-        {messages === null && !msgError && <div className="ec-msg-loading">读取聊天记录中…</div>}
-        {msgError && <div className="ec-msg-loading">无法读取聊天记录（会话可能已删除或无权限）：{msgError}</div>}
-        {messages?.length === 0 && <div className="ec-msg-loading">该会话暂无消息记录</div>}
-        {messages?.map((m) => (
-          <div key={m.messageKey || `${m.localId}`} className={`ec-msg ${m.isSend === 1 ? 'me' : 'other'}`}>
-            <div className="ec-msg-meta">{m.isSend === 1 ? '销售' : '客户'} · {shortTime(m.createTime)}</div>
-            <div className="ec-msg-bubble">{messageText(m)}</div>
-          </div>
-        ))}
-      </div>
-
-      {!confirmed && (
-        <div className="ec-actions">
-          <button className="ec-btn has" disabled={busy} onClick={() => onLabel(item, 'has')}>有商机</button>
-          <button className="ec-btn none" disabled={busy} onClick={() => onLabel(item, 'none')}>无商机</button>
-          <button className="ec-btn uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
+      {/* 判断依据区：信号原文 + 会话最近消息（聊天记录独立滚动，长会话不顶开卡片） */}
+      <section className="ec-block">
+        <div className="seclabel ec-block__head">
+          <span className="seclabel__t">判断依据</span>
+          <span className="ec-block__h">先看聊天自己判</span>
         </div>
+        {item.evidence_text ? <div className="ec-evidence">信号原文：{item.evidence_text}</div> : null}
+
+        <div className="ec-msgs">
+          {messages === null && !msgError && <div className="ec-msg-loading">读取聊天记录中…</div>}
+          {msgError && <div className="ec-msg-loading">无法读取聊天记录（会话可能已删除或无权限）：{msgError}</div>}
+          {messages?.length === 0 && <div className="ec-msg-loading">该会话暂无消息记录</div>}
+          {messages?.map((m) => (
+            <div key={m.messageKey || `${m.localId}`} className={`ec-msg ${m.isSend === 1 ? 'me' : 'other'}`}>
+              <div className="ec-msg-meta">{m.isSend === 1 ? '销售' : '客户'} · {shortTime(m.createTime)}</div>
+              <div className="ec-msg-bubble">{messageText(m)}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 标注区：三档按钮点击即写库，成功后自动跳下一张未标注卡 */}
+      {!confirmed && (
+        <section className="ec-block ec-block--mark">
+          <div className="seclabel ec-block__head">
+            <span className="seclabel__t">人工判定</span>
+            <span className="ec-block__h">点击即写库并跳到下一条</span>
+          </div>
+          <div className="ec-actions">
+            <button className="ec-btn has" disabled={busy} onClick={() => onLabel(item, 'has')}>有商机</button>
+            <button className="ec-btn none" disabled={busy} onClick={() => onLabel(item, 'none')}>无商机</button>
+            <button className="ec-btn uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
+          </div>
+        </section>
       )}
 
       {confirmed && (
         <div className="ec-ai">
-          <button className="crm-btn" onClick={() => setShowAi(!showAi)}>
+          <button className="btn btn--plain btn--sm" onClick={() => setShowAi(!showAi)}>
             {showAi ? <ChevronUp size={13} /> : <ChevronDown size={13} />} AI 预标注
           </button>
           {showAi && (
@@ -183,7 +197,9 @@ function AlertRow(props: {
   const typeText = ALERT_TYPE_TEXT[String(item.alert_type || '')] || String(item.alert_type || '未分类')
 
   return (
-    <div className={`eval-card alert-row ${confirmed ? 'done' : ''}`} ref={props.rowRef}>
+    // 行容器用本页类名（ec-alert-card）：全局基础件 .alert-row 是「左色条 + 内容 + 动作」三列网格，
+    // 同名会把本卡的头/依据/标注三块按三列排开
+    <div className={`eval-card ec-alert-card ${confirmed ? 'done' : ''}`} ref={props.rowRef}>
       <div className="ec-head">
         <span className={`ec-type t-${String(item.alert_type || 'other')}`}>{typeText}</span>
         <span className="ec-name">{item.display_name}</span>
@@ -198,22 +214,34 @@ function AlertRow(props: {
         )}
       </div>
 
-      {item.evidence_text ? <div className="ec-evidence">告警依据原话：{item.evidence_text}</div> : null}
+      {/* 判断依据区：告警依据原话（消息锚点回查在行首标识） */}
+      <section className="ec-block">
+        <div className="seclabel ec-block__head">
+          <span className="seclabel__t">判断依据</span>
+          <span className="ec-block__h">对照原话判类型是否成立</span>
+        </div>
+        {item.evidence_text ? <div className="ec-evidence">告警依据原话：{item.evidence_text}</div> : null}
+      </section>
 
+      {/* 标注区：三档点击即写库（已标行退出待标注队列） */}
       {!confirmed && (
-        <>
+        <section className="ec-block ec-block--mark">
+          <div className="seclabel ec-block__head">
+            <span className="seclabel__t">人工判定</span>
+            <span className="ec-block__h">点击即写库</span>
+          </div>
           {aiLabel && <div className="ec-ai-hint">AI 已预判（标注后可见，防锚定）</div>}
           <div className="ec-actions">
             <button className="ec-btn has" disabled={busy} onClick={() => onLabel(item, 'correct')}>告警成立</button>
             <button className="ec-btn none" disabled={busy} onClick={() => onLabel(item, 'wrong')}>不成立</button>
             <button className="ec-btn uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
           </div>
-        </>
+        </section>
       )}
 
       {confirmed && (
         <div className="ec-ai">
-          <button className="crm-btn" onClick={() => setShowAi(!showAi)}>
+          <button className="btn btn--plain btn--sm" onClick={() => setShowAi(!showAi)}>
             {showAi ? <ChevronUp size={13} /> : <ChevronDown size={13} />} AI 预判
           </button>
           {showAi && (
@@ -415,26 +443,33 @@ export default function EvalAnnotatePage() {
 
   return (
     <div className="eval-annotate-page">
-      <div className="crm-header">
-        <h2><ClipboardCheck size={18} /> 评测标注</h2>
-        <label className={`ea-annotator${annotator.trim() ? '' : ' need'}`}>
-          <UserCircle size={14} /> 标注人
-          <input
-            ref={annotatorRef}
-            value={annotator}
-            placeholder="姓名（必填）"
-            onChange={(e) => {
-              setAnnotator(e.target.value)
-              window.localStorage.setItem(ANNOTATOR_KEY, e.target.value.trim())
-            }}
-          />
-        </label>
-        {tab === 'opportunity' && (
-          <button className="crm-btn primary" disabled={generating} onClick={() => void doGenerate()}
-            title="从意向打标 / 报价信号 / 意向信号会话 / 无信号对照四路生成候选（幂等，已存在不重复；自动排除群聊，同一客户只留一行）">
-            <RefreshCw size={14} /> {generating ? '生成中…' : '生成/刷新候选'}
-          </button>
-        )}
+      {/* 页眉（概念稿 .shead）：小标 → 页名 → 口径说明；右侧为标注人与生成动作 */}
+      <div className="shead ea-header">
+        <div className="ea-header-main">
+          <p className="eyebrow">AI · 评测标注</p>
+          <h1 className="hero ea-title"><ClipboardCheck size={18} /> 评测标注</h1>
+          <p className="sub">人工判定写回样本库，用于评测基线；AI 答案在标注前不可见（防锚定）。</p>
+        </div>
+        <div className="ea-header-acts">
+          <label className={`ea-annotator${annotator.trim() ? '' : ' need'}`}>
+            <UserCircle size={14} /> 标注人
+            <input
+              ref={annotatorRef}
+              value={annotator}
+              placeholder="姓名（必填）"
+              onChange={(e) => {
+                setAnnotator(e.target.value)
+                window.localStorage.setItem(ANNOTATOR_KEY, e.target.value.trim())
+              }}
+            />
+          </label>
+          {tab === 'opportunity' && (
+            <button className="btn btn--primary" disabled={generating} onClick={() => void doGenerate()}
+              title="从意向打标 / 报价信号 / 意向信号会话 / 无信号对照四路生成候选（幂等，已存在不重复；自动排除群聊，同一客户只留一行）">
+              <RefreshCw size={14} /> {generating ? '生成中…' : '生成/刷新候选'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 类型页签：商机样本 / 告警样本（cws-tabs 全局分段控件，跟单中心两 Tab 同款） */}
@@ -447,7 +482,7 @@ export default function EvalAnnotatePage() {
         </button>
       </div>
 
-      {notice && <div className="crm-notice">{notice}</div>}
+      {notice && <div className="ea-notice" role="status">{notice}</div>}
 
       {tab === 'opportunity' && (
         <>
@@ -463,12 +498,12 @@ export default function EvalAnnotatePage() {
           {report && (
             <div className="ea-report-bar">
               <span>{report.gate.met ? '导出正式基线报告' : '导出当前评测进度（未达门槛）'}</span>
-              <button className="crm-btn" disabled={!countConfirmed(cases)} onClick={downloadLabels}
+              <button className="btn btn--plain btn--sm" disabled={!countConfirmed(cases)} onClick={downloadLabels}
                 title="逐条导出人工标注结果（会话/结论/标注人/时间/锚点/AI 比对）；不含聊天原文">
                 <Download size={13} /> 标注结果 CSV（{countConfirmed(cases)} 条）
               </button>
-              <button className="crm-btn" onClick={() => downloadReport('md')}><Download size={13} /> Markdown</button>
-              <button className="crm-btn" onClick={() => downloadReport('json')}><Download size={13} /> JSON</button>
+              <button className="btn btn--plain btn--sm" onClick={() => downloadReport('md')}><Download size={13} /> Markdown</button>
+              <button className="btn btn--plain btn--sm" onClick={() => downloadReport('json')}><Download size={13} /> JSON</button>
             </div>
           )}
 
@@ -489,8 +524,8 @@ export default function EvalAnnotatePage() {
               </div>
               <div className="ea-label">人工分档 has / none / uncertain</div>
             </div>
-            <div className="ea-tip">口径：先看聊天自己判，再点按钮；AI 答案标完后才能看（防锚定）。三档定义见《评测集标注指引》。</div>
           </div>
+          <p className="sub ea-tip">口径：先看聊天自己判，再点按钮；AI 答案标完后才能看（防锚定）。三档定义见《评测集标注指引》。</p>
 
           {/* 基线指标（只统计人工确认样本）：门槛达标才展示，未达标不给正式数字 */}
           {stats?.gate?.met && report?.metrics && (
@@ -591,9 +626,9 @@ export default function EvalAnnotatePage() {
             {(!alertStats || alertStats.types.length === 0) && (
               <div className="ea-stat"><div className="ea-num">—</div><div className="ea-label">暂无告警样本</div></div>
             )}
-            <div className="ea-tip">口径：分母只算人工已标且非「不确定」的样本；某类型一致率 ≥85% 才允许开推送门（ALERT_PUSH_APPROVED）。
-              候选由 alert-eval.ts export/import 通道产出，本页不生成。</div>
           </div>
+          <p className="sub ea-tip">口径：分母只算人工已标且非「不确定」的样本；某类型一致率 ≥85% 才允许开推送门（ALERT_PUSH_APPROVED）。
+            候选由 alert-eval.ts export/import 通道产出，本页不生成。</p>
 
           <div className="cws-tabs ea-subtabs">
             <button className={`cws-tab ${alertFilter === 'pending' ? 'active' : ''}`} onClick={() => setAlertFilter('pending')}>

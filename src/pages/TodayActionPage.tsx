@@ -10,7 +10,7 @@ import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, BarChart3, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
-  Clock, Flame, ListTodo, Plus, RefreshCw, Sunrise, TrendingUp, Users, X,
+  ListTodo, Plus, RefreshCw, Sunrise, X,
 } from 'lucide-react'
 import AIActionCard from '../components/sales/AIActionCard'
 import TodoSidebar from '../components/sales/TodoSidebar'
@@ -30,18 +30,6 @@ const STAGE_LABELS: Record<string, string> = {
 const STAGE_COLORS: Record<string, string> = {
   contacted: '#8b5cf6', quoted: '#f59e0b', negotiating: '#ef4444',
   unknown: '#9ca3af', new: '#3b82f6', dormant: '#6b7280',
-}
-
-function KpiStat({ icon, value, label }: { icon: React.ReactNode; value: number; label: string }) {
-  return (
-    <div className="kpi-strip__stat">
-      {icon}
-      <div>
-        <div className="kpi-strip__value">{value}</div>
-        <div className="kpi-strip__label">{label}</div>
-      </div>
-    </div>
-  );
 }
 
 /** 简报六态（PRD §6.1）——键必须覆盖 coverage.state 的全部取值，避免漏态回退到错误结论 */
@@ -230,35 +218,48 @@ export default function TodayActionPage() {
 
   return (
     <div className="today-action-page">
-      {/* header */}
-      <div className="today-action-page__header">
+      {/* 页眉（概念稿 .shead）：小标 → 一句主张 → 真实计数说明；右侧动作 */}
+      <div className="shead">
         <div>
-          <h1 className="today-action-page__title">今日行动</h1>
-          <p className="today-action-page__subtitle">任务与动态已合并 · 共 {filtered.length} 条信号</p>
+          <p className="eyebrow">{new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</p>
+          <h1 className="hero">今天先跟谁</h1>
+          <p className="sub">
+            共 {filtered.length} 条信号{chipCounts.urgent > 0 ? ` · 其中紧急 ${chipCounts.urgent} 条` : ''}
+            {stats ? ` · 高优行动 ${stats.highPriorityCount} 条` : ''}
+          </p>
         </div>
-        <div className="today-action-page__header-actions">
-          <button className="ta-btn ta-btn--todo" onClick={() => void openTodoModal()}>
-            <Plus size={14} /> 新建待办
+        <div className="shead__actions">
+          <button className="btn btn--quiet" onClick={() => navigate('/sales-report')}>
+            <BarChart3 size={14} strokeWidth={1.6} /> 销售复盘
           </button>
-          <button className="ta-btn ta-btn--teal" onClick={() => navigate('/sales-report')}>
-            <BarChart3 size={14} /> 销售复盘
+          <button className="btn btn--plain" onClick={() => void handleRefresh()} disabled={refreshing}>
+            <RefreshCw size={14} className={refreshing ? 'spinning' : ''} strokeWidth={1.6} /> 重算今日信号
           </button>
-          <button className="today-action-page__refresh" onClick={handleRefresh} disabled={refreshing}>
-            <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
+          <button className="btn btn--primary" onClick={() => void openTodoModal()}>
+            <Plus size={14} strokeWidth={1.6} /> 新建待办
           </button>
         </div>
       </div>
 
-      {/* KPI 单行条 */}
+      {/* 四格数字条（概念稿 .stats/.stat）：等宽数字 + 语义只由文字承担 */}
       {stats && (
-        <div className="kpi-strip">
-          <KpiStat icon={<Flame size={15} />} value={stats.highPriorityCount} label="高优行动" />
-          <span className="kpi-strip__divider" />
-          <KpiStat icon={<Clock size={15} />} value={stats.riskCustomerCount} label="沉默风险" />
-          <span className="kpi-strip__divider" />
-          <KpiStat icon={<TrendingUp size={15} />} value={stats.activeDeals} label="活跃商机" />
-          <span className="kpi-strip__divider" />
-          <KpiStat icon={<Users size={15} />} value={stats.totalSignals} label="待处理" />
+        <div className="stats">
+          <div className="stat">
+            <div className="stat__n">{stats.highPriorityCount}</div>
+            <div className="stat__l">高优行动</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.riskCustomerCount}</div>
+            <div className="stat__l">沉默风险</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.activeDeals}</div>
+            <div className="stat__l">活跃商机</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.totalSignals}</div>
+            <div className="stat__l">待处理</div>
+          </div>
         </div>
       )}
 
@@ -266,15 +267,15 @@ export default function TodayActionPage() {
           PRD §6.1 六态 + §6.2 单飞：任何失败/额度阻断都不得显示为「无风险/无需跟进/全部跟完」 */}
       {/* 收起后的重开入口：把「不可当作已核对」的两态带在按钮上，收起不等于结论已成立 */}
       {digestDismissed && (
-        <button className="crm-btn signal-notice--digest-reopen" onClick={() => setDigestDismissed(false)}>
+        <button className="btn btn--sm signal-notice--digest-reopen" onClick={() => setDigestDismissed(false)}>
           展开开工简报{digest?.coverage?.state === 'failed_or_blocked' ? '（有未完成分析）'
             : digest?.coverage?.state === 'stale_snapshot' ? '（仅旧快照）' : ''}
         </button>
       )}
-      {!digestDismissed && <section className="signal-notice signal-notice--digest" aria-label="当前账号开工简报">
-        <Sunrise size={14} />
+      {!digestDismissed && <section className="notice notice--accent signal-notice signal-notice--digest" aria-label="当前账号开工简报">
+        <Sunrise size={16} strokeWidth={1.6} />
         <div className="signal-notice__digest-body">
-          <strong>开工简报 · 仅当前账号</strong>
+          <span className="notice__h">开工简报 · 仅当前账号</span>
           {/* 态一/二/三/四/五/六：coverage.state 决定展示口径；无 coverage 时按「未核验」处理 */}
           {digest && <p>{DIGEST_STATE_HINT[digest.coverage?.state as DigestStateKey] || '聊天分析覆盖尚未核验，不代表已分析全部消息'}</p>}
           {digest?.coverage?.message && <p className="signal-notice__digest-coverage">{digest.coverage.message}</p>}
@@ -290,10 +291,10 @@ export default function TodayActionPage() {
             <p role="alert">{digestNotReady
               ? '业务库尚未就绪（正在打开当前账号数据），暂无简报。'
               : '简报生成超时（10s 未返回）。'}未完成的聊天分析不会被当作「无需跟进」。
-              <button className="crm-btn" onClick={() => { setDigestPhase('frame'); void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }}>重试</button>
+              <button className="btn btn--sm btn--quiet" onClick={() => { setDigestPhase('frame'); void (window as any).electronAPI.sales.morningDigestGenerate(); void fetchDigest() }}>重试</button>
             </p>
           )}
-          {digestError && <p role="alert">{digestError} <button className="crm-btn" onClick={() => void fetchDigest()}>重试</button></p>}
+          {digestError && <p role="alert">{digestError} <button className="btn btn--sm btn--quiet" onClick={() => void fetchDigest()}>重试</button></p>}
           {digest && (() => {
             const pending = digest.items.filter((it: any) => !it.status || it.status === 'pending')
             const visible = digestExpanded ? pending : pending.slice(0, 5)
@@ -302,8 +303,8 @@ export default function TodayActionPage() {
               {/* 态四：全部覆盖且无有效待办；态一：新账号空态（提供建客户/建待办入口，不调 AI 凑摘要） */}
               {!pending.length && st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
               {!pending.length && st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
-                <button className="crm-btn" onClick={() => navigate('/customers')}>去绑定客户</button>
-                <button className="crm-btn" onClick={() => void openTodoModal()}>新建待办</button>
+                <button className="btn btn--sm btn--quiet" onClick={() => navigate('/customers')}>去绑定客户</button>
+                <button className="btn btn--sm btn--quiet" onClick={() => void openTodoModal()}>新建待办</button>
               </p>}
               {!pending.length && (st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
                 <p>暂无已记录的事项。注意：{digest.coverage?.reason || '聊天分析未完成'}，
@@ -314,35 +315,43 @@ export default function TodayActionPage() {
                 <strong>{it.group === 'must' ? '今天必须处理' : '建议优先跟进'} · {it.displayName}</strong>——{it.reason}
                 {it.dueAt && <small> · 期限 {new Date(it.dueAt).toLocaleString()}</small>}
               </button>)}
-              {pending.length > 5 && <button className="crm-btn" onClick={() => setDigestExpanded(v => !v)}>{digestExpanded ? '收起' : `展开其余 ${pending.length - 5} 个事项`}</button>}
+              {pending.length > 5 && <button className="btn btn--sm btn--quiet" onClick={() => setDigestExpanded(v => !v)}>{digestExpanded ? '收起' : `展开其余 ${pending.length - 5} 个事项`}</button>}
               <details><summary>历史事项状态</summary>{digest.items.filter((it: any) => it.status && it.status !== 'pending').map((it: any) => <p key={it.itemKey}>{it.displayName} · {it.reason} · {it.status}</p>)}</details>
             </>
           })()}
+          <div className="signal-notice__digest-acts">
+            <button className="btn btn--sm btn--quiet" onClick={() => setDigestDismissed(true)}>收起</button>
+            {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
+            <button className="btn btn--sm btn--quiet" disabled={digestRegenerating || identifyBusy}
+              title={identifyBusy ? '正在识别中，请稍候' : undefined}
+              onClick={() => void regenerateDigest()}>
+              {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
+            </button>
+          </div>
         </div>
-        <button className="crm-btn" onClick={() => setDigestDismissed(true)}>收起</button>
-        {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
-        <button className="crm-btn" disabled={digestRegenerating || identifyBusy}
-          title={identifyBusy ? '正在识别中，请稍候' : undefined}
-          onClick={() => void regenerateDigest()}>
-          {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
-        </button>
       </section>}
 
-      {/* 主两栏 */}
-      <div className="today-action-page__main">
+      {/* 主两栏（概念稿 .cols：左索引 / 右待办细线栏） */}
+      <div className="cols today-action-page__main">
         <div className="today-action-page__left">
-          {/* 筛选 chips */}
-          <div className="signal-chips">
-            {CHIPS.map(c => (
-              <button
-                key={c.key}
-                className={`signal-chip ${filter === c.key ? 'signal-chip--active' : ''}`}
-                onClick={() => setFilter(c.key)}
-              >
-                {c.label}
-                <span className="signal-chip__count">{chipCounts[c.key]}</span>
-              </button>
-            ))}
+          {/* 分段标题 + 筛选（概念稿 chipbar） */}
+          <div className="seclabel">
+            <span className="seclabel__t">信号</span>
+            <span className="chipbar" role="tablist" aria-label="信号筛选">
+              {CHIPS.map(c => (
+                <button
+                  key={c.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={filter === c.key}
+                  className={`chip ${filter === c.key ? 'is-on' : ''}`}
+                  onClick={() => setFilter(c.key)}
+                >
+                  {c.label}
+                  <span className="chip__n">{chipCounts[c.key]}</span>
+                </button>
+              ))}
+            </span>
           </div>
 
           {/* 错误 */}
@@ -374,34 +383,35 @@ export default function TodayActionPage() {
             </div>
           )}
 
-          {/* 信号卡片流 */}
+          {/* 信号细线索引 */}
           {filtered.length > 0 && (
             <>
-              <div className="signal-list">
+              <div className="siglist">
                 {pageItems.map(item => (
                   <AIActionCard key={item.itemKey} item={item} />
                 ))}
               </div>
+              <p className="sub siglist__note">优先级分来自本机排序引擎，不对外暴露；点客户名进客户档案，点整行展开判断。</p>
 
-              {/* 分页 */}
+              {/* 分页（计数全部取真实值） */}
               {pageCount > 1 && (
                 <div className="signal-pagination">
                   <button
-                    className="signal-pagination__btn"
+                    className="btn btn--sm signal-pagination__btn"
                     disabled={curPage === 1}
                     onClick={() => setPage(curPage - 1)}
                   >
-                    <ChevronLeft size={14} /> 上一页
+                    <ChevronLeft size={14} strokeWidth={1.6} /> 上一页
                   </button>
-                  <span className="signal-pagination__info">
+                  <span className="num signal-pagination__info">
                     {curPage} / {pageCount} 页 · 共 {filtered.length} 条
                   </span>
                   <button
-                    className="signal-pagination__btn"
+                    className="btn btn--sm signal-pagination__btn"
                     disabled={curPage === pageCount}
                     onClick={() => setPage(curPage + 1)}
                   >
-                    下一页 <ChevronRight size={14} />
+                    下一页 <ChevronRight size={14} strokeWidth={1.6} />
                   </button>
                 </div>
               )}

@@ -1,5 +1,6 @@
 
-.crm-review-page { padding: 24px; color: var(--text-primary, var(--color-text-primary)); }
+/* 页面根：留白复用外壳 .content 的 padding（任务 0 约定），本页不再叠加整页 padding */
+.crm-review-page { color: var(--text-primary, var(--color-text-primary)); }
 .crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
 .crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
 /* 销售团队下拉（header 扫描按钮旁）：成员名单 + 新增/移除管理 */
@@ -92,11 +93,77 @@
   &.danger:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: transparent; } }
 .crm-header__sub { font-size: 12px; color: var(--color-text-tertiary); margin-right: auto; }
 
-// ── 设计稿屏 4（2026-09-06 四页简化）：今天要办摘要行 + 管理折叠区 ──
-.review-verdict { background: var(--color-accent-bg); border-radius: var(--radius-control); padding: 12px 16px; font-size: 13px; color: var(--color-text-primary); margin-bottom: 12px;
-  b { color: var(--color-text-primary); font-weight: 700; font-variant-numeric: tabular-nums; } }
+// ── 管理折叠区（原「今天要办」摘要行已并入顶部视图栏 .rail，提示不再单独占一层）──
 .review-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; background: var(--color-bg-surface-muted); border: none; border-radius: var(--radius-control); color: var(--color-text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 16px;
   &:hover { color: var(--color-text-primary); } }
 .review-manage { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
 /* 销售团队从 header 弹层改为折叠区内联块（功能原样，仅定位方式变化） */
 .sales-team-drop--inline { position: static; width: auto; box-shadow: none; padding: 0; border: none; background: transparent; }
+
+/* =============================================================
+   布局整理（跟单页专属，全部限定在 .crm-review-page 作用域内）
+   概念稿语法：页眉左标题右动作 → 视图栏 .rail → 分节细线行 → 队列细线行。
+   共享类（.crm-btn / .crm-card 本体 / .cws-tabs 等）不改，只在本页作用域覆写。
+   ============================================================= */
+
+/* ─── 页眉：小标 + 标题在左，扫描与刷新在右 ─── */
+.crm-review-page .crm-header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 10px; }
+.crm-review-page .crm-header__id { display: flex; flex-direction: column; gap: 1px; min-width: 0; margin-right: auto; }
+.crm-review-page .crm-header__id h2 { margin-right: 0; font-size: 17px; line-height: 1.25; }
+.crm-review-page .crm-header__ops { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ─── 视图栏：队列档位 + 右侧「今天要办」汇总（.rail 本体在 main.scss）─── */
+.crm-review-page .rail { margin-top: 0; margin-bottom: 12px; }
+
+/* ─── 分节行：标题 + 统计/动作同一行，细线分隔 ─── */
+.crm-review-page .review-sec { margin-bottom: 16px; }
+.crm-review-page .review-sec__head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--color-divider);
+}
+.crm-review-page .review-sec__t { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--color-text-secondary); }
+.crm-review-page .review-sec__head .logi-stats { margin-left: 0; }
+.crm-review-page .review-sec__head .crm-btn { margin-left: auto; }
+.crm-review-page .review-queue__h {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin: 12px 0 4px;
+}
+.crm-review-page .review-queue__n { font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); }
+
+/* ─── 队列 / 到款 / 发票行：卡片降级为细线行（本页作用域内的 .crm-card，不动共享类本体）─── */
+.crm-review-page .crm-card {
+  border: 0; border-bottom: 1px solid var(--color-divider); border-radius: 0; padding: 9px 2px; margin-bottom: 0;
+  /* 窄屏换行而不是把文字/按钮挤成竖排（发票行的输入与动作整体落到下一行） */
+  flex-wrap: wrap; gap: 6px 10px;
+}
+.crm-review-page .crm-card > span { min-width: 0; }
+.crm-review-page .crm-card.logi-card { padding: 10px 2px; }
+.crm-review-page .logi-card__actions { margin-top: 6px; }
+/* 行内状态徽标与相邻信息留出间距（原来紧贴客户/合同文字） */
+.crm-review-page .logi-card__info .logi-card__time,
+.crm-review-page .logi-card__info .invoice-ok { margin-left: 6px; }
+.crm-review-page .logi-queue { margin-bottom: 4px; }
+/* 空态仍以虚线块区分（比上面的细线行更具体，保持覆盖顺序稳定） */
+.crm-review-page .crm-card.crm-card--empty { border: 1px dashed var(--color-divider); border-radius: var(--radius-small); padding: 12px 14px; margin-bottom: 4px; color: var(--color-text-tertiary); }
+
+/* ─── 天分组头：概念稿 .tl__grp 语法（细线下沿、无底色块）─── */
+.crm-review-page .day-header {
+  margin: 0; padding: 10px 2px; border: 0; border-bottom: 1px solid var(--color-border);
+  border-radius: 0; background: transparent;
+}
+.crm-review-page .claimed-section .day-header { margin-top: 4px; }
+.crm-review-page .claimed-section { margin-top: 14px; }
+
+/* ─── 行内认领控件宽度：原内联宽度改类（窄屏可收缩，避免挤出横向滚动）─── */
+.crm-review-page .review-field { min-width: 0; }
+.crm-review-page .review-field--sales { width: 132px; }
+.crm-review-page .review-field--account { width: 160px; }
+.crm-review-page .review-field--contract { width: 150px; }
+@media (max-width: 1100px) {
+  .crm-review-page .review-field--account { width: 140px; }
+  .crm-review-page .review-field--contract { width: 130px; }
+}
+@media (max-width: 820px) {
+  .crm-review-page .crm-header { flex-wrap: wrap; }
+  .crm-review-page .logi-card__actions { row-gap: 6px; }
+}

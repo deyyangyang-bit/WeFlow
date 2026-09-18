@@ -236,9 +236,17 @@ async function main(): Promise<void> {
   })
   const mineLocalId = localLeadByContact('13900000004')
   const otherLocalId = localLeadByContact('13900000005')
-  const res = assignmentService.assignLeads([mineLocalId], '杨青', '测试操作', 'manual') // 本机署名路径（历史行为不变）
-  assignmentService.assignLeads([otherLocalId], '李四', '测试操作', 'manual')           // 他人
-  ok('D1 本机 assignLeads 仍写署名（改动不触碰本地分配路径）',
+  // ⚠️ 2026-09-17 起本机写路径会补 owner_employee_id（见 scripts/local-write-owner-id-test.ts）：
+  // 下面两条是**姓名回退路径**用例，必须显式解绑后再写，否则会落到 ID 权威分支，
+  // 语义就从「姓名集合能不能看见」变成「ID 等值能不能看见」——测的东西不一样了。
+  // G4 尤其依赖这一点：解绑后要验证的是姓名行照常可见，ID 行按 ID 权威拒绝。
+  identityService.setIdentity('杨青', '销售') // 清别名（解绑后别名恒空，此处确保前置一致）
+  const savedEnabled = Boolean(cfg.get('centralSyncEnabled'))
+  cfg.set('centralSyncEnabled', false)
+  const res = assignmentService.assignLeads([mineLocalId], '杨青', '测试操作', 'manual') // 未绑定 → 姓名回退路径
+  assignmentService.assignLeads([otherLocalId], '李四', '测试操作', 'manual')           // 他人（同为姓名回退路径）
+  cfg.set('centralSyncEnabled', savedEnabled) // 恢复绑定态，后续 D/E/F 段按绑定后的视图口径继续
+  ok('D1 本机 assignLeads 仍写署名（姓名回退行不因补列而改变 sales_name 口径）',
     res.ok === true && res.data?.assignments.length === 1 && landed(mineLocalId)?.sales_name === '杨青' && landed(otherLocalId)?.sales_name === '李四',
     JSON.stringify({ mine: landed(mineLocalId)?.sales_name, other: landed(otherLocalId)?.sales_name }))
   const asgRows = crmDbService.all('SELECT * FROM assignment WHERE deleted = 0 ORDER BY id DESC')

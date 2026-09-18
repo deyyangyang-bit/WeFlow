@@ -16,10 +16,53 @@
   background: var(--color-bg-page);
 }
 
+// ── 宽窗口列数（概念稿 .set-cards / .set-groups 同口径：两栏 / 三栏，
+//    窄窗逐级收回单栏）。断点按「视口 → 设置弹窗实际宽度」换算：
+//    弹窗宽 = min(1180px, 100vw - 40px)、正文左右各 24px 内边距。
+// 常用页四卡：宽窗 2×2，同行等高（stretch）避免卡片参差；高级入口整行
+.snav-body--common {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  align-items: stretch;
+
+  > .snav-advanced-entry {
+  border: 1px solid var(--color-border);
+    grid-column: 1 / -1;
+  }
+}
+
+// 高级页三组：宽窗 AI / 数据 / 系统 三栏，组内行表高度各栏独立
+.snav-body--advanced {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: start;
+  align-items: start;
+
+  > .snav-adv-topbar {
+    grid-column: 1 / -1;
+  }
+}
+
+// 小窗口逐步降列：三栏 → 两栏 → 单栏；常用页两栏 → 单栏
+@media (max-width: 1180px) {
+  .snav-body--advanced {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .snav-body--common,
+  .snav-body--advanced {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 // ── 常用页卡片（屏 1）──
 
 .snav-card {
   background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   padding: 14px 18px;
   box-shadow: var(--shadow-card);

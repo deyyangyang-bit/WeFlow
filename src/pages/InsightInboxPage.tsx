@@ -279,22 +279,38 @@ export default function InsightInboxPage() {
   return (
     <div className="insight-inbox-page">
       <section className="insight-inbox-main">
-        <header className="insight-inbox-header">
+        {/* 页眉（概念稿 .shead）：小标 → 页名 → 说明；右侧为操作区 */}
+        <header className="shead insight-inbox-header">
           <div className="insight-inbox-title-block">
-            <div className="insight-inbox-title-line">
+            <p className="eyebrow">AI · 重要提醒</p>
+            <h1 className="hero insight-inbox-title-line">
               <img src={INSIGHT_AVATAR_URL} alt="" className="insight-inbox-logo" />
-              <h2>重要提醒</h2>
-            </div>
-            <div className="insight-inbox-stats">
-              <span>共 {stats.total} 条</span>
-              <span>今天 {stats.todayCount} 条</span>
-              <span>未读 {stats.unreadCount} 条</span>
-            </div>
+              <span>重要提醒</span>
+            </h1>
+            <p className="sub">需要及时关注的客户动态；每条都能打开对应会话核对。</p>
           </div>
-          <button className="insight-icon-btn" onClick={() => { void loadRecords() }} title="刷新">
-            <RefreshCw size={18} className={loading ? 'spinning' : ''} />
-          </button>
+          <div className="shead__actions">
+            <button className="insight-icon-btn" onClick={() => { void loadRecords() }} title="刷新">
+              <RefreshCw size={18} className={loading ? 'spinning' : ''} />
+            </button>
+          </div>
         </header>
+
+        {/* 状态数字条（概念稿 .stats）：数字只取既有统计口径，不加派生指标 */}
+        <div className="stats insight-inbox-stats">
+          <div className="stat">
+            <div className="stat__n">{stats.total}</div>
+            <div className="stat__l">当前筛选</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.todayCount}</div>
+            <div className="stat__l">今天新增</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.unreadCount}</div>
+            <div className="stat__l">未读</div>
+          </div>
+        </div>
 
         {focusedRecordId && (
           <div className="insight-focus-bar">
@@ -340,6 +356,7 @@ export default function InsightInboxPage() {
                     <Avatar src={INSIGHT_AVATAR_URL} name="见解" size={44} shape="rounded" lazy={false} />
                   </div>
                   <div className="insight-card-content">
+                    {/* 状态行：对象（发给谁 / 会话）+ 时间 */}
                     <div className="insight-card-header">
                       <div className="insight-recipient">
                         <Avatar src={record.avatarUrl} name={record.displayName} size={28} shape="rounded" />
@@ -348,13 +365,35 @@ export default function InsightInboxPage() {
                           <span className="insight-session-id">{record.sessionId}</span>
                         </div>
                       </div>
-                      <div className="insight-card-actions">
+                      <span className="insight-time">{formatRecordTime(record.createdAt)}</span>
+                    </div>
+                    {record.sourceType === 'message_analysis' && record.messageInsight && (
+                      <div className="message-analysis-target">
+                        <span className="message-analysis-target-label">目标消息</span>
+                        <span className="message-analysis-target-text">
+                          {record.messageInsight.targetSenderName}：{record.messageInsight.targetTextPreview}
+                        </span>
+                      </div>
+                    )}
+                    {/* 说明/正文 */}
+                    <p className="insight-body">{record.insight}</p>
+                    {record.sourceType === 'message_analysis' && record.messageInsight && (
+                      <div className="message-analysis-tags">
+                        <span>情绪：{record.messageInsight.analysis.emotion}</span>
+                        <span>意图：{record.messageInsight.analysis.intent}</span>
+                        <span>话题：{record.messageInsight.analysis.topic}</span>
+                      </div>
+                    )}
+                    {/* 操作区：来源/触发/阶段状态 + 动作按钮 */}
+                    <div className="insight-card-foot">
+                      <div className="insight-card-tags">
                         <span className={`insight-source-pill ${record.sourceType || 'insight'}`}>{getSourceLabel(record.sourceType)}</span>
                         <span className={`insight-trigger-pill ${record.triggerReason}`}>{getTriggerLabel(record.triggerReason)}</span>
                         {record.salesStage && (
                           <span className={`insight-stage-pill stage-${record.salesStage}`}>{record.salesStage}</span>
                         )}
-                        <span className="insight-time">{formatRecordTime(record.createdAt)}</span>
+                      </div>
+                      <div className="insight-card-actions">
                         {crmMap[record.sessionId] && (
                           <button
                             className="insight-action-btn crm"
@@ -375,22 +414,6 @@ export default function InsightInboxPage() {
                         </button>
                       </div>
                     </div>
-                    {record.sourceType === 'message_analysis' && record.messageInsight && (
-                      <div className="message-analysis-target">
-                        <span className="message-analysis-target-label">目标消息</span>
-                        <span className="message-analysis-target-text">
-                          {record.messageInsight.targetSenderName}：{record.messageInsight.targetTextPreview}
-                        </span>
-                      </div>
-                    )}
-                    <p className="insight-body">{record.insight}</p>
-                    {record.sourceType === 'message_analysis' && record.messageInsight && (
-                      <div className="message-analysis-tags">
-                        <span>情绪：{record.messageInsight.analysis.emotion}</span>
-                        <span>意图：{record.messageInsight.analysis.intent}</span>
-                        <span>话题：{record.messageInsight.analysis.topic}</span>
-                      </div>
-                    )}
                   </div>
                 </article>
               ))}
@@ -593,7 +616,8 @@ export default function InsightInboxPage() {
         </div>
       )}
 
-      {message && <div className="insight-copy-toast">{message}</div>}
+      {/* 复制/读取反馈：走全局 .toast（本页只补 z-index，需盖在请求日志弹层之上） */}
+      {message && <div className="toast insight-copy-toast" role="status" aria-live="polite">{message}</div>}
     </div>
   )
 }

@@ -1,217 +1,222 @@
-/* CustomerWorkspacePage.scss —— AI 客户工作台（复用 CrmWorkbenchPage.scss 的 crm-* 基础类） */
-.cws-page { padding: 24px; color: var(--text-primary, var(--color-text-primary)); }
+/* CustomerWorkspacePage.scss —— AI 客户工作台（概念稿 CRM 屏语法：细线行 / 等宽数字 / 四栏判断）
+   约定（2026-09-17 概念稿对齐）：
+   - 颜色只消费 src/styles/main.scss 尾部「前进视觉 tokens」--color-* 族，双模式（[data-mode="dark"]）自动继承；
+   - 跨页复用件（.hero/.eyebrow/.sub/.rail/.tbl/.defs/.verdicts/.ahead/.tag/.pill/.notice/.btn…）定义在 main.scss，
+     本文件只写本页私有件与「本页网格模板 / 档案列细线化」覆写；新增跨页类一律放 main.scss。
+   - 卡片降级为细线：静态对象不再同时带边框 + 圆角 + 阴影；浮起只留给档案浮层与菜单。
+   - 留白：整页留白由外壳 .content（24px 32px）承担，本页不再叠加一整层 padding（见 App.scss「内容滚动约定」）。
+   - 层级（概念稿 CRM 屏）：页头 .shead → 阶段筛选 .rail → 客户索引 .cws-index ＋ 当前档案 .cws-side。
+     宽窗（≥1280px，外壳内容区约 1000px 以上）两栏并排；窄窗档案回到浮层抽屉，选择 / 关闭 / 遮罩行为不变。 */
+.cws-page { color: var(--color-text-primary); }
 
-/* 顶部概览徽章 */
-.cws-badges { display: flex; gap: 6px; margin-right: auto; }
-.cws-badge {
-  font-size: 12px; padding: 3px 10px; border-radius: 12px;
-  background: var(--color-bg-inset); color: var(--color-text-secondary); font-variant-numeric: tabular-nums;
+/* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
+.cws-page .hero { max-width: 760px; }
+
+/* ─── 按钮补齐（概念稿 .btn 默认档：描边细线 + surface 底 + 30px）
+   main.scss 的「界面概念稿基础件」只补了 BEM 修饰符，基线外观各页自持；
+   这里按页补齐，并把全局修饰符在本页作用域内重述一遍，保证叠放顺序与稿一致 ── */
+.cws-page {
+  .btn {
+    height: 30px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: var(--radius-small);
+    background: var(--color-bg-surface); color: var(--color-text-primary); font-family: inherit; font-size: 12.5px;
+  }
+  .btn:hover { background: var(--color-bg-hover); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn--primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-text-on-accent); }
+  .btn--primary:hover { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
+  .btn--quiet { border-color: transparent; background: none; color: var(--color-text-secondary); }
+  .btn--quiet:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+  .btn--sm { height: 26px; padding: 0 10px; font-size: 12px; }
 }
-.cws-badge--follow { background: rgba(220, 38, 38, 0.08); color: var(--color-danger); }
-.cws-badge--insight { background: rgba(5, 150, 105, 0.1); color: var(--color-success); }
 
-/* 更多菜单 */
+/* 更多菜单（浮层：保留阴影） */
 .cws-more { position: relative; }
 .cws-menu {
-  position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 30;
-  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 8px;
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30;
+  background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: var(--radius-small);
   box-shadow: var(--shadow-menu); padding: 6px; min-width: 180px;
 }
 .cws-menu__item {
   display: flex; gap: 6px; align-items: center; width: 100%;
-  border: none; background: none; text-align: left; font-size: 12px;
-  padding: 8px 10px; border-radius: 6px; cursor: pointer; color: var(--color-text-primary);
-  &:hover { background: var(--color-bg-inset); }
+  border: none; background: none; text-align: left; font-family: inherit; font-size: 12px;
+  padding: 8px 10px; border-radius: var(--radius-micro); cursor: pointer; color: var(--color-text-primary);
+  &:hover { background: var(--color-bg-hover); }
   &:disabled { opacity: 0.5; cursor: default; }
 }
 
-/* 视图 tab（.cws-tabs/.cws-tab 已上移 main.scss 全局——跟单中心两 Tab 复用，跨页类勿留在本页 scss） */
-.cws-toolbar { margin-bottom: 0; }
-.cws-search {
-  border: 1px solid var(--color-border); border-radius: 6px; padding: 6px 10px; font-size: 13px;
-  min-width: 200px; background: var(--color-bg-surface);
+/* ─── AI 准确率（近 7 天）：折叠细线 + .defs 三列键值 ─────────────── */
+.cws-accuracy { margin-top: 16px; }
+.cws-accuracy__head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 0 0 6px; border: none; background: none; text-align: left; cursor: pointer;
+  font-family: inherit;
+}
+.cws-accuracy__toggle { font-size: 11px; color: var(--color-text-tertiary); }
+.cws-accuracy__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* ─── 搜索行（概念稿 .field）：索引列首行，索引与档案两列同顶 ────────── */
+.cws-searchrow { margin: 0; }
+.cws-searchfield { width: min(340px, 100%); }
+
+/* ─── 客户索引（概念稿 .tbl/.thead/.trow + 本页网格模板）─────────── */
+.cws-ix { grid-template-columns: minmax(0, 1fr) 84px 118px 16px; }
+.cws-ix--row {
+  /* .trow 是 Grid 行长；button 的 UA 外观在本项目不全局 reset，按行补齐 */
+  border: none; background: none; font-family: inherit; color: inherit; cursor: pointer;
+}
+.cws-ix__who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cws-ix__main { display: flex; flex-direction: column; min-width: 0; }
+.cws-ix__silent { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+.cws-ix__empty { padding: 22px 10px; font-size: 12.5px; color: var(--color-text-tertiary); }
+
+/* 分页条（与 SearchTable 同款行为：第 n / m 页 · 共 N 条） */
+.cws-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0 0; }
+.cws-pager__info { font-size: 12px; color: var(--color-text-secondary); }
+
+/* ─── 行动队列（细线行；卡片降级为 1px 发丝）──────────────────── */
+.cws-q, .cws-q__row { grid-template-columns: minmax(190px, 0.85fr) minmax(0, 1.5fr) auto; }
+.cws-q__row { cursor: pointer; }
+.cws-q__who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cws-q__name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.cws-q__why { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cws-q__reason { font-size: 12.5px; color: var(--color-text-primary); line-height: 1.5; }
+.cws-q__suggest { font-size: 11.5px; color: var(--color-text-tertiary); line-height: 1.5; }
+.cws-q__ops { flex-wrap: wrap; row-gap: 6px; }
+
+/* ─── 空态（细线，不落卡）──────────────────────────────── */
+.cws-done { text-align: center; padding: 46px 0 52px; }
+.cws-done__title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
+.cws-done__sub { color: var(--color-text-tertiary); font-size: 12px; line-height: 1.7; margin: 6px auto 0; max-width: 560px; }
+
+/* ─── 批量采纳条（概念稿 .notice：左侧 2px 语义条替代整块 tint 底）── */
+.cws-batch-bar {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 10px;
+  border-left: 2px solid var(--color-accent); padding: 3px 0 3px 13px;
+  font-size: 12px; color: var(--color-text-secondary);
 }
 
-/* 客户卡片流 */
-/* 对齐设计稿：3 列大卡（宽屏自动保持 3 列比例，窄屏回落自适应） */
-.cws-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px;
-}
-.cws-card {
-  background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card); box-shadow: var(--shadow-card);
-  padding: 12px 14px; cursor: pointer; transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-  display: flex; flex-direction: column; gap: 6px;
-  &:hover { border-color: var(--color-accent-border); transform: translateY(-1px); }
-  &.active { border-color: var(--color-accent-border); background: var(--color-accent-bg); }
-}
-.cws-card__head { display: flex; align-items: center; gap: 6px; }
-.cws-card__name { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
-.cws-card__stage { margin-left: auto; }
-.cws-card__company { font-size: 12px; color: var(--color-text-secondary); }
-.cws-card__silence { font-size: 11px; color: var(--color-text-tertiary); display: flex; gap: 4px; align-items: center; }
-.cws-card__signal {
-  display: flex; gap: 6px; align-items: flex-start;
-  background: var(--color-bg-surface-muted); border: 1px solid var(--color-bg-inset); border-radius: 8px; padding: 6px 8px;
-}
-.cws-card__signal-tag {
-  flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: rgba(37, 99, 235, 0.1); color: var(--color-accent);
-}
-.cws-card__signal-text { font-size: 12px; color: var(--color-text-secondary); word-break: break-all; }
-.cws-card__actions { display: flex; gap: 6px; margin-top: 2px; }
-.cws-card__complete { margin-left: auto; }
+.cws-info-check {
+  display: flex; align-items: center; cursor: pointer;
 
-/* P0-3.2 AI 当前判断卡（消费 getCustomerCurrentView 投影；evidence 点击才回查 P0-2B） */
-.cws-j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 8px; font-size: 11px; vertical-align: 1px; }
-.cws-j-badge--stale { background: var(--color-warning-bg); color: var(--color-warning); }
-.cws-j-badge--manual { background: var(--color-accent-bg); color: var(--color-accent); }
-.cws-j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: none; border-radius: 8px; cursor: pointer; }
-.cws-j-evidence:hover { background: var(--color-accent-bg); }
-.cws-j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: 6px; font-size: 13px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
-.cws-j-empty { color: var(--color-text-tertiary); }
+  input {
+    cursor: pointer;
+    accent-color: var(--color-accent);
+  }
+}
 
-/* 客户 360 档案：右侧抽屉（2026-09-05，替代页面底部内联长面板——页面过长影响操作） */
-.cws-drawer {
-  position: fixed; top: 48px; right: 0; bottom: 0; left: 0; z-index: 900; /* top 48px 避开 TitleBar（z-index 2101），防右上角与窗口最小化/关闭键重叠 */
-  background: rgba(0, 0, 0, 0.35);
+/* ─── 客户索引 ＋ 当前档案（概念稿 .crm：索引列 + 档案列）─────────── */
+.cws-cols { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
+.cws-index { min-width: 0; }
+
+/* 档案列默认档 = 浮层抽屉（浮起仅此处：overlay + shadow-pop；窄窗仍走这一档） */
+.cws-side {
+  position: fixed; top: 46px; right: 0; bottom: 0; left: 0; z-index: 900; /* top 46px 避开 TitleBar（z-index 2101），防右上角与窗口最小化/关闭键重叠 */
+  background: var(--color-overlay);
   display: flex; justify-content: flex-end;
+  animation: wf-fade-in .16s ease-out both;
 }
-.cws-drawer__panel {
+.cws-side__panel {
   width: min(760px, 94vw); height: 100%;
   background: var(--color-bg-surface);
   overflow-y: auto; padding: 16px 20px 32px;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-pop);
   .crm-detail { margin-top: 0; }
-  .crm-detail-head { position: sticky; top: -16px; z-index: 5; background: var(--color-bg-surface); padding: 4px 0 8px; }
+  .crm-detail-head {
+    position: sticky; top: -16px; z-index: 5; background: var(--color-bg-surface);
+    padding: 4px 0 8px; align-items: flex-start; flex-wrap: wrap; gap: 8px 12px;
+  }
+  .crm-detail-actions { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
+  /* 共享类的细线化覆写（只作用于本页档案列，不改 CrmWorkbenchPage.scss 自身） */
+  .crm-insight {
+    background: none; border: none; border-left: 2px solid var(--color-border); border-radius: 0;
+    padding: 2px 0 2px 13px; margin-bottom: 12px;
+    font-size: 12.5px; line-height: 1.68; color: var(--color-text-secondary);
+  }
+  .crm-timeline__item { border-bottom: 1px solid var(--color-divider); padding-bottom: 6px; }
+  .crm-muted { font-size: 12.5px; }
 }
-.cws-drawer__close { padding: 4px 8px; }
+.cws-side__close { padding: 4px 6px; }
 
-// ─── 客户工作台简化改版（设计稿屏 1-4）：颜色全走 --color-* 族，零硬编码 hex ──
-.cws-toolbar-row { margin-bottom: 14px; }
+/* 宽窗（≥1280px）：档案改为文档流内的粘顶列——选择/关闭仍是同一个 selectedCustomer，
+   只是从「盖住列表」变成「与列表并排」；窄窗不进入本档，浮层行为一字不改。 */
+@media (min-width: 1280px) {
+  .cws-cols.has-detail { grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 400px); }
+  .cws-cols.has-detail .cws-index { padding-right: 22px; }
 
-// 屏 1 行动队列
-.cws-queue-hint {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  margin-bottom: 10px;
-
-  strong { color: var(--color-text-primary); font-size: 14px; }
-}
-
-.cws-queue { display: flex; flex-direction: column; gap: 12px; }
-
-.cws-action-card {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-card);
-  padding: 14px 18px;
-  box-shadow: var(--shadow-card);
-  cursor: pointer;
-
-  &:hover { outline: 1px solid var(--color-border); }
-
-  .cws-action-card__body { flex: 1; min-width: 0; }
-
-  .cws-action-card__head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .cws-action-card__name { font-size: 14px; font-weight: 700; color: var(--color-text-primary); }
-  .cws-action-card__reason { font-size: 13px; color: var(--color-text-primary); margin: 2px 0; }
-  .cws-action-card__suggest { font-size: 12px; color: var(--color-text-secondary); }
-
-  .cws-action-card__ops { display: flex; flex-direction: column; gap: 8px; flex: none; padding-top: 2px; }
-}
-
-// 屏 2 空态
-.cws-done {
-  text-align: center;
-  padding: 56px 24px;
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-
-  .cws-done__title { font-size: 15px; font-weight: 700; color: var(--color-text-primary); margin-top: 8px; }
-  .cws-done__sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 6px; }
+  .cws-side {
+    /* 粘顶基准是外壳滚动容器的内容盒上沿（= 页头所在的那条线），top:0 即与索引列同顶；
+       窗口纵向压缩时档案跟着它走，不会跟着长列表被推出视野。 */
+    position: sticky; top: 0; right: auto; bottom: auto; left: auto; z-index: auto;
+    display: block; background: none; animation: none;
+    align-self: start; min-width: 0;
+    border-left: 1px solid var(--color-divider); padding-left: 24px;
+    /* 并排列不是遮罩：列内空白（左边距、面板下沿）不接收点击，点它不会误关档案；
+       面板自身仍可交互（下面 pointer-events: auto）。窄窗档不走这条，遮罩点击照旧关闭。 */
+    pointer-events: none;
+  }
+  .cws-side__panel {
+    width: auto; height: auto;
+    pointer-events: auto;
+    /* 46 标题栏 + 24 上留白 + 24 下留白 + 2 外框线：档案列整体落在可视区内，
+       超出时才出现自身滚动条——否则「档案比窗口高就永远看不到底部」是更差的失败。 */
+    max-height: calc(100vh - 96px);
+    padding: 0 0 24px;
+    box-shadow: none;
+    .crm-detail-head { top: 0; }
+  }
+  /* 并排后索引列变窄：动作列收窄换行，先保「为什么现在看」那列的可读宽度 */
+  .cws-cols.has-detail .cws-q,
+  .cws-cols.has-detail .cws-q__row { grid-template-columns: minmax(150px, 0.9fr) minmax(0, 1.2fr) minmax(0, 210px); }
 }
 
-// 屏 3 搜索态结果列表
-.cws-search-card {
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-card);
-  padding: 0 18px;
-  box-shadow: var(--shadow-card);
+/* 档案头：概念稿 .detail__name / .detail__sub */
+.cws-detail__id { min-width: 0; }
+.cws-detail__name { font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
+.cws-detail__sub { font-size: 11.5px; color: var(--color-text-tertiary); font-family: var(--font-mono); margin-top: 5px; }
+
+/* 分节标题右侧的等宽/小字补充（概念稿 seclabel 右侧位） */
+.cws-seclabel__h { font-size: 11px; color: var(--color-text-tertiary); }
+
+/* 判断栏出处标记：可点的「依据消息」按钮压平到 .ahead 语法 */
+.cws-ahead-btn {
+  border: none; background: none; padding: 0; font-family: inherit; cursor: pointer;
+  &:hover { color: var(--color-accent); }
+}
+.cws-verdict__evi {
+  margin-top: 6px; padding: 6px 10px; background: var(--color-bg-surface-muted);
+  border-left: 2px solid var(--color-accent-border);
+  font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all;
 }
 
-.cws-search-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 10px 12px 0;
-  border-bottom: 1px solid var(--color-divider);
-  cursor: pointer;
+/* 档案定义网格（概念稿 .defs/.def）：客户类型行 + 12 字段，点击可编辑 */
+.cws-typerow { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.cws-typerow__k { font-size: 11px; color: var(--color-text-tertiary); letter-spacing: .04em; }
+.cws-def .def__v { cursor: text; min-height: 18px; word-break: break-all; }
+.cws-def--empty .def__v { color: var(--color-text-tertiary); }
+.cws-def__src { margin-left: 6px; }
+.cws-def__edit {
+  display: flex; align-items: center; gap: 6px; margin-top: 2px;
 
-  &:last-child { border-bottom: none; }
-  &:hover { background: var(--color-bg-hover); }
-
-  .cws-search-row__main { flex: 1; min-width: 0; strong { font-size: 13px; color: var(--color-text-primary); } }
-  .cws-search-row__sub { font-size: 11px; color: var(--color-text-tertiary); }
-  .cws-search-row__silent { font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+  input {
+    flex: 1; min-width: 0; border: 1px solid var(--color-accent-border); border-radius: var(--radius-small);
+    padding: 3px 8px; font-size: 12.5px; font-family: inherit; outline: none;
+    background: var(--color-bg-surface); color: var(--color-text-primary);
+  }
 }
 
-/* 搜索态结果表（SearchTable 骨架，§2.75）：首列 客户头像+名+公司 双行单元格；__silent 复用上方既有样式 */
-.cws-search-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.cws-search-cell__main { display: flex; flex-direction: column; min-width: 0;
-  strong { font-size: 13px; color: var(--color-text-primary); } }
-.cws-search-cell__sub { font-size: 11px; color: var(--color-text-tertiary); }
-
-// pill 五语义（行动卡/搜索行）
-.pill {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 999px;
-  white-space: nowrap;
-
-  &--blue { background: var(--color-accent-bg); color: var(--color-accent); }
-  &--amber { background: var(--color-warning-bg); color: var(--color-warning); }
-  &--success, &--green { background: var(--color-success-bg); color: var(--color-success); }
-  &--danger, &--red { background: var(--color-danger-bg); color: var(--color-danger); }
-  &--info { background: var(--color-accent-bg); color: var(--color-accent); }
-  &--warning { background: var(--color-warning-bg); color: var(--color-warning); }
-  &--neutral { background: var(--color-bg-inset); color: var(--color-text-secondary); }
-}
-
-// 屏 4 档案抽屉：verdict 置顶 + 折叠行 + AI 工具下拉
-.cws-verdict {
-  background: var(--color-accent-bg);
-  border-radius: var(--radius-control);
-  padding: 14px 16px;
-  margin-bottom: 16px;
-
-  .cws-verdict__title { font-size: 12px; font-weight: 700; color: var(--color-accent); margin-bottom: 4px; }
-  .cws-verdict__text { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
-  .cws-verdict__next { font-size: 12px; color: var(--color-text-secondary); margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-}
-
-.cws-sec { margin-top: 16px; }
-
+/* 分块（时间线 / AI 画像 / 业务折叠行）：细线上边 + 行内标题 */
+.cws-sec { margin-top: 18px; }
+.cws-sec__acts { display: flex; gap: 8px; padding: 8px 0 2px; }
 .cws-fold {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 12px 14px;
-  background: var(--color-bg-surface-muted);
-  border: none;
-  border-radius: var(--radius-control);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px; width: 100%;
+  border: none; border-top: 1px solid var(--color-divider); background: none;
+  padding: 10px 0; font-family: inherit; text-align: left; cursor: pointer;
 
-  & + .cws-fold, .cws-sec + .cws-sec .cws-fold { margin-top: 8px; }
+  &:hover .seclabel__t { color: var(--color-text-primary); }
 }
+.cws-fold__meta { font-size: 11px; color: var(--color-text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cws-danger-btn { color: var(--color-danger); border-color: var(--color-danger-border); }
+.cws-danger-btn:hover { background: var(--color-danger-bg); }
 
 .cws-aitools { position: relative;
   .cws-aitools__menu {
@@ -220,7 +225,8 @@
     right: 0;
     z-index: 10;
     background: var(--color-bg-elevated);
-    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     box-shadow: var(--shadow-pop);
     padding: 6px;
     display: flex;
@@ -234,6 +240,7 @@
     border: none;
     background: transparent;
     color: var(--color-text-primary);
+    font-family: inherit;
     font-size: 12px;
     padding: 8px 10px;
     border-radius: var(--radius-small);
@@ -245,54 +252,23 @@
   }
 }
 
-/* ─── 刀 4 信息待确认批量通过 ────────────────────────────────────────── */
-
-.cws-batch-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 10px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-accent-border);
-  border-radius: var(--radius-control);
-}
-
-.cws-info-check {
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-
-  input {
-    cursor: pointer;
-    accent-color: var(--color-accent);
-  }
-}
-
 // ─── AI 识别这个客户：结果提示（PRD §6.2 六态）────────────────────────────────
-// 无新内容/成功/失败/额度不足都必须在档案头部可见，不得静默。
+// 无新内容/成功/失败/额度不足都必须在档案头部可见，不得静默；语义只走左侧 2px 条
 .cws-identify-notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-left: 2px solid var(--color-border); padding: 3px 0 3px 13px; margin-bottom: 12px;
+  font-size: 12.5px; color: var(--color-text-secondary);
 
-  small {
-    opacity: 0.75;
-  }
+  small { opacity: 0.75; }
 
-  &--ok {
-    color: var(--color-success, #16a34a);
-  }
+  &--ok { border-left-color: var(--color-success); }
 
-  &--no_new {
-    color: var(--color-text-secondary, #6b7280);
-  }
+  &--no_new { border-left-color: var(--color-border); }
 
   &--error,
-  &--quota {
-    color: var(--color-danger, #dc2626);
-  }
+  &--quota { border-left-color: var(--color-danger); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cws-side { animation: none; }
 }

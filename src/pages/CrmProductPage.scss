@@ -1,21 +1,102 @@
 // CrmProductPage —— 前进视觉 tokens 版（2026-09-02 UI 美化批次 D；纯样式，零逻辑/结构改动）
 // 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
-.crm-product-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
-.crm-header { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; font-weight: 700; margin-right: auto; .count { font-size: 12px; color: var(--color-text-tertiary); font-weight: 400; } } }
-.crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: var(--color-text-secondary); }
-.crm-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; transition: background .15s, border-color .15s, color .15s; &:hover { background: var(--color-bg-hover); } &.primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); font-weight: 600; &:hover { background: var(--color-accent-hover); } } &.active { background: var(--color-warning); color: var(--color-text-on-accent); border-color: var(--color-warning); }&:disabled { opacity: 0.5; cursor: not-allowed; } }
-.crm-filterbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-.crm-search { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 8px 12px; font-size: 13px; width: 280px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } &::placeholder { color: var(--color-text-tertiary); } }
-.crm-chips { display: flex; gap: 6px; flex-wrap: wrap; .chip { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-secondary); border-radius: 16px; padding: 4px 12px; font-size: 12px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; &:hover { background: var(--color-bg-hover); } &.active { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); } } }
-.crm-table { width: 100%; border-collapse: collapse; font-size: 13px; th, td { border-bottom: 1px solid var(--color-divider); padding: 8px 10px; text-align: left; vertical-align: top; } th { color: var(--color-text-secondary); font-weight: 600; } input { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 3px 6px; font-size: 12px; width: 90px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } } }
-.thumb { width: 48px; height: 48px; border-radius: var(--radius-small); object-fit: cover; &.empty { background: var(--color-bg-inset); display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); } }
-.pname { font-weight: 600; }
-.psub { font-size: 11px; color: var(--color-text-tertiary); }
-.p1 { font-weight: 600; }
-.price-col .psub { margin-top: 2px; }
-.desc { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ops { display: flex; gap: 4px; }
-.crm-modal { position: fixed; inset: 0; background: var(--color-overlay); display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(3px); }
-.crm-modal-body { background: var(--color-bg-elevated); border-radius: var(--radius-card); border: 1px solid var(--color-border); box-shadow: var(--shadow-pop); padding: 20px; width: 640px; max-height: 80vh; overflow: auto; h3 { display: flex; justify-content: space-between; align-items: center; font-size: 15px; font-weight: 700; margin-bottom: 12px; } h4 { font-size: 13px; color: var(--color-text-secondary); margin: 12px 0 6px; } }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 3px; input, select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } } } }
-.form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+//
+// 2026-09-17 布局整理：
+//   ① 页边留白由外壳 .content 提供（24px 32px），本页不再叠加整页 padding；限宽 1280 与其余 CRM 页同组同宽。
+//   ② .crm-header/.crm-btn/.crm-table/.thumb… 与 CrmWorkbenchPage / CrmReviewPage / CrmLeadPage 同名，
+//      本页此前也是裸全局定义 —— 现将全部规则收进 .crm-product-page 作用域，避免懒加载顺序影响其他页。
+//   ③ 产品表 9 列列宽固定，超宽在 .crm-table-wrap 内横向滚动，不把整窗顶出横向滚动条。
+.crm-product-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
+
+  // 页眉：结构走概念稿 .shead（左小标/标题/说明，右操作区）；本页只调间距与标题行内图标
+  .crm-header { margin-bottom: 12px; }
+  .crm-header__lead { min-width: 0; }
+  .crm-header__title { display: flex; align-items: center; gap: 8px; }
+  .crm-header__sub { margin-top: 2px; }
+  .crm-header__actions { flex-wrap: wrap; }
+  /* 空态：整块细线说明（不渲染固定列宽宽表，避免空表滚出横向滚动条） */
+  .crm-table-empty {
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-small);
+    padding: 34px 20px;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--color-text-tertiary);
+  }
+  .crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+  .crm-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; transition: background .15s, border-color .15s, color .15s; &:hover { background: var(--color-bg-hover); } &.primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); font-weight: 600; &:hover { background: var(--color-accent-hover); } } &.active { background: var(--color-warning); color: var(--color-text-on-accent); border-color: var(--color-warning); } &:disabled { opacity: 0.5; cursor: not-allowed; } }
+  .crm-filterbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .crm-search { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 8px 12px; font-size: 13px; width: 280px; max-width: 100%; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } &::placeholder { color: var(--color-text-tertiary); } }
+  .crm-chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; .chip { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-secondary); border-radius: 16px; padding: 4px 12px; font-size: 12px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; &:hover { background: var(--color-bg-hover); } &.active { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); } } }
+}
+
+/* ─── 产品表 ────────────────────────────────────────────────────────────────
+   9 列（选择 / 图片 / 名称 / 类目 / 单价 / MOQ / 材质 / 描述 / 操作）各有明确职责，
+   固定列宽 + 表体最小宽度：窗口或侧栏收窄时由本容器横向滚动，
+   名称、价格、操作三列不会被压扁到看不见内容。 */
+.crm-product-page .crm-table-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  padding-bottom: 2px;
+
+  &::-webkit-scrollbar { height: 8px; }
+  &::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 4px; &:hover { background: var(--color-scrollbar-thumb-hover); } }
+}
+
+.crm-product-page .crm-table {
+  width: 100%;
+  /* 列宽合计 1152px：1440 宽窗口（侧栏展开时内容区约 1160）正好完整显示，
+     更窄的窗口由 .crm-table-wrap 横向滚动，操作列不会被切掉 */
+  min-width: 1152px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th, td { border-bottom: 1px solid var(--color-divider); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { color: var(--color-text-secondary); font-weight: 600; }
+
+  /* 列宽（含 padding，全局 border-box）：名称与描述给足，价格/库存类数字列不再被挤断 */
+  th:nth-child(1), td:nth-child(1) { width: 40px; }   /* 选择 */
+  th:nth-child(2), td:nth-child(2) { width: 68px; }   /* 图片：48 缩略图 + 内边距 */
+  th:nth-child(3), td:nth-child(3) { width: 200px; }  /* 名称 + SKU/型号 */
+  th:nth-child(4), td:nth-child(4) { width: 112px; }  /* 类目 + 小分类 */
+  th:nth-child(5), td:nth-child(5) { width: 144px; }  /* 单价 / 成本 / 参考 */
+  th:nth-child(6), td:nth-child(6) { width: 72px; }   /* MOQ */
+  th:nth-child(7), td:nth-child(7) { width: 104px; }  /* 材质 */
+  th:nth-child(8), td:nth-child(8) { width: 216px; }  /* 描述 */
+  th:nth-child(9), td:nth-child(9) { width: 196px; }  /* 操作：5 个图标动作一行 */
+
+  /* 行内编辑输入框：铺满所属列；勾选框单独走 16px，不再被输入框样式撑成 90px 宽 */
+  input:not([type="checkbox"]) { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 3px 6px; font-size: 12px; width: 100%; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } }
+  input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--color-accent); cursor: pointer; }
+
+  /* 单元格内的长串（型号 / 材质 / 地址类）一律在列内换行，不撑破表格 */
+  td { overflow-wrap: anywhere; }
+}
+
+.crm-product-page .thumb { width: 48px; height: 48px; border-radius: var(--radius-small); object-fit: cover; display: block; &.empty { background: var(--color-bg-inset); display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); } }
+.crm-product-page .pname { font-weight: 600; overflow-wrap: anywhere; }
+.crm-product-page .psub { font-size: 11px; color: var(--color-text-tertiary); overflow-wrap: anywhere; }
+.crm-product-page .p1 { font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.crm-product-page .price-col .psub { margin-top: 2px; font-variant-numeric: tabular-nums; }
+.crm-product-page .desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 操作列：5 个图标动作一行排开，不换行、不被裁掉 */
+.crm-product-page .ops { display: flex; gap: 4px; flex-wrap: nowrap; }
+.crm-product-page .ops .crm-btn { padding: 4px 8px; flex-shrink: 0; }
+
+.crm-product-page .crm-modal { position: fixed; inset: 0; background: var(--color-overlay); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 24px; backdrop-filter: blur(3px); }
+.crm-product-page .crm-modal-body { background: var(--color-bg-elevated); border-radius: var(--radius-card); border: 1px solid var(--color-border); box-shadow: var(--shadow-pop); padding: 20px; width: 640px; max-width: 100%; max-height: 80vh; overflow: auto; h3 { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; font-weight: 700; margin-bottom: 12px; overflow-wrap: anywhere; } h4 { font-size: 13px; color: var(--color-text-secondary); margin: 12px 0 6px; } }
+.crm-product-page .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 3px; min-width: 0; input, select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; width: 100%; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } } } }
+.crm-product-page .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+
+@media (max-width: 860px) {
+  .crm-product-page .form-grid { grid-template-columns: minmax(0, 1fr); }
+}

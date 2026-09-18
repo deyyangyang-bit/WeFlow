@@ -1,165 +1,98 @@
 /**
- * AIActionCard.scss — 统一信号流卡片样式
- * 2026-09-02 UI 美化（批次 B）：迁出 --wf-* 私有变量与字面 hex，全量消费「前进视觉」tokens
- * （src/styles/main.scss；规范 docs/DESIGN-SPEC-MINI.md）。纯样式，零逻辑/结构改动。
+ * AIActionCard.scss — 统一信号流细线行样式（2026-09-17 概念稿语法）
+ * 本组件私有结构件：.sig / .sigrow / .sigdetail / .dot / .score（2026-09-18 从 src/styles/main.scss
+ * 迁入，唯一使用者就是本组件——迁出后不再占用全局命名空间，视觉逐字不变）。
+ * 仍留在全局基础件的：.chev / .ahead / .verdicts（今日行动与客户档案等多处复用）。
+ * 颜色一律 --color-*。
  */
 
 .spinning { animation: wf-spin 1s linear infinite; }
 @keyframes wf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-// 信号卡：白卡浮起 + shadow-card + radius 16；左侧 4px 状态条按紧急度走语义色
-.signal-card {
-  background: var(--color-bg-surface);
-  border: 1px solid transparent;
-  border-left: 4px solid var(--color-chart-neutral);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  margin-bottom: 12px;
-  overflow: hidden;
-  transition: transform 0.15s, box-shadow 0.15s;
+// ---- 信号行：细线 + 7px 语义点 + 等宽分数 + 2px 刻度 ----
+.sig { border-bottom: 1px solid var(--color-divider); }
+.sigrow {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto 92px 16px;
+  align-items: center; gap: 14px; width: 100%; text-align: left; padding: 13px 4px 13px 0;
+  transition: background .15s;
+  border: none; background: none; font-family: inherit; color: inherit; cursor: pointer;
+}
+.sigrow:hover { background: var(--color-bg-hover); }
+.sigrow__name { display: block; font-size: 13.5px; font-weight: 600; letter-spacing: -0.005em; }
+.sigrow__sub { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 4px; }
+.sigrow__silent { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-tertiary); }
+.sig.is-open .chev { transform: rotate(180deg); }
+.sig.is-done { opacity: .55; }
+.sig.is-done .sigrow__name { text-decoration: line-through; color: var(--color-text-tertiary); }
+.sigdetail { padding: 2px 4px 16px 32px; }
+.sigdetail__acts { display: flex; gap: 8px; margin-top: 12px; }
 
-  &:hover { transform: translateY(-1px); }
+// 紧急度点 / 分数刻度（AIActionCard 独有）
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-chart-neutral); flex: none; }
+.dot--high { background: var(--color-warning); }
+.dot--urgent { background: var(--color-danger); }
+.score { text-align: right; }
+.score__n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+.score__n small { font-size: 10px; color: var(--color-text-tertiary); font-weight: 400; margin-left: 2px; }
+.score__bar { display: block; height: 2px; background: var(--color-bg-inset); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.score__bar i { display: block; height: 100%; background: var(--color-chart-neutral); }
+.score--high .score__n { color: var(--color-warning); }
+.score--high .score__bar i { background: var(--color-warning); }
+.score--urgent .score__n { color: var(--color-danger); }
+.score--urgent .score__bar i { background: var(--color-danger); }
 
-  &--urgent { border-left-color: var(--color-danger); }
-  &--high { border-left-color: var(--color-warning); }
-  &--normal { border-left-color: var(--color-chart-neutral); }
-
-  &__body {
-    display: flex;
-    align-items: stretch;
-  }
-
-  &__main {
-    flex: 1;
-    min-width: 0;
-    padding: 14px 18px;
-  }
-
-  &__header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-bottom: 8px;
-  }
-
-  &__name {
-    font-weight: 700;
-    font-size: 15px;
-    color: var(--color-text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 320px;
-    white-space: nowrap;
-  }
-
-  // 阶段 pill：底色/文字色由 TSX 从阶段色板内联注入，这里只管形状
-  &__stage {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 999px;
-    white-space: nowrap;
-  }
-
-  &__silence {
-    font-size: 12px;
-    color: var(--color-text-tertiary);
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  // AI 判断条：蓝 = 信息
-  &__insight {
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    background: var(--color-accent-bg);
-    border: 1px solid var(--color-accent-border);
-    border-radius: var(--radius-small);
-    padding: 8px 10px;
-    margin-bottom: 10px;
-
-    span {
-      font-size: 13px;
-      color: var(--color-accent);
-      line-height: 1.5;
-    }
-  }
-
-  &__insight-icon {
-    margin-top: 2px;
-    flex-shrink: 0;
-    color: var(--color-accent);
-  }
-
-  &__sources {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
-  }
-
-  &__actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  &__side {
-    padding: 14px 18px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  &__score-label {
-    font-size: 10px;
-    color: var(--color-text-tertiary);
-  }
-
-  &__ai-panel {
-    border-top: 1px solid var(--color-divider);
-    background: var(--color-bg-surface-muted);
-    padding: 12px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
+// 行内列模板：点在稿子五列基础上少一列（来源标签移到副行，标签较长不适合独立列）
+// 主列 minmax(0, 1fr)：文字列可收缩，评分列（92px）与箭头列（16px）不被标签挤走。
+.signal-sigrow {
+  grid-template-columns: 14px minmax(0, 1fr) 92px 16px;
 }
 
-.ring-gauge {
-  position: relative;
-  width: 64px;
-  height: 64px;
-
-  &__score {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 17px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-  }
+// 来源标签条：一行横排多个来源时，必须能换行且能在主列内收缩。
+// 实测（1440 宽真实数据，5 来源卡）：标签条 flex-wrap 默认 nowrap + min-width 默认 auto，
+// 其最小内容宽度 = 各标签宽度之和（1264px）> 主列（666px），整条横向溢出到待办栏，
+// 并把整页撑出横向滚动条。父容器可收缩后，逐个标签再按最小内容宽度（code + label）保底。
+.sigrow__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
 }
 
-// 来源 pill：任务 = 中性灰；见解 = 琥珀（临近/提示）
+.sigrow__main {
+  min-width: 0;
+}
+
+// 客户名可点击（深链到客户 360 档案）：与整行展开互不干扰
+.signal-card__name--link {
+  cursor: pointer;
+  transition: color 0.15s;
+
+  &:hover { color: var(--color-accent); text-decoration: underline; }
+}
+
+// 阶段 pill：底色/文字色由 TSX 从阶段色板内联注入，这里只管形状
+.signal-card__stage {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+// 来源标签：4px 直角档（出处），与状态胶囊分属两个层级
 .source-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  border-radius: 999px;
-  padding: 3px 8px;
+  line-height: 1;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-micro);
+  border: 1px solid transparent;
   max-width: 100%;
+  // 不写 min-width: 0：保留自动最小尺寸（= code + label 的最小内容宽度），
+  // 标签最窄也只收到「关键内容」宽度，短标签不会被压成逐字竖排。
 
   &--task {
     background: var(--color-bg-inset);
@@ -169,22 +102,42 @@
   &--insight {
     background: var(--color-warning-bg);
     color: var(--color-warning);
+    border-color: var(--color-warning-border);
   }
 
   // 阶段三例外告警（设计-AI见解重定位 §4.1）：红档徽章，稀缺高优
   &--alert {
-    background: var(--color-danger-bg, rgba(239, 68, 68, 0.12));
-    color: var(--color-danger, #ef4444);
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+    border-color: var(--color-danger-border);
   }
 
+  // 商机确定性信号（落库字段投影，非 AI 产物）：中性描边档，避免与 AI 档混淆
+  &--opportunity {
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
+    border-color: var(--color-accent-border);
+  }
+
+  // 来源码 / 类别：关键内容，永不压缩、不换行
   &__code {
+    flex: none;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
-  &__label { font-weight: 600; white-space: nowrap; }
+  &__label {
+    flex: none;
+    font-weight: 600;
+    white-space: nowrap;
+  }
 
+  // 原因文本：唯一可压缩项。flex-basis 0 让标签的最小内容宽度 = code + label（关键内容可读），
+  // 富余空间再按 1:1 伸展；超出部分省略号，完整文本由 title（悬停）与 DOM 文本（读屏）保留。
   &__reason {
+    flex: 1 1 0;
+    min-width: 0;
     color: inherit;
     opacity: 0.75;
     overflow: hidden;
@@ -194,113 +147,43 @@
   }
 }
 
-.signal-btn {
+// 动作行：常驻可见，位于细线行之下（红线 5：行动任务可见性与可点击性不变）
+.signal-card__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 14px;
-  border-radius: var(--radius-control);
+  padding: 0 0 14px 32px;
+}
+
+// AI 深度分析入口的展开箭头随展开翻转
+.signal-card__ai-btn .chev.is-flip { transform: rotate(180deg); }
+
+.signal-card__script {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// P0-3.4：判断证据回查（蓝色信息档；「依据消息」入口在 .verdict__meta 内）
+.signal-card__j-evidence {
+  margin-left: 0;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-accent);
+  background: var(--color-accent-bg);
+  border: none;
+  border-radius: var(--radius-micro);
   cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-
-  &:disabled { opacity: 0.5; cursor: default; }
-
-  &--done {
-    background: var(--color-accent);
-    color: var(--color-text-on-accent);
-
-    &:hover:not(:disabled) { background: var(--color-accent-hover); }
-    &:active:not(:disabled) { background: var(--color-accent-hover); }
-  }
-
-  &--skip {
-    background: var(--color-bg-surface);
-    color: var(--color-text-secondary);
-    border-color: var(--color-border);
-
-    &:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-primary); }
-    &:active:not(:disabled) { background: var(--color-bg-inset); }
-  }
-
-  &--ai {
-    background: var(--color-bg-surface);
-    color: var(--color-accent);
-    border-color: var(--color-accent-border);
-
-    &:hover:not(:disabled) { background: var(--color-accent-bg); }
-    &:active:not(:disabled) { background: var(--color-accent-bg); }
-  }
-
-  &--chat {
-    background: var(--color-bg-surface);
-    color: var(--color-accent);
-    border-color: var(--color-accent-border);
-
-    &:hover:not(:disabled) { background: var(--color-accent-bg); }
-    &:active:not(:disabled) { background: var(--color-accent-bg); }
-  }
-
-  &--copy {
-    background: var(--color-accent);
-    color: var(--color-text-on-accent);
-
-    &:hover:not(:disabled) { background: var(--color-accent-hover); }
-    &:active:not(:disabled) { background: var(--color-accent-hover); }
-  }
-
-  &--sm {
-    font-size: 11px;
-    padding: 3px 10px;
-    border-radius: var(--radius-small);
-    flex-shrink: 0;
-  }
 }
-
-.ai-row {
-  display: flex;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-
-  &__label {
-    flex-shrink: 0;
-    font-weight: 700;
-    color: var(--color-text-primary);
-    font-size: 12px;
-    padding: 1px 6px;
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    height: fit-content;
-  }
-
-  &--risk span:last-child { color: var(--color-danger); }
-
-  &__value {
-    min-width: 0;
-    line-height: 1.6;
-  }
-}
-
-// P0-3.4：判断徽标/证据回查（pill 语义：琥珀=过期提醒、蓝=信息）
-.signal-card__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-size: 11px; vertical-align: 1px; }
-.signal-card__j-badge--stale { background: var(--color-warning-bg); color: var(--color-warning); }
-.signal-card__j-badge--manual { background: var(--color-accent-bg); color: var(--color-accent); }
-.signal-card__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: none; border-radius: var(--radius-small); cursor: pointer; }
 .signal-card__j-evidence:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-.signal-card__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: var(--radius-small); font-size: 13px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
-
-.ai-row--script {
-  align-items: flex-start;
-
-  .ai-row__script {
-    flex: 1;
-    min-width: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
+.signal-card__j-evidence-text {
+  margin: 8px 0 2px;
+  padding: 6px 10px;
+  background: var(--color-bg-surface-muted);
+  border-left: 2px solid var(--color-accent-border);
+  border-radius: var(--radius-micro);
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
 }

@@ -1,14 +1,13 @@
 /**
- * AIActionCard.tsx — 统一信号流卡片(v4 视觉)
+ * AIActionCard.tsx — 统一信号流细线行（2026-09-17 概念稿语法）
  *
- * - 左侧 4px 紧急度色条
- * - 头部：客户名 + 阶段 chip + 沉默天数（无头像）
- * - 来源标签行：task（石墨蓝；insight 来源已随设计-AI见解重定位 §3.2 移除）
- * - 右列：环形 gauge（纯 SVG，priorityScore/140 归一化，语义=引擎内部优先级分，不改名）
- * - 底部：完成 / 跳过 / AI分析（行为不变）+ AI 五字段折叠面板
+ * - 行内：7px 紧急度点（概念稿 .dot）+ 客户名 + 阶段 pill / 来源标签 / 沉默天数
+ * - 右列：等宽数字 + 2px 细刻度（概念稿 .score；原环形 gauge 按稿子设计说明去掉）
+ * - 点整行展开：四栏判断（概念稿 .verdicts：摘要 / 机会 / 风险 / 下一步，含出处标记与证据回查，语义未变）
+ * - 动作行（打开聊天 / 复制话术 / 完成 / 跳过 / AI 深度分析）常驻可见，行为与文案不变
  */
 import { useCallback, useState } from 'react'
-import { Check, ChevronDown, ChevronUp, Clock, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
+import { Check, ChevronDown, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useTodayActionStore, type ActionItem, type SignalSource, type JudgmentValue } from '../../stores/todayActionStore'
 import './AIActionCard.scss'
@@ -25,31 +24,8 @@ const STAGE_LABELS: Record<string, { text: string; color: string }> = {
   manual: { text: '手动', color: '#6b7280' }
 }
 
-/** 环形 gauge：score 原始分居中，环按 /140 归一化 */
-function RingGauge({ score }: { score: number }) {
-  const color = score >= 100
-    ? 'var(--color-danger)'
-    : score >= 60
-      ? 'var(--color-warning)'
-      : 'var(--color-chart-neutral)'
-  const R = 26
-  const C = 2 * Math.PI * R
-  const pct = Math.min(1, score / 140)
-  return (
-    <div className="ring-gauge">
-      <svg width={64} height={64} viewBox="0 0 64 64">
-        <circle cx={32} cy={32} r={R} fill="none" stroke="var(--color-bg-inset)" strokeWidth={6} />
-        <circle
-          cx={32} cy={32} r={R} fill="none"
-          stroke={color} strokeWidth={6} strokeLinecap="round"
-          strokeDasharray={`${C * pct} ${C}`}
-          transform="rotate(-90 32 32)"
-        />
-      </svg>
-      <span className="ring-gauge__score" style={{ color }}>{score}</span>
-    </div>
-  )
-}
+/** 优先级分刻度：与旧环形 gauge 同一归一化（/140），只换表现不换口径 */
+const SCORE_SCALE = 140
 
 function SourceTag({ source }: { source: SignalSource }) {
   // 阶段三例外告警：专属红色徽章（复用 source-tag 结构）；task 石墨蓝；
@@ -65,7 +41,7 @@ function SourceTag({ source }: { source: SignalSource }) {
     <span className={`source-tag ${cls}`}>
       <span className="source-tag__code">{code}</span>
       <span className="source-tag__label">{source.label}</span>
-      <span className="source-tag__reason">· {source.reason}</span>
+      <span className="source-tag__reason" title={source.reason}>· {source.reason}</span>
     </span>
   )
 }
@@ -167,113 +143,130 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
     : item.urgencyTier === 'high'
       ? 'signal-card--high'
       : 'signal-card--normal'
+  // 紧急度点/刻度档位（概念稿 .dot--* / .score--*）
+  const tier = item.urgencyTier === 'urgent' ? 'urgent' : item.urgencyTier === 'high' ? 'high' : 'normal'
+  const scorePct = Math.max(0, Math.min(1, Number(item.priorityScore || 0) / SCORE_SCALE))
 
   // 虚拟卡（无真实微信会话）：todo:<id> 手动待办 / lead:<id> 线索首触 SLA / logi:<id> 物流超期
   // 均无聊天对象 → 隐藏「打开聊天」按钮（SLA 卡 displayName 已含脱敏联系方式，销售自行微信搜索）
   const isVirtualTodo = ['todo:', 'lead:', 'logi:'].some((p) => String(item.sessionId || '').startsWith(p))
 
   return (
-    <div className={`signal-card ${tierClass}`}>
-      <div className="signal-card__body">
-        <div className="signal-card__main">
-          {/* 头部 */}
-          <div className="signal-card__header">
-            <span className="signal-card__name signal-card__name--link" title="查看客户 360 档案"
-              onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
-            >{item.displayName}</span>
+    <div className={`sig ${tierClass} ${expanded ? 'is-open' : ''}`}>
+      {/* 整行可点：展开/收起四栏判断（原「AI深度分析」入口同语义，键盘可达） */}
+      <button
+        type="button"
+        className="sigrow signal-sigrow"
+        aria-expanded={expanded}
+        onClick={() => { if (hasAnalysis) setExpanded(!expanded) }}
+      >
+        <span className={`dot ${tier === 'normal' ? '' : `dot--${tier}`}`} />
+        <span className="sigrow__main">
+          <span
+            className="sigrow__name signal-card__name--link"
+            title="查看客户 360 档案"
+            onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
+          >{item.displayName}</span>
+          <span className="sigrow__sub">
             <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
               {stage.text}
             </span>
-            <span className="signal-card__silence"><Clock size={12} /> {item.silentDays}天未互动</span>
-          </div>
-
-          {/* 来源标签行 */}
-          <div className="signal-card__sources">
-            {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
-          </div>
-
-          {/* 底部操作 */}
-          <div className="signal-card__actions">
-            {!isVirtualTodo && (
-              <button className="signal-btn signal-btn--chat" onClick={handleOpenChat}>
-                <MessageCircle size={14} /> 打开聊天
-              </button>
-            )}
-            <button className="signal-btn signal-btn--copy" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
-              {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? '已复制' : '复制话术'}
-            </button>
-            <button className="signal-btn signal-btn--done" onClick={handleComplete}>
-              <Check size={14} /> 完成
-            </button>
-            <button className="signal-btn signal-btn--skip" onClick={handleSkip}>
-              <X size={14} /> 跳过
-            </button>
-            {!isVirtualTodo && (
-              <button
-                className="signal-btn signal-btn--ai"
-                onClick={hasAnalysis ? () => setExpanded(!expanded) : handleSuggest}
-                disabled={loadingSuggestion}
-              >
-                {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : <Sparkles size={13} />}
-                {loadingSuggestion ? '分析中...' : expanded ? '收起' : 'AI深度分析'}
-                {hasAnalysis && !loadingSuggestion && (expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* 右列 gauge */}
-        <div className="signal-card__side">
-          <RingGauge score={item.priorityScore} />
-          <span className="signal-card__score-label">AI 关注度</span>
-        </div>
-      </div>
+            <span className="sigrow__tags">
+              {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
+            </span>
+            <span className="sigrow__silent">{item.silentDays} 天未互动</span>
+          </span>
+        </span>
+        <span className={`score ${tier === 'normal' ? '' : `score--${tier}`}`}>
+          <span className="score__n">{item.priorityScore}<small>分</small></span>
+          <span className="score__bar"><i style={{ width: `${scorePct * 100}%` }} /></span>
+        </span>
+        <ChevronDown size={16} strokeWidth={1.6} className="chev" />
+      </button>
 
       {/* P0-3.4 折叠面板：判断只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
           空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断） */}
       {expanded && hasAnalysis && (
-        <div className="signal-card__ai-panel">
+        <div className="sigdetail">
           {hasJudgments && (
-            <div className="signal-card__judgments">
+            <div className="verdicts">
               {([
-                { label: '总结', v: judgments.summary },
-                { label: '机会', v: judgments.opportunity },
-                { label: '风险', v: judgments.risk },
-                { label: '下一步', v: judgments.nextAction }
+                { label: '摘要', v: judgments!.summary },
+                { label: '机会', v: judgments!.opportunity },
+                { label: '风险', v: judgments!.risk },
+                { label: '下一步', v: judgments!.nextAction }
               ] as Array<{ label: string; v: JudgmentValue | null }>)
               .filter((c): c is { label: string; v: JudgmentValue } => !!c.v).map((c) => {
                 return (
-                <div key={c.label} className="ai-row">
-                  <span className="ai-row__label">{c.label}</span>
-                  <span className="ai-row__value">
+                <div key={c.label} className="verdict">
+                  <div className="verdict__k">{c.label}</div>
+                  <div className="verdict__v">
                     {String(c.v.value || '')}
-                    {c.v.freshness === 'stale' && <span className="signal-card__j-badge signal-card__j-badge--stale" title="生成已超 24h，可能过时">较旧</span>}
-                    {c.v.source === 'manual' && <span className="signal-card__j-badge signal-card__j-badge--manual">人工</span>}
-                    {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
-                      <button className="signal-card__j-evidence" onClick={() => void toggleEvidence(c.v)}>
-                        {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起' : '回查中…') : '有据可查'}
-                      </button>
+                    <div className="verdict__meta">
+                      {/* 出处标记：新鲜 = AI 当前判断，较旧 = 生成超 24h，人工 = 手动锁定 */}
+                      <span className={`ahead ${c.v.source === 'manual' ? 'ahead--human' : 'ahead--ai'}`}>
+                        <span className="ahead__i" />
+                        {c.v.source === 'manual' ? '人工确认' : c.v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
+                      </span>
+                      {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
+                        <button className="signal-card__j-evidence" onClick={(e) => { e.stopPropagation(); void toggleEvidence(c.v) }}>
+                          {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
+                        </button>
+                      )}
+                    </div>
+                    {evidenceKey === c.v.messageKey && evidenceMsg && (
+                      <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
                     )}
-                  </span>
-                  {evidenceKey === c.v.messageKey && evidenceMsg && (
-                    <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
-                  )}
+                  </div>
                 </div>
                 )
               })}
             </div>
           )}
           {script && (
-            <div className="ai-row ai-row--script">
-              <span className="ai-row__label">话术</span>
-              <span className="ai-row__script">{script}</span>
-              <button className="signal-btn signal-btn--copy signal-btn--sm" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
-                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? '已复制' : '复制'}
-              </button>
+            <div className="verdict verdict--muted">
+              <div className="verdict__k">话术</div>
+              <div className="verdict__v">
+                <span className="signal-card__script">{script}</span>
+                <div className="verdict__meta">
+                  <button className="btn btn--sm btn--quiet" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+                    {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? '已复制' : '复制'}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
       )}
+
+      {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致 */}
+      <div className="sigdetail__acts signal-card__actions">
+        {!isVirtualTodo && (
+          <button className="btn btn--sm" onClick={handleOpenChat}>
+            <MessageCircle size={14} strokeWidth={1.6} /> 打开聊天
+          </button>
+        )}
+        <button className="btn btn--sm" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+          {copied ? <Check size={14} strokeWidth={1.6} /> : <Copy size={14} strokeWidth={1.6} />} {copied ? '已复制' : '复制话术'}
+        </button>
+        <button className="btn btn--sm btn--primary" onClick={handleComplete}>
+          <Check size={14} strokeWidth={1.6} /> 完成
+        </button>
+        <button className="btn btn--sm btn--quiet" onClick={handleSkip}>
+          <X size={14} strokeWidth={1.6} /> 跳过
+        </button>
+        {!isVirtualTodo && (
+          <button
+            className="btn btn--sm btn--quiet signal-card__ai-btn"
+            onClick={hasAnalysis ? () => setExpanded(!expanded) : handleSuggest}
+            disabled={loadingSuggestion}
+          >
+            {loadingSuggestion ? <RotateCw size={13} className="spinning" /> : <Sparkles size={13} strokeWidth={1.6} />}
+            {loadingSuggestion ? '分析中...' : expanded ? '收起判断' : 'AI深度分析'}
+            {hasAnalysis && !loadingSuggestion && <ChevronDown size={13} strokeWidth={1.6} className={`chev ${expanded ? 'is-flip' : ''}`} />}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

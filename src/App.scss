@@ -16,33 +16,37 @@
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
+  height: 46px;
   app-region: drag;
   -webkit-app-region: drag;
   pointer-events: auto;
   z-index: 2000;
 }
 
+// 外壳中段（概念稿 .shell 位）：侧栏 + 内容区横向排布。
+// min-height/min-width: 0 让这一层可以被窗口压缩，滚动交给内层，不在整窗上溢出。
 .main-layout {
   flex: 1;
   display: flex;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
+// 主内容区（概念稿）：平底画布 + 细线分隔，不做径向渐变、不做 16px 圆角挂接与交界阴影。
+// 分隔线由侧栏的 border-right 承担，此处不再叠 border-left。
+// 横向：min-width: 0 允许内容区比其内容更窄，宽表/长串由本层横向滚动，不顶出整窗；
+// 纵向：min-height: 0 + overflow: auto 是本层兜底的滚动；页面自带 height:100% + overflow 时
+//       由页面自己滚（本层不出现第二根滚动条），未迁移页面仍靠本层滚动。
+// padding 与页面根 padding 叠加为现状约定（见交付说明「内容滚动约定」），本轮不动。
 .content {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 24px 32px;
   position: relative;
-  background: radial-gradient(circle at center, var(--color-bg-page) 0%, var(--color-bg-page-deep) 100%); /* 页面画布：light 灰 / dark 深灰，双套 token 自动切换 */
-  border-top-left-radius: 16px; /* 为主内容区域左上角添加优雅的圆角过渡 */
-  border-bottom-left-radius: 16px; /* 为主内容区域左下角添加优雅的圆角过渡 */
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.03); /* 侧边栏与主内容区域交界处的微弱阴影过渡 */
-}
-
-[data-mode="dark"] .content {
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.25); /* 深色模式下更深邃的阴影过渡 */
-  border-left: 1px solid var(--color-divider); /* 极细的微光边界线 */
+  background: var(--color-bg-page);
 }
 
 .export-keepalive-page {
@@ -140,52 +144,7 @@
   }
 }
 
-// ---- Agreement modal ----
-.agreement-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  backdrop-filter: blur(4px);
-}
-
-.agreement-modal {
-  width: 520px;
-  max-height: 80vh;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
-}
-
-.agreement-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 24px 28px;
-  border-bottom: 1px solid var(--border-color);
-
-  svg {
-    color: var(--primary);
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-}
-
+// .agreement-content 与 AgreementPage（/agreement-window）共用同名类，保留（启动弹窗已删除）
 .agreement-content {
   flex: 1;
   padding: 20px 28px;
@@ -198,129 +157,3 @@
   }
 }
 
-.agreement-notice {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  background: rgba(245, 158, 11, 0.08);
-  color: var(--text-primary);
-
-  strong {
-    font-size: 15px;
-    font-weight: 700;
-  }
-
-  .agreement-notice-link {
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  a {
-    font-size: 12px;
-    color: var(--primary);
-    text-decoration: none;
-    word-break: break-all;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-}
-
-.agreement-text {
-  background: var(--bg-secondary);
-  border-radius: 10px;
-  padding: 20px;
-  max-height: 280px;
-  overflow-y: auto;
-
-  h4 {
-    margin: 0 0 8px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-
-    &:not(:first-child) {
-      margin-top: 16px;
-    }
-  }
-
-  p {
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.6;
-  }
-}
-
-.agreement-footer {
-  padding: 20px 28px;
-  border-top: 1px solid var(--border-color);
-}
-
-.agreement-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-  cursor: pointer;
-
-  input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    accent-color: var(--primary);
-    cursor: pointer;
-  }
-
-  span {
-    font-size: 14px;
-    color: var(--text-primary);
-  }
-}
-
-.agreement-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-
-  .btn {
-    padding: 10px 24px;
-  }
-
-  .btn-secondary {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    cursor: pointer;
-    transition: background 0.15s;
-
-    &:hover {
-      background: var(--bg-hover);
-    }
-  }
-
-  .btn-primary {
-    background: var(--primary);
-    color: var(--on-primary);
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    cursor: pointer;
-    transition: opacity 0.15s;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    &:hover:not(:disabled) {
-      opacity: 0.9;
-    }
-  }
-}

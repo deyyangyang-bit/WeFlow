@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { Inbox, Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2, Sparkles } from 'lucide-react'
+import { Upload, RefreshCw, ClipboardPaste, Phone, MessageCircle, UserPlus, UserCheck, UserX, X, FileSpreadsheet, AlertTriangle, Pencil, ArrowLeftRight, Undo2, Hand, Link2, Sparkles, Search } from 'lucide-react'
 import * as XLSX from 'exceljs'
 import type { LeadRow, FirstClassifyRoundRow } from '../types/electron'
 import type { ContactInfo } from '../types/models'
@@ -745,18 +745,29 @@ export default function CrmLeadPage() {
 
   return (
     <div className="crm-lead-page">
-      <div className="crm-header">
-        <h2><Inbox size={18} /> 线索资源 <span className="count">共 {ov?.total ?? 0} 条</span></h2>
-        {!salesView && managerTab === 'pool' && (
-          <button className="crm-btn" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
-        )}
-        {!salesView && selected.size > 0 && managerTab === 'pool' && (
-          <button className="crm-btn primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
-        )}
-        {!salesView && (
-          <button className="crm-btn" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
-        )}
-        {!salesView && <button className="crm-btn primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
+      {/* 页眉（概念稿 .shead）：小标 → 主张句 → 真实计数说明；右侧动作 */}
+      <div className="shead">
+        <div>
+          <p className="eyebrow">CRM · 线索池</p>
+          <h1 className="hero">线索资源</h1>
+          <p className="sub">
+            {salesView
+              ? `我的资源 ${myWait.length + myActive.length + myRecycled.length} 条 · 点卡片看线索详情与归属留痕`
+              : `共 ${ov?.total ?? 0} 条 · 待分配 ${poolCounts.pool} 条 · 点整行看线索详情与归属留痕`}
+          </p>
+        </div>
+        <div className="shead__actions">
+          {!salesView && managerTab === 'pool' && (
+            <button className="btn btn--plain" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
+          )}
+          {!salesView && selected.size > 0 && managerTab === 'pool' && (
+            <button className="btn btn--primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
+          )}
+          {!salesView && (
+            <button className="btn btn--plain" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
+          )}
+          {!salesView && <button className="btn btn--primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
+        </div>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
 
@@ -764,9 +775,9 @@ export default function CrmLeadPage() {
         /* ── 屏 4：销售 · 我的资源卡 ── */
         <div className="lp-sales">
           <div className="lp-seg-wrap">
-            <div className="lp-segs">
+            <div className="chipbar">
               {salesSegDefs.map((d) => (
-                <button key={d.id} className={`lp-seg ${salesSeg === d.id ? 'on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label} {d.count}</button>
+                <button key={d.id} className={`chip ${salesSeg === d.id ? 'is-on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label}<span className="chip__n">{d.count}</span></button>
               ))}
             </div>
             <span className="lp-hint">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
@@ -782,16 +793,16 @@ export default function CrmLeadPage() {
                 <div className="l">{recycled ? '已回资源池，等待改派' : cd.label}</div>
               </div>
               {!recycled && cd.tier === 'wait_claim' && (
-                <button className="crm-btn primary" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
+                <button className="btn btn--primary" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
               )}
               {!recycled && (cd.tier === 'ok' || cd.tier === 'warn' || cd.tier === 'over') && (
-                <button className="crm-btn" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
+                <button className="btn btn--plain" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
               )}
               {!recycled && cd.tier !== 'wait_claim' && (
-                <button className="crm-btn" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
+                <button className="btn btn--plain" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
               )}
               {!recycled && cd.tier === 'done' && (
-                <button className="crm-btn ghost" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
+                <button className="btn btn--quiet" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
               )}
               {cd.tier === 'done' && (
                 <div className="lp-sla2" onClick={(e) => e.stopPropagation()}>
@@ -812,90 +823,106 @@ export default function CrmLeadPage() {
         </div>
       ) : (
         <>
-          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左） */}
-          <div className="lp-tabs">
-            <button className={`lp-tab ${managerTab === 'pool' ? 'on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
-            <button className={`lp-tab ${managerTab === 'console' ? 'on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
-            <button className={`lp-tab ${managerTab === 'reassign' ? 'on' : ''}`} onClick={() => setManagerTab('reassign')}>回收改派{poolCounts.recycledN > 0 ? ` (${poolCounts.recycledN})` : ''}{notifyUnread > 0 ? ` · 升级提醒 ${notifyUnread}` : ''}</button>
+          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左）：互斥视图，走概念稿分段控件 */}
+          <div className="chipbar lp-tabs">
+            <button className={`chip ${managerTab === 'pool' ? 'is-on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
+            <button className={`chip ${managerTab === 'console' ? 'is-on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
+            <button className={`chip ${managerTab === 'reassign' ? 'is-on' : ''}`} onClick={() => setManagerTab('reassign')}>
+              回收改派
+              {poolCounts.recycledN > 0 && <span className="chip__n">{poolCounts.recycledN}</span>}
+              {notifyUnread > 0 && <span className="chip__n">升级提醒 {notifyUnread}</span>}
+            </button>
           </div>
 
           {managerTab === 'pool' && (
             <>
-              <div className="lp-stats">
+              {/* 四格数字条（概念稿 .stats）：点格即筛该分段，口径沿用 poolCounts */}
+              <div className="stats lp-stats">
                 {segDefs.map((d) => (
-                  <button key={d.id} className={`lp-stat ${poolSeg === d.id ? 'on' : ''}`} onClick={() => { setPoolSeg(d.id); setPage(1) }}>
-                    <div className="k">{d.label}</div>
-                    <div className="v num">{d.count}{d.id === 'recycled' && d.count > 0 ? <small> 可改派</small> : ''}</div>
+                  <button key={d.id} className={`stat ${poolSeg === d.id ? 'is-on' : ''}`} onClick={() => { setPoolSeg(d.id); setPage(1) }}>
+                    <span className="stat__n num">{d.count}{d.id === 'recycled' && d.count > 0 ? <small> 可改派</small> : ''}</span>
+                    <span className="stat__l">{d.label}</span>
                   </button>
                 ))}
               </div>
               {importAudit && (
-                <div className="lp-banner">
-                  ✓ 最近导入批次 #A{String(impDetail.batchId ?? '?')}：{String(impDetail.fileName || '导入')} {String(impDetail.total ?? 0)} 条 → 有效 {String(impDetail.valid ?? 0)} 条 · 查重拦截 {String(impDetail.duplicate ?? 0)} 条 · 无效 {String(impDetail.invalid ?? 0)} 条
+                <div className="notice notice--accent">
+                  <AlertTriangle className="icon" size={14} />
+                  <div>
+                    最近导入批次 <span className="num">#A{String(impDetail.batchId ?? '?')}</span>：{String(impDetail.fileName || '导入')}{' '}
+                    <span className="num">{String(impDetail.total ?? 0)}</span> 条 → 有效 <span className="num">{String(impDetail.valid ?? 0)}</span> 条 ·
+                    查重拦截 <span className="num">{String(impDetail.duplicate ?? 0)}</span> 条 · 无效 <span className="num">{String(impDetail.invalid ?? 0)}</span> 条
+                  </div>
                 </div>
               )}
-              <div className="crm-filterbar">
-                <input className="crm-search" placeholder="搜索 手机号 / 微信号 / 备注…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
+              {/* 筛选区：搜索走概念稿 .field，来源 / 标签走 .chipbar → .chip.is-on */}
+              <div className="crm-filterbar lp-filters">
+                <label className="field lp-search">
+                  <Search className="icon" />
+                  <input placeholder="搜索 手机号 / 微信号 / 备注…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
+                </label>
                 {ov && ov.sources.length > 0 && (
-                  <div className="crm-chips src">
-                    <button className={`chip ${sourceChip === '全部' ? 'active' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
+                  <div className="chipbar">
+                    <button className={`chip ${sourceChip === '全部' ? 'is-on' : ''}`} onClick={() => { setSourceChip('全部'); setPage(1) }}>全部来源</button>
                     {ov.sources.map((sr) => (
-                      <button key={sr.source} className={`chip ${sourceChip === sr.source ? 'active' : ''}`} onClick={() => { setSourceChip(sr.source); setPage(1) }}>{sr.source} ({sr.count})</button>
+                      <button key={sr.source} className={`chip ${sourceChip === sr.source ? 'is-on' : ''}`} onClick={() => { setSourceChip(sr.source); setPage(1) }}>{sr.source}<span className="chip__n">{sr.count}</span></button>
                     ))}
                   </div>
                 )}
                 {tagChips.length > 0 && (
-                  <div className="crm-chips src">
-                    <button className={`chip ${tagChip === '全部' ? 'active' : ''}`} onClick={() => { setTagChip('全部'); setPage(1) }}>全部标签</button>
+                  <div className="chipbar">
+                    <button className={`chip ${tagChip === '全部' ? 'is-on' : ''}`} onClick={() => { setTagChip('全部'); setPage(1) }}>全部标签</button>
                     {tagChips.map((c) => (
-                      <button key={c.value} className={`chip ${tagChip === c.value ? 'active' : ''}`} title="按标签（需求标签）筛选" onClick={() => { setTagChip(c.value); setPage(1) }}>{c.value} ({c.count})</button>
+                      <button key={c.value} className={`chip ${tagChip === c.value ? 'is-on' : ''}`} title="按标签（需求标签）筛选" onClick={() => { setTagChip(c.value); setPage(1) }}>{c.value}<span className="chip__n">{c.count}</span></button>
                     ))}
                   </div>
                 )}
               </div>
 
-              <table className="crm-table">
-                <thead><tr><th className="lc-check"><input type="checkbox" title="全选本页待分配线索" checked={pageItems.length > 0 && pageItems.filter((l) => l.status === 'NEW').length > 0 && pageItems.filter((l) => l.status === 'NEW').every((l) => selected.has(l.id))} onChange={toggleSelectPage} /></th><th>联系方式</th><th>来源</th><th>需求标签</th><th>备注</th><th className="num">入池时间</th><th>入池方式</th><th>操作</th></tr></thead>
-                <tbody>
-                  {pageItems.map((l) => {
-                    const latest = latestAsg[l.id]
-                    const recycled = String(latest?.status || '') === 'recycled'
-                    // 入池方式（§2.75 遗留精确化）：读真列 import_batch_id（importLeads 回填，宪法 §3）；
-                    // NULL（该列上线前的存量导入）回退旧「时间近似判定」——贴最近导入审计 <10 分钟才算批次，不炸存量
-                    const inPoolWay = Number(l.import_batch_id || 0) > 0
-                      ? `批次 #A${Number(l.import_batch_id)}`
-                      : (importAudit && Math.abs(Number(l.created_at || 0) - Number(importAudit.created_at || 0)) < 10 * 60_000
-                          ? `批次 #A${String(impDetail.batchId ?? '?')}` : '存量导入')
-                    return (
-                      <tr key={l.id} onClick={() => void openDetail(l.id)}>
-                        <td className="lc-check" onClick={(e) => e.stopPropagation()}>
-                          {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
-                        </td>
-                        <td>
-                          <div className="lc-contact num">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</div>
-                          <div className="psub">{l.contact_type === 'wechat' ? '微信号' : l.contact_type === 'both' ? '手机+微信' : '手机号'}{l.name ? ` · ${l.name}` : ''}</div>
-                        </td>
-                        <td>{String(l.source || '-')}</td>
-                        <td>{String(l.tag || '').trim() ? <span className="pill pill--neutral">{String(l.tag)}</span> : '-'}</td>
-                        <td className="lp-note">{String(l.note || '-')}</td>
-                        <td className="num">{fmtTime(l.created_at)}{recycled ? '（回池）' : ''}</td>
-                        <td>{inPoolWay}</td>
-                        <td className="lc-ops" onClick={(e) => e.stopPropagation()}>
-                          <button className="crm-btn" title="编辑资料（姓名/微信）" onClick={() => { setEditTarget(l); setEditName(String(l.name || '')); setEditWechat(String(l.wechat || '')) }}><Pencil size={13} /></button>
-                          {l.status === 'NEW' && <button className="crm-btn danger" title="标记失效" onClick={() => { setDeadLead(l); setDeadReason('') }}><X size={13} /></button>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {poolFiltered.length === 0 && <tr><td colSpan={8} className="empty">该分段暂无线索{poolSeg === 'pool' ? '，点击右上角「导入线索」开始' : ''}</td></tr>}
-                </tbody>
-              </table>
+              {/* 细线行表（概念稿 .tbl/.thead/.trow）：紧凑行 + 1px 分隔线，单元格截断不撑宽 */}
+              <div className="tbl lp-tbl">
+                <div className="thead lp-grid">
+                  <span className="lp-check"><input type="checkbox" title="全选本页待分配线索" checked={pageItems.length > 0 && pageItems.filter((l) => l.status === 'NEW').length > 0 && pageItems.filter((l) => l.status === 'NEW').every((l) => selected.has(l.id))} onChange={toggleSelectPage} /></span>
+                  <span>联系方式</span><span>来源</span><span>需求标签</span><span>备注</span><span className="tc-r">入池时间</span><span>入池方式</span><span className="tc-r">操作</span>
+                </div>
+                {pageItems.map((l) => {
+                  const latest = latestAsg[l.id]
+                  const recycled = String(latest?.status || '') === 'recycled'
+                  // 入池方式（§2.75 遗留精确化）：读真列 import_batch_id（importLeads 回填，宪法 §3）；
+                  // NULL（该列上线前的存量导入）回退旧「时间近似判定」——贴最近导入审计 <10 分钟才算批次，不炸存量
+                  const inPoolWay = Number(l.import_batch_id || 0) > 0
+                    ? `批次 #A${Number(l.import_batch_id)}`
+                    : (importAudit && Math.abs(Number(l.created_at || 0) - Number(importAudit.created_at || 0)) < 10 * 60_000
+                        ? `批次 #A${String(impDetail.batchId ?? '?')}` : '存量导入')
+                  return (
+                    <div key={l.id} className="trow lp-grid" onClick={() => void openDetail(l.id)}>
+                      <span className="lp-check" onClick={(e) => e.stopPropagation()}>
+                        {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
+                      </span>
+                      <span className="lp-contact">
+                        <span className="lc-contact num lp-ell">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</span>
+                        <span className="psub lp-ell">{l.contact_type === 'wechat' ? '微信号' : l.contact_type === 'both' ? '手机+微信' : '手机号'}{l.name ? ` · ${l.name}` : ''}</span>
+                      </span>
+                      <span className="lp-ell">{String(l.source || '-')}</span>
+                      <span className="lp-ell">{String(l.tag || '').trim() ? <span className="tag tag--neutral">{String(l.tag)}</span> : '-'}</span>
+                      <span className="lp-ell">{String(l.note || '-')}</span>
+                      <span className="num tc-r lp-ell">{fmtTime(l.created_at)}{recycled ? '（回池）' : ''}</span>
+                      <span className="lp-ell">{inPoolWay}</span>
+                      <span className="tc-a lp-ops" onClick={(e) => e.stopPropagation()}>
+                        <button className="iconbtn" title="编辑资料（姓名/微信）" onClick={() => { setEditTarget(l); setEditName(String(l.name || '')); setEditWechat(String(l.wechat || '')) }}><Pencil size={13} /></button>
+                        {l.status === 'NEW' && <button className="iconbtn lp-iconbtn--danger" title="标记失效" onClick={() => { setDeadLead(l); setDeadReason('') }}><X size={13} /></button>}
+                      </span>
+                    </div>
+                  )
+                })}
+                {poolFiltered.length === 0 && <div className="empty">该分段暂无线索{poolSeg === 'pool' ? '，点击右上角「导入线索」开始' : ''}</div>}
+              </div>
 
               {poolFiltered.length > PAGE_SIZE && (
                 <div className="crm-pager">
-                  <button className="crm-btn" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>上一页</button>
+                  <button className="btn btn--sm btn--plain" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>上一页</button>
                   <span className="crm-pager-info">第 {curPage} / {totalPages} 页 · 共 {poolFiltered.length} 条</span>
-                  <button className="crm-btn" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页</button>
+                  <button className="btn btn--sm btn--plain" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页</button>
                 </div>
               )}
             </>
@@ -903,12 +930,13 @@ export default function CrmLeadPage() {
 
           {managerTab === 'console' && (
             <>
-              <div className="lp-grid2">
-                <div className="lp-cardbox">
-                  <div className="lp-cardbox__title">分配模式 <span className="lp-hint">默认：比例权重</span></div>
-                  <div className="lp-segs lp-segs--modes">
+              {/* 分配控制台：先定候选人集合（销售名单），再定策略 —— 结构与枚举不动，只换细线语法 */}
+              <div className="g2 lp-console">
+                <div className="box">
+                  <div className="box__t">分配模式 <span className="box__h">默认：比例权重</span></div>
+                  <div className="chipbar lp-modes">
                     {(['weight', 'round_robin', 'load'] as AssignMode[]).map((m) => (
-                      <button key={m} className={`lp-seg ${assignMode === m ? 'on' : ''}`} onClick={() => setAssignMode(m)}>{MODE_LABEL[m]}</button>
+                      <button key={m} className={`chip ${assignMode === m ? 'is-on' : ''}`} onClick={() => setAssignMode(m)}>{MODE_LABEL[m]}</button>
                     ))}
                   </div>
                   {salesList.map((s) => (
@@ -921,55 +949,53 @@ export default function CrmLeadPage() {
                     </div>
                   ))}
                   {salesList.length === 0 && <div className="empty">还没有销售名单。到「资源池」页签勾选线索后点击「分配给…」，可在弹窗中直接添加销售姓名。</div>}
-                  <div className="lp-hint" style={{ marginTop: 10 }}>不调整权重时按人数均分；调整后会自动保存，每次分配都会保留审计记录。</div>
+                  <div className="lp-hint">不调整权重时按人数均分；调整后会自动保存，每次分配都会保留审计记录。</div>
                 </div>
-                <div className="lp-cardbox">
-                  <div className="lp-cardbox__title">本次分配预览</div>
-                  <table className="crm-table lp-preview">
-                    <thead><tr><th>销售</th><th className="num">分得</th><th>按</th></tr></thead>
-                    <tbody>
-                      {salesList.map((s) => (
-                        <tr key={s}>
-                          <td>{s}</td>
-                          <td className="num"><b>{batchPreview[s] ?? 0}</b> 条</td>
-                          <td className="psub">{assignMode === 'weight' ? `权重 ${Number(assignWeights[s] ?? 0)}%` : assignMode === 'round_robin' ? '轮询均分' : `在手 ${loads[s] ?? 0} 条（负载优先）`}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="box">
+                  <div className="box__t">本次分配预览 <span className="box__h">确认前不落任何行</span></div>
+                  <div className="tbl">
+                    <div className="thead lp-prev-grid"><span>销售</span><span className="tc-r">分得</span><span>按</span></div>
+                    {salesList.map((s) => (
+                      <div key={s} className="trow trow--static lp-prev-grid">
+                        <span className="tc-n">{s}</span>
+                        <span className="num tc-r"><b>{batchPreview[s] ?? 0}</b> 条</span>
+                        <span className="psub">{assignMode === 'weight' ? `权重 ${Number(assignWeights[s] ?? 0)}%` : assignMode === 'round_robin' ? '轮询均分' : `在手 ${loads[s] ?? 0} 条（负载优先）`}</span>
+                      </div>
+                    ))}
+                  </div>
                   <div className="lp-batch-row">
                     <span className="lp-hint">从「待分配」取</span>
-                    <input type="number" min={1} max={Math.max(1, poolAvailable)} value={batchCount} onChange={(e) => setBatchCount(Math.max(1, Math.floor(Number(e.target.value) || 1)))} className="crm-input lp-count" />
+                    <input type="number" min={1} max={Math.max(1, poolAvailable)} value={batchCount} onChange={(e) => setBatchCount(Math.max(1, Math.floor(Number(e.target.value) || 1)))} className="lp-count" />
                     <span className="lp-hint">条（池内待分配 {poolAvailable} 条）</span>
-                    <span style={{ flex: 1 }} />
-                    <button className="crm-btn" onClick={() => { setBatchCount(50); setAssignMode('weight') }}>取消</button>
-                    <button className="crm-btn primary" disabled={batchBusy || poolAvailable === 0 || salesList.length === 0} onClick={() => void doAssignBatch()}><UserCheck size={13} /> {batchBusy ? '执行中…' : '执行分配'}</button>
+                    {/* 窄列（1024 下控制台为两栏）时只换行不留孤按钮：两个动作同排进退 */}
+                    <span className="lp-batch-acts">
+                      <button className="btn btn--plain" onClick={() => { setBatchCount(50); setAssignMode('weight') }}>取消</button>
+                      <button className="btn btn--primary" disabled={batchBusy || poolAvailable === 0 || salesList.length === 0} onClick={() => void doAssignBatch()}><UserCheck size={13} /> {batchBusy ? '执行中…' : '执行分配'}</button>
+                    </span>
                   </div>
                 </div>
               </div>
-              <div className="lp-cardbox" style={{ marginTop: 14 }}>
-                <div className="lp-cardbox__title">最近分配记录 <span className="lp-hint">每次执行一行，可追溯到操作人（audit_event）</span></div>
-                <table className="crm-table">
-                  <thead><tr><th className="num">时间</th><th>批次</th><th>模式</th><th className="num">数量</th><th>分给</th><th>操作人</th></tr></thead>
-                  <tbody>
-                    {batchRows.slice(0, 8).map((r) => {
-                      let d: Record<string, unknown> = {}
-                      try { d = JSON.parse(String(r.detail || '{}')) } catch { /* 跳过 */ }
-                      const per = Object.entries((d.perSales || {}) as Record<string, number>).filter(([, n]) => n > 0).map(([s, n]) => `${s} ${n}`).join(' / ')
-                      return (
-                        <tr key={String(r.id)}>
-                          <td className="num">{fmtTime(Number(r.created_at))}</td>
-                          <td className="num">#A{String(r.id)}</td>
-                          <td>{MODE_LABEL[(String(d.mode || 'weight')) as AssignMode] || String(d.mode)}</td>
-                          <td className="num">{String(d.assigned ?? 0)}</td>
-                          <td>{per || '-'}</td>
-                          <td>{String(r.actor || '')}</td>
-                        </tr>
-                      )
-                    })}
-                    {batchRows.length === 0 && <tr><td colSpan={6} className="empty">暂无批量分配记录</td></tr>}
-                  </tbody>
-                </table>
+              <div className="box lp-recent">
+                <div className="box__t">最近分配记录 <span className="box__h">每次执行一行，可追溯到操作人（audit_event）</span></div>
+                <div className="tbl">
+                  <div className="thead lp-batch-grid"><span>时间</span><span>批次</span><span>模式</span><span className="tc-r">数量</span><span>分给</span><span>操作人</span></div>
+                  {batchRows.slice(0, 8).map((r) => {
+                    let d: Record<string, unknown> = {}
+                    try { d = JSON.parse(String(r.detail || '{}')) } catch { /* 跳过 */ }
+                    const per = Object.entries((d.perSales || {}) as Record<string, number>).filter(([, n]) => n > 0).map(([s, n]) => `${s} ${n}`).join(' / ')
+                    return (
+                      <div key={String(r.id)} className="trow trow--static lp-batch-grid">
+                        <span className="num">{fmtTime(Number(r.created_at))}</span>
+                        <span className="num">#A{String(r.id)}</span>
+                        <span>{MODE_LABEL[(String(d.mode || 'weight')) as AssignMode] || String(d.mode)}</span>
+                        <span className="num tc-r">{String(d.assigned ?? 0)}</span>
+                        <span className="lp-ell">{per || '-'}</span>
+                        <span className="lp-ell">{String(r.actor || '')}</span>
+                      </div>
+                    )
+                  })}
+                  {batchRows.length === 0 && <div className="empty">暂无批量分配记录</div>}
+                </div>
               </div>
             </>
           )}
@@ -977,8 +1003,8 @@ export default function CrmLeadPage() {
           {managerTab === 'reassign' && (
             <>
           {notifies.length > 0 && (
-            <div className="lp-cardbox" style={{ marginBottom: 14 }}>
-              <div className="lp-cardbox__title">升级提醒 <span className="pill pill--danger num">{notifyUnread}</span> <span className="lp-hint">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
+            <div className="box">
+              <div className="box__t">升级提醒 <span className="pill pill--danger num">{notifyUnread}</span> <span className="box__h">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
               <div className="lead-timeline">
                 {notifies.map((n) => {
                   let d: Record<string, unknown> = {}
@@ -989,45 +1015,45 @@ export default function CrmLeadPage() {
                       <span className="lt-time">{fmtTime(Number(n.created_at))}</span>
                       <span className="lt-act">{unread ? '未读' : '已读'}</span>
                       <span className="lt-note">{String(n.title || '')} — {String(n.body || '')}</span>
-                      {unread && <button className="crm-btn" style={{ marginLeft: 8 }} onClick={() => void markNotifyRead(Number(n.id))}>标记已读</button>}
-                      {Number(d.hubLeadId || 0) > 0 && <button className="crm-btn ghost" style={{ marginLeft: 8 }} onClick={() => { void openDetail(Number(d.hubLeadId)) }}>看线索</button>}
+                      <span className="lp-notify-acts">
+                        {unread && <button className="btn btn--sm btn--plain" onClick={() => void markNotifyRead(Number(n.id))}>标记已读</button>}
+                        {Number(d.hubLeadId || 0) > 0 && <button className="btn btn--sm btn--quiet" onClick={() => { void openDetail(Number(d.hubLeadId)) }}>看线索</button>}
+                      </span>
                     </div>
                   )
                 })}
               </div>
             </div>
           )}
-            <div className="lp-cardbox">
-              <div className="lp-cardbox__title">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="lp-hint">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
-              <table className="crm-table">
-                <thead><tr><th>线索</th><th>原归属</th><th>回收原因</th><th>建议改派给</th><th></th></tr></thead>
-                <tbody>
-                  {reassignLeads.map((l) => {
-                    const from = String(latestAsg[l.id]?.sales_name || '')
-                    const sug = suggestReassignOwner(from, salesList, loads)
-                    return (
-                      <tr key={l.id}>
-                        <td>
-                          <div className="lc-contact num">{maskLead(l)}</div>
-                          <div className="psub">{String(l.source || '')}{l.note ? ` · ${l.note}` : ''}</div>
-                        </td>
-                        <td>{from || '-'}</td>
-                        <td><span className="pill pill--danger">{recycleReasons[l.id] || '人工回收'}</span></td>
-                        <td>
-                          {sug ? <span className="pill pill--neutral">{sug}（建议）</span> : <span className="psub">名单无其他人，请先补充销售名单</span>}
-                          <div className="psub">{sug ? `在手 ${loads[sug] ?? 0} 条 · 非原归属` : ''}</div>
-                        </td>
-                        <td>
-                          <button className="crm-btn primary" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
-                            {reassignBusy === l.id ? '改派中…' : '确认改派'}
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {reassignLeads.length === 0 && <tr><td colSpan={5} className="empty">暂无待改派线索</td></tr>}
-                </tbody>
-              </table>
+            <div className="box">
+              <div className="box__t">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="box__h">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
+              <div className="tbl">
+                <div className="thead lp-own-grid"><span>线索</span><span>原归属</span><span>回收原因</span><span>建议改派给</span><span className="tc-r">动作</span></div>
+                {reassignLeads.map((l) => {
+                  const from = String(latestAsg[l.id]?.sales_name || '')
+                  const sug = suggestReassignOwner(from, salesList, loads)
+                  return (
+                    <div key={l.id} className="trow trow--static lp-own-grid">
+                      <span>
+                        <span className="lc-contact num lp-ell">{maskLead(l)}</span>
+                        <span className="psub lp-ell">{String(l.source || '')}{l.note ? ` · ${l.note}` : ''}</span>
+                      </span>
+                      <span className="lp-ell">{from || '-'}</span>
+                      <span className="lp-ell"><span className="pill pill--danger">{recycleReasons[l.id] || '人工回收'}</span></span>
+                      <span className="lp-cell">
+                        {sug ? <span className="tag tag--neutral">{sug}（建议）</span> : <span className="psub">名单无其他人，请先补充销售名单</span>}
+                        {sug ? <span className="psub">在手 {loads[sug] ?? 0} 条 · 非原归属</span> : null}
+                      </span>
+                      <span className="tc-a">
+                        <button className="btn btn--sm btn--primary" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
+                          {reassignBusy === l.id ? '改派中…' : '确认改派'}
+                        </button>
+                      </span>
+                    </div>
+                  )
+                })}
+                {reassignLeads.length === 0 && <div className="empty">暂无待改派线索</div>}
+              </div>
             </div>
             </>
           )}
@@ -1037,7 +1063,7 @@ export default function CrmLeadPage() {
       {showImport && (
         <div className="crm-modal" onClick={() => setShowImport(false)}>
           <div className="crm-modal-body lead-import" onClick={(e) => e.stopPropagation()}>
-            <h3><Upload size={15} /> 导入线索 <button className="crm-btn" onClick={() => setShowImport(false)}><X size={14} /></button></h3>
+            <h3><Upload size={15} /> 导入线索 <button className="btn btn--plain" onClick={() => setShowImport(false)}><X size={14} /></button></h3>
             <div className="form-grid">
               <label>来源
                 <select value={importSource} onChange={(e) => { setImportSource(e.target.value); setCustomSource('') }}>
@@ -1055,7 +1081,7 @@ export default function CrmLeadPage() {
             </div>
             {importTab === 'file' ? (
               <div className="lead-file">
-                <button className="crm-btn" onClick={() => fileRef.current?.click()}><FileSpreadsheet size={14} /> 选择文件</button>
+                <button className="btn btn--plain" onClick={() => fileRef.current?.click()}><FileSpreadsheet size={14} /> 选择文件</button>
                 <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void pickFile(f); e.target.value = '' }} />
                 <span className="lc-filename">{fileName || '支持 .xlsx / .csv，表头可含：手机号 / 微信 / 姓名 / 标签 / 备注'}</span>
               </div>
@@ -1064,7 +1090,7 @@ export default function CrmLeadPage() {
             )}
             <div className="lead-preview">已识别 {rows.length} 行{rows.length ? '，点击导入将写入线索池（重复号码自动跳过）' : ''}</div>
             <div className="form-actions">
-              <button className="crm-btn primary" disabled={!rows.length} onClick={() => void doImport()}><ClipboardPaste size={14} /> 导入</button>
+              <button className="btn btn--primary" disabled={!rows.length} onClick={() => void doImport()}><ClipboardPaste size={14} /> 导入</button>
             </div>
           </div>
         </div>
@@ -1073,7 +1099,7 @@ export default function CrmLeadPage() {
       {detail && (
         <div className="crm-modal" onClick={() => setDetail(null)}>
           <div className="crm-modal-body lead-detail" onClick={(e) => e.stopPropagation()}>
-            <h3>线索详情 <button className="crm-btn" onClick={() => setDetail(null)}><X size={14} /></button></h3>
+            <h3>线索详情 <button className="btn btn--plain" onClick={() => setDetail(null)}><X size={14} /></button></h3>
             <div className="lead-detail-grid">
               <div><label>联系方式</label><div className="ld-strong">{detail.lead.contact_raw || detail.lead.contact_normalized}</div></div>
               <div><label>类型</label><div>{detail.lead.contact_type === 'wechat' ? '微信号' : detail.lead.contact_type === 'both' ? '手机号 + 微信' : '手机号'}{detail.lead.wechat ? `（微信 ${detail.lead.wechat}）` : ''}</div></div>
@@ -1093,10 +1119,10 @@ export default function CrmLeadPage() {
                     {CHANNELS.map((c) => <option key={c}>{c}</option>)}
                   </select>
                 </label>
-                <button className="crm-btn" onClick={() => void act(detail.lead.id, 'contacted', { channel: (document.getElementById('contact-channel') as HTMLSelectElement)?.value || 'PHONE' })}><Phone size={14} /> 完成首触</button>
-                <input id="lead-wechat" className="crm-input" placeholder="客户微信号 / 昵称（可选）" defaultValue={detail.lead.wechat || ''} style={{ maxWidth: 180 }} />
-                <button className="crm-btn" onClick={() => void act(detail.lead.id, 'wx_added', { wechat: (document.getElementById('lead-wechat') as HTMLInputElement)?.value || '' })}><MessageCircle size={14} /> 已加微信</button>
-                <button className="crm-btn primary" onClick={() => void toAccount(detail.lead.id)}><UserPlus size={14} /> 转客户</button>
+                <button className="btn btn--plain" onClick={() => void act(detail.lead.id, 'contacted', { channel: (document.getElementById('contact-channel') as HTMLSelectElement)?.value || 'PHONE' })}><Phone size={14} /> 完成首触</button>
+                <input id="lead-wechat" placeholder="客户微信号 / 昵称（可选）" defaultValue={detail.lead.wechat || ''} style={{ maxWidth: 180 }} />
+                <button className="btn btn--plain" onClick={() => void act(detail.lead.id, 'wx_added', { wechat: (document.getElementById('lead-wechat') as HTMLInputElement)?.value || '' })}><MessageCircle size={14} /> 已加微信</button>
+                <button className="btn btn--primary" onClick={() => void toAccount(detail.lead.id)}><UserPlus size={14} /> 转客户</button>
               </div>
             )}
             {detail.sla2 && (
@@ -1111,7 +1137,7 @@ export default function CrmLeadPage() {
                       {detail.sla2.evidenceKey && (
                         <>
                           {' · '}
-                          <button className="crm-btn" onClick={(e) => { e.stopPropagation(); void loadSla2Evidence(detail.lead.id) }} disabled={sla2Ev.loading}>
+                          <button className="btn btn--plain" onClick={(e) => { e.stopPropagation(); void loadSla2Evidence(detail.lead.id) }} disabled={sla2Ev.loading}>
                             {sla2Ev.loading ? '读取中…' : '查看依据'}
                           </button>
                         </>
@@ -1167,23 +1193,23 @@ export default function CrmLeadPage() {
       {showAssign && (
         <div className="crm-modal" onClick={() => { if (!assignBusy) setShowAssign(false) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>分配线索（{selected.size} 条） <button className="crm-btn" onClick={() => setShowAssign(false)}><X size={14} /></button></h3>
+            <h3>分配线索（{selected.size} 条） <button className="btn btn--plain" onClick={() => setShowAssign(false)}><X size={14} /></button></h3>
             <p className="ld-tip">选一位销售；名单里没有就现场输入新名字（会自动记住，下次直接选）。已有归属的线索会自动跳过。</p>
             <div className="lc-sales-list">
               {salesList.map((n) => (
                 <div key={n} className={`lc-sales-item ${assignName === n ? 'active' : ''}`} onClick={() => setAssignName(n)}>
                   <span>{n}</span>
-                  <button className="crm-btn danger" title="从名单移除（不影响已分配的记录）" onClick={(e) => { e.stopPropagation(); void removeSales(n) }}><X size={12} /></button>
+                  <button className="btn lp-btn--danger" title="从名单移除（不影响已分配的记录）" onClick={(e) => { e.stopPropagation(); void removeSales(n) }}><X size={12} /></button>
                 </div>
               ))}
               {salesList.length === 0 && <div className="empty">还没有销售名单，先在下方添加</div>}
             </div>
             <div className="lc-sales-add">
               <input value={newSales} onChange={(e) => setNewSales(e.target.value)} placeholder="输入新销售姓名" onKeyDown={(e) => { if (e.key === 'Enter') void addSales() }} />
-              <button className="crm-btn" disabled={!newSales.trim()} onClick={() => void addSales()}>添加并选中</button>
+              <button className="btn btn--plain" disabled={!newSales.trim()} onClick={() => void addSales()}>添加并选中</button>
             </div>
             <div className="form-actions">
-              <button className="crm-btn primary" disabled={!assignName || assignBusy} onClick={() => void doAssign()}><UserCheck size={14} /> {assignBusy ? '分配中…' : `确认分配${assignName ? `给 ${assignName}` : ''}`}</button>
+              <button className="btn btn--primary" disabled={!assignName || assignBusy} onClick={() => void doAssign()}><UserCheck size={14} /> {assignBusy ? '分配中…' : `确认分配${assignName ? `给 ${assignName}` : ''}`}</button>
             </div>
           </div>
         </div>
@@ -1192,13 +1218,13 @@ export default function CrmLeadPage() {
       {wxTarget && (
         <div className="crm-modal" onClick={() => setWxTarget(null)}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>已加微信 <button className="crm-btn" onClick={() => setWxTarget(null)}><X size={14} /></button></h3>
+            <h3>已加微信 <button className="btn btn--plain" onClick={() => setWxTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(wxTarget)} 标记为已加微信。顺手填上客户微信号/昵称，以后好认人（可留空）。</p>
             <label>客户微信号 / 昵称
               <input autoFocus value={wxInput} onChange={(e) => setWxInput(e.target.value)} placeholder="如：鸿富叉车-老王 / wxid_xxx" onKeyDown={(e) => { if (e.key === 'Enter') { void act(wxTarget.id, 'wx_added', { wechat: wxInput.trim() }); setWxTarget(null) } }} />
             </label>
             <div className="form-actions">
-              <button className="crm-btn primary" onClick={() => { void act(wxTarget.id, 'wx_added', { wechat: wxInput.trim() }); setWxTarget(null) }}><MessageCircle size={14} /> 确认（{wxInput.trim() ? '记录微信' : '不填，直接标记'}）</button>
+              <button className="btn btn--primary" onClick={() => { void act(wxTarget.id, 'wx_added', { wechat: wxInput.trim() }); setWxTarget(null) }}><MessageCircle size={14} /> 确认（{wxInput.trim() ? '记录微信' : '不填，直接标记'}）</button>
             </div>
           </div>
         </div>
@@ -1207,7 +1233,7 @@ export default function CrmLeadPage() {
       {editTarget && (
         <div className="crm-modal" onClick={() => setEditTarget(null)}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>编辑资料 <button className="crm-btn" onClick={() => setEditTarget(null)}><X size={14} /></button></h3>
+            <h3>编辑资料 <button className="btn btn--plain" onClick={() => setEditTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(editTarget)}，只改姓名和微信，不影响线索状态。</p>
             <label>姓名
               <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="如：鸿富叉车-老王" />
@@ -1216,7 +1242,7 @@ export default function CrmLeadPage() {
               <input value={editWechat} onChange={(e) => setEditWechat(e.target.value)} placeholder="如：wxid_xxx / 昵称" onKeyDown={(e) => { if (e.key === 'Enter') void saveEdit() }} />
             </label>
             <div className="form-actions">
-              <button className="crm-btn primary" onClick={() => void saveEdit()}><Pencil size={14} /> 保存</button>
+              <button className="btn btn--primary" onClick={() => void saveEdit()}><Pencil size={14} /> 保存</button>
             </div>
           </div>
         </div>
@@ -1225,13 +1251,13 @@ export default function CrmLeadPage() {
       {deadLead && (
         <div className="crm-modal" onClick={() => setDeadLead(null)}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>标记失效 <button className="crm-btn" onClick={() => setDeadLead(null)}><X size={14} /></button></h3>
+            <h3>标记失效 <button className="btn btn--plain" onClick={() => setDeadLead(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(deadLead)} 将标记为失效，之后仍可「重新跟进」。</p>
             <label>死因 <select value={deadReason} onChange={(e) => setDeadReason(e.target.value)}>
               <option value="">请选择死因</option>
               {['号码无效', '重复留资', '明确不要', '同行', '非目标客户', '已购车', '联系不上', '其他'].map((r) => <option key={r}>{r}</option>)}
             </select></label>
-            <div className="form-actions"><button className="crm-btn danger" disabled={!deadReason} onClick={() => void confirmDead()}>确认失效</button></div>
+            <div className="form-actions"><button className="btn lp-btn--danger" disabled={!deadReason} onClick={() => void confirmDead()}>确认失效</button></div>
           </div>
         </div>
       )}
@@ -1239,7 +1265,7 @@ export default function CrmLeadPage() {
       {claimTarget && (
         <div className="crm-modal" onClick={() => { if (!claimBusy) setClaimTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>认领线索 <button className="crm-btn" onClick={() => setClaimTarget(null)}><X size={14} /></button></h3>            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空；填了微信号会同时「绑定微信」停 SLA1 表）。</p>
+            <h3>认领线索 <button className="btn btn--plain" onClick={() => setClaimTarget(null)}><X size={14} /></button></h3>            <p className="ld-tip">确认认领线索 {maskLead(claimTarget)}（归属：{identity.name}）。认领后开始算你的；顺手填客户微信号/昵称，以后好认人（都可留空；填了微信号会同时「绑定微信」停 SLA1 表）。</p>
             <label>客户微信号（可选）
               <input autoFocus value={claimWechat} onChange={(e) => setClaimWechat(e.target.value)} placeholder="如：wxid_xxx" />
             </label>
@@ -1247,7 +1273,7 @@ export default function CrmLeadPage() {
               <input value={claimNick} onChange={(e) => setClaimNick(e.target.value)} placeholder="如：鸿富叉车-老王" onKeyDown={(e) => { if (e.key === 'Enter') void doClaim() }} />
             </label>
             <div className="form-actions">
-              <button className="crm-btn primary" disabled={claimBusy} onClick={() => void doClaim()}><Hand size={14} /> {claimBusy ? '认领中…' : '确认认领'}</button>
+              <button className="btn btn--primary" disabled={claimBusy} onClick={() => void doClaim()}><Hand size={14} /> {claimBusy ? '认领中…' : '确认认领'}</button>
             </div>
           </div>
         </div>
@@ -1256,7 +1282,7 @@ export default function CrmLeadPage() {
       {classifyTarget && (
         <div className="crm-modal" onClick={() => { if (!classifyBusy) setClassifyTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>AI 首次分类（PRD 2.4） <button className="crm-btn" onClick={() => setClassifyTarget(null)}><X size={14} /></button></h3>
+            <h3>AI 首次分类（PRD 2.4） <button className="btn btn--plain" onClick={() => setClassifyTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(classifyTarget)}。认领满 24 小时自动触发一次；也可手动立即分析。结果是 AI 提案（B 档），确认后才写入客户档案，拒绝则保留记录不落档案。</p>
             {!classifyRound && <div className="empty">暂无分类轮次。认领满 24h 会自动生成，或点下方「立即分析」。</div>}
             {classifyRound && (() => {
@@ -1293,13 +1319,13 @@ export default function CrmLeadPage() {
             })()}
             <div className="form-actions">
               {(!classifyRound || classifyRound.status === 'failed') && (
-                <button className="crm-btn primary" disabled={classifyBusy} onClick={() => void doClassifyRun()}><Sparkles size={14} /> {classifyBusy ? '分析中…' : '立即分析'}</button>
+                <button className="btn btn--primary" disabled={classifyBusy} onClick={() => void doClassifyRun()}><Sparkles size={14} /> {classifyBusy ? '分析中…' : '立即分析'}</button>
               )}
               {classifyRound?.status === 'proposed' && (
                 <>
                   <input value={classifyRejectReason} onChange={(e) => setClassifyRejectReason(e.target.value)} placeholder="拒绝原因（拒绝时建议填写）" style={{ flex: 1 }} />
-                  <button className="crm-btn primary" disabled={classifyBusy} onClick={() => void doClassifyConfirm()}>确认写入档案</button>
-                  <button className="crm-btn danger" disabled={classifyBusy} onClick={() => void doClassifyReject()}>拒绝</button>
+                  <button className="btn btn--primary" disabled={classifyBusy} onClick={() => void doClassifyConfirm()}>确认写入档案</button>
+                  <button className="btn lp-btn--danger" disabled={classifyBusy} onClick={() => void doClassifyReject()}>拒绝</button>
                 </>
               )}
             </div>
@@ -1310,7 +1336,7 @@ export default function CrmLeadPage() {
       {bindTarget && (
         <div className="crm-modal" onClick={() => { if (!bindBusy) setBindTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>绑定微信 <button className="crm-btn" onClick={() => setBindTarget(null)}><X size={14} /></button></h3>
+            <h3>绑定微信 <button className="btn btn--plain" onClick={() => setBindTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(bindTarget)}（归属：{ownerByLead[bindTarget.id]?.salesName}）。搜本机微信联系人（备注/昵称/微信号关键词），选中确认即绑定——内部绑的是微信内部 id（改名不失效），命中即停 SLA1 表并留审计。</p>
             <label>搜索联系人
               <input autoFocus value={bindKw} onChange={(e) => { setBindKw(e.target.value); setBindSel(null) }} placeholder="备注 / 昵称 / 微信号关键词" />
@@ -1334,7 +1360,7 @@ export default function CrmLeadPage() {
               })}
             </div>
             <div className="form-actions">
-              <button className="crm-btn primary" disabled={!bindSel || bindBusy} onClick={() => void doBind()}><Link2 size={14} /> {bindBusy ? '绑定中…' : `确认绑定${bindSel ? `：${String(bindSel.remark || bindSel.nickname || bindSel.alias || bindSel.username)}` : ''}`}</button>
+              <button className="btn btn--primary" disabled={!bindSel || bindBusy} onClick={() => void doBind()}><Link2 size={14} /> {bindBusy ? '绑定中…' : `确认绑定${bindSel ? `：${String(bindSel.remark || bindSel.nickname || bindSel.alias || bindSel.username)}` : ''}`}</button>
             </div>
           </div>
         </div>
@@ -1343,7 +1369,7 @@ export default function CrmLeadPage() {
       {transferTarget && (
         <div className="crm-modal" onClick={() => { if (!transferBusy) setTransferTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>调派线索 <button className="crm-btn" onClick={() => setTransferTarget(null)}><X size={14} /></button></h3>
+            <h3>调派线索 <button className="btn btn--plain" onClick={() => setTransferTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">线索 {maskLead(transferTarget)} 当前归属 {ownerByLead[transferTarget.id]?.salesName}，选一位新销售接手（SLA 重新计时）。</p>
             <div className="lc-sales-list">
               {salesList.filter((n) => n !== ownerByLead[transferTarget.id]?.salesName).map((n) => (
@@ -1357,7 +1383,7 @@ export default function CrmLeadPage() {
               <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} placeholder="默认：人工调派" />
             </label>
             <div className="form-actions">
-              <button className="crm-btn primary" disabled={!transferTo || transferBusy} onClick={() => void doTransfer()}><ArrowLeftRight size={14} /> {transferBusy ? '调派中…' : `确认调派${transferTo ? `给 ${transferTo}` : ''}`}</button>
+              <button className="btn btn--primary" disabled={!transferTo || transferBusy} onClick={() => void doTransfer()}><ArrowLeftRight size={14} /> {transferBusy ? '调派中…' : `确认调派${transferTo ? `给 ${transferTo}` : ''}`}</button>
             </div>
           </div>
         </div>
@@ -1366,11 +1392,11 @@ export default function CrmLeadPage() {
       {recycleTarget && (
         <div className="crm-modal" onClick={() => { if (!recycleBusy) setRecycleTarget(null) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>回收线索 <button className="crm-btn" onClick={() => setRecycleTarget(null)}><X size={14} /></button></h3>
+            <h3>回收线索 <button className="btn btn--plain" onClick={() => setRecycleTarget(null)}><X size={14} /></button></h3>
             <p className="ld-tip">确认把线索 {maskLead(recycleTarget)}（当前归属 {ownerByLead[recycleTarget.id]?.salesName}）回收到资源池？回收后该销售不再看到它，可重新分配给其他销售。</p>
             <div className="form-actions">
-              <button className="crm-btn" disabled={recycleBusy} onClick={() => setRecycleTarget(null)}>再想想</button>
-              <button className="crm-btn danger" disabled={recycleBusy} onClick={() => void doRecycle()}><Undo2 size={14} /> {recycleBusy ? '回收中…' : '确认回收'}</button>
+              <button className="btn btn--plain" disabled={recycleBusy} onClick={() => setRecycleTarget(null)}>再想想</button>
+              <button className="btn lp-btn--danger" disabled={recycleBusy} onClick={() => void doRecycle()}><Undo2 size={14} /> {recycleBusy ? '回收中…' : '确认回收'}</button>
             </div>
           </div>
         </div>
@@ -1379,7 +1405,7 @@ export default function CrmLeadPage() {
       {showDeparture && (
         <div className="crm-modal" onClick={() => { if (!departBusy) setShowDeparture(false) }}>
           <div className="crm-modal-body lead-dead" onClick={(e) => e.stopPropagation()}>
-            <h3>离职移交 <button className="crm-btn" onClick={() => setShowDeparture(false)}><X size={14} /></button></h3>
+            <h3>离职移交 <button className="btn btn--plain" onClick={() => setShowDeparture(false)}><X size={14} /></button></h3>
             <p className="ld-tip">把离职销售名下的<strong>全部</strong>归属一次性移交给接手人：线索分配（逐条调派，SLA 重新计时）+ 客户/商机/物流的归属人。全程留归属流水与审计，不可撤销。</p>
             <label>离职销售
               <select value={departFrom} onChange={(e) => setDepartFrom(e.target.value)}>
@@ -1394,7 +1420,7 @@ export default function CrmLeadPage() {
               </select>
             </label>
             <div className="form-actions">
-              <button className="crm-btn danger" disabled={!departFrom || !departTo || departBusy} onClick={() => void doDeparture()}><UserX size={14} /> {departBusy ? '移交中…' : `确认移交${departFrom && departTo ? `（${departFrom} → ${departTo}）` : ''}`}</button>
+              <button className="btn lp-btn--danger" disabled={!departFrom || !departTo || departBusy} onClick={() => void doDeparture()}><UserX size={14} /> {departBusy ? '移交中…' : `确认移交${departFrom && departTo ? `（${departFrom} → ${departTo}）` : ''}`}</button>
             </div>
           </div>
         </div>
@@ -1402,26 +1428,24 @@ export default function CrmLeadPage() {
       {dedupeDetail !== null && (
         <div className="crm-modal" onClick={() => setDedupeDetail(null)}>
           <div className="crm-modal-body lead-detail" onClick={(e) => e.stopPropagation()}>
-            <h3>导入查重明细（批次 #A{dedupeBatchId}） <button className="crm-btn" onClick={() => setDedupeDetail(null)}><X size={14} /></button></h3>
+            <h3>导入查重明细（批次 #A{dedupeBatchId}） <button className="btn btn--plain" onClick={() => setDedupeDetail(null)}><X size={14} /></button></h3>
             <p className="ld-tip">手机号/微信号跨类型分别查重；双标识命中不同联系人 = 冲突待人工确认。明细中的联系方式已脱敏，可安全导出复核。</p>
             <div className="form-actions" style={{ justifyContent: 'flex-start' }}>
-              <button className="crm-btn primary" disabled={!dedupeDetail.length} onClick={exportDedupeCsv}><FileSpreadsheet size={13} /> 导出明细 CSV</button>
+              <button className="btn btn--primary" disabled={!dedupeDetail.length} onClick={exportDedupeCsv}><FileSpreadsheet size={13} /> 导出明细 CSV</button>
             </div>
-            <table className="crm-table">
-              <thead><tr><th className="num">行号</th><th>结果</th><th>原因</th><th>联系方式（脱敏）</th><th>姓名</th></tr></thead>
-              <tbody>
-                {dedupeDetail.map((r) => (
-                  <tr key={r.line}>
-                    <td className="num">{r.line}</td>
-                    <td><span className={`pill ${r.verdict === 'inserted' ? 'pill--success' : r.verdict === 'conflict' ? 'pill--danger' : 'pill--neutral'}`}>{({ inserted: '新增', duplicate: '同批重复', existing_lead: '线索池已有', existing_customer: '正式客户已有', conflict: '冲突待人工', invalid: '无效' } as Record<string, string>)[r.verdict] || r.verdict}</span></td>
-                    <td>{r.reason || '-'}</td>
-                    <td className="num">{[r.phoneMasked, r.wechatMasked].filter(Boolean).join(' / ') || '-'}</td>
-                    <td>{r.name || '-'}</td>
-                  </tr>
-                ))}
-                {dedupeDetail.length === 0 && <tr><td colSpan={5} className="empty">无明细记录</td></tr>}
-              </tbody>
-            </table>
+            <div className="tbl lp-tbl--modal">
+              <div className="thead lp-dd-grid"><span className="tc-r">行号</span><span>结果</span><span>原因</span><span>联系方式（脱敏）</span><span>姓名</span></div>
+              {dedupeDetail.map((r) => (
+                <div key={r.line} className="trow trow--static lp-dd-grid">
+                  <span className="num tc-r">{r.line}</span>
+                  <span className="lp-ell"><span className={`pill ${r.verdict === 'inserted' ? 'pill--success' : r.verdict === 'conflict' ? 'pill--danger' : 'pill--neutral'}`}>{({ inserted: '新增', duplicate: '同批重复', existing_lead: '线索池已有', existing_customer: '正式客户已有', conflict: '冲突待人工', invalid: '无效' } as Record<string, string>)[r.verdict] || r.verdict}</span></span>
+                  <span className="lp-ell">{r.reason || '-'}</span>
+                  <span className="num lp-ell">{[r.phoneMasked, r.wechatMasked].filter(Boolean).join(' / ') || '-'}</span>
+                  <span className="lp-ell">{r.name || '-'}</span>
+                </div>
+              ))}
+              {dedupeDetail.length === 0 && <div className="empty">无明细记录</div>}
+            </div>
           </div>
         </div>
       )}

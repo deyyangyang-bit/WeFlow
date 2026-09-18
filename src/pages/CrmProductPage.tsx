@@ -191,15 +191,23 @@ export default function CrmProductPage() {
 
   return (
     <div className="crm-product-page">
-      <div className="crm-header">
-        <h2><Package size={18} /> 产品库 <span className="count">共 {products.length} 个产品</span></h2>
-        <button className={`crm-btn ${editMode ? 'active' : ''}`} onClick={() => setEditMode((v) => !v)}><Pencil size={14} /> 编辑模式</button>
-        <button className="crm-btn" onClick={() => fileRef.current?.click()}><Upload size={14} /> 批量导入</button>
-        <input ref={fileRef} type="file" accept=".xlsx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importExcel(f) }} />
-        <button className="crm-btn" disabled={!selected.length} onClick={() => void aiDescBatch()}><Sparkles size={14} /> AI描述({selected.length})</button>
-        <button className="crm-btn" onClick={() => void fetchProducts()}><RefreshCw size={14} /></button>
-        <button className="crm-btn primary" onClick={() => setShowNew((v) => !v)}><Plus size={14} /> 新增产品</button>
-      </div>
+      {/* 页眉（概念稿 .shead：左标题/说明，右操作区）——标题与「共 N 个产品」口径不变，
+          说明只保留本页已有事实（产品总数），不新增业务承诺 */}
+      <header className="shead crm-header">
+        <div className="crm-header__lead">
+          <p className="eyebrow">系统 · 产品库</p>
+          <h1 className="hero crm-header__title"><Package size={18} /> 产品库</h1>
+          <p className="sub crm-header__sub">共 {products.length} 个产品 · 价格与规格以本机业务库为准</p>
+        </div>
+        <div className="shead__actions crm-header__actions">
+          <button className={`crm-btn ${editMode ? 'active' : ''}`} onClick={() => setEditMode((v) => !v)}><Pencil size={14} /> 编辑模式</button>
+          <button className="crm-btn" onClick={() => fileRef.current?.click()}><Upload size={14} /> 批量导入</button>
+          <input ref={fileRef} type="file" accept=".xlsx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void importExcel(f) }} />
+          <button className="crm-btn" disabled={!selected.length} onClick={() => void aiDescBatch()}><Sparkles size={14} /> AI描述({selected.length})</button>
+          <button className="crm-btn" onClick={() => void fetchProducts()}><RefreshCw size={14} /></button>
+          <button className="crm-btn primary" onClick={() => setShowNew((v) => !v)}><Plus size={14} /> 新增产品</button>
+        </div>
+      </header>
       {notice && <div className="crm-notice">{notice}</div>}
 
       <div className="crm-filterbar">
@@ -213,37 +221,47 @@ export default function CrmProductPage() {
         </div>
       </div>
 
-      <table className="crm-table">
-        <thead><tr><th></th><th>图片</th><th>名称</th><th>类目</th><th>单价</th><th>MOQ</th><th>材质</th><th>描述</th><th>操作</th></tr></thead>
-        <tbody>
-          {filtered.map((p) => (
-            <tr key={p.id}>
-              <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e) => setSelected((s) => e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id))} /></td>
-              <td>{imgCache[p.id] ? <img className="thumb" src={imgCache[p.id]} alt="" /> : <div className="thumb empty"><Tags size={14} /></div>}</td>
-              <td>
-                {editMode ? <input defaultValue={p.name} onBlur={(e) => inlineUpdate(p, 'name', e.target.value)} /> : <div className="pname">{p.name}</div>}
-                <div className="psub">SKU: {p.sku || p.model || '-'}</div>
-              </td>
-              <td><div>{p.category || '未分类'}</div><div className="psub">{p.subcategory || ''}</div></td>
-              <td className="price-col">
-                {editMode ? <input defaultValue={p.unit_price} onBlur={(e) => inlineUpdate(p, 'unit_price', e.target.value)} /> : <div className="p1">¥{Number(p.unit_price ?? 0).toLocaleString()}/件</div>}
-                <div className="psub">成本 ¥{Number(p.cost_price ?? 0).toLocaleString()}</div>
-                <div className="psub">参考 ¥{Number(p.reference_price ?? 0).toLocaleString()}</div>
-              </td>
-              <td>MOQ {p.moq ?? 1}</td>
-              <td>{p.material || '-'}</td>
-              <td><div className="desc" title={p.description || ''}>{p.description || '-'}</div></td>
-              <td className="ops">
-                <button className="crm-btn" title="复制" onClick={() => copyRow(p)}><Copy size={13} /></button>
-                <button className="crm-btn" title="AI描述" onClick={() => void aiDescRow(p)}><Sparkles size={13} /></button>
-                <button className="crm-btn" title="规格" onClick={() => openSpecs(p)}><Tags size={13} /></button>
-                <button className="crm-btn" title="换图" onClick={() => { imgTargetRef.current = p.id; imgFileRef.current?.click() }}><ImagePlus size={13} /></button>
-                {p.image_path && <button className="crm-btn" title="删图" onClick={() => void removeImage(p.id)}><Trash2 size={13} /></button>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* 空态：不渲染固定列宽的宽表（9 列固定宽度合计 1152px 会让空表也滚出一条横向滚动条），
+          只给一行说明；有数据时仍走下面的宽表容器，列宽与局部横滚照旧 */}
+      {filtered.length === 0 ? (
+        <div className="crm-table-empty">
+          {products.length === 0 ? '还没有产品：用「新增产品」或「批量导入」建第一条。' : '没有匹配的产品：换个关键词或清掉类目筛选。'}
+        </div>
+      ) : (
+      <div className="crm-table-wrap">
+        <table className="crm-table">
+          <thead><tr><th></th><th>图片</th><th>名称</th><th>类目</th><th>单价</th><th>MOQ</th><th>材质</th><th>描述</th><th>操作</th></tr></thead>
+          <tbody>
+            {filtered.map((p) => (
+              <tr key={p.id}>
+                <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e) => setSelected((s) => e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id))} /></td>
+                <td>{imgCache[p.id] ? <img className="thumb" src={imgCache[p.id]} alt="" /> : <div className="thumb empty"><Tags size={14} /></div>}</td>
+                <td>
+                  {editMode ? <input defaultValue={p.name} onBlur={(e) => inlineUpdate(p, 'name', e.target.value)} /> : <div className="pname">{p.name}</div>}
+                  <div className="psub">SKU: {p.sku || p.model || '-'}</div>
+                </td>
+                <td><div>{p.category || '未分类'}</div><div className="psub">{p.subcategory || ''}</div></td>
+                <td className="price-col">
+                  {editMode ? <input defaultValue={p.unit_price} onBlur={(e) => inlineUpdate(p, 'unit_price', e.target.value)} /> : <div className="p1">¥{Number(p.unit_price ?? 0).toLocaleString()}/件</div>}
+                  <div className="psub">成本 ¥{Number(p.cost_price ?? 0).toLocaleString()}</div>
+                  <div className="psub">参考 ¥{Number(p.reference_price ?? 0).toLocaleString()}</div>
+                </td>
+                <td>MOQ {p.moq ?? 1}</td>
+                <td>{p.material || '-'}</td>
+                <td><div className="desc" title={p.description || ''}>{p.description || '-'}</div></td>
+                <td className="ops">
+                  <button className="crm-btn" title="复制" onClick={() => copyRow(p)}><Copy size={13} /></button>
+                  <button className="crm-btn" title="AI描述" onClick={() => void aiDescRow(p)}><Sparkles size={13} /></button>
+                  <button className="crm-btn" title="规格" onClick={() => openSpecs(p)}><Tags size={13} /></button>
+                  <button className="crm-btn" title="换图" onClick={() => { imgTargetRef.current = p.id; imgFileRef.current?.click() }}><ImagePlus size={13} /></button>
+                  {p.image_path && <button className="crm-btn" title="删图" onClick={() => void removeImage(p.id)}><Trash2 size={13} /></button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      )}
 
       <input ref={imgFileRef} type="file" accept="image/*" hidden onChange={(e) => {
         const f = e.target.files?.[0]

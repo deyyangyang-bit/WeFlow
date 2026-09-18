@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<!--
+  状态：草案待拍板 —— 分配链路优化 UI 设计稿
+  日期：2026-09-17
+  效力：本稿尚未成为验收标准。拍板前不得按现行稿执行。
+  关系：本稿只覆盖「分配链路优化」的新增与变更部分。
+        · 屏 3 / 屏 4 / 屏 6 是对 docs/UI设计稿-Phase1-资源分配.html 同号屏的增量替换；
+        · 屏 1 / 屏 2 / 屏 5 为新屏；
+        · 冲突处以本稿为准（须先拍板），替换登记见「附 · 实现规格」。
+  视觉：token 唯一来源 = src/styles/main.scss「前进视觉 tokens」；本稿延续 DESIGN-SPEC-MINI。
+  文档导航：docs/CURRENT.md（拍板并实施后再登记）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WeFlow · 分配链路优化 · UI 设计稿（草案）</title>
+<style>
+  :root{
+    --bg-page:#F5F5F7; --bg-surface:#FFFFFF; --bg-surface-muted:#FAFAFC; --bg-inset:#F0F0F3;
+    --text-primary:#1D1D1F; --text-secondary:#6E6E73; --text-tertiary:#98989D;
+    --border:#E5E5EA; --divider:#EEEEF2;
+    --accent:#0071E3; --accent-bg:#E8F1FC; --accent-border:#B8D4F5;
+    --success:#34C759; --success-bg:#E9F9EE;
+    --warning:#FF9500; --warning-bg:#FFF4E5;
+    --danger:#FF3B30; --danger-bg:#FFEDEC;
+    --radius-card:16px; --radius-control:10px; --radius-small:8px;
+    --shadow-card:0 4px 16px rgba(0,0,0,.08);
+    --shadow-control:0 1px 4px rgba(0,0,0,.1);
+    --shadow-pop:0 12px 40px rgba(0,0,0,.16);
+  }
+  [data-mode="dark"]{
+    --bg-page:#171717; --bg-surface:#212121; --bg-surface-muted:#1C1C1C; --bg-inset:#2F2F2F;
+    --text-primary:#F2F2F2; --text-secondary:#A1A1A6; --text-tertiary:#7A7A80;
+    --border:#383838; --divider:#2F2F2F;
+    --accent:#0A84FF; --accent-bg:#0E2A45; --accent-border:#1D4B77;
+    --success-bg:#12331F; --warning-bg:#3A2A0C; --danger-bg:#3A1512;
+    --shadow-card:0 4px 16px rgba(0,0,0,.4);
+    --shadow-control:0 1px 4px rgba(0,0,0,.5);
+    --shadow-pop:0 12px 40px rgba(0,0,0,.6);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"SF Pro Display","PingFang SC",sans-serif;background:var(--bg-page);color:var(--text-primary);font-size:13px;line-height:1.5}
+  .page{max-width:1280px;margin:0 auto;padding:24px}
+  .num{font-variant-numeric:tabular-nums}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:var(--bg-inset);border-radius:4px;padding:1px 5px}
+
+  /* ===== 设计稿框架（非产品 UI） ===== */
+  .doc-header{padding:32px 0 8px}
+  .doc-header h1{font-size:22px;font-weight:700}
+  .doc-header p{color:var(--text-secondary);margin-top:6px;max-width:980px}
+  .screen{margin:36px 0}
+  .screen-title{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
+  .screen-title .idx{font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:6px;padding:2px 8px}
+  .screen-title h2{font-size:16px;font-weight:700}
+  .req-map{display:inline-block;font-size:11px;color:var(--accent);background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:6px;padding:2px 8px;margin-left:4px}
+  .screen-note{color:var(--text-secondary);font-size:12px;margin-bottom:14px;max-width:980px}
+  .frame{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card);overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--divider);background:var(--bg-surface-muted)}
+  .frame-bar .dot{width:10px;height:10px;border-radius:50%}
+  .frame-bar .path{font-size:11px;color:var(--text-tertiary);margin-left:8px}
+  .frame-body{padding:20px 24px;background:var(--bg-page)}
+
+  /* ===== 产品 UI 元件（对齐 DESIGN-SPEC-MINI） ===== */
+  .card{background:var(--bg-surface);border-radius:var(--radius-card);padding:16px 18px}
+  .card + .card{margin-top:14px}
+  .card-title{font-size:13px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .hint{font-size:11px;color:var(--text-tertiary);font-weight:400}
+  .hint-block{font-size:11px;color:var(--text-tertiary);margin-top:10px;line-height:1.6}
+  .btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:7px 14px;border-radius:var(--radius-control);border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.ghost{background:transparent}
+  .btn.off{opacity:.42;background:var(--bg-inset);color:var(--text-tertiary);border-color:var(--border)}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px}
+  .pill.blue{background:var(--accent-bg);color:var(--accent)}
+  .pill.green{background:var(--success-bg);color:var(--success)}
+  .pill.amber{background:var(--warning-bg);color:var(--warning)}
+  .pill.red{background:var(--danger-bg);color:var(--danger)}
+  .pill.gray{background:var(--bg-inset);color:var(--text-secondary)}
+  .seg{display:inline-flex;background:var(--bg-inset);border-radius:var(--radius-control);padding:3px;gap:2px}
+  .seg span{font-size:12px;font-weight:600;padding:6px 16px;border-radius:8px;color:var(--text-secondary)}
+  .seg span.on{background:var(--bg-surface);color:var(--accent);box-shadow:var(--shadow-control)}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:11px;font-weight:600;color:var(--text-tertiary);text-align:left;padding:8px 10px;border-bottom:1px solid var(--divider)}
+  td{font-size:12px;padding:10px;border-bottom:1px solid var(--divider);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  td .sub{font-size:11px;color:var(--text-tertiary)}
+  tr.is-rejected td{background:var(--danger-bg)}
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .toolbar .spacer{flex:1}
+  .input{border:1px solid var(--border);border-radius:var(--radius-control);padding:7px 12px;font-size:12px;background:var(--bg-surface);color:var(--text-tertiary);min-width:220px}
+  .banner{display:flex;gap:10px;align-items:flex-start;border-radius:var(--radius-control);padding:12px 14px;font-size:12px;margin-bottom:14px;line-height:1.6}
+  .banner.amber{background:var(--warning-bg);color:#8A5600}
+  .banner.blue{background:var(--accent-bg);color:#0B4FA0}
+  .banner.red{background:var(--danger-bg);color:#A32018}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .stat{background:var(--bg-surface);border-radius:var(--radius-card);padding:14px 18px}
+  .stat .k{font-size:11px;color:var(--text-tertiary)}
+  .stat .v{font-size:26px;font-weight:700;margin-top:2px}
+  .stat .v small{font-size:12px;font-weight:400;color:var(--text-tertiary)}
+  .stat .v.is-warn{color:var(--warning)}
+  .stat .v.is-bad{color:var(--danger)}
+
+  /* 步骤条 */
+  .steps{display:flex;align-items:center;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+  .steps .st{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--text-tertiary);background:var(--bg-surface);border:1px solid var(--border);border-radius:99px;padding:5px 13px}
+  .steps .st b{width:16px;height:16px;border-radius:50%;background:var(--bg-inset);color:var(--text-tertiary);font-size:10px;display:flex;align-items:center;justify-content:center}
+  .steps .st.on{color:var(--accent);border-color:var(--accent-border);background:var(--accent-bg)}
+  .steps .st.on b{background:var(--accent);color:#fff}
+  .steps .st.done{color:var(--success);border-color:var(--success-bg);background:var(--success-bg)}
+  .steps .st.done b{background:var(--success);color:#fff}
+  .steps .arw{color:var(--text-tertiary);font-size:11px}
+
+  /* 候选人 / 员工行 */
+  .emp{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--divider)}
+  .emp:last-child{border-bottom:none}
+  .avatar{width:28px;height:28px;border-radius:50%;background:var(--accent-bg);color:var(--accent);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+  .avatar.mute{background:var(--bg-inset);color:var(--text-tertiary)}
+  .emp-main{flex:1;min-width:0}
+  .emp-main .n{font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .emp-main .id{font-size:11px;color:var(--text-tertiary);margin-top:1px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .emp-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--text-tertiary)}
+  .bar{width:88px;height:6px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent)}
+
+  /* 归属事实链 */
+  .kv{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--divider);font-size:12px}
+  .kv:last-child{border-bottom:none}
+  .kv .k{width:118px;color:var(--text-tertiary);flex:none}
+  .kv .v{flex:1;min-width:0}
+  .kv .v.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+
+  .timeline{position:relative;padding-left:18px}
+  .timeline:before{content:"";position:absolute;left:4px;top:6px;bottom:6px;width:2px;background:var(--border)}
+  .tl-item{position:relative;padding:8px 0 8px 12px;font-size:12px}
+  .tl-item:before{content:"";position:absolute;left:-17px;top:14px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+  .tl-item.mute:before{background:var(--border)}
+  .tl-item .when{font-size:11px;color:var(--text-tertiary)}
+
+  /* 权限矩阵 */
+  .matrix td,.matrix th{text-align:center}
+  .matrix td:first-child,.matrix th:first-child{text-align:left;font-weight:600}
+  .matrix .yes{color:var(--success);font-weight:700}
+  .matrix .no{color:var(--text-tertiary)}
+  .matrix .sv{color:var(--accent);font-weight:700}
+
+  .foot{color:var(--text-tertiary);font-size:11px;text-align:center;padding:32px 0 8px}
+  .dark-wrap{background:var(--bg-page);border-radius:var(--radius-card);padding:20px 24px}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ========== 0. 封面 ========== -->
+  <div class="doc-header">
+    <h1>WeFlow · 分配链路优化 · UI 设计稿</h1>
+    <p>
+      2026-09-17 · 状态：<b>草案待拍板</b>。<br>
+      覆盖范围：稳定身份与归属 · 跨机实体定位 · 统一分配流程 · 统一权限检查 · 服务端过滤 · 同步诊断 · 可扩展分配策略。
+      视觉语言沿用现有应用规范（DESIGN-SPEC-MINI，默认 Apple 蓝）；<b>不引入新 token、不做风格改版</b>。
+    </p>
+    <p style="margin-top:10px">
+      <b>与现行验收稿的关系：</b>屏 3 / 屏 4 / 屏 6 是对 <code>docs/UI设计稿-Phase1-资源分配.html</code> 同号屏的<b>增量替换</b>；
+      屏 1 / 屏 2 / 屏 5 为新屏。拍板后现行稿对应屏作废，替换登记见「附 · 实现规格」。
+    </p>
+  </div>
+
+  <!-- ========== 1. 需求映射总表 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">0</span><h2>需求映射总表</h2></div>
+    <div class="screen-note">左边是优化方案里的七项，右边是它在设计稿里的落点。<b>有遗漏或画多了的，在这里最容易看出来。</b></div>
+    <div class="frame"><div class="frame-body">
+      <div class="card">
+        <table class="toc">
+          <tr><th style="width:210px">优化项</th><th>本稿落点</th><th style="width:230px">数据口径（不许前端另造）</th></tr>
+          <tr><td>稳定身份与归属</td><td>屏 2 归属事实链 · 屏 3 销售身份条</td><td><code>assignment.owner_employee_id</code> 为权威；<code>sales_name</code> 仅显示快照</td></tr>
+          <tr><td>跨机实体定位</td><td>屏 2 来源设备 / 中央实体引用 · 屏 4 留痕</td><td>引用 = <code>来源设备 / kind:本地行号</code>；不按本机同号 id 命中</td></tr>
+          <tr><td>统一分配流程</td><td>屏 1 五步控制台 · 屏 4 移交与回收</td><td>身份解析与状态校验共用一处；保留既有事务 / 审计 / outbox</td></tr>
+          <tr><td>统一权限检查</td><td>屏 5 权限边界（判定来源标注）</td><td>判定在<b>中央服务端</b>；本机只展示结果与兜底过滤</td></tr>
+          <tr><td>服务端过滤</td><td>屏 6 下行目标过滤 · 回执归属校验</td><td>非目标设备不下发；非目标回执不予采信</td></tr>
+          <tr><td>同步诊断</td><td>屏 6 三行时间 + 四类计数 + 积压拆分</td><td>按<b>行终态</b>统计，不按轮次反推；<code>pending</code> 不呈现为成功</td></tr>
+          <tr><td>可扩展分配策略</td><td>屏 1 策略与条件规则（受限配置）</td><td>枚举唯一来源 <code>ASSIGNMENT_MODES</code>；条件为字段/运算符/值，不做脚本</td></tr>
+        </table>
+      </div>
+    </div></div>
+  </div>
+
+  <!-- ========== 2. 分配控制台 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">1</span><h2>分配员 · 分配控制台（筛选候选人 → 策略 → 预览 → 事务执行）</h2><span class="req-map">统一分配流程 / 可扩展分配策略</span></div>
+    <div class="screen-note">
+      现行稿屏 3 是「选模式 → 预览 → 执行」。本稿把前两步拆开：<b>先定候选人集合，再定策略</b>——
+      条件规则是对候选人集合的筛选，不是对分配结果的修饰。四步走完才进事务，事务内不二次解析身份。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 分配控制台（分配员）</span></div>
+      <div class="frame-body">
+        <div class="steps">
+          <span class="st done"><b>✓</b>取数范围</span><span class="arw">›</span>
+          <span class="st done"><b>✓</b>候选人</span><span class="arw">›</span>
+          <span class="st on"><b>3</b>策略</span><span class="arw">›</span>
+          <span class="st"><b>4</b>预览</span><span class="arw">›</span>
+          <span class="st"><b>5</b>执行</span>
+        </div>
+
+        <div class="banner blue">
+          <span>ℹ️</span>
+          <div>
+            <b>身份在这里解析，只解析一次。</b>下方候选人一律按<b>稳定员工 ID</b> 勾选；
+            姓名仅用于显示。同名同姓的两位会各占一行、各自带 ID 尾号——
+            <b>不存在「按名字选人」这条路径</b>，所以后续移交、回收不会串到另一个人身上。
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">候选人 <span class="hint">勾选即入集合，未勾选的不参与本次分配</span></div>
+            <div class="emp">
+              <span class="avatar">李</span>
+              <div class="emp-main">
+                <div class="n">李林辉 <span class="pill blue">在职</span></div>
+                <div class="id">emp-2b91…4c7e · 设备 3 号机</div>
+              </div>
+              <div class="emp-right"><span class="num">在手 21</span><span class="bar"><i style="width:40%"></i></span><span class="pill gray">已选</span></div>
+            </div>
+            <div class="emp">
+              <span class="avatar">李</span>
+              <div class="emp-main">
+                <div class="n">李林辉 <span class="pill amber">同名 · 不同员工</span></div>
+                <div class="id">emp-a30f…91b2 · 设备 7 号机</div>
+              </div>
+              <div class="emp-right"><span class="num">在手 6</span><span class="bar"><i style="width:12%"></i></span><span class="pill gray">已选</span></div>
+            </div>
+            <div class="emp">
+              <span class="avatar">杨</span>
+              <div class="emp-main">
+                <div class="n">杨青 <span class="pill blue">在职</span></div>
+                <div class="id">emp-7f3a…08d5 · 设备 2 号机</div>
+              </div>
+              <div class="emp-right"><span class="num">在手 18</span><span class="bar"><i style="width:35%"></i></span><span class="pill gray">已选</span></div>
+            </div>
+            <div class="emp">
+              <span class="avatar mute">许</span>
+              <div class="emp-main">
+                <div class="n">许丽娟 <span class="pill red">已离职</span></div>
+                <div class="id">emp-5c62…7f10 · 设备已回收</div>
+              </div>
+              <div class="emp-right"><span class="num">在手 13</span><span class="pill gray">不参分</span></div>
+            </div>
+            <div class="hint-block">离职成员自动置灰、默认不勾选；其名下未结线索须先走「回收」，不在分配控制台里处理——两件事不混在一个动作里。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">策略 <span class="hint">枚举唯一来源 ASSIGNMENT_MODES</span></div>
+            <div class="seg" style="margin-bottom:12px"><span class="on">比例权重</span><span>轮询</span><span>负载均衡</span><span>手动指定</span></div>
+            <div class="emp" style="padding:8px 0">
+              <div class="emp-main"><div class="n">李林辉 <span class="hint">emp-2b91…4c7e</span></div></div>
+              <div class="emp-right"><span class="bar" style="width:120px"><i style="width:40%"></i></span><span class="num" style="color:var(--accent);font-weight:700">40%</span></div>
+            </div>
+            <div class="emp" style="padding:8px 0">
+              <div class="emp-main"><div class="n">李林辉 <span class="hint">emp-a30f…91b2</span></div></div>
+              <div class="emp-right"><span class="bar" style="width:120px"><i style="width:20%"></i></span><span class="num" style="color:var(--accent);font-weight:700">20%</span></div>
+            </div>
+            <div class="emp" style="padding:8px 0">
+              <div class="emp-main"><div class="n">杨青 <span class="hint">emp-7f3a…08d5</span></div></div>
+              <div class="emp-right"><span class="bar" style="width:120px"><i style="width:40%"></i></span><span class="num" style="color:var(--accent);font-weight:700">40%</span></div>
+            </div>
+            <div style="border-top:1px solid var(--divider);margin-top:6px;padding-top:12px">
+              <div class="card-title" style="margin-bottom:8px">条件规则 <span class="hint">受限配置：字段 / 运算符 / 值，三段式</span></div>
+              <div class="kv"><div class="k">条件</div><div class="v"><code>来源</code> <code>等于</code> <code>抖音</code> <b>且</b> <code>在手线索</code> <code>小于</code> <code>20</code></div></div>
+              <div class="kv"><div class="k">命中</div><div class="v">2 人 / 24 条线索 <span class="hint">（不命中不报错，只是不进本次集合）</span></div></div>
+              <div class="hint-block">
+                <b>这里不是脚本框。</b>可选字段、运算符、值域都由后端登记表给出；
+                输入不进去的内容无法提交。新增条件 = 后端登记一行，<b>不复制整套分配逻辑</b>，也不需要改动本屏结构。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">预览 <span class="hint">预览 = 即将写入的事实，逐行可核对；确认前不落任何行</span></div>
+          <table>
+            <tr><th>线索</th><th>来源</th><th>拟归属</th><th>归属员工 ID</th><th>按</th><th>第一段 SLA 截止</th></tr>
+            <tr><td class="num">186****3345</td><td>抖音</td><td>李林辉</td><td class="sub num">emp-2b91…4c7e</td><td class="sub">权重 40%</td><td class="sub num">09-18 10:30</td></tr>
+            <tr><td class="num">135****8890</td><td>抖音</td><td>李林辉</td><td class="sub num">emp-a30f…91b2</td><td class="sub">权重 20%</td><td class="sub num">09-18 10:30</td></tr>
+            <tr><td class="num">152****5273</td><td>视频号</td><td>杨青</td><td class="sub num">emp-7f3a…08d5</td><td class="sub">权重 40%</td><td class="sub num">09-18 10:30</td></tr>
+          </table>
+          <div class="hint-block">
+            第一段 SLA 截止时间在这里就是<b>绝对值</b>，随指令一起下发并落库。
+            接收端不回算、不按本地配置重算——两边的截止时间必须是同一个毫秒数。
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+            <span class="hint">从「待分配」取</span><span class="pill blue num">200 条</span>
+            <span style="flex:1"></span>
+            <span class="btn ghost">返回</span><span class="btn primary">执行分配（一个事务）</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 3. 归属事实链 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">2</span><h2>归属事实 · 稳定 ID 与显示名快照（跨机同号不串线）</h2><span class="req-map">稳定身份与归属 / 跨机实体定位</span></div>
+    <div class="screen-note">
+      这一屏是这次优化的地基，也是唯一一处把「两套口径」摆到明面上的地方：
+      <b>归属 = 员工 ID（权威）</b>，<b>姓名 = 显示快照（不参与匹配）</b>。
+      左卡是一条线索的完整事实链，右卡演示同名不同人如何各归各的。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">线索详情 · 归属事实（管理视角）</span></div>
+      <div class="frame-body">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">归属事实链 · 186****3345 <span class="hint">只读</span></div>
+            <div class="kv"><div class="k">当前归属员工</div><div class="v mono">emp-2b91…4c7e <span class="pill green">在职</span></div></div>
+            <div class="kv"><div class="k">显示名快照</div><div class="v">李林辉 <span class="hint">落地时写下的名字，之后改名不回改此行</span></div></div>
+            <div class="kv"><div class="k">中央实体引用</div><div class="v mono">dev-3号机/assignment:481</div></div>
+            <div class="kv"><div class="k">来源设备</div><div class="v mono">dev-3号机 <span class="hint">分配由这台机器发出</span></div></div>
+            <div class="kv"><div class="k">本机行号</div><div class="v mono">lead 8127 <span class="hint">只在来源设备的行号空间里有效</span></div></div>
+            <div class="kv"><div class="k">最近一次变更</div><div class="v">分配 · 09-17 10:30 · 操作人 杨青（分配员）</div></div>
+            <div class="hint-block">
+              <b>为什么行号后面要跟设备？</b>两台机器各自从 1 开始自增，第 481 号线索在 A 机是一条、在 B 机可能是另一条。
+              跨机只说「第 481 号」就会回收错线索，所以引用必须带来源设备——
+              中央来的回收指令据此落到<b>同一条</b>线索上，不再优先命中本机的同号行。
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">同名不同人 <span class="hint">同一工作区内两位「李林辉」</span></div>
+            <table>
+              <tr><th>员工</th><th>归属员工 ID</th><th>在手</th><th>设备</th></tr>
+              <tr><td>李林辉 <span class="pill blue">在职</span></td><td class="sub num">emp-2b91…4c7e</td><td class="num">21</td><td class="sub">3 号机</td></tr>
+              <tr><td>李林辉 <span class="pill amber">在职</span></td><td class="sub num">emp-a30f…91b2</td><td class="num">6</td><td class="sub">7 号机</td></tr>
+            </table>
+            <div class="banner amber" style="margin:14px 0 0">
+              <span>⚠️</span>
+              <div>
+                两人的姓名完全一样。按姓名匹配的场景（认领、回收、移交）必然串到对方身上——
+                这就是本次优化的核心验收项：<b>同名不同人各归各的</b>。
+              </div>
+            </div>
+            <div class="hint-block">
+              历史行只有姓名（单机期与 SMB 期写入）。这些行在补齐归属员工 ID 之前，
+              <b>只允许按姓名做展示匹配</b>；认领 / 回收 / 移交 / 回执四条写路径一律不接受姓名兜底。
+              补齐进度在屏 6 的「归属待对齐」一栏可查，清零后姓名兜底关闭。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 4. 销售 · 我的资源卡 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">3</span><h2>销售 · 我的资源卡（稳定身份版）</h2><span class="req-map">替换现行验收稿屏 4</span></div>
+    <div class="screen-note">
+      销售看到的东西<b>不该变多</b>：还是三段、还是那些卡。变的是判定依据——归属按员工 ID 核对，
+      所以「改了本机署名」或「中央显示名和本机署名不一样」都不再影响看得到什么。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">/allocation · 我的资源（销售视角）</span></div>
+      <div class="frame-body">
+        <div class="card" style="padding:12px 18px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <span class="avatar">杨</span>
+            <div style="flex:1;min-width:220px">
+              <div style="font-size:12px;font-weight:600">杨青 <span class="pill blue">销售</span> <span class="pill green">已绑定</span></div>
+              <div class="hint">本机署名「杨青」 · 中央身份 杨青 · <span style="font-family:ui-monospace,Menlo,monospace">emp-7f3a…08d5</span> · 设备 2 号机</div>
+            </div>
+            <div class="hint">归属按员工 ID 核对，署名只用于显示</div>
+          </div>
+        </div>
+
+        <div class="toolbar"><span class="seg"><span class="on">待认领 8</span><span>跟进中 21</span><span>已回收 2</span></span><span class="spacer"></span><span class="hint">分配员：杨青 · 批次 #A0007</span></div>
+
+        <div class="card" style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
+          <div class="emp-main">
+            <div style="font-size:13px;font-weight:600" class="num">186****3345 <span class="pill blue">待认领</span></div>
+            <div class="hint">抖音 · 问 3 吨电动叉车 · 分配于 09-17 10:30 · 归属 <span style="font-family:ui-monospace,Menlo,monospace">emp-2b91…4c7e</span></div>
+          </div>
+          <div style="text-align:center;width:110px">
+            <div class="num" style="font-size:18px;font-weight:700;color:var(--success)">22:41:06</div>
+            <div class="hint" style="font-size:10px">认领后 24h 内加好友</div>
+          </div>
+          <span class="btn primary">认领</span>
+        </div>
+
+        <div class="card" style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
+          <div class="emp-main">
+            <div style="font-size:13px;font-weight:600" class="num">135****8890 <span class="pill amber">已认领·未加好友</span></div>
+            <div class="hint">视频号 · 「我们冷库」 · 认领于 09-17 11:02 · 归属 <span style="font-family:ui-monospace,Menlo,monospace">emp-2b91…4c7e</span></div>
+          </div>
+          <div style="text-align:center;width:110px">
+            <div class="num" style="font-size:18px;font-weight:700;color:var(--warning)">03:12:48</div>
+            <div class="hint" style="font-size:10px">加好友倒计时 · 临近超时</div>
+          </div>
+          <span class="btn">🔗 绑定微信</span>
+        </div>
+
+        <div class="card" style="display:flex;align-items:center;gap:14px">
+          <div class="emp-main">
+            <div style="font-size:13px;font-weight:600" class="num">152****5273 <span class="pill red">第 2 次超时提醒</span></div>
+            <div class="hint">奋斗群存量 · 再超 1 次将抄送主管；累计 3 次自动回收 · 归属 <span style="font-family:ui-monospace,Menlo,monospace">emp-7f3a…08d5</span></div>
+          </div>
+          <div style="text-align:center;width:110px">
+            <div class="num" style="font-size:18px;font-weight:700;color:var(--danger)">已超时</div>
+            <div class="hint" style="font-size:10px">24h 复查中 · 2/3</div>
+          </div>
+          <span class="btn">🔗 绑定微信</span>
+        </div>
+
+        <div class="banner blue" style="margin-top:14px">
+          <span>ℹ️</span>
+          <div>
+            卡上的归属 ID 是<b>给你核对用的</b>，不是要你记住。它的作用是让下面两件事不再发生：
+            ① 同事改了自己的署名，你的线索跑到他名下；② 你和同事同名，两人互相看到对方的线索。
+            <b>本机改署名 / 改角色都不会改变你能看到和能操作的范围</b>——那是中央按员工身份判定的。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 5. 移交与回收 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">4</span><h2>主管 / 分配员 · 移交（双目标）与回收</h2><span class="req-map">替换现行验收稿屏 6</span></div>
+    <div class="screen-note">
+      移交是这次最容易出错的动作：它<b>同时涉及两个员工</b>——原持有者收一条 remove、新持有者收一条 apply。
+      两边都要解析对身份、都要带绝对 SLA 期限，任何一边落错人，线索就同时属于两个人或谁也不属于。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">移交弹窗 / 归属留痕</span></div>
+      <div class="frame-body">
+        <div class="grid2">
+          <div class="card" style="background:var(--bg-surface)">
+            <div class="card-title" style="font-size:15px">移交 · 186****3345</div>
+            <div class="hint" style="margin-bottom:14px">原持有者与新持有者各受理一条指令。两边的归属员工 ID 在提交前逐字核对。</div>
+            <div class="kv"><div class="k">转出</div><div class="v">李林辉 <span class="hint">emp-2b91…4c7e</span> <span class="pill gray">remove</span></div></div>
+            <div class="kv"><div class="k">转入</div><div class="v">李林辉 <span class="hint">emp-a30f…91b2</span> <span class="pill blue">apply</span></div></div>
+            <div class="kv"><div class="k">分配模式</div><div class="v"><span class="pill gray">manual</span> <span class="hint">四值枚举，字段省略即缺省，不填空串</span></div></div>
+            <div class="kv"><div class="k">新第一段 SLA</div><div class="v num">09-18 14:00 <span class="hint">绝对毫秒下发，两端同一个数</span></div></div>
+            <div class="kv"><div class="k">理由</div><div class="v">原持有者负荷过高 · 主管手动移交</div></div>
+            <div class="banner amber" style="margin:14px 0 0">
+              <span>⚠️</span>
+              <div>转出与转入都是「李林辉」，但员工 ID 不同——<b>这是两个人</b>。界面上必须并列显示 ID，改派才能点得安心。</div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:14px"><span class="btn ghost">取消</span><span class="btn primary">确认移交（一个事务）</span></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">归属留痕 · 186****3345 <span class="hint">ownership_history，只增不删</span></div>
+            <div class="timeline">
+              <div class="tl-item"><b>移交</b>：李林辉 → 李林辉<span class="when"> · 09-17 14:00 · 主管（手动）<br>emp-2b91…4c7e → emp-a30f…91b2 · 理由：负荷过高</span></div>
+              <div class="tl-item"><b>分配</b>：资源池 → 李林辉<span class="when"> · 09-17 10:30 · 杨青（分配员）· 批次 #A0007 · 比例权重<br>emp-2b91…4c7e · 引用 dev-3号机/assignment:481</span></div>
+              <div class="tl-item mute"><b>线索建档</b>：由 dev-3号机 下行 assign 落地<span class="when"> · 09-17 10:30 · system:sync</span></div>
+            </div>
+            <div class="hint-block">
+              留痕里每一次归属变化都带<b>员工 ID</b>，姓名只是当时的快照。
+              半年后有人改了名，往回查这条时间线仍然是清楚的——谁改的、改成谁、按什么理由。
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">待改派 <span class="pill red num">2</span> <span class="hint">回收后优先给其他人，避免同一销售循环占位</span></div>
+          <table>
+            <tr><th>线索</th><th>原归属</th><th>回收原因</th><th>建议改派给</th><th>承接条件</th><th></th></tr>
+            <tr><td class="num">152****5273</td><td>杨青<div class="sub num">emp-7f3a…08d5</div></td><td><span class="pill red">3 次超时未加</span></td><td>许丽娟<div class="sub num">emp-5c62…7f10</div></td><td><span class="pill red">已离职 · 不可承接</span></td><td><span class="btn off">确认改派</span></td></tr>
+            <tr><td class="num">138****0061</td><td>李林辉<div class="sub num">emp-a30f…91b2</div></td><td><span class="pill amber">主管手动回收</span></td><td>李林辉<div class="sub num">emp-2b91…4c7e</div></td><td><span class="pill green">在职 · 非原归属</span></td><td><span class="btn primary">确认改派</span></td></tr>
+          </table>
+          <div class="hint-block">
+            第一行的按钮是灰的，且写明原因——<b>不是「点了没反应」</b>。
+            承接条件（在职 / 非原归属 / 未超负载）由后端统一判定，界面只展示判定结果。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 6. 权限边界 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">5</span><h2>权限边界 · 能看什么 / 能操作什么</h2><span class="req-map">统一权限检查 / 服务端过滤</span></div>
+    <div class="screen-note">
+      这张表的作用是<b>把判定来源写清楚</b>：能看什么、能操作什么，由中央服务端按员工身份与设备绑定决定；
+      本机只做两件事——展示判定结果、把不属于本机的行挡在视图外。
+      <b>本机不是权限边界</b>，所以「切主管」「改署名」这类本机操作不在判定链上。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">设置 · 权限说明（所有角色可见）</span></div>
+      <div class="frame-body">
+        <div class="card">
+          <div class="card-title">动作 × 角色 <span class="hint">判定来源：中央服务端员工角色 + 设备绑定；本机自报角色仅作署名</span></div>
+          <table class="matrix">
+            <tr><th>动作</th><th>销售</th><th>主管</th><th>分配员</th><th>管理员</th><th>判定依据</th></tr>
+            <tr><td>查看本人分配</td><td class="sv">按员工 ID</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">下行按目标员工路由</td></tr>
+            <tr><td>查看他人分配</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">服务端角色</td></tr>
+            <tr><td>认领</td><td class="sv">仅本人行</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">行归属员工 ID = 本机绑定</td></tr>
+            <tr><td>移交 / 回收</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">服务端角色 + 目标在职</td></tr>
+            <tr><td>执行分配</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">服务端角色</td></tr>
+            <tr><td>下发指令</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="sub">服务端 <code>command.issue</code></td></tr>
+            <tr><td>回执（ACK）</td><td class="sv">仅本机收到的</td><td class="sv">仅本机收到的</td><td class="sv">仅本机收到的</td><td class="sv">仅本机收到的</td><td class="sub">回执方必须是指令目标</td></tr>
+          </table>
+          <div class="hint-block">
+            最后一行的「仅本机收到的」是本次新增的服务端校验。在此之前，同一工作区里
+            <b>任何一台设备都能替别人回执</b>——中央据此做的落地统计分不清「目标已落地」和「旁人代答」。
+            新增后：回执方不是该指令的目标，中央不采信（屏 6 有对应明细）。
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top:14px">
+          <div class="card">
+            <div class="card-title">被拒时界面说什么 <span class="hint">不出现「点了没反应」</span></div>
+            <div class="emp" style="align-items:flex-start">
+              <div class="emp-main">
+                <div class="n">139****2210 <span class="pill gray">他人归属</span></div>
+                <div class="id">归属 emp-a30f…91b2 · 本机绑定 emp-7f3a…08d5</div>
+                <div class="hint" style="margin-top:6px">这条线索不属于本机绑定的员工，因此不提供认领与绑定微信。</div>
+              </div>
+              <span class="btn off">认领</span>
+            </div>
+            <div class="hint-block">
+              <b>禁用 + 原因</b>，而不是把按钮藏起来——藏起来会让人以为是加载问题，
+              然后开始找「切主管」「改署名」这类旁路。
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">「为什么看不到」 <span class="hint">空态必须能自证</span></div>
+            <div style="text-align:center;padding:18px 0">
+              <div class="hint" style="font-size:12px">当前没有属于你的待认领资源</div>
+              <div class="hint" style="margin-top:8px">本机绑定 <span style="font-family:ui-monospace,Menlo,monospace">emp-7f3a…08d5</span> · 已收到下行 <b class="num">12</b> 条，其中属于本员工 <b class="num">0</b> 条</div>
+            </div>
+            <div class="hint-block">
+              空态给出两个数：<b>收到了多少</b>、<b>其中多少条属于我</b>。
+              只要这两个数对得上口径，就不会再出现「中央在同步、界面却显示尚未同步」那种没法自证的怀疑。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 7. 同步诊断 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">6</span><h2>设置 · 企业同步 —— 同步诊断面板</h2><span class="req-map">替换现行设置页「企业同步」区块</span></div>
+    <div class="screen-note">
+      现行界面只有「最近同步」一行、上行下行挤在一起，所以一旦对不上，没人能说清到底哪一步没走。
+      本稿把时间轴拆成<b>三行</b>（尝试 / 成功 / 实际上传），把上行结果拆成<b>四类计数</b>，
+      并且明确规定：<b>排队不等于成功</b>——数只能按每行自己的最终状态统计。
+    </div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">设置 · 企业同步</span></div>
+      <div class="frame-body">
+        <div class="card" style="padding:12px 18px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <span class="pill green">已绑定</span>
+            <div style="flex:1;min-width:240px" class="hint">
+              杨青 · <span style="font-family:ui-monospace,Menlo,monospace">emp-7f3a…08d5</span> · 设备 2 号机 ·
+              轮巡 每 5 分钟 · <span id="diag-tick">刚刚自动刷新（每 30 秒）</span>
+            </div>
+            <span class="btn">立即同步</span><span class="btn ghost">解绑</span>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-title">时间轴 <span class="hint">三行分开记——「试过了」「成功了」「真的传上去了」是三件事</span></div>
+          <div class="kv"><div class="k">最近尝试</div><div class="v num">09-17 15:42:10 <span class="pill gray">每 5 分钟一轮</span></div></div>
+          <div class="kv"><div class="k">最近成功</div><div class="v num">09-17 15:42:11 <span class="pill green">本轮成功</span></div></div>
+          <div class="kv"><div class="k">最近实际上传</div><div class="v num">09-17 15:42:11 <span class="hint">有 3 条新事件写入中央，中央 seq 已推进到 1042</span></div></div>
+          <div class="hint-block">
+            中间这行是关键：<b>尝试成功但一条都没传</b>（本轮无新事件）与<b>尝试失败</b>，
+            在这里是两个不同的显示，不再都笼统写成「最近同步 09-17 15:42」。
+          </div>
+        </div>
+
+        <div class="grid4" style="margin-bottom:14px">
+          <div class="stat"><div class="k">新增</div><div class="v num">3</div></div>
+          <div class="stat"><div class="k">重复（中央已受理）</div><div class="v num">0</div></div>
+          <div class="stat"><div class="k">拒收</div><div class="v num is-warn">1</div></div>
+          <div class="stat"><div class="k">冲突</div><div class="v num">0</div></div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">积压 <span class="hint">按每行自己的最终状态统计</span></div>
+            <div class="kv"><div class="k">待发送</div><div class="v num">2 <span class="hint">等下一轮，不算成功也不算失败</span></div></div>
+            <div class="kv"><div class="k">重试中</div><div class="v num">0</div></div>
+            <div class="kv"><div class="k">已失败待人工</div><div class="v num">1 <span class="hint">已停止自动重试</span></div></div>
+            <div class="kv"><div class="k">归属待对齐</div><div class="v num">7 <span class="hint">历史行缺归属员工 ID，仅可展示匹配</span></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">下行 <span class="hint">只收属于本员工的指令</span></div>
+            <div class="kv"><div class="k">下行游标</div><div class="v num">1042</div></div>
+            <div class="kv"><div class="k">最近落地</div><div class="v num">09-17 15:40:02 · assign · assignment:481</div></div>
+            <div class="kv"><div class="k">目标过滤</div><div class="v">本员工 <b class="num">12</b> 条 · 其他员工 <b class="num">0</b> 条 <span class="pill green">未投递</span></div></div>
+            <div class="kv"><div class="k">回执采信</div><div class="v">已采信 <b class="num">12</b> · 未采信 <b class="num">1</b></div></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">失败同步项 <span class="pill amber num">1</span> <span class="hint">重投只把它放回队列，结果看该行最终状态</span></div>
+          <table>
+            <tr><th>行号</th><th>类型</th><th>seq</th><th>原因</th><th>为什么自己不会好</th><th></th></tr>
+            <tr><td class="num">#3118</td><td>assignment 上行</td><td class="num">1039</td><td><span class="pill red">entity_id_not_scoped</span></td><td class="sub">载荷里的实体引用缺设备命名空间，重试多少次都一样，要改的是产生这条事件的那段代码</td><td><span class="btn">重投</span></td></tr>
+          </table>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">下行指令明细 <span class="hint">目标员工 / 回执方 / 是否采信</span></div>
+          <table>
+            <tr><th>seq</th><th>类型</th><th>目标员工</th><th>回执方设备</th><th>回执结果</th><th>采信</th></tr>
+            <tr><td class="num">1042</td><td>assign</td><td class="sub num">emp-7f3a…08d5</td><td class="sub num">dev-2号机</td><td><span class="pill green">applied</span></td><td><span class="pill green">✓ 采信</span></td></tr>
+            <tr><td class="num">1041</td><td>recycle</td><td class="sub num">emp-7f3a…08d5</td><td class="sub num">dev-2号机</td><td><span class="pill green">applied</span></td><td><span class="pill green">✓ 采信</span></td></tr>
+            <tr class="is-rejected"><td class="num">1040</td><td>transfer</td><td class="sub num">emp-7f3a…08d5</td><td class="sub num">dev-5号机</td><td><span class="pill gray">applied</span></td><td><span class="pill red">✗ 不予采信</span></td></tr>
+          </table>
+          <div class="hint-block">
+            最后一行是本次新增的校验结果：那条 transfer 的目标是 2 号机，却由 5 号机回了执。
+            中央不采信它——<b>否则这条指令到底落没落地，就永远说不清了</b>。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 8. 暗色对照 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">7</span><h2>暗色对照（红线条：新组件必须 light / dark 双验）</h2><span class="req-map">DESIGN-SPEC-MINI 红线 4</span></div>
+    <div class="screen-note">只验本次新增/变更的三个组件：诊断统计格 · 归属事实链 · 候选人行。暗色走 <code>[data-mode="dark"]</code> 全量覆盖，与旧页面同灰阶坡。</div>
+    <div class="frame">
+      <div class="frame-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span><span class="path">dark 模式对照</span></div>
+      <div class="frame-body">
+        <div data-mode="dark" class="dark-wrap">
+          <div class="grid3">
+            <div class="stat"><div class="k">新增</div><div class="v num">3</div></div>
+            <div class="stat"><div class="k">拒收</div><div class="v num is-warn">1</div></div>
+            <div class="stat"><div class="k">已失败待人工</div><div class="v num is-bad">1</div></div>
+          </div>
+          <div class="card" style="margin-top:14px">
+            <div class="card-title">归属事实链 · 186****3345</div>
+            <div class="kv"><div class="k">当前归属员工</div><div class="v mono">emp-2b91…4c7e <span class="pill green">在职</span></div></div>
+            <div class="kv"><div class="k">中央实体引用</div><div class="v mono">dev-3号机/assignment:481</div></div>
+            <div class="kv"><div class="k">显示名快照</div><div class="v">李林辉 <span class="pill gray">不参与匹配</span></div></div>
+          </div>
+          <div class="card" style="margin-top:14px">
+            <div class="emp">
+              <span class="avatar">李</span>
+              <div class="emp-main"><div class="n">李林辉 <span class="pill amber">同名 · 不同员工</span></div><div class="id">emp-a30f…91b2 · 设备 7 号机</div></div>
+              <div class="emp-right"><span class="num">在手 6</span><span class="bar"><i style="width:12%"></i></span><span class="pill gray">已选</span></div>
+            </div>
+            <div class="emp" style="margin-top:10px">
+              <span class="avatar mute">许</span>
+              <div class="emp-main"><div class="n">许丽娟 <span class="pill red">已离职</span></div><div class="id">emp-5c62…7f10 · 设备已回收</div></div>
+              <div class="emp-right"><span class="num">在手 13</span><span class="pill gray">不参分</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 附：实现规格 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附</span><h2>实现规格（开发必读，与本稿同效力）</h2></div>
+    <div class="frame"><div class="frame-body">
+      <table>
+        <tr><th style="width:190px">项</th><th>硬约束</th></tr>
+        <tr><td>视觉 token</td><td>唯一来源 = <code>src/styles/main.scss</code>「前进视觉 tokens」（<code>--color-*</code> 族）；<b>禁止硬编码品牌色 / 字面 hex</b>（DESIGN-SPEC-MINI 红线 2/3）；本稿不新增 token</td></tr>
+        <tr><td>本稿的效力边界</td><td>本稿为<b>草案</b>。拍板后：现行稿 <code>docs/UI设计稿-Phase1-资源分配.html</code> 的屏 3 / 屏 4 / 屏 6 由本稿屏 1 / 屏 3 / 屏 4 替换；屏 2 / 屏 5 / 屏 6 为本稿新增。替换须先更新现行稿状态注释与 <code>docs/CURRENT.md</code> §5，再进入实现——<b>不得让两份稿同时声称是验收标准</b></td></tr>
+        <tr><td>数据口径</td><td>归属权威 = <code>assignment.owner_employee_id</code>；<code>sales_name</code> 只作显示快照。枚举唯一来源 <code>ASSIGNMENT_MODES</code>；下行禁字段与引用命名空间规则以 <code>docs/API-CONTRACT.md</code> §3.5 为准。<b>前端不另造状态值、不改口径</b></td></tr>
+        <tr><td>姓名兜底的边界</td><td>姓名集合匹配<b>只允许出现在展示链路</b>（列表 / 卡片 / chips）。认领、移交、回收、回执四条写路径<b>一律不接受姓名兜底</b>。屏 6「归属待对齐」计数清零后，展示侧兜底一并关闭</td></tr>
+        <tr><td>权限边界</td><td>任何界面元素都<b>不得</b>基于本机身份档案（<code>identityName</code> / <code>identityRole</code>）做权限判断；本机只展示服务端判定结果与兜底过滤。禁用控件必须带原因文案（屏 5）</td></tr>
+        <tr><td>同步文案纪律</td><td>禁止用整轮 <code>pushed</code> / <code>rejected</code> 计数反推单行结果；<code>pending</code> 一律呈现为「等待下一轮」；重投按钮文案必须写明「只放回队列」。错误文本先经既有脱敏才可显示（宪法 §1.11）</td></tr>
+        <tr><td>双模式</td><td>本次新增组件必须 light / dark 双验（DESIGN-SPEC-MINI 红线 4）；对照见屏 7</td></tr>
+        <tr><td>路由注册</td><td>屏 6 是对设置页既有区块的替换，不新增路由；其余各屏均为既有页面内改造（<code>CrmLeadPage</code> / 分配控制台 / 线索详情）</td></tr>
+        <tr><td>验收方式</td><td>实现后无头浏览器逐屏截图（1440 宽），与本稿并排比对：布局结构 / 文案 / 状态徽标不一致即打回。「差不多」不验收</td></tr>
+      </table>
+    </div></div>
+  </div>
+
+  <!-- ========== 附二：待拍板 ========== -->
+  <div class="screen">
+    <div class="screen-title"><span class="idx">附</span><h2>待拍板事项（本稿画不出来、但会决定本稿能不能落地的部分）</h2></div>
+    <div class="frame"><div class="frame-body">
+      <div class="card">
+        <table>
+          <tr><th style="width:150px">事项</th><th>为什么挡在设计前面</th></tr>
+          <tr><td>中央/客户端版本兼容矩阵</td><td>屏 6 的「目标过滤」「回执采信」是服务端改动。老客户端连新中央、新客户端连老中央时这两栏显示什么，必须先定，否则界面会写着无法兑现的承诺</td></tr>
+          <tr><td>历史行归属对齐的终点</td><td>屏 2 与屏 6 都写了「补齐后关闭姓名兜底」。补齐进度到什么程度算完、由谁触发、对齐失败的行怎么办，未定则这两屏的文案就是空话</td></tr>
+          <tr><td>断网分叉的收敛规则</td><td>断网期间中央已回收、本机已认领，两边都合法。谁收敛谁决定了屏 3 的卡片最终显示成什么</td></tr>
+          <tr><td>旧验收稿的替换方式</td><td>是就地改现行稿（保留屏号与体例），还是本稿整体升格为新验收标准、现行稿转设计记录。两种做法的文档责任不同</td></tr>
+        </table>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="foot">WeFlow · 分配链路优化 · UI 设计稿 <b>草案</b>（2026-09-17）· 未拍板前不作为验收标准</div>
+</div>
+</body>
+</html>

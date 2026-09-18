@@ -211,7 +211,7 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
   }
 
   const renderCommonView = () => (
-    <div className="snav-body">
+    <div className="snav-body snav-body--common">
       {/* 外观卡：主题三段，复用外观 tab 的 useThemeStore.setThemeMode（同一持久化键） */}
       <div className="snav-card">
         <div className="snav-card-title"><Palette size={15} /> 外观</div>
@@ -306,7 +306,7 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
 
   // ── 高级设置二级页（屏 2）─────────────────────────────────────
   const renderAdvancedView = () => (
-    <div className="snav-body">
+    <div className="snav-body snav-body--advanced">
       <div className="snav-adv-topbar">
         <button type="button" className="snav-back-link" onClick={() => setNav(navBack(nav))}>‹ 返回常用</button>
         <span className="snav-adv-heading">高级设置</span>

@@ -1,124 +1,204 @@
 @use './CrmProductPage.scss' as *;
 
-.crm-lead-page { padding: 24px; color: var(--color-text-primary); font-family: var(--font-app); }
+/**
+ * CrmLeadPage.scss —— 线索池（概念稿「屏 2 资源池 / 屏 3 分配控制台 / 屏 4 我的资源卡 / 屏 6 回收改派」）
+ *
+ * 2026-09-17 概念稿对齐：
+ * - 跨页复用件（.shead/.hero/.eyebrow/.sub/.stats/.stat/.chipbar/.chip/.tag/.pill/.field/.notice/
+ *   .tbl/.thead/.trow/.tc-系列/.box/.g2/.btn/.iconbtn）定义在 src/styles/main.scss 尾部「界面概念稿基础件」，
+ *   本文件只写本页私有件与页内网格模板，不复制基础件。
+ * - 页面留白由外壳 .content（padding: 24px 32px）承担，页面根不再叠加整页 padding。
+ * - 颜色/圆角/字体仍只消费既有 token（--color-* / --radius-* / --shadow-* / --font-app），未新增 token。
+ * - 裸全局规则只留 .crm-pager / .crm-pager-info / .empty（CrmReviewPage 等按加载顺序可能命中，不动）；
+ *   其余规则全部收进 .crm-lead-page 作用域。
+ */
 
-/* 顶部统计卡片（2026-08-29 对齐全局统计卡语言：白卡浮起 + 26px 主数字；语义 tint 只做状态） */
-.lead-cards { display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
-.lead-card {
-  flex: 1; min-width: 140px; background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 14px 18px; display: flex; flex-direction: column; gap: 2px;
-  transition: transform .15s, border-color .15s;
-  &:hover { transform: translateY(-1px); border-color: var(--color-accent-border); }
-  .lc-num { font-size: 26px; font-weight: 700; letter-spacing: -.3px; color: var(--color-accent); font-variant-numeric: tabular-nums; line-height: 1.15; }
-  .lc-label { font-size: 12px; color: var(--color-text-tertiary); }
-  &.warn { background: var(--color-danger-bg); border-color: var(--color-danger-border); .lc-num { color: var(--color-danger); } .lc-label { color: var(--color-danger); } }
-}
-
-/* 状态徽章（语义 tint：新=蓝 / 已首触=绿 / 已加微信=紫 / 失效=灰 / 转客户=琥珀） */
-.lead-st {
-  display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; white-space: nowrap; font-weight: 500;
-  &.st-new { background: var(--color-accent-bg); color: var(--color-accent); }
-  &.st-contacted { background: var(--color-success-bg); color: var(--color-success); }
-  &.st-wx { background: rgba(139, 92, 246, 0.1); color: #8b5cf6; }
-  &.st-dead { background: var(--color-bg-inset); color: var(--color-text-tertiary); }
-  &.st-account { background: var(--color-warning-bg); color: var(--color-warning); }
-}
-
-/* 行内字段 */
-.lc-contact { font-weight: 600; }
-.lc-wechat { font-weight: 400; font-size: 12px; color: #8b5cf6; }
-.lc-source { background: var(--color-bg-inset); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: var(--color-text-secondary); }
-.lc-deadline { color: var(--color-text-secondary); font-size: 12px; }
-.lc-overdue { display: inline-flex; gap: 4px; align-items: center; color: var(--color-danger); font-size: 12px; font-weight: 600; }
-.lc-filename { font-size: 12px; color: var(--color-text-tertiary); }
-.crm-btn.danger { color: var(--color-danger); border-color: var(--color-danger-border); }
-
-/* 导入 modal */
-.lead-import { width: 560px; }
-.lead-paste { width: 100%; box-sizing: border-box; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 10px; font-size: 13px; font-family: inherit; resize: vertical; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } }
-.lead-file { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
-.lead-preview { font-size: 12px; color: var(--color-text-secondary); margin-top: 8px; }
-/* 模态内错误位：失败原因就地把守（页面级 crm-notice 在文档流里，会被 fixed 遮罩盖住） */
-.lead-err { font-size: 12px; color: var(--color-danger); background: var(--color-danger-bg); border: 1px solid var(--color-danger-border); border-radius: var(--radius-small); padding: 8px 10px; margin-top: 10px; }
-
-/* 详情 modal */
-.lead-detail { width: 620px; }
-.lead-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; label { font-size: 11px; color: var(--color-text-tertiary); } .ld-strong { font-weight: 700; font-size: 15px; } .ld-note { grid-column: span 2; } div { font-size: 13px; } }
-.lead-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; label { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 4px; align-items: center; select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 6px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } } input { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 8px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } }
-.lead-timeline { display: flex; flex-direction: column; gap: 4px; .lt-item { display: flex; gap: 10px; font-size: 12px; .lt-time { color: var(--color-text-tertiary); width: 90px; flex-shrink: 0; font-variant-numeric: tabular-nums; } .lt-act { font-weight: 600; color: var(--color-accent); width: 90px; flex-shrink: 0; } .lt-note { color: var(--color-text-secondary); } } }
-
-/* 失效确认 */
-.lead-dead { width: 420px; label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 4px; select, input { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); } } }
-.ld-tip { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 10px; }
-
-.empty { text-align: center; color: var(--color-text-tertiary); padding: 24px 0; }
-
-/* 线索分配（Phase 1）：勾选列 / 归属小字 / 分配弹窗名单 */
-.lc-check { width: 30px; text-align: center; input[type='checkbox'] { accent-color: var(--color-accent); cursor: pointer; } }
-.lc-owner { font-size: 11px; color: var(--color-text-tertiary); margin-top: 2px; }
-.lc-sales-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
-.lc-sales-item {
-  display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; font-size: 13px; cursor: pointer;
-  border: 1px solid var(--color-border); border-radius: var(--radius-small); color: var(--color-text-primary);
-  &.active { border-color: var(--color-accent-border); background: var(--color-accent-bg); color: var(--color-accent); font-weight: 600; }
-  .crm-btn { padding: 2px 6px; }
-}
-.lc-sales-add { display: flex; gap: 8px; margin-bottom: 10px; input { flex: 1; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none; &:focus { border-color: var(--color-accent-border); } } }
-
-/* 分页 */
+/* 分页与空态：跨页共用，保持顶层不动 */
 .crm-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0; }
 .crm-pager-info { font-size: 13px; color: var(--color-text-secondary); }
+.empty { text-align: center; color: var(--color-text-tertiary); padding: 24px 0; }
 
-// 归属留痕（设计稿屏 6 右）：只读时间线，样式复用 lead-timeline；hint 元信息
-.ld-ownhist-hint {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--color-text-tertiary);
-  margin-left: 6px;
+.crm-lead-page {
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
 }
 
-// ─── 三视角改版（设计稿屏 2/3/4/6）：颜色只消费 --color-* 族，light/dark 自动继承 ──
-.lp-tabs { display: inline-flex; gap: 2px; background: var(--color-bg-inset); border-radius: var(--radius-control); padding: 2px; margin-bottom: 14px;
-  .lp-tab { border: none; background: transparent; color: var(--color-text-secondary); font-size: 13px; padding: 6px 16px; border-radius: var(--radius-small); cursor: pointer;
-    &.on { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); } } }
+/* 页眉（.shead/.hero/.eyebrow/.sub 本体在 main.scss；本页只收主张句行长） */
+.crm-lead-page .hero { max-width: 760px; }
 
-.lp-seg-wrap { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
-.lp-hint { font-size: 11px; color: var(--color-text-tertiary); }
-.lp-empty { padding: 24px 0; }
+/* ─── 弹窗与表单件：基线外观本页自持 ──────────────────────────────────────
+   2026-09-17 起产品库页把 .crm-modal/.crm-modal-body/.form-grid/.form-actions/.psub/
+   .crm-notice/.crm-filterbar 全部收进 .crm-product-page 作用域（跨页共享改为各页自持，
+   免受懒加载顺序影响）。本页仍在使用这些类名，故按原值在 .crm-lead-page 下重述一份；
+   值与原文件一致，不改视觉，只把归属收到本页作用域内。 */
+.crm-lead-page {
+  .crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+  .crm-filterbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .psub { font-size: 11px; color: var(--color-text-tertiary); overflow-wrap: anywhere; }
 
-.lp-segs { display: inline-flex; background: var(--color-bg-inset); border-radius: var(--radius-control); padding: 2px; gap: 2px;
-  .lp-seg { border: none; background: transparent; color: var(--color-text-secondary); font-size: 12px; padding: 4px 12px; border-radius: var(--radius-small); cursor: pointer;
-    &.on { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); } } }
+  .crm-modal {
+    position: fixed; inset: 0; background: var(--color-overlay);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 50; padding: 24px; backdrop-filter: blur(3px);
+  }
+  .crm-modal-body {
+    background: var(--color-bg-elevated); border-radius: var(--radius-card); border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-pop); padding: 20px; width: 640px; max-width: 100%; max-height: 80vh; overflow: auto;
 
-.lp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px;
-  .lp-stat { text-align: left; border: none; background: var(--color-bg-surface); border-radius: var(--radius-card); padding: 14px 16px; cursor: pointer; box-shadow: var(--shadow-card);
-    .k { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
-    .v { font-size: 26px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums;
-      small { font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); margin-left: 4px; } }
-    &:hover { outline: 1px solid var(--color-border); }
-    &.on { outline: 2px solid var(--color-accent-border); .k { color: var(--color-accent); } } } }
+    h3 { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; font-weight: 700; margin-bottom: 12px; overflow-wrap: anywhere; }
+    h4 { font-size: 13px; color: var(--color-text-secondary); margin: 12px 0 6px; }
+  }
+  .form-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
 
-.lp-banner { display: flex; align-items: center; gap: 8px; background: var(--color-accent-bg); color: var(--color-accent); border-radius: var(--radius-control); padding: 9px 14px; font-size: 12px; margin-bottom: 14px; }
+    label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 3px; min-width: 0;
+      input, select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 6px 8px; font-size: 13px; width: 100%; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
+        &:focus { border-color: var(--color-accent-border); } } }
+  }
+  .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+}
 
-.lp-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.lp-cardbox { background: var(--color-bg-surface); border-radius: var(--radius-card); padding: 16px; box-shadow: var(--shadow-card);
-  &__title { font-size: 14px; font-weight: 700; color: var(--color-text-primary); margin-bottom: 12px; display: flex; align-items: baseline; gap: 8px; } }
+/* 提示条与提示行的层级调整（页头之后第一条提示留出上间距） */
+.crm-lead-page .shead + .crm-notice { margin-top: 14px; }
 
-.lp-slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
-  .name { width: 64px; font-size: 13px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  input[type='range'] { flex: 1; accent-color: var(--color-accent); }
-  .pct { width: 40px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--color-text-primary); }
-  .load { width: 76px; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--color-text-tertiary); } }
+/* ─── 分段控件 / 数字条 / 筛选区 ──────────────────────────────────────────── */
+.crm-lead-page .lp-tabs { margin: 16px 0 14px; }
 
-.lp-preview td .psub { font-size: 11px; color: var(--color-text-tertiary); }
-.lp-batch-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap;
-  .lp-count { width: 90px; } }
-.lp-note { font-size: 12px; color: var(--color-text-secondary); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 四格数字条：概念稿 .stats，这里补「可点选」的按钮语义与选中态（口径不变，仍是 poolCounts） */
+.crm-lead-page .lp-stats { margin-bottom: 14px; }
+.crm-lead-page .lp-stats .stat {
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s;
 
-// 屏 4 销售资源卡
-.lp-sales { display: flex; flex-direction: column; gap: 10px; }
-.lp-card { display: flex; align-items: center; gap: 16px; background: var(--color-bg-surface); border-radius: var(--radius-card); padding: 14px 16px; box-shadow: var(--shadow-card); cursor: pointer;
+  &:hover { background: var(--color-bg-hover); }
+  &:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+  &.is-on { background: var(--color-bg-inset); }
+  &.is-on .stat__n { color: var(--color-accent); }
+  &.is-on .stat__l { color: var(--color-accent); }
+}
+.crm-lead-page .lp-stats .stat__n { display: block; }
+.crm-lead-page .lp-stats .stat__l { display: block; }
+.crm-lead-page .lp-stats .stat__n small { font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); }
+
+.crm-lead-page .lp-filters { margin: 0 0 4px; gap: 10px; }
+.crm-lead-page .lp-search { width: 300px; flex: none; }
+.crm-lead-page .lp-filters .chipbar { flex-wrap: wrap; }
+
+/* ─── 细线行表：网格列模板按页定义，单元格一律可截断，整表不横向撑破 ────────── */
+/* 行内字号：与改造前的 .crm-table（13px）一致；不加这一条会继承 body 的 14px，
+   等宽时间列会被自己的字号撑出省略号（09-17 08…），是本轮实测踩到的坑 */
+.crm-lead-page .tbl .trow { font-size: 13px; }
+.crm-lead-page .tbl .thead { font-size: 10.5px; }
+.crm-lead-page .lp-grid { grid-template-columns: 22px minmax(0, 1.4fr) 88px 84px minmax(0, 1fr) 92px 88px 76px; }
+.crm-lead-page .lp-own-grid { grid-template-columns: minmax(0, 1.2fr) 84px minmax(0, 0.95fr) minmax(0, 1.2fr) 92px; }
+.crm-lead-page .lp-prev-grid { grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1.2fr); }
+.crm-lead-page .lp-batch-grid { grid-template-columns: 84px 72px 76px 60px minmax(0, 1fr) 88px; }
+.crm-lead-page .lp-dd-grid { grid-template-columns: 44px 96px minmax(0, 1fr) 132px 80px; gap: 10px; }
+
+.crm-lead-page .lp-grid > *,
+.crm-lead-page .lp-own-grid > *,
+.crm-lead-page .lp-prev-grid > *,
+.crm-lead-page .lp-batch-grid > *,
+.crm-lead-page .lp-dd-grid > * { min-width: 0; }
+
+.crm-lead-page .lp-tbl { margin-top: 2px; }
+.crm-lead-page .lp-tbl--modal { margin-top: 12px; }
+.crm-lead-page .lp-tbl .trow { cursor: pointer; }
+.crm-lead-page .lp-tbl .trow .tc-a .iconbtn:hover { background: var(--color-bg-hover); }
+
+/* 单行截断：grid 项被块化，但夹在包装 span 里的文本仍是行内盒 —— 必须显式 block，
+   否则 overflow/ellipsis 不生效，长备注会横穿到相邻列上（回收改派表实测踩到） */
+.crm-lead-page .lp-ell { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crm-lead-page .lp-contact { min-width: 0; }
+.crm-lead-page .lp-contact > .lc-contact,
+.crm-lead-page .lp-contact > .psub { display: block; }
+/* 双行单元格（标签 + 补充小字）：小字另起一行，避免被读成相邻列 */
+.crm-lead-page .lp-cell { min-width: 0; }
+.crm-lead-page .lp-cell > .psub { display: block; margin-top: 3px; }
+
+.crm-lead-page .lc-contact { font-weight: 600; font-size: 13px; }
+.crm-lead-page .lc-wechat { font-weight: 400; font-size: 11.5px; color: #8b5cf6; }
+.crm-lead-page .lc-filename { font-size: 12px; color: var(--color-text-tertiary); }
+
+/* 直角勾选框：原生 input 保留键盘/读屏语义，外观由 CSS 画（15px + 4px 圆角） */
+.crm-lead-page .lp-check { display: flex; align-items: center; }
+.crm-lead-page .lp-check input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  border: 1.4px solid var(--color-border);
+  border-radius: var(--radius-micro);
+  background: var(--color-bg-surface);
+  transition: background .15s, border-color .15s;
+
+  &:hover { border-color: var(--color-accent); }
+  &:checked { background: var(--color-accent); border-color: var(--color-accent); }
+  &:checked::after {
+    content: '';
+    width: 8px;
+    height: 4px;
+    border-left: 1.6px solid var(--color-text-on-accent);
+    border-bottom: 1.6px solid var(--color-text-on-accent);
+    transform: rotate(-45deg) translateY(-1px);
+  }
+  &:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+  &:disabled { opacity: .5; cursor: not-allowed; }
+}
+.crm-lead-page .lp-ops { gap: 2px; justify-content: flex-end; }
+.crm-lead-page .lp-iconbtn--danger { color: var(--color-danger); }
+.crm-lead-page .lp-iconbtn--danger:hover { color: var(--color-danger); background: var(--color-danger-bg); }
+
+/* 危险档按钮（标记失效 / 确认回收 / 确认移交）：沿用 .btn 几何，只换语义色 */
+.crm-lead-page .lp-btn--danger { color: var(--color-danger); border-color: var(--color-danger-border); }
+.crm-lead-page .lp-btn--danger:hover { background: var(--color-danger-bg); }
+
+/* ─── 分配控制台（屏 3）：细线块 + 滑杆行 + 预览 ─────────────────────────── */
+.crm-lead-page .lp-console { margin-bottom: 18px; }
+.crm-lead-page .lp-modes { margin: 8px 0 4px; }
+.crm-lead-page .lp-slider-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 0;
+  border-bottom: 1px solid var(--color-divider);
+
+  .name { width: 88px; font-size: 12.5px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  input[type='range'] { flex: 1; min-width: 0; accent-color: var(--color-accent); }
+  .pct { width: 40px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--color-text-primary); }
+  .load { width: 80px; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; color: var(--color-text-tertiary); }
+}
+.crm-lead-page .lp-hint { font-size: 11px; color: var(--color-text-tertiary); }
+.crm-lead-page .lp-batch-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+/* 动作组：整组换行、组内不拆，「取消 / 执行分配」永远同排 */
+.crm-lead-page .lp-batch-acts { display: inline-flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+.crm-lead-page .lp-spacer { flex: 1; }
+.crm-lead-page .lp-count {
+  width: 76px; height: 30px; padding: 0 8px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  background: var(--color-bg-surface); color: var(--color-text-primary);
+  font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; outline: none;
+
+  &:focus { border-color: var(--color-accent-border); }
+}
+.crm-lead-page .lp-recent { margin-top: 18px; }
+.crm-lead-page .lp-notify-acts { margin-left: auto; display: inline-flex; gap: 6px; flex: none; }
+
+/* ─── 屏 4 销售资源卡（保留原卡片结构与倒计时语义，只对齐间距）───────────── */
+.crm-lead-page .lp-sales { display: flex; flex-direction: column; gap: 10px; }
+.crm-lead-page .lp-seg-wrap { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.crm-lead-page .lp-empty { padding: 24px 0; }
+.crm-lead-page .lp-card {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: 14px 16px;
+  box-shadow: var(--shadow-card); cursor: pointer;
+
   &:hover { outline: 1px solid var(--color-border); }
   &__main { flex: 1; min-width: 0; }
   &__t1 { font-size: 14px; font-weight: 600; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
@@ -129,18 +209,11 @@
     &.ok { .t, .l { color: var(--color-success); } }
     &.warn { .t, .l { color: var(--color-warning); } }
     &.over { .t, .l { color: var(--color-danger); } }
-    &.done { .t, .l { color: var(--color-success); } } } }
-
-.crm-table td.num, .crm-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
-
-@media (max-width: 900px) {
-  .lp-grid2 { grid-template-columns: 1fr; }
-  .lp-stats { grid-template-columns: repeat(2, 1fr); }
-  .lp-card { flex-wrap: wrap; }
+    &.done { .t, .l { color: var(--color-success); } } }
 }
 
-// 屏 5 右「跟进状态」（第二段 SLA 结论投影）：check-line 形态，颜色全走 --color-* 族
-.lp-sla2 {
+/* ─── 跟进状态（第二段 SLA 结论投影）：check-line 形态，颜色全走 --color-* 族 ── */
+.crm-lead-page .lp-sla2 {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -168,4 +241,87 @@
     color: var(--color-text-tertiary);
     margin-top: 2px;
   }
+}
+
+/* ─── 时间线（归属留痕 / 升级提醒）：细线行，只增不删的只读序列 ───────────── */
+.crm-lead-page .lead-timeline {
+  display: flex;
+  flex-direction: column;
+
+  .lt-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--color-divider);
+
+    &:last-child { border-bottom: none; }
+    .lt-time { color: var(--color-text-tertiary); width: 90px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .lt-act { font-weight: 600; color: var(--color-accent); width: 90px; flex-shrink: 0; }
+    .lt-note { color: var(--color-text-secondary); flex: 1; min-width: 0; }
+  }
+}
+.crm-lead-page .ld-ownhist-hint { font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); margin-left: 6px; }
+
+/* ─── 弹窗：宽度与字段布局沿用原定义，只统一按钮几何与列表行对齐 ──────────── */
+.crm-lead-page .lead-import { width: 560px; }
+.crm-lead-page .lead-paste {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  padding: 10px; font-size: 13px; font-family: inherit; resize: vertical;
+  background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
+
+  &:focus { border-color: var(--color-accent-border); }
+}
+.crm-lead-page .lead-file { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.crm-lead-page .lead-preview { font-size: 12px; color: var(--color-text-secondary); margin-top: 8px; }
+
+.crm-lead-page .lead-detail { width: 620px; }
+.crm-lead-page .lead-detail-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  label { font-size: 11px; color: var(--color-text-tertiary); }
+  .ld-strong { font-weight: 700; font-size: 15px; }
+  .ld-note { grid-column: span 2; }
+  div { font-size: 13px; }
+}
+.crm-lead-page .lead-actions {
+  display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap;
+  label { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 4px; align-items: center;
+    select { border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 4px 6px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); } }
+  input { height: 30px; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 0 8px; font-size: 12px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
+    &:focus { border-color: var(--color-accent-border); } }
+}
+
+/* 失效 / 认领 / 已加微信 / 编辑 / 调派 / 回收 / 离职移交 / 绑定微信 / 首次分类：同一档窄弹窗 */
+.crm-lead-page .lead-dead {
+  width: 420px;
+  label { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 4px;
+    select, input { height: 30px; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 0 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
+      &:focus { border-color: var(--color-accent-border); } } }
+}
+.crm-lead-page .ld-tip { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 10px; }
+
+/* 候选人名单 / 本机联系人（认领、调岗、绑定微信三处共用）：细线行 + 选中态 */
+.crm-lead-page .lc-sales-list { display: flex; flex-direction: column; max-height: 240px; overflow-y: auto; margin-bottom: 10px; }
+.crm-lead-page .lc-sales-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 8px; font-size: 13px; cursor: pointer;
+  border-bottom: 1px solid var(--color-divider);
+  color: var(--color-text-primary);
+
+  &:last-child { border-bottom: none; }
+  &:hover { background: var(--color-bg-hover); }
+  &.active { background: var(--color-accent-bg); color: var(--color-accent); font-weight: 600; }
+  .btn { height: 24px; padding: 0 8px; flex: none; }
+}
+.crm-lead-page .lc-sales-add {
+  display: flex; gap: 8px; margin-bottom: 10px;
+  input { flex: 1; height: 30px; border: 1px solid var(--color-border); border-radius: var(--radius-small); padding: 0 8px; font-size: 13px; background: var(--color-bg-surface); color: var(--color-text-primary); outline: none;
+    &:focus { border-color: var(--color-accent-border); } }
+}
+
+@media (max-width: 900px) {
+  .crm-lead-page .lp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .crm-lead-page .lp-card { flex-wrap: wrap; }
+  .crm-lead-page .lp-search { width: 100%; }
 }

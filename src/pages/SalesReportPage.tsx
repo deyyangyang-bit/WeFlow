@@ -119,6 +119,21 @@ function ReviewList({ title, items, empty, tone }: { title: string; items: strin
   )
 }
 
+/**
+ * 周复盘指标条：与周报/月报同序——数字先出现，结论（AI 复盘正文）随后。
+ * 只搬位置不改口径：四个数仍取 stats 里的现有字段。
+ */
+function ReviewMetrics({ stats }: { stats: WeeklyReviewStats }) {
+  return (
+    <div className="sr-review-metrics">
+      <StatCard icon={Layers} label="管道客户" value={stats.pipelineTotal} color="var(--color-accent)" />
+      <StatCard icon={Flame} label="本周热了" value={stats.hotCount} color="var(--color-danger)" />
+      <StatCard icon={Snowflake} label="变冷(>30天)" value={stats.coldCount} color="var(--color-accent)" />
+      <StatCard icon={UserX} label="建议放弃" value={stats.dropCount} color="var(--color-text-tertiary)" />
+    </div>
+  )
+}
+
 function ReviewSections({ stats }: { stats: WeeklyReviewStats }) {
   const stageEntries = useMemo(() =>
     Object.entries(stats.stageCounts || {})
@@ -130,13 +145,6 @@ function ReviewSections({ stats }: { stats: WeeklyReviewStats }) {
 
   return (
     <>
-      <div className="sr-review-metrics">
-        <StatCard icon={Layers} label="管道客户" value={stats.pipelineTotal} color="var(--color-accent)" />
-        <StatCard icon={Flame} label="本周热了" value={stats.hotCount} color="var(--color-danger)" />
-        <StatCard icon={Snowflake} label="变冷(>30天)" value={stats.coldCount} color="var(--color-accent)" />
-        <StatCard icon={UserX} label="建议放弃" value={stats.dropCount} color="var(--color-text-tertiary)" />
-      </div>
-
       {stageEntries.length > 0 && (
         <div className="sr-review-stage">
           <h4>阶段分布</h4>
@@ -314,8 +322,9 @@ export default function SalesReportPage() {
             </div>
 
             {isWeeklyReview ? (
-              /* ── 周复盘视图 ── */
+              /* ── 周复盘视图：指标条 → 复盘结论（AI 正文）→ 阶段分布 → 热/冷/放弃三列 ── */
               <>
+                {currentReviewStats && <ReviewMetrics stats={currentReviewStats} />}
                 {currentReport.ai_summary && (
                   <div className="sr-ai-summary">
                     <div className="sr-ai-summary-header">

@@ -2597,13 +2597,18 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 
 ### 2.116.2 修复口径（第二轮修订：归属核对以 employeeId 为权威，映射带来源设备命名空间）
 
-- **中央落地行的归属核对 = 绑定 employeeId 权威**：assignment 新增 `owner_employee_id` 列
-  （幂等 ALTER 加列，不改写存量归属；中央下行 assign/transfer 落地写入指令声明的
-  `targetEmployeeId`）。行带该列 → 以本机绑定 employeeId 核对（显示名不参与判定，同名员工
-  不串线；未绑定一律不可见/不可认领）；行未带（历史/本地/SMB）→ 姓名集合回退
-  （署名 ∪ 绑定别名，`identityService.getOwnershipAliases()` 仅中央同步启用且持员工 id 时
-  返回中央 displayName，解绑即清）。**「同名不混淆」仅对 owner_employee_id 非空行成立，
-  历史行与本地行无法追溯区分同名（如实标注）**；
+- **归属核对 = 绑定 employeeId 权威**：assignment 新增 `owner_employee_id` 列
+  （幂等 ALTER 加列，不改写存量归属）。**写入者两处**：① 中央下行 assign/transfer 落地写入
+  指令声明的 `targetEmployeeId`；② **本机写路径**（`crmAssignmentService.assignLeads` /
+  `transferAssignment`，2026-09-17 补 `resolveLocalOwnerEmployeeId`）——目标 = 本机绑定身份
+  （署名或绑定期间别名）→ `getBoundEmployeeId()`；否则查设置页 `centralSyncEmployeeAlias`
+  显式别名表；**都不命中写空串**（本机同步写路径拿不到中央目录，不猜——写错 ID 会让同名不同人
+  串线）。行带该列 → 以本机绑定 employeeId 核对（显示名不参与判定，同名员工不串线；未绑定
+  一律不可见/不可认领）；行未带（存量历史行 / 未绑定时的本地行 / SMB 行 / 解析不出目标的
+  本地行）→ 姓名集合回退（署名 ∪ 绑定别名，`identityService.getOwnershipAliases()` 仅中央
+  同步启用且持员工 id 时返回中央 displayName，解绑即清）。**「同名不混淆」仅对
+  owner_employee_id 非空行成立；存量历史行与解析不出目标的本地行无法追溯区分同名（如实标注）**。
+  夹具：`scripts/local-write-owner-id-test.ts`（32/0）；
 - 消费点统一 `shared/ownerFilter.isOwnedName / isOwnedLead`（新增）+ `IdentityLike.nameAliases?/employeeId?`：
   页面过滤档、线索页三视角、认领（前端按钮 + `claimLead` 后端，两处共用同一口径）、
   绑定微信按钮、chips 计数（按 isOwnedLead 精确统计）、`identity:get` IPC（新增

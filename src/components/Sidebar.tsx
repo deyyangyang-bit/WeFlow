@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, BarChart3, Filter, FileText, Settings, Download, Aperture, UserCircle, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, Sparkles, BookOpen, Clock, Briefcase, ClipboardCheck, ClipboardList, Bot, Package, Inbox, Target, type LucideIcon } from 'lucide-react'
+import { Settings, Download, Aperture, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, FileText, BarChart3 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { useHermesStore } from '../stores/hermesStore'
 import * as configService from '../services/config'
 import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
+import { NAV_GROUPS, type NavItemDef } from '../utils/appNav'
 
 import './Sidebar.scss'
 
@@ -16,39 +17,8 @@ interface SidebarUserProfile {
 }
 
 // ─── 导航收口：7 个一级模块（今日行动 / 聊天 / CRM / 跟单 / AI·知识 / 报表 / 系统）───
+// 定义已上移到 src/utils/appNav.ts：侧栏、命令面板、⌘1/⌘2/⌘3 跳转共用单一真源。
 // 多子项模块渲染为可展开分组；collapsed 时全部子项图标平铺，保持原行为
-// 导航项两类：路由项（path，NavLink 跳转）与动作项（action，点击执行动作不跳路由）；
-// 动作项不参与 active 高亮（active 样式只属于真实路由项）
-type NavItemDef =
-  | { label: string; path: string; icon: LucideIcon }
-  | { label: string; icon: LucideIcon; action: 'openHermes' }
-interface NavGroupDef { key: string; label: string; items: NavItemDef[] }
-
-const NAV_GROUPS: NavGroupDef[] = [
-  { key: 'home', label: '今日行动', items: [{ label: '今日行动', path: '/home', icon: Home }] },
-  { key: 'chat', label: '聊天', items: [{ label: '聊天', path: '/chat', icon: MessageSquare }] },
-  { key: 'crm', label: 'CRM', items: [
-    { label: '线索', path: '/leads', icon: Inbox },
-    { label: '客户', path: '/customers', icon: Users },
-    { label: '商机', path: '/opportunities', icon: Target },
-    { label: '合同', path: '/crm', icon: Briefcase }
-  ] },
-  { key: 'review', label: '跟单', items: [{ label: '跟单中心', path: '/crm-review', icon: ClipboardCheck }] },
-  { key: 'ai', label: 'AI / 知识', items: [
-    { label: 'Hermes', icon: Bot, action: 'openHermes' },
-    { label: '重要提醒', path: '/insight-inbox', icon: Sparkles },
-    { label: '知识库', path: '/knowledge-base', icon: BookOpen },
-    { label: '评测标注', path: '/eval-annotate', icon: ClipboardList }
-  ] },
-  { key: 'report', label: '报表', items: [
-    { label: '复盘', path: '/sales-report', icon: BarChart3 },
-    { label: '行动漏斗', path: '/action-funnel', icon: Filter }
-  ] },
-  { key: 'system', label: '系统', items: [
-    { label: '产品库', path: '/crm-product', icon: Package },
-    { label: '通讯录', path: '/contacts', icon: UserCircle }
-  ] }
-]
 
 const SIDEBAR_USER_PROFILE_CACHE_KEY = 'sidebar_user_profile_cache_v1'
 const ACCOUNT_PROFILES_CACHE_KEY = 'account_profiles_cache_v1'
@@ -347,21 +317,25 @@ function Sidebar({ collapsed }: SidebarProps) {
   // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
   const openHermes = useHermesStore((s) => s.openHermes)
-  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮
+  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮；设置除外——它的路由是浮层，仍标 active
   const groupActive = (items: NavItemDef[]) => items.some((i) => 'path' in i && isActive(i.path))
   const renderNavItem = (item: NavItemDef, child = false) => {
     if ('action' in item) {
-      // 动作项：button 原生键盘可操作；不跳路由、不改 openGroups、无 active 样式
+      const actionActive = item.action === 'openSettings' && isActive('/settings')
+      // 动作项：button 原生键盘可操作；不跳路由、不改 openGroups
       return (
         <button
           key={item.label}
           type="button"
-          className={`nav-item ${child ? 'nav-item--child' : ''}`}
-          onClick={() => { if (item.action === 'openHermes') openHermes() }}
+          className={`nav-item ${child ? 'nav-item--child' : ''} ${actionActive ? 'active' : ''}`}
+          onClick={() => {
+            if (item.action === 'openHermes') openHermes()
+            if (item.action === 'openSettings') openSettingsFromAccountMenu()
+          }}
           title={collapsed ? item.label : undefined}
           aria-label={item.label}
         >
-          <span className="nav-icon"><item.icon size={20} /></span>
+          <span className="nav-icon"><item.icon size={collapsed ? 17 : 16} strokeWidth={1.6} /></span>
           <span className="nav-label">{item.label}</span>
         </button>
       )
@@ -373,7 +347,7 @@ function Sidebar({ collapsed }: SidebarProps) {
         className={`nav-item ${child ? 'nav-item--child' : ''} ${isActive(item.path) ? 'active' : ''}`}
         title={collapsed ? item.label : undefined}
       >
-        <span className="nav-icon"><item.icon size={20} /></span>
+        <span className="nav-icon"><item.icon size={collapsed ? 17 : 16} strokeWidth={1.6} /></span>
         <span className="nav-label">{item.label}</span>
       </NavLink>
     )
@@ -388,7 +362,15 @@ function Sidebar({ collapsed }: SidebarProps) {
           {collapsed
             ? NAV_GROUPS.flatMap((g) => g.items).map((i) => renderNavItem(i))
             : NAV_GROUPS.map((g) => {
-                if (g.items.length === 1) return renderNavItem(g.items[0])
+                // 概念稿 7 个一级模块都带分组标签；单项分组的标签只作层级说明，不折叠（没有可折叠的内容）
+                if (g.items.length === 1) {
+                  return (
+                    <div key={g.key} className="nav-group">
+                      <div className="nav-group-head nav-group-head--static">{g.label}</div>
+                      {renderNavItem(g.items[0])}
+                    </div>
+                  )
+                }
                 const open = openGroups[g.key] !== false
                 return (
                   <div key={g.key} className="nav-group">
@@ -511,7 +493,7 @@ function Sidebar({ collapsed }: SidebarProps) {
             title={collapsed ? lockActionLabel : undefined}
             aria-label={lockActionLabel}
           >
-            <span className="nav-icon">{authEnabled ? <Lock size={20} /> : <LockOpen size={20} />}</span>
+            <span className="nav-icon">{authEnabled ? <Lock size={16} strokeWidth={1.6} /> : <LockOpen size={16} strokeWidth={1.6} />}</span>
             <span className="nav-label">{lockActionLabel}</span>
           </button>
 

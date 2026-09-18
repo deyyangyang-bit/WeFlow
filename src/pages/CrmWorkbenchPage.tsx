@@ -150,6 +150,9 @@ export default function CrmWorkbenchPage() {
     contacted: '已沟通', quoted: '已报价', negotiating: '谈判中', won: '已成交', new: '新客', unknown: '未分类'
   }
   const CONTRACT_STATUS_MAP: Record<string, string> = { pending_sign: '待签约', signed: '已签约', shipped: '已发货' }
+  // 子资源状态显示（详情区）：仅文案与配色映射，取值域仍来自 allocation.status / logistics.link_status
+  const ALLOC_STATUS_PILL: Record<string, string> = { confirmed: 'crm-pill--ok', pending: 'crm-pill--warn', proposed: 'crm-pill--acc', rejected: 'crm-pill--bad', failed: 'crm-pill--bad' }
+  const ALLOC_STATUS_LABEL: Record<string, string> = { confirmed: '已确认', pending: '待确认', proposed: '待确认', rejected: '已拒绝', failed: '失败' }
   // 图表色单一真源（红线 3）：与漏斗同族的 Apple 蓝渐变
   const BAR_ACCENT = {
     type: 'linear' as const, x: 0, y: 0, x2: 0, y2: 1,
@@ -241,7 +244,7 @@ export default function CrmWorkbenchPage() {
     { key: 'status', title: '状态', render: (c) => <span className={`crm-pill crm-pill--${c.status === 'pending_sign' ? 'acc' : c.status === 'signed' ? 'ok' : 'neu'}`}>{CONTRACT_STATUS_MAP[c.status] || c.status}</span> },
     { key: 'warning', title: '预警', render: (c) => c.warning ? <span className="crm-pill crm-pill--bad">{c.warning}</span> : <span className="crm-pill crm-pill--neu">—</span> },
     { key: 'ops', title: '操作', render: (c) => (
-      <span onClick={(e) => e.stopPropagation()}>
+      <span className="crm-row-ops" onClick={(e) => e.stopPropagation()}>
         {c.status === 'pending_sign' && <button className="crm-btn crm-btn--ghost" onClick={() => void sign(c)}><Handshake size={13} /> 签约</button>}
         {c.status === 'signed' && <button className="crm-btn crm-btn--ghost" onClick={() => void ship(c)}><Truck size={13} /> 发货</button>}
         <button className="crm-btn crm-btn--ghost" onClick={() => void genDoc('contract', c.id)}><FileText size={13} /> 合同</button>
@@ -482,16 +485,21 @@ export default function CrmWorkbenchPage() {
     <div className="crm-workbench-page">
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
       <div className="crm-header">
-        <h2><Briefcase size={18} /> 合同工作台</h2>
-        <span className="crm-header__sub">合同闭环 · 报价 / 发货 / 回款 / 开票 · r7</span>
-        <div className="crm-view-tabs">
-          <button className={`crm-view-tab ${view === 'contracts' ? 'on' : ''}`} onClick={() => setView('contracts')}>合同工作台</button>
-          <button className={`crm-view-tab ${view === 'delivery' ? 'on' : ''}`} onClick={() => setView('delivery')}>交付售后</button>
+        <div className="crm-header__id">
+          <p className="eyebrow">CRM · 合同</p>
+          <h2><Briefcase size={18} /> 合同工作台</h2>
+          <span className="crm-header__sub">合同闭环 · 报价 / 发货 / 回款 / 开票 · r7</span>
         </div>
-        <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
-        {view === 'contracts' && (
-          <button className="crm-btn crm-btn--primary" disabled={creatingRef.current} onClick={() => { if (showNew) resetNew(); else { void openNew().catch(e => setNotice(String(e))) }; if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
-        )}
+        <div className="crm-header__ops">
+          <div className="crm-view-tabs">
+            <button className={`crm-view-tab ${view === 'contracts' ? 'on' : ''}`} onClick={() => setView('contracts')}>合同工作台</button>
+            <button className={`crm-view-tab ${view === 'delivery' ? 'on' : ''}`} onClick={() => setView('delivery')}>交付售后</button>
+          </div>
+          <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
+          {view === 'contracts' && (
+            <button className="crm-btn crm-btn--primary" disabled={creatingRef.current} onClick={() => { if (showNew) resetNew(); else { void openNew().catch(e => setNotice(String(e))) }; if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
+          )}
+        </div>
       </div>
       {view === 'delivery' && <DeliveryAftersales />}
       {view === 'contracts' && (<>
@@ -499,17 +507,25 @@ export default function CrmWorkbenchPage() {
       {artifact && <GeneratedFileResult artifact={artifact} onClose={() => setArtifact(null)} />}
       {stats && (
         <>
-          {/* 顶部统计卡收成一行小字（设计稿屏 3：本月到账 / 待签 / 预警，预警非零才红色） */}
-          <div className="crm-kpi-line">
-            <span>本月到账 <b>¥{Number(stats.monthPaid || 0).toLocaleString()}</b></span>
-            <span>待签 <b>{pendingSignCount}</b></span>
-            <span>预警 <b className={warningCount > 0 ? 'is-hot' : ''}>{warningCount}</b></span>
+          {/* 概览条：KPI 小字 + 管道 pill + 数据看板折叠钮并作一行，收紧列表上方的纵向堆叠 */}
+          <div className="crm-overview-strip">
+            {/* 顶部统计卡收成一行小字（设计稿屏 3：本月到账 / 待签 / 预警，预警非零才红色） */}
+            <div className="crm-kpi-line">
+              <span>本月到账 <b>¥{Number(stats.monthPaid || 0).toLocaleString()}</b></span>
+              <span>待签 <b>{pendingSignCount}</b></span>
+              <span>预警 <b className={warningCount > 0 ? 'is-hot' : ''}>{warningCount}</b></span>
+            </div>
+            <div className="crm-pipeline-strip">
+              {(stats.pipeline || []).map((p: any) => (
+                <span key={p.status} className="crm-pill crm-pill--neu">{CONTRACT_STATUS_MAP[p.status] || p.status} {p.count} 份 · ¥{Number(p.amount || 0).toLocaleString()}</span>
+              ))}
+            </div>
+            {/* 两张图表 + AI 准确率 + 原 4 统计卡收进「数据看板」折叠区（默认收起，展开后原样渲染，零删除） */}
+            <button className="crm-fold" aria-expanded={dashboardOpen} title="到款趋势 / 客户阶段分布 / AI 准确率" onClick={() => setDashboardOpen((v) => !v)}>
+              <span>📊 数据看板</span>
+              <span className="crm-fold__state">{dashboardOpen ? '收起 ▲' : '展开 ▼'}</span>
+            </button>
           </div>
-          {/* 两张图表 + AI 准确率 + 原 4 统计卡收进「数据看板」折叠区（默认收起，展开后原样渲染，零删除） */}
-          <button className="crm-fold" onClick={() => setDashboardOpen((v) => !v)}>
-            <span>📊 数据看板（到款趋势 / 客户阶段分布 / AI 准确率）</span>
-            <span>{dashboardOpen ? '收起 ▲' : '展开 ▼'}</span>
-          </button>
           {dashboardOpen && (
             <>
               <div className="crm-stats-row">
@@ -554,6 +570,7 @@ export default function CrmWorkbenchPage() {
       )}
       {showNew && (
         <div className="crm-new-form"><h3>新建合同</h3><fieldset disabled={formLocked}>
+          <div className="crm-new-form__row">
           <select value={newAccountId} onChange={(e) => {
             const id = Number(e.target.value)
             setHeaderConfirmed(false); setHeaderChoices(null)
@@ -579,6 +596,8 @@ export default function CrmWorkbenchPage() {
           </select>
           <input placeholder="客户名称" readOnly={newAccountId > 0} value={newName} onChange={(e) => setNewName(e.target.value)} />
           <input placeholder={`合同金额（当前报价合计 ${newQuoTotal.toFixed(2)}）`} value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
+          </div>
+          <div className="crm-new-form__block">
           <span className="crm-new-form__divider">型号（从产品库选，可多选；创建即生成报价单）</span>
           <div className="crm-new-form__quotes">
             <input className="crm-new-form__search" placeholder="搜索产品/型号…" value={newQuoSearch} onChange={(e) => setNewQuoSearch(e.target.value)} />
@@ -616,13 +635,18 @@ export default function CrmWorkbenchPage() {
               <div className="crm-new-form__total">型号合计 ¥{newQuoTotal.toLocaleString()}（未填金额时作为合同金额，可改）· {newQuoItems.filter(r => isPriceOverride(r.price, r.unitPrice)).length} 项改价（记录审计）</div>
             )}
           </div>
+          </div>
+          <div className="crm-new-form__block">
           <span className="crm-new-form__divider">甲方开票信息（选填，用于生成合同/开票申请单）</span>
           {headerPaste(newHeaderText, newHeaderNote, applyNewHeader)}
+          <div className="crm-new-form__grid">
           <input placeholder="单位地址" value={newBuyerAddr} onChange={(e) => setNewBuyerAddr(e.target.value)} />
           <input placeholder="开户银行" value={newBuyerBank} onChange={(e) => setNewBuyerBank(e.target.value)} />
           <input placeholder="银行账号" value={newBuyerAccount} onChange={(e) => setNewBuyerAccount(e.target.value)} />
           <input placeholder="税号" value={newBuyerTax} onChange={(e) => setNewBuyerTax(e.target.value)} />
           <input placeholder="电话" value={newBuyerPhone} onChange={(e) => setNewBuyerPhone(e.target.value)} />
+          </div>
+          </div>
           </fieldset>
           {newAmount.trim() && newQuoItems.length > 0 && Number(newAmount) !== newQuoTotal && <div className="crm-notice">合同金额已手工设定；当前报价合计 ¥{newQuoTotal.toFixed(2)} <button className="crm-btn" disabled={formLocked} onClick={() => setNewAmount('')}>同步报价合计</button></div>}
           {headerChoices && !headerConfirmed && <div className="entry-header-confirm" role="dialog" aria-label="更新客户抬头">
@@ -638,13 +662,6 @@ export default function CrmWorkbenchPage() {
             {createdRef.current.contractId && <button className="crm-btn" onClick={async () => { const c = await window.electronAPI.crm.get('contract', createdRef.current.contractId!); if (c) await select(c) }}>查看合同详情</button>}
             <button className="crm-btn" disabled={creatingRef.current} onClick={resetNew}>取消</button>
           </div>
-        </div>
-      )}
-      {stats && (
-        <div className="crm-pipeline-strip">
-          {(stats.pipeline || []).map((p: any) => (
-            <span key={p.status} className="crm-pill crm-pill--neu">{CONTRACT_STATUS_MAP[p.status] || p.status} {p.count} 份 · ¥{Number(p.amount || 0).toLocaleString()}</span>
-          ))}
         </div>
       )}
       <SearchTable
@@ -672,20 +689,53 @@ export default function CrmWorkbenchPage() {
 
       {selected && (
         <div className="crm-detail">
-          <h3>{selected.name} · 子资源</h3>
-          <div className="crm-tabs">
-            <div><h4>报价单 <button className="crm-btn" onClick={() => void openQuotation()}><Plus size={12} /> 新建</button></h4>{quotations.map((q) => (
-              <div key={q.id} className="crm-row">合计 {Number(q.total).toLocaleString()} <button className="crm-btn" onClick={() => void genDoc('quotation', q.id)}>生成</button></div>
-            ))}</div>
-            <div><h4>发票</h4>{invoices.map((i) => (
-              <div key={i.id} className="crm-row">{i.invoice_no ?? '(待开票)'} {i.buyer} {Number(i.amount).toLocaleString()}</div>
-            ))}</div>
-            <div><h4>回款归属</h4>{allocations.map((a) => (
-              <div key={a.id} className="crm-row">{a.customer_hint} {Number(a.credited_amount).toLocaleString()} [{a.status}] {a.sales_name ?? a.sales_hint ?? ''}</div>
-            ))}</div>
-            <div><h4>物流</h4>{logistics.map((l) => (
-              <div key={l.id} className="crm-row">{l.tracking_no} {l.receiver} {l.city} [{l.link_status}]</div>
-            ))}</div>
+          <div className="crm-detail__head">
+            <h3>{selected.name}</h3>
+            <span className="crm-detail__hint">子资源 · 报价 / 发票 / 回款 / 物流</span>
+          </div>
+          <div className="crm-detail__grid">
+            <section className="crm-sub">
+              <div className="crm-sub__head">
+                <h4>报价单</h4><span className="crm-sub__n">{quotations.length}</span>
+                <button className="crm-btn" onClick={() => void openQuotation()}><Plus size={12} /> 新建</button>
+              </div>
+              {quotations.map((q) => (
+                <div key={q.id} className="crm-row">
+                  <span className="crm-row__main">合计 <b className="num">{Number(q.total).toLocaleString()}</b></span>
+                  <button className="crm-btn" onClick={() => void genDoc('quotation', q.id)}>生成</button>
+                </div>
+              ))}
+            </section>
+            <section className="crm-sub">
+              <div className="crm-sub__head"><h4>发票</h4><span className="crm-sub__n">{invoices.length}</span></div>
+              {invoices.map((i) => (
+                <div key={i.id} className="crm-row">
+                  <span className="crm-row__main">{i.invoice_no ?? '(待开票)'}<span className="crm-row__hint">{i.buyer}</span></span>
+                  <b className="num">{Number(i.amount).toLocaleString()}</b>
+                </div>
+              ))}
+            </section>
+            <section className="crm-sub">
+              <div className="crm-sub__head"><h4>回款归属</h4><span className="crm-sub__n">{allocations.length}</span></div>
+              {allocations.map((a) => (
+                <div key={a.id} className="crm-row">
+                  <span className="crm-row__main">{a.customer_hint}
+                    <span className="crm-row__hint">{a.sales_name ?? a.sales_hint ?? ''}</span>
+                  </span>
+                  <span className={`crm-pill ${ALLOC_STATUS_PILL[a.status] || 'crm-pill--neu'}`} title={a.status}>{ALLOC_STATUS_LABEL[a.status] || a.status}</span>
+                  <b className="num">{Number(a.credited_amount).toLocaleString()}</b>
+                </div>
+              ))}
+            </section>
+            <section className="crm-sub">
+              <div className="crm-sub__head"><h4>物流</h4><span className="crm-sub__n">{logistics.length}</span></div>
+              {logistics.map((l) => (
+                <div key={l.id} className="crm-row">
+                  <span className="crm-row__main num">{l.tracking_no}<span className="crm-row__hint">{l.receiver} {l.city}</span></span>
+                  <span className={`crm-pill ${l.link_status === 'linked' ? 'crm-pill--ok' : 'crm-pill--neu'}`} title={l.link_status}>{l.link_status === 'linked' ? '已关联' : '未关联'}</span>
+                </div>
+              ))}
+            </section>
           </div>
 
           <div className="crm-invoice-edit">

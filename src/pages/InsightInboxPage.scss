@@ -1,11 +1,14 @@
 // InsightInboxPage —— 前进视觉迁移（UI 美化批次 C；纯样式，零逻辑/结构改动）
+// 2026-09-17 布局整理：页眉走 .shead（小标/页名/说明 + 操作区）、状态走 .stats 数字条、
+// 卡片内部分「状态行 / 说明 / 操作区」三段；本页做整页两栏（列表 + 筛选栏），
+// 故用负 margin 抵掉外壳 .content 的 padding 实现满幅，页内不再叠加整页 padding。
 // 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 .insight-inbox-page {
   --insight-panel-width: 328px;
   --insight-card-bg: var(--color-bg-surface-muted);
   display: flex;
   height: calc(100% + 48px);
-  margin: -24px;
+  margin: -24px -32px;
   overflow: hidden;
   background: var(--color-bg-page);
   color: var(--color-text-primary);
@@ -17,36 +20,41 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 16px 20px 12px;
+  padding: 16px 20px 0;
 }
 
+// 页眉（概念稿 .shead 位）：与 .sub 一起收回本页间距，说明文字补齐基线
 .insight-inbox-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  align-items: flex-start;
   padding: 0 2px 10px;
-  border-bottom: 1px solid var(--color-border);
+
+  .sub {
+    margin-top: 2px;
+    color: var(--color-text-tertiary);
+  }
 }
 
 .insight-inbox-title-block {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+
+  .eyebrow {
+    margin: 0;
+  }
 }
 
 .insight-inbox-title-line {
   display: flex;
   align-items: center;
   gap: 10px;
-
-  h2 {
-    margin: 0;
-    font-size: 21px;
-    font-weight: 700;
-    color: var(--color-text-primary);
-  }
+  margin: 6px 0 0;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
 }
 
 .insight-inbox-logo {
@@ -56,23 +64,18 @@
   object-fit: cover;
 }
 
+// 状态数字条：沿用概念稿 .stats 语法，本页只有三格
 .insight-inbox-stats {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  color: var(--color-text-secondary);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 2px 0 0;
+  padding: 0 2px;
 
-  span + span::before {
-    content: '';
-    display: inline-block;
-    width: 3px;
-    height: 3px;
-    margin-right: 10px;
-    border-radius: 50%;
-    background: var(--color-text-tertiary);
-    vertical-align: middle;
+  .stat {
+    padding: 12px 2px 11px;
+  }
+
+  .stat + .stat {
+    padding-left: 18px;
   }
 }
 
@@ -204,11 +207,30 @@
   gap: 10px;
 }
 
+// 卡内三段：状态行（对象 + 时间）/ 说明（正文）/ 操作区（状态标签 + 动作）
 .insight-card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.insight-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.insight-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .insight-recipient {
@@ -364,7 +386,13 @@
 }
 
 .insight-filter-header {
-  margin-bottom: 14px;
+  position: sticky;
+  top: -18px;
+  z-index: 1;
+  margin: -18px 0 14px;
+  padding: 18px 0 10px;
+  background: var(--color-bg-surface-muted);
+  border-bottom: 1px solid var(--color-divider);
 
   h3 {
     margin: 0;
@@ -492,13 +520,12 @@
   min-height: 260px;
 }
 
+// 聊天对象列表：随筛选栏整体滚动，列表自己不再开第二根滚动条
 .insight-contact-list {
   margin-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 420px;
-  overflow-y: auto;
 }
 
 .insight-contact-row {
@@ -672,21 +699,19 @@
 }
 
 .insight-copy-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 26px;
-  transform: translateX(-50%);
-  z-index: 1100;
-  padding: 9px 14px;
-  border-radius: 999px;
-  background: var(--color-tooltip-bg);
-  color: var(--color-tooltip-text);
-  font-size: 13px;
+  // 全局 .toast 提供外观；本页需盖在请求日志弹层（z-index 1000）之上
+  z-index: 1001;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
   .insight-inbox-page {
     flex-direction: column;
+    height: calc(100% + 48px);
+  }
+
+  .insight-inbox-main {
+    flex: 1;
+    min-height: 0;
   }
 
   .insight-filter-panel {
@@ -696,9 +721,21 @@
     max-height: 42%;
   }
 
-  .insight-card-header,
-  .insight-card-actions {
+  .insight-filter-header {
+    top: -18px;
+  }
+
+  .insight-card-foot {
     align-items: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .insight-inbox-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .insight-card-actions {
     flex-wrap: wrap;
   }
 }

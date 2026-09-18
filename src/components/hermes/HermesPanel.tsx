@@ -225,19 +225,24 @@ export default function HermesPanel() {
           {isRunning && (
             <div className="hermes-panel__running">
               <div className="hermes-panel__goal-line">目标：{task!.goal}</div>
-              {task!.steps.length === 0 && <div className="hermes-panel__hint"><Loader2 size={14} className="spin" /><span>正在规划查询步骤…</span></div>}
-              <ul className="hermes-steps">
-                {task!.steps.map((s, i) => (
-                  <li key={i} className={`hermes-step hermes-step--${s.status}`}>
-                    <StepIcon status={s.status} />
-                    <div className="hermes-step__body">
-                      <span className="hermes-step__label">{s.label}</span>
-                      {s.publicSummary && <span className="hermes-step__summary">{s.publicSummary}</span>}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <button className="hermes-panel__cancel" onClick={() => void handleCancel()}>停止</button>
+              <section className="hermes-section">
+                <div className="hermes-section__head">
+                  <span className="hermes-section__t">执行步骤</span>
+                  {task!.steps.length > 0 && <span className="hermes-section__n num">{task!.steps.length}</span>}
+                </div>
+                {task!.steps.length === 0 && <div className="hermes-panel__hint"><Loader2 size={14} className="spin" /><span>正在规划查询步骤…</span></div>}
+                <ul className="hermes-steps">
+                  {task!.steps.map((s, i) => (
+                    <li key={i} className={`hermes-step hermes-step--${s.status}`}>
+                      <StepIcon status={s.status} />
+                      <div className="hermes-step__body">
+                        <span className="hermes-step__label">{s.label}</span>
+                        {s.publicSummary && <span className="hermes-step__summary">{s.publicSummary}</span>}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             </div>
           )}
 
@@ -274,7 +279,7 @@ export default function HermesPanel() {
               )}
               {task!.evidence.length > 0 && (
                 <div className="hermes-card">
-                  <div className="hermes-card__tag">证据</div>
+                  <div className="hermes-card__tag">证据 · {task!.evidence.length} 条</div>
                   <ul className="hermes-evidence">
                     {task!.evidence.map((ev) => (
                       <li key={ev.ref}>
@@ -305,34 +310,17 @@ export default function HermesPanel() {
               <p>{startError}</p>
             </div>
           )}
-
-          {/* 追问（多轮继续；completed 后可用） */}
-          {task && task.status === 'completed' && (
-            <div className="hermes-panel__followup">
-              {continueError && (
-                <div className="hermes-panel__failed hermes-panel__failed--inline">
-                  <AlertCircle size={16} />
-                  <p>{continueError}</p>
-                </div>
-              )}
-              <div className="hermes-panel__input-row">
-                <input
-                  type="text"
-                  value={followUp}
-                  onChange={(e) => setFollowUp(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void handleContinue() }}
-                  placeholder="继续追问…"
-                  disabled={continuing}
-                />
-                <button className="hermes-panel__go" onClick={() => void handleContinue()} disabled={continuing || !followUp.trim()}>
-                  {continuing ? <Loader2 size={14} className="spin" /> : '让 Hermes 分析'}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* 底部目标输入（空闲/失败态可重新发起；运行中隐藏防重复提交） */}
+        {/* 底部操作区：与答案区分离常驻，长回答滚动时输入框仍在原位。
+            运行中只留「停止」（隐藏输入防重复提交）；完成态为追问输入 + 换目标。 */}
+        {isRunning && (
+          <div className="hermes-panel__footer hermes-panel__footer--acting">
+            <span className="hermes-panel__footer-note">正在执行，完成后可继续追问</span>
+            <button className="hermes-panel__cancel" onClick={() => void handleCancel()}>停止</button>
+          </div>
+        )}
+
         {!isRunning && !(task && task.status === 'completed') && (
           <div className="hermes-panel__footer">
             <div className="hermes-panel__input-row">
@@ -351,12 +339,34 @@ export default function HermesPanel() {
           </div>
         )}
 
-        {/* completed 态底部：新目标入口（带摘要窗口续问在上方追问框；这里开新任务） */}
+        {/* completed 态底部：追问输入沿用本任务上下文；「换个目标」另起新任务 */}
         {task && task.status === 'completed' && (
           <div className="hermes-panel__footer">
+            {continueError && (
+              <div className="hermes-panel__failed hermes-panel__failed--inline">
+                <AlertCircle size={16} />
+                <p>{continueError}</p>
+              </div>
+            )}
+            <div className="hermes-panel__input-row">
+              <input
+                type="text"
+                value={followUp}
+                onChange={(e) => setFollowUp(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void handleContinue() }}
+                placeholder="继续追问…"
+                disabled={continuing}
+              />
+              <button className="hermes-panel__go" onClick={() => void handleContinue()} disabled={continuing || !followUp.trim()}>
+                {continuing ? <Loader2 size={14} className="spin" /> : '让 Hermes 分析'}
+              </button>
+            </div>
+            <div className="hermes-panel__footer-acts">
+              <span className="hermes-panel__footer-note">追问沿用本任务上下文</span>
               <button className="hermes-panel__new" onClick={() => { setTask(null); setStartError(''); setContinueError('') }}>
-              <Undo2 size={13} />换个目标
-            </button>
+                <Undo2 size={13} />换个目标
+              </button>
+            </div>
           </div>
         )}
       </div>

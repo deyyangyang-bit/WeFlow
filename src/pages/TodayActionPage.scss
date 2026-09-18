@@ -1,102 +1,52 @@
 /**
- * TodayActionPage.scss — 统一信号流首页样式
- * 2026-09-02 UI 美化（批次 B）：迁出页面私有 --wf-* 色板，全量消费「前进视觉」tokens
- * （token 真源 src/styles/main.scss；规范 docs/DESIGN-SPEC-MINI.md）。纯样式，零逻辑/结构改动。
- * 语义映射：品牌 teal → accent；紧急 → danger；高优 → warning；中性 → chart-neutral/text-secondary。
+ * TodayActionPage.scss — 今日行动（2026-09-17 概念稿「屏 1 · 今日行动」）
+ *
+ * 页面语法：一句主张（.hero）→ 四格数字条（.stats）→ 信号细线索引（.siglist/.sig）
+ *           → 右栏待办（.side/.todo）。这些结构件定义在 src/styles/main.scss 的
+ *           「界面概念稿基础件」段；本文件只放本页自己的容器、开工简报、概览与弹窗。
+ * 颜色一律 --color-*（light/dark 与 8 套主题经 alias 自动继承）。纯样式，零逻辑改动。
+ * 页边留白由外壳 .content 提供（24px 32px）——本页不再叠加整页 padding。
  */
 
 .today-action-page {
   background: var(--color-bg-page);
-  padding: 24px;
   height: 100%;
   overflow-y: auto;
   color: var(--color-text-primary);
   font-family: var(--font-app);
   font-variant-numeric: tabular-nums;
 
-  &__header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 16px;
-  }
-
-  &__title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--color-text-primary);
-    margin: 0;
-  }
-
-  &__subtitle {
-    font-size: 13px;
-    color: var(--color-text-tertiary);
-    margin: 4px 0 0;
-  }
-
-  &__header-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  &__refresh {
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    cursor: pointer;
-    color: var(--color-text-secondary);
-    padding: 8px;
-    border-radius: var(--radius-control);
-    display: flex;
-    align-items: center;
-    transition: background 0.15s, color 0.15s;
-
-    &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
-    &:active { background: var(--color-bg-inset); }
-    &:disabled { opacity: 0.5; cursor: default; }
-  }
-
   &__main {
-    display: flex;
-    gap: 14px;
-    align-items: stretch;
-    margin-bottom: 14px;
+    align-items: start;
   }
 
   &__left {
-    flex: 1.9;
     min-width: 0;
   }
 
   &__right {
-    flex: 1;
-    min-width: 300px;
+    min-width: 0;
   }
 
   &__error {
-    background: var(--color-danger-bg);
-    border: 1px solid var(--color-danger-border);
-    color: var(--color-danger);
-    border-radius: var(--radius-control);
-    padding: 12px 16px;
-    font-size: 13px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 12px;
+    gap: 12px;
+    border-left: 2px solid var(--color-danger);
+    padding: 3px 0 3px 13px;
+    margin: 12px 0;
+    font-size: 12.5px;
+    color: var(--color-danger);
 
     button {
-      background: var(--color-bg-surface);
-      border: 1px solid var(--color-danger-border);
+      background: none;
+      border: none;
       color: var(--color-danger);
-      border-radius: var(--radius-small);
-      padding: 4px 10px;
       font-size: 12px;
       font-weight: 600;
       cursor: pointer;
-
-      &:hover { background: var(--color-danger-bg); }
+      text-decoration: underline;
     }
   }
 
@@ -112,217 +62,59 @@
   }
 }
 
+// ── 宽窄适配（本页作用域，只覆写 .cols 的列模板）──────────────────────
+// 分栏阈值按本页真实可用宽度定：内容宽 = 窗口宽 − 侧栏(展开 208 / 折叠 68) − 外壳留白(64)。
+// 宽窗两栏（292px 待办栏）→ 中窗收窄待办栏 → 窄窗上下排列（信号行不再被压到多次换行）。
+// 1024×768 与主窗口最小宽 1000 落在上下排列档，1440 / 1280 保持两栏。
+// 断点看窗口宽（不计侧栏折叠状态）：折叠后可用宽度变大时仍按窗口宽分档 —— 宁可早收窄，不挤信号行。
+@media (max-width: 1320px) {
+  .today-action-page__main {
+    grid-template-columns: minmax(0, 1fr) 258px;
+    gap: 24px;
+  }
+}
+
+@media (max-width: 1160px) {
+  .today-action-page__main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  // 待办区从「右侧竖线栏」变为「页尾分段」：竖线换横线，不引入第二套样式
+  .today-action-page__right .side {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--color-divider);
+    padding-top: 18px;
+  }
+}
+
 .spinning { animation: wf-spin 1s linear infinite; }
 @keyframes wf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-// header 按钮
-.ta-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 14px;
-  border-radius: var(--radius-control);
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s;
+// 信号索引容器（.siglist）：容器细线归本页；行件 .sig/.sigrow/.sigdetail 归组件
+// （src/components/sales/AIActionCard.scss，唯一使用者）。整段收在本页根类下，
+// 不再以裸类名占用全局命名空间。
+.today-action-page {
+  .siglist { border-top: 1px solid var(--color-divider); }
 
-  &--teal {
-    background: var(--color-bg-surface);
-    color: var(--color-accent);
-    border-color: var(--color-accent-border);
-
-    &:hover { background: var(--color-accent-bg); }
-    &:active { background: var(--color-accent-bg); }
-  }
-}
-
-// KPI 单行条：白卡浮起 + shadow-card + radius 16；主数字 26px/700 tabular
-.kpi-strip {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  flex-wrap: wrap;
-  background: var(--color-bg-surface);
-  border: 1px solid transparent;
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 14px 20px;
-  margin-bottom: 14px;
-
-  &__stat {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-
-    // 图标按序着色:高优/沉默/活跃/待处理
-    &:nth-of-type(1) svg { color: var(--color-danger); }
-    &:nth-of-type(2) svg { color: var(--color-warning); }
-    &:nth-of-type(3) svg { color: var(--color-accent); }
-    &:nth-of-type(4) svg { color: var(--color-chart-neutral); }
-  }
-
-  &__value {
-    font-weight: 700;
-    font-size: 26px;
-    color: var(--color-text-primary);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.3px;
-    line-height: 1;
-  }
-
-  &__label {
-    font-size: 12px;
+  // 索引脚注：解释优先级分与两个可点区（概念稿 .siglist 下的说明小字）
+  .siglist__note {
+    margin-top: 14px;
+    font-size: 11.5px;
     color: var(--color-text-tertiary);
-    margin-top: 2px;
-  }
-
-  &__divider {
-    width: 1px;
-    align-self: stretch;
-    background: var(--color-divider);
   }
 }
 
-// 高意向提示条（蓝 = 信息）
-.signal-notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--color-accent-bg);
-  border: 1px solid var(--color-accent-border);
-  color: var(--color-accent);
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: var(--radius-control);
-  padding: 10px 14px;
-  margin-bottom: 14px;
-  cursor: pointer;
-  transition: background 0.15s;
-
-  &:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-
-  &__dismiss {
-    margin-left: auto;
-    font-size: 11px;
-    font-weight: 400;
-    color: var(--color-accent);
-    opacity: 0.7;
-  }
-
-  // 晨间摘要变体：纵向条目列表，条目可点（深链客户档案），banner 本体不再整条可点
-  &--digest {
-    align-items: flex-start;
-    cursor: default;
-
-    &:hover { filter: none; }
-  }
-
-  // 收起后的重开入口（digestDismissed 时渲染）：与 crm-btn 同族，只补对齐/间距，不引入第二套样式
-  &--digest-reopen {
-    align-self: flex-start;
-    margin-bottom: 14px;
-    border-color: var(--color-accent-border);
-    color: var(--color-accent);
-
-    &:hover { background: var(--color-accent-bg); }
-  }
-
-  &__digest-body {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  &__digest-item {
-    background: none;
-    border: none;
-    padding: 2px 0;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-accent);
-    text-align: left;
-    cursor: pointer;
-
-    &:hover { text-decoration: underline; }
-  }
-
-  // 手动重生成入口（用户测试不必等早上 8 点）：小图标按钮，转圈表示进行中
-  &__digest-refresh {
-    display: flex;
-    align-items: center;
-    background: none;
-    border: none;
-    padding: 2px;
-    color: var(--color-accent);
-    opacity: 0.7;
-    cursor: pointer;
-
-    &:hover:not(:disabled) { opacity: 1; }
-    &:disabled { cursor: default; }
-  }
-}
-
-// 筛选 chips：分段控件惯例（灰底 + 选中浮起 + accent 文字）
-.signal-chips {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
-
-.signal-chip {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: 999px;
-  cursor: pointer;
-  background: var(--color-bg-inset);
-  color: var(--color-text-secondary);
-  border: 1px solid transparent;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
-
-  &:hover { color: var(--color-text-primary); }
-
-  &--active {
-    background: var(--color-bg-surface);
-    color: var(--color-accent);
-    box-shadow: var(--shadow-control);
-
-    &:hover { color: var(--color-accent); }
-
-    .signal-chip__count { color: inherit; opacity: 0.7; }
-  }
-
-  &__count {
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-    font-variant-numeric: tabular-nums;
-  }
-}
-
-// 空状态
+// 空状态：细线框，不再白卡浮起
 .signal-empty {
-  background: var(--color-bg-surface);
   border: 1px dashed var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 48px 20px;
+  border-radius: var(--radius-small);
+  padding: 44px 20px;
+  margin-top: 14px;
   text-align: center;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--color-text-tertiary);
-}
-
-// 客户名可点击（深链到客户 360 档案）
-.signal-card__name--link {
-  cursor: pointer;
-  transition: color 0.15s;
-  &:hover { color: var(--color-accent); text-decoration: underline; }
 }
 
 // 分页
@@ -331,112 +123,138 @@
   align-items: center;
   justify-content: center;
   gap: 16px;
-  margin: 14px 0 4px;
-
-  &__btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 13px;
-    font-weight: 600;
-    padding: 6px 14px;
-    border-radius: var(--radius-control);
-    cursor: pointer;
-    background: var(--color-bg-surface);
-    color: var(--color-text-secondary);
-    border: 1px solid var(--color-border);
-    transition: background 0.15s, border-color 0.15s;
-
-    &:hover:not(:disabled) { background: var(--color-bg-hover); border-color: var(--color-accent-border); }
-    &:disabled { opacity: 0.4; cursor: default; }
-  }
+  margin: 16px 0 4px;
 
   &__info {
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--color-text-tertiary);
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 }
 
-// 可折叠数据概览：白卡浮起
+// ── 开工简报（概念稿 .notice：左 2px 语义条，替代整块 tint 底 + 边框）──
+.signal-notice {
+  &--digest {
+    align-items: flex-start;
+    margin: 14px 0;
+  }
+
+  // 收起后的重开入口（digestDismissed 时渲染）：小按钮，不引入第二套样式
+  &--digest-reopen {
+    align-self: flex-start;
+    margin: 12px 0;
+  }
+
+  &__digest-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    // 简报正文含会话键/客户名等长串：窄窗下按需断行，不把整页顶出横向滚动
+    overflow-wrap: anywhere;
+
+    p { margin: 0; line-height: 1.68; }
+    small { color: var(--color-text-tertiary); font-size: 11px; }
+    // 列向 flex 会把按钮拉满整行（看起来像分隔条）：动作按钮只占自身宽度，
+    // 事项行（.signal-notice__digest-item）仍整行可点
+    > .btn { align-self: flex-start; }
+  }
+
+  &__digest-coverage {
+    color: var(--color-text-tertiary);
+  }
+
+  &__digest-item {
+    background: none;
+    border: none;
+    padding: 2px 0;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--color-accent);
+    text-align: left;
+    cursor: pointer;
+
+    &:hover { text-decoration: underline; }
+  }
+
+  &__digest-acts {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+}
+
+// ── 数据概览：降级为细线段落（概念稿把「来源/紧急度/阶段」移出首屏卡片；本页保留入口与内容，只去掉卡片外观）──
 .overview-card {
-  background: var(--color-bg-surface);
-  border: 1px solid transparent;
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  margin-bottom: 14px;
+  border-top: 1px solid var(--color-divider);
+  margin: 22px 0 4px;
 
   &__toggle {
     width: 100%;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 13px 18px;
+    padding: 10px 0;
     background: transparent;
     border: none;
     cursor: pointer;
     color: var(--color-text-tertiary);
-    transition: background 0.15s;
 
-    &:hover { background: var(--color-bg-hover); }
+    &:hover { color: var(--color-text-primary); }
   }
 
   &__title {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--color-text-primary);
     display: flex;
     align-items: center;
     gap: 6px;
-
-    svg { color: var(--color-accent); }
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    font-weight: 500;
+    color: var(--color-text-tertiary);
   }
 }
 
 .overview-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  padding: 0 14px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 28px;
+  padding: 4px 0 14px;
 }
 
 .overview-section {
-  background: var(--color-bg-surface-muted);
-  border: 1px solid var(--color-divider);
-  border-radius: var(--radius-control);
-  padding: 12px 14px;
+  padding: 8px 0;
 
   &--wide { grid-column: 1 / -1; }
 
   &__title {
     display: block;
-    font-size: 11px;
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
     color: var(--color-text-tertiary);
     margin-bottom: 8px;
   }
 
   &__bar {
     display: flex;
-    height: 6px;
-    border-radius: 3px;
+    height: 3px;
+    border-radius: 2px;
     overflow: hidden;
     background: var(--color-bg-inset);
   }
 
-  // 来源分布配色（语义近似：任务=中性灰、双重信号=品牌蓝、见解=琥珀）
+  // 来源分布配色（语义近似：任务=中性灰、双重信号=品牌色、见解=琥珀）
   &__seg--task { background: var(--color-chart-neutral); }
   &__seg--merged { background: var(--color-accent); }
   &__seg--insight { background: var(--color-warning); }
 
   &__legend {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 12px;
     margin-top: 8px;
     font-size: 11px;
     color: var(--color-text-secondary);
-    flex-wrap: wrap;
-    align-items: center;
   }
 
   &__dot {
@@ -463,8 +281,8 @@
   }
 
   &__urgency-dot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
 
     &--urgent { background: var(--color-danger); }
@@ -473,10 +291,11 @@
   }
 
   &__urgency-num {
-    font-weight: 700;
-    font-size: 14px;
-    color: var(--color-text-primary);
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-primary);
   }
 
   &__urgency-label {
@@ -498,66 +317,58 @@
 
   &__stage-label {
     width: 36px;
-    font-size: 12px;
-    color: var(--color-text-secondary);
     flex-shrink: 0;
+    font-size: 11.5px;
+    color: var(--color-text-secondary);
   }
 
+  // 阶段分布：2px 细刻度（概念稿不用粗轨道表达大小）
   &__stage-track {
     flex: 1;
-    height: 8px;
+    height: 2px;
     background: var(--color-bg-inset);
-    border-radius: 4px;
+    border-radius: 2px;
     overflow: hidden;
   }
 
   &__stage-fill {
     height: 100%;
-    border-radius: 4px;
   }
 
   &__stage-count {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--color-text-primary);
-    font-variant-numeric: tabular-nums;
     width: 24px;
     text-align: right;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    color: var(--color-text-primary);
   }
 }
 
-// 新建待办按钮（header 区）
-.ta-btn--todo {
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  border-color: var(--color-border);
-
-  &:hover { background: var(--color-bg-hover); }
-  &:active { background: var(--color-bg-inset); }
-}
-
-// 新建待办弹窗
+// ── 新建待办弹窗（浮起留给真正需要分离的对象；颜色全走 token）──
 .ta-modal-overlay {
   position: fixed;
   inset: 0;
-  background: var(--color-overlay);
+  z-index: 1000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  z-index: 1000;
+  background: var(--color-overlay);
+  backdrop-filter: blur(3px);
 }
 
 .ta-modal {
   width: 440px;
   max-width: calc(100vw - 32px);
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-pop);
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
 
   &__header {
     display: flex;
@@ -570,8 +381,8 @@
     align-items: center;
     gap: 7px;
     margin: 0;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 13.5px;
+    font-weight: 600;
     color: var(--color-text-primary);
   }
 
@@ -593,15 +404,16 @@
   &__input {
     width: 100%;
     box-sizing: border-box;
-    padding: 9px 12px;
-    font-size: 13px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    font-family: inherit;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
+    border-radius: var(--radius-small);
     outline: none;
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
 
-    &:focus { border-color: var(--color-accent-border); box-shadow: 0 0 0 3px var(--color-accent-bg); }
+    &:focus { border-color: var(--color-accent-border); }
   }
 
   &__error {
@@ -617,10 +429,12 @@
   }
 
   &__cancel {
-    padding: 7px 14px;
-    font-size: 13px;
-    border-radius: var(--radius-control);
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    font-family: inherit;
     border: 1px solid var(--color-border);
+    border-radius: var(--radius-small);
     background: var(--color-bg-surface);
     color: var(--color-text-secondary);
     cursor: pointer;
@@ -629,11 +443,13 @@
   }
 
   &__submit {
-    padding: 7px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: var(--radius-control);
+    height: 30px;
+    padding: 0 16px;
+    font-size: 12.5px;
+    font-weight: 500;
+    font-family: inherit;
     border: none;
+    border-radius: var(--radius-small);
     background: var(--color-accent);
     color: var(--color-text-on-accent);
     cursor: pointer;
@@ -653,13 +469,13 @@
   top: calc(100% + 4px);
   left: 0;
   right: 0;
+  z-index: 10;
   max-height: 220px;
   overflow-y: auto;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-small);
   box-shadow: var(--shadow-menu);
-  z-index: 10;
 }
 
 .ta-customer-item {
@@ -673,10 +489,11 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-family: inherit;
 
-  &:hover { background: var(--color-accent-bg); }
+  &:hover { background: var(--color-bg-hover); }
 
   &__name { color: var(--color-text-primary); font-weight: 600; }
-  &__sid { color: var(--color-text-tertiary); font-size: 11px; }
+  &__sid { color: var(--color-text-tertiary); font-size: 11px; font-family: var(--font-mono); }
 }

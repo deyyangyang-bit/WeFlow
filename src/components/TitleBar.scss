@@ -1,5 +1,7 @@
+// 概念稿 .titlebar：46px 固定行高 + 1px 下边线，标题左、外壳动作与窗口控制右。
+// 高度必须保持 46px 与 App.scss 的 .window-drag-region 一致（拖拽区按同高覆盖）。
 .title-bar {
-  height: 48px;
+  height: 46px;
   background: transparent;
   display: flex;
   align-items: center;
@@ -12,6 +14,13 @@
   gap: 8px;
   position: relative;
   z-index: 2101;
+}
+
+// 下边线只加在主窗口外壳里：图片/视频窗与独立窗口的标题行语义不同，不跟着变。
+// 用 inset 阴影而不是 border：全局 border-box 下 border 会吃掉 1px 内容高，
+// 标题行内高从 46 变 45，右侧 28px 控制件跟着偏 0.5px。
+.app-container .title-bar {
+  box-shadow: inset 0 -1px 0 var(--color-border);
 }
 
 .title-brand {
@@ -44,15 +53,49 @@
 }
 
 .titles {
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   letter-spacing: -0.01em;
 }
 
+// ---- 顶栏右侧：⌘K 搜索入口 + 明暗切换（概念稿 chrome 件；独立窗口不传这两个 props）----
+// 收在 .title-bar 之下的原因：.kbtn / .titlebar__right 是通用名，裸露会漏进其它窗口与页面。
+.title-bar {
+  .titlebar__right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    app-region: no-drag;
+    -webkit-app-region: no-drag;
+  }
+
+  .kbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-page);
+    border-radius: var(--radius-small);
+    padding: 4px 8px 4px 10px;
+    font-size: 12px;
+    color: var(--color-text-tertiary);
+    cursor: pointer;
+    font-family: inherit;
+    transition: border-color 0.15s, color 0.15s;
+
+    &:hover {
+      border-color: var(--color-accent-border);
+      color: var(--color-text-secondary);
+    }
+  }
+}
+
+// 与右侧 .iconbtn（28px）同高，标题行的控制件基线才齐。
 .title-sidebar-toggle {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: none;
   border-radius: var(--radius-small);

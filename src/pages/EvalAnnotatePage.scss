@@ -1,6 +1,37 @@
-@use './CrmProductPage.scss' as *;
+// 2026-09-17 布局整理：页眉走 .shead（小标/页名/口径 + 标注人与生成动作）、统计走细线数字条、
+// 卡片分「判断依据 / 人工判定」两区。按钮与提示条改用全局基础件（.btn/.btn--*），本文件不再
+// @use CrmProductPage.scss —— 那份样式已收进 .crm-product-page 作用域，对本站不再生效，
+// 此前 .crm-btn/.crm-notice 实为按懒加载顺序时有时无（本文档说明见 CrmProductPage.scss 头注）。
+// 页边留白由外壳 .content 提供（24px 32px）——本页不再叠加整页 padding。
 
-.eval-annotate-page { padding: 24px; max-width: 860px; margin: 0 auto; color: var(--color-text-primary); font-family: var(--font-app); }
+.eval-annotate-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  color: var(--color-text-primary);
+  font-family: var(--font-app);
+}
+
+/* 页眉（概念稿 .shead 位）：左标题与口径说明，右标注人输入与生成动作 */
+.ea-header { align-items: flex-start; gap: 20px; margin-bottom: 14px; }
+.ea-header-main {
+  min-width: 0;
+  .eyebrow { margin: 0; }
+}
+.ea-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 21px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2;
+  margin: 6px 0 3px;
+}
+.ea-header-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 提示条（生成结果 / 加载失败）：左侧 2px 语义条，长文案换行不顶窗 */
+.ea-notice {
+  border-left: 2px solid var(--color-accent);
+  padding: 3px 0 3px 13px;
+  margin: 0 0 14px;
+  font-size: 12.5px; line-height: 1.68; color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
 
 /* 标注人输入（记住一次，不用每卡填） */
 .ea-annotator {
@@ -14,16 +45,23 @@
   &.need input { border-color: #e5534b; box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.15); }
 }
 
-/* 顶部统计（对齐 lead-cards 语言：白卡浮起 + 26px 主数字） */
-.ea-stats { display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; align-items: stretch; }
-.ea-stat {
-  min-width: 140px; background: var(--color-bg-surface); border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card); padding: 14px 18px; display: flex; flex-direction: column; gap: 2px;
-  .ea-num { font-size: 26px; font-weight: 700; letter-spacing: -.3px; color: var(--color-accent); font-variant-numeric: tabular-nums; line-height: 1.15; }
-  .ea-den { font-size: 14px; color: var(--color-text-tertiary); font-weight: 400; }
-  .ea-label { font-size: 12px; color: var(--color-text-tertiary); }
+/* 顶部统计（概念稿 .stats 语法：细线数字条 + 等宽数字；格数随统计项自适应） */
+.ea-stats {
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  border-block: 1px solid var(--color-divider);
+  margin: 0 0 10px;
 }
-.ea-tip { flex: 1; min-width: 220px; font-size: 12px; color: var(--color-text-tertiary); align-self: center; line-height: 1.6; }
+.ea-stat {
+  flex: 1 1 168px; min-width: 0; padding: 12px 18px;
+  display: flex; flex-direction: column; gap: 2px;
+  .ea-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 23px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; color: var(--color-accent); }
+  .ea-den { font-size: 14px; color: var(--color-text-tertiary); font-weight: 400; margin-left: 4px; }
+  .ea-label { font-size: 11.5px; color: var(--color-text-secondary); line-height: 1.5; }
+}
+.ea-stat:first-child { padding-left: 2px; }
+.ea-stat + .ea-stat { border-left: 1px solid var(--color-divider); }
+/* 口径说明：跟在数字条下方，不再挤在数字格里 */
+.ea-tip { margin: 0 0 14px; font-size: 12px; color: var(--color-text-tertiary); line-height: 1.6; }
 
 /* 评测门槛横幅（PRD ≥100 样本 + ≥100 人工确认）：未达标红显，绝不把未达标输出成已达标 */
 .ea-gate-banner {
@@ -48,7 +86,7 @@
 
 /* 基线指标区（门槛达标后展示）：分档 P/R/F1 卡 + 混淆矩阵表 */
 .ea-metrics {
-  background: var(--color-bg-surface); border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card);
   padding: 14px 18px; margin-bottom: 14px;
 }
 .ea-metrics-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;
@@ -69,7 +107,7 @@
 
 /* 标注卡 */
 .eval-card {
-  background: var(--color-bg-surface); border: 1px solid transparent; border-radius: var(--radius-card);
+  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card);
   box-shadow: var(--shadow-card); padding: 16px 18px; margin-bottom: 14px;
   transition: transform .15s, border-color .15s;
   &:hover { border-color: var(--color-accent-border); }
@@ -98,6 +136,19 @@
 
 /* 三档标注按钮（点击即写库） */
 .ec-actions { display: flex; gap: 10px; margin-top: 12px; }
+
+/* 卡内分区：判断依据 / 人工判定 —— 小标 + 右提示，细线分隔，长记录在 .ec-msgs 内独立滚动 */
+.ec-block { display: flex; flex-direction: column; gap: 8px; }
+.ec-block__head { margin-bottom: 0; }
+.ec-block__h { font-size: 11px; color: var(--color-text-tertiary); font-family: var(--font-mono); white-space: nowrap; }
+.ec-block--mark { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--color-divider); }
+.ec-block--mark .ec-actions { margin-top: 0; }
+.ec-block--mark .ec-ai-hint { margin-top: 0; }
+.ec-block .ec-evidence { margin-bottom: 0; }
+
+/* 防锚定提示（待标注行只显「已预判」，标注后才显 AI 判断值） */
+.ec-ai-hint { font-size: 11px; color: var(--color-text-tertiary);
+  &::before { content: '·'; margin-right: 6px; color: var(--color-accent); } }
 .ec-btn {
   flex: 1; border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 9px 0;
   font-size: 14px; font-weight: 600; cursor: pointer; background: var(--color-bg-surface); color: var(--color-text-primary);
@@ -117,7 +168,8 @@
 }
 
 /* ─── 告警样本页签（alert_eval_case，宪法 §3）：类型 pill / 证据可回查标识 / 开门判定徽章 ─── */
-.alert-row { padding: 14px 16px; }
+/* 行容器叫 ec-alert-card 不叫 alert-row：后者是全局基础件（左色条三列网格），同名会打散本卡分区 */
+.ec-alert-card { padding: 14px 16px; }
 
 /* 类型 pill：三类型语义 tint（competitor=danger / loss=warning / payment_overdue=success），全 token 双模式继承 */
 .ec-type { border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 600; border: 1px solid transparent;
@@ -140,9 +192,7 @@
   svg { flex-shrink: 0; }
 }
 
-/* 待标注行 AI 预判占位（只显示「已预判」不显值——防锚定，与商机卡同纪律） */
-.ec-ai-hint { margin-top: 10px; font-size: 11px; color: var(--color-text-tertiary);
-  &::before { content: '·'; margin-right: 6px; color: var(--color-accent); } }
+/* 待标注行 AI 预判占位（只显示「已预判」不显值——防锚定，与商机卡同纪律；间距由 .ec-block 提供） */
 
 /* 开门判定徽章（统计行）：≥85% 达标绿 / 未达标灰红 */
 .ea-gate { border-radius: 999px; padding: 1px 8px; font-size: 10px; font-weight: 600; margin-left: 6px;

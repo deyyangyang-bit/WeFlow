@@ -448,7 +448,7 @@
 
     .message-area {
       border-radius: 0;
-      background: var(--bg-secondary);
+      background: var(--color-bg-page);
       -webkit-app-region: no-drag;
 
       .message-header {
@@ -605,10 +605,11 @@
         padding-bottom: 16px;
       }
 
+      // 独立窗口气泡：与普通窗口同一套数值（概念稿 .msg__b / .msg--in / .msg--out）
       .message-bubble {
         display: flex;
-        gap: 12px;
-        max-width: 80%;
+        gap: 10px;
+        max-width: min(74%, 760px);
         margin-bottom: 4px;
         align-items: flex-start;
 
@@ -624,13 +625,13 @@
           flex-direction: row-reverse;
 
           .bubble-content {
-            background: var(--primary-gradient);
-            color: var(--on-primary);
-            border-radius: 18px 18px 4px 18px;
-            padding: 10px 14px;
-            font-size: 14px;
-            line-height: 1.5;
-            box-shadow: 0 2px 10px var(--primary-light);
+            background: var(--color-accent-bg);
+            color: var(--color-text-primary);
+            border-radius: 10px 3px 10px 10px;
+            padding: 8px 12px;
+            font-size: 13px;
+            line-height: 1.6;
+            box-shadow: none;
           }
 
           .bubble-body {
@@ -640,14 +641,14 @@
 
         &.received {
           .bubble-content {
-            background: var(--card-bg);
-            color: var(--text-primary);
-            border-radius: 18px 18px 18px 4px;
-            padding: 10px 14px;
-            font-size: 14px;
-            line-height: 1.5;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border-color);
+            background: var(--color-bg-inset);
+            color: var(--color-text-primary);
+            border-radius: 3px 10px 10px 10px;
+            padding: 8px 12px;
+            font-size: 13px;
+            line-height: 1.6;
+            backdrop-filter: none;
+            border: 0;
           }
 
           .bubble-body {
@@ -1979,10 +1980,13 @@
 }
 
 .message-wrapper.new-message {
+  // 入场动效保留（跳转/新消息需要「落到位」的位移反馈），
+  // 高亮圈改用概念稿 .msg.is-cited 的写法：outline 2px + offset 2px
   animation: messagePop 0.35s ease-out;
 
   .message-bubble:not(.system) .bubble-content {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 45%, transparent);
+    outline: 2px solid var(--color-accent-border);
+    outline-offset: 2px;
   }
 }
 
@@ -2716,33 +2720,34 @@
 }
 
 // Sent message — adjust ghost position to right
+// 发出气泡改为浅 accent 底后，引用锚点不再需要 on-primary 反白，回到与收到气泡同一套 token 色
 .message-bubble.sent .ambient-reply-wrapper {
   .reply-ghost {
     right: 0;
   }
 
   .reply-anchor-name {
-    color: color-mix(in srgb, var(--on-primary) 96%, var(--primary));
+    color: var(--color-accent);
   }
 
   .reply-anchor-excerpt {
-    color: color-mix(in srgb, var(--on-primary) 86%, var(--primary));
+    color: var(--color-text-secondary);
   }
 
   .reply-anchor-sep {
-    color: color-mix(in srgb, var(--on-primary) 68%, var(--primary));
+    color: var(--color-text-tertiary);
   }
 
   .reply-anchor-icon {
-    color: color-mix(in srgb, var(--on-primary) 90%, var(--primary));
+    color: var(--color-accent);
   }
 
   &:hover .reply-anchor {
-    background: color-mix(in srgb, var(--on-primary) 10%, transparent);
+    background: var(--color-accent-bg);
   }
 
   .reply-ghost {
-    background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+    background: color-mix(in srgb, var(--color-bg-surface) 80%, transparent);
   }
 }
 
@@ -4490,27 +4495,25 @@
     }
   }
 
+  // 发出气泡改为浅 accent 底（不再是实底品牌色），
+  // 通话/群公告这类「长在气泡上」的文本必须回到常规文字色，否则白字落在浅底上不可读
   .call-message {
-    color: rgba(255, 255, 255, 0.9);
+    color: var(--color-text-secondary);
 
     svg {
-      color: white;
+      color: var(--color-text-secondary);
     }
   }
 
   .announcement-message {
-    background: rgba(255, 255, 255, 0.15);
+    background: var(--color-bg-surface);
 
     .announcement-label {
-      color: rgba(255, 255, 255, 0.8);
+      color: var(--color-text-tertiary);
     }
 
     .announcement-text {
-      color: white;
-    }
-
-    .announcement-icon {
-      color: white;
+      color: var(--color-text-primary);
     }
   }
 }
@@ -6114,21 +6117,64 @@
 }
 
 // Modern chat surface overrides for the refactored Chat components.
+// 2026-09-17 概念稿对齐：细线 + 单色底，栏位之间只用 1px 分隔（对齐 weflow-ui-concept.html 聊天屏）
 .chat-page {
   gap: 0;
-  background: var(--bg-sidebar);
+  background: var(--color-bg-page);
 
+  // 满幅：聊天是「会话列表 + 消息线程 + 右侧辅助栏」三栏工作台，外壳那圈留白会直接压榨中栏宽度。
+  // 写法与 .contacts-page / .insight-inbox-page 一致：负 margin 正好抵消外壳 .content 的
+  // padding: 24px 32px（纵向 +48px 与 -24px 配对，横向 -32px 与 32px 配对），不是额外留白。
+  // 外壳 padding 或侧栏宽度调整时这三处数字需同步。独立会话窗口（.standalone）不在 .content 内，
+  // 保持原来的 100% 高度，不吃这套补偿。
   &:not(.standalone) {
+    height: calc(100% + 48px);
+    margin: -24px -32px;
+
     .message-area {
       margin-left: 0;
     }
   }
 }
 
+// 左栏：与页面同底，右侧 1px 细线承担与中栏的分隔（概念稿 .chat__col border-right）
 .session-sidebar {
-  background: var(--bg-sidebar);
-  border-right: 0;
+  background: var(--color-bg-page);
+  border-right: 1px solid var(--color-border);
   border-radius: 0;
+}
+
+// 会话列表项：细线分隔、无卡片感；选中态改 inset 底 + 名称回到 text-primary
+//（概念稿 .srow / .srow.is-on / .srow__n）
+.session-item {
+  border-bottom: 1px solid var(--color-divider);
+  transition: background 0.14s;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &:hover,
+  &.fold-entry:hover,
+  &.biz-entry:hover {
+    background: var(--color-bg-hover);
+  }
+
+  &.active {
+    background: var(--color-bg-inset);
+
+    .session-name {
+      color: var(--color-text-primary);
+    }
+  }
+
+  // 时间戳：等宽 + 表格数字（概念稿 .srow__t，等同 .num 语义）
+  .session-time {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
 }
 
 .resize-handle {
@@ -6139,31 +6185,59 @@
   }
 }
 
+// 中栏：平底画布，不叠圆角与阴影（与全局主内容区 --color-bg-page 一致）
 .message-area {
-  background: var(--bg-primary);
+  background: var(--color-bg-page);
   border-radius: 0;
   box-shadow: none;
 }
 
+// 右栏：surface-muted 底 + 1px 细线，不叠投影（概念稿 .chat__col--side）
+.detail-panel {
+  background: var(--color-bg-surface-muted);
+  border-left: 1px solid var(--color-border);
+  box-shadow: none;
+
+  .detail-header {
+    background: var(--color-bg-surface-muted);
+    border-bottom: 1px solid var(--color-divider);
+  }
+
+  .group-summary-controls {
+    background: var(--color-bg-surface-muted);
+  }
+}
+
 .chat-page.standalone {
-  background: var(--bg-primary);
+  background: var(--color-bg-page);
 
   .session-sidebar {
-    background: var(--bg-sidebar);
+    background: var(--color-bg-page);
     border-right: 0;
     backdrop-filter: none;
   }
 
   .message-area {
-    background: var(--bg-primary);
+    background: var(--color-bg-page);
 
     .message-header {
-      min-height: 64px;
-      padding: 12px 22px;
-      border-bottom: 0;
-      background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
-      backdrop-filter: blur(14px);
-      box-shadow: 0 1px 0 color-mix(in srgb, var(--border-color) 70%, transparent);
+      min-height: 56px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--color-divider);
+      background: var(--color-bg-page);
+      backdrop-filter: none;
+      box-shadow: none;
+      // 独立窗口标题栏文字：与普通窗口共用同一套数值
+      .header-info h3 {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .header-info .header-subtitle {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--color-text-tertiary);
+      }
 
       .session-avatar {
         width: 36px;
@@ -6172,42 +6246,43 @@
       }
 
       .header-actions .icon-btn {
-        width: 34px;
-        height: 34px;
+        width: 28px;
+        height: 28px;
         border: 0;
-        border-radius: 8px;
+        border-radius: var(--radius-small);
         background: transparent;
-        color: var(--text-secondary);
+        color: var(--color-text-secondary);
         box-shadow: none;
 
         &:hover {
-          background: var(--bg-hover);
-          color: var(--text-primary);
+          background: var(--color-bg-hover);
+          color: var(--color-text-primary);
           box-shadow: none;
         }
 
         &.active {
-          background: var(--primary-light);
-          color: var(--primary);
+          background: var(--color-accent-bg);
+          color: var(--color-accent);
         }
       }
     }
 
     .message-list {
-      background: var(--bg-primary);
+      background: var(--color-bg-page);
       padding: 18px clamp(16px, 3vw, 48px) 28px;
       padding-bottom: calc(28px + env(safe-area-inset-bottom));
     }
   }
 }
 
+// 顶栏：平底 + 1px 细线，标题 13px/600，次要信息等宽 tertiary（概念稿 .thread__head / .thread__t / .thread__sub）
 .message-header {
-  min-height: 64px;
-  padding: 12px 22px;
-  border-bottom: 0;
-  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--border-color) 70%, transparent);
+  min-height: 56px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--color-divider);
+  background: var(--color-bg-page);
+  backdrop-filter: none;
+  box-shadow: none;
 
   .session-avatar {
     width: 36px;
@@ -6219,10 +6294,18 @@
     min-width: 0;
 
     h3 {
-      font-size: 15px;
+      font-size: 13px;
       font-weight: 600;
       letter-spacing: 0;
-      line-height: 1.25;
+      line-height: 1.3;
+      color: var(--color-text-primary);
+    }
+
+    .header-subtitle {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--color-text-tertiary);
+      margin-top: 2px;
     }
   }
 
@@ -6230,37 +6313,249 @@
     gap: 2px;
   }
 
+  // 与全局 .iconbtn 同尺寸同观感（28px / radius-small），按钮数量与顺序不变
   .icon-btn {
-    width: 34px;
-    height: 34px;
+    width: 28px;
+    height: 28px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--radius-small);
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--color-text-secondary);
     box-shadow: none;
 
     &:hover {
-      background: var(--bg-hover);
-      color: var(--text-primary);
+      background: var(--color-bg-hover);
+      color: var(--color-text-primary);
       box-shadow: none;
     }
 
     &.active {
-      background: var(--primary-light);
-      color: var(--primary);
+      background: var(--color-accent-bg);
+      color: var(--color-accent);
     }
   }
 }
 
 .message-content-wrapper {
-  background: var(--bg-primary);
+  background: var(--color-bg-page);
+}
+
+// 消息列：消息列表 + 右侧会话详情面板并排；辅助栏（.chat-rail）再往右另起一列。
+// 只在这一列上挂 position: relative —— 回复建议浮层（.reply-suggestion，absolute）因此锚在
+// 消息列右下角，而不是整个内容行，避免浮层压到右侧辅助栏上。
+.chat-thread-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// 右侧辅助栏（概念稿 .chat__col--side）：本机判断 / 依据 / 回复建议的常驻栏位。
+// 与会话详情面板共用同一栏位：详情面板打开时给本栏加 --tucked 让整栏退出布局
+// （组件保持挂载，状态不丢），窄窗口由下面的媒体查询整栏收起（消息列优先，辅助栏不覆盖主内容）。
+.chat-rail {
+  flex: 0 0 auto;
+  width: clamp(264px, 20vw, 300px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+  background: var(--color-bg-surface-muted);
+  border-left: 1px solid var(--color-border);
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--text-tertiary) 58%, transparent);
+    border-radius: 999px;
+  }
+}
+
+// 详情面板打开时的让位档：整栏退出布局（display:none 不留宽度，不是 visibility 占位），
+// 栏内 SalesContextStrip 仍挂载 —— 判断/建议的展开状态与已取数据在同会话内不重置。
+.chat-rail--tucked {
+  display: none;
+}
+
+// 栏头（概念稿 .side-head）：标题 + 该栏实际承载的三段名，不写没有依据的「本地模型」之类说明
+.chat-rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--color-divider);
+
+  &__title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--color-text-primary);
+  }
+
+  &__kicker {
+    font-size: 10.5px;
+    color: var(--color-text-tertiary);
+    white-space: nowrap;
+  }
+}
+
+// 辅助栏内的销售上下文条：条自己的底色/下边框退掉（栏底已承担），
+// 展开区按「判断 / 依据 / 回复建议」分段排版：
+//   判断 = __judgments 逐行 label/value；依据 = 每行判断的「有据可查」回查（原话来自 P0-2B，不是另造一份）；
+//   回复建议 = __suggestion 卡片。
+// 未识别时保留组件自身的真实空态（__empty / 阶段 pill「未知」），这里只做排版，不补默认值。
+.chat-rail .sales-context-strip {
+  background: transparent;
+  border-bottom: 0;
+  font-size: 12px;
+
+  &__bar {
+    min-height: 30px;
+    padding: 0 6px;
+    margin: 0 -6px;
+    gap: 6px;
+    border-radius: var(--radius-small);
+  }
+
+  &__stage {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  &__silent {
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+
+  // 最近意向理由：窄栏里允许换行（概念稿右栏不靠单行省略号承载信息），最多两行
+  &__reason {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  &__detail {
+    margin-top: 10px;
+    padding: 12px 0 0;
+    border-top: 1px solid var(--color-divider);
+  }
+
+  &__notes {
+    font-size: 12px;
+    line-height: 1.55;
+    margin-bottom: 10px;
+  }
+
+  &__judgments {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 10px;
+  }
+
+  &__j-row {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 0;
+    padding: 8px 0;
+    font-size: 12.5px;
+    border-bottom: 1px solid var(--color-divider);
+    flex-wrap: nowrap;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+  }
+
+  &__j-label {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--color-text-tertiary);
+    padding-top: 2px;
+  }
+
+  &__j-value {
+    min-width: 0;
+    color: var(--color-text-primary);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+
+  &__j-badge {
+    margin-left: 6px;
+  }
+
+  &__j-evidence {
+    display: inline-flex;
+    align-items: center;
+    margin: 4px 0 0;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+
+  &__j-evidence-text {
+    grid-column: 1 / -1;
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: var(--color-bg-inset);
+    border-left: 2px solid var(--color-accent-border);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+
+  &__empty {
+    line-height: 1.6;
+    margin-bottom: 10px;
+  }
+
+  // 回复建议（概念稿 .draft）：surface 底 + 1px 描边 + 12.5px/1.65
+  &__suggestion {
+    padding: 10px 12px;
+    font-size: 12.5px;
+    line-height: 1.65;
+  }
+
+  &__suggestion-text {
+    padding-right: 46px;
+  }
+
+  &__copy {
+    top: 8px;
+    right: 8px;
+    font-size: 11px;
+  }
+
+  &__suggest-btn {
+    width: 100%;
+    justify-content: center;
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
 }
 
 .message-list {
-  background: var(--bg-primary);
+  background: var(--color-bg-page);
   padding: 18px clamp(16px, 3vw, 48px) 28px;
   padding-bottom: calc(28px + env(safe-area-inset-bottom));
   gap: 0;
+}
+
+// 有回复建议浮层（40px 按钮 + 16px 下边距）时，给消息列表留出让位，
+// 否则最后一条右侧气泡会被浮层压住；群聊没有这个浮层，不额外留白。
+.chat-thread-main:has(.reply-suggestion) .message-list {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
 }
 
 .message-wrapper {
@@ -6321,9 +6616,10 @@
   }
 }
 
+// 气泡（概念稿 .msg / .msg__b）：8px 12px、圆角 10px、13px / 1.6、宽度上限 74%
 .message-bubble {
   gap: 10px;
-  max-width: min(76%, 760px);
+  max-width: min(74%, 760px);
 
   .bubble-avatar {
     width: 36px;
@@ -6338,18 +6634,21 @@
   }
 
   .bubble-content {
-    border-radius: 18px;
-    padding: 10px 14px;
-    line-height: 1.56;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.6;
     box-shadow: none;
     border: 0;
   }
 
+  // 发出：浅 accent 底 + 常规文字色（不再用实底反白），右上角 3px 小圆角
+  //（概念稿 .msg--out .msg__b）
   &.sent {
     .bubble-content {
-      background: var(--primary);
-      color: var(--on-primary);
-      border-radius: 18px;
+      background: var(--color-accent-bg);
+      color: var(--color-text-primary);
+      border-radius: 10px 3px 10px 10px;
     }
 
     .bubble-body {
@@ -6357,11 +6656,12 @@
     }
   }
 
+  // 收到：inset 底 + 左上角 3px 小圆角（概念稿 .msg--in .msg__b）
   &.received {
     .bubble-content {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-      border-radius: 18px;
+      background: var(--color-bg-inset);
+      color: var(--color-text-primary);
+      border-radius: 3px 10px 10px 10px;
       backdrop-filter: none;
     }
 
@@ -6378,8 +6678,8 @@
     }
 
     .bubble-content {
-      background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
-      color: var(--text-tertiary);
+      background: var(--color-bg-inset);
+      color: var(--color-text-tertiary);
       border-radius: 999px;
       padding: 6px 12px;
       text-align: center;
@@ -6816,7 +7116,7 @@
     border-color: var(--border-color);
   }
 
-  .message-bubble.received .bubble-content,
+  // 收到气泡统一走 --color-bg-inset（token 已自带暗色值），不再在此处覆盖
   .message-bubble.voice.sent .bubble-content {
     background: var(--bg-secondary);
   }
@@ -6835,6 +7135,15 @@
   }
 }
 
+// 窄窗口：消息列优先。辅助栏整栏收起（沿用概念稿 1180px 一档，本应用另有 208px 侧栏，
+// 换算到本页内容区同宽），栏内信息仍可在宽窗口或加宽窗口后看到 —— 收起的只是常驻栏，
+// 不折叠成浮层，避免遮住消息。
+@media (max-width: 1180px) {
+  .chat-page .chat-rail {
+    display: none;
+  }
+}
+
 @media (max-width: 720px) {
   .message-header {
     padding-inline: 14px;
@@ -6844,8 +7153,8 @@
     }
 
     .icon-btn {
-      width: 32px;
-      height: 32px;
+      width: 28px;
+      height: 28px;
     }
   }
 

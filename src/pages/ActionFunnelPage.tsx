@@ -217,20 +217,27 @@ export default function ActionFunnelPage() {
 
   return (
     <div className="af-page">
-      <div className="af-header">
-        <h2>行动漏斗</h2>
-        <span className="af-header__sub">AI 推荐 → 销售执行 → 客户响应 → 商机推进（Task-level，P0-4）</span>
-        <div className="af-days">
-          {DAY_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              className={`af-days__btn${days === o.value ? ' af-days__btn--active' : ''}`}
-              onClick={() => setDays(o.value)}
-            >{o.label}</button>
-          ))}
+      {/* 页眉（概念稿 .shead：左小标/标题/口径说明，右时间窗与刷新）——标题语义不变，
+          说明沿用页内原有口径句，不新增承诺 */}
+      <header className="shead af-header">
+        <div className="af-header__lead">
+          <p className="eyebrow">报表 · 行动漏斗</p>
+          <h1 className="hero af-header__title">行动漏斗</h1>
+          <p className="sub af-header__sub">AI 推荐 → 销售执行 → 客户响应 → 商机推进（Task-level，P0-4）</p>
         </div>
-        <button className="af-btn" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
-      </div>
+        <div className="shead__actions af-header__actions">
+          <div className="af-days">
+            {DAY_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                className={`af-days__btn${days === o.value ? ' af-days__btn--active' : ''}`}
+                onClick={() => setDays(o.value)}
+              >{o.label}</button>
+            ))}
+          </div>
+          <button className="af-btn" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
+        </div>
+      </header>
       {error && <div className="af-error">{error}</div>}
       {loading && !data && <div className="af-empty">加载中…</div>}
 

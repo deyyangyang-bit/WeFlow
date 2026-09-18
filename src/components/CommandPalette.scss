@@ -1,0 +1,37 @@
+/**
+ * CommandPalette.scss — 命令面板（⌘K）样式（2026-09-18 从 src/styles/main.scss「弹层与命令面板」段迁出）
+ *
+ * 归属：本组件私有。类名 .overlay / .palette* / .prow* 只由 CommandPalette.tsx 渲染，
+ * 迁到组件文件后不再占用全局命名空间；组件由 App 直接渲染（无 portal），
+ * 样式随组件 import 一起到达，不存在挂载点拿不到样式的问题。
+ * 视觉与迁移前逐字一致（同选择器同名同声明），颜色一律 --color-*。
+ */
+
+// 遮罩：全稿统一 overlay + shadow-pop
+.overlay {
+  position: fixed; inset: 0; background: var(--color-overlay); backdrop-filter: blur(3px);
+  display: grid; place-items: start center; padding: 12vh 20px 20px; z-index: 40;
+}
+.palette {
+  width: min(560px, 100%); background: var(--color-bg-elevated); border: 1px solid var(--color-border);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-pop); overflow: hidden;
+}
+.palette__field { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--color-divider); }
+.palette__field input { border: 0; outline: 0; background: none; font-size: 14px; width: 100%; font-family: inherit; color: inherit; }
+.palette__list { max-height: 320px; overflow-y: auto; padding: 6px 0 8px; }
+.palette__grp { font-size: 10.5px; letter-spacing: .09em; color: var(--color-text-tertiary); padding: 10px 16px 5px; }
+.prow {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 16px; font-size: 13px;
+  border: none; background: none; font-family: inherit; color: inherit; cursor: pointer;
+}
+.prow .icon { color: var(--color-text-tertiary); }
+.prow.is-sel { background: var(--color-bg-inset); }
+.prow__hint { margin-left: auto; font-size: 11px; color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.palette__empty { padding: 22px 16px 26px; text-align: center; font-size: 12.5px; color: var(--color-text-tertiary); }
+
+// 弹层入场：动效 token（@keyframes wf-fade-in）留在 src/styles/main.scss，供多页遮罩共用；
+// 本组件只声明自己的动画绑定，规范要求动效可关（DESIGN-SPEC-MINI 控件惯例）。
+.overlay { animation: wf-fade-in .16s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .overlay { animation: none; }
+}

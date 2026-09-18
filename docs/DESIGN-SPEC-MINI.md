@@ -21,12 +21,13 @@
 层级：主数字 26px/700 · 页标题 16px/700 · 正文 13-14px · 辅助 12px · 元信息 11px。
 
 ## 间距 / 圆角 / 阴影
-页面 padding 24；卡间距 14；圆角 `radius-card 16 / radius-control 10 / radius-small 8`；
-阴影 `shadow-card`（静置卡）/ `shadow-control`（分段选中项）/ `shadow-menu`（菜单/tooltip）/ `shadow-pop`（弹层）。
+页面 padding 24；卡间距 14；圆角 `radius-card 12 / radius-control 10 / radius-small 8`（2026-09-17 概念稿：16→12）；
+阴影：`shadow-card = none`（静置卡只留 1px 发丝边，不浮起）/ `shadow-control`（分段选中）/ `shadow-menu`（菜单/tooltip）/ `shadow-pop`（弹层/主张卡需要分离时）。
+编辑体：`--font-editorial` 只用于主张句与说明标题（范围待拍板）。
 
 ## 控件惯例
 - 分段控件：`bg-inset` 灰底 + 选中项 `bg-surface` 浮起 + `shadow-control` + accent 文字。
-- 卡片：`bg-surface-muted` 弱底、默认无边框；hover 才 `accent-border + shadow-card`。
+- 卡片：`bg-surface` + 1px `color-border` 发丝边、**默认无阴影**；hover 只用底色/边色变化，不再靠 `shadow-card` 抬起。
 - 弹层：`overlay` + blur(3px) + `shadow-pop` + 入场动效；必须带 `prefers-reduced-motion` 关闭。
 - 滚动条 6-8px，颜色走 `scrollbar-thumb(-hover)`。
 
@@ -50,3 +51,9 @@ W1 地基（本次：token 双套 + 品牌拍板 + 主题映射 + 已打磨页�
 W2 Chrome（TitleBar / Dialog / DateRangePicker / 全局滚动条 / 焦点环 / 空态）→
 W3 高频页（聊天 / CRM 工作台 / 今日行动 / 见解收件箱）→
 W4 低频页与独立窗口（报表 / 年报 / 导出窗）。
+
+
+## P0 Chrome / 阴影收口（2026-09-18）
+- 导航 `weflow-ui-concept.html`：静置列表与卡片去阴影，浮起只留给弹层与真正需要分离的对象。
+- 导航增加「角色视角」占位路由 `/role-view`（无角色开关）。
+- 本文 `radius-card` / `shadow-card` 描述已与 `src/styles/main.scss` 前进视觉 tokens 对齐。

@@ -26,7 +26,9 @@
 .settings-page {
   position: relative;
   display: flex;
-  width: min(1000px, calc(100vw - 40px));
+  // 宽窗口放宽到 1180px：常用页 2×2 / 高级页三栏 / 原 tab 正文满宽都需要横向余量；
+  // 窄窗仍按 100vw - 40px 收窄，弹窗内各布局在 ≥900px 视口逐级降列
+  width: min(1180px, calc(100vw - 40px));
   height: min(760px, calc(100vh - 40px));
   max-height: 100%;
   background: var(--bg-primary);
@@ -220,8 +222,10 @@
   border: none;
   padding: 0;
   min-height: auto;
-  max-width: 680px;
-  margin: 0 auto;
+  // 正文吃满 .settings-body 可用宽度（原来固定 680px 居中，宽表 / 长表单被白白收窄）；
+  // 窄窗安全由 .settings-body 的 padding 与内部各控件的 max-width / 换行规则保证
+  max-width: none;
+  margin: 0;
   padding-bottom: 40px;
 
   .section-desc {
@@ -229,6 +233,37 @@
     color: var(--text-tertiary);
     margin: 0 0 24px;
     line-height: 1.6;
+  }
+}
+
+/* 原 tab 正文两栏（概念稿 .tabp 落地）：只有「普通分组」.settings-section 进半栏，
+   其余子项默认整行 —— 页内的宽表 / 分隔线 / 复杂块因此天然占整行，不需要额外判定。
+   仅由 className 显式选用（当前只有「分析」tab 标记）：未标记的 tab 仍是单栏满宽。
+   .settings-section--wide 是留给「半栏装不下的分组」的显式开关（当前无分组使用）；
+   单卡页由 :only-of-type 自动占整行。 */
+.tab-content--grouped {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 44px;
+  align-items: start;
+
+  > * {
+    grid-column: 1 / -1;
+  }
+
+  > .settings-section {
+    grid-column: auto;
+  }
+
+  > .settings-section--wide,
+  > .settings-section:only-of-type {
+    grid-column: 1 / -1;
+  }
+
+  // 窄窗收回单栏：正文可用宽 = 弹窗宽 − 侧栏 220px − 左右 padding 64px，
+  // 低于约 700px 时半栏连控件（segmented / range）都排不开
+  @media (max-width: 1100px) {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -997,6 +1032,8 @@
 .btn-row {
   display: flex;
   gap: 10px;
+  // 按钮多于两个 / 窄窗时整体换行，避免把同一行的输入控件挤到不可用宽度
+  flex-wrap: wrap;
 }
 
 .message-toast {
@@ -2197,6 +2234,12 @@
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   margin-top: 12px;
+
+  // 双列名单各列不窄于正文收窄前的可读宽度（约 330px）：视口不足时改单列，
+  // 而不是把姓名 / 类型 / 动作挤在同一行的窄列里
+  @media (max-width: 1024px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .filter-panel {

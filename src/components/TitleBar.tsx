@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Copy, Minus, PanelLeftClose, PanelLeftOpen, Square, X } from 'lucide-react'
+import { Copy, Minus, Moon, PanelLeftClose, PanelLeftOpen, Search, Square, Sun, X } from 'lucide-react'
+import { useThemeStore } from '../stores/themeStore'
 import './TitleBar.scss'
 
 interface TitleBarProps {
@@ -9,7 +10,13 @@ interface TitleBarProps {
   showWindowControls?: boolean
   customControls?: React.ReactNode
   showLogo?: boolean
+  /** 主窗口外壳动作：给了才渲染 ⌘K 搜索按钮（独立窗口不传，保持原样） */
+  onOpenPalette?: () => void
+  /** 主窗口外壳动作：明暗切换图标按钮 */
+  showThemeToggle?: boolean
 }
+
+const isMacPlatform = navigator.userAgent.toLowerCase().includes('mac')
 
 function TitleBar({
   title,
@@ -17,9 +24,15 @@ function TitleBar({
   onToggleSidebar,
   showWindowControls = true,
   customControls,
-  showLogo = true
+  showLogo = true,
+  onOpenPalette,
+  showThemeToggle = false
 }: TitleBarProps = {}) {
   const [isMaximized, setIsMaximized] = useState(false)
+  const themeMode = useThemeStore((s) => s.themeMode)
+  const toggleThemeMode = useThemeStore((s) => s.toggleThemeMode)
+  // 跟随系统时图标按「下一步会切到哪边」显示：system 视作浅色起点
+  const darkActive = themeMode === 'dark'
 
   useEffect(() => {
     if (!showWindowControls) return
@@ -56,6 +69,28 @@ function TitleBar({
         </div>
       ) : null}
       <div className="title-drag-spacer" aria-hidden="true" />
+      {(onOpenPalette || showThemeToggle) ? (
+        <div className="titlebar__right">
+          {onOpenPalette ? (
+            <button type="button" className="kbtn" onClick={onOpenPalette}>
+              <Search size={13} strokeWidth={1.6} />
+              搜索客户、会话
+              <kbd>{isMacPlatform ? '⌘K' : 'Ctrl K'}</kbd>
+            </button>
+          ) : null}
+          {showThemeToggle ? (
+            <button
+              type="button"
+              className="iconbtn"
+              onClick={toggleThemeMode}
+              title={darkActive ? '切到浅色' : '切到深色'}
+              aria-label={darkActive ? '切到浅色' : '切到深色'}
+            >
+              {darkActive ? <Sun size={16} strokeWidth={1.6} /> : <Moon size={16} strokeWidth={1.6} />}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {showWindowControls ? (
         <div className="title-window-controls">
           <button

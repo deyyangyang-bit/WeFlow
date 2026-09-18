@@ -49,6 +49,53 @@ function parseAssignmentMode<T extends string>(value: unknown, fallback: T, allo
   return typeof value === 'string' && allowed.includes(value as T) ? value as T : null
 }
 
+/**
+ * 本机写路径的**归属员工 ID 解析**（2026-09-17，宪法 §1.3 补列登记的消费者侧）。
+ *
+ * 背景：`assignment.owner_employee_id` 已是归属权威列，但 2026-09-17 前**只有中央下行落地行**
+ * （lanSyncService 的 assign/transfer 落地）会写它；本机自己产生的行（assign/transfer）不写，
+ * 于是一条本地移交出来的行永远只能走 `ownerFilter.isOwnedLead` 的姓名回退分支 ——
+ * 姓名回退是宪法 §1.3 的**历史兼容**，不是终点，本地生产端不补列它就永远退不掉。
+ *
+ * 解析纪律（「绝不按名字猜人」，与 centralSyncService.resolveDirectoryEmployee 同一口径）：
+ *   ① 目标就是本机绑定员工（显示名 = 本机署名或本机别名之一）→ 用 `getBoundEmployeeId()`，
+ *      这是绑定凭据给的**权威** ID，不是猜的；
+ *   ② 否则查本机显式别名表 `centralSyncEmployeeAlias`（显示名 → employeeCode）——
+ *      别名是人在设置页手填的显式绑定，可信；
+ *   ③ 其余情况**返回空串**：本机拿不到中央目录（同步是异步的，本函数在同步写路径上），
+ *      没有任何依据把「杨青」这三个字变成某个 UUID。空串 = 退回既有姓名回退分支，
+ *      语义与今天完全一致 —— **宁可降级到旧的兼容口径，也不写一个错的 ID**：
+ *      错的 owner_employee_id 会让「同名不同人」直接串线，比不写严重得多。
+ *
+ * 不接受 sales_name 兜底以外的任何模糊匹配（前缀/模糊/大小写）：ID 列一旦写错，
+ * 判定分支就从「姓名集合」跳到「ID 等值」，错得比不写更彻底。
+ */
+function resolveLocalOwnerEmployeeId(salesName: string): string {
+  const name = String(salesName || '').trim()
+  if (!name) return ''
+  const bound = String(getBoundEmployeeId() || '').trim()
+  if (bound) {
+    const me = getIdentity()
+    // 本机署名 / 绑定期间的别名 == 目标显示名 → 目标就是本机绑定的那个员工
+    const names = [String(me?.name || '').trim(), ...getOwnershipAliases()].filter(Boolean)
+    if (names.includes(name)) return bound
+  }
+  // 本机显式别名表（设置页填写，显示名 → 中央员工编号）：只有显式登记的才认
+  const raw = String(ConfigService.getInstance().get('centralSyncEmployeeAlias') || '').trim()
+  if (!raw) return ''
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    for (const [key, code] of Object.entries(parsed)) {
+      if (String(key).trim() !== name) continue
+      const value = String(code ?? '').trim()
+      if (value) return value
+    }
+  } catch {
+    // 坏 JSON 视为未配置（与 centralSyncService.localEmployeeAlias 同口径），不猜
+  }
+  return ''
+}
+
 // ─── 分配（crm:assignment:assign）──────────────────────────────────────────
 export interface AssignSkipped { leadId: number; code: 'E201' | 'E301'; reason: string }
 export interface AssignData { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: AssignSkipped[] }
@@ -83,6 +130,8 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
   // 分配起计时（PRD 1.4 第一段「加了没有」）：sla1_deadline = now + crmLeadSlaHours；
   // 已分配 lead 的 first_contact_deadline 从 2100 哨兵改为同一期限（scanLeadSla 现有机制继续工作）
   const sla1 = now + sla1Ms()
+  // 归属员工 ID（宪法 §1.3 补列）：解析不到就留空、退回姓名回退分支，绝不猜（见 resolveLocalOwnerEmployeeId）
+  const ownerEmployeeId = resolveLocalOwnerEmployeeId(name)
   const data = crmDbService.runTx((tx) => {
     const assignments: Array<{ leadId: number; assignmentId: number }> = []
     const skipped: AssignSkipped[] = []
@@ -97,8 +146,8 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
         continue
       }
       const assignmentId = tx.run(
-        'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-        [leadId, name, m, sla1, '', 'assigned', 'manual', by, now, 1, 0]
+        'INSERT INTO assignment (lead_id, sales_name, owner_employee_id, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [leadId, name, ownerEmployeeId, m, sla1, '', 'assigned', 'manual', by, now, 1, 0]
       )
       // 首触 SLA 起计时：哨兵 → 真实期限（只覆盖计时列，lead 状态机不动）
       tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, leadId])
@@ -106,7 +155,7 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
       tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
         ['lead', leadId, '', name, '分配', by, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-        [by, 'lead_assign', 'lead', leadId, JSON.stringify({ salesName: name, mode: m, assignmentId, sla1Deadline: sla1 }), now])
+        [by, 'lead_assign', 'lead', leadId, JSON.stringify({ salesName: name, mode: m, assignmentId, sla1Deadline: sla1, ownerEmployeeId: ownerEmployeeId || null }), now])
       // outbox 登记（PRD §1.10 只记录不发送；下行 assign 事件，同步设计 §3）
       recordOutboxTx(tx, 'assign', `assign:${assignmentId}`, { leadId, salesName: name, mode: m, assignmentId, sla1Deadline: sla1, actor: by }, now)
       assignments.push({ leadId, assignmentId })
@@ -273,16 +322,18 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
   const now = Date.now()
   const sla1 = now + sla1Ms()
   const mode = String(row.mode || 'manual')
+  // 新行的归属员工 ID 按**新归属人**解析（旧行的 owner_employee_id 随旧行作废，不可继承）
+  const targetEmployeeId = resolveLocalOwnerEmployeeId(target)
   const newId = crmDbService.runTx((tx) => {
     tx.run("UPDATE assignment SET status = 'transferred', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
     const nid = tx.run(
-      'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [Number(row.lead_id), target, mode, sla1, '', 'assigned', 'transfer', by, now, 1, 0]
+      'INSERT INTO assignment (lead_id, sales_name, owner_employee_id, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [Number(row.lead_id), target, targetEmployeeId, mode, sla1, '', 'assigned', 'transfer', by, now, 1, 0]
     )
     tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
       ['lead', Number(row.lead_id), String(row.sales_name), target, why, by, now])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      [by, 'lead_transfer', 'lead', Number(row.lead_id), JSON.stringify({ fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid }), now])
+        [by, 'lead_transfer', 'lead', Number(row.lead_id), JSON.stringify({ fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, ownerEmployeeId: targetEmployeeId || null }), now])
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, Number(row.lead_id)])
     // outbox 登记（下行 transfer 事件，同步设计 §3；key 用新行 id = 每次移交一条事件）。
     // sla1Deadline/mode 是移交事实产生时就确定的值，必须随指令传递：接收端落地精确等于本值，

@@ -442,6 +442,8 @@ function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence
 }) {
   const { openForm, deleteEntry, renewTtl } = useKnowledgeStore()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // 正文预览折叠：卡片只截前几行，长条目可就地展开读全文（纯展示状态，不改数据）
+  const [contentOpen, setContentOpen] = useState(false)
   const tags = parseTags(entry.tags)
   const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
   const isRejected = entry.status === 'rejected'
@@ -512,7 +514,16 @@ function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence
         {entry.title}
         <span className="kb-card-version" title={`版本 v${entry.version ?? 1} · ${statusLabel(entry)}`}>v{entry.version ?? 1}</span>
       </h4>
-      <p className="kb-card-content">{entry.content}</p>
+      <p className={`kb-card-content ${contentOpen ? 'is-open' : ''}`}>{entry.content}</p>
+      {entry.content.length > 140 && (
+        <button
+          className="kb-card-more"
+          onClick={() => setContentOpen(v => !v)}
+          title={contentOpen ? '收起正文预览' : '展开正文全文（长条目不必进编辑态）'}
+        >
+          {contentOpen ? '收起' : '展开全文'}
+        </button>
+      )}
 
       {chain.length > 1 && (
         <div className="kb-chain" title="同一 logical_id 的知识条目构成版本链；发布新版本后旧版被接替">
@@ -784,29 +795,34 @@ function ReviewSection({ entries, publishedEntries, onShowEvidence }: {
   return (
     <div className="kb-review-section">
       <div className="kb-review-header">
-        <Clock size={16} />
-        <h3>待审核</h3>
-        <span className="kb-review-count">{entries.length}</span>
-        <label className="kb-review-check" title="全选本区">
-          <input type="checkbox" checked={allSelected} onChange={e => toggleAll(e.target.checked)} />
-        </label>
-        <button
-          className="kb-btn kb-btn-primary kb-btn-sm"
-          onClick={handleBatchPublish}
-          disabled={batchBusy || selectedIds.length === 0}
-          title="勾选多条一次发布（community 口径；标官方请逐条勾选发布）"
-        >
-          <CheckCircle2 size={14} />{batchBusy ? '发布中…' : `批量发布${selectedIds.length > 0 ? `（${selectedIds.length}）` : ''}`}
-        </button>
-        <button
-          className={`kb-btn kb-btn-sm ${onlyDiff ? 'kb-btn-accent' : 'kb-btn-secondary'}`}
-          onClick={() => setOnlyDiff(v => !v)}
-          disabled={conflictEntries.length === 0}
-          title="只显示与已发布条目同标题冲突的提案，展开并排内容对照（冲突以产品库为准，人工裁决）"
-        >
-          <GitCompare size={14} />只看 diff{conflictEntries.length > 0 ? `（${conflictEntries.length}）` : ''}
-        </button>
-        <span className="kb-review-hint">待审核条目可编辑/删除 · 发布后成为当前版本 · 价格类条目请与产品库对账，冲突以产品库为准</span>
+        <div className="kb-review-head">
+          <Clock size={16} />
+          <h3>待审核</h3>
+          <span className="kb-review-count">{entries.length}</span>
+          <span className="kb-review-hint">待审核条目可编辑/删除 · 发布后成为当前版本 · 价格类条目请与产品库对账，冲突以产品库为准</span>
+        </div>
+        <div className="kb-review-acts">
+          <label className="kb-review-check" title="全选本区">
+            <input type="checkbox" checked={allSelected} onChange={e => toggleAll(e.target.checked)} />
+            <span>全选</span>
+          </label>
+          <button
+            className="kb-btn kb-btn-primary kb-btn-sm"
+            onClick={handleBatchPublish}
+            disabled={batchBusy || selectedIds.length === 0}
+            title="勾选多条一次发布（community 口径；标官方请逐条勾选发布）"
+          >
+            <CheckCircle2 size={14} />{batchBusy ? '发布中…' : `批量发布${selectedIds.length > 0 ? `（${selectedIds.length}）` : ''}`}
+          </button>
+          <button
+            className={`kb-btn kb-btn-sm ${onlyDiff ? 'kb-btn-accent' : 'kb-btn-secondary'}`}
+            onClick={() => setOnlyDiff(v => !v)}
+            disabled={conflictEntries.length === 0}
+            title="只显示与已发布条目同标题冲突的提案，展开并排内容对照（冲突以产品库为准，人工裁决）"
+          >
+            <GitCompare size={14} />只看 diff{conflictEntries.length > 0 ? `（${conflictEntries.length}）` : ''}
+          </button>
+        </div>
       </div>
       <div className="kb-review-list">
         {visible.length === 0 ? (
@@ -971,14 +987,20 @@ export default function KnowledgeBasePage() {
       {/* 话术提炼弹窗（批量） */}
       <ExtractScriptDialog open={batchExtractOpen} onClose={() => setBatchExtractOpen(false)} batch />
 
-      <div className="kb-page-header">
-        <div className="kb-page-title">
-          <BookOpen size={22} />
-          <h2>知识库</h2>
-          <span className="kb-page-count">{total} 条</span>
+      {/* 页眉（概念稿 .shead）：小标 → 页名 → 条数说明；右侧为搜索与动作区 */}
+      <div className="shead kb-page-header">
+        <div className="kb-page-title-block">
+          <p className="eyebrow">知识治理 · 待审核 → 已发布</p>
+          <h1 className="hero kb-page-title">
+            <BookOpen size={22} strokeWidth={1.6} />
+            <span>知识库</span>
+          </h1>
+          <p className="sub">
+            {total} 条{stagingEntries.length > 0 ? ` · 待审核 ${stagingEntries.length} 条（发布后才被问答引用）` : ''}
+          </p>
         </div>
 
-        <div className="kb-page-toolbar">
+        <div className="shead__actions kb-page-toolbar">
           <div className="kb-search-box">
             <Search size={16} />
             <input
@@ -997,16 +1019,6 @@ export default function KnowledgeBasePage() {
               </button>
             )}
           </div>
-
-          <select
-            className="kb-category-filter"
-            value={filterCategory}
-            onChange={e => setFilterCategory(e.target.value)}
-          >
-            {CATEGORY_OPTIONS.map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
 
           <button className="kb-btn kb-btn-secondary" onClick={handleImportClick} disabled={importing}>
             <Upload size={16} />
@@ -1051,28 +1063,51 @@ export default function KnowledgeBasePage() {
       )}
 
       <div className="kb-page-body">
-        <ReviewSection entries={stagingEntries} publishedEntries={currentPublished} onShowEvidence={setEvidenceEntry} />
-        {loading ? (
-          <div className="kb-loading">加载中...</div>
-        ) : gridEntries.length === 0 ? (
-          <div className="kb-empty">
-            <BookOpen size={48} />
-            <p>{searchKeyword ? '没有找到匹配的条目' : stagingEntries.length > 0 ? '没有已发布的条目，先在上方「待审核」区发布' : '知识库为空，点击"新增"添加第一条知识'}</p>
-          </div>
-        ) : (
-          <div className="kb-card-grid">
-            {gridEntries.map(entry => (
-              <KnowledgeCard
-                key={entry.id}
-                entry={entry}
-                highlighted={highlightId === entry.id}
-                chain={chainMap.get(knowledgeChainKey(entry)) ?? [entry]}
-                onNewVersion={setVersionBase}
-                onShowEvidence={setEvidenceEntry}
-              />
-            ))}
-          </div>
-        )}
+        {/* 分类栏（左）：沿用 store 现有 filterCategory 单一状态与既有分类枚举，不新增分类能力 */}
+        <aside className="kb-rail" aria-label="知识分类">
+          <div className="ktree__g kb-rail__g">分类</div>
+          {CATEGORY_OPTIONS.map((option) => {
+            const IconComp = CATEGORY_ICONS[option.value] ?? BookOpen
+            const active = (filterCategory || '') === option.value
+            return (
+              <button
+                key={option.value || 'all'}
+                type="button"
+                className={`kb-rail__i ${active ? 'is-on' : ''}`}
+                aria-pressed={active}
+                onClick={() => setFilterCategory(option.value)}
+              >
+                <IconComp size={14} />
+                <span className="kb-rail__t">{option.label}</span>
+              </button>
+            )
+          })}
+        </aside>
+
+        <div className="kb-main">
+          <ReviewSection entries={stagingEntries} publishedEntries={currentPublished} onShowEvidence={setEvidenceEntry} />
+          {loading ? (
+            <div className="kb-loading">加载中...</div>
+          ) : gridEntries.length === 0 ? (
+            <div className="kb-empty">
+              <BookOpen size={48} />
+              <p>{searchKeyword ? '没有找到匹配的条目' : stagingEntries.length > 0 ? '没有已发布的条目，先在上方「待审核」区发布' : '知识库为空，点击"新增"添加第一条知识'}</p>
+            </div>
+          ) : (
+            <div className="kb-card-grid">
+              {gridEntries.map(entry => (
+                <KnowledgeCard
+                  key={entry.id}
+                  entry={entry}
+                  highlighted={highlightId === entry.id}
+                  chain={chainMap.get(knowledgeChainKey(entry)) ?? [entry]}
+                  onNewVersion={setVersionBase}
+                  onShowEvidence={setEvidenceEntry}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {showForm && <KnowledgeForm onClose={closeForm} />}

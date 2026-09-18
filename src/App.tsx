@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation, type Location } from 'react-router-dom'
 import TitleBar from './components/TitleBar'
 import Sidebar from './components/Sidebar'
@@ -8,7 +8,6 @@ import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
 import HermesPanel from './components/hermes/HermesPanel'
 import * as configService from './services/config'
-import { Shield } from 'lucide-react'
 import './App.scss'
 
 import UpdateDialog from './components/UpdateDialog'
@@ -17,6 +16,9 @@ import LockScreen from './components/LockScreen'
 import IdentityOnboardingDialog from './components/IdentityOnboardingDialog'
 import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import WindowCloseDialog from './components/WindowCloseDialog'
+import CommandPalette from './components/CommandPalette'
+import GlobalToast from './components/GlobalToast'
+import { useGlobalShortcuts } from './utils/useGlobalShortcuts'
 import { resolveAutomationScopeKey } from './pages/Export/hooks/useAutomation'
 
 // 全部页面懒加载：主窗口首屏只解析 App 壳；
@@ -51,6 +53,7 @@ const CrmWorkbenchPage = lazy(() => import('./pages/CrmWorkbenchPage'))
 const CrmReviewPage = lazy(() => import('./pages/CrmReviewPage'))
 const CrmProductPage = lazy(() => import('./pages/CrmProductPage'))
 const CrmLeadPage = lazy(() => import('./pages/CrmLeadPage'))
+const RoleViewPage = lazy(() => import('./pages/RoleViewPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
 const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
@@ -113,6 +116,7 @@ function App() {
   const [themeHydrated, setThemeHydrated] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showCloseDialog, setShowCloseDialog] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [canMinimizeToTray, setCanMinimizeToTray] = useState(false)
   const [closeRestoreMethod, setCloseRestoreMethod] = useState<'tray' | 'dock'>('tray')
 
@@ -128,12 +132,6 @@ function App() {
   const [showIdentityOnboarding, setShowIdentityOnboarding] = useState(false)
   const identityCheckedRef = useRef(false)
 
-  // 协议同意状态
-  const [showAgreement, setShowAgreement] = useState(false)
-  const [agreementChecked, setAgreementChecked] = useState(false)
-  const [agreementLoading, setAgreementLoading] = useState(true)
-
-
   useEffect(() => {
     if (location.pathname !== '/settings') {
       settingsBackgroundRef.current = location
@@ -144,6 +142,19 @@ function App() {
     isAgreementWindow || isOnboardingWindow || isVideoPlayerWindow || isChatHistoryWindow ||
     isStandaloneChatWindow || isNotificationWindow || isAnnualReportWindow || isDualReportWindow ||
     location.pathname === '/image-viewer-window'
+
+  // 全局快捷键（⌘K 命令面板 / ⌘1-3 切前三屏）：只在主窗口、未锁定时挂
+  const togglePalette = useCallback(() => setPaletteOpen((prev) => !prev), [])
+  useGlobalShortcuts({
+    enabled: !isStandaloneWindow && !isLocked,
+    paletteOpen,
+    onTogglePalette: togglePalette
+  })
+
+  // 锁屏或切到独立窗口路由时收掉面板，避免浮层挂在锁屏之上
+  useEffect(() => {
+    if (isLocked || isStandaloneWindow) setPaletteOpen(false)
+  }, [isLocked, isStandaloneWindow])
 
   useEffect(() => {
     if (isExportRoute && !exportMounted) setExportMounted(true)
@@ -259,33 +270,6 @@ function App() {
     }
     saveTheme()
   }, [currentTheme, themeMode, themeHydrated])
-
-  // 检查是否已同意协议
-  useEffect(() => {
-    const checkAgreement = async () => {
-      try {
-        const agreed = await configService.getAgreementAccepted()
-        if (!agreed) {
-          setShowAgreement(true)
-        }
-      } catch (e) {
-        console.error('检查协议状态失败:', e)
-      } finally {
-        setAgreementLoading(false)
-      }
-    }
-    checkAgreement()
-  }, [])
-
-  const handleAgree = async () => {
-    if (!agreementChecked) return
-    await configService.setAgreementAccepted(true)
-    setShowAgreement(false)
-  }
-
-  const handleDisagree = () => {
-    window.electronAPI.window.close()
-  }
 
   // 监听启动时的更新通知
   useEffect(() => {
@@ -632,6 +616,8 @@ function App() {
       <TitleBar
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((prev) => !prev)}
+        onOpenPalette={togglePalette}
+        showThemeToggle
       />
 
       {/* 全局悬浮进度胶囊 (处理：新版本提示、下载进度、错误提示) */}
@@ -639,61 +625,6 @@ function App() {
 
       {/* 全局会话监听与通知 */}
       <GlobalSessionMonitor />
-
-      {/* 用户协议弹窗 */}
-      {showAgreement && !agreementLoading && (
-        <div className="agreement-overlay">
-          <div className="agreement-modal">
-            <div className="agreement-header">
-              <Shield size={32} />
-              <h2>用户协议与隐私政策</h2>
-            </div>
-            <div className="agreement-content">
-              <p>欢迎使用WeFlow！在使用本软件前，请仔细阅读以下条款：</p>
-              <div className="agreement-notice">
-                <strong>这是免费软件，如果你是付费购买的话请骂死那个骗子。</strong>
-                <span className="agreement-notice-link">
-                  官方网站：
-                  <a href="https://weflow.top" target="_blank" rel="noreferrer">
-                    https://weflow.top
-                  </a>
-                  &nbsp;·&nbsp;
-                  <a href="https://github.com/hicccc77/WeFlow" target="_blank" rel="noreferrer">
-                    GitHub 仓库
-                  </a>
-                </span>
-              </div>
-              <div className="agreement-text">
-                <h4>1. 数据安全</h4>
-                <p>本软件所有数据处理均在本地完成，不会上传任何聊天记录、个人信息到服务器。你的数据完全由你自己掌控。</p>
-
-                <h4>2. 使用须知</h4>
-                <p>本软件仅供个人学习研究使用，请勿用于任何非法用途。使用本软件解密、查看、分析的数据应为你本人所有或已获得授权。</p>
-
-                <h4>3. 免责声明</h4>
-                <p>因使用本软件产生的任何直接或间接损失，开发者不承担任何责任。请确保你的使用行为符合当地法律法规。</p>
-
-                <h4>4. 隐私保护</h4>
-                <p>本软件不收集任何用户隐私数据。软件更新检测仅获取版本信息，不涉及任何个人隐私。</p>
-              </div>
-            </div>
-            <div className="agreement-footer">
-              <label className="agreement-checkbox">
-                <input
-                  type="checkbox"
-                  checked={agreementChecked}
-                  onChange={(e) => setAgreementChecked(e.target.checked)}
-                />
-                <span>我已阅读并同意上述协议</span>
-              </label>
-              <div className="agreement-actions">
-                <button className="btn btn-secondary" onClick={handleDisagree}>不同意</button>
-                <button className="btn btn-primary" onClick={handleAgree} disabled={!agreementChecked}>同意并继续</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 更新提示对话框 */}
       <UpdateDialog
@@ -717,6 +648,10 @@ function App() {
 
       {/* Hermes 只读智能体全局唯一面板实例：常驻挂载（hidden 控制显隐），路由切换不丢任务 */}
       <HermesPanel />
+
+      {/* 命令面板（⌘K / 顶栏搜索按钮）与全局提示条：主窗口外壳件 */}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <GlobalToast />
 
       <div className="main-layout">
         <Sidebar collapsed={sidebarCollapsed} />
@@ -766,6 +701,7 @@ function App() {
                 <Route path="/crm-product" element={<CrmProductPage />} />
                 <Route path="/leads" element={<CrmLeadPage />} />
                 <Route path="/contacts" element={<ContactsPage />} />
+                <Route path="/role-view" element={<RoleViewPage />} />
                 <Route path="/resources" element={<ResourcesPage />} />
                 <Route path="/backup" element={<BackupPage />} />
                 <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />

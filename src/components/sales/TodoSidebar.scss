@@ -1,193 +1,89 @@
 /**
- * TodoSidebar.scss — 待办清单侧栏样式
- * 2026-09-02 UI 美化（批次 B）：迁出 --wf-* 私有变量，全量消费「前进视觉」tokens
- * （src/styles/main.scss；规范 docs/DESIGN-SPEC-MINI.md）。纯样式，零逻辑/结构改动。
+ * TodoSidebar.scss — 右栏待办（2026-09-17 概念稿语法）
+ * 结构件全部来自全局基础件：.side / .side-head / .bar / .todo / .checkbox / .iconbtn（src/styles/main.scss）。
+ * 本文件只放本组件自己的间距、分页微调与窄窗列表排布，颜色一律走 --color-*（明暗自动继承）。
+ * 窄窗（≤1160px，本页上下排列档）待办列表改两列；宽窗仍是右栏单列细线行。
  */
 
 .todo-sidebar {
-  background: var(--color-bg-surface);
-  border: 1px solid transparent;
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  min-width: 0;
 
-  &__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px 10px;
+  // 正文块在基础件里没有类名：补最小收缩 + 断行，长标题不撑破右栏（窄窗下也不出横向滚动）
+  .todo > div { min-width: 0; }
+  .todo__t { overflow-wrap: anywhere; }
+
+  // 勾选框：基础件把对勾置为透明（仅 is-on 显示），补回 hover 提示；点击仍是原「点击即完成」
+  &__checkbox:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 
-  &__title {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--color-text-primary);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  &__meta {
+  &__count {
     font-size: 11px;
     color: var(--color-text-tertiary);
   }
 
+  // 进度：2px 细刻度（稿子的 .bar），不再用 6px 圆角轨道
+  &__bar {
+    width: 100%;
+    margin: 10px 0 2px;
+    height: 2px;
+  }
+
+  // 进度旁的真实分子分母（11px 等宽小字，与抬头数字同档；数字大时不挤压抬头行）
   &__progress {
-    display: flex;
-    height: 6px;
-    border-radius: 3px;
-    overflow: hidden;
-    margin: 0 18px 4px;
-    background: var(--color-bg-inset);
-  }
-
-  // 进度条：待处理 = 中性灰；已完成 = 品牌色
-  &__progress-active {
-    background: var(--color-chart-neutral);
-    min-width: 0;
-  }
-
-  &__progress-done {
-    background: var(--color-accent);
-    min-width: 0;
-  }
-
-  &__stat {
+    margin-top: 6px;
     font-size: 11px;
     color: var(--color-text-tertiary);
-    margin: 0 18px 12px;
-    font-variant-numeric: tabular-nums;
   }
 
   &__list {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 0 18px;
+    margin-top: 4px;
   }
 
   &__empty {
-    font-size: 12px;
+    padding: 18px 0;
+    font-size: 12.5px;
     color: var(--color-text-tertiary);
-    padding: 12px 0;
-  }
-
-  &__item {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 9px 0;
-    border-bottom: 1px solid var(--color-divider);
-
-    &:last-child { border-bottom: none; }
-  }
-
-  &__checkbox {
-    width: 16px;
-    height: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border: 1.5px solid var(--color-text-tertiary);
-    border-radius: 4px;
-    margin-top: 2px;
-    flex-shrink: 0;
-    background: transparent;
-    color: var(--color-text-on-accent);
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-
-    svg { opacity: 0; }
-
-    &:hover {
-      background: var(--color-accent);
-      border-color: var(--color-accent);
-
-      svg { opacity: 1; }
-    }
-  }
-
-  &__item-body {
-    min-width: 0;
-  }
-
-  &__item-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-text-primary);
-    line-height: 1.4;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
-
-  &__item-meta {
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-    margin-top: 2px;
   }
 
   &__pagination {
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 8px;
-    padding: 6px 18px 2px;
+    padding-top: 12px;
   }
 
   &__page-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    background: var(--color-bg-surface);
     color: var(--color-text-secondary);
-    cursor: pointer;
-    transition: background 0.15s;
 
-    &:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-primary); }
-    &:disabled { opacity: 0.4; cursor: not-allowed; }
+    &:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    &:hover:not(:disabled) {
+      border-color: var(--color-accent-border);
+      color: var(--color-text-primary);
+    }
   }
 
   &__page-info {
     font-size: 11px;
-    font-weight: 600;
     color: var(--color-text-tertiary);
-    font-variant-numeric: tabular-nums;
-    min-width: 38px;
-    text-align: center;
+  }
+}
+
+// 上下排列档（断点与 TodayActionPage 的窄窗断点一致）：待办区移到信号列表下方后横向铺开，
+// 避免 10 条待办变成一条长竖列把页面拖长；每格仍是一条细线行。
+@media (max-width: 1160px) {
+  .todo-sidebar__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 28px;
+    align-content: start;
   }
 
-  &__footer {
-    padding: 12px 18px 16px;
-  }
-
-  &__viewall {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
-    padding: 8px 14px;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-
-    &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
-    &:active { background: var(--color-bg-inset); }
-  }
+  .todo-sidebar__empty { grid-column: 1 / -1; }
 }

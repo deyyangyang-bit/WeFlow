@@ -6404,7 +6404,9 @@ JSON 输出格式：
   }
 
   const renderAnalyticsTab = () => (
-    <div className="tab-content">
+    // tab-content--grouped：四个普通分组在宽窗排两栏（窄窗由样式收回单栏）；
+    // 页内若出现宽表 / 复杂卡，给它加 .settings-section--wide 即占整行
+    <div className="tab-content tab-content--grouped">
       <div className="settings-section">
         <h2>分析设置</h2>
         <div className="setting-item">

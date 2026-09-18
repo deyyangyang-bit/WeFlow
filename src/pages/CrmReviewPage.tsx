@@ -217,6 +217,8 @@ export default function CrmReviewPage() {
   const claimablePayments = payments.filter(isClaimable)
   // 「今天要办」摘要（设计稿屏 4）：今日到款待认领 = 现有 claimable 口径 + pay_time 落在今天（与按天分组同口径），零新查询
   const todayClaimable = claimablePayments.filter((p) => dayStartOf(Number(p.pay_time)) === dayStartOf(Date.now())).length
+  // 待认领笔数（与原「款项认领」标题内联同一口径，提到变量供视图栏与本段共用）
+  const unclaimedCount = payments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length
   // 开票状态：认领后按订单群 PDF 发票解析结果展示（invoice_status='issued' 即已开票）；
   // 旧自动确认遗留（confirmed 无客户合同）补认领前不显示开票状态
   const invoiceBadgeOf = (p: any) => {
@@ -319,33 +321,43 @@ export default function CrmReviewPage() {
   return (
     <div className="crm-review-page">
       <div className="crm-header">
-        <h2><ClipboardCheck size={18} /> 跟单中心</h2>
-        <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
-        <div className="cws-tabs">
-          {([['payments', '💰 款项认领'], ['logistics', '🚚 物流跟单']] as const).map(([key, label]) => (
-            <button key={key} className={`cws-tab ${reviewTab === key ? 'active' : ''}`} onClick={() => setReviewTab(key)}>{label}</button>
-          ))}
+        <div className="crm-header__id">
+          <p className="eyebrow">跟单 · 承诺与回访</p>
+          <h2><ClipboardCheck size={18} /> 跟单中心</h2>
         </div>
-        <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
+        <div className="crm-header__ops">
+          <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
+          <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
+        </div>
       </div>
-      {/* 「今天要办」一行摘要（设计稿屏 4）：数据从现有 queues/payments 计算，零新接口 */}
-      <div className="review-verdict">
-        今天要办：<b>{todayClaimable}</b> 笔今日到款待认领 · <b>{logiLinked.length}</b> 单物流待签收 · <b>{queues.invoices.length}</b> 张发票待开
+      {/* 视图栏（概念稿 .rail）：两个队列档位 + 右侧「今天要办」汇总，数据同原摘要行（零新接口） */}
+      <div className="rail" role="tablist" aria-label="跟单队列">
+        <button type="button" role="tab" aria-selected={reviewTab === 'payments'}
+          className={`rail__item${reviewTab === 'payments' ? ' is-on' : ''}`} onClick={() => setReviewTab('payments')}>
+          💰 款项认领<span className="rail__n">{unclaimedCount}</span>
+        </button>
+        <button type="button" role="tab" aria-selected={reviewTab === 'logistics'}
+          className={`rail__item${reviewTab === 'logistics' ? ' is-on' : ''}`} onClick={() => setReviewTab('logistics')}>
+          🚚 物流跟单<span className="rail__n">{queues.logistics.length}</span>
+        </button>
+        <span className="rail__sum">
+          今天要办 · 今日到款待认领 <b>{todayClaimable}</b> 笔 · 待签收 <b>{logiLinked.length}</b> 单 · 发票待开 <b>{queues.invoices.length}</b> 张
+        </span>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
 
       {reviewTab === 'logistics' && (
-      <section>
-        <h3>
-          物流跟单
+      <section className="review-sec">
+        <div className="review-sec__head">
+          <span className="review-sec__t">物流跟单</span>
           <em className="logi-stats">
             待认领 {queues.logistics.length} · 待签收 {logiLinked.length}
             <span className={logiOverdueCount > 0 ? 'logi-stats__overdue' : ''}>{logiOverdueCount > 0 ? ` · 超期 ${logiOverdueCount}` : ''}</span>
           </em>
-        </h3>
+        </div>
         {logiNotice && <div className="logi-notice">{logiNotice}</div>}
         <div className="logi-queue">
-          <h4>待认领（{queues.logistics.length}）</h4>
+          <h4 className="review-queue__h">待认领<span className="review-queue__n">{queues.logistics.length}</span></h4>
           {noAccount && queues.logistics.length > 0 && (
             <div className="logi-notice logi-notice--warn">
               暂无客户，无法认领物流。请先在「客户工作台」创建客户。
@@ -363,12 +375,12 @@ export default function CrmReviewPage() {
                   <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
                 </div>
                 <div className="logi-card__actions">
-                  <input placeholder="认领销售（默认本人）" value={logiSales[l.id] ?? ''}
-                    onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '110px' }} />
-                  <div style={{ width: '160px' }}>
+                  <input className="review-field review-field--sales" placeholder="认领销售（默认本人）" value={logiSales[l.id] ?? ''}
+                    onChange={(e) => setLogiSales((m) => ({ ...m, [l.id]: e.target.value }))} />
+                  <div className="review-field review-field--account">
                     <CustomerPicker accounts={accounts} value={logiCustomer[l.id] ?? ''} onChange={(name) => setLogiCustomer((m) => ({ ...m, [l.id]: name }))} displayNameOf={displayNameOf} />
                   </div>
-                  <select value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))} style={{ width: '150px' }}>
+                  <select className="review-field review-field--contract" value={logiContract[l.id] ?? ''} onChange={(e) => setLogiContract((m) => ({ ...m, [l.id]: e.target.value }))}>
                     <option value="">关联合同（可选）</option>
                     {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
@@ -379,7 +391,7 @@ export default function CrmReviewPage() {
             )
           }} />
         </div>
-        <h4 style={{ marginTop: '10px' }}>已认领待签收（{logiLinked.length}）</h4>
+        <h4 className="review-queue__h">已认领待签收<span className="review-queue__n">{logiLinked.length}</span></h4>
         {logiLinked.length === 0 && <div className="crm-card crm-card--empty">暂无待签收物流（发货后 {logiOverdueHours}h 未签收会标红提醒）</div>}
         <WeekDayGroups items={logiLinked} timeOf={(l) => Number(l.latest_update_at)} render={(l) => (
           <div className="crm-card logi-card">
@@ -397,7 +409,7 @@ export default function CrmReviewPage() {
             </div>
           </div>
         )} />
-        <h4 style={{ marginTop: '10px' }}>已签收（{logiSigned.length}）</h4>
+        <h4 className="review-queue__h">已签收<span className="review-queue__n">{logiSigned.length}</span></h4>
         {logiSigned.length === 0
           ? <div className="crm-card crm-card--empty">暂无已签收物流</div>
           : <WeekDayGroups items={logiSigned} timeOf={(l) => Number(l.latest_update_at)} render={(l) => (
@@ -415,12 +427,12 @@ export default function CrmReviewPage() {
       )}
 
       {reviewTab === 'payments' && (
-      <section>
-        <h3>
-          款项认领（7 天一页）
-          <em className="logi-stats">近 30 天 {payments.length} 笔 · 待认领 {payments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length} 笔</em>
-          <button className={`crm-btn${onlyUnclaimed ? ' primary' : ''}`} style={{ marginLeft: 8 }} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
-        </h3>
+      <section className="review-sec">
+        <div className="review-sec__head">
+          <span className="review-sec__t">款项认领（7 天一页）</span>
+          <em className="logi-stats">近 30 天 {payments.length} 笔 · 待认领 {unclaimedCount} 笔</em>
+          <button className={`crm-btn${onlyUnclaimed ? ' primary' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
+        </div>
         {payments.length === 0 && <div className="crm-card crm-card--empty">近 30 天无到款记录</div>}
         <WeekDayGroups
           items={onlyUnclaimed ? claimablePayments : payments}
@@ -458,12 +470,12 @@ export default function CrmReviewPage() {
                     </div>
                     {!claimed && (
                       <div className="logi-card__actions">
-                        <input placeholder="认领销售（默认本人）" value={claimSales[p.id] ?? ''}
-                          onChange={(e) => setClaimSales((m) => ({ ...m, [p.id]: e.target.value }))} style={{ width: '110px' }} />
-                        <div style={{ width: '160px' }}>
+                        <input className="review-field review-field--sales" placeholder="认领销售（默认本人）" value={claimSales[p.id] ?? ''}
+                          onChange={(e) => setClaimSales((m) => ({ ...m, [p.id]: e.target.value }))} />
+                        <div className="review-field review-field--account">
                           <CustomerPicker accounts={accounts} value={claimCustomer[p.id] ?? ''} onChange={(name) => setClaimCustomer((m) => ({ ...m, [p.id]: name }))} displayNameOf={displayNameOf} />
                         </div>
-                        <select value={claimContract[p.id] ?? ''} onChange={(e) => setClaimContract((m) => ({ ...m, [p.id]: e.target.value }))} style={{ width: '150px' }}>
+                        <select className="review-field review-field--contract" value={claimContract[p.id] ?? ''} onChange={(e) => setClaimContract((m) => ({ ...m, [p.id]: e.target.value }))}>
                           <option value="">关联合同（可选）</option>
                           {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
@@ -505,8 +517,11 @@ export default function CrmReviewPage() {
       )}
 
       {reviewTab === 'payments' && (
-      <section>
-        <h3>发票待开（{queues.invoices.length}）</h3>
+      <section className="review-sec">
+        <div className="review-sec__head">
+          <span className="review-sec__t">发票待开</span>
+          <em className="logi-stats">{queues.invoices.length} 张</em>
+        </div>
         {queues.invoices.map((i) => (
           <div key={i.id} className="crm-card">
             <span>{i.buyer} · 发票号 {i.invoice_no || '-'} · 金额 ¥{Number(i.amount ?? 0).toLocaleString()}

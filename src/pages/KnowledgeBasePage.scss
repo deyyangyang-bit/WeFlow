@@ -1,11 +1,13 @@
 // KnowledgeBasePage —— 前进视觉迁移（UI 美化批次 C；纯样式，零逻辑/结构改动）
+// 2026-09-17 布局整理：页眉走 .shead（小标/页名/条数 + 搜索与动作区），正文两栏
+// 「分类栏 + 列表（待审核区 + 卡片网格）」；分类栏是既有 filterCategory 的另一种呈现，
+// 不新增分类能力。页边留白由外壳 .content 提供（24px 32px）——本页不再叠加整页 padding。
 // 设计 tokens 定义于 src/styles/main.scss（light/dark 双套；规范见 docs/DESIGN-SPEC-MINI.md）
 
 .kb-page {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 20px 24px;
   overflow: hidden;
   color: var(--color-text-primary);
   font-family: var(--font-app);
@@ -13,34 +15,37 @@
 
 .kb-page-header {
   flex-shrink: 0;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+}
+
+.kb-page-title-block {
+  min-width: 0;
+
+  .eyebrow {
+    margin: 0;
+  }
 }
 
 .kb-page-title {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 9px;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 6px 0 0;
 
-  h2 {
-    font-size: 20px;
-    font-weight: 600;
-    margin: 0;
-  }
-
-  .kb-page-count {
-    font-size: 13px;
-    color: var(--color-text-tertiary);
-    background: var(--color-bg-inset);
-    padding: 2px 8px;
-    border-radius: var(--radius-control);
+  svg {
+    color: var(--color-accent);
+    flex: none;
   }
 }
 
 .kb-page-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .kb-search-box {
@@ -158,12 +163,77 @@
   }
 }
 
-// ─── 内容区 ──────────────────────────────────────────────────────────────────
+// ─── 内容区：左分类栏 + 右列表（列表独立滚动，页面自身不出现第二根滚动条）─────
 
 .kb-page-body {
   flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 24px;
+}
+
+.kb-rail {
+  min-width: 0;
   overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.kb-rail__g {
+  padding: 0 10px 8px;
+}
+
+.kb-rail__i {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+
+  svg {
+    flex: none;
+    color: var(--color-text-tertiary);
+  }
+
+  .kb-rail__t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &.is-on {
+    background: var(--color-bg-inset);
+    color: var(--color-text-primary);
+    font-weight: 600;
+
+    svg {
+      color: var(--color-accent);
+    }
+  }
+}
+
+.kb-main {
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .kb-loading,
@@ -278,6 +348,28 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   white-space: pre-wrap;
+
+  // 展开态：正文全文就地读完（不改数据，只放开截断）
+  &.is-open {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+  }
+}
+
+.kb-card-more {
+  margin: -6px 0 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 .kb-card-tags {
@@ -460,10 +552,22 @@
 
 .kb-review-header {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 10px;
   margin-bottom: 12px;
   color: var(--color-warning);
+
+  .kb-review-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+
+    svg {
+      align-self: center;
+      flex: none;
+    }
+  }
 
   h3 {
     margin: 0;
@@ -480,9 +584,16 @@
   }
 
   .kb-review-hint {
-    margin-left: auto;
     font-size: 12px;
     color: var(--color-text-tertiary);
+    line-height: 1.55;
+  }
+
+  .kb-review-acts {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 }
 
@@ -643,8 +754,11 @@
 .kb-review-check {
   display: flex;
   align-items: center;
-  padding-top: 2px;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
   cursor: pointer;
+  user-select: none;
 
   input {
     cursor: pointer;
@@ -928,4 +1042,47 @@
 // 审核行操作区扩展（编辑/删除与发布/拒绝并排）
 .kb-review-item-actions {
   .kb-btn { flex: none; }
+}
+
+// ─── 窄窗：分类栏由竖列转为横排一行，列表仍独立滚动 ──────────────────────────
+
+@media (max-width: 1100px) {
+  .kb-page-body {
+    grid-template-columns: minmax(0, 1fr);
+    // 分类栏收成一行的同时，列表行吃掉剩余高度（否则两行 auto 会把滚动区顶出容器）
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .kb-rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+    overflow: visible;
+    padding-right: 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--color-divider);
+  }
+
+  .kb-rail__g {
+    width: 100%;
+    padding: 0 2px 2px;
+  }
+
+  .kb-rail__i {
+    width: auto;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    padding: 5px 10px;
+
+    &.is-on {
+      border-color: var(--color-accent-border);
+      background: var(--color-accent-bg);
+      color: var(--color-accent);
+
+      svg {
+        color: var(--color-accent);
+      }
+    }
+  }
 }

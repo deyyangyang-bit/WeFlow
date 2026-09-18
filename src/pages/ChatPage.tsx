@@ -8301,44 +8301,52 @@ function ChatPage(props: ChatPageProps) {
                   <span>{isSessionSwitching ? '切换会话中...' : '加载消息中...'}</span>
                 </div>
               )}
-              <div
-                className={`message-list ${hasInitialMessages ? 'loaded' : 'loading'}`}
-                ref={handleMessageListScrollParentRef}
-                onScroll={markMessageListScrolling}
-                onWheel={handleMessageListWheel}
-              >
-                {!isLoadingMessages && messages.length === 0 && !hasMoreMessages ? (
-                  <div className="empty-chat-inline">
-                    <MessageSquare size={32} />
-                    <span>该联系人没有聊天记录</span>
-                  </div>
-                ) : (
-                  <Virtuoso
-                    ref={messageVirtuosoRef}
-                    className="message-virtuoso"
-                    customScrollParent={messageListScrollParent ?? undefined}
-                    data={messages}
-                    overscan={MESSAGE_VIRTUAL_OVERSCAN_PX}
-                    followOutput={(atBottom) => (
-                      prependingHistoryRef.current
-                        ? false
-                        : (atBottom && isMessageListAtBottomRef.current ? 'auto' : false)
-                    )}
-                    atBottomThreshold={80}
-                    atBottomStateChange={handleMessageAtBottomStateChange}
-                    atTopStateChange={handleMessageAtTopStateChange}
-                    rangeChanged={handleMessageRangeChanged}
-                    computeItemKey={(_, msg) => getMessageKey(msg)}
-                    components={messageVirtuosoComponents}
-                    itemContent={renderMessageListItem}
-                  />
-                )}
+              {/* 消息列：与右侧辅助栏并排，只有这一列内的 .message-list 参与纵向滚动 */}
+              <div className="chat-thread-main">
+                <div
+                  className={`message-list ${hasInitialMessages ? 'loaded' : 'loading'}`}
+                  ref={handleMessageListScrollParentRef}
+                  onScroll={markMessageListScrolling}
+                  onWheel={handleMessageListWheel}
+                >
+                  {!isLoadingMessages && messages.length === 0 && !hasMoreMessages ? (
+                    <div className="empty-chat-inline">
+                      <MessageSquare size={32} />
+                      <span>该联系人没有聊天记录</span>
+                    </div>
+                  ) : (
+                    <Virtuoso
+                      ref={messageVirtuosoRef}
+                      className="message-virtuoso"
+                      customScrollParent={messageListScrollParent ?? undefined}
+                      data={messages}
+                      overscan={MESSAGE_VIRTUAL_OVERSCAN_PX}
+                      followOutput={(atBottom) => (
+                        prependingHistoryRef.current
+                          ? false
+                          : (atBottom && isMessageListAtBottomRef.current ? 'auto' : false)
+                      )}
+                      atBottomThreshold={80}
+                      atBottomStateChange={handleMessageAtBottomStateChange}
+                      atTopStateChange={handleMessageAtTopStateChange}
+                      rangeChanged={handleMessageRangeChanged}
+                      computeItemKey={(_, msg) => getMessageKey(msg)}
+                      components={messageVirtuosoComponents}
+                      itemContent={renderMessageListItem}
+                    />
+                  )}
 
-                {/* 回到底部按钮 */}
-                <div className={`scroll-to-bottom ${showScrollToBottom ? 'show' : ''}`} onClick={scrollToBottom}>
-                  <ChevronDown size={16} />
-                  <span>回到底部</span>
+                  {/* 回到底部按钮 */}
+                  <div className={`scroll-to-bottom ${showScrollToBottom ? 'show' : ''}`} onClick={scrollToBottom}>
+                    <ChevronDown size={16} />
+                    <span>回到底部</span>
+                  </div>
                 </div>
+
+                {/* AI 回复建议：浮在消息列右下角，不放进右侧辅助栏（栏内可滚动，浮层会被裁切） */}
+                {!isCurrentSessionGroup && currentSession.username && (
+                  <ReplySuggestion sessionId={currentSession.username} />
+                )}
               </div>
 
               {/* 群成员面板 */}
@@ -8569,14 +8577,6 @@ function ChatPage(props: ChatPageProps) {
               )}
 
 
-              {/* 销售上下文条 - 仅非群聊显示（PRD v2 P2） */}
-              {!isCurrentSessionGroup && currentSession.username && (
-                <SalesContextStrip sessionId={currentSession.username} />
-              )}
-              {/* AI 回复建议 - 仅非群聊显示 */}
-              {!isCurrentSessionGroup && currentSession.username && (
-                <ReplySuggestion sessionId={currentSession.username} />
-              )}
               {/* 会话详情面板 */}
               {showDetailPanel && (
                 <div className="detail-panel session-detail-panel">
@@ -8862,6 +8862,21 @@ function ChatPage(props: ChatPageProps) {
                     <div className="detail-empty">暂无详情</div>
                   )}
                 </div>
+              )}
+
+              {/* 右侧辅助栏：判断 / 依据 / 回复建议 - 仅非群聊显示（PRD v2 P2）；
+                  会话详情面板打开时只让位（加 --tucked 让整栏退出布局），不卸载组件 ——
+                  同一会话内已取到的判断/建议与展开状态不因布局切换丢失，关掉详情原样回来。
+                  栏内数据全部来自 SalesContextStrip 自身的读取，这里只加分组标题，不补默认值：
+                  没有判断/没识别出来时，组件自己显示「未知」阶段与空态。 */}
+              {!isCurrentSessionGroup && currentSession.username && (
+                <aside className={`chat-rail${showDetailPanel ? ' chat-rail--tucked' : ''}`} aria-label="销售上下文：判断、依据与回复建议">
+                  <div className="chat-rail-head">
+                    <span className="chat-rail-head__title">销售上下文</span>
+                    <span className="chat-rail-head__kicker">判断 · 依据 · 回复建议</span>
+                  </div>
+                  <SalesContextStrip sessionId={currentSession.username} />
+                </aside>
               )}
             </div>
           </>
