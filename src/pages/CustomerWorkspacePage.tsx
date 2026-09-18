@@ -47,6 +47,8 @@ const FIELD_LABELS_WB: Record<string, string> = {
 }
 const ENRICH_FIELD_ORDER = ['company', 'position', 'phone', 'industry', 'province', 'city', 'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive']
 const FORMAL_SET = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
+// 档案列首屏只露 3 条待办：超过的部分收进「展开其余 N 条」，避免右栏一进来就出滚动条
+const TODO_PREVIEW_COUNT = 3
 
 export default function CustomerWorkspacePage() {
   const { notice, setNotice, queues, fetchQueues } = useCrmStore()
@@ -267,6 +269,9 @@ export default function CustomerWorkspacePage() {
   const [foldTimeline, setFoldTimeline] = useState(false)
   const [foldProfile, setFoldProfile] = useState(false)
   const [foldBiz, setFoldBiz] = useState(false)
+  // 客户信息（12 字段两列网格）是栏内最高的一块：默认收起，点标题展开
+  const [foldInfo, setFoldInfo] = useState(false)
+  const [todosOpen, setTodosOpen] = useState(false)
   const [customerProfile, setCustomerProfile] = useState<any>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [editingField, setEditingField] = useState('')
@@ -342,6 +347,10 @@ export default function CustomerWorkspacePage() {
     setFoldTimeline(false)
     setFoldProfile(false)
     setFoldBiz(false)
+    // 换客户＝换档案：折叠态与待办展开态一起回默认（与上面三个折叠同规矩），
+    // 新客户的 12 字段与超过 3 条的待办都从收起态开始
+    setFoldInfo(false)
+    setTodosOpen(false)
     if (!c.session_id) return
     setProfileLoading(true)
     try {
@@ -879,7 +888,7 @@ export default function CustomerWorkspacePage() {
                     <span className="cws-side__meta">{pendingTodos.length} 条待处理</span>
                   </div>
                   <div className="cws-side__rows">
-                    {pendingTodos.map((t: any) => (
+                    {(todosOpen ? pendingTodos : pendingTodos.slice(0, TODO_PREVIEW_COUNT)).map((t: any) => (
                       <div key={t.id} className="todo">
                         <div>
                           <div className="todo__t">{t.promise_summary || t.title}</div>
@@ -888,58 +897,72 @@ export default function CustomerWorkspacePage() {
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
-              {/* 屏 4 ③：客户信息 */}
-              <div className="side-block">
-                <div className="side-head">
-                  <span className="side-head__t">客户信息</span>
-                  <span className="cws-side__meta">点击字段可编辑，手改后 AI 不再覆盖</span>
-                </div>
-                <div className="cws-typerow">
-                  <span className="cws-typerow__k">客户类型</span>
-                  {customerProfile.customer ? (
-                    <select
-                      className="crm-filter-select"
-                      value={String(customerProfile.customer.type || '')}
-                      onChange={(e) => void saveCustomerType(e.target.value)}
-                    >
-                      <option value="">未设置</option>
-                      <option value="dealer">经销商</option>
-                      <option value="end_user">终端客户</option>
-                    </select>
-                  ) : (
-                    <span className="crm-muted">未建档（account 未挂接 customer，存量迁移后可用）</span>
+                  {pendingTodos.length > TODO_PREVIEW_COUNT && (
+                    <div className="cws-side__more">
+                      <button className="btn btn--sm btn--quiet" onClick={() => setTodosOpen((v) => !v)}>
+                        {todosOpen ? '收起' : `展开其余 ${pendingTodos.length - TODO_PREVIEW_COUNT} 条`}
+                      </button>
+                    </div>
                   )}
                 </div>
-                <div className="defs">
-                  {accountFieldView(customerProfile.account).map((f) => (
-                    <div key={f.field} className={`def cws-def${f.value ? '' : ' cws-def--empty'}`}>
-                      <div className="def__k">
-                        {f.label}
-                        {f.value && f.source === 'ai' && (
-                          <span className="ahead ahead--ai cws-def__src" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
-                            <i className="ahead__i" />AI · {Math.round((f.confidence ?? 0) * 100)}%
-                          </span>
-                        )}
-                        {f.value && f.source === 'manual' && <span className="ahead ahead--human cws-def__src"><i className="ahead__i" />人工确认</span>}
-                      </div>
-                      {editingField === f.field ? (
-                        <div className="cws-def__edit">
-                          <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
-                          <button className="btn btn--sm btn--primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
-                          <button className="btn btn--sm" onClick={() => setEditingField('')}>取消</button>
-                        </div>
+              )}
+              {/* 屏 4 ③：客户信息（12 字段两列网格，栏内最高的一块）：与时间线/画像/业务同一套
+                  折叠语法，默认收起——首屏先留给客户名 + 动作行 + 本机判断四格 + 跟进待办。 */}
+              <div className="side-block">
+                <button className="cws-fold" onClick={() => setFoldInfo((v) => !v)}>
+                  <span className="side-head__t">客户信息</span>
+                  <span className="cws-side__meta">
+                    {foldInfo ? '点击字段可编辑，手改后 AI 不再覆盖 · 收起 ▲' : `${ENRICH_FIELD_ORDER.length} 项 · 展开 ▼`}
+                  </span>
+                </button>
+                {foldInfo && (
+                  <>
+                    <div className="cws-typerow">
+                      <span className="cws-typerow__k">客户类型</span>
+                      {customerProfile.customer ? (
+                        <select
+                          className="crm-filter-select"
+                          value={String(customerProfile.customer.type || '')}
+                          onChange={(e) => void saveCustomerType(e.target.value)}
+                        >
+                          <option value="">未设置</option>
+                          <option value="dealer">经销商</option>
+                          <option value="end_user">终端客户</option>
+                        </select>
                       ) : (
-                        <div className="def__v" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
-                          title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
-                          {f.value || '未提取'}
-                        </div>
+                        <span className="crm-muted">未建档（account 未挂接 customer，存量迁移后可用）</span>
                       )}
                     </div>
-                  ))}
-                </div>
+                    <div className="defs">
+                      {accountFieldView(customerProfile.account).map((f) => (
+                        <div key={f.field} className={`def cws-def${f.value ? '' : ' cws-def--empty'}`}>
+                          <div className="def__k">
+                            {f.label}
+                            {f.value && f.source === 'ai' && (
+                              <span className="ahead ahead--ai cws-def__src" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
+                                <i className="ahead__i" />AI · {Math.round((f.confidence ?? 0) * 100)}%
+                              </span>
+                            )}
+                            {f.value && f.source === 'manual' && <span className="ahead ahead--human cws-def__src"><i className="ahead__i" />人工确认</span>}
+                          </div>
+                          {editingField === f.field ? (
+                            <div className="cws-def__edit">
+                              <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
+                              <button className="btn btn--sm btn--primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
+                              <button className="btn btn--sm" onClick={() => setEditingField('')}>取消</button>
+                            </div>
+                          ) : (
+                            <div className="def__v" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
+                              title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
+                              {f.value || '未提取'}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
               <div className="side-block">
                 <button className="cws-fold" onClick={() => setFoldTimeline((v) => !v)}>

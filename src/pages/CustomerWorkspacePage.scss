@@ -10,7 +10,10 @@
      （2026-09-18 P1.3：去掉「灰底遮罩 + 白底阴影浮卡 + 关闭 X」的盒中盒，栏内改走
      .side-block / .side-head / .verdicts，与聊天右栏 SalesContextStrip 同一套分段语法）。
      （2026-09-18 P1.3b 纯样式放宽：档案列 clamp(380px, 34vw, 460px)、栏内左右各 22px 留白、
-     分段节奏 22 → 32px、客户信息长文案字段通栏。只动本页排版，不动 DOM / 文案 / 数据。） */
+     分段节奏 22 → 32px、客户信息长文案字段通栏。只动本页排版，不动 DOM / 文案 / 数据。）
+     （2026-09-18 P1.3c 首屏降压迫 + 网格再松一档：客户信息默认收起（与时间线/画像/业务同一套
+     .cws-fold）、跟进待办只先露 3 条、.def 内边距 13/14 → 16/18、格子 gap 1 → 2px；
+     折叠仍是扁平侧栏内的分段，不引入白卡 / 阴影 / 浮层。） */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -191,17 +194,22 @@
    与聊天侧栏共用同一份 —— 判断栏跨屏是同一个组件，不再各写一套 .cws-* 皮肤。 */
 
 /* 档案定义网格（概念稿 .defs/.def）：客户类型行 + 12 字段，点击可编辑。
-   本页档案列比全局 .defs 再松一档：单元格内边距 9/11 → 13/14（行距随之变松），
+   本页档案列比全局再放两档松：单元格内边距 9/11 → 13/14（P1.3b）→ 16/18（P1.3c），
+   格子 gap 1 → 2px、标签到取值 2 → 6px、取值行高 1.6 → 1.75，两列之间松得出来；
    只在 .cws-side__panel 作用域内覆写，合同右栏等仍走 main.scss 全局档。 */
-.cws-side__panel .defs { margin-top: 8px; }
-.cws-side__panel .def { padding: 13px 14px; }
+.cws-side__panel .defs { margin-top: 8px; gap: 2px; }
+.cws-side__panel .def { padding: 16px 18px; }
+.cws-side__panel .cws-def .def__v { margin-top: 6px; line-height: 1.75; }
 /* 长文案字段通栏（一列）：需求 / 预算 / 意向型号 / 采购时间是整句，两列窄格里会挤成墙。
-   序号与 TSX 的 ENRICH_FIELD_ORDER 一一对应（第 7–10 项）；字段顺序变化时同步这里。 */
+   序号与 TSX 的 ENRICH_FIELD_ORDER 一一对应（第 7–10 项）；字段顺序变化时同步这里。
+   （P1.3b 起的通栏规则保持不动，P1.3c 只放宽格子本身。） */
 .cws-side__panel .cws-def:nth-child(n + 7):nth-child(-n + 10) { grid-column: 1 / -1; }
 
 .cws-typerow { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
 .cws-typerow__k { font-size: 11px; color: var(--color-text-tertiary); letter-spacing: .04em; }
-.cws-def .def__v { cursor: text; min-height: 18px; line-height: 1.6; overflow-wrap: anywhere; }
+/* 取值行高由上面「档案定义网格」一段的 .cws-side__panel .cws-def .def__v 统一给（1.75），
+   这里只管交互与折行；两处都写会变成「谁在后面谁赢」的隐式覆盖 */
+.cws-def .def__v { cursor: text; min-height: 18px; overflow-wrap: anywhere; }
 .cws-def--empty .def__v { color: var(--color-text-tertiary); }
 .cws-def__src { margin-left: 6px; }
 .cws-def__edit {
@@ -217,9 +225,12 @@
 /* 待办行：段内行表与判断四格同节奏（上沿一条发丝线 + 行间线，末行不收口） */
 .cws-side__rows { border-top: 1px solid var(--color-divider); }
 .cws-side__rows .todo:last-child { border-bottom: 0; }
+/* 待办超过 3 条时的「展开其余 N 条」：跟在本段行表后面的一行安静按钮，
+   不是第二个动作区，也不再画一条分隔线（.todo 末行已收口） */
+.cws-side__more { display: flex; padding-top: 8px; }
 .cws-side__acts { display: flex; gap: 8px; padding: 8px 0 2px; }
 
-/* 折叠行（时间线 / AI 画像 / 业务）：就是一枚 .side-head（标题左、补充右），
+/* 折叠行（客户信息 / 时间线 / AI 画像 / 业务）：就是一枚 .side-head（标题左、补充右），
    分段间距交给 .side-block，自己不再画一条上边线——栏内只有一套分段语法 */
 .cws-fold {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px; width: 100%;
