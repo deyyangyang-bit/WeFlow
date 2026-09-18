@@ -23,6 +23,11 @@
  *     识别时间拼成一句安静小字，去掉旧的内联色 .pill 徽章 —— 右栏第一视觉留给判断本身，
  *     与客户右栏 .cws-side__meta 同一档。阶段「未知」不进戳记（没有信息量）。
  *   · 判断行空格的「尚未识别」只保留取值文字，去掉重复的 ahead 标记（原先是同一句话出现两遍）。
+ * 2026-09-18 P1.5 细修（动作降档，纯视觉）：
+ *   · 无草稿时「AI 跟进建议」从实心 primary 降为次要档（.btn 默认档，与客户右栏动作同级）。
+ *   · 有草稿时保持 .draft + .draft__acts（复制/换一版）；「复制建议」改轻 primary
+ *     （.btn--primary-soft，浅 accent 底），动作行最多一档主色。
+ *   · suggest API、草稿数据路径不动，不造假草稿。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, Check, Sparkles } from 'lucide-react'
@@ -308,7 +313,9 @@ export default function SalesContextStrip({ sessionId }: Props) {
           <>
             <div className="draft">{suggestion}</div>
             <div className="draft__acts">
-              <button className="btn btn--sm btn--primary" onClick={handleCopy}>
+              {/* P1.5 细修：复制是草稿态唯一的主操作，用「轻 primary」（浅 accent 底），
+                  不再上实心主色；换一版保持 quiet —— 动作行最多一档主色 */}
+              <button className="btn btn--sm btn--primary-soft" onClick={handleCopy}>
                 {copied ? <Check size={13} strokeWidth={1.6} /> : <Copy size={13} strokeWidth={1.6} />}
                 {copied ? '已复制' : '复制建议'}
               </button>
@@ -319,9 +326,11 @@ export default function SalesContextStrip({ sessionId }: Props) {
           </>
         ) : (
           <div className="draft__acts">
-            {/* profile 未就绪时 suggest 会直接跳过（无客户可定位），按钮如实禁用而不是空点 */}
+            {/* profile 未就绪时 suggest 会直接跳过（无客户可定位），按钮如实禁用而不是空点。
+                P1.5 细修：生成是常规动作不是「今天必须做的这一件」，降为与客户右栏动作
+                同级的次要档（.btn 默认档，无实心主色）——右栏第一视觉留给判断本身。 */}
             <button
-              className="btn btn--sm btn--primary"
+              className="btn btn--sm"
               onClick={() => void handleSuggest()}
               disabled={loadingSuggestion || !profile}
             >

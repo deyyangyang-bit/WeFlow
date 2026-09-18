@@ -557,6 +557,16 @@ body {
 
   &:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 }
+// .btn--primary-soft =「轻 primary」：仍是动作行里唯一的主操作档，但不上实心 accent ——
+// 浅 accent 底 + accent 字（概念稿 .tag--task 的 tint 语法）。给侧栏 / 列表动作行用，
+// 避免一行里出现实心色块（2026-09-18 P1.5/P1.6：Chat 回复建议与今日行动动作行共用）。
+.btn--primary-soft {
+  background: var(--color-accent-bg);
+  border: 1px solid transparent;
+  color: var(--color-accent);
+
+  &:hover { border-color: var(--color-accent-border); }
+}
 .btn--sm { height: 26px; padding: 0 10px; font-size: 12px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.is-off,
