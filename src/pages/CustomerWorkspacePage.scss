@@ -8,7 +8,9 @@
    - 层级（概念稿 CRM 屏）：页头 .shead → 阶段筛选 .rail → 客户索引 .cws-index ＋ 当前档案 .cws-side。
      宽窗（≥1280px，外壳内容区约 1000px 以上）两栏并排；窄窗档案落到索引下方，两档都是扁平侧栏
      （2026-09-18 P1.3：去掉「灰底遮罩 + 白底阴影浮卡 + 关闭 X」的盒中盒，栏内改走
-     .side-block / .side-head / .verdicts，与聊天右栏 SalesContextStrip 同一套分段语法）。 */
+     .side-block / .side-head / .verdicts，与聊天右栏 SalesContextStrip 同一套分段语法）。
+     （2026-09-18 P1.3b 纯样式放宽：档案列 clamp(380px, 34vw, 460px)、栏内左右各 22px 留白、
+     分段节奏 22 → 32px、客户信息长文案字段通栏。只动本页排版，不动 DOM / 文案 / 数据。） */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -113,7 +115,9 @@
 /* 档案列 = 与列表并排的扁平侧栏（概念稿 .detail / 聊天右栏同一套语法）。
    这里没有浮层、没有白底卡、没有阴影、没有关闭 X：与列表只靠一条发丝线分开，
    栏内一律 .side-block / .side-head / .verdicts 的分段节奏（与聊天右栏同一个组件语法）。 */
-.cws-cols.has-detail { grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 400px); }
+/* 栏宽：比 P1.3 的 340/30vw/400 再放宽一档（1280px 窗宽下约占主区 43%，不超过一半），
+   给两列表单和长文案留出可读宽度；min 380px 是「再窄就退回一列」的底线。 */
+.cws-cols.has-detail { grid-template-columns: minmax(0, 1fr) clamp(380px, 34vw, 460px); }
 .cws-cols.has-detail .cws-index { padding-right: 22px; }
 
 .cws-side {
@@ -121,23 +125,29 @@
      窗口纵向压缩时档案跟着它走，不会跟着长列表被推出视野。 */
   position: sticky; top: 0;
   align-self: start; min-width: 0;
-  border-left: 1px solid var(--color-divider); padding-left: 22px;
+  /* 栏内左右各 22px：左侧与发丝线留气口，右侧不再贴到内容区边缘（外壳 32px 之外再让出一档） */
+  border-left: 1px solid var(--color-divider); padding: 0 22px;
 }
 .cws-side__panel {
   /* 46 标题栏 + 24 上留白 + 24 下留白 + 2 外框线：档案列整体落在可视区内，
      超出时才出现自身滚动条——否则「档案比窗口高就永远看不到底部」是更差的失败。 */
   max-height: calc(100vh - 96px);
   overflow-y: auto;
-  padding: 0 0 24px;
+  padding: 0 0 26px;
   .crm-detail { margin-top: 0; }
   /* 栏头不吸顶、不铺白条：客户名独占一行，动作收成下面一行（可换行），权重次于客户名 */
   .crm-detail-head {
     display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
-    gap: 10px; margin-bottom: 16px;
+    gap: 10px; margin-bottom: 22px;
   }
   .crm-detail-actions { flex-wrap: wrap; justify-content: flex-start; row-gap: 6px; }
-  /* 深度分析是第二个 .crm-profile：并排时也要接上 .side-block 的 22px 分段节奏 */
-  .crm-profile + .crm-profile { margin-top: 22px; }
+  /* 分段节奏：本页档案列比全局 .side-block 的 22px 再松一档（+10px），
+     本机判断 / 跟进待办 / 客户信息三段之间留出清晰气口，不糊成一块。
+     只在本页档案列作用域内覆写，聊天右栏与今日行动仍是全局 22px。 */
+  .side-block + .side-block { margin-top: 32px; }
+  .side-block > .side-head { margin-bottom: 10px; }
+  /* 深度分析是第二个 .crm-profile：并排时也要接上 .side-block 的分段节奏 */
+  .crm-profile + .crm-profile { margin-top: 32px; }
   /* 共享类的细线化覆写（只作用于本页档案列，不改 CrmWorkbenchPage.scss 自身） */
   .crm-insight {
     background: none; border: none; border-left: 2px solid var(--color-border); border-radius: 0;
@@ -148,16 +158,17 @@
   .crm-muted { font-size: 12.5px; }
 }
 
-/* 窄窗（<1280px）：档案列落到索引下方（概念稿 .detail 的窄窗档：上沿一条发丝线 + 18px 留白），
+/* 窄窗（<1280px）：档案列落到索引下方（概念稿 .detail 的窄窗档：上沿一条发丝线 + 22px 留白），
    依旧扁平；不再走「灰底遮罩 + 白底浮卡」那一档，所以也不再有可关的浮层壳。 */
 @media (max-width: 1279px) {
   .cws-cols.has-detail { grid-template-columns: minmax(0, 1fr); }
   .cws-cols.has-detail .cws-index { padding-right: 0; }
 
   .cws-side {
+    /* 落到索引下方：上沿一条发丝线 + 与桌面档同档的左右 22px 留白（不是只有宽窗才放宽） */
     position: static;
-    border-left: 0; padding-left: 0;
-    border-top: 1px solid var(--color-divider); padding-top: 18px;
+    border-left: 0; border-top: 1px solid var(--color-divider);
+    padding: 22px 22px 0;
   }
   .cws-side__panel { max-height: none; overflow: visible; }
 }
@@ -179,10 +190,18 @@
 /* 判断栏出处标记与证据回查：已收进 main.scss 的 .ahead--btn / .verdict__evi，
    与聊天侧栏共用同一份 —— 判断栏跨屏是同一个组件，不再各写一套 .cws-* 皮肤。 */
 
-/* 档案定义网格（概念稿 .defs/.def）：客户类型行 + 12 字段，点击可编辑 */
+/* 档案定义网格（概念稿 .defs/.def）：客户类型行 + 12 字段，点击可编辑。
+   本页档案列比全局 .defs 再松一档：单元格内边距 9/11 → 13/14（行距随之变松），
+   只在 .cws-side__panel 作用域内覆写，合同右栏等仍走 main.scss 全局档。 */
+.cws-side__panel .defs { margin-top: 8px; }
+.cws-side__panel .def { padding: 13px 14px; }
+/* 长文案字段通栏（一列）：需求 / 预算 / 意向型号 / 采购时间是整句，两列窄格里会挤成墙。
+   序号与 TSX 的 ENRICH_FIELD_ORDER 一一对应（第 7–10 项）；字段顺序变化时同步这里。 */
+.cws-side__panel .cws-def:nth-child(n + 7):nth-child(-n + 10) { grid-column: 1 / -1; }
+
 .cws-typerow { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
 .cws-typerow__k { font-size: 11px; color: var(--color-text-tertiary); letter-spacing: .04em; }
-.cws-def .def__v { cursor: text; min-height: 18px; word-break: break-all; }
+.cws-def .def__v { cursor: text; min-height: 18px; line-height: 1.6; overflow-wrap: anywhere; }
 .cws-def--empty .def__v { color: var(--color-text-tertiary); }
 .cws-def__src { margin-left: 6px; }
 .cws-def__edit {
