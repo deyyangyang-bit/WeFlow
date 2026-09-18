@@ -2391,9 +2391,10 @@ class CrmDbService {
 
   // ─── 工作台 ───────────────────────────────────────────────────────────────
   workbench(): CrmRow[] {
-    // 合同无 owner_sales 列（宪法设计）：owner 经 account_id JOIN account 带出（页面过滤档用，只加 SELECT 列不改口径）
+    // 合同无 owner_sales 列（宪法设计）：owner 经 account_id JOIN account 带出（页面过滤档用，只加 SELECT 列不改口径）。
+    // account_name 同为 JOIN 带出的展示列（P2.1c-fix：台账客户主列），不改 IPC 名/签名与口径
     const contracts = this.all(
-      'SELECT c.*, a.owner_sales AS owner_sales FROM contract c LEFT JOIN account a ON a.id = c.account_id ORDER BY c.id DESC LIMIT 200'
+      'SELECT c.*, a.owner_sales AS owner_sales, a.name AS account_name FROM contract c LEFT JOIN account a ON a.id = c.account_id ORDER BY c.id DESC LIMIT 200'
     )
     return contracts.map((c) => {
       const paid = this.creditedTotal(Number(c.id))

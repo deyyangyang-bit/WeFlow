@@ -236,19 +236,28 @@ export default function CrmWorkbenchPage() {
     const maxPage = Math.max(1, Math.ceil(filteredContracts.length / 10))
     if (tablePage > maxPage) setTablePage(maxPage)
   }, [filteredContracts.length, tablePage])
-  // 列序贴近概念稿台账（名称 / 金额 / 状态 / 进度），能力列不删：已确认回款、预警、操作全保留
+  // 台账列序贴概念稿（编号 · 客户主列 · 金额 · 状态 · 签订日 · 回款）：能力不删——
+  // 原「已确认回款」并入回款格次行；操作列 hover 才显（签约/发货/合同/删除都在，删除仍有确认）
   const contractColumns: Array<SearchTableColumn<any>> = [
-    { key: 'name', title: '合同' },
-    { key: 'amount', title: '金额', className: 'num', render: (c) => Number(c.amount ?? 0).toLocaleString() },
-    { key: 'status', title: '状态', render: (c) => <span className={`crm-qtag ${c.status === 'pending_sign' ? 'crm-qtag--info' : c.status === 'signed' ? 'crm-qtag--success' : 'crm-qtag--neutral'}`}>{CONTRACT_STATUS_MAP[c.status] || c.status}</span> },
-    { key: 'ratio', title: '全款进度', render: (c) => (
-      <span className="crm-paid">
-        <span className="bar bar--mute"><i style={{ width: `${Math.round((c.paidRatio ?? 0) * 100)}%` }} /></span>
-        <span className="crm-paid__pct num">{Math.round((c.paidRatio ?? 0) * 100)}%</span>
+    { key: 'no', title: '编号', render: (c) => <span className="crm-cell-no num">#{c.id}</span> },
+    { key: 'account', title: '客户', render: (c) => (
+      <span className="crm-cell-main">
+        <span className="tc-n">{accountLabelOf(c)}</span>
+        <span className="tc-s">{contractLabelOf(c)}</span>
       </span>
     ) },
-    { key: 'paid', title: '已确认回款', className: 'num', render: (c) => Number(c.paid ?? 0).toLocaleString() },
-    { key: 'warning', title: '预警', render: (c) => c.warning ? <span className="crm-qtag crm-qtag--danger">{c.warning}</span> : <span className="crm-muted">—</span> },
+    { key: 'amount', title: '金额', className: 'num', render: (c) => Number(c.amount ?? 0).toLocaleString() },
+    { key: 'status', title: '状态', render: (c) => { const t = statusTagOf(c); return <span className={`crm-qtag ${t.cls}`}>{t.text}</span> } },
+    { key: 'sign_date', title: '签订日', render: (c) => <span className="crm-cell-date num">{fmtSignDate(c.sign_date) || '未签'}</span> },
+    { key: 'pay', title: '回款', render: (c) => (
+      <span className="crm-cell-pay">
+        <span className="crm-paid">
+          <span className="bar bar--mute"><i style={{ width: `${Math.round((c.paidRatio ?? 0) * 100)}%` }} /></span>
+          <span className="crm-paid__pct num">{Math.round((c.paidRatio ?? 0) * 100)}%</span>
+        </span>
+        <span className="crm-cell-pay__t">{Number(c.paid || 0) > 0 ? `已确认 ¥${Number(c.paid).toLocaleString()}` : '未回款'}</span>
+      </span>
+    ) },
     { key: 'ops', title: '操作', render: (c) => (
       <span className="crm-row-ops" onClick={(e) => e.stopPropagation()}>
         {c.status === 'pending_sign' && <button className="btn btn--sm btn--quiet" onClick={() => void sign(c)}><Handshake size={13} /> 签约</button>}
@@ -478,16 +487,23 @@ export default function CrmWorkbenchPage() {
     </div>
   )
 
-  // 一行小字摘要（设计稿屏 3）：待签/预警取销售视角名单（filterByOwner 后的 myWorkbench），
+  // 一行小字摘要：待签/预警取销售视角名单（filterByOwner 后的 myWorkbench），
   // 本月到账沿用 statsOverview 的 monthPaid 口径（不新造口径）
   const pendingSignCount = myWorkbench.filter((c: any) => c.status === 'pending_sign').length
   const warningCount = myWorkbench.filter((c: any) => c.warning).length
-  // 四格概览（概念稿 contracts 屏 .stats）：在途份数/金额与待回款取销售视角名单的既有字段
-  // （金额 − 已确认回款 = 未清估算），不新造读口；本月到账/待确认事项沿用 statsOverview
+  // 四格概览（概念稿 contracts 屏 .stats）：在签/待回款取销售视角名单的既有字段
+  // （金额 − 已确认回款 = 未清估算），不新造读口；本月到账沿用 statsOverview
   const activeContracts = myWorkbench.filter((c: any) => c.status === 'pending_sign' || c.status === 'signed')
   const activeAmount = activeContracts.reduce((s: number, c: any) => s + Number(c.amount || 0), 0)
   const unpaidAmount = activeContracts.reduce((s: number, c: any) => s + Math.max(Number(c.amount || 0) - Number(c.paid || 0), 0), 0)
   const unpaidCount = activeContracts.filter((c: any) => Number(c.paid || 0) < Number(c.amount || 0)).length
+  // 本月签订：签约动作写 sign_date（ms），落本月历月的条数；无逾期天数字段，最长逾期诚实显示「—」
+  const monthSignCount = myWorkbench.filter((c: any) => {
+    if (!c.sign_date) return false
+    const d = new Date(Number(c.sign_date))
+    const now = new Date()
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+  }).length
   // stat__n 主数字：≥1 万折叠成「X.X 万」（概念稿 small 单位语法），避免长数字撑破格子
   const fmtWan = (n: number) => {
     if (n >= 10000) { const w = n / 10000; return { main: (Math.round(w * 10) / 10).toLocaleString(), unit: '万' } }
@@ -496,6 +512,25 @@ export default function CrmWorkbenchPage() {
   const activeAmountFmt = fmtWan(activeAmount)
   const unpaidAmountFmt = fmtWan(unpaidAmount)
   const monthPaidFmt = fmtWan(Number(stats?.monthPaid || 0))
+  // 台账展示（贴概念叙事）：客户名为主列（workbench JOIN 带出 account_name），合同名退次行并去表情；
+  // 详情直开（crm.get 无 JOIN）时按「-合同」后缀兜底
+  const stripEmoji = (s: string) => s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').trim()
+  const contractLabelOf = (c: any) => stripEmoji(String(c?.name || '')) || `#${c?.id}`
+  const accountLabelOf = (c: any) => String(c?.account_name || '').trim() || stripEmoji(String(c?.name || '').replace(/-合同$/, '')) || '未命名客户'
+  // 签订日：未签为空 →「未签」；同年省年份（mono 短日期）
+  const fmtSignDate = (ts: any) => {
+    if (!ts) return ''
+    const d = new Date(Number(ts))
+    const sameYear = d.getFullYear() === new Date().getFullYear()
+    return sameYear ? `${d.getMonth() + 1}/${d.getDate()}` : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`
+  }
+  // 状态 tag：status + warning 合成一格（预警覆盖成 danger 档文案，不并排两枚章）
+  const statusTagOf = (c: any): { cls: string; text: string } => {
+    if (c.warning) return { cls: 'crm-qtag--danger', text: String(c.warning) }
+    if (c.status === 'pending_sign') return { cls: 'crm-qtag--info', text: '待签约' }
+    if (c.status === 'signed') return { cls: 'crm-qtag--success', text: '已签约' }
+    return { cls: 'crm-qtag--neutral', text: CONTRACT_STATUS_MAP[c.status] || c.status }
+  }
 
   // 视图切换：合同工作台（默认）/ 交付售后（成交单交付登记 + 设备档案 + 售后投影）
   const [view, setView] = useState<'contracts' | 'delivery'>('contracts')
@@ -504,34 +539,38 @@ export default function CrmWorkbenchPage() {
   return (
     <div className="crm-workbench-page">
       {ownerFiltered && <div className="owner-filter-hint">仅显示我名下及未归属的数据</div>}
-      {/* 页眉（概念稿 .shead）：小标 → 主张句 → 一行弱文案；右侧视图分段 + 刷新 + 新建（本屏唯一轻 primary） */}
+      {/* 页眉（概念稿 .shead）：小标 → 在签/待回款主张句 → 一行弱文案；右侧刷新 quiet + 实心新建（本屏唯一实心主按钮） */}
       <div className="shead">
         <div>
           <p className="eyebrow">CRM · 合同</p>
-          <h1 className="hero">在途 {activeContracts.length} 份 · 待签 {pendingSignCount} 份</h1>
-          <p className="sub">签约 / 发货 / 回款 / 合同与报价文档，都在本页闭环</p>
+          <h1 className="hero">{activeContracts.length} 份在签，{unpaidCount} 份待回款</h1>
+          <p className="sub">签订与回款状态取本机业务库 · 异常进「预警」，不会自动催款</p>
         </div>
         <div className="shead__actions">
-          {/* 视图分段接共享 .chipbar（quiet segmented），交付售后入口保留 */}
-          <div className="chipbar" role="tablist" aria-label="合同工作台视图">
-            <button role="tab" aria-selected={view === 'contracts'} className={`chip${view === 'contracts' ? ' is-on' : ''}`} onClick={() => setView('contracts')}>合同工作台</button>
-            <button role="tab" aria-selected={view === 'delivery'} className={`chip${view === 'delivery' ? ' is-on' : ''}`} onClick={() => setView('delivery')}>交付售后</button>
-          </div>
           <button className="btn btn--quiet" onClick={() => { void fetchStats(); void fetchAccuracy(); void fetchWorkbench() }}><RefreshCw size={14} /> 刷新</button>
-          {view === 'contracts' && (
-            <button className="btn btn--primary-soft" disabled={creatingRef.current} onClick={() => { if (showNew) resetNew(); else { void openNew().catch(e => setNotice(String(e))) }; if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
+          {/* 新建表单打开时让位，避免与表单内的实心提交钮同屏抢主 */}
+          {view === 'contracts' && !showNew && (
+            <button className="btn btn--primary" disabled={creatingRef.current} onClick={() => { void openNew().catch(e => setNotice(String(e))); if (!products.length) void fetchProducts() }}><Plus size={14} /> 新建合同</button>
           )}
+        </div>
+      </div>
+      {/* 视图分段降为 shead 下的 quiet 一行（默认合同台账；交付售后能力保留） */}
+      <div className="crm-view-row">
+        <div className="chipbar" role="tablist" aria-label="合同工作台视图">
+          <button role="tab" aria-selected={view === 'contracts'} className={`chip${view === 'contracts' ? ' is-on' : ''}`} onClick={() => setView('contracts')}>合同工作台</button>
+          <button role="tab" aria-selected={view === 'delivery'} className={`chip${view === 'delivery' ? ' is-on' : ''}`} onClick={() => setView('delivery')}>交付售后</button>
         </div>
       </div>
       {view === 'delivery' && <DeliveryAftersales />}
       {view === 'contracts' && (<>
       {notice && <div className="crm-notice">{notice}</div>}
       {artifact && <GeneratedFileResult artifact={artifact} onClose={() => setArtifact(null)} />}
-      {/* 四格概览（概念稿 .stats 发丝顶底）：份数/待回款取列表既有字段，本月到账沿用 statsOverview 口径 */}
+      {/* 四格概览（概念稿 .stats 发丝顶底）：标签贴概念——在签金额 / 待回款 / 本月签订 / 最长逾期；
+          最长逾期无天数字段，诚实显示「—」，预警份数收在副行 */}
       <div className="stats crm-stats">
         <div className="stat">
           <div className="stat__n">¥{activeAmountFmt.main}{activeAmountFmt.unit && <small>{activeAmountFmt.unit}</small>}</div>
-          <div className="stat__l">在途金额</div>
+          <div className="stat__l">在签金额</div>
           <div className="stat__d">{activeContracts.length} 份 · 待签 {pendingSignCount}</div>
         </div>
         <div className="stat">
@@ -540,14 +579,14 @@ export default function CrmWorkbenchPage() {
           <div className="stat__d">{unpaidCount} 份未清 · 金额−已确认回款</div>
         </div>
         <div className="stat">
-          <div className="stat__n">{stats ? <>¥{monthPaidFmt.main}{monthPaidFmt.unit && <small>{monthPaidFmt.unit}</small>}</> : '—'}</div>
-          <div className="stat__l">本月到账</div>
-          <div className="stat__d">已认领 · 按到款日</div>
+          <div className="stat__n">{monthSignCount}</div>
+          <div className="stat__l">本月签订</div>
+          <div className="stat__d">{stats ? `本月到账 ¥${monthPaidFmt.main}${monthPaidFmt.unit}` : '—'}</div>
         </div>
         <div className="stat">
-          <div className={`stat__n${warningCount > 0 ? ' stat__n--bad' : ''}`}>{warningCount}</div>
-          <div className="stat__l">预警</div>
-          <div className="stat__d">{stats ? `另有待确认 ${stats.pendingReview} 项` : '—'}</div>
+          <div className="stat__n">—</div>
+          <div className="stat__l">最长逾期</div>
+          <div className="stat__d">{warningCount > 0 ? `有预警 ${warningCount} 份` : '暂无预警'}</div>
         </div>
       </div>
       {/* 原 KPI 行与管道 pill 降权为一行 mono 小字；数据看板默认收起，折叠钮 quiet */}
@@ -725,8 +764,9 @@ export default function CrmWorkbenchPage() {
       {selected && (
         <div className="crm-detail">
           <div className="crm-detail__head">
-            <h3>{selected.name}</h3>
-            <span className="crm-detail__hint">子资源 · 报价 / 发票 / 回款 / 物流</span>
+            <h3>{accountLabelOf(selected)}</h3>
+            <span className="crm-detail__name">{contractLabelOf(selected)}</span>
+            <span className="crm-detail__hint">子资源 · 回款 / 报价 / 发票 / 物流</span>
           </div>
           <div className="crm-detail__grid">
             <section className="crm-sub">

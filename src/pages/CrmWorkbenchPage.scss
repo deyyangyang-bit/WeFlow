@@ -154,8 +154,6 @@
 // ── 概览四格（概念稿 contracts 屏）+ 数据看板折叠行 ──
 .crm-workbench-page .crm-stats { margin-top: 16px; }
 .crm-workbench-page .stat__n small { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); margin-left: 3px; }
-// 预警非零才红（语义色只做状态）
-.crm-workbench-page .stat__n--bad { color: var(--color-danger); }
 .crm-dash-row { display: flex; align-items: baseline; gap: 8px 16px; flex-wrap: wrap; margin: 12px 0 14px; }
 .crm-meta-line { display: flex; gap: 5px 14px; flex-wrap: wrap; margin-right: auto; font-size: 11.5px; color: var(--color-text-tertiary);
   span { white-space: nowrap; }
@@ -195,15 +193,34 @@
    布局整理（合同页专属，全部限定在 .crm-workbench-page / 本页私有类内）
    P2.1c（2026-09-18）：页眉接共享 .shead / 概览四格 .stats / 台账 seclabel+发丝行 /
    状态 pill 换安静 .crm-qtag / 行操作接 .btn--quiet / 新建表单改发丝分区。
+   P2.1c-fix：台账叙事贴概念——hero 在签/待回款、实心新建、四格文案对齐概念
+   （本月签订 / 最长逾期「—」）、列序 编号·客户主列·金额·状态·签订日·回款、操作列 hover 才显。
    共享类（.crm-btn 等，交付售后与 SearchTable 仍在用）不改本体，只在本页作用域覆写。
    ============================================================= */
 
 /* ─── 页眉（概念稿 .shead）：布局交给共享类，本页只管与 stats 的呼吸 ─── */
 .crm-workbench-page .shead { margin-bottom: 4px; }
 
-/* ─── 台账（概念稿 .seclabel + .tbl 发丝行）：标签行 + 安静筛选 + 发丝行 ─── */
+/* ─── 台账（概念稿 .seclabel + .tbl 发丝行）：客户主列 + 操作 hover 才显 ─── */
 .crm-ledger-label { margin-top: 6px; }
 .crm-ledger-hint { font-size: 11px; color: var(--color-text-tertiary); }
+/* 视图切换（shead 下的 quiet 一行）：默认合同台账，交付售后入口降级不删 */
+.crm-view-row { display: flex; margin: 2px 0 0; }
+/* 编号弱 mono；客户主列两行（客户名 + 弱色合同名） */
+.crm-cell-no { font-size: 11px; color: var(--color-text-tertiary); }
+.crm-cell-main { display: flex; flex-direction: column; min-width: 0; }
+.crm-cell-date { font-size: 11.5px; color: var(--color-text-secondary); }
+/* 回款格：细条 + 百分比一行，短文案次行（并掉原「已确认回款」数值列） */
+.crm-cell-pay { display: flex; flex-direction: column; gap: 4px; }
+.crm-cell-pay .crm-paid { display: inline-flex; align-items: center; gap: 8px; }
+.crm-cell-pay .bar { width: 92px; }
+.crm-paid__pct { font-size: 11px; color: var(--color-text-tertiary); }
+.crm-cell-pay__t { font-size: 11px; color: var(--color-text-tertiary); }
+/* 操作列默认退场：行 hover / 键盘焦点 / 选中行才显（签约/发货/合同/删除仍在，删除仍有确认） */
+.crm-workbench-page .crm-row-ops { display: flex; gap: 2px; justify-content: flex-end; white-space: nowrap; opacity: 0; transition: opacity .12s; }
+.crm-workbench-page .search-table__grid tr:hover .crm-row-ops,
+.crm-workbench-page .search-table__grid tr:focus-within .crm-row-ops,
+.crm-workbench-page .search-table__grid tr.active .crm-row-ops { opacity: 1; }
 /* 安静状态 tag（同线索池 .lp-qtag 语法：发丝边 + 语义色字，无 tint 底） */
 .crm-workbench-page .crm-qtag {
   display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
@@ -216,10 +233,8 @@
   &--danger { border-color: var(--color-danger-border); color: var(--color-danger); }
   &--neutral { color: var(--color-text-tertiary); }
 }
-/* 全款进度：共享 .bar 细条（mute 档）+ 等宽百分比 */
-.crm-paid { display: inline-flex; align-items: center; gap: 8px; }
-.crm-paid .bar { width: 92px; }
-.crm-paid__pct { font-size: 11px; color: var(--color-text-tertiary); }
+/* 删除保持 danger 但 quiet：默认同 quiet，hover 才上语义色 */
+.crm-workbench-page .crm-op--danger:hover { color: var(--color-danger); background: var(--color-danger-bg); }
 
 /* ─── 合同台账（主列表）：发丝底边 + 极淡 hover + 选中 inset；筛选控件收矮一档 ─── */
 .crm-workbench-page .search-table__bar { margin-bottom: 8px; }
@@ -233,9 +248,6 @@
 .crm-workbench-page .search-table__grid td { padding: 8px 10px; border-bottom: 1px solid var(--color-divider); }
 .crm-workbench-page .search-table__grid tbody td { vertical-align: middle; }
 .crm-workbench-page .search-table__grid tr.active { background: var(--color-bg-inset) !important; }
-.crm-workbench-page .crm-row-ops { display: flex; gap: 2px; justify-content: flex-end; white-space: nowrap; }
-/* 删除保持 danger 但 quiet：默认同 quiet，hover 才上语义色 */
-.crm-workbench-page .crm-op--danger:hover { color: var(--color-danger); background: var(--color-danger-bg); }
 /* 宽表兜底：窄屏不在表内挤成多行，改为表格容器内横向滚动（页面本身仍不出横向滚动条） */
 .crm-workbench-page .search-table__grid table { min-width: 980px; }
 .crm-workbench-page .search-table__pager { padding-top: 8px; }
@@ -244,6 +256,7 @@
 .crm-workbench-page .crm-detail { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--color-border); }
 .crm-workbench-page .crm-detail__head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .crm-workbench-page .crm-detail__head h3 { font-size: 13px; font-weight: 600; margin: 0; }
+.crm-workbench-page .crm-detail__name { font-size: 12px; color: var(--color-text-tertiary); }
 .crm-workbench-page .crm-detail__hint { font-size: 11.5px; color: var(--color-text-tertiary); }
 .crm-workbench-page .crm-detail__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 22px; align-items: start; }
 .crm-workbench-page .crm-sub { min-width: 0; }
