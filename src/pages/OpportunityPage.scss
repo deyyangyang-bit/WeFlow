@@ -23,6 +23,10 @@
  * - 详情弹窗压平（同客户右栏节奏）：分区改共享 .box + .box__t，字段行接共享 .kv（两列排布），
  *   「AI 建议下一步」去 tint 底改左 2px accent 条，风险行去边框壳改左 2px 语义条，
  *   事件/风险标签去实心底。
+ *
+ * 2026-09-18 P2.1b-A：默认主视图改阶段看板（概念稿 .board/.bcol/.deal/.win 落地本文件）——
+ * 4 列 grid（minmax(176px,1fr)）一屏铺开，≤1180px 转横向滚动 + scroll-snap；列顶 2px 色条、
+ * 卡片发丝边、赢率 2px 细条全部对齐概念尺寸；列表降为次要视图（.rail 筛选保留）。
  */
 
 .opp-page { color: var(--color-text-primary); font-family: var(--font-app); }
@@ -57,6 +61,68 @@
 .opp-page .stat__n small { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); margin-left: 4px; }
 .opp-page .stat__n--warn { color: var(--color-warning); }
 .opp-page .stat__n--ok { color: var(--color-success); }
+
+/* ─── 看板主视图（概念稿 .board/.bcol/.deal/.win，P2.1b-A）───────────────────
+   列顶 2px 色条颜色由 TSX 内联（FUNNEL_STAGE_COLORS 单一真源 / success token）；
+   卡片 = 1px 发丝边 + radius-small，hover 只变边色；赢率 = 2px 细条，不造假%。 */
+.opp-page .opp-board {
+  display: grid; grid-template-columns: repeat(4, minmax(176px, 1fr));
+  gap: 16px; margin-top: 20px; align-items: start;
+}
+.opp-page .bcol {
+  border-top: 2px solid var(--color-border);
+  border-radius: 0 0 var(--radius-small) var(--radius-small);
+  padding: 12px 8px 10px; min-width: 176px;
+  transition: background .15s;
+
+  &.is-over { background: var(--color-bg-hover); }
+}
+.opp-page .bcol__h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.opp-page .bcol__t { font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--color-text-primary); }
+.opp-page .bcol__n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--color-text-tertiary); }
+.opp-page .bcol__sum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--color-text-tertiary); margin-top: 5px; }
+.opp-page .bcol__empty { font-size: 11px; color: var(--color-text-tertiary); padding: 10px 2px 2px; }
+
+.opp-page .deal {
+  border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  background: var(--color-bg-surface); padding: 11px 12px; margin-top: 10px;
+  cursor: pointer; transition: border-color .15s, opacity .15s;
+
+  &:hover { border-color: var(--color-accent-border); }
+  &.is-dragging { opacity: .45; }
+  &.deal--won .deal__n { color: var(--color-text-secondary); }
+}
+.opp-page .deal__n {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-size: 12.5px; font-weight: 600; line-height: 1.35; color: var(--color-text-primary);
+}
+.opp-page .deal__nt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* active 已推进到成交档（待人工登记）的标记；won 卡不标（win 行已示「已赢单」） */
+.opp-page .deal__reg {
+  flex: none; font-size: 10px; font-weight: 500; line-height: 1.4;
+  color: var(--color-warning); border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-micro); padding: 0 5px;
+}
+.opp-page .deal__d { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.55; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opp-page .deal__d--reason { color: var(--color-text-secondary); }
+.opp-page .deal__amt {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em;
+  margin-top: 8px; color: var(--color-text-primary);
+  &.deal__amt--pending { font-size: 11.5px; font-weight: 400; color: var(--color-text-tertiary); }
+}
+/* 赢率条：2px 发丝细条（概念稿 .win）；只在有真实意向评分时渲染 */
+.opp-page .win { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.opp-page .win__bar { flex: 1; height: 2px; background: var(--color-bg-inset); border-radius: 2px; overflow: hidden;
+  i { display: block; height: 100%; background: var(--color-chart-neutral); } }
+.opp-page .win__n { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-text-tertiary); flex: none; }
+.opp-page .win__n--won { color: var(--color-success); }
+
+/* 窄屏：4 列转横向滚动（概念稿窄屏同款处理，scroll-snap 对齐列首） */
+@media (max-width: 1180px) {
+  .opp-page .opp-board { display: flex; overflow-x: auto; gap: 14px; padding-bottom: 10px; scroll-snap-type: x proximity; }
+  .opp-page .bcol { flex: none; width: 216px; scroll-snap-align: start; }
+}
 
 /* ─── 阶段筛选 rail（原漏斗条降权）：共享 .rail 本体，段色只留圆点 ─────────── */
 .opp-page .opp-rail-block { margin: 20px 0 16px; }

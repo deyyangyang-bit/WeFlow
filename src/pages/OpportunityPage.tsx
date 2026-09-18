@@ -13,6 +13,11 @@ import GeneratedFileResult from '../components/crm/GeneratedFileResult'
  *
  * 2026-09-18 P2.1b：纯视觉对齐（按钮接共享档位 / 漏斗条改 .rail / 列表安静 tag / 详情弹窗压平），
  * 数据链路、字段与契约不变。
+ *
+ * 2026-09-18 P2.1b-A：默认主视图改概念稿式阶段看板（.board：了解/比价/决策/成交 四列，
+ * 列 key = stage 真源；「成交」列 = active 已推进到成交档 + 近 30 天 won，流失不进看板）。
+ * 卡片点击开既有详情；拖拽跨列走既有 opportunityStage（与「推进到 xx」同一写路径，留痕一致）；
+ * 正式 won 只走成交登记表单（宪法 §1.5 单点），接口 opportunity* 不新增不改签名。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -25,7 +30,7 @@ import { useCrmStore } from '../stores/crmStore'
 import type { OpportunityDealRegistration, OpportunityRecord, QuotationRecord } from '../types/electron'
 import type { OpportunityAnalysisResult, OppAssessment } from '../../shared/opportunitySignals'
 import OpportunityStageAnalysis from '../components/crm/OpportunityStageAnalysis'
-import { RefreshCw, X, CheckCircle2, XCircle, Lock, BarChart3, List } from 'lucide-react'
+import { RefreshCw, X, CheckCircle2, XCircle, Lock, BarChart3, List, KanbanSquare } from 'lucide-react'
 // 阶段色单一真源（红线 3）：与销售漏斗同族 Apple 蓝渐变。P2.1b 起段色只作安静 tag 文字与
 // rail 圆点点缀，不再整块铺色；unknown 无段色，回落 CSS tertiary。
 import { FUNNEL_STAGE_COLORS, FUNNEL_NEUTRAL } from '../../shared/funnelPalette'
@@ -40,7 +45,9 @@ const STAGE_COLORS: Record<string, string> = {
 // 阶段推进路径：了解 → 比价 → 决策 → 成交
 const NEXT_STAGE: Record<string, string> = { 了解: '比价', 比价: '决策', 决策: '成交' }
 
-type OppRow = OpportunityRecord
+// 行类型：SQL SELECT o.* 实际带 owner_sales（归属过滤档用），类型声明里没有——交叉补齐可选字段，
+// 只补类型不改运行时数据
+type OppRow = OpportunityRecord & { owner_sales?: string | null }
 interface OppEvent { id: number; event_type: string; stage: string; detail: string; created_at: number }
 interface OppStats { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number }
 interface OppScore { score: number; level: string; factors: Array<{ label: string; delta: number; reason: string }> }
@@ -92,6 +99,17 @@ function supplementaryModels(o: OppRow | null): string {
 const EVENT_LABEL: Record<string, string> = {
   created: '创建', signal: '采购信号', stage_change: '阶段推进', won: '成交', lost: '丢单', deal_pending: '待成交登记'
 }
+
+// 备注名里的日期前缀剥离（同客户页 namePartsOf 思路，纯展示；store 字段与检索口径不动）
+const NAME_DATE_PREFIX = /^(?:[[(（【])?((?:\d{2}|\d{4})[.\-/]\d{1,2}[.\-/]\d{1,2})(?:[\])）】])?[\s·\-—–,，、|]*/
+function namePartsOf(raw: string): { main: string; date: string } {
+  const full = String(raw || '').trim()
+  const m = full.match(NAME_DATE_PREFIX)
+  const rest = m ? full.slice(m[0].length).trim() : ''
+  if (!m || !rest) return { main: full, date: '' }
+  return { main: rest, date: m[1] }
+}
+function nameOnlyOf(raw: string) { return namePartsOf(raw).main }
 
 // 币种下拉（人工登记；外贸单以 RMB 结算，不做自动换算——宪法 §1.5）
 const CURRENCY_OPTIONS = ['CNY', 'USD', 'EUR', 'JPY', 'HKD', 'AUD', 'CAD', 'GBP']
@@ -411,6 +429,57 @@ function TodoForm({ assessment, onClose, onDone }: {
   )
 }
 
+/** 看板卡（概念稿 .deal）：标题去备注日期前缀（纯展示）；赢率条用真实意向评分，无分则隐藏（禁止造假%） */
+function DealCard({ o, score, dragging, onOpen, onDragStart, onDragEnd }: {
+  o: OppRow
+  score: OppScore | null
+  dragging: boolean
+  onOpen: (o: OppRow) => void
+  onDragStart: () => void
+  onDragEnd: () => void
+}) {
+  const isWon = o.status === 'won'
+  const model = o.main_model || o.product || o.name
+  const qty = Number(o.order_qty) > 0 ? `×${o.order_qty}` : Number(o.quantity) > 0 ? `×${o.quantity}` : ''
+  const reason = score?.factors[0]?.reason || ''
+  const scoreN = score ? Math.max(0, Math.min(100, Number(score.score) || 0)) : 0
+  return (
+    <div
+      className={`deal${dragging ? ' is-dragging' : ''}${isWon ? ' deal--won' : ''}`}
+      draggable={!isWon}
+      onClick={() => onOpen(o)}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', String(o.id))
+        onDragStart()
+      }}
+      onDragEnd={onDragEnd}
+      title={`${o.account_name || '未命名客户'} · ${isWon ? '已赢单' : o.stage} · 点击查看详情`}
+    >
+      <div className="deal__n">
+        <span className="deal__nt">{nameOnlyOf(o.account_name || o.name)}</span>
+        {!isWon && o.stage === '成交' && <span className="deal__reg">待成交登记</span>}
+      </div>
+      <div className="deal__d">{[model, qty].filter(Boolean).join(' · ')}</div>
+      <div className="deal__d num">最近信号 {fmtTime(Number(o.last_signal_at))}</div>
+      {reason && <div className="deal__d deal__d--reason" title={reason}>{reason}</div>}
+      <div className={`deal__amt${Number(o.amount) > 0 ? '' : ' deal__amt--pending'}`}>
+        {Number(o.amount) > 0 ? `¥${Number(o.amount).toLocaleString()}` : '金额待确认'}
+      </div>
+      {isWon ? (
+        <div className="win">
+          <span className="win__n win__n--won">已赢单{Number(o.updated_at) > 0 ? ` · ${fmtDate(Number(o.updated_at))}` : ''}</span>
+        </div>
+      ) : score ? (
+        <div className="win">
+          <span className="win__bar"><i style={{ width: `${scoreN}%` }} /></span>
+          <span className="win__n">意向 {score.score}</span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /** 最近的纵向可滚动祖先：滚动容器是 App shell 的 .content，不由本页拥有 */
 function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
   let node: HTMLElement | null = el?.parentElement ?? null
@@ -422,10 +491,17 @@ function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
   return null
 }
 
-type OppView = 'list' | 'analysis'
+type OppView = 'board' | 'list' | 'analysis'
+/** 看板列（概念稿 .board/.bcol）：列 key = 商机 stage 真源（了解/比价/决策/成交），不新造枚举 */
+interface BoardCol { key: string; color: string; cards: OppRow[]; emptyText: string }
 
 export default function OpportunityPage() {
   const [opps, setOpps] = useState<OppRow[]>([])
+  // won 行只喂看板「成交」列（近 30 天）；流失不进主看板
+  const [wonRows, setWonRows] = useState<OppRow[]>([])
+  // 拖拽推进（P1）：拖起的卡与悬停列；写路径与「推进到 xx」同为 opportunityStage
+  const [dragOpp, setDragOpp] = useState<OppRow | null>(null)
+  const [dragOverStage, setDragOverStage] = useState('')
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [stats, setStats] = useState<OppStats | null>(null)
@@ -448,13 +524,15 @@ export default function OpportunityPage() {
   const [toast, setToast] = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // 视图由 URL 承载（`/sales-funnel` 旧链接重定向到 `?view=analysis`），刷新/回退保持同一视图
+  // 视图由 URL 承载（看板 = 默认主视图；`/sales-funnel` 旧链接仍重定向到 `?view=analysis`），
+  // 刷新/回退保持同一视图；未知取值回落看板
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const view: OppView = searchParams.get('view') === 'analysis' ? 'analysis' : 'list'
+  const rawView = searchParams.get('view')
+  const view: OppView = rawView === 'analysis' ? 'analysis' : rawView === 'list' ? 'list' : 'board'
   const pageRef = useRef<HTMLDivElement>(null)
   // 两视图各自的筛选是各自的 state；滚动位置在这里按视图记忆，切换时互不覆盖
-  const scrollMem = useRef<Record<OppView, number>>({ list: 0, analysis: 0 })
+  const scrollMem = useRef<Record<OppView, number>>({ board: 0, list: 0, analysis: 0 })
   const viewMounted = useRef(false)
 
   const showToast = (msg: string) => {
@@ -501,9 +579,12 @@ export default function OpportunityPage() {
         window.electronAPI.crm.opportunityStats(),
         window.electronAPI.identity.get().catch(() => ({ name: '', role: '', nameAliases: [] }))
       ])
+      // 看板「成交」列数据源；老版本缺该通道时降级为空列，不影响主流程
+      const wonList: OppRow[] = await window.electronAPI.crm.opportunityList({ status: 'won' }).catch(() => [])
       const idLike = identityLikeFromIpc(idt)
       setIdentity(idLike)
       setOpps(filterByOwner(list || [], idLike))
+      setWonRows(filterByOwner(wonList, idLike))
       setStats(st || null)
       // 逐个客户拉意向评分 0-100（跨库装配，失败忽略单个）
       const scoreMap: Record<number, OppScore> = {}
@@ -537,6 +618,38 @@ export default function OpportunityPage() {
       rate: i > 0 && data[i - 1].count > 0 && d.count > 0 ? Math.round((d.count / data[i - 1].count) * 100) : null
     }))
   }, [stats])
+
+  // 看板列（概念稿 .board）：活跃列 = status=active 且 stage 匹配；「成交」列 = active 且已推进到
+  // 成交档（待登记）+ 近 30 天 won。流失（lost）不进看板。列顶色条沿用 FUNNEL_STAGE_COLORS 单一真源。
+  const boardCols = useMemo<BoardCol[]>(() => {
+    const activeOf = (stage: string) => opps.filter((o) => o.status === 'active' && o.stage === stage)
+    const wonRecent = wonRows.filter((o) => Number(o.updated_at || 0) >= Date.now() - 30 * 86400000)
+    const wonCol = [...activeOf('成交'), ...wonRecent]
+    return [
+      { key: '了解', color: FUNNEL_STAGE_COLORS[0], cards: activeOf('了解'), emptyText: '暂无商机' },
+      { key: '比价', color: FUNNEL_STAGE_COLORS[1], cards: activeOf('比价'), emptyText: '暂无商机' },
+      { key: '决策', color: FUNNEL_STAGE_COLORS[2], cards: activeOf('决策'), emptyText: '暂无商机' },
+      { key: '成交', color: 'var(--color-success)', cards: wonCol, emptyText: '近 30 天暂无赢单' }
+    ]
+  }, [opps, wonRows])
+
+  // 拖拽落列（P1）：与「推进到 xx」同一写路径 opportunityStage（后端留痕 stage_change 事件），
+  // 成交列同样只写 stage（=推进到成交），正式 won 一律走成交登记表单（宪法 §1.5 单点）；
+  // 失败/无变化只提示不改数据
+  const handleDrop = async (targetStage: string) => {
+    const o = dragOpp
+    setDragOpp(null)
+    setDragOverStage('')
+    if (!o || o.status !== 'active' || o.stage === targetStage) return
+    try {
+      const ok = await window.electronAPI.crm.opportunityStage(o.id, targetStage)
+      if (ok) showToast(`已推进到「${targetStage}」`)
+      else showToast(`「${o.stage} → ${targetStage}」未生效（阶段无变化或商机已关闭）`)
+      await fetch()
+    } catch (e) {
+      showToast(`推进失败：${String(e)}`)
+    }
+  }
 
   const filtered = opps
     .filter((o) => !stageFilter || o.stage === stageFilter)
@@ -660,8 +773,15 @@ export default function OpportunityPage() {
           </p>
         </div>
         <div className="shead__actions">
-          {/* 视图分段（设计稿状态 1）：列表 = 逐条看；阶段分析 = 每周复盘看卡点。P2.1b 接共享 .chipbar */}
+          {/* 视图分段（设计稿状态 1）：看板 = 默认主视图；列表 = 逐条看；阶段分析 = 每周复盘看卡点。
+              P2.1b 接共享 .chipbar（quiet 分段，不做三颗实心钮） */}
           <div className="chipbar" role="tablist" aria-label="商机视图">
+            <button
+              role="tab"
+              aria-selected={view === 'board'}
+              className={`chip${view === 'board' ? ' is-on' : ''}`}
+              onClick={() => switchView('board')}
+            ><KanbanSquare size={13} /> 看板</button>
             <button
               role="tab"
               aria-selected={view === 'list'}
@@ -683,7 +803,7 @@ export default function OpportunityPage() {
       </div>
 
       {/* 统计条（概念稿 deals 屏 .stats 四格）：mono 数字 / 发丝分隔，口径全部来自既有数据投影 */}
-      {view === 'list' && stats && stats.total > 0 && (
+      {(view === 'board' || view === 'list') && stats && stats.total > 0 && (
         <div className="stats opp-stats">
           <div className="stat">
             <div className="stat__n">{stats.totalAmount > 0 ? `¥${stats.totalAmount.toLocaleString()}` : '—'}</div>
@@ -706,6 +826,58 @@ export default function OpportunityPage() {
             <div className="stat__d">意向评分 ≥ 80</div>
           </div>
         </div>
+      )}
+
+      {/* 看板主视图（概念稿 .board）：阶段列 + 发丝卡；列 key = stage 真源，点击卡开详情，拖卡跨列推进。
+          首屏 loading 且 stats 未到时不渲染（避免闪「暂无商机」空态）；0 active 但有近期赢单仍显示看板 */}
+      {view === 'board' && pendingOnly && (
+        <div className="opp-filter">
+          <span>看板已筛：<b>金额待确认</b></span>
+          <button className="btn btn--sm btn--quiet" onClick={() => setPendingOnly(false)}>清除</button>
+        </div>
+      )}
+      {view === 'board' && stats && (stats.total > 0 || boardCols.some((c) => c.cards.length > 0)) && (
+        <div className="opp-board">
+          {boardCols.map((col) => {
+            const cards = pendingOnly ? col.cards.filter((o) => Number(o.amount) <= 0) : col.cards
+            const sum = cards.reduce((s, o) => s + Number(o.amount || 0), 0)
+            return (
+              <div
+                key={col.key}
+                className={`bcol${dragOverStage === col.key ? ' is-over' : ''}`}
+                style={{ borderTopColor: col.color }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (dragOverStage !== col.key) setDragOverStage(col.key)
+                }}
+                onDragLeave={() => { if (dragOverStage === col.key) setDragOverStage('') }}
+                onDrop={(e) => { e.preventDefault(); void handleDrop(col.key) }}
+              >
+                <div className="bcol__h">
+                  <span className="bcol__t">{col.key}</span>
+                  <span className="bcol__n">{cards.length}</span>
+                </div>
+                <div className="bcol__sum">{sum > 0 ? `¥${sum.toLocaleString()}` : '—'}</div>
+                {cards.map((o) => (
+                  <DealCard
+                    key={`${o.status}-${o.id}`}
+                    o={o}
+                    score={scores[o.id] || null}
+                    dragging={dragOpp?.id === o.id}
+                    onOpen={(x) => void openDetail(x)}
+                    onDragStart={() => setDragOpp(o)}
+                    onDragEnd={() => { setDragOpp(null); setDragOverStage('') }}
+                  />
+                ))}
+                {!cards.length && <div className="bcol__empty">{col.emptyText}</div>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {view === 'board' && !loading && stats && stats.total === 0 && !boardCols.some((c) => c.cards.length > 0) && (
+        <div className="opp-empty">暂无商机。客户在微信里表达采购意向（如"要几台""多少钱"）后会自动创建。</div>
       )}
 
       {view === 'analysis' && (
@@ -749,10 +921,10 @@ export default function OpportunityPage() {
         <div className="opp-empty">暂无商机。客户在微信里表达采购意向（如"要几台""多少钱"）后会自动创建。</div>
       ))}
 
-      {view === 'list' && stageFilter && (
+      {view === 'list' && (stageFilter || pendingOnly) && (
         <div className="opp-filter">
-          <span>当前筛选：<b>{stageFilter}</b></span>
-          <button className="btn btn--sm btn--quiet" onClick={() => setStageFilter('')}>清除</button>
+          <span>当前筛选：{[stageFilter, pendingOnly ? '金额待确认' : ''].filter(Boolean).join(' · ')}</span>
+          <button className="btn btn--sm btn--quiet" onClick={() => { setStageFilter(''); setPendingOnly(false) }}>清除</button>
         </div>
       )}
 
