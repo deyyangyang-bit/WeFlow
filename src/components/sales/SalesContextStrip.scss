@@ -3,35 +3,13 @@
 // 2026-09-18 P1.1：判断 / 依据 / 回复建议三段全部吃概念稿基础件（.verdicts / .evidence+.ev / .draft+.draft__acts，
 // 定义在 src/styles/main.scss）——本文件只留「侧栏里怎么排」的紧凑元信息，不再持有一层私有皮肤。
 // 旧族 var(--bg-*/--text-*) 与字面 hex 一律不用，颜色全走 --color-*。
+// 2026-09-18 P1.5：栏头右侧收敛为概念稿同款单一 .num 戳记（.cws-side__meta 同档），
+// 旧的 __meta 弹性组与内联色 .pill 徽章、__silent 档已删；本文件只剩前提行与戳记的字号档。
 .sales-context-strip {
   font-size: 12px;
 
   // 侧栏分段的间距与 .side-block 全局规则一致（22px），这里只补首段与栏头的贴合
   > .side-block:first-child { margin-top: 0; }
-
-  // ── 紧凑元信息（阶段 / 沉默天数 / 识别时间戳记）：从旧的整行 top-strip 主 UI 降下来 ──
-  // 栏宽 clamp(264px, 20vw, 300px)：组内允许折行（戳记次要，落到第二行仍成立）。
-  // flex: 1 1 auto + min-width 0 = 可收缩并占满余量，这样窄栏是「换行」而不是把标题挤出栏外。
-  &__meta {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-    gap: 7px;
-    row-gap: 3px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  &__silent {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-    white-space: nowrap;
-
-    &.is-warn { color: var(--color-danger); font-weight: 600; }
-  }
 
   // 前提行：最近意向 / 备注（等宽小字，不抢判断栏的注意力）
   &__reason {
@@ -46,7 +24,8 @@
     margin-top: 3px;
   }
 
-  // 栏头右侧的次要数字：依据条数（依据消息）/ 识别时间（本机识别）——同一档语气，不新造徽章
+  // 栏头右侧的次要数字：依据条数（依据消息）/ 阶段·沉默·识别时间（本机识别）——
+  // 同一档语气（10.5px 等宽 tertiary），等宽字形由 tsx 里的 .num 提供，不新造徽章
   &__count,
   &__stamp {
     font-size: 10.5px;

@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import {
   Aperture,
   BarChart3,
@@ -44,6 +44,7 @@ export interface ChatHeaderProps {
   isLoadingMessages: boolean
   currentSessionId?: string | null
   jumpCalendarWrapRef: React.RefObject<HTMLDivElement | null>
+  formatTime: (timestamp: number) => string
   onTriggerSessionInsight: () => void
   onToggleGroupSummaryPanel: () => void
   onGroupAnalytics: () => void
@@ -83,6 +84,7 @@ function ChatHeader({
   isLoadingMessages,
   currentSessionId,
   jumpCalendarWrapRef,
+  formatTime,
   onTriggerSessionInsight,
   onToggleGroupSummaryPanel,
   onGroupAnalytics,
@@ -115,6 +117,18 @@ function ChatHeader({
     ? `批量解密图片中${batchImageDecryptProgress?.total ? `：${batchImageDecryptProgress.current}/${batchImageDecryptProgress.total}（${batchImageDecryptProgressPercent}%）` : ''}，可在导出页任务中心查看进度`
     : '批量解密图片'
 
+  // P1.5 顶栏次要 meta（概念稿 .thread__sub「214 条消息 · 最近 09:12」同位）：
+  // 消息数在头部没有真实来源，不写；只用会话行已有的最近时间（与列表行同一格式化器，
+  // 相对时间「3小时前/刚刚」直接展示，日期才带「最近」前缀），取不到就整段不出。
+  const lastActiveText = useMemo(() => {
+    const ts = session.lastTimestamp || session.sortTimestamp
+    return ts > 0 ? formatTime(ts) : ''
+  }, [session.lastTimestamp, session.sortTimestamp, formatTime])
+  const lastActivePart = lastActiveText
+    ? (lastActiveText.includes('/') ? `最近 ${lastActiveText}` : lastActiveText)
+    : ''
+  const headerSub = [isGroupChat ? '群聊' : '', lastActivePart].filter(Boolean).join(' · ')
+
   return (
     <div className="message-header">
       <Avatar
@@ -125,7 +139,7 @@ function ChatHeader({
       />
       <div className="header-info">
         <h3>{sessionName}</h3>
-        {isGroupChat && <div className="header-subtitle">群聊</div>}
+        {headerSub && <div className="header-subtitle">{headerSub}</div>}
       </div>
       <div className="header-actions">
         <button
@@ -262,6 +276,8 @@ function areEqual(prev: ChatHeaderProps, next: ChatHeaderProps) {
     prev.session.username === next.session.username &&
     prev.session.displayName === next.session.displayName &&
     prev.session.avatarUrl === next.session.avatarUrl &&
+    prev.session.lastTimestamp === next.session.lastTimestamp &&
+    prev.session.sortTimestamp === next.session.sortTimestamp &&
     prev.isGroupChat === next.isGroupChat &&
     prev.standaloneSessionWindow === next.standaloneSessionWindow &&
     prev.showGroupMembersPanel === next.showGroupMembersPanel &&
@@ -287,6 +303,7 @@ function areEqual(prev: ChatHeaderProps, next: ChatHeaderProps) {
     prev.isLoadingMessages === next.isLoadingMessages &&
     prev.currentSessionId === next.currentSessionId &&
     prev.jumpCalendarWrapRef === next.jumpCalendarWrapRef &&
+    prev.formatTime === next.formatTime &&
     prev.onTriggerSessionInsight === next.onTriggerSessionInsight &&
     prev.onToggleGroupSummaryPanel === next.onToggleGroupSummaryPanel &&
     prev.onGroupAnalytics === next.onGroupAnalytics &&

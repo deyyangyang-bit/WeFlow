@@ -18,6 +18,11 @@
  *     generatedAt，取不到就整条不显示；覆盖条数在本机没有真实来源，故不写（不造假）。
  *   · 回复建议的 .draft 壳修好渲染路径：suggest 回的是 ActionAnalysisResult.script，
  *     旧代码读不存在的 result.suggestion，导致真机上「有建议」也只剩一个按钮。
+ * 2026-09-18 P1.5（观感对齐）：
+ *   · 栏头右侧收敛为概念稿同款单一 .num 戳记（10.5px 等宽 tertiary）：阶段 / 沉默天数 /
+ *     识别时间拼成一句安静小字，去掉旧的内联色 .pill 徽章 —— 右栏第一视觉留给判断本身，
+ *     与客户右栏 .cws-side__meta 同一档。阶段「未知」不进戳记（没有信息量）。
+ *   · 判断行空格的「尚未识别」只保留取值文字，去掉重复的 ahead 标记（原先是同一句话出现两遍）。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, Check, Sparkles } from 'lucide-react'
@@ -207,6 +212,13 @@ export default function SalesContextStrip({ sessionId }: Props) {
     .filter((t) => t > 0)
   const identifyStampMs = stampTimes.length ? Math.max(...stampTimes) : 0
   const identifyStamp = fmtStampTime(identifyStampMs)
+  // P1.5 栏头戳记（概念稿 .side-head 右侧 .num「09:41 · 覆盖 214 条」同位）：
+  // 阶段（未知不出现）/ 沉默天数 / 识别时间拼成一句安静小字；全空则整条不出。
+  const contextStamp = [
+    stage !== 'unknown' ? stageInfo.label : '',
+    silentDays > 0 ? `${silentDays} 天未联系` : '',
+    identifyStamp
+  ].filter(Boolean).join(' · ')
 
   return (
     <div className="sales-context-strip">
@@ -214,20 +226,14 @@ export default function SalesContextStrip({ sessionId }: Props) {
       <div className="side-block">
         <div className="side-head">
           <span className="side-head__t">本机识别</span>
-          {/* 阶段 / 沉默天数从旧的整行 top-strip 主 UI 降为栏内紧凑元信息 */}
-          <span className="sales-context-strip__meta">
-            <span className="pill" style={{ background: `${stageInfo.color}1A`, color: stageInfo.color }}>{stageInfo.label}</span>
-            {silentDays > 0 && (
-              <span className={`sales-context-strip__silent${silentDays > 7 ? ' is-warn' : ''}`}>{silentDays} 天未联系</span>
-            )}
-            {/* 识别时间戳记：有生成时间才出现（无数据不显示、不造假），完整时刻放 title */}
-            {identifyStamp && (
-              <span
-                className="num sales-context-strip__stamp"
-                title={`本机识别时间：${new Date(identifyStampMs).toLocaleString('zh-CN')}`}
-              >{identifyStamp}</span>
-            )}
-          </span>
+          {/* 阶段 / 沉默天数 / 识别时间：P1.5 起收敛为概念稿同款单一 .num 戳记（安静小字），
+              阶段「未知」与缺失项不进串；什么都没有就整条不显示，不造空节点 */}
+          {contextStamp && (
+            <span
+              className="num sales-context-strip__stamp"
+              title={identifyStamp ? `本机识别时间：${new Date(identifyStampMs).toLocaleString('zh-CN')}` : undefined}
+            >{contextStamp}</span>
+          )}
         </div>
 
         {/* 最近意向与备注都是前提（这份判断基于什么），压在栏内紧凑行里，不另起分段 */}
@@ -241,15 +247,18 @@ export default function SalesContextStrip({ sessionId }: Props) {
                 <div className="verdict__k">{label}</div>
                 <div>
                   <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
-                  <div className="verdict__meta">
-                    {!v && <span className="ahead"><i className="ahead__i" />尚未识别</span>}
-                    {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
-                    {v && v.source !== 'manual' && (
-                      <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
-                        <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
-                      </span>
-                    )}
-                  </div>
+                  {/* P1.5：出处标记只跟着有值的格子走（空格的「尚未识别」由取值文字承担），
+                      出处行整行不渲染，避免空 meta 撑出一段无内容的缝 */}
+                  {v && (
+                    <div className="verdict__meta">
+                      {v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
+                      {v.source !== 'manual' && (
+                        <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
+                          <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

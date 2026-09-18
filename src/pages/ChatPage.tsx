@@ -8127,6 +8127,7 @@ function ChatPage(props: ChatPageProps) {
                 isLoadingMessages={isLoadingMessages}
                 currentSessionId={currentSessionId}
                 jumpCalendarWrapRef={jumpCalendarWrapRef}
+                formatTime={formatSessionTime}
                 onTriggerSessionInsight={handleTriggerSessionInsight}
                 onToggleGroupSummaryPanel={toggleGroupSummaryPanel}
                 onGroupAnalytics={handleGroupAnalytics}
@@ -8867,14 +8868,11 @@ function ChatPage(props: ChatPageProps) {
               {/* 右侧辅助栏：判断 / 依据 / 回复建议 - 仅非群聊显示（PRD v2 P2）；
                   会话详情面板打开时只让位（加 --tucked 让整栏退出布局），不卸载组件 ——
                   同一会话内已取到的判断/建议与展开状态不因布局切换丢失，关掉详情原样回来。
-                  栏内数据全部来自 SalesContextStrip 自身的读取，这里只加分组标题，不补默认值：
-                  没有判断/没识别出来时，组件自己显示「未知」阶段与空态。 */}
+                  栏内数据全部来自 SalesContextStrip 自身的读取，不补默认值：
+                  没有判断/没识别出来时，组件自己显示「未知」阶段与空态。
+                  P1.5 不再包一层栏级标题：三段各有共享 .side-head，右栏与客户档案同一套侧栏语法。 */}
               {!isCurrentSessionGroup && currentSession.username && (
                 <aside className={`chat-rail${showDetailPanel ? ' chat-rail--tucked' : ''}`} aria-label="销售上下文：判断、依据与回复建议">
-                  <div className="chat-rail-head">
-                    <span className="chat-rail-head__title">销售上下文</span>
-                    <span className="chat-rail-head__kicker">判断 · 依据 · 回复建议</span>
-                  </div>
                   <SalesContextStrip sessionId={currentSession.username} />
                 </aside>
               )}
