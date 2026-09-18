@@ -4,7 +4,7 @@ import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/G
  * 2026-08-24 改造：去掉 AI 自动确认（销售手动认领），到款按天分组展示，认领后显示开票状态（订单群 PDF 发票解析）。
  */
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
-import { ClipboardCheck, RefreshCw, Radio, Users, X } from 'lucide-react'
+import { RefreshCw, Radio, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import { getCrmLogisticsOverdueHours } from '../services/config'
 import CustomerPicker from '../components/sales/CustomerPicker'
@@ -92,9 +92,9 @@ function WeekDayGroups(props: {
       })}
       {maxPage > 0 && (
         <div className="crm-pager">
-          <button className="crm-btn" disabled={cur >= maxPage} onClick={() => setPage(cur + 1)}>上一页</button>
+          <button className="btn btn--plain btn--sm" disabled={cur >= maxPage} onClick={() => setPage(cur + 1)}>上一页</button>
           <span className="crm-pager-info">{dayLabelOf(days[0])} ~ {dayLabelOf(days[6])} · 第 {cur + 1} / {maxPage + 1} 页</span>
-          <button className="crm-btn" disabled={cur <= 0} onClick={() => setPage(cur - 1)}>下一页</button>
+          <button className="btn btn--plain btn--sm" disabled={cur <= 0} onClick={() => setPage(cur - 1)}>下一页</button>
         </div>
       )}
     </div>
@@ -316,33 +316,58 @@ export default function CrmReviewPage() {
   }
   // 超期未签收统计（顶部徽章）
   const logiOverdueCount = logiLinked.filter((l: any) => l._overdueHours > 0).length
+  const invoiceUnlinked = queues.invoices.filter((i) => !i.contract_id).length // 四格副行：未挂合同的发票张数
   const noAccount = accounts.length === 0 // 无任何客户 → 认领不可行，给引导
 
   return (
     <div className="crm-review-page">
-      <div className="crm-header">
-        <div className="crm-header__id">
-          <p className="eyebrow">跟单 · 承诺与回访</p>
-          <h2><ClipboardCheck size={18} /> 跟单中心</h2>
+      {/* 页眉（概念稿 .shead）：eyebrow 按真实队列命名；hero 用页内既有计数（今日待认领到款 + 待签收），
+          不写「承诺」腔；右侧 刷新 quiet + 立即扫描 轻 primary（本屏唯一主操作档） */}
+      <div className="shead">
+        <div>
+          <p className="eyebrow">跟单 · 款项与物流</p>
+          <h1 className="hero">今天待办 {todayClaimable + logiLinked.length} 件，物流超期 {logiOverdueCount} 件</h1>
+          <p className="sub">到款与物流来自本机扫描的群消息，需人工认领 / 签收，不会自动确认</p>
         </div>
-        <div className="crm-header__ops">
-          <button className="crm-btn" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
-          <button className="crm-btn crm-btn--ghost" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
+        <div className="shead__actions">
+          <button className="btn btn--quiet" onClick={() => { void fetchQueues(); void fetchPayments(); void fetchLogi(logiOverdueHours); void fetchSalesTeam(); void fetchGroups() }}><RefreshCw size={14} /> 刷新</button>
+          <button className="btn btn--primary-soft" onClick={() => void scanNow()} disabled={loading}><Radio size={14} /> 立即扫描群消息</button>
         </div>
       </div>
-      {/* 视图栏（概念稿 .rail）：两个队列档位 + 右侧「今天要办」汇总，数据同原摘要行（零新接口） */}
+      {/* 四格概览（概念稿 .stats）：全部取页内既有队列计数，不新造口径；超期危险色仅 >0 */}
+      <div className="stats">
+        <div className="stat">
+          <div className={`stat__n${logiOverdueCount > 0 ? ' stat__n--danger' : ''}`}>{logiOverdueCount}</div>
+          <div className="stat__l">物流超期</div>
+          <div className="stat__d">{logiOverdueCount > 0 ? `超过 ${logiOverdueHours}h 未签收` : `阈值 ${logiOverdueHours}h 未签收`}</div>
+        </div>
+        <div className="stat">
+          <div className="stat__n">{todayClaimable}</div>
+          <div className="stat__l">今日待认领到款</div>
+          <div className="stat__d">近 30 天待认领 {unclaimedCount} 笔</div>
+        </div>
+        <div className="stat">
+          <div className="stat__n">{logiLinked.length}</div>
+          <div className="stat__l">待签收物流</div>
+          <div className="stat__d">待认领 {queues.logistics.length} 单</div>
+        </div>
+        <div className="stat">
+          <div className="stat__n">{queues.invoices.length}</div>
+          <div className="stat__l">发票待开</div>
+          <div className="stat__d">{invoiceUnlinked > 0 ? `${invoiceUnlinked} 张未关联合同` : '均已关联合同'}</div>
+        </div>
+      </div>
+      {/* 视图栏（概念稿 .rail）：两个队列档位 + 右侧弱汇总（只留四格没有的近 30 天到款笔数，不与四格重复） */}
       <div className="rail" role="tablist" aria-label="跟单队列">
         <button type="button" role="tab" aria-selected={reviewTab === 'payments'}
           className={`rail__item${reviewTab === 'payments' ? ' is-on' : ''}`} onClick={() => setReviewTab('payments')}>
-          💰 款项认领<span className="rail__n">{unclaimedCount}</span>
+          款项认领<span className="rail__n">{unclaimedCount}</span>
         </button>
         <button type="button" role="tab" aria-selected={reviewTab === 'logistics'}
           className={`rail__item${reviewTab === 'logistics' ? ' is-on' : ''}`} onClick={() => setReviewTab('logistics')}>
-          🚚 物流跟单<span className="rail__n">{queues.logistics.length}</span>
+          物流跟单<span className="rail__n">{queues.logistics.length}</span>
         </button>
-        <span className="rail__sum">
-          今天要办 · 今日到款待认领 <b>{todayClaimable}</b> 笔 · 待签收 <b>{logiLinked.length}</b> 单 · 发票待开 <b>{queues.invoices.length}</b> 张
-        </span>
+        <span className="rail__sum">近 30 天到款 <b>{payments.length}</b> 笔</span>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
 
@@ -384,8 +409,8 @@ export default function CrmReviewPage() {
                     <option value="">关联合同（可选）</option>
                     {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  <button className="crm-btn primary" disabled={!claimReady} title={claimReady ? '' : '请先输入客户名'} onClick={() => void doClaimLogi(l)}>确认认领</button>
-                  <button className="crm-btn" onClick={() => void linkLogi(l)}>自动匹配</button>
+                  <button className="btn btn--primary-soft btn--sm" disabled={!claimReady} title={claimReady ? '' : '请先输入客户名'} onClick={() => void doClaimLogi(l)}>确认认领</button>
+                  <button className="btn btn--quiet btn--sm" onClick={() => void linkLogi(l)}>自动匹配</button>
                 </div>
               </div>
             )
@@ -405,7 +430,7 @@ export default function CrmReviewPage() {
               <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
             </div>
             <div className="logi-card__actions">
-              <button className="crm-btn primary" onClick={() => void doSignedLogi(l)}>确认签收</button>
+              <button className="btn btn--primary-soft btn--sm" onClick={() => void doSignedLogi(l)}>确认签收</button>
             </div>
           </div>
         )} />
@@ -431,7 +456,7 @@ export default function CrmReviewPage() {
         <div className="review-sec__head">
           <span className="review-sec__t">款项认领（7 天一页）</span>
           <em className="logi-stats">近 30 天 {payments.length} 笔 · 待认领 {unclaimedCount} 笔</em>
-          <button className={`crm-btn${onlyUnclaimed ? ' primary' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
+          <button className={`btn btn--quiet btn--sm review-only-unclaimed${onlyUnclaimed ? ' is-on' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
         </div>
         {payments.length === 0 && <div className="crm-card crm-card--empty">近 30 天无到款记录</div>}
         <WeekDayGroups
@@ -479,7 +504,7 @@ export default function CrmReviewPage() {
                           <option value="">关联合同（可选）</option>
                           {accContracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
-                        <button className="crm-btn primary" disabled={!Boolean(claimCustomer[p.id]?.trim())}
+                        <button className="btn btn--primary-soft btn--sm" disabled={!Boolean(claimCustomer[p.id]?.trim())}
                           title={claimCustomer[p.id]?.trim() ? '' : '请先输入客户名'} onClick={() => void doClaimPayment(p)}>认领</button>
                       </div>
                     )}
@@ -529,7 +554,7 @@ export default function CrmReviewPage() {
             </span>
             <input className="crm-card__amt" type="number" min="0" placeholder="填写金额" value={invoiceAmount[i.id] ?? ''}
               onChange={(e) => setInvoiceAmount((m) => ({ ...m, [i.id]: e.target.value }))} />
-            <button className="crm-btn" onClick={() => {
+            <button className="btn btn--quiet btn--sm" onClick={() => {
               const amt = parseFloat(invoiceAmount[i.id] ?? '')
               if (!amt || amt <= 0) { setNotice('请先填写发票金额'); return }
               void window.electronAPI.crm.update('invoice', i.id, { amount: amt }).then(() => { setNotice(`发票金额已保存 ¥${amt.toLocaleString()}`); void fetchQueues() })
@@ -542,8 +567,8 @@ export default function CrmReviewPage() {
               <option value="">关联合同…</option>
               {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-            <button className="crm-btn" disabled={!!generating} onClick={() => void generateInvoice('invoice-info', i.id)}>开票信息单</button>
-            <button className="crm-btn" disabled={!!generating} onClick={() => void generateInvoice('invoice-app', i.id)}>开票申请</button>
+            <button className="btn btn--quiet btn--sm" disabled={!!generating} onClick={() => void generateInvoice('invoice-info', i.id)}>开票信息单</button>
+            <button className="btn btn--quiet btn--sm" disabled={!!generating} onClick={() => void generateInvoice('invoice-app', i.id)}>开票申请</button>
             {['invoice-info', 'invoice-app'].map(type => generatedArtifacts[`${type}:${i.id}`] && <GeneratedFileResult key={`${type}:${i.id}`} artifact={generatedArtifacts[`${type}:${i.id}`]} onClose={() => setGeneratedArtifacts(v => { const next = { ...v }; delete next[`${type}:${i.id}`]; return next })} />)}
           </div>
         ))}
@@ -578,7 +603,7 @@ export default function CrmReviewPage() {
                 <input placeholder="添加销售（输入姓名）" value={addSalesName}
                   onChange={(e) => setAddSalesName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') void addSalesMember() }} />
-                <button className="crm-btn" onClick={() => void addSalesMember()}>添加</button>
+                <button className="btn btn--plain btn--sm" onClick={() => void addSalesMember()}>添加</button>
               </div>
             </div>
           </section>
@@ -595,14 +620,14 @@ export default function CrmReviewPage() {
                 <label className="gswitch"><input type="checkbox" checked={Number(g.enabled) === 1} onChange={(e) => void toggleGroup(g, e.target.checked)} /> 启用</label>
               </div>
             ))}
-            <button className="crm-btn" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
+            <button className="btn btn--plain btn--sm" onClick={() => void openPick()}><Users size={14} /> 筛选群聊</button>
           </section>
         </div>
       )}
       {showPick && (
         <div className="crm-modal">
           <div className="crm-modal-body">
-            <h3>筛选扫描群聊 <button className="crm-btn" onClick={() => setShowPick(false)}><X size={14} /></button></h3>
+            <h3>筛选扫描群聊 <button className="btn btn--plain btn--sm" onClick={() => setShowPick(false)}><X size={14} /></button></h3>
             <input className="crm-search" placeholder="搜索群聊名称 / ID" value={pickSearch} onChange={(e) => setPickSearch(e.target.value)} />
             <div className="pick-list">
               {groupSessions
@@ -621,7 +646,7 @@ export default function CrmReviewPage() {
                       <option value="logistics">物流发货</option>
                       <option value="order">订单截图</option>
                     </select>
-                    <button className="crm-btn primary" onClick={() => void addGroup(x)}>添加并扫描</button>
+                    <button className="btn btn--primary btn--sm" onClick={() => void addGroup(x)}>添加并扫描</button>
                   </div>
                 ))}
             </div>

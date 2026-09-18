@@ -217,25 +217,29 @@ export default function ActionFunnelPage() {
 
   return (
     <div className="af-page">
-      {/* 页眉（概念稿 .shead：左小标/标题/口径说明，右时间窗与刷新）——标题语义不变，
-          说明沿用页内原有口径句，不新增承诺 */}
+      {/* 页眉（概念稿 .shead：左小标/标题/口径说明，右时间窗与刷新）——hero 用窗口内既有计数拼句
+          （行动/执行/响应均为窗口口径；成交数是「当前 stage」，不进 hero，避免跨口径混读） */}
       <header className="shead af-header">
         <div className="af-header__lead">
           <p className="eyebrow">报表 · 行动漏斗</p>
-          <h1 className="hero af-header__title">行动漏斗</h1>
+          <h1 className="hero af-header__title">
+            {data
+              ? `${days === 0 ? '全部' : `近${days}天`} ${data.stages.created} 个行动，${data.stages.executed} 已执行、${data.stages.responded} 已响应`
+              : '行动漏斗'}
+          </h1>
           <p className="sub af-header__sub">AI 推荐 → 销售执行 → 客户响应 → 商机推进（Task-level，P0-4）</p>
         </div>
         <div className="shead__actions af-header__actions">
-          <div className="af-days">
+          <div className="chipbar" role="group" aria-label="统计时间窗">
             {DAY_OPTIONS.map((o) => (
               <button
                 key={o.value}
-                className={`af-days__btn${days === o.value ? ' af-days__btn--active' : ''}`}
+                className={`chip${days === o.value ? ' is-on' : ''}`}
                 onClick={() => setDays(o.value)}
               >{o.label}</button>
             ))}
           </div>
-          <button className="af-btn" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
+          <button className="btn btn--quiet" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
         </div>
       </header>
       {error && <div className="af-error">{error}</div>}
