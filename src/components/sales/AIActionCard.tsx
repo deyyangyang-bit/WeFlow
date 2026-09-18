@@ -49,7 +49,7 @@ function SourceTag({ source }: { source: SignalSource }) {
 /**
  * @param lead 主张卡档（概念稿 .lead-card）：排序首位提升到索引上方时用。
  *   数据、判断、证据回查与动作全部沿用细线行那一套，只是外壳与头部换成「一句话答案」的排布，
- *   并且四栏判断默认摊开 —— 完整判断只留给被主张的这一位。
+ *   并且四栏判断默认摊开且四格常驻（缺哪栏标「尚未识别」）—— 完整判断只留给被主张的这一位。
  */
 export default function AIActionCard({ item, lead = false }: { item: ActionItem; lead?: boolean }) {
   const { completeItem, fetchSuggestion } = useTodayActionStore()
@@ -159,34 +159,50 @@ export default function AIActionCard({ item, lead = false }: { item: ActionItem;
   // P0-3.4 判断面板：只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
   // 空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断）。
   // 细线行档收在 .sigdetail 里按需展开，主张卡档直接摊在卡内 —— 内容同一份，只有外壳不同。
+  // 2026-09-18 P1.2：主张卡（lead）四格常驻（摘要 / 机会 / 风险 / 下一步），不再 filter 掉空判断 ——
+  // 整格消失会被读成「这一栏没问题」，缺哪栏就如实标「尚未识别」（与聊天上下文条 / 客户 360 同一句空态文案）。
+  // 细线行档保持原样：仍然按需展开，展开后也只列已有判断，不改列表密度。
+  const cells: Array<{ label: string; v: JudgmentValue | null }> = [
+    { label: '摘要', v: judgments?.summary ?? null },
+    { label: '机会', v: judgments?.opportunity ?? null },
+    { label: '风险', v: judgments?.risk ?? null },
+    { label: '下一步', v: judgments?.nextAction ?? null }
+  ]
+  // 细线行展开档保持原密度：只列已有判断；主张卡四格常驻，缺栏如实标「尚未识别」
+  const visibleCells = lead ? cells : cells.filter((c) => !!c.v)
+
   const panel = <>
-          {hasJudgments && (
+          {(lead || hasJudgments) && (
             <div className="verdicts">
-              {([
-                { label: '摘要', v: judgments!.summary },
-                { label: '机会', v: judgments!.opportunity },
-                { label: '风险', v: judgments!.risk },
-                { label: '下一步', v: judgments!.nextAction }
-              ] as Array<{ label: string; v: JudgmentValue | null }>)
-              .filter((c): c is { label: string; v: JudgmentValue } => !!c.v).map((c) => {
+              {visibleCells.map((c) => {
+                // const 绑定：narrow 后的判断值在 onClick 闭包里仍然非空（属性访问的 narrow 进不了闭包）
+                const v = c.v
+                if (!v) {
+                  return (
+                    <div key={c.label} className="verdict verdict--muted">
+                      <div className="verdict__k">{c.label}</div>
+                      <div className="verdict__v">尚未识别</div>
+                    </div>
+                  )
+                }
                 return (
                 <div key={c.label} className="verdict">
                   <div className="verdict__k">{c.label}</div>
                   <div className="verdict__v">
-                    {String(c.v.value || '')}
+                    {String(v.value || '')}
                     <div className="verdict__meta">
                       {/* 出处标记：新鲜 = AI 当前判断，较旧 = 生成超 24h，人工 = 手动锁定 */}
-                      <span className={`ahead ${c.v.source === 'manual' ? 'ahead--human' : 'ahead--ai'}`}>
+                      <span className={`ahead ${v.source === 'manual' ? 'ahead--human' : 'ahead--ai'}`}>
                         <span className="ahead__i" />
-                        {c.v.source === 'manual' ? '人工确认' : c.v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
+                        {v.source === 'manual' ? '人工确认' : v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
                       </span>
-                      {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
-                        <button className="signal-card__j-evidence" onClick={(e) => { e.stopPropagation(); void toggleEvidence(c.v) }}>
-                          {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
+                      {v.evidenceStatus === 'ok' && v.messageKey && (
+                        <button className="signal-card__j-evidence" onClick={(e) => { e.stopPropagation(); void toggleEvidence(v) }}>
+                          {evidenceKey === v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
                         </button>
                       )}
                     </div>
-                    {evidenceKey === c.v.messageKey && evidenceMsg && (
+                    {evidenceKey === v.messageKey && evidenceMsg && (
                       <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
                     )}
                   </div>
@@ -259,9 +275,9 @@ export default function AIActionCard({ item, lead = false }: { item: ActionItem;
         </button>
       )}
 
-      {/* 主张卡档摊开判断，细线行档按需展开 */}
+      {/* 主张卡档摊开判断（四格常驻，无判断时也如实标「尚未识别」）；细线行档按需展开 */}
       {lead
-        ? (hasAnalysis && panel)
+        ? panel
         : (expanded && hasAnalysis && <div className="sigdetail">{panel}</div>)}
 
       {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致 */}

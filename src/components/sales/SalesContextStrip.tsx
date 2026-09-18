@@ -12,6 +12,12 @@
  * 依据段只列判断里带 messageKey 的锚点，点击才走 P0-2B 拉原话（与 360 同语义）；
  * 当前会话的消息高亮（flashNewMessages）只存在于 ChatPage 内部，未做跨组件接线，
  * 因此保留内联证据文案这条既有路径。
+ *
+ * 2026-09-18 P1.2（真机补差）：
+ *   · 「本机识别」标题行右侧补识别时间戳记（概念稿 .side-head 右侧 .num）：只用判断投影里真实的
+ *     generatedAt，取不到就整条不显示；覆盖条数在本机没有真实来源，故不写（不造假）。
+ *   · 回复建议的 .draft 壳修好渲染路径：suggest 回的是 ActionAnalysisResult.script，
+ *     旧代码读不存在的 result.suggestion，导致真机上「有建议」也只剩一个按钮。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, Check, Sparkles } from 'lucide-react'
@@ -45,6 +51,24 @@ interface IntentData {
   confidence: number | null
   reason: string | null
   created_at: number
+}
+
+/**
+ * 「本机识别」行的戳记时间（概念稿 .side-head 右侧 .num）：同日内只给时刻，昨天与更早补日期。
+ * 无效时间返回空串 —— 不伪造时间，也不显示「刚刚」这类没有依据的说法。
+ */
+function fmtStampTime(ms: number): string {
+  if (!ms || !Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  if (!Number.isFinite(d.getTime())) return ''
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  const now = new Date()
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (sameDay(d, now)) return hm
+  if (sameDay(d, new Date(now.getTime() - 86400_000))) return `昨天 ${hm}`
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}`
 }
 
 interface Props {
@@ -92,6 +116,11 @@ export default function SalesContextStrip({ sessionId }: Props) {
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
+    // 组件不随会话卸载：换会话先清掉上一会话的草稿与展开的证据，避免别的客户的正文留在栏里
+    // （只在 sessionId 变化时执行；30 秒轮询走 load()，不会把刚生成的草稿刷掉）
+    setSuggestion('')
+    setEvidenceKey(null)
+    setEvidenceMsg(null)
 
     async function load() {
       try {
@@ -127,7 +156,11 @@ export default function SalesContextStrip({ sessionId }: Props) {
         silentDays,
         title: `跟进客户 ${profile.display_name || sessionId}`
       })
-      if (result?.suggestion) setSuggestion(result.suggestion)
+      // sales:action:suggest 回的是 ActionAnalysisResult（script = 可直接发送的回复话术）。
+      // 旧代码读 result.suggestion —— actionSuggest 从不回这个字段，于是「有建议」也进不了 .draft 分支，
+      // 真机上只剩一个按钮（P1.2 修的就是这条渲染路径）。失败/未配置时不覆盖已有草稿，如实留空。
+      const draft = String(result?.script || result?.suggestion || '').trim()
+      if (draft) setSuggestion(draft)
       // P0-3.3 验证闭环：生成成功 → customer_judgment append → 立即重读 currentView → UI 显示新判断
       const v = await (window as any).electronAPI.sales.customerCurrentView(sessionId)
       if (v?.success) setJudgments(v.data?.judgments || null)
@@ -164,6 +197,17 @@ export default function SalesContextStrip({ sessionId }: Props) {
   // 依据锚点：只有带 messageKey 的判断才有原话可回查，没有就不编一条出来
   const anchors = rows.filter(([, v]) => v && v.evidenceStatus === 'ok' && v.messageKey)
 
+  // 本机识别戳记（概念稿 .side-head 右侧 .num）：字段只用识别结果里真有的「判断生成时间」。
+  // 概念稿那句「覆盖 214 条」在本机没有真实来源（识别按窗口读消息、结果里不落每会话覆盖条数），
+  // 拿会话总条数顶上会把「读了一个窗口」说成「覆盖全部」—— 宁缺不假，没有生成时间就整条不显示。
+  // 位置在上面的 early return 之后，这里不能再调 hook（纯计算足够，四个字段取最大值）。
+  const stampTimes = ([judgments?.summary, judgments?.opportunity, judgments?.risk, judgments?.nextAction] as
+    Array<{ generatedAt?: number } | null | undefined>)
+    .map((v) => Number(v?.generatedAt || 0))
+    .filter((t) => t > 0)
+  const identifyStampMs = stampTimes.length ? Math.max(...stampTimes) : 0
+  const identifyStamp = fmtStampTime(identifyStampMs)
+
   return (
     <div className="sales-context-strip">
       {/* 判断（概念稿 .side-block：侧栏分段；与客户档案同一个 .verdicts 组件） */}
@@ -175,6 +219,13 @@ export default function SalesContextStrip({ sessionId }: Props) {
             <span className="pill" style={{ background: `${stageInfo.color}1A`, color: stageInfo.color }}>{stageInfo.label}</span>
             {silentDays > 0 && (
               <span className={`sales-context-strip__silent${silentDays > 7 ? ' is-warn' : ''}`}>{silentDays} 天未联系</span>
+            )}
+            {/* 识别时间戳记：有生成时间才出现（无数据不显示、不造假），完整时刻放 title */}
+            {identifyStamp && (
+              <span
+                className="num sales-context-strip__stamp"
+                title={`本机识别时间：${new Date(identifyStampMs).toLocaleString('zh-CN')}`}
+              >{identifyStamp}</span>
             )}
           </span>
         </div>

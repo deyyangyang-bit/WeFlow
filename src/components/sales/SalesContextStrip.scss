@@ -9,12 +9,18 @@
   // 侧栏分段的间距与 .side-block 全局规则一致（22px），这里只补首段与栏头的贴合
   > .side-block:first-child { margin-top: 0; }
 
-  // ── 紧凑元信息（阶段 / 沉默天数）：从旧的整行 top-strip 主 UI 降下来 ──
+  // ── 紧凑元信息（阶段 / 沉默天数 / 识别时间戳记）：从旧的整行 top-strip 主 UI 降下来 ──
+  // 栏宽 clamp(264px, 20vw, 300px)：组内允许折行（戳记次要，落到第二行仍成立）。
+  // flex: 1 1 auto + min-width 0 = 可收缩并占满余量，这样窄栏是「换行」而不是把标题挤出栏外。
   &__meta {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 7px;
-    flex: none;
+    row-gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   &__silent {
@@ -40,9 +46,12 @@
     margin-top: 3px;
   }
 
-  &__count {
+  // 栏头右侧的次要数字：依据条数（依据消息）/ 识别时间（本机识别）——同一档语气，不新造徽章
+  &__count,
+  &__stamp {
     font-size: 10.5px;
     color: var(--color-text-tertiary);
+    white-space: nowrap;
   }
 
   // 判断为空时的说明：沿用全局 .coverage 底，只把 22px 上边距收到侧栏节奏里
