@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
+import { RefreshCw, Plus, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
 import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
@@ -208,7 +208,7 @@ export default function CustomerWorkspacePage() {
 
   // ─── 客户 360 档案 ─────────────────────────────────────────────────────────
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
-  // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
+  // 档案侧栏（屏 4）：顶部动作行 + 分段（本机判断 / 待办 / 客户信息 / 折叠行），全部扁平，无浮层外壳
   const [showAiTools, setShowAiTools] = useState(false)
   /** AI 见解屏蔽名单（只影响自动/批量触发；本页只做手动加入与解除） */
   const [insightBlacklist, setInsightBlacklist] = useState<InsightBlacklistEntry[]>([])
@@ -220,6 +220,15 @@ export default function CustomerWorkspacePage() {
     })()
     return () => { cancelled = true }
   }, [])
+
+  // 窄窗（<1280px）档案列落在索引下方（见 .scss 窄窗档）：选中客户后把它滚进视野。
+  // 并排列档不走这条 —— 栏内本来就与索引同顶可见，不打扰。
+  const railRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!selectedCustomer) return
+    if (!window.matchMedia('(max-width: 1279px)').matches) return
+    railRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [selectedCustomer])
 
   /**
    * 屏蔽 / 解除屏蔽所选客户的 AI 见解（决策：入口放客户工作台「…」菜单，带二次确认）。
@@ -253,7 +262,7 @@ export default function CustomerWorkspacePage() {
     await configService.setAiInsightNonCustomerBlacklist(next)
     setNotice(`已解除对「${name}」的 AI 见解屏蔽`)
   }
-  // Hermes 智能体入口（档案「AI 工具」下拉）：App 级单例抽屉，带着当前客户上下文打开
+  // Hermes 智能体入口（档案顶部动作行的「AI 工具」）：App 级单例抽屉，带着当前客户上下文打开
   const openHermes = useHermesStore((s) => s.openHermes)
   const [foldTimeline, setFoldTimeline] = useState(false)
   const [foldProfile, setFoldProfile] = useState(false)
@@ -525,8 +534,14 @@ export default function CustomerWorkspacePage() {
   const subLine = actionQueue.length > 0
     ? `今天有 ${actionQueue.length} 位客户需要处理 · 处理完即消失 · 档案与信号取本机业务库，不做云端汇总`
     : '队列里没有待处理事项 · 档案与信号取本机业务库，不做云端汇总'
-  // 档案抽屉：跟进待办只列待处理/逾期（口径与旧渲染一致）
+  // 档案侧栏：跟进待办只列待处理/逾期（口径与旧渲染一致）
   const pendingTodos = (customerProfile?.todos || []).filter((t: any) => t.status === 'pending' || t.status === 'overdue')
+  // 档案侧栏判断四格（摘要/机会/风险/下一步）：字段名同 customerCurrentView 投影，缺栏如实留空占位
+  const judgmentRows: Array<[string, any]> = (() => {
+    const j: any = customerProfile?.currentView?.judgments || {}
+    return [['摘要', j.summary], ['机会', j.opportunity], ['风险', j.risk], ['下一步', j.nextAction]]
+  })()
+  const hasAnyJudgment = judgmentRows.some(([, v]) => v)
   // AI 准确率（近 7 天）九格：值与旧渲染逐个一致，只换细线键值语法（.defs/.def）
   const accuracyItems: Array<{ l: string; v: any }> = accuracy ? [
     { l: 'AI 自动写入字段', v: accuracy.enrichAuto },
@@ -752,11 +767,13 @@ export default function CustomerWorkspacePage() {
 
       </div>{/* /.cws-index */}
 
-      {/* 当前档案：宽窗为并排列（.cws-side 常规文档流内粘顶），窄窗为浮层抽屉（同旧遮罩行为） */}
+      {/* 当前档案：与索引并排的扁平档案列（概念稿 .detail / 聊天右栏同一套语法）。
+          不再有浮层外壳：无白底卡、无阴影、无关闭 X —— 与列表只隔一条发丝线（窄窗落到索引下方，仍是扁平的）。 */}
       {selectedCustomer && (
-        <aside className="cws-side" aria-label="客户档案" onClick={() => setSelectedCustomer(null)}>
-          <div className="cws-side__panel" onClick={(e) => e.stopPropagation()}>
+        <aside className="cws-side" aria-label="客户档案" ref={railRef}>
+          <div className="cws-side__panel">
           <div className="crm-detail">
+          {/* 栏头：客户名在上（吸睛主体），动作收成下面一行、可换行，权重次于客户名 */}
           <div className="crm-detail-head">
             <div className="cws-detail__id">
               <div className="cws-detail__name">
@@ -781,28 +798,28 @@ export default function CustomerWorkspacePage() {
               </button>
               <button className="btn btn--sm" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
               <button className="btn btn--sm" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
-              <div className="cws-aitools">
-                <button className="btn btn--sm btn--quiet" onClick={() => setShowAiTools((v) => !v)}>AI 工具 ▾</button>
-                {showAiTools && (
-                  <div className="cws-aitools__menu">
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
-                    {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
-                    <button
-                      className="cws-aitools__item"
-                      onClick={() => { setShowAiTools(false); void toggleInsightBlacklist(selectedCustomer) }}
-                      disabled={!selectedCustomer.session_id}
-                      title={!selectedCustomer.session_id ? '未关联微信会话，无法屏蔽' : '只影响自动/批量触发，不影响你手动发起的识别与见解'}
-                    >
-                      <Ban size={12} /> {isInsightBlacklisted(insightBlacklist, String(selectedCustomer.session_id || '')) ? '解除 AI 见解屏蔽' : '屏蔽 TA 的 AI 见解'}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <button className="iconbtn cws-side__close" title="关闭档案（回到客户索引；窄窗下点遮罩同样关闭）" onClick={() => setSelectedCustomer(null)}><X size={15} /></button>
+              {/* 其余 AI 动作：在侧栏内展开成扁平清单（贴着动作行往下排），不再是浮起的白卡菜单 */}
+              <button className="btn btn--sm btn--quiet" aria-expanded={showAiTools} onClick={() => setShowAiTools((v) => !v)}>
+                AI 工具 {showAiTools ? '▴' : '▾'}
+              </button>
             </div>
+            {showAiTools && (
+              <div className="cws-aitools">
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
+                {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
+                <button
+                  className="cws-aitools__item"
+                  onClick={() => { setShowAiTools(false); void toggleInsightBlacklist(selectedCustomer) }}
+                  disabled={!selectedCustomer.session_id}
+                  title={!selectedCustomer.session_id ? '未关联微信会话，无法屏蔽' : '只影响自动/批量触发，不影响你手动发起的识别与见解'}
+                >
+                  <Ban size={12} /> {isInsightBlacklisted(insightBlacklist, String(selectedCustomer.session_id || '')) ? '解除 AI 见解屏蔽' : '屏蔽 TA 的 AI 见解'}
+                </button>
+              </div>
+            )}
           </div>
           {/* 识别结果提示（PRD §6.2 六态）：无新内容 / 成功 / 失败 / 额度不足都必须有明确文案 */}
           {identifyNotice && (
@@ -817,71 +834,67 @@ export default function CustomerWorkspacePage() {
           {!selectedCustomer.session_id && <p className="crm-insight">（未关联微信会话，无 AI 档案）</p>}
           {!profileLoading && selectedCustomer.session_id && customerProfile && (
             <div className="crm-profile">
-              {customerProfile.currentView && (() => {
-                // 屏 4 ①：AI 当前判断——概念稿四栏判断 .verdicts（摘要/机会/风险/下一步，字段名同 customerCurrentView 投影）
-                const j: any = customerProfile.currentView.judgments || {}
-                const rows: Array<[string, any]> = [
-                  ['摘要', j.summary], ['机会', j.opportunity], ['风险', j.risk], ['下一步', j.nextAction]
-                ]
-                if (!rows.some(([, v]) => v)) return null
-                return (
-                  <div className="cws-sec">
-                    <div className="seclabel">
-                      <span className="seclabel__t">AI 当前判断</span>
-                      <span className="cws-seclabel__h">最近一次识别 · 本机</span>
-                    </div>
-                    <div className="verdicts">
-                      {rows.map(([label, v]) => {
-                        const open = !!v && !!v.messageKey && evidenceKey === v.messageKey
-                        return (
-                          <div key={label} className={`verdict${v ? '' : ' verdict--muted'}`}>
-                            <div className="verdict__k">{label}</div>
-                            <div>
-                              <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
-                              <div className="verdict__meta">
-                                {!v && <span className="ahead"><i className="ahead__i" />点「AI 识别这个客户」生成</span>}
-                                {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
-                                {v && v.source !== 'manual' && (
-                                  <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
-                                    <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
-                                  </span>
-                                )}
-                                {v && v.evidenceStatus === 'ok' && v.messageKey && (
-                                  <button className="ahead ahead--src ahead--btn" onClick={() => void toggleEvidence(v)}>
-                                    <i className="ahead__i" />{open ? (evidenceMsg && evidenceMsg.startsWith('正在') ? '回查中…' : '收起') : '依据消息'}
-                                  </button>
-                                )}
-                              </div>
-                              {/* 与聊天侧栏同一份证据样式（main.scss .verdict__evi），不再各写一套 */}
-                              {open && evidenceMsg && <div className="verdict__evi">{evidenceMsg}</div>}
-                            </div>
+              {/* 屏 4 ①：本机判断——四格常驻（概念稿 .verdicts，与聊天右栏同一份基础件），缺栏如实标「尚未识别」 */}
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">本机判断</span>
+                  <span className="cws-side__meta">{hasAnyJudgment ? '最近一次识别 · 本机' : '尚未识别'}</span>
+                </div>
+                <div className="verdicts">
+                  {judgmentRows.map(([label, v]) => {
+                    const open = !!v && !!v.messageKey && evidenceKey === v.messageKey
+                    return (
+                      <div key={label} className={`verdict${v ? '' : ' verdict--muted'}`}>
+                        <div className="verdict__k">{label}</div>
+                        <div>
+                          <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
+                          <div className="verdict__meta">
+                            {/* 空栏引导句：整份都没识别过时只在首格说一次，不四遍重复 */}
+                            {!v && (hasAnyJudgment || label === '摘要') && <span className="ahead"><i className="ahead__i" />点「AI 识别这个客户」生成</span>}
+                            {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
+                            {v && v.source !== 'manual' && (
+                              <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
+                                <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
+                              </span>
+                            )}
+                            {v && v.evidenceStatus === 'ok' && v.messageKey && (
+                              <button className="ahead ahead--src ahead--btn" onClick={() => void toggleEvidence(v)}>
+                                <i className="ahead__i" />{open ? (evidenceMsg && evidenceMsg.startsWith('正在') ? '回查中…' : '收起') : '依据消息'}
+                              </button>
+                            )}
                           </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })()}
-              {customerProfile.todos?.length > 0 && (
-                <div className="cws-sec">
-                  <div className="seclabel">
-                    <span className="seclabel__t">跟进待办</span>
-                    <span className="cws-seclabel__h">{pendingTodos.length} 条待处理</span>
-                  </div>
-                  {pendingTodos.map((t: any) => (
-                    <div key={t.id} className="todo">
-                      <div>
-                        <div className="todo__t">{t.promise_summary || t.title}</div>
-                        <div className="todo__m">[{t.status}]</div>
+                          {/* 与聊天侧栏同一份证据样式（main.scss .verdict__evi），不再各写一套 */}
+                          {open && evidenceMsg && <div className="verdict__evi">{evidenceMsg}</div>}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
+                </div>
+              </div>
+              {/* 屏 4 ②：跟进待办——与判断区同一段节奏（.side-block / .side-head） */}
+              {customerProfile.todos?.length > 0 && (
+                <div className="side-block">
+                  <div className="side-head">
+                    <span className="side-head__t">跟进待办</span>
+                    <span className="cws-side__meta">{pendingTodos.length} 条待处理</span>
+                  </div>
+                  <div className="cws-side__rows">
+                    {pendingTodos.map((t: any) => (
+                      <div key={t.id} className="todo">
+                        <div>
+                          <div className="todo__t">{t.promise_summary || t.title}</div>
+                          <div className="todo__m">[{t.status}]</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
-              <div className="cws-sec">
-                <div className="seclabel">
-                  <span className="seclabel__t">客户信息</span>
-                  <span className="cws-seclabel__h">点击字段可编辑，手改后 AI 不再覆盖</span>
+              {/* 屏 4 ③：客户信息 */}
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">客户信息</span>
+                  <span className="cws-side__meta">点击字段可编辑，手改后 AI 不再覆盖</span>
                 </div>
                 <div className="cws-typerow">
                   <span className="cws-typerow__k">客户类型</span>
@@ -928,10 +941,10 @@ export default function CustomerWorkspacePage() {
                   ))}
                 </div>
               </div>
-              <div className="cws-sec">
+              <div className="side-block">
                 <button className="cws-fold" onClick={() => setFoldTimeline((v) => !v)}>
-                  <span className="seclabel__t">动态时间线</span>
-                  <span className="cws-fold__meta">{customerProfile.activities?.length ?? 0} 条 · {foldTimeline ? '收起 ▲' : '展开 ▼'}</span>
+                  <span className="side-head__t">动态时间线</span>
+                  <span className="cws-side__meta">{customerProfile.activities?.length ?? 0} 条 · {foldTimeline ? '收起 ▲' : '展开 ▼'}</span>
                 </button>
                 {foldTimeline && (customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
                   <div className="crm-timeline">
@@ -950,21 +963,21 @@ export default function CustomerWorkspacePage() {
                 )}
               </div>
               {customerProfile.aiProfile && (
-                <div className="cws-sec">
+                <div className="side-block">
                   <button className="cws-fold" onClick={() => setFoldProfile((v) => !v)}>
-                    <span className="seclabel__t">AI 画像</span>
-                    <span className="cws-fold__meta">{foldProfile ? '收起 ▲' : '展开 ▼'}</span>
+                    <span className="side-head__t">AI 画像</span>
+                    <span className="cws-side__meta">{foldProfile ? '收起 ▲' : '展开 ▼'}</span>
                   </button>
                   {foldProfile && <p className="crm-insight">{customerProfile.aiProfile}</p>}
                 </div>
               )}
-              <div className="cws-sec">
+              <div className="side-block">
                 <button className="cws-fold" onClick={() => setFoldBiz((v) => !v)}>
-                  <span className="seclabel__t">业务</span>
-                  <span className="cws-fold__meta">合同 {customerProfile.contracts?.length ?? 0} 份 · 回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()} · {foldBiz ? '收起 ▲' : '展开 ▼'}</span>
+                  <span className="side-head__t">业务</span>
+                  <span className="cws-side__meta">合同 {customerProfile.contracts?.length ?? 0} 份 · 回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()} · {foldBiz ? '收起 ▲' : '展开 ▼'}</span>
                 </button>
                 {foldBiz && (
-                  <div className="cws-sec__acts">
+                  <div className="cws-side__acts">
                     <button className="btn btn--sm cws-danger-btn" onClick={() => void deleteCustomer(selectedCustomer)}><Trash2 size={13} /> 删除客户</button>
                   </div>
                 )}
@@ -973,9 +986,9 @@ export default function CustomerWorkspacePage() {
           )}
           {deepReport && (
             <div className="crm-profile">
-              <div className="cws-sec">
-                <div className="seclabel">
-                  <span className="seclabel__t">资深销售助理 · 深度分析</span>
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">资深销售助理 · 深度分析</span>
                 </div>
                 <p className="crm-insight crm-deep-report">{deepReport}</p>
               </div>

@@ -3,10 +3,12 @@
    - 颜色只消费 src/styles/main.scss 尾部「前进视觉 tokens」--color-* 族，双模式（[data-mode="dark"]）自动继承；
    - 跨页复用件（.hero/.eyebrow/.sub/.rail/.tbl/.defs/.verdicts/.ahead/.tag/.pill/.notice/.btn…）定义在 main.scss，
      本文件只写本页私有件与「本页网格模板 / 档案列细线化」覆写；新增跨页类一律放 main.scss。
-   - 卡片降级为细线：静态对象不再同时带边框 + 圆角 + 阴影；浮起只留给档案浮层与菜单。
+   - 卡片降级为细线：静态对象不再同时带边框 + 圆角 + 阴影；浮起只留给菜单与遮挡层。
    - 留白：整页留白由外壳 .content（24px 32px）承担，本页不再叠加一整层 padding（见 App.scss「内容滚动约定」）。
    - 层级（概念稿 CRM 屏）：页头 .shead → 阶段筛选 .rail → 客户索引 .cws-index ＋ 当前档案 .cws-side。
-     宽窗（≥1280px，外壳内容区约 1000px 以上）两栏并排；窄窗档案回到浮层抽屉，选择 / 关闭 / 遮罩行为不变。 */
+     宽窗（≥1280px，外壳内容区约 1000px 以上）两栏并排；窄窗档案落到索引下方，两档都是扁平侧栏
+     （2026-09-18 P1.3：去掉「灰底遮罩 + 白底阴影浮卡 + 关闭 X」的盒中盒，栏内改走
+     .side-block / .side-head / .verdicts，与聊天右栏 SalesContextStrip 同一套分段语法）。 */
 .cws-page { color: var(--color-text-primary); }
 
 /* ─── 页眉（概念稿 .shead/.eyebrow/.hero/.sub 本体在 main.scss；本页只收主张句行长）── */
@@ -104,28 +106,38 @@
   }
 }
 
-/* ─── 客户索引 ＋ 当前档案（概念稿 .crm：索引列 + 档案列）─────────── */
+/* ─── 客户索引 ＋ 当前档案（概念稿 .crm/.detail：索引列 + 扁平档案列）─────────── */
 .cws-cols { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
 .cws-index { min-width: 0; }
 
-/* 档案列默认档 = 浮层抽屉（浮起仅此处：overlay + shadow-pop；窄窗仍走这一档） */
+/* 档案列 = 与列表并排的扁平侧栏（概念稿 .detail / 聊天右栏同一套语法）。
+   这里没有浮层、没有白底卡、没有阴影、没有关闭 X：与列表只靠一条发丝线分开，
+   栏内一律 .side-block / .side-head / .verdicts 的分段节奏（与聊天右栏同一个组件语法）。 */
+.cws-cols.has-detail { grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 400px); }
+.cws-cols.has-detail .cws-index { padding-right: 22px; }
+
 .cws-side {
-  position: fixed; top: 46px; right: 0; bottom: 0; left: 0; z-index: 900; /* top 46px 避开 TitleBar（z-index 2101），防右上角与窗口最小化/关闭键重叠 */
-  background: var(--color-overlay);
-  display: flex; justify-content: flex-end;
-  animation: wf-fade-in .16s ease-out both;
+  /* 粘顶基准是外壳滚动容器的内容盒上沿（= 页头所在的那条线），top:0 即与索引列同顶；
+     窗口纵向压缩时档案跟着它走，不会跟着长列表被推出视野。 */
+  position: sticky; top: 0;
+  align-self: start; min-width: 0;
+  border-left: 1px solid var(--color-divider); padding-left: 22px;
 }
 .cws-side__panel {
-  width: min(760px, 94vw); height: 100%;
-  background: var(--color-bg-surface);
-  overflow-y: auto; padding: 16px 20px 32px;
-  box-shadow: var(--shadow-pop);
+  /* 46 标题栏 + 24 上留白 + 24 下留白 + 2 外框线：档案列整体落在可视区内，
+     超出时才出现自身滚动条——否则「档案比窗口高就永远看不到底部」是更差的失败。 */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 0 0 24px;
   .crm-detail { margin-top: 0; }
+  /* 栏头不吸顶、不铺白条：客户名独占一行，动作收成下面一行（可换行），权重次于客户名 */
   .crm-detail-head {
-    position: sticky; top: -16px; z-index: 5; background: var(--color-bg-surface);
-    padding: 4px 0 8px; align-items: flex-start; flex-wrap: wrap; gap: 8px 12px;
+    display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+    gap: 10px; margin-bottom: 16px;
   }
-  .crm-detail-actions { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
+  .crm-detail-actions { flex-wrap: wrap; justify-content: flex-start; row-gap: 6px; }
+  /* 深度分析是第二个 .crm-profile：并排时也要接上 .side-block 的 22px 分段节奏 */
+  .crm-profile + .crm-profile { margin-top: 22px; }
   /* 共享类的细线化覆写（只作用于本页档案列，不改 CrmWorkbenchPage.scss 自身） */
   .crm-insight {
     background: none; border: none; border-left: 2px solid var(--color-border); border-radius: 0;
@@ -135,36 +147,23 @@
   .crm-timeline__item { border-bottom: 1px solid var(--color-divider); padding-bottom: 6px; }
   .crm-muted { font-size: 12.5px; }
 }
-.cws-side__close { padding: 4px 6px; }
 
-/* 宽窗（≥1280px）：档案改为文档流内的粘顶列——选择/关闭仍是同一个 selectedCustomer，
-   只是从「盖住列表」变成「与列表并排」；窄窗不进入本档，浮层行为一字不改。 */
-@media (min-width: 1280px) {
-  .cws-cols.has-detail { grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 400px); }
-  .cws-cols.has-detail .cws-index { padding-right: 22px; }
+/* 窄窗（<1280px）：档案列落到索引下方（概念稿 .detail 的窄窗档：上沿一条发丝线 + 18px 留白），
+   依旧扁平；不再走「灰底遮罩 + 白底浮卡」那一档，所以也不再有可关的浮层壳。 */
+@media (max-width: 1279px) {
+  .cws-cols.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .cws-cols.has-detail .cws-index { padding-right: 0; }
 
   .cws-side {
-    /* 粘顶基准是外壳滚动容器的内容盒上沿（= 页头所在的那条线），top:0 即与索引列同顶；
-       窗口纵向压缩时档案跟着它走，不会跟着长列表被推出视野。 */
-    position: sticky; top: 0; right: auto; bottom: auto; left: auto; z-index: auto;
-    display: block; background: none; animation: none;
-    align-self: start; min-width: 0;
-    border-left: 1px solid var(--color-divider); padding-left: 24px;
-    /* 并排列不是遮罩：列内空白（左边距、面板下沿）不接收点击，点它不会误关档案；
-       面板自身仍可交互（下面 pointer-events: auto）。窄窗档不走这条，遮罩点击照旧关闭。 */
-    pointer-events: none;
+    position: static;
+    border-left: 0; padding-left: 0;
+    border-top: 1px solid var(--color-divider); padding-top: 18px;
   }
-  .cws-side__panel {
-    width: auto; height: auto;
-    pointer-events: auto;
-    /* 46 标题栏 + 24 上留白 + 24 下留白 + 2 外框线：档案列整体落在可视区内，
-       超出时才出现自身滚动条——否则「档案比窗口高就永远看不到底部」是更差的失败。 */
-    max-height: calc(100vh - 96px);
-    padding: 0 0 24px;
-    box-shadow: none;
-    .crm-detail-head { top: 0; }
-  }
-  /* 并排后索引列变窄：动作列收窄换行，先保「为什么现在看」那列的可读宽度 */
+  .cws-side__panel { max-height: none; overflow: visible; }
+}
+
+/* 并排后索引列变窄：动作列收窄换行，先保「为什么现在看」那列的可读宽度 */
+@media (min-width: 1280px) {
   .cws-cols.has-detail .cws-q,
   .cws-cols.has-detail .cws-q__row { grid-template-columns: minmax(150px, 0.9fr) minmax(0, 1.2fr) minmax(0, 210px); }
 }
@@ -174,8 +173,8 @@
 .cws-detail__name { font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
 .cws-detail__sub { font-size: 11.5px; color: var(--color-text-tertiary); font-family: var(--font-mono); margin-top: 5px; }
 
-/* 分节标题右侧的等宽/小字补充（概念稿 seclabel 右侧位） */
-.cws-seclabel__h { font-size: 11px; color: var(--color-text-tertiary); }
+/* 分段标题右侧的小字补充（概念稿 .side-head 右侧位；段内数字再叠 .num 走等宽） */
+.cws-side__meta { font-size: 11px; color: var(--color-text-tertiary); }
 
 /* 判断栏出处标记与证据回查：已收进 main.scss 的 .ahead--btn / .verdict__evi，
    与聊天侧栏共用同一份 —— 判断栏跨屏是同一个组件，不再各写一套 .cws-* 皮肤。 */
@@ -196,52 +195,35 @@
   }
 }
 
-/* 分块（时间线 / AI 画像 / 业务折叠行）：细线上边 + 行内标题 */
-.cws-sec { margin-top: 18px; }
-.cws-sec__acts { display: flex; gap: 8px; padding: 8px 0 2px; }
+/* 待办行：段内行表与判断四格同节奏（上沿一条发丝线 + 行间线，末行不收口） */
+.cws-side__rows { border-top: 1px solid var(--color-divider); }
+.cws-side__rows .todo:last-child { border-bottom: 0; }
+.cws-side__acts { display: flex; gap: 8px; padding: 8px 0 2px; }
+
+/* 折叠行（时间线 / AI 画像 / 业务）：就是一枚 .side-head（标题左、补充右），
+   分段间距交给 .side-block，自己不再画一条上边线——栏内只有一套分段语法 */
 .cws-fold {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px; width: 100%;
-  border: none; border-top: 1px solid var(--color-divider); background: none;
-  padding: 10px 0; font-family: inherit; text-align: left; cursor: pointer;
+  border: none; background: none; padding: 0; font-family: inherit; text-align: left; cursor: pointer;
 
-  &:hover .seclabel__t { color: var(--color-text-primary); }
+  &:hover .side-head__t { color: var(--color-accent); }
 }
-.cws-fold__meta { font-size: 11px; color: var(--color-text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cws-danger-btn { color: var(--color-danger); border-color: var(--color-danger-border); }
 .cws-danger-btn:hover { background: var(--color-danger-bg); }
 
-.cws-aitools { position: relative;
-  .cws-aitools__menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 10;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    box-shadow: var(--shadow-pop);
-    padding: 6px;
-    display: flex;
-    flex-direction: column;
-    min-width: 140px;
-  }
-  .cws-aitools__item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border: none;
-    background: transparent;
-    color: var(--color-text-primary);
-    font-family: inherit;
-    font-size: 12px;
-    padding: 8px 10px;
-    border-radius: var(--radius-small);
-    cursor: pointer;
-    text-align: left;
+/* AI 工具（其余 AI 动作）：在侧栏内展开成扁平清单，贴着动作行往下排。
+   不给它白底卡 / 阴影 / 绝对定位 —— 侧栏里不再出现第二个「工具盒」（浮起只留给菜单与遮挡层）。 */
+.cws-aitools {
+  display: flex; flex-direction: column; align-items: flex-start;
+  border-top: 1px solid var(--color-divider); padding-top: 4px;
+}
+.cws-aitools__item {
+  display: flex; align-items: center; gap: 6px;
+  border: none; background: none; color: var(--color-text-secondary);
+  font-family: inherit; font-size: 12px; padding: 7px 0; cursor: pointer; text-align: left;
 
-    &:hover { background: var(--color-bg-hover); }
-    &:disabled { opacity: 0.5; cursor: default; }
-  }
+  &:hover { color: var(--color-text-primary); }
+  &:disabled { opacity: 0.5; cursor: default; }
 }
 
 // ─── AI 识别这个客户：结果提示（PRD §6.2 六态）────────────────────────────────
@@ -261,6 +243,3 @@
   &--quota { border-left-color: var(--color-danger); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .cws-side { animation: none; }
-}
