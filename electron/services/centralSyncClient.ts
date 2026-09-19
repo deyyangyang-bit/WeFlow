@@ -119,7 +119,9 @@ export class CentralSyncClient {
 
   /**
    * 下发一条中央指令（§三.3）：本地分配动作经中央转为对目标员工的显式下行指令。
-   * **不是**上行投影：/sync/commands 由 command.issue 授权，且服务端按同一份下行业务契约校验。
+   * **不是**上行投影：/sync/commands 按指令域细分能力位授权（assign/recycle→command.assign、
+   * transfer/supervisor_correction→command.transfer、permission_change→command.permission、
+   * sla1 升级通知→command.notify），且服务端按同一份下行业务契约校验。
    */
   async issueCommand(event: CentralSyncEvent): Promise<{ centralSeq: number; duplicate: boolean }> {
     return this.request('/api/v1/sync/commands', { method: 'POST', body: JSON.stringify(event) })
