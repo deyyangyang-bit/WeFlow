@@ -207,6 +207,25 @@ export const PROJECTIONS: Record<CentralEntityType, Projection> = {
       { column: 'revoked_at', from: 'revokedAt', type: 'bigint', nullable: true },
       { column: 'deleted', from: 'deleted', type: 'boolean' }
     ]
+  },
+  // 撞客一期（宪法 §3.1 duplicate_group 登记行）：**中央自产**投影——身份锚点冲突时由 store 登记，
+  // 设备**永不**上行此实体（上行会命中归属/身份闸门被拒）。随 /sync/pull 广播下发（下行投影白名单
+  // 唯一成员，见 shared/centralSync.DOWN_PROJECTION_ENTITY_TYPES）。列里只有身份哈希 + 双方客户
+  // 引用 + 各自归属销售姓名；聊天内容 / 消息正文 / 对方资料明细（昵称、头像、消息）不存在。
+  duplicate_group: {
+    entityType: 'duplicate_group', table: 'central_duplicate_group',
+    businessKey: ['workspace_id', 'anchor_type', 'anchor_hash'],
+    required: ['anchorType', 'anchorHash', 'membersJson', 'memberCount'],
+    columns: [
+      { column: 'anchor_type', from: 'anchorType', type: 'text' },
+      // 身份值只存不可逆哈希（与 customer_identity 同一哈希算法与归一口径）
+      { column: 'anchor_hash', from: 'anchorHash', type: 'text' },
+      { column: 'anchor_masked', from: 'anchorMasked', type: 'text', nullable: true },
+      // 成员 JSON 文本：[{customerRef, ownerSales}]——跨设备客户引用 + 归属销售姓名
+      { column: 'members_json', from: 'membersJson', type: 'text' },
+      { column: 'member_count', from: 'memberCount', type: 'integer' },
+      { column: 'registered_by', from: 'registeredBy', type: 'text', nullable: true }
+    ]
   }
 }
 

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { CentralAckRequest, CentralPullResult, CentralSyncEvent } from '../../shared/centralSync.js'
 import {
-  crossDeviceConflict, identityAnchorOf, projectionOf, validateProjectionPayload
-} from './projections.js'
+  buildDuplicateGroupDownPayload, duplicateGroupDigest, duplicateGroupEventIdentity,
+  duplicateGroupGroupId, mergeDuplicateGroupMembers, type DupMember
+} from './duplicateGroup.js'
+import { crossDeviceConflict, identityAnchorOf, projectionOf, validateProjectionPayload } from './projections.js'
 import type { CentralStore, DevicePrincipal, EmployeeDirectoryEntry, EnterpriseRole, InviteInput, PushResult } from './store.js'
 
 interface InviteRow extends InviteInput { inviteId: string; codeHash: string; used: boolean; employeeId: string }
@@ -34,6 +36,8 @@ export class MemoryCentralStore implements CentralStore {
   private attempts = new Map<string, number>()
   private violations: Array<{ workspaceId: string; deviceId: string; eventId: string; fieldPath: string }> = []
   private conflicts: Array<{ workspaceId: string; deviceId: string; eventId: string; entityType: string; entityId: string; code: string }> = []
+  /** 撞客一期（宪法 §3.1 duplicate_group）：身份锚点冲突登记的重复组，与 postgres central_duplicate_group 同构（含单调版本号） */
+  private dupGroups: Array<{ workspaceId: string; anchorType: string; anchorHash: string; anchorMasked: string; membersJson: string; memberCount: number; registeredBy: string; aggregateVersion: number }> = []
   private employees: EmployeeRow[] = []
   /**
    * 中央审计流水。`detail` 与 PostgresCentralStore 的 `central_audit_event.detail` 同语义：
@@ -103,6 +107,74 @@ export class MemoryCentralStore implements CentralStore {
     this.audits.push({ workspaceId: principal.workspaceId, actor: `device:${principal.deviceId}`,
       action: 'sync_entity_conflict', entityType: event.entityType, entityId: event.entityId,
       detail: { code, eventId: event.eventId, eventType: event.eventType } })
+  }
+
+  /**
+   * 撞客一期（宪法 §3.1 duplicate_group）：身份锚点冲突 → 登记重复组 + 广播下行事件（无 target
+   * = pullEvents 对全工作区设备可见）。与 postgres registerDuplicateGroup 同构：
+   * H7 收口后成员**累积合并**（central/src/duplicateGroup.ts 唯一实现，第三成员不再覆盖第二成员）、
+   * ownerSales 用最新可得值更新但不清空非空旧值、eventId/幂等键/aggregateVersion 基于
+   * canonical 成员内容摘要（成员内容不变不重发；成员数相同但内容变化也产生新事件）。
+   */
+  private registerDuplicateGroup(principal: DevicePrincipal, event: CentralSyncEvent, clash: ProjectionRow): void {
+    const anchor = identityAnchorOf(event.payload)
+    if (!anchor) return
+    const holderRef = String(clash.payload.customerRef || clash.entityId || '')
+    const incomingRef = String(event.payload.customerRef || event.entityId || '')
+    if (!holderRef || !incomingRef || holderRef === incomingRef) return
+    const ownerOf = (ref: string) => {
+      const row = this.projections.find((p) => p.workspaceId === principal.workspaceId &&
+        p.entityType === 'customer' && (p.entityId === ref || String(p.payload.customerRef || '') === ref))
+      return String(row?.payload.ownerSales ?? '')
+    }
+    const existing = this.dupGroups.find((g) => g.workspaceId === principal.workspaceId &&
+      g.anchorType === anchor.identityType && g.anchorHash === anchor.identityHash)
+    let prevMembers: DupMember[] = []
+    try {
+      const parsed = JSON.parse(String(existing?.membersJson || '[]'))
+      if (Array.isArray(parsed)) prevMembers = parsed as DupMember[]
+    } catch { prevMembers = [] }
+    const prevVersion = existing ? Number(existing.aggregateVersion || 0) : 0
+    // 全部成员带最新可得 owner 值进入合并（查不到为 ''，merge 空不清空旧非空值）
+    const refs = [...new Set([...prevMembers.map((m) => m.customerRef), holderRef, incomingRef])]
+    const incoming: DupMember[] = refs.map((customerRef) => ({ customerRef, ownerSales: ownerOf(customerRef) }))
+    const members = mergeDuplicateGroupMembers(prevMembers, incoming)
+    const digest = duplicateGroupDigest(members)
+    // 内容未变化（重复登记同一成员、owner 也无更新）→ 不重发不空转
+    if (prevMembers.length > 0 && members.length === prevMembers.length && digest === duplicateGroupDigest(prevMembers)) return
+    const anchorMasked = String(event.payload.identityMasked || existing?.anchorMasked || '')
+    const identity = duplicateGroupEventIdentity(anchor.identityType, anchor.identityHash, digest, prevVersion)
+    const membersJson = JSON.stringify(members)
+    if (existing) {
+      existing.anchorMasked = anchorMasked
+      existing.membersJson = membersJson
+      existing.memberCount = members.length
+      existing.registeredBy = principal.deviceId
+      existing.aggregateVersion = identity.aggregateVersion
+    } else {
+      this.dupGroups.push({ workspaceId: principal.workspaceId, anchorType: anchor.identityType,
+        anchorHash: anchor.identityHash, anchorMasked, membersJson, memberCount: members.length,
+        registeredBy: principal.deviceId, aggregateVersion: identity.aggregateVersion })
+    }
+    const downPayload = buildDuplicateGroupDownPayload({
+      anchorType: anchor.identityType, anchorHash: anchor.identityHash, anchorMasked,
+      members, deleted: false, registeredByDeviceId: principal.deviceId
+    })
+    this.events.push({
+      centralSeq: this.events.length + 1, workspaceId: principal.workspaceId, sourceDeviceId: principal.deviceId,
+      event: { protocolVersion: 1, eventId: identity.eventId,
+        eventSeq: members.length, idempotencyKey: identity.idempotencyKey,
+        direction: 'down', entityType: 'duplicate_group', entityId: duplicateGroupGroupId(anchor.identityType, anchor.identityHash),
+        eventType: 'duplicate_group_sync', aggregateVersion: identity.aggregateVersion,
+        payload: downPayload,
+        occurredAt: Date.now() }
+    })
+  }
+
+  /** 测试视图：重复组登记行（与 central_duplicate_group 同构） */
+  dupGroupRows(): Array<{ workspaceId: string; anchorType: string; anchorHash: string; anchorMasked: string; membersJson: string; memberCount: number }> {
+    return this.dupGroups.map(({ workspaceId, anchorType, anchorHash, anchorMasked, membersJson, memberCount }) =>
+      ({ workspaceId, anchorType, anchorHash, anchorMasked, membersJson, memberCount }))
   }
 
   async authenticate(tokenHash: string): Promise<DevicePrincipal | null> {
@@ -187,6 +259,7 @@ export class MemoryCentralStore implements CentralStore {
           String(row.payload.identityHash ?? '') === anchor.identityHash)
         if (clash) {
           await this.recordConflict(principal, event, 'identity_anchor_conflict')
+          this.registerDuplicateGroup(principal, event, clash)
           rejected.push({ eventId: event.eventId, code: 'identity_anchor_conflict',
             message: '同一身份锚点已指向其它客户，需人工仲裁后再同步' })
           continue

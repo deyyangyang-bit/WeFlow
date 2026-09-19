@@ -15,11 +15,20 @@ export const CENTRAL_SYNC_PROTOCOL_VERSION = 1 as const
 
 export const CENTRAL_ENTITY_TYPES = [
   'customer', 'customer_identity', 'assignment', 'ownership', 'opportunity', 'quote',
-  'audit_event', 'customer_judgment', 'knowledge_proposal', 'permission'
+  'audit_event', 'customer_judgment', 'knowledge_proposal', 'permission',
+  'duplicate_group'
 ] as const
 
 export type CentralEntityType = typeof CENTRAL_ENTITY_TYPES[number]
 export type CentralSyncDirection = 'up' | 'down'
+
+/**
+ * 中央下行投影白名单（撞客一期 2026-09-19，宪法 §3.1 duplicate_group 登记行）：
+ * 允许中央自产并随 /sync/pull 广播下发的投影实体类型。与下行指令（DOWN_COMMAND_SPECS）
+ * 互斥——投影是**事实通告**，不承载动作语义，客户端只落本地表供界面提示，
+ * 不走 applyDownEventDirect / 下行业务校验器。
+ */
+export const DOWN_PROJECTION_ENTITY_TYPES = ['duplicate_group'] as const
 
 export interface CentralSyncEvent {
   protocolVersion: typeof CENTRAL_SYNC_PROTOCOL_VERSION

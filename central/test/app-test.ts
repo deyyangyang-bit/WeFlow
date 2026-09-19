@@ -133,6 +133,25 @@ check('C11 service 账号不可下发指令 → 403', (await app.inject({ method
 check('C12 service 账号不可创建邀请码 → 403', (await app.inject({ method: 'POST', url: '/api/v1/bindings/invitations', headers: authOf(service.token),
   payload: { workspaceId: wsA, employeeCode: 'Z', displayName: 'Z', role: 'sales' } })).statusCode === 403)
 
+// ── 指令域细分（2026-09-19 权限矩阵拆分）：按 eventType 鉴权，取代一刀切 command.issue ──
+const correctionCmd = (suffix: string) => ({
+  ...downCommand, eventId: `corr-${suffix}`, idempotencyKey: `corr-${suffix}`, eventType: 'supervisor_correction',
+  payload: { type: 'supervisor_correction', deliveryRole: 'apply', leadId: 1, assignmentId: 1, title: '归属修正', summary: '主管修正认领信息' }
+})
+const permissionCmd = (suffix: string) => ({
+  ...downCommand, eventId: `perm-${suffix}`, idempotencyKey: `perm-${suffix}`,
+  entityType: 'permission', entityId: scoped('permission:1'), eventType: 'permission_change',
+  payload: { type: 'permission_change', deliveryRole: 'apply', employeeRef: 'M001', declaredRole: 'sales' }
+})
+check('C13 分配员不可下发 supervisor_correction → 403（越权修复）', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(allocator.token), payload: correctionCmd('a') })).statusCode === 403)
+check('C14 主管可下发 supervisor_correction → 201', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(supervisor.token), payload: correctionCmd('s') })).statusCode === 201)
+check('C15 分配员不可下发 permission_change → 403（越权修复）', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(allocator.token), payload: permissionCmd('a') })).statusCode === 403)
+check('C16 主管不可下发 permission_change → 403（权限归管理员）', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(supervisor.token), payload: permissionCmd('s') })).statusCode === 403)
+check('C17 管理员可下发 permission_change → 201', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: authOf(admin.token), payload: permissionCmd('adm') })).statusCode === 201)
+check('C18 销售可上报 sla1_escalate_supervisor → 201（notify 域）', (await app.inject({ method: 'POST', url: '/api/v1/sync/commands', headers: salesAuth,
+  payload: { ...downCommand, eventId: 'sla-sales', idempotencyKey: 'sla-sales', eventType: 'sla1_escalate_supervisor',
+    payload: { type: 'sla1_escalate_supervisor', deliveryRole: 'notify', leadId: 1, assignmentId: 1, salesName: '张三', remindCount: 3, recycledAt: Date.now() } } })).statusCode === 201)
+
 console.log('═══ D. 推送：幂等 / 批内隔离 / 禁字段 ═══')
 const first = await app.inject({ method: 'POST', url: '/api/v1/sync/push', headers: { ...salesAuth, 'idempotency-key': 'batch-1' },
   payload: { events: [upEvent({ eventId: 'e1', idempotencyKey: 'customer:1:v1' })] } })
@@ -288,6 +307,82 @@ check('I12 身份冲突不静默改写既有投影（未新建第二条真源）
   store.projectionRow('customer_identity', idA)?.payload.customerRef === scoped('customer:1'))
 check('I13 身份冲突留痕待人工仲裁', store.conflictRecords().some((r) => r.code === 'identity_anchor_conflict'))
 
+// ── 撞客一期（宪法 §3.1 duplicate_group）：身份冲突除审计外登记重复组并广播下行 ──
+const dupPull = await app.inject({ method: 'GET', url: '/api/v1/sync/pull?cursor=0&limit=200', headers: authOf(allocator.token) })
+const dupEvents = (dupPull.json().data?.events || []).filter((e: { entityType?: string }) => e.entityType === 'duplicate_group')
+check('I17 身份冲突登记重复组并随下行广播（无 target 全工作区可见）', dupEvents.length >= 1)
+const dg = dupEvents[dupEvents.length - 1]
+const dgMembers = JSON.parse(String(dg?.payload?.membersJson || '[]')) as Array<{ customerRef?: string; ownerSales?: string }>
+check('I18 重复组成员 = 双方客户引用 + 归属销售字段，锚点哈希与冲突身份一致',
+  dgMembers.length === 2 && dgMembers.some((m) => m.customerRef === scoped('customer:1')) &&
+  dgMembers.some((m) => m.customerRef === scoped('customer:2')) &&
+  dgMembers.every((m) => typeof m.ownerSales === 'string') &&
+  String(dg?.payload?.anchorHash || '') === identityPayload.identityHash && String(dg?.payload?.anchorType || '') === 'phone')
+check('I19 重复组不含禁出字段（无聊天内容/消息正文）',
+  !String(dg?.payload?.membersJson).includes('session') && !String(dg?.payload?.membersJson).includes('msg') &&
+  !('messages' in (dg?.payload || {})))
+check('I20 重复组登记留档（dupGroupRows 与 central_duplicate_group 同构）',
+  store.dupGroupRows().some((g) => g.memberCount === 2 && g.anchorHash === identityPayload.identityHash && g.anchorMasked === identityPayload.identityMasked))
+const dupPull2 = await app.inject({ method: 'GET', url: '/api/v1/sync/pull?cursor=0&limit=200', headers: authOf(allocator.token) })
+const dupEvents2 = (dupPull2.json().data?.events || []).filter((e: { entityType?: string }) => e.entityType === 'duplicate_group')
+check('I21 重复组下行对同锚点幂等（成员数不变不重发）', dupEvents2.length === dupEvents.length)
+
+// ── H7 扩展：第三成员累积合并 + 内容摘要幂等（成员按 customerRef 永久累积，不被覆盖）──
+// 先给 A/B 两个客户补 ownerSales 投影（重复组的 ownerSales 用最新可得值）
+// customer:1 在 D 区已落 v1 投影（D3）；这里推 v2 带 ownerSales（版本闸门要求严格变大）
+await pushAs(salesAuth, 'own-c1', [upEvent({ eventId: 'own-c1', idempotencyKey: 'cust:1:v2',
+  entityType: 'customer', entityId: scoped('customer:1'), aggregateVersion: 2,
+  payload: { displayName: '客户一', ownerSales: '张三' } })])
+await pushAs(salesAuth, 'own-c2', [upEvent({ eventId: 'own-c2', idempotencyKey: 'cust:2:v1',
+  entityType: 'customer', entityId: scoped('customer:2'), aggregateVersion: 1,
+  payload: { displayName: '客户二', ownerSales: '李四' } })])
+// 第三个不同 customerRef 撞同一身份锚点 → 拒收 + 登记组扩展为 A/B/C
+const idC = scoped('identity:3')
+const idClash3 = await pushAs(salesAuth, 'own-9', [upEvent({ eventId: 'own-9', idempotencyKey: 'identity:3:v1',
+  entityType: 'customer_identity', entityId: idC, payload: { ...identityPayload, customerRef: scoped('customer:3') } })])
+check('I22 同锚点第三个客户 → 拒收 identity_anchor_conflict', idClash3.json().data.rejected[0]?.code === 'identity_anchor_conflict')
+const dgRow3 = store.dupGroupRows().find((g) => g.anchorHash === identityPayload.identityHash)
+const dg3Members = JSON.parse(String(dgRow3?.membersJson || '[]')) as Array<{ customerRef?: string; ownerSales?: string }>
+check('I23 登记行最终包含 A/B/C 三个成员（累积合并不覆盖）',
+  dgRow3?.memberCount === 3 &&
+  dg3Members.some((m) => m.customerRef === scoped('customer:1')) &&
+  dg3Members.some((m) => m.customerRef === scoped('customer:2')) &&
+  dg3Members.some((m) => m.customerRef === scoped('customer:3')))
+check('I24 成员 ownerSales 用最新投影值（张三/李四，不清空）',
+  dg3Members.find((m) => m.customerRef === scoped('customer:1'))?.ownerSales === '张三' &&
+  dg3Members.find((m) => m.customerRef === scoped('customer:2'))?.ownerSales === '李四')
+const dupPull3 = await app.inject({ method: 'GET', url: '/api/v1/sync/pull?cursor=0&limit=200', headers: authOf(allocator.token) })
+const dupEvents3 = (dupPull3.json().data?.events || []).filter((e: { entityType?: string }) => e.entityType === 'duplicate_group')
+check('I25 第三成员下行新增一次内容变化事件（2 → 3）', dupEvents3.length === dupEvents2.length + 1 &&
+  JSON.parse(String(dupEvents3[dupEvents3.length - 1]?.payload?.membersJson || '[]')).length === 3)
+check('I26 aggregateVersion 随内容变化单调递增',
+  Number(dupEvents3[dupEvents3.length - 1]?.aggregateVersion || 0) > Number(dg?.aggregateVersion || 0))
+
+// 重复提交同一成员（同实体同载荷、新 eventId）→ 拒收冲突但组内容不变 → 不重发
+const replayThird = await pushAs(salesAuth, 'own-10', [upEvent({ eventId: 'own-10', idempotencyKey: 'identity:2:replay',
+  entityType: 'customer_identity', entityId: idB, payload: { ...identityPayload, customerRef: scoped('customer:2') } })])
+check('I27 重复提交既有成员仍拒收（身份闸门不受历史影响）', replayThird.json().data.rejected[0]?.code === 'identity_anchor_conflict')
+const dupPull4 = await app.inject({ method: 'GET', url: '/api/v1/sync/pull?cursor=0&limit=200', headers: authOf(allocator.token) })
+const dupEvents4 = (dupPull4.json().data?.events || []).filter((e: { entityType?: string }) => e.entityType === 'duplicate_group')
+check('I28 内容摘要不变 → 不重发（下行事件数不变）', dupEvents4.length === dupEvents3.length)
+
+// 成员数相同但成员内容变化（customer:1 ownerSales 更新后再次触发冲突）→ 仍产生新事件
+await pushAs(salesAuth, 'own-c1v3', [upEvent({ eventId: 'own-c1v3', idempotencyKey: 'cust:1:v3',
+  entityType: 'customer', entityId: scoped('customer:1'), aggregateVersion: 3,
+  payload: { displayName: '客户一', ownerSales: '王五' } })])
+const reTrigger = await pushAs(salesAuth, 'own-11', [upEvent({ eventId: 'own-11', idempotencyKey: 'identity:2:retrigger',
+  entityType: 'customer_identity', entityId: idB, payload: { ...identityPayload, customerRef: scoped('customer:2') } })])
+check('I29 再次触发冲突（内容变化前置）', reTrigger.json().data.rejected[0]?.code === 'identity_anchor_conflict')
+const dupPull5 = await app.inject({ method: 'GET', url: '/api/v1/sync/pull?cursor=0&limit=200', headers: authOf(allocator.token) })
+const dupEvents5 = (dupPull5.json().data?.events || []).filter((e: { entityType?: string }) => e.entityType === 'duplicate_group')
+const lastDup = dupEvents5[dupEvents5.length - 1]
+const lastDupMembers = JSON.parse(String(lastDup?.payload?.membersJson || '[]')) as Array<{ customerRef?: string; ownerSales?: string }>
+check('I30 成员数相同（仍 3）但成员内容变化 → 新事件',
+  dupEvents5.length === dupEvents4.length + 1 && lastDupMembers.length === 3 &&
+  lastDupMembers.find((m) => m.customerRef === scoped('customer:1'))?.ownerSales === '王五')
+check('I31 新事件幂等键含内容摘要（与上一条不同）',
+  String(lastDup?.idempotencyKey || '') !== String(dupEvents4[dupEvents4.length - 1]?.idempotencyKey || ''))
+
 // §二.7：bootstrap-admin 是运维身份，不带工作区上下文，不得调用常规同步接口
 check('I14 bootstrap-admin 调 push → 400（不以空 workspaceId 绕过隔离）',
   (await pushAs(adminAuth, 'boot-1', [upEvent({ eventId: 'boot-1', idempotencyKey: 'boot-1' })])).statusCode === 400)
@@ -318,8 +413,8 @@ check('J4 同工作区同名员工 → nameUnique=false（禁止按显示名猜�
 
 console.log('═══ K. 下行指令校验（§七）═══')
 const cmdAuth = authOf(supervisor.token)
-const postCommand = (overrides: Partial<CentralSyncEvent>, suffix: string) => app.inject({
-  method: 'POST', url: '/api/v1/sync/commands', headers: cmdAuth,
+const postCommand = (overrides: Partial<CentralSyncEvent>, suffix: string, auth: Record<string, string> = cmdAuth) => app.inject({
+  method: 'POST', url: '/api/v1/sync/commands', headers: auth,
   payload: { ...downCommand, eventId: `k-${suffix}`, idempotencyKey: `k-${suffix}`, ...overrides }
 })
 const pay = (extra: Record<string, unknown>) => ({ ...downCommand.payload, ...extra })
@@ -416,10 +511,11 @@ const correction = await postCommand({ eventType: 'supervisor_correction', entit
   payload: { type: 'supervisor_correction', deliveryRole: 'apply', leadId: 1, assignmentId: 1, title: '主管纠正', summary: '口径修正',
     detail: { reasonCode: 'contract_review', source: 'central-app-test' } } }, 'correction')
 check('K19 supervisor_correction 在册且可下发 → 201', correction.statusCode === 201)
+// 2026-09-19 指令域拆分：permission_change 归 command.permission，仅管理员可下发（主管 → 403 见 C16）
 const permissionChange = await postCommand({ eventType: 'permission_change', entityType: 'permission',
   entityId: scoped('permission:1'),
-  payload: { type: 'permission_change', deliveryRole: 'apply', employeeRef: 'S001', declaredRole: 'sales' } }, 'permission')
-check('K20 permission_change 在册且可下发 → 201', permissionChange.statusCode === 201)
+  payload: { type: 'permission_change', deliveryRole: 'apply', employeeRef: 'S001', declaredRole: 'sales' } }, 'permission', authOf(admin.token))
+check('K20 permission_change 在册且管理员可下发 → 201', permissionChange.statusCode === 201)
 const slaNotify = await postCommand({ eventType: 'sla1_escalate_supervisor',
   payload: { type: 'sla1_escalate_supervisor', deliveryRole: 'notify', leadId: 1, assignmentId: 1, salesName: '张三', remindCount: 3, recycledAt: Date.now() } }, 'sla1')
 check('K21 sla1_escalate_supervisor 在册且可下发 → 201', slaNotify.statusCode === 201)
