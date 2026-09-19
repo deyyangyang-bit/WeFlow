@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell, BarChart2, Check, ChevronRight, ClipboardList, Database, Download, Globe, HardDrive,
-  Info, Mic, Palette, RotateCcw, ShieldCheck, Sparkles, UserRound, X
+  Info, Mic, Palette, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, UserRound, X
 } from 'lucide-react'
 import SettingsPage from './SettingsPage'
 import * as configService from '../services/config'
@@ -98,7 +98,9 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
   const [notificationFilterMode, setNotificationFilterMode] = useState<'all' | 'whitelist' | 'blacklist'>('all')
   const [authEnabled, setAuthEnabled] = useState(false)
   const [isLockMode, setIsLockMode] = useState(false)
-  const [identity, setIdentity] = useState<{ name: string; role: string } | null>(null)
+  const [identity, setIdentity] = useState<{ name: string; role: string; employeeId: string } | null>(null)
+  // 企业同步绑定信息（centralSync.status，只读展示；enabled=false / 读取失败 → 视为未启用）
+  const [centralSyncInfo, setCentralSyncInfo] = useState<{ deviceId: string; workspaceId: string } | null>(null)
   const [showIdentityDialog, setShowIdentityDialog] = useState(false)
   const [identityNameDraft, setIdentityNameDraft] = useState('')
   const [identityRoleDraft, setIdentityRoleDraft] = useState('')
@@ -146,8 +148,14 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
         setIsLockMode(savedLockMode)
         try {
           const idProfile = await window.electronAPI.identity.get()
-          if (!cancelled) setIdentity({ name: idProfile.name, role: idProfile.role })
+          if (!cancelled) setIdentity({ name: idProfile.name, role: idProfile.role, employeeId: idProfile.employeeId })
         } catch { /* 身份档案读取失败静默，常用页不阻塞 */ }
+        try {
+          const syncRes = await window.electronAPI.centralSync.status()
+          if (!cancelled && syncRes.success && syncRes.status?.enabled) {
+            setCentralSyncInfo({ deviceId: syncRes.status.deviceId, workspaceId: syncRes.status.workspaceId })
+          }
+        } catch { /* 企业同步未启用/读取失败静默，常用页不阻塞 */ }
       } catch { /* 配置读取失败保持默认值，常用页不阻塞 */ }
     })()
     return () => {
@@ -200,7 +208,7 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
     try {
       const res = await window.electronAPI.identity.set({ name: n, role: identityRoleDraft })
       if (res.ok && res.data) {
-        setIdentity({ name: res.data.name, role: res.data.role })
+        setIdentity({ name: res.data.name, role: res.data.role, employeeId: res.data.employeeId || identity?.employeeId || '' })
         setShowIdentityDialog(false)
         showMessage(`身份已保存，署名：${res.data.actorLabel}`, true)
       } else {
@@ -213,6 +221,13 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
 
   const renderCommonView = () => (
     <div className="snav-body snav-body--common">
+      {/* 页头（概念稿屏 17 .shead 语法）：小标 + 页名 + 口径说明 */}
+      <div className="snav-page-head">
+        <p className="eyebrow">系统 · 设置</p>
+        <h1 className="snav-page-title">设置</h1>
+        <p className="sub">日常要动的四项留在这一页 · 数据库、AI 参数、缓存收进「高级设置」，一般不用动</p>
+      </div>
+
       {/* 外观卡：主题三段，复用外观 tab 的 useThemeStore.setThemeMode（同一持久化键） */}
       <div className="snav-card">
         <div className="snav-card-title"><Palette size={15} /> 外观</div>
@@ -291,6 +306,26 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
             : <span className="snav-pill snav-pill-muted">未设置</span>}
         </div>
         <div className="snav-row">
+          <div className="snav-row-label">
+            <span className="snav-row-title">员工 ID</span>
+            <span className="snav-row-desc">由企业同步绑定产生，本机不可修改</span>
+          </div>
+          {identity?.employeeId
+            ? <span className="snav-pill snav-pill-mono" title={identity.employeeId}>…{identity.employeeId.slice(-8)}</span>
+            : <span className="snav-pill snav-pill-muted">未绑定</span>}
+        </div>
+        <div className="snav-row">
+          <div className="snav-row-label">
+            <span className="snav-row-title">设备 / 企业同步</span>
+            <span className="snav-row-desc">
+              {centralSyncInfo ? `工作区 ${centralSyncInfo.workspaceId}` : '未启用企业同步'}
+            </span>
+          </div>
+          {centralSyncInfo
+            ? <span className="snav-pill snav-pill-mono" title={centralSyncInfo.deviceId}>设备 …{centralSyncInfo.deviceId.slice(-6)}</span>
+            : null}
+        </div>
+        <div className="snav-row">
           <div className="snav-row-label"><span className="snav-row-title">切换身份</span></div>
           <button type="button" className="snav-row-link" onClick={openIdentityDialog}>
             选择 <ChevronRight size={13} />
@@ -298,9 +333,11 @@ function SettingsNavShell({ onClose }: SettingsNavShellProps) {
         </div>
       </div>
 
-      {/* 高级设置入口（屏 1 底部） */}
+      {/* 高级设置入口（屏 1 底部，概念稿 .set-entry 语法） */}
       <button type="button" className="snav-advanced-entry" onClick={() => setNav(navOpenAdvanced(nav))}>
-        ⚙️ 高级设置（数据库、AI 参数、缓存等，一般不用动）<ChevronRight size={13} />
+        <SlidersHorizontal size={15} />
+        高级设置（数据库、AI 参数、缓存等，一般不用动）
+        <ChevronRight size={14} className="snav-entry-go" />
       </button>
     </div>
   )

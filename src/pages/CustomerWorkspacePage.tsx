@@ -15,6 +15,8 @@
  *  - 客户主数据：crm.customers()（account + profile_stage/profile_display_name 投影）
  *  - 行动信号：sales.actionGetUnified()（getUnifiedSignals，全量不截断，过滤 todo:/logi:/lead: 虚拟前缀）
  *  - 360 档案：crm.customerProfile(sessionId)
+ *  - 在谈金额（2026-09-19 UI 第一批）：crm.opportunityList({status:'active'}) 一次拉取，按会话汇总金额
+ *  - 报价版本表（同批）：档案 contracts → crm.quotationHistory(contractId) 版本链，只读
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
@@ -58,10 +60,17 @@ export default function CustomerWorkspacePage() {
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [signals, setSignals] = useState<any[]>([])
+  // 在谈金额（概念稿索引列）：active 商机金额按会话汇总，一次 IPC，展示层口径（商机表 amount 单位=元）
+  const [dealAmounts, setDealAmounts] = useState<Record<string, number>>({})
+  // 报价版本链（概念稿「报价单」表）：当前档案各合同的 quotation 行，随档案打开拉取（只读）
+  const [quotesByContract, setQuotesByContract] = useState<Record<number, any[]>>({})
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState('')
   // 处理成功即从队列移除：乐观移除键集（重新拉取后源数据已消失，键集可安全保留）
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  // 撞客一期：重复组徽标（只显示「与同事某某的客户重复」，不显示对方任何资料）
+  const [dupMatches, setDupMatches] = useState<{ leadMatches: Record<string, { others: string[] }>; customerMatches: Record<string, { others: string[] }> }>({ leadMatches: {}, customerMatches: {} })
+  const [dupPopId, setDupPopId] = useState('')
 
   // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
   const openChat = (c: any) => {
@@ -72,6 +81,8 @@ export default function CustomerWorkspacePage() {
   // 拉取客户列表 + 行动信号（一次刷新两路数据）
   const fetchAll = async () => {
     const rows = (await window.electronAPI.crm.customers()) || []
+    // 撞客一期：重复组徽标匹配（失败不影响客户列表）
+    try { setDupMatches(await window.electronAPI.crm.dupGroupList()) } catch { /* ignore */ }
     const idt = await window.electronAPI.identity.get().catch(() => ({ name: '', role: '', nameAliases: [] }))
     const idLike = identityLikeFromIpc(idt)
     setIdentity(idLike)
@@ -85,6 +96,17 @@ export default function CustomerWorkspacePage() {
       })
       setSignals(sigs)
     } catch { /* 信号失败不影响客户列表 */ }
+    // 在谈金额：active 商机一次拉取，按会话汇总（商机行自带 session_id）；失败不影响客户列表
+    try {
+      const opps = await (window as any).electronAPI.crm.opportunityList({ status: 'active' })
+      const sums: Record<string, number> = {}
+      for (const o of opps || []) {
+        const sid = String(o?.session_id || '')
+        if (!sid) continue
+        sums[sid] = (sums[sid] || 0) + Number(o?.amount || 0)
+      }
+      setDealAmounts(sums)
+    } catch { setDealAmounts({}) }
     return rows
   }
   useEffect(() => { void fetchAll() }, [])
@@ -160,6 +182,17 @@ export default function CustomerWorkspacePage() {
   }
   // 卡片信号徽章：task 信号优先（R0-R8 跟进规则），否则 insight
   const signalOf = (c: any) => signalBySession.get(String(c.session_id || '')) || null
+  // 在谈金额（概念稿 .irow__amt）：active 商机金额合计（元 → 万，一位小数）；无商机显示 —，不写「未报价」
+  const dealAmountOf = (c: any) => dealAmounts[String(c.session_id || '')] || 0
+  const dealAmountTextOf = (c: any) => {
+    const v = dealAmountOf(c)
+    return v > 0 ? `${(v / 10000).toFixed(1)}` : '—'
+  }
+  // 在谈合计（.rail__sum）：本页客户全集（owner 过滤后）的商机金额总和
+  const totalDealAmount = useMemo(
+    () => customers.reduce((acc, c) => acc + dealAmountOf(c), 0),
+    [customers, dealAmounts] // eslint-disable-line react-hooks/exhaustive-deps
+  )
 
   // ─── 行动队列（屏 1）与搜索态（屏 3）──────────────────────────────────────
   const withTask = (s: any) => (s?.sources || []).some((src: any) => src.type === 'task')
@@ -207,10 +240,10 @@ export default function CustomerWorkspacePage() {
     await fetchAll()
   }
 
-  // 搜索态结果列表（概念稿细线索引 .tbl/.thead/.trow）：每页 10 条 + Pager；筛选变化回第 1 页
+  // 搜索态结果列表（概念稿细线索引 .tbl/.thead/.trow）：每页 20 条 + Pager；筛选变化回第 1 页
   const [searchPage, setSearchPage] = useState(1)
   useEffect(() => { setSearchPage(1) }, [searchKw, stageFilter])
-  const INDEX_PAGE_SIZE = 10
+  const INDEX_PAGE_SIZE = 20
   const indexTotalPages = Math.max(1, Math.ceil(searchResults.length / INDEX_PAGE_SIZE))
   const indexPage = Math.min(searchPage, indexTotalPages)
   const indexRows = searchResults.slice((indexPage - 1) * INDEX_PAGE_SIZE, indexPage * INDEX_PAGE_SIZE)
@@ -360,6 +393,7 @@ export default function CustomerWorkspacePage() {
     setSelectedCustomer(c)
     setCustomerProfile(null)
     setDeepReport('')
+    setQuotesByContract({}) // 换客户＝换版本链，先清空旧表防串档
     deepReqRef.current = Number(c?.id ?? -1) // 使在途的旧客户深度分析请求失效
     setDeepLoading(false)
     setEvidenceKey(null)
@@ -377,6 +411,18 @@ export default function CustomerWorkspacePage() {
     try {
       const r = await window.electronAPI.crm.customerProfile(String(c.session_id))
       if (r?.success) setCustomerProfile(r.data)
+      // 报价版本链（概念稿「报价单」表）：按档案返回的合同逐个取历史（只读 IPC，无新增）；
+      // 期间切换客户（deepReqRef 已变）则丢弃，防串档
+      const contracts: any[] = r?.data?.contracts || []
+      if (contracts.length) {
+        const entries = await Promise.all(contracts.map(async (ct: any) => {
+          try {
+            const list = await (window as any).electronAPI.crm.quotationHistory(Number(ct.id))
+            return [Number(ct.id), Array.isArray(list) ? list : []] as const
+          } catch { return [Number(ct.id), []] as const }
+        }))
+        if (deepReqRef.current === Number(c.id)) setQuotesByContract(Object.fromEntries(entries))
+      }
     } catch { /* ignore */ }
     setProfileLoading(false)
   }
@@ -566,6 +612,44 @@ export default function CustomerWorkspacePage() {
     : '队列里没有待处理事项 · 档案与信号取本机业务库，不做云端汇总'
   // 档案侧栏：跟进待办只列待处理/逾期（口径与旧渲染一致）
   const pendingTodos = (customerProfile?.todos || []).filter((t: any) => t.status === 'pending' || t.status === 'overdue')
+  // ── 报价版本表（概念稿屏 2「报价单」quotetable）──────────────────────────────
+  // 日期取整到天；无效/缺列如实略去，不补假值
+  const fmtDay = (ms: number) => {
+    if (!ms || !Number.isFinite(ms)) return ''
+    const d = new Date(ms)
+    if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2000) return ''
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const quotePeriodOf = (q: any) => {
+    const from = fmtDay(Number(q?.effective_from || 0)) || fmtDay(Number(q?.created_at || 0))
+    const to = fmtDay(Number(q?.effective_to || 0))
+    if (from && to) return `${from} → ${to}`
+    if (from) return `${from} 起`
+    if (to) return `${to} 止`
+    return '—'
+  }
+  // 版本链扁平视图：档案各合同的 quotation 行，新版本在前（quotationHistoryForContract 的顺序）；
+  // 首行=当前版（effective_to=0），其余=已换版。多合同都挂着报价时加「合同」列防歧义
+  const quoteRows = useMemo(() => {
+    const contracts: any[] = customerProfile?.contracts || []
+    const rows: Array<{ key: string; contractName: string; versionLabel: string; period: string; total: string }> = []
+    for (const ct of contracts) {
+      for (const q of (quotesByContract[Number(ct.id)] || [])) {
+        const ver = Number(q?.version || 0)
+        rows.push({
+          key: `${ct.id}-${q?.id ?? rows.length}`,
+          contractName: String(ct?.name || `合同 #${ct?.id}`),
+          versionLabel: ver > 0 ? `v${ver}` : '—',
+          period: quotePeriodOf(q),
+          total: Number(q?.total || 0).toLocaleString('zh-CN'),
+        })
+      }
+    }
+    return rows
+  }, [customerProfile, quotesByContract])
+  const quoteContractCount = useMemo(() => (
+    new Set(Object.entries(quotesByContract).filter(([, list]) => (list as any[]).length > 0).map(([cid]) => Number(cid))).size
+  ), [quotesByContract])
   // 档案侧栏判断四格（摘要/机会/风险/下一步）：字段名同 customerCurrentView 投影，缺栏如实留空占位
   const judgmentRows: Array<[string, any]> = (() => {
     const j: any = customerProfile?.currentView?.judgments || {}
@@ -677,7 +761,11 @@ export default function CustomerWorkspacePage() {
             {st}<span className="rail__n">{stageCounts[st] || 0}</span>
           </button>
         ))}
-        <span className="rail__sum">显示 <b>{searchActive ? searchResults.length : actionQueue.length} / {customers.length}</b> · 本机业务库</span>
+        <span className="rail__sum">
+          显示 <b>{searchActive ? searchResults.length : actionQueue.length} / {customers.length}</b>
+          {totalDealAmount > 0 && <> · 在谈合计 <b>¥{(totalDealAmount / 10000).toFixed(1)} 万</b></>}
+          {' '}· 本机业务库
+        </span>
       </div>
 
       {/* 客户索引 + 当前档案（概念稿 .crm）：宽窗两栏并排，窄窗档案转为浮层；选择/关闭/遮罩行为与旧抽屉一致 */}
@@ -695,7 +783,7 @@ export default function CustomerWorkspacePage() {
         <>
           <div className="tbl tbl--air">
             <div className="thead cws-ix">
-              <span>客户</span><span>阶段</span><span className="tc-r">最近互动</span><span />
+              <span>客户</span><span>阶段</span><span className="tc-r">最近互动</span><span className="tc-r">在谈金额</span><span />
             </div>
             {indexRows.length === 0 && <div className="cws-ix__empty">无匹配客户</div>}
             {indexRows.map((c: any) => (
@@ -716,15 +804,18 @@ export default function CustomerWorkspacePage() {
                 </span>
                 <span><span className={stagePillClass(rowStage(c))}>{rowStage(c)}</span></span>
                 <span className="cws-ix__silent tc-r">{silentTextOf(c)}</span>
+                <span className={`cws-ix__amt tc-r${dealAmountOf(c) > 0 ? '' : ' cws-ix__amt--none'}`}>
+                  {dealAmountOf(c) > 0 ? <>{dealAmountTextOf(c)}<span>万</span></> : '—'}
+                </span>
                 <ChevronRight size={14} className="chev" />
               </button>
             ))}
           </div>
           {indexTotalPages > 1 && (
             <div className="cws-pager">
-              <button className="btn btn--sm" disabled={indexPage <= 1} onClick={() => setSearchPage(indexPage - 1)}>上一页</button>
+              <button className="btn btn--plain btn--sm" disabled={indexPage <= 1} onClick={() => setSearchPage(indexPage - 1)}>上一页</button>
               <span className="cws-pager__info">第 {indexPage} / {indexTotalPages} 页 · 共 {searchResults.length} 条</span>
-              <button className="btn btn--sm" disabled={indexPage >= indexTotalPages} onClick={() => setSearchPage(indexPage + 1)}>下一页</button>
+              <button className="btn btn--plain btn--sm" disabled={indexPage >= indexTotalPages} onClick={() => setSearchPage(indexPage + 1)}>下一页</button>
             </div>
           )}
         </>
@@ -755,6 +846,18 @@ export default function CustomerWorkspacePage() {
                 <span className="cws-q__who">
                   <span className="cws-q__name">
                     <span className="tc-n">{nameOnlyOf(it.displayName)}</span>
+                    {it.customer && (() => {
+                      // 撞客一期（宪法 §3.1 duplicate_group）：点徽标只显示对方归属人姓名
+                      const hit = dupMatches.customerMatches[String(it.customer.id)]
+                      if (!hit) return null
+                      const pop = dupPopId === `cust-${it.customer.id}`
+                      return (
+                        <span className="dup-badge-wrap" onClick={(e) => e.stopPropagation()}>
+                          <span className="tag tag--insight dup-badge" title="撞客提示" onClick={() => setDupPopId(pop ? '' : `cust-${it.customer.id}`)}>重复</span>
+                          {pop && <span className="dup-pop">与同事 {hit.others.join('、')} 的客户重复</span>}
+                        </span>
+                      )
+                    })()}
                     <span className="cws-q__sub">
                       <span className={queuePillClass(it.pill)}>{it.pillText}</span>
                       {nameDateOf(it.displayName) && <span className="cws-rowdate">{nameDateOf(it.displayName)}</span>}
@@ -848,7 +951,7 @@ export default function CustomerWorkspacePage() {
                 <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
                 <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
                 <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
-                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }); navigate('/hermes') }}><Bot size={12} /> 让 Hermes 分析</button>
                 {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
                 <button
                   className="cws-aitools__item"
@@ -993,6 +1096,40 @@ export default function CustomerWorkspacePage() {
                       ))}
                     </div>
                   </>
+                )}
+              </div>
+              {/* 概念稿屏 2「报价单」：版本链 quotetable（main.scss 基础件）。行取真实报价链，
+                  版本 / 生效期 / 总额 / 当前版标记全部读库；多合同都挂报价时加「合同」列防歧义 */}
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">报价单</span>
+                  <span className="cws-side__meta">{quoteRows.length > 0 ? `${quoteRows.length} 个版本` : '尚无报价'}</span>
+                </div>
+                {quoteRows.length > 0 ? (
+                  <table className="quotetable">
+                    <thead>
+                      <tr>
+                        <th>版本</th>
+                        {quoteContractCount > 1 && <th>合同</th>}
+                        <th>生效期</th>
+                        <th style={{ textAlign: 'right' }}>总额</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {quoteRows.map((q, i) => (
+                        <tr key={q.key} className={i === quoteRows.length - 1 ? 'is-last' : ''}>
+                          <td className="num">{q.versionLabel}</td>
+                          {quoteContractCount > 1 && <td>{q.contractName}</td>}
+                          <td className="num">{q.period}</td>
+                          <td className="num" style={{ textAlign: 'right' }}>¥{q.total}</td>
+                          <td>{i === 0 ? <span className="tag tag--task">当前版</span> : <span className="tag tag--neutral">已换版</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="cws-side__quotempty">该客户还没有报价记录；报价单随合同版本建档，AI 报价或手动新建后在这里列出。</p>
                 )}
               </div>
               <div className="side-block">

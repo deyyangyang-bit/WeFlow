@@ -317,20 +317,18 @@ function Sidebar({ collapsed }: SidebarProps) {
   // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
   const openHermes = useHermesStore((s) => s.openHermes)
-  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮；设置除外——它的路由是浮层，仍标 active
+  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮
   const groupActive = (items: NavItemDef[]) => items.some((i) => 'path' in i && isActive(i.path))
   const renderNavItem = (item: NavItemDef, child = false) => {
     if ('action' in item) {
-      const actionActive = item.action === 'openSettings' && isActive('/settings')
       // 动作项：button 原生键盘可操作；不跳路由、不改 openGroups
       return (
         <button
           key={item.label}
           type="button"
-          className={`nav-item ${child ? 'nav-item--child' : ''} ${actionActive ? 'active' : ''}`}
+          className={`nav-item ${child ? 'nav-item--child' : ''}`}
           onClick={() => {
-            if (item.action === 'openHermes') openHermes()
-            if (item.action === 'openSettings') openSettingsFromAccountMenu()
+            if (item.action === 'openHermes') { openHermes(); navigate('/hermes') }
           }}
           title={collapsed ? item.label : undefined}
           aria-label={item.label}

@@ -349,3 +349,25 @@
   .crm-lead-page .lp-card { flex-wrap: wrap; }
   .crm-lead-page .lp-search { width: 100%; }
 }
+
+// ── 单条录入查重面板（2026-09-19）──
+.lead-dup-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+
+  .lead-dup-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #b45309; }
+  .lead-dup-meta { margin-top: 6px; opacity: 0.75; line-height: 1.6; }
+  .lead-dup-table {
+    width: 100%;
+    margin-top: 8px;
+    border-collapse: collapse;
+
+    th, td { padding: 4px 6px; text-align: left; border-bottom: 1px solid rgba(128, 128, 128, 0.18); font-weight: 400; }
+    th { opacity: 0.6; font-size: 11px; }
+  }
+  .lead-dup-actions { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+}

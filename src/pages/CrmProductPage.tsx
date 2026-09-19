@@ -189,6 +189,21 @@ export default function CrmProductPage() {
 
   const tpl = SPEC_TEMPLATES[form.category] ?? []
 
+  // 规格摘要：specs JSON 取前 3 个「标量」键值对做行内次行（嵌套对象/数组跳过，完整规格在「规格」弹窗；
+  // 同 copyRow 的教训：直接插值嵌套对象会渲染出 [object Object]）
+  const specSummaryOf = (p: ProductRow): string => {
+    let specs: Record<string, unknown> = {}
+    try { specs = JSON.parse(String(p.specs || '{}')) } catch { /* 脏数据忽略 */ }
+    return Object.entries(specs)
+      .filter(([, v]) => v != null && typeof v !== 'object' && String(v).trim())
+      .slice(0, 3)
+      .map(([k, v]) => {
+        const text = String(v).trim()
+        return `${k}:${text.length > 24 ? `${text.slice(0, 24)}…` : text}`
+      })
+      .join(' · ')
+  }
+
   return (
     <div className="crm-product-page">
       {/* 页眉（概念稿 .shead：左标题/说明，右操作区）——标题与「共 N 个产品」口径不变，
@@ -221,46 +236,74 @@ export default function CrmProductPage() {
         </div>
       </div>
 
-      {/* 空态：不渲染固定列宽的宽表（9 列固定宽度合计 1152px 会让空表也滚出一条横向滚动条），
-          只给一行说明；有数据时仍走下面的宽表容器，列宽与局部横滚照旧 */}
+      {/* 行表换皮（概念稿屏 14 .tbl/.thead/.trow 细线行）：型号 / 类型 / 规格 / 指导价 / MOQ / 操作。
+          产品实体没有库存与在售状态字段，概念稿对应两列不画（不造假）；能力全保留：
+          勾选批量 AI 描述、编辑模式行内改名/改价、规格/换图/删图/复制入口都在。 */}
       {filtered.length === 0 ? (
         <div className="crm-table-empty">
           {products.length === 0 ? '还没有产品：用「新增产品」或「批量导入」建第一条。' : '没有匹配的产品：换个关键词或清掉类目筛选。'}
         </div>
       ) : (
-      <div className="crm-table-wrap">
-        <table className="crm-table">
-          <thead><tr><th></th><th>图片</th><th>名称</th><th>类目</th><th>单价</th><th>MOQ</th><th>材质</th><th>描述</th><th>操作</th></tr></thead>
-          <tbody>
-            {filtered.map((p) => (
-              <tr key={p.id}>
-                <td><input type="checkbox" checked={selected.includes(p.id)} onChange={(e) => setSelected((s) => e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id))} /></td>
-                <td>{imgCache[p.id] ? <img className="thumb" src={imgCache[p.id]} alt="" /> : <div className="thumb empty"><Tags size={14} /></div>}</td>
-                <td>
-                  {editMode ? <input defaultValue={p.name} onBlur={(e) => inlineUpdate(p, 'name', e.target.value)} /> : <div className="pname">{p.name}</div>}
-                  <div className="psub">SKU: {p.sku || p.model || '-'}</div>
-                </td>
-                <td><div>{p.category || '未分类'}</div><div className="psub">{p.subcategory || ''}</div></td>
-                <td className="price-col">
-                  {editMode ? <input defaultValue={p.unit_price} onBlur={(e) => inlineUpdate(p, 'unit_price', e.target.value)} /> : <div className="p1">¥{Number(p.unit_price ?? 0).toLocaleString()}/件</div>}
-                  <div className="psub">成本 ¥{Number(p.cost_price ?? 0).toLocaleString()}</div>
-                  <div className="psub">参考 ¥{Number(p.reference_price ?? 0).toLocaleString()}</div>
-                </td>
-                <td>MOQ {p.moq ?? 1}</td>
-                <td>{p.material || '-'}</td>
-                <td><div className="desc" title={p.description || ''}>{p.description || '-'}</div></td>
-                <td className="ops">
-                  <button className="crm-btn" title="复制" onClick={() => copyRow(p)}><Copy size={13} /></button>
-                  <button className="crm-btn" title="AI描述" onClick={() => void aiDescRow(p)}><Sparkles size={13} /></button>
-                  <button className="crm-btn" title="规格" onClick={() => openSpecs(p)}><Tags size={13} /></button>
-                  <button className="crm-btn" title="换图" onClick={() => { imgTargetRef.current = p.id; imgFileRef.current?.click() }}><ImagePlus size={13} /></button>
-                  {p.image_path && <button className="crm-btn" title="删图" onClick={() => void removeImage(p.id)}><Trash2 size={13} /></button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <>
+      <div className="seclabel crm-ptable-label">
+        <span className="seclabel__t">产品行表</span>
+        <span className="crm-ptable-hint">指导价 = 报价引擎取数口径 · 成本 / 参考价在次行</span>
       </div>
+      <div className="crm-table-wrap">
+        <div className="ptable">
+          <div className="thead ptable__grid">
+            <span aria-hidden />
+            <span>型号</span>
+            <span>类型</span>
+            <span>规格</span>
+            <span className="tc-r">指导价</span>
+            <span className="tc-r">MOQ</span>
+            <span>操作</span>
+          </div>
+          {filtered.map((p) => {
+            const specLine = specSummaryOf(p)
+            return (
+            <div key={p.id} className={`trow ptable__grid ptable__row${selected.includes(p.id) ? ' is-on' : ''}`} title={p.description || undefined}>
+              <span><input type="checkbox" aria-label={`选择 ${p.name}`} checked={selected.includes(p.id)} onChange={(e) => setSelected((s) => e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id))} /></span>
+              <span className="ptable__model">
+                {imgCache[p.id]
+                  ? <img className="thumb thumb--sm" src={imgCache[p.id]} alt="" />
+                  : <span className="thumb thumb--sm thumb--empty"><Tags size={12} /></span>}
+                <span className="ptable__modeltext">
+                  {editMode
+                    ? <input aria-label="产品名称" defaultValue={p.name} onBlur={(e) => inlineUpdate(p, 'name', e.target.value)} />
+                    : <span className="tc-n">{p.name}</span>}
+                  <span className="psub">{p.model ? `型号 ${p.model} · ` : ''}SKU {p.sku || '—'}</span>
+                </span>
+              </span>
+              <span className="ptable__cat">
+                <span>{p.category || '未分类'}</span>
+                {p.subcategory && <span className="psub">{p.subcategory}</span>}
+              </span>
+              <span className="ptable__spec">
+                <span>{p.material || '—'}</span>
+                {specLine && <span className="psub">{specLine}</span>}
+              </span>
+              <span className="ptable__price">
+                {editMode
+                  ? <input aria-label="单价" defaultValue={p.unit_price} onBlur={(e) => inlineUpdate(p, 'unit_price', e.target.value)} />
+                  : <span className="p1 num">¥{Number(p.unit_price ?? 0).toLocaleString()}</span>}
+                <span className="psub">成本 ¥{Number(p.cost_price ?? 0).toLocaleString()} · 参考 ¥{Number(p.reference_price ?? 0).toLocaleString()}</span>
+              </span>
+              <span className="ptable__moq num">{p.moq ?? 1}</span>
+              <span className="ops">
+                <button className="crm-btn" title="复制" onClick={() => copyRow(p)}><Copy size={13} /></button>
+                <button className="crm-btn" title="AI描述" onClick={() => void aiDescRow(p)}><Sparkles size={13} /></button>
+                <button className="crm-btn" title="规格" onClick={() => openSpecs(p)}><Tags size={13} /></button>
+                <button className="crm-btn" title="换图" onClick={() => { imgTargetRef.current = p.id; imgFileRef.current?.click() }}><ImagePlus size={13} /></button>
+                {p.image_path && <button className="crm-btn" title="删图" onClick={() => void removeImage(p.id)}><Trash2 size={13} /></button>}
+              </span>
+            </div>
+            )
+          })}
+        </div>
+      </div>
+      </>
       )}
 
       <input ref={imgFileRef} type="file" accept="image/*" hidden onChange={(e) => {

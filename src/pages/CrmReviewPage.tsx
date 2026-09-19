@@ -3,7 +3,7 @@ import GeneratedFileResult, { type GeneratedArtifact } from '../components/crm/G
  * CrmReviewPage.tsx —— 跟单中心：到款认领（7 天一页，销售认领+开票状态）/ 物流跟单（7 天一页，待认领+待签收+已签收）/ 发票待开
  * 2026-08-24 改造：去掉 AI 自动确认（销售手动认领），到款按天分组展示，认领后显示开票状态（订单群 PDF 发票解析）。
  * 2026-09-19 §2.80 销售归属收口（§2.78 屏 4 认领三区不动的延续）：identity 接入 + 展示层视图档——
- * 销售默认「只看我的」（未认领池 ∪ 本人认领，shared/ownerFilter 唯一姓名口径），可切「全员」临时看全库；
+ * 销售默认「只看我的」（仅本人认领，shared/ownerFilter 唯一姓名口径），未认领数据进入显式公共池；可切「全员」临时看全库；
  * 列表 / 四格 / hero / rail 角标全部用同一批过滤后数组（数字同源）；发票为一等队列档；页器收进节标题行。
  */
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
@@ -11,7 +11,7 @@ import { RefreshCw, Radio, Users, X } from 'lucide-react'
 import { useCrmStore } from '../stores/crmStore'
 import { getCrmLogisticsOverdueHours } from '../services/config'
 import CustomerPicker from '../components/sales/CustomerPicker'
-import { filterByOwner, filterByOwnerOf, filterPaymentsForView, identityLikeFromIpc, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
+import { filterByOwner, filterPaymentsForView, identityLikeFromIpc, isOwnedName, isSalesView, type IdentityLike } from '../utils/leadAssignmentView'
 import './CrmReviewPage.scss'
 
 // 一页七天（到款认领 / 物流三队列共用）：以今天为基准滚动 7 天窗口分页（第 0 页 = 今天往前 6 天，如 8/18~8/24），
@@ -158,7 +158,7 @@ export default function CrmReviewPage() {
   const [onlyUnclaimed, setOnlyUnclaimed] = useState(false) // 只看未认领（销售视角默认开启，见下方 identity effect）
   // 2026-08-29 对齐设计稿：款项认领 / 物流跟单 分 Tab（默认款项认领）；§2.80 发票升一等队列档
   const [reviewTab, setReviewTab] = useState<'payments' | 'logistics' | 'invoices'>('payments')
-  // 视图档（§2.80 A3）：销售默认「只看我的」（未认领池 ∪ 本人），可切「全员」临时看全库；管理视角隐藏开关（恒全量）
+  // 视图档（§2.80 A3）：销售默认「只看我的」（仅本人已认领），未认领另进公共池；可切「全员」临时看全库；管理视角隐藏开关（恒全量）
   const [viewAll, setViewAll] = useState(false)
   // 已确认到款默认折叠（认领优先级：未认领 > 已确认；header 复用每日分组样式，须真实可点）
   const [claimedOpen, setClaimedOpen] = useState(false)
@@ -214,6 +214,11 @@ export default function CrmReviewPage() {
       ? Math.max(1, Math.floor((Date.now() - Number(l.latest_update_at)) / 3600000))
       : 0
   }
+  const logisticsStatusLabel = (status: string) => ({
+    shipped: '已发货', delayed: '物流停滞', urgent: '客户催件', partial: '少件/分批',
+    returned: '退回处理中', self_pickup: '自提/待补单号', exception: '物流异常',
+    cancelled: '已取消', signed: '已签收'
+  } as Record<string, string>)[status] || status
   const fetchLogi = async (hours: number) => {
     const [pending, signed] = await Promise.all([
       window.electronAPI.crm.logisticsList({ filter: 'pending' }),
@@ -244,7 +249,7 @@ export default function CrmReviewPage() {
     await fetchSalesTeam()
   }
   // ── 视图档派生（§2.80 A2/A4）：拉全量后前端 filter，一份过滤结果喂 列表 + 四格 + hero + rail（数字同源）──
-  // 销售视角（isSalesView）：到款 = 未认领 ∪ 本人（allocation.sales_name）；物流 = 未归属 ∪ 本人（owner_sales，
+  // 销售视角（isSalesView）：到款 = 本人已认领（公共未认领另列）；物流 = 未归属公共池 + 本人（owner_sales，
   // 直接复用 filterByOwner——与合同台账同一口径，勿新造第二套）；发票无归属列，经「直接挂客户 → 关联合同的客户」
   // 推导 owner 后走同一规则（推导不了 = 未归属公共池，诚实保留可见，不做猜测）。管理 / 未建档视角全量。
   const salesScope = isSalesView(identity) && !viewAll
@@ -255,13 +260,14 @@ export default function CrmReviewPage() {
   for (const c of contracts) if (c?.id && c.account_id) contractAccountById[Number(c.id)] = Number(c.account_id)
   const invoiceOwnerSalesOf = (inv: any): string => {
     const accId = Number(inv?.account_id) || contractAccountById[Number(inv?.contract_id)] || 0
-    return accountOwnerById[accId] || ''
+    return accountOwnerById[accId] || String(inv?.requested_by || '')
   }
   const payments = salesScope ? filterPaymentsForView(paymentsAll, identity) : paymentsAll
-  const logiUnlinked = salesScope ? filterByOwner(queues.logistics, identity) : queues.logistics
+  // 未归属到款/物流是显式公共池，不再混入「我的」过滤结果；页面仍单独给销售认领入口。
+  const logiUnlinked = salesScope ? queues.logistics.filter((l: any) => !String(l.owner_sales || '').trim()) : queues.logistics
   const logiLinked = salesScope ? filterByOwner(logiLinkedAll, identity) : logiLinkedAll
   const logiSigned = salesScope ? filterByOwner(logiSignedAll, identity) : logiSignedAll
-  const invoices = salesScope ? filterByOwnerOf(queues.invoices, identity, invoiceOwnerSalesOf) : queues.invoices
+  const invoices = salesScope ? queues.invoices.filter((inv: any) => isOwnedName(identity, invoiceOwnerSalesOf(inv))) : queues.invoices
   // 视图档切换（销售 only，管理视角整行不渲染）：切档回该档默认——我的 = 只看未认领；全员 = 看全库
   // （验收口径：切「全员」须能看到他人已认领，不能被「只看未认领」叠着挡住）
   const switchScope = (all: boolean) => { setViewAll(all); setOnlyUnclaimed(!all) }
@@ -271,12 +277,14 @@ export default function CrmReviewPage() {
   // 已确认到款 = 已认领且挂上客户或合同（确认收到款项集中罗列，与每日流水分开）
   const claimedPayments = payments.filter((p) => p.alloc_status === 'confirmed' && (p.account_id || p.contract_id))
   // 只看未认领：行数已很少，强制全展开（折叠不挡筛选结果）
-  const claimablePayments = payments.filter(isClaimable)
+  const claimablePayments = salesScope
+    ? paymentsAll.filter((p) => isClaimable(p) && !String(p.sales_name || '').trim())
+    : payments.filter(isClaimable)
   // 「今天要办」verdict（设计稿屏 4）：今日到款待认领 = 现有 claimable 口径 + pay_time 落在今天（与按天分组同口径），
   // 零新查询；§2.80 起基于视图档过滤后的 claimablePayments（hero/四格/rail 数字同源）
   const todayClaimable = claimablePayments.filter((p) => dayStartOf(Number(p.pay_time)) === dayStartOf(Date.now())).length
   // 待认领笔数（与 rail 档位角标 / 四格副行共用同一口径）
-  const unclaimedCount = payments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length
+  const unclaimedCount = claimablePayments.filter((p) => !p.alloc_status || p.alloc_status === 'pending').length
   // 款项认领页器数据（页器在节标题行，受控分页；上限随当前过滤结果收敛）
   const payItems = onlyUnclaimed ? claimablePayments : payments
   const payMaxPage = weekMaxPageOf(payItems, (p) => Number(p.pay_time))
@@ -287,9 +295,10 @@ export default function CrmReviewPage() {
     if (!p.alloc_status || p.alloc_status === 'pending') return null
     if (p.alloc_status === 'confirmed' && !p.account_id && !p.contract_id) return null
     if (p.invoice_status === 'issued') return <em className="logi-card__time invoice-ok">已开票 {p.invoice_no ? `· ${p.invoice_no}` : ''}</em>
-    // 未开票 / 开票中：安静发丝 tag（§2.80 视觉收口，与 .logi-overdue 同一族）
-    if (p.invoice_status) return <em className="review-tag">开票中</em>
-    return <em className="review-tag">未开票</em>
+    if (p.invoice_requirement === 'not_required') return <em className="review-tag">本单不开发票</em>
+    if (p.invoice_requirement === 'info_pending') return <em className="review-tag review-tag--warn">待补开票资料</em>
+    if (p.invoice_status || p.invoice_requirement === 'required') return <em className="review-tag">待开票</em>
+    return <em className="review-tag review-tag--warn">待确认是否开票</em>
   }
   // 到款显示金额：拆单认领场景 credited_amount 是解析出的客户实际付款额（银行聚合流水拆单），
   // 未认领/无拆单时回退 amount_net——统计卡（SUM credited_amount）与清单口径一致
@@ -306,9 +315,36 @@ export default function CrmReviewPage() {
       accountId = Number(created)
     }
     const r = await window.electronAPI.crm.paymentClaim(p.id, { account_id: accountId, contract_id: cid, sales_name: claimSales[p.id]?.trim() || mySalesName || undefined })
-    setNotice(r.ok ? (r.linked ? `已认领 ¥${shownAmountOf(p).toLocaleString()}：计入合同回款` : '已认领（未关联合同，回款未计入）') : `认领失败：${r.reason}`)
+    setNotice(r.ok ? `已认领 ¥${shownAmountOf(p).toLocaleString()}，等待财务核销${r.linked ? '（已选择合同）' : ''}` : `认领失败：${r.reason}`)
     await fetchPayments(); await fetchQueues()
   }
+  const setInvoiceRequirement = async (p: any, requirement: 'unknown' | 'required' | 'not_required' | 'info_pending') => {
+    if (!p.allocation_id) return
+    const r = await window.electronAPI.crm.allocationInvoiceRequirement(Number(p.allocation_id), requirement)
+    setNotice(r.ok ? '开票需求已更新' : `更新失败：${r.reason || ''}`)
+    await fetchPayments(); await fetchQueues()
+  }
+  const reconcilePayment = async (p: any) => {
+    if (!p.allocation_id) return
+    if (!window.confirm(`确认已完成「${p.account_name || p.payer || '该客户'}」¥${shownAmountOf(p).toLocaleString()} 的财务核销？`)) return
+    const r = await window.electronAPI.crm.allocationReconcile(Number(p.allocation_id))
+    setNotice(r.ok ? '财务核销已确认' : `核销失败：${r.reason || ''}`)
+    await fetchPayments(); await fetchQueues()
+  }
+  const paymentFollowupActions = (p: any) => p.allocation_id && p.alloc_status === 'confirmed' ? (
+    <div className="logi-card__actions">
+      <select className="review-field" aria-label="开票需求" value={p.invoice_requirement || 'unknown'}
+        onChange={(e) => void setInvoiceRequirement(p, e.target.value as 'unknown' | 'required' | 'not_required' | 'info_pending')}>
+        <option value="unknown">开票待确认</option>
+        <option value="required">需要开票</option>
+        <option value="info_pending">待补开票资料</option>
+        <option value="not_required">本单不开发票</option>
+      </select>
+      {p.reconciliation_status === 'allocated' || p.reconciliation_status === 'legacy_confirmed'
+        ? <em className="review-tag invoice-ok">财务已核销</em>
+        : <button className="btn btn--quiet btn--sm" onClick={() => void reconcilePayment(p)}>财务确认核销</button>}
+    </div>
+  ) : null
 
   useEffect(() => {
     void fetchQueues()
@@ -484,7 +520,10 @@ export default function CrmReviewPage() {
             return (
               <div className="crm-card logi-card">
                 <div className="logi-card__main">
-                  <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}</span>
+                  <span className="logi-card__info">{l.tracking_no} · {l.brand} · {l.receiver} {l.city}
+                    {l.status !== 'shipped' && <em className="review-tag review-tag--warn">{logisticsStatusLabel(l.status)}</em>}
+                  </span>
+                  {l.exception_note && <em className="crm-card__src">「{String(l.exception_note).slice(0, 80)}」</em>}
                   <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}</em>
                 </div>
                 <div className="logi-card__actions">
@@ -513,8 +552,10 @@ export default function CrmReviewPage() {
                 {l.tracking_no} · {l.brand} · {l.receiver} {l.city}
                 {l.owner_sales ? ` · ${l.owner_sales}` : ''}
                 {contractName[Number(l.contract_id)] ? ` · ${contractName[Number(l.contract_id)]}` : accountName[Number(l.account_id)] ? ` · ${accountName[Number(l.account_id)]}` : ''}
+                {l.status !== 'shipped' && <em className="review-tag review-tag--warn">{logisticsStatusLabel(l.status)}</em>}
               </span>
               {l._overdueHours > 0 && <em className="logi-overdue">超期 {l._overdueHours} 小时</em>}
+              {l.exception_note && <em className="crm-card__src">「{String(l.exception_note).slice(0, 80)}」</em>}
               <em className="logi-card__time">发货 {fmtTime(l.latest_update_at)}{logiOverdueHours ? ` · 阈值 ${logiOverdueHours}h` : ''}</em>
             </div>
             <div className="logi-card__actions">
@@ -548,7 +589,7 @@ export default function CrmReviewPage() {
           <span className="review-sec__pager">
             <DayPager cur={payCur} maxPage={payMaxPage} onPage={setPayPage} />
           </span>
-          <button className={`btn btn--quiet btn--sm review-only-unclaimed${onlyUnclaimed ? ' is-on' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>只看未认领</button>
+          <button className={`btn btn--quiet btn--sm review-only-unclaimed${onlyUnclaimed ? ' is-on' : ''}`} aria-pressed={onlyUnclaimed} onClick={() => setOnlyUnclaimed((v) => !v)}>公共待认领</button>
         </div>
         {payItems.length === 0 && <div className="crm-card crm-card--empty">{onlyUnclaimed ? '没有待认领的到款' : '近 30 天无到款记录'}</div>}
         <WeekDayGroups
@@ -602,6 +643,7 @@ export default function CrmReviewPage() {
                           title={claimCustomer[p.id]?.trim() ? '' : '请先输入客户名'} onClick={() => void doClaimPayment(p)}>认领</button>
                       </div>
                     )}
+                    {claimed && paymentFollowupActions(p)}
                   </div>
                 )
           }}
@@ -628,6 +670,7 @@ export default function CrmReviewPage() {
                 </div>
                 {invoiceBadgeOf(p)}
                 <em className="logi-card__time claimed-row__time">{p.pay_time ? `到账 ${fmtTime(p.pay_time)}` : ''}</em>
+                {paymentFollowupActions(p)}
               </div>
             ))}
           </div>

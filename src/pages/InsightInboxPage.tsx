@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, SlidersHorizontal, X } from 'lucide-react'
+import { Ban, CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, SlidersHorizontal, X } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
+import * as configService from '../services/config'
+import {
+  addInsightBlacklistEntry,
+  isInsightBlacklisted,
+  removeInsightBlacklistEntry,
+  type InsightBlacklistEntry
+} from '../../shared/insightBlacklist'
 import type {
   InsightRecord,
   InsightRecordContactFacet,
@@ -146,6 +153,48 @@ export default function InsightInboxPage() {
   const [focusedRecordId, setFocusedRecordId] = useState(searchParams.get('recordId') || '')
   const [logRecord, setLogRecord] = useState<InsightRecord | null>(null)
   const [message, setMessage] = useState('')
+
+  // AI 见解屏蔽名单（概念稿「静音此规则」的真实落点）：客户级屏蔽 = 不再自动/批量触发该客户的见解。
+  // 存储与客户工作台共用同一份 config（shared/insightBlacklist），手动见解不受影响，设置页可解除
+  const [insightBlacklist, setInsightBlacklist] = useState<InsightBlacklistEntry[]>([])
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const list = await configService.getAiInsightNonCustomerBlacklist().catch(() => [])
+      if (!cancelled) setInsightBlacklist(list)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const flashMessage = (text: string) => {
+    setMessage(text)
+    window.setTimeout(() => setMessage(''), 2400)
+  }
+
+  // 静音/解除静音当前提醒所属客户（写既有屏蔽名单，带二次确认；无会话 id 的记录不显示入口）
+  const toggleInsightBlacklist = async (record: InsightRecordSummary) => {
+    const sessionId = String(record.sessionId || '')
+    if (!sessionId) return
+    if (!isInsightBlacklisted(insightBlacklist, sessionId)) {
+      const ok = window.confirm(
+        `屏蔽「${record.displayName}」的 AI 见解？\n\n` +
+        '屏蔽后：TA 不会被自动或批量触发 AI 见解与分析（例如早间简报）。\n' +
+        '你手动发起的识别与见解仍会正常执行。\n\n可随时在设置页解除。'
+      )
+      if (!ok) return
+      const next = addInsightBlacklistEntry(insightBlacklist, sessionId, 'manual', Date.now())
+      setInsightBlacklist(next)
+      await configService.setAiInsightNonCustomerBlacklist(next)
+      flashMessage(`已屏蔽「${record.displayName}」的 AI 见解，可在设置页查看名单`)
+      return
+    }
+    const ok = window.confirm(`解除对「${record.displayName}」的 AI 见解屏蔽？\n\n解除后 TA 会重新参与自动与批量的 AI 见解与分析。`)
+    if (!ok) return
+    const next = removeInsightBlacklistEntry(insightBlacklist, sessionId)
+    setInsightBlacklist(next)
+    await configService.setAiInsightNonCustomerBlacklist(next)
+    flashMessage(`已解除对「${record.displayName}」的 AI 见解屏蔽`)
+  }
 
   const dateRange = useMemo(() => {
     const now = new Date()
@@ -453,6 +502,17 @@ export default function InsightInboxPage() {
                         <button className="btn btn--quiet btn--sm" onClick={() => { void openLog(record.id) }}>
                           <Code size={13} /> 请求日志
                         </button>
+                        {/* 静音（概念稿 alert__acts）：真实存储 = AI 见解屏蔽名单（客户级，带确认，设置页可解除）；
+                            无会话 id 的记录无从屏蔽，不渲染 */}
+                        {record.sessionId && (
+                          <button
+                            className="btn btn--quiet btn--sm"
+                            onClick={() => { void toggleInsightBlacklist(record) }}
+                            title="只影响自动/批量触发，不影响你手动发起的识别与见解"
+                          >
+                            <Ban size={13} /> {isInsightBlacklisted(insightBlacklist, record.sessionId) ? '解除静音' : '静音'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

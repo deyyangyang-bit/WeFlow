@@ -43,25 +43,63 @@ function formatTime(ts: number): string {
 
 // ─── 图表组件（数据源不动，外壳去卡壳） ──────────────────────────────────────
 
+/**
+ * 每日消息量柱状图（概念稿屏 12 .chart 语法，手写 SVG）：
+ * 细线框卡 + 内嵌标题/图例 + 网格线 mono 刻度。单序列 = 本机消息量——
+ * report 接口没有「每日回复」序列字段，概念稿的双序列（跟进 vs 回复）不画（不造假）。
+ */
 function DailyChart({ data }: { data: Array<{ date: string; count: number }> }) {
-  const option = useMemo(() => ({
-    tooltip: { trigger: 'axis' as const },
-    grid: { left: 40, right: 20, top: 20, bottom: 30 },
-    xAxis: {
-      type: 'category' as const,
-      data: data.map(d => d.date.slice(5)),
-      axisLabel: { fontSize: 11 }
-    },
-    yAxis: { type: 'value' as const, minInterval: 1 },
-    series: [{
-      type: 'bar',
-      data: data.map(d => d.count),
-      itemStyle: { borderRadius: [4, 4, 0, 0], color: FUNNEL_STAGE_COLORS[2] },
-      barMaxWidth: 32
-    }]
-  }), [data])
-
-  return <ReactECharts option={option} style={{ height: 220 }} />
+  const W = 720, H = 236, L = 40, R = 14, T = 16, B = 30
+  const pw = W - L - R, ph = H - T - B
+  const n = data.length
+  const rawMax = Math.max(1, ...data.map((d) => d.count))
+  // 刻度上限取整到 1/2/4/5×10^k 的「漂亮数」，4 等分网格线（概念稿同款语法）
+  const pow = Math.pow(10, Math.floor(Math.log10(rawMax)))
+  const niceMax = [1, 2, 4, 5, 10].map((m) => m * pow).find((c) => c >= rawMax) ?? rawMax
+  const ticks = [0, 1, 2, 3, 4].map((i) => (niceMax / 4) * i)
+  const slot = n > 0 ? pw / n : pw
+  const bw = Math.max(6, Math.min(20, slot * 0.42))
+  // 日期标签过密时隔一显示（月报 31 天不挤）
+  const labelEvery = n > 14 ? Math.ceil(n / 12) : 1
+  const total = data.reduce((s, d) => s + d.count, 0)
+  return (
+    <div className="sr-chartbox">
+      <div className="sr-chartbox__h">
+        <span className="sr-chartbox__t">每日消息量</span>
+        <span className="sr-chartbox__legend">
+          <span><i style={{ background: 'var(--color-accent)' }} />消息 {total} 条</span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="每日消息量柱状图">
+        {ticks.map((t) => {
+          const y = H - B - (t / niceMax) * ph
+          return (
+            <g key={t}>
+              <line x1={L} y1={y} x2={W - R} y2={y} style={{ stroke: 'var(--color-divider)' }} strokeWidth={1} />
+              <text x={L - 8} y={y + 3.5} textAnchor="end" style={{ fill: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 10 }}>{t}</text>
+            </g>
+          )
+        })}
+        {data.map((d, i) => {
+          const h = (d.count / niceMax) * ph
+          const x0 = L + i * slot + (slot - bw) / 2
+          return (
+            <g key={d.date}>
+              <rect x={x0} y={H - B - h} width={bw} height={h} rx={2} style={{ fill: 'var(--color-accent)' }}>
+                <title>{`${d.date} · ${d.count} 条`}</title>
+              </rect>
+              {i % labelEvery === 0 && (
+                <text x={x0 + bw / 2} y={H - B + 15} textAnchor="middle" style={{ fill: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                  {d.date.slice(5)}
+                </text>
+              )}
+            </g>
+          )
+        })}
+        <line x1={L} y1={H - B} x2={W - R} y2={H - B} style={{ stroke: 'var(--color-border)' }} strokeWidth={1} />
+      </svg>
+    </div>
+  )
 }
 
 function TopContactsChart({ contacts }: { contacts: ReportStats['topContacts'] }) {
@@ -377,7 +415,6 @@ export default function SalesReportPage() {
                   <div className="sr-charts-grid">
                     {currentStats.dailyMessageCounts.length > 0 && (
                       <section className="sr-chart-sec">
-                        <div className="seclabel"><span className="seclabel__t">每日消息量</span></div>
                         <DailyChart data={currentStats.dailyMessageCounts} />
                       </section>
                     )}

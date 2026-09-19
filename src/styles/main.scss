@@ -3,10 +3,11 @@
 @use './chat-patterns.scss';
 
 // 编辑体（衬线）全局定义一次：--font-editorial 只用于「主张句」与说明标题。
-// 中文字重与年报窗口同一份本地资源，不引在线字体，离线可用（AnnualReportWindow.scss 里的同名定义保持不动）。
+// 不引在线字体，离线可用。2026-09-19：改用 GB2312+常用符号子集 woff2（2.6MB，原可变 TTF 24MB），
+// wght 200-900 可变轴与常用字形覆盖不变；年报窗口仍用全量 TTF（AnnualReportWindow.scss 同名定义保持不动）。
 @font-face {
   font-family: 'NotoSerifSCLocal';
-  src: url('../../resources/fonts/annual-report/NotoSerifSC-Var.ttf') format('truetype');
+  src: url('../../resources/fonts/editorial/NotoSerifSC-Subset.woff2') format('woff2');
   font-style: normal;
   font-weight: 200 900;
   font-display: swap;
@@ -983,4 +984,21 @@ kbd {
 .toast { animation: wf-toast-in .18s ease-out both; }
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
+}
+
+// ── 撞客一期：重复徽标（复用 .tag/.tag--insight 组件类与既有 warning token，2026-09-19）──
+.dup-badge-wrap { position: relative; display: inline-flex; align-items: center; margin-left: 6px; vertical-align: middle; }
+.dup-badge { cursor: pointer; }
+.dup-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+  font-size: 11px;
 }

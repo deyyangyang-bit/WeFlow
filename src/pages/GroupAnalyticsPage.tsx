@@ -903,12 +903,10 @@ function GroupAnalyticsPage() {
 
   const handleChooseExportFolder = async () => {
     try {
-      const result = await window.electronAPI.dialog.openDirectory({
-        title: '选择导出目录'
-      })
-      if (!result.canceled && result.filePaths.length > 0) {
-        setExportFolder(result.filePaths[0])
-        await configService.setExportPath(result.filePaths[0])
+      // P1b：导出根目录走专用端点（主进程弹对话框 → 授权 + 持久化根 + 更新偏好路径）
+      const result = await configService.chooseExportRoot()
+      if (!result.canceled && result.ok && result.path) {
+        setExportFolder(result.path)
       }
     } catch (e) {
       console.error('选择导出目录失败:', e)

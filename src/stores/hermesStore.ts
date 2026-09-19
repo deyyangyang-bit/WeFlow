@@ -1,14 +1,15 @@
 /**
- * hermesStore.ts —— Hermes 只读智能体抽屉 App 级单例状态（zustand，零新依赖）
+ * hermesStore.ts —— Hermes 只读智能体路由页（/hermes）的上下文状态（zustand，零新依赖）
  *
- * 三入口（侧边栏「Hermes」/ 聊天页会话侧栏 / 客户档案「AI 工具」下拉）统一调 openHermes(context)，
- * 由 App.tsx 挂载的唯一一份 HermesPanel 消费。取代 knowledgeAskStore 的纯布尔开关：
- * 面板升级为带上下文的智能体工作台，入口必须声明上下文（global / chat / customer 三态）。
+ * 三入口（侧边栏「Hermes」/ 聊天页会话侧栏 / 客户档案「AI 工具」下拉 / 命令面板）统一调
+ * openHermes(context) 注入上下文后 navigate('/hermes')，由 App.tsx 路由挂载的唯一一份
+ * HermesPanel 消费。isHermesOpen 保留为打开标记（hermes-agent-test c4-c9 语义锚点）；
+ * 上下文必须由入口声明（global / chat / customer 三态）。
  *
  * 任务真源在主进程内存（hermesAgent.getTask(taskId)）：本 store 只按上下文记任务 id 锚点
  * （lastTaskByContext，key 由 contextKeyOf 生成）——不同客户/会话/全局各记各的任务，
- * 切换入口不会把 A 上下文的任务正文串显到 B 上下文的标题下；关闭抽屉 / 路由切换都不删任务，
- * 切回原上下文时面板按该上下文的锚点恢复视图并重新订阅进度。
+ * 切换入口不会把 A 上下文的任务正文串显到 B 上下文的标题下；离开 /hermes 路由都不删任务，
+ * 切回原上下文时页面按该上下文的锚点恢复视图并重新订阅进度。
  */
 import { create } from 'zustand'
 

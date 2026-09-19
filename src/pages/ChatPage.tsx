@@ -7883,6 +7883,7 @@ function ChatPage(props: ChatPageProps) {
                   const sid = String(currentSessionId || '')
                   const sess = sessions.find((x) => x.username === sid)
                   openHermes({ kind: 'chat', sessionId: sid, sessionName: displayNameOrFallback(sid, sess?.displayName) })
+                  navigate('/hermes')
                 }}
                 title="Hermes"
                 aria-label="Hermes"

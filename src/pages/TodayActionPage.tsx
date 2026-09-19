@@ -9,6 +9,8 @@
  * 2026-09-18 P1.6（观感细修，纯视觉）：顶栏动作全降次要档（复盘/重算 quiet、新建描边）；
  * 信号行动作行降文字链档（AIActionCard），右栏待办对齐 Chat/客户 side-head 节奏；
  * 简报覆盖 tag / meta 数值再安静一档（本页 scss 作用域）。骨架、口径、逻辑均不变。
+ * 2026-09-19 UI 改版第一批：chips 补「有动向」第四档（非 task 来源=提醒/商机动向）；
+ * eyebrow 补「信号截至」时刻；四格统计补真实口径副行（.stat__d）。数据契约不变。
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
@@ -22,9 +24,11 @@ import TodoSidebar from '../components/sales/TodoSidebar'
 import { useTodayActionStore, type SignalFilter } from '../stores/todayActionStore'
 import './TodayActionPage.scss'
 
+// 概念稿屏 1 四档：全部 / 该联系 / 有动向 / 紧急（insight 档取数语义见下方 filtered 注释）
 const CHIPS: { key: SignalFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'task', label: '该联系' },
+  { key: 'insight', label: '有动向' },
   { key: 'urgent', label: '紧急' },
 ]
 
@@ -76,7 +80,7 @@ function fmtBriefTime(ms: number, withSeconds = false): string {
 }
 
 export default function TodayActionPage() {
-  const { items, stats, loading, error, filter, fetchToday, setFilter, createTodo } = useTodayActionStore()
+  const { items, stats, loading, error, filter, generatedAt, fetchToday, setFilter, createTodo } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [page, setPage] = useState(1)
@@ -202,7 +206,10 @@ export default function TodayActionPage() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
-    void (window as any).electronAPI.sales.actionRefresh()
+    try {
+      // 等 main 侧重算跑完再取数（IPC 返回即扫描已完成），避免取到重算前的旧数据
+      await (window as any).electronAPI.sales.actionRefresh()
+    } catch { /* 重算失败也要刷新当前库内数据 */ }
     await fetchToday()
     setRefreshing(false)
   }, [fetchToday])
@@ -213,6 +220,9 @@ export default function TodayActionPage() {
     // 「该联系」= 含待办来源的卡。用 some 而非 every：商机信号会并入同客户卡，
     // 若按 every 判定，被并入了报价/风险理由的卡会从本筛选中静默消失（与 customerActionQueue 的 withTask 同口径）
     if (filter === 'task') return items.filter(i => i.sources.some(s => s.type === 'task'))
+    // 「有动向」= 非待办来源的卡（例外提醒 / 商机确定性信号）。insight 来源本体已随
+    // 设计-AI见解重定位 §3.2 移出卡流，概念稿第四档按同一句语义改由剩余来源承担
+    if (filter === 'insight') return items.filter(i => i.sources.some(s => s.type !== 'task'))
     if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
     return items
   }, [items, filter])
@@ -270,10 +280,11 @@ export default function TodayActionPage() {
     document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
-  // chips 计数
+  // chips 计数（四档与 filtered 同口径，计数联动）
   const chipCounts = useMemo(() => ({
     all: items.length,
     task: items.filter(i => i.sources.some(s => s.type === 'task')).length,
+    insight: items.filter(i => i.sources.some(s => s.type !== 'task')).length,
     urgent: items.filter(i => i.urgencyTier === 'urgent').length,
   }), [items])
 
@@ -288,12 +299,23 @@ export default function TodayActionPage() {
   }, [items])
   const maxStageCount = Math.max(1, ...stageCounts.map(([, c]) => c))
 
+  // eyebrow 第二段（概念稿「信号截至 09:42」）：取本轮取数的真实生成时刻，无值就只留日期
+  const generatedAtLabel = useMemo(() => {
+    if (!generatedAt) return ''
+    const d = new Date(generatedAt)
+    if (!Number.isFinite(d.getTime())) return ''
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }, [generatedAt])
+
   return (
     <div className="today-action-page">
       {/* 页眉（概念稿 .shead）：小标 → 一句主张 → 真实计数说明；右侧动作 */}
       <div className="shead">
         <div>
-          <p className="eyebrow">{new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</p>
+          <p className="eyebrow">
+            {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
+            {generatedAtLabel ? ` · 信号截至 ${generatedAtLabel}` : ''}
+          </p>
           <h1 className="hero">今天先跟谁</h1>
           <p className="sub">
             共 {filtered.length} 条信号{chipCounts.urgent > 0 ? ` · 其中紧急 ${chipCounts.urgent} 条` : ''}
@@ -400,24 +422,29 @@ export default function TodayActionPage() {
         </div>
       </section>}
 
-      {/* 四格数字条（概念稿 .stats/.stat）：整屏前提（简报）之后才是数字与列表 */}
+      {/* 四格数字条（概念稿 .stats/.stat）：整屏前提（简报）之后才是数字与列表。
+          副行（.stat__d）只填主进程真实口径：定义性说明或同源计数字段，不造趋势假数 */}
       {stats && (
         <div className="stats">
           <div className="stat">
             <div className="stat__n">{stats.highPriorityCount}</div>
             <div className="stat__l">高优行动</div>
+            <div className="stat__d">紧急 <b>{stats.urgentCount}</b> 条需 24 小时内回应</div>
           </div>
           <div className="stat">
             <div className="stat__n">{stats.riskCustomerCount}</div>
             <div className="stat__l">沉默风险</div>
+            <div className="stat__d">活跃阶段 · 沉默 ≥ 5 天</div>
           </div>
           <div className="stat">
             <div className="stat__n">{stats.activeDeals}</div>
             <div className="stat__l">活跃商机</div>
+            <div className="stat__d">报价 / 谈判阶段客户</div>
           </div>
           <div className="stat">
             <div className="stat__n">{stats.totalSignals}</div>
             <div className="stat__l">待处理</div>
+            <div className="stat__d">该联系 <b>{stats.taskOnly}</b> 条</div>
           </div>
         </div>
       )}

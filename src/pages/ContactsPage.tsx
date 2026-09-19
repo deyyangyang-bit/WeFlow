@@ -578,6 +578,19 @@ function ContactsPage() {
 
     const contactTypeCounts = useMemo(() => toContactTypeCardCounts(sharedTabCounts), [sharedTabCounts])
 
+    // 页头副行（概念稿屏 16 上半屏 shead 语法）：全部读真实类型计数，不造「同事/归属」这类本页没有的数据
+    const contactSummaryText = useMemo(() => {
+        const parts = [
+            `好友 ${contactTypeCounts.friends}`,
+            `群聊 ${contactTypeCounts.groups}`,
+            contactTypeCounts.officialSubscriptions > 0 ? `公众号 ${contactTypeCounts.officialSubscriptions}` : '',
+            contactTypeCounts.officialServices > 0 ? `服务号 ${contactTypeCounts.officialServices}` : '',
+            contactTypeCounts.deletedFriends > 0 ? `曾经的好友 ${contactTypeCounts.deletedFriends}` : '',
+            contactTypeCounts.blocked > 0 ? `黑名单 ${contactTypeCounts.blocked}` : ''
+        ].filter(Boolean)
+        return `${contacts.length} 位联系人${parts.length ? ` · ${parts.join(' · ')}` : ''}`
+    }, [contactTypeCounts, contacts.length])
+
     useEffect(() => {
         if (!listRef.current) return
         listRef.current.scrollTop = 0
@@ -901,11 +914,15 @@ function ContactsPage() {
 
     return (
         <div className="contacts-page">
-            {/* 左侧：联系人列表 */}
+            {/* 左侧：联系人列表。页头对齐概念稿屏 16 上半屏 shead 语法（小标/页名/真实计数副行） */}
             <div className="contacts-panel">
-                <div className="panel-header">
-                    <h2>通讯录</h2>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div className="panel-header contacts-panel-header">
+                    <div className="contacts-head-main">
+                        <p className="eyebrow">系统 · 通讯录</p>
+                        <h2>通讯录</h2>
+                        <p className="contacts-head-sub">{contactSummaryText}</p>
+                    </div>
+                    <div className="contacts-head-acts">
                         <button
                             className={`icon-btn export-mode-btn ${exportMode ? 'active' : ''}`}
                             onClick={() => { setExportMode(!exportMode); setSelectedContact(null) }}
@@ -1031,62 +1048,69 @@ function ContactsPage() {
                         <span>暂无联系人</span>
                     </div>
                 ) : (
-                    <div className="contacts-list" ref={listRef} onScroll={onContactsListScroll}>
-                        <div
-                            className="contacts-list-virtual"
-                            style={{ height: filteredContacts.length * VIRTUAL_ROW_HEIGHT }}
-                        >
-                            {visibleContacts.map((contact, idx) => {
-                            const absoluteIndex = startIndex + idx
-                            const top = absoluteIndex * VIRTUAL_ROW_HEIGHT
-                            const isChecked = selectedUsernames.has(contact.username)
-                            const isActive = !exportMode && selectedContact?.username === contact.username
-                            return (
-                                <div
-                                    key={contact.username}
-                                    className="contact-row"
-                                    style={{ transform: `translateY(${top}px)` }}
-                                >
+                    <div className="contacts-list-wrap">
+                        {/* 表头行（概念稿 .tbl/.thead 语法）：与列表行同一左右内边距 */}
+                        <div className="contacts-thead">
+                            <span>姓名</span>
+                            <span>类型</span>
+                        </div>
+                        <div className="contacts-list" ref={listRef} onScroll={onContactsListScroll}>
+                            <div
+                                className="contacts-list-virtual"
+                                style={{ height: filteredContacts.length * VIRTUAL_ROW_HEIGHT }}
+                            >
+                                {visibleContacts.map((contact, idx) => {
+                                const absoluteIndex = startIndex + idx
+                                const top = absoluteIndex * VIRTUAL_ROW_HEIGHT
+                                const isChecked = selectedUsernames.has(contact.username)
+                                const isActive = !exportMode && selectedContact?.username === contact.username
+                                return (
                                     <div
-                                        className={`contact-item ${exportMode && isChecked ? 'selected' : ''} ${isActive ? 'active' : ''}`}
-                                        onClick={() => {
-                                            if (exportMode) {
-                                                toggleContactSelected(contact.username, !isChecked)
-                                            } else {
-                                                setSelectedContact(isActive ? null : contact)
-                                            }
-                                        }}
+                                        key={contact.username}
+                                        className="contact-row"
+                                        style={{ transform: `translateY(${top}px)` }}
                                     >
-                                        {exportMode && (
-                                            <label className="contact-select" onClick={e => e.stopPropagation()}>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={isChecked}
-                                                    onChange={e => toggleContactSelected(contact.username, e.target.checked)}
-                                                />
-                                            </label>
-                                        )}
-                                        <div className="contact-avatar">
-                                            {contact.avatarUrl ? (
-                                                <img src={contact.avatarUrl} alt="" loading="lazy" />
-                                            ) : (
-                                                <span>{getAvatarLetter(contact.displayName)}</span>
+                                        <div
+                                            className={`contact-item ${exportMode && isChecked ? 'selected' : ''} ${isActive ? 'active' : ''}`}
+                                            onClick={() => {
+                                                if (exportMode) {
+                                                    toggleContactSelected(contact.username, !isChecked)
+                                                } else {
+                                                    setSelectedContact(isActive ? null : contact)
+                                                }
+                                            }}
+                                        >
+                                            {exportMode && (
+                                                <label className="contact-select" onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isChecked}
+                                                        onChange={e => toggleContactSelected(contact.username, e.target.checked)}
+                                                    />
+                                                </label>
                                             )}
-                                        </div>
-                                        <div className="contact-info">
-                                            <div className="contact-name">{contact.displayName}</div>
-                                            {contact.remark && contact.remark !== contact.displayName && (
-                                                <div className="contact-remark">备注: {contact.remark}</div>
-                                            )}
-                                        </div>
-                                        <div className={`contact-type ${contact.type} ${contact.officialAccountKind || ''}`}>
-                                            {getContactTypeIcon(contact.type)}
-                                            <span>{getContactTypeName(contact)}</span>
+                                            <div className="contact-avatar">
+                                                {contact.avatarUrl ? (
+                                                    <img src={contact.avatarUrl} alt="" loading="lazy" />
+                                                ) : (
+                                                    <span>{getAvatarLetter(contact.displayName)}</span>
+                                                )}
+                                            </div>
+                                            <div className="contact-info">
+                                                <div className="contact-name">{contact.displayName}</div>
+                                                {contact.remark && contact.remark !== contact.displayName && (
+                                                    <div className="contact-remark">备注: {contact.remark}</div>
+                                                )}
+                                            </div>
+                                            <div className={`contact-type ${contact.type} ${contact.officialAccountKind || ''}`}>
+                                                {getContactTypeIcon(contact.type)}
+                                                <span>{getContactTypeName(contact)}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            )
-                            })}
+                                )
+                                })}
+                            </div>
                         </div>
                     </div>
                 )}

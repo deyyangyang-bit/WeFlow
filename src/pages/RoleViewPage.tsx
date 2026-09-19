@@ -1,7 +1,7 @@
 /**
  * 角色视角（P0 占位）
  * 概念稿：只画「看得见 / 看不见」与依赖标记；故意不做角色切换开关。
- * P0 只挂路由与导航，正文结构留给后续波次。
+ * 2026-09-19 起已从侧栏导航撤下（入口并入设置「我是谁」），路由保留可地址直达，正文结构留给后续波次。
  */
 import './RoleViewPage.scss'
 
@@ -52,10 +52,6 @@ export default function RoleViewPage() {
           </section>
         ))}
       </div>
-
-      <p className="role-view-page__note notice">
-        占位说明：本页是 P0 Chrome 收口用的结构壳，不接权限后端，也不提供「切换到主管看看」的开关。
-      </p>
     </div>
   )
 }

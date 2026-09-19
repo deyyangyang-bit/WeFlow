@@ -142,6 +142,19 @@
   padding-top: 12px;
 }
 
+/* 每日消息量（概念稿屏 12 .chart：细线框卡 + 内嵌标题/图例 + 手写 SVG） */
+.sr-chartbox {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-bg-surface);
+  padding: 18px 20px 14px;
+  .sr-chartbox__h { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .sr-chartbox__t { font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+  .sr-chartbox__legend { display: flex; gap: 16px; font-size: 11px; color: var(--color-text-tertiary); }
+  .sr-chartbox__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  svg { display: block; width: 100%; height: auto; margin-top: 14px; }
+}
+
 // ─── Top 列表（互动排行：发丝行） ────────────────────────────────────────────
 
 .sr-top-items {

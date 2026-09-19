@@ -95,8 +95,10 @@ function App() {
   } = useAppStore()
 
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
-  // Hermes 只读智能体 App 级单例：三入口经 hermesStore.openHermes(context) 打开，
-  // HermesPanel 组件内部自消费 store（本文件不取值）；任务真源在主进程内存，切路由不丢任务
+  // Hermes 只读智能体：全屏三栏路由页（/hermes，概念稿屏 8 形态）。三入口经
+  // hermesStore.openHermes(context) 注入上下文后 navigate('/hermes')；HermesPanel 组件
+  // 内部自消费 store（本文件不取值）。任务真源在主进程内存：离开路由不删任务，
+  // 回到 /hermes 按上下文锚点恢复视图并重订阅进度。
   const isAgreementWindow = location.pathname === '/agreement-window'
   const isOnboardingWindow = location.pathname === '/onboarding-window'
   const isVideoPlayerWindow = location.pathname === '/video-player-window'
@@ -389,19 +391,16 @@ function App() {
 
     const autoConnect = async () => {
       try {
-        const dbPath = await configService.getDbPath()
-        const decryptKey = await configService.getDecryptKey()
-        const wxid = await configService.getMyWxid()
-        const onboardingDone = await configService.getOnboardingDone()
-        const wxidConfig = wxid ? await configService.getWxidConfig(wxid) : null
-        const effectiveDecryptKey = wxidConfig?.decryptKey || decryptKey
-
-        if (wxidConfig?.decryptKey && wxidConfig.decryptKey !== decryptKey) {
-          await configService.setDecryptKey(wxidConfig.decryptKey)
-        }
+        // H2：自动连接前置判断由主进程执行——wxidConfigs 中该账号的已保存密钥由主进程
+        // 应用到全局密钥位，密钥值不返回渲染层；渲染层只拿非秘密状态决定是否连接。
+        const savedDbPath = await configService.getDbPath()
+        const status = await configService.applySavedKeyForAutoConnect()
+        const decryptKeyReady = status.hasKey
+        const wxid = status.myWxid
+        const onboardingDone = status.onboardingDone
 
         // 如果配置完整，自动测试连接
-        if (dbPath && effectiveDecryptKey && wxid) {
+        if (status.hasDbPath && decryptKeyReady && wxid) {
           if (!onboardingDone) {
             await configService.setOnboardingDone(true)
           }
@@ -410,7 +409,7 @@ function App() {
 
           if (result.success) {
 
-            setDbConnected(true, dbPath)
+            setDbConnected(true, savedDbPath || undefined)
             // 如果当前在欢迎页，跳转到首页
             if (window.location.hash === '#/' || window.location.hash === '') {
               navigate('/home')
@@ -646,9 +645,6 @@ function App() {
         onCancel={() => handleWindowCloseAction('cancel')}
       />
 
-      {/* Hermes 只读智能体全局唯一面板实例：常驻挂载（hidden 控制显隐），路由切换不丢任务 */}
-      <HermesPanel />
-
       {/* 命令面板（⌘K / 顶栏搜索按钮）与全局提示条：主窗口外壳件 */}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <GlobalToast />
@@ -690,6 +686,7 @@ function App() {
                 <Route path="/insight-inbox" element={<InsightInboxPage />} />
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                 <Route path="/eval-annotate" element={<EvalAnnotatePage />} />
+                <Route path="/hermes" element={<HermesPanel />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
                 {/* 「漏斗」已并入商机「阶段分析」视图（2026-09-13）；旧链接/书签不失效 */}
                 <Route path="/sales-funnel" element={<RouteStateRedirect to="/opportunities?view=analysis" />} />

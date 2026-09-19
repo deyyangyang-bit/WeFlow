@@ -28,6 +28,10 @@
  *   · 有草稿时保持 .draft + .draft__acts（复制/换一版）；「复制建议」改轻 primary
  *     （.btn--primary-soft，浅 accent 底），动作行最多一档主色。
  *   · suggest API、草稿数据路径不动，不造假草稿。
+ * 2026-09-19 UI 改版第一批：
+ *   · 未识别会话不再整栏消失：首轮读取完成后仍无画像/意向 → 显示「尚未识别」空态段
+ *     （概念稿未识别会话语义：不假装有结论）；加载中先不出栏，防闪空态。
+ *   · 换会话时清掉上一会话的画像/判断/草稿（旧数据不再闪现半秒）。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Copy, Check, Sparkles } from 'lucide-react'
@@ -95,6 +99,8 @@ export default function SalesContextStrip({ sessionId }: Props) {
   // P0-3.3 证据回查：视图只带 messageKey 锚点，点击才走 P0-2B 拉原话（与 360 同语义）
   const [evidenceKey, setEvidenceKey] = useState<string | null>(null)
   const [evidenceMsg, setEvidenceMsg] = useState<string | null>(null)
+  // 本轮会话的首轮读取是否完成：完成仍无画像/意向 = 未识别会话（走「尚未识别」空态），避免加载中闪空态
+  const [loaded, setLoaded] = useState(false)
 
   // P0-3.3 判断证据回查（与 Customer 360 判断卡同语义）
   const toggleEvidence = async (j: any) => {
@@ -126,11 +132,15 @@ export default function SalesContextStrip({ sessionId }: Props) {
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
-    // 组件不随会话卸载：换会话先清掉上一会话的草稿与展开的证据，避免别的客户的正文留在栏里
-    // （只在 sessionId 变化时执行；30 秒轮询走 load()，不会把刚生成的草稿刷掉）
+    // 组件不随会话卸载：换会话先清掉上一会话的画像/判断/草稿与展开的证据，
+    // 避免别的客户的正文留在栏里（30 秒轮询走 load()，不触发这段，只刷新数据）
+    setProfile(null)
+    setLatestIntent(null)
+    setJudgments(null)
     setSuggestion('')
     setEvidenceKey(null)
     setEvidenceMsg(null)
+    setLoaded(false)
 
     async function load() {
       try {
@@ -142,7 +152,9 @@ export default function SalesContextStrip({ sessionId }: Props) {
 
         const v = await (window as any).electronAPI.sales.customerCurrentView(sessionId)
         if (!cancelled && v?.success) setJudgments(v.data?.judgments || null)
-      } catch { /* ignore */ }
+      } catch { /* ignore */ } finally {
+        if (!cancelled) setLoaded(true)
+      }
     }
     load()
 
@@ -187,8 +199,25 @@ export default function SalesContextStrip({ sessionId }: Props) {
     } catch { /* ignore */ }
   }, [suggestion])
 
-  // 无数据时不渲染
-  if (!profile && !latestIntent) return null
+  // 未识别会话（读取完成仍无画像与意向）：栏保留，如实显示「尚未识别」空态 ——
+  // 概念稿语义：不假装有结论，也不整栏消失让人误以为右栏坏了（2026-09-19 UI 第一批）。
+  // 依据/回复建议两段随判断一起不出现（没有判断就没有依据，没有画像就生成不了草稿）。
+  if (!profile && !latestIntent) {
+    if (!loaded) return null
+    return (
+      <div className="sales-context-strip">
+        <div className="side-block">
+          <div className="side-head">
+            <span className="side-head__t">本机识别</span>
+            <span className="num sales-context-strip__stamp">尚未识别</span>
+          </div>
+          <p className="coverage">
+            本次会话尚未识别，暂无判断与建议；这不代表「无需跟进」。识别只在本机运行，聊天内容不会上传。
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   const stage = profile?.stage || latestIntent?.stage || 'unknown'
   const stageInfo = STAGE_MAP[stage] || STAGE_MAP.unknown

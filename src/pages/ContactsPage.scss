@@ -24,6 +24,50 @@
     background: var(--color-bg-surface-muted);
   }
 
+  // 左面板页头（概念稿屏 16 上半屏 .shead 语法：小标/页名/真实计数副行 + 右动作）
+  .contacts-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .contacts-head-main {
+    min-width: 0;
+
+    .eyebrow {
+      margin: 0;
+    }
+
+    h2 {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--color-text-primary);
+      margin: 4px 0 0;
+    }
+  }
+
+  .contacts-head-sub {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .contacts-head-acts {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex: none;
+  }
+
   .panel-header {
     display: flex;
     align-items: center;
@@ -39,10 +83,10 @@
     }
 
     .icon-btn {
-      width: 32px;
-      height: 32px;
+      width: 30px;
+      height: 30px;
       border: none;
-      background: var(--color-bg-inset);
+      background: transparent;
       border-radius: var(--radius-small);
       cursor: pointer;
       display: flex;
@@ -344,6 +388,28 @@
     }
   }
 
+  // 列表容器：表头行 + 虚拟滚动列表（wrap 吃满剩余高度，列表自身滚动）
+  .contacts-list-wrap {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  // 表头行（概念稿 .thead 语法）：细线行小签，与行内左右内边距对齐
+  .contacts-thead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px 6px 64px;
+    border-bottom: 1px solid var(--color-divider);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--color-text-tertiary);
+    flex: none;
+  }
+
   .contacts-list {
     flex: 1;
     min-height: 0;
@@ -371,18 +437,18 @@
     left: 0;
     right: 0;
     height: 64px;
-    padding-bottom: 4px;
     will-change: transform;
   }
 
+  // 联系人行：发丝细线行（概念稿 .trow 语法），去圆角卡片底
   .contact-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 10px;
-    height: 60px;
+    padding: 8px 16px;
+    height: 64px;
     box-sizing: border-box;
-    border-radius: var(--radius-control);
+    border-bottom: 1px solid var(--color-divider);
     transition: background 0.15s ease;
     cursor: pointer;
     margin-bottom: 0;
@@ -460,14 +526,14 @@
       margin-top: 2px;
     }
 
-    // 类型徽标走语义族：friend=accent / group=success / official=warning
+    // 类型徽标走语义族（紧凑 tag）：friend=accent / group=success / official=warning
     .contact-type {
       display: flex;
       align-items: center;
       gap: 4px;
-      padding: 4px 10px;
-      border-radius: var(--radius-small);
-      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
       font-weight: 500;
       flex-shrink: 0;
       /* 徽标宽度封顶：类型名过长时省略，避免把姓名区挤到不可读 */

@@ -321,7 +321,7 @@ function ExportPage() {
       <ExportTopBar 
         exportPath={exportPath}
         writeLayout={writeLayout}
-        onSelectPath={() => void window.electronAPI.dialog.openFile({ properties: ['openDirectory'] }).then(res => !res.canceled && res.filePaths[0] && setExportPath(res.filePaths[0]))}
+        onSelectPath={() => setExportPath('')}
         onWriteLayoutChange={setWriteLayout}
         onGlobalSettingsClick={() => setIsSettingsModalOpen(true)}
       />
@@ -372,7 +372,7 @@ function ExportPage() {
         onClose={closeDialog}
         options={options}
         exportPath={exportPath}
-        onSelectPath={() => void window.electronAPI.dialog.openFile({ properties: ['openDirectory'] }).then(res => !res.canceled && res.filePaths[0] && setExportPath(res.filePaths[0]))}
+        onSelectPath={() => setExportPath('')}
         rawDateRangeConfig={rawDateRangeConfig}
         onConfirm={handleConfirmExport}
         onAutomationCreate={handleAutomationCreateFromDialog}

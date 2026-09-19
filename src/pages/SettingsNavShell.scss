@@ -1,33 +1,36 @@
-// SettingsNavShell —— 设置页导航壳样式（设计稿 docs/UI设计稿-设置页简化.html 屏 1 / 屏 2）
+// SettingsNavShell —— 设置页导航壳样式（版式对齐概念稿屏 17 的 .set-* 容器语法）
+// 2026-09-19 视觉收口：卡片改为「顶部发丝线 + 段距」的 set-card 分节；行改「左标签右值」的
+// set-row 网格（行间发丝线）；高级页改「小写距组标 + 发丝行」的 set-group/set-adv 语法。
+// 只换容器与排版，不动任何配置键与写入逻辑；tab 内容仍由 SettingsPage 原样渲染。
 // 视觉红线（docs/DESIGN-SPEC-MINI.md）：新 UI 唯一消费入口 = 前进视觉 tokens
 // `--color-* / --radius-* / --shadow-*`，零硬编码 hex、不新增第三套 token、不引用旧 --bg-*/--text-* 族；
 // light/dark 与 8 套主题经 [data-mode]/[data-theme] 自动继承。
-// 既有 SettingsPage.scss 一行不动（modal 框 / switch / toast / inline 弹层类直接复用）。
 
 .snav-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   // 顶部额外留白避开右上角悬浮的关闭按钮（.settings-header 为 absolute 定位）
-  padding: 52px 24px 24px;
+  padding: 52px 32px 28px;
   background: var(--color-bg-page);
 }
 
 // ── 宽窗口列数（概念稿 .set-cards / .set-groups 同口径：两栏 / 三栏，
 //    窄窗逐级收回单栏）。断点按「视口 → 设置弹窗实际宽度」换算：
-//    弹窗宽 = min(1180px, 100vw - 40px)、正文左右各 24px 内边距。
-// 常用页四卡：宽窗 2×2，同行等高（stretch）避免卡片参差；高级入口整行
+//    弹窗宽 = min(1180px, 100vw - 40px)、正文左右各 32px 内边距。
+// 常用页：页头整行 + 四卡 2×2 + 高级入口整行
 .snav-body--common {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 44px;
   align-content: start;
-  align-items: stretch;
+  align-items: start;
 
+  > .snav-page-head,
   > .snav-advanced-entry {
-  border: 1px solid var(--color-border);
     grid-column: 1 / -1;
   }
 }
@@ -36,11 +39,13 @@
 .snav-body--advanced {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 40px;
   align-content: start;
   align-items: start;
 
   > .snav-adv-topbar {
     grid-column: 1 / -1;
+    justify-self: start;
   }
 }
 
@@ -58,45 +63,70 @@
   }
 }
 
-// ── 常用页卡片（屏 1）──
+// ── 页头（概念稿 .shead 语法）──
+
+.snav-page-head {
+  margin: 0 0 4px;
+
+  .eyebrow { margin: 0; }
+}
+
+.snav-page-title {
+  margin: 6px 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: var(--color-text-primary);
+}
+
+.snav-page-head .sub {
+  margin: 0;
+  line-height: 1.7;
+}
+
+// ── 常用页四卡（概念稿 .set-card 语法：顶部 1px 发丝线 + 段距，无卡片底框）──
 
 .snav-card {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: 14px 18px;
-  box-shadow: var(--shadow-card);
+  border-top: 1px solid var(--color-border);
+  padding-top: 13px;
+  margin-top: 22px;
+  min-width: 0;
 }
 
 .snav-card-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: 7px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--color-text-primary);
-  margin-bottom: 6px;
 
   svg {
-    color: var(--color-text-secondary);
+    width: 14px;
+    height: 14px;
+    color: var(--color-text-tertiary);
   }
 }
 
+// 行：左标签（题 + 说明）右值（概念稿 .set-row 语法：grid 1fr auto + 行间发丝线）
 .snav-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
   align-items: center;
-  gap: 12px;
   padding: 11px 0;
-  border-bottom: 1px solid var(--color-divider);
 
-  &:last-child {
-    border-bottom: none;
-    padding-bottom: 4px;
+  & + .snav-row {
+    border-top: 1px solid var(--color-divider);
   }
+}
+
+.snav-card-title + .snav-row {
+  margin-top: 9px;
 }
 
 .snav-row-label {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -104,36 +134,42 @@
 }
 
 .snav-row-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--color-text-primary);
 }
 
 .snav-row-desc {
   font-size: 11px;
+  line-height: 1.62;
   color: var(--color-text-tertiary);
 }
 
 .snav-row-link {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   background: none;
   border: none;
   padding: 4px 2px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--color-accent);
+  white-space: nowrap;
   cursor: pointer;
 
   &:hover {
-    opacity: 0.8;
+    color: var(--color-accent-hover);
   }
 }
 
 .snav-pill {
   flex: none;
+  max-width: 100%;
   display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   font-weight: 600;
   padding: 3px 10px;
@@ -145,9 +181,18 @@
     background: var(--color-bg-inset);
     color: var(--color-text-secondary);
   }
+
+  // 身份明细（员工 ID / 设备 ID 尾号）：等宽窄字号，避免长 id 撑破行
+  &.snav-pill-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    font-weight: 500;
+  }
 }
 
-// 主题三段控件（屏 1 外观卡）——分段控件惯例：inset 灰底 + 选中项 surface 浮起 + accent 文字
+// 主题三段控件（屏 1 外观卡，概念稿 .chipbar 语法）——分段控件惯例：inset 灰底 + 选中项 surface 浮起 + accent 文字。
+// 只收视觉，不碰 useThemeStore.setThemeMode 写入逻辑。
 .snav-seg {
   display: inline-flex;
   gap: 2px;
@@ -159,7 +204,7 @@
   button {
     border: none;
     background: transparent;
-    padding: 6px 14px;
+    padding: 5px 13px;
     border-radius: var(--radius-small);
     font-size: 12px;
     font-weight: 600;
@@ -174,96 +219,110 @@
   }
 }
 
-// 底部「高级设置」入口
+// 底部「高级设置」入口（概念稿 .set-entry 语法：描边行 + 左图标右箭头）
 .snav-advanced-entry {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: var(--color-bg-surface);
-  border: none;
+  gap: 9px;
+  width: 100%;
+  margin-top: 24px;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
-  padding: 15px;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  box-shadow: var(--shadow-card);
+  background: var(--color-bg-surface);
   cursor: pointer;
+  transition: border-color .15s, background .15s;
 
   svg {
+    width: 15px;
+    height: 15px;
+    color: var(--color-text-secondary);
+    flex: none;
+  }
+
+  .snav-entry-go {
+    width: 14px;
+    height: 14px;
+    margin-left: auto;
     color: var(--color-text-tertiary);
   }
 
   &:hover {
-    color: var(--color-accent);
+    border-color: var(--color-accent-border);
+  }
 
-    svg {
-      color: var(--color-accent);
-    }
+  &:active {
+    transform: scale(.995);
   }
 }
 
-// ── 高级设置二级页（屏 2）──
+// ── 高级设置二级页（屏 2，概念稿 .set-group / .set-adv 语法：小写距组标 + 发丝行）──
 
 .snav-adv-topbar {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-top: 16px;
 }
 
 .snav-back-link {
   background: none;
   border: none;
   padding: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-accent);
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-text-secondary);
   cursor: pointer;
 
   &:hover {
-    opacity: 0.8;
+    color: var(--color-text-primary);
   }
 }
 
 .snav-adv-heading {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
 }
 
 .snav-adv-group {
   display: flex;
   flex-direction: column;
+  margin-top: 20px;
+  min-width: 0;
 }
 
 .snav-adv-group-label {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
   color: var(--color-text-tertiary);
-  padding: 6px 4px;
 }
 
 .snav-adv-list {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  overflow: hidden;
+  margin-top: 6px;
+  border-top: 1px solid var(--color-border);
 }
 
+// 行：左图标 + 中间题/说明 + 右箭头（概念稿 .set-adv 网格 15px 1fr 14px），发丝底线
 .snav-adv-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 14px;
+  gap: 11px;
   align-items: center;
-  gap: 12px;
   width: 100%;
-  padding: 12px 16px;
+  padding: 11px 0;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--color-divider);
   text-align: left;
+  font-family: inherit;
   cursor: pointer;
-
-  &:last-child {
-    border-bottom: none;
-  }
+  transition: background .14s;
 
   &:hover {
     background: var(--color-bg-hover);
@@ -271,19 +330,13 @@
 }
 
 .snav-adv-ic {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-small);
-  background: var(--color-bg-inset);
-  color: var(--color-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: none;
+  color: var(--color-text-secondary);
 }
 
 .snav-adv-label {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -291,19 +344,19 @@
 }
 
 .snav-adv-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--color-text-primary);
 }
 
 .snav-adv-desc {
   font-size: 11px;
+  line-height: 1.62;
   color: var(--color-text-tertiary);
 }
 
 .snav-adv-go {
   color: var(--color-text-tertiary);
-  flex: none;
 }
 
 // ── 切换身份弹层（复用 SettingsPage 的 settings-inline-modal 弹层框）──
