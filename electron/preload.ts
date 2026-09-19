@@ -11,9 +11,49 @@ type CloseConfirmPayload = {
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
   config: {
+    // H2：通用 config:get/set 由主进程白名单把关（秘密键/未知键拒绝）
     get: (key: string) => ipcRenderer.invoke('config:get', key),
     set: (key: string, value: any) => ipcRenderer.invoke('config:set', key, value),
     clear: () => ipcRenderer.invoke('config:clear')
+  },
+
+  // H2：用户录入秘密的专用通道——写入接收新值，读取只回 hasValue/maskedValue，完整秘密永不回传
+  secret: {
+    getStatus: () => ipcRenderer.invoke('secret:status'),
+    setDbKey: (value: string) => ipcRenderer.invoke('secret:setDbKey', value),
+    setImageKeys: (patch: { xorKey?: number | null; aesKey?: string | null }) => ipcRenderer.invoke('secret:setImageKeys', patch),
+    setHttpApiToken: (value: string) => ipcRenderer.invoke('secret:setHttpApiToken', value),
+    setAiModelApiKey: (value: string) => ipcRenderer.invoke('secret:setAiModelApiKey', value),
+    setTelegramToken: (value: string) => ipcRenderer.invoke('secret:setTelegramToken', value),
+    setWecomWebhook: (value: string) => ipcRenderer.invoke('secret:setWecomWebhook', value),
+    setWxidConfig: (wxid: string, patch: { decryptKey?: string | null; imageAesKey?: string | null; imageXorKey?: number | null }) =>
+      ipcRenderer.invoke('secret:setWxidConfig', wxid, patch),
+    removeWxidConfig: (wxid: string) => ipcRenderer.invoke('secret:removeWxidConfig', wxid),
+    undoRemoveWxidConfig: (token: string) => ipcRenderer.invoke('secret:undoRemoveWxidConfig', token)
+  },
+
+  // H2：账号切换/自动连接由主进程依已保存配置执行（密钥不经过渲染层）
+  account: {
+    switchTo: (wxid: string) => ipcRenderer.invoke('account:switchTo', wxid),
+    applySavedKey: () => ipcRenderer.invoke('account:applySavedKey')
+  },
+
+  // P0：受限服务地址专用端点——地址变化时主进程原子清除对应凭据（AI Key/中央令牌）
+  serviceAddr: {
+    setAiModelBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setAiModelBaseUrl', url),
+    setAiInsightBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setAiInsightBaseUrl', url),
+    setCentralSyncBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setCentralSyncBaseUrl', url)
+  },
+
+  // P0：dbPath 专用端点（对话框批准路径 / 主进程验证过的自动检测结果）
+  dbPathGate: {
+    setFromDialog: (path: string) => ipcRenderer.invoke('dbpath:setFromDialog', path),
+    setVerified: (path: string) => ipcRenderer.invoke('dbpath:setVerified', path)
+  },
+
+  // P1b：导出根目录专用选择（主进程弹对话框 → 授权 + 持久化根 + 更新偏好）
+  exportGate: {
+    chooseRoot: () => ipcRenderer.invoke('export:chooseRoot')
   },
 
   // 通知
@@ -647,6 +687,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // AI 见解
   insight: {
     testConnection: () => ipcRenderer.invoke('insight:testConnection'),
+    sendWecomTest: (webhook: string) => ipcRenderer.invoke('insight:sendWecomTest', webhook),
     listRecords: (filters?: any) => ipcRenderer.invoke('insight:listRecords', filters),
     getRecord: (id: string) => ipcRenderer.invoke('insight:getRecord', id),
     markRecordRead: (id: string) => ipcRenderer.invoke('insight:markRecordRead', id),
@@ -744,7 +785,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     allocationReject: (id: number) => ipcRenderer.invoke('crm:allocation:reject', id),
     paymentApprove: (id: number) => ipcRenderer.invoke('crm:payment:approve', id),
     paymentsByDay: (days?: number) => ipcRenderer.invoke('crm:payments:byDay', days),
-    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string }) => ipcRenderer.invoke('crm:payment:claim', id, patch),
+    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string }) => ipcRenderer.invoke('crm:payment:claim', id, patch),
+    allocationReconcile: (id: number) => ipcRenderer.invoke('crm:allocation:reconcile', id),
+    allocationInvoiceRequirement: (id: number, requirement: 'unknown' | 'required' | 'not_required' | 'info_pending') =>
+      ipcRenderer.invoke('crm:allocation:invoiceRequirement', id, requirement),
     currentSalesName: () => ipcRenderer.invoke('crm:currentSalesName'),
     salesTeam: () => ipcRenderer.invoke('crm:sales:team'),
     salesTeamAdd: (name: string) => ipcRenderer.invoke('crm:sales:team:add', name),
@@ -783,6 +827,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 单机线索流转
     leadImport: (source: string, fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:import', source, fileName, rows),
+    leadDupCheck: (input: { phone?: string; wechat?: string }) => ipcRenderer.invoke('crm:lead:dupCheck', input),
+    leadCreate: (input: { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }) => ipcRenderer.invoke('crm:lead:create', input),
+    leadQrSave: (fileName: string, srcPath: string) => ipcRenderer.invoke('crm:lead:qrSave', fileName, srcPath),
+    leadHistoryImport: (fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:historyImport', fileName, rows),
+    dupGroupList: () => ipcRenderer.invoke('crm:dupGroup:list'),
     leadList: (opts?: unknown) => ipcRenderer.invoke('crm:lead:list', opts),
     leadDetail: (id: number) => ipcRenderer.invoke('crm:lead:detail', id),
     leadOverview: () => ipcRenderer.invoke('crm:lead:overview'),

@@ -642,6 +642,41 @@ export interface KbEntryRecord {
   updated_at: number
 }
 
+/** P0：服务地址专用端点结果（地址变化时主进程原子清除对应凭据） */
+export interface ServiceAddressResult {
+  ok?: boolean
+  changed: boolean
+  url: string
+  credentialsCleared: boolean
+  apiKey?: SecretStatus
+  error?: string
+}
+
+/** H2：秘密状态（普通加载只回 hasValue/maskedValue，完整秘密不回传渲染层） */
+export interface SecretStatus {
+  hasValue: boolean
+  masked: string
+}
+
+export interface WxidSecretStatus {
+  hasDecryptKey: boolean
+  hasImageXorKey: boolean
+  hasImageAesKey: boolean
+  updatedAt: number
+}
+
+export interface SecretStatusReport {
+  dbKey: SecretStatus
+  imageXorKey: SecretStatus
+  imageAesKey: SecretStatus
+  httpApiToken: SecretStatus
+  aiModelApiKey: SecretStatus
+  weiboCookie: SecretStatus
+  telegramToken: SecretStatus
+  wecomWebhook: SecretStatus
+  wxidConfigs: Record<string, WxidSecretStatus>
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -663,9 +698,43 @@ export interface ElectronAPI {
     openSessionChatWindow: (sessionId: string, options?: SessionChatWindowOpenOptions) => Promise<boolean>
   }
   config: {
+    /** H2：主进程白名单把关——秘密键/主进程托管键/未知键一律拒绝 */
     get: (key: string) => Promise<unknown>
     set: (key: string, value: unknown) => Promise<void>
     clear: () => Promise<boolean>
+  }
+  /** H2：用户录入秘密的专用通道——读取只回 hasValue/maskedValue，完整秘密永不回传渲染层 */
+  secret: {
+    getStatus: () => Promise<SecretStatusReport>
+    setDbKey: (value: string) => Promise<SecretStatus>
+    setImageKeys: (patch: { xorKey?: number | null; aesKey?: string | null }) => Promise<{ imageXorKey: SecretStatus; imageAesKey: SecretStatus }>
+    setHttpApiToken: (value: string) => Promise<SecretStatus>
+    setAiModelApiKey: (value: string) => Promise<SecretStatus>
+    setWxidConfig: (wxid: string, patch: { decryptKey?: string | null; imageAesKey?: string | null; imageXorKey?: number | null }) => Promise<WxidSecretStatus>
+    removeWxidConfig: (wxid: string) => Promise<{ ok: boolean; removed: number; undoToken?: string }>
+    undoRemoveWxidConfig: (token: string) => Promise<{ ok: boolean; restored: number }>
+    setTelegramToken: (value: string) => Promise<SecretStatus>
+    setWecomWebhook: (value: string) => Promise<SecretStatus>
+  }
+  /** H2：账号切换/自动连接由主进程依已保存配置执行（wxidConfigs 密钥不经过渲染层） */
+  account: {
+    switchTo: (wxid: string) => Promise<{ ok: boolean; reason?: string }>
+    applySavedKey: () => Promise<{ hasDbPath: boolean; hasKey: boolean; myWxid: string; onboardingDone: boolean; appliedSavedKey: boolean }>
+  }
+  /** P0：受限服务地址专用端点——地址变化时主进程原子清除对应凭据 */
+  serviceAddr: {
+    setAiModelBaseUrl: (url: string) => Promise<ServiceAddressResult>
+    setAiInsightBaseUrl: (url: string) => Promise<ServiceAddressResult>
+    setCentralSyncBaseUrl: (url: string) => Promise<ServiceAddressResult>
+  }
+  /** P0：dbPath 专用端点（对话框批准路径 / 主进程验证过的自动检测结果） */
+  dbPathGate: {
+    setFromDialog: (path: string) => Promise<{ ok: boolean; path?: string; reason?: string }>
+    setVerified: (path: string) => Promise<{ ok: boolean; path?: string; reason?: string }>
+  }
+  /** P1b：导出根目录专用选择（主进程弹对话框 → 授权 + 持久化根 + 更新偏好） */
+  exportGate: {
+    chooseRoot: () => Promise<{ canceled: boolean; ok?: boolean; path?: string; error?: string }>
   }
   auth: {
     hello: (message?: string) => Promise<{ success: boolean; error?: string }>
@@ -677,6 +746,9 @@ export interface ElectronAPI {
     setHelloSecret: (password: string) => Promise<{ success: boolean }>
     clearHelloSecret: () => Promise<{ success: boolean }>
     isLockMode: () => Promise<boolean>
+    /** H2：应用锁密码哈希写点（authPassword 不再经通用 config:set） */
+    setPasswordHash: (passwordHash: string) => Promise<{ success: boolean; error?: string }>
+    setUseHello: (useHello: boolean) => Promise<{ success: boolean; error?: string }>
   }
   identity: {
     /** nameAliases = 归属别名（绑定中央身份时为该中央 displayName，解绑/未绑定为 []）；
@@ -1918,6 +1990,7 @@ export interface ElectronAPI {
   }
   insight: {
     testConnection: () => Promise<{ success: boolean; message: string }>
+    sendWecomTest: (webhook: string) => Promise<{ success: boolean; message: string }>
     listRecords: (filters?: InsightRecordFilters) => Promise<InsightRecordListResult>
     getRecord: (id: string) => Promise<InsightRecordResult>
     markRecordRead: (id: string) => Promise<{ success: boolean; error?: string }>
@@ -2012,8 +2085,10 @@ export interface ElectronAPI {
     allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
     allocationReject: (id: number) => Promise<void>
     paymentApprove: (id: number) => Promise<{ ok: boolean; reason?: string; allocationCreated?: boolean }>
-    paymentsByDay: (days?: number) => Promise<Array<{ id: number; payer: string; amount_net: number; pay_time: number; group_id?: string; source?: string; pay_channel?: string; needs_review: number; allocation_id?: number; alloc_status?: string; account_id?: number; contract_id?: number; sales_name?: string; account_name?: string; contract_name?: string; invoice_id?: number; invoice_no?: string; invoice_status?: string }>>
-    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string }) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
+    paymentsByDay: (days?: number) => Promise<Array<{ id: number; payer: string; amount_net: number; pay_time: number; group_id?: string; source?: string; pay_channel?: string; needs_review: number; allocation_id?: number; alloc_status?: string; account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string; account_name?: string; contract_name?: string; invoice_id?: number; invoice_no?: string; invoice_status?: string; invoice_requirement?: 'unknown' | 'required' | 'not_required' | 'info_pending'; reconciliation_status?: 'pending' | 'allocated' | 'legacy_confirmed'; reconciled_at?: number }>>
+    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string }) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
+    allocationReconcile: (id: number) => Promise<{ ok: boolean; reason?: string }>
+    allocationInvoiceRequirement: (id: number, requirement: 'unknown' | 'required' | 'not_required' | 'info_pending') => Promise<{ ok: boolean; reason?: string }>
     currentSalesName: () => Promise<string>
     salesTeam: () => Promise<{ team: Array<{ name: string; orderCount: number; amount: number }>; removed: string[] }>
     salesTeamAdd: (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -2052,6 +2127,11 @@ export interface ElectronAPI {
 
     // 单机线索流转
     leadImport: (source: string, fileName: string, rows: unknown[]) => Promise<{ batchId: number; total: number; valid: number; duplicate: number; invalid: number; invalidIndexes: number[]; dupSameBatch: number; dupExistingLead: number; dupExistingCustomer: number; conflicts: number }>
+    leadDupCheck: (input: { phone?: string; wechat?: string }) => Promise<{ duplicate: boolean; detail: { kind: 'lead' | 'customer' | 'conflict'; contactMasked: string; leadId?: number; accountId?: number; status?: string; source?: string; currentOwner?: string; assignments: Array<{ id: number; salesName: string; mode: string; status: string; assignedAt: number; sla1Stopped: boolean }>; message: string } | null }>
+    leadCreate: (input: { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }) => Promise<{ ok: boolean; data?: { leadId: number }; code?: 'E101' | 'E201'; message: string; duplicate?: { kind: 'lead' | 'customer' | 'conflict'; contactMasked: string; leadId?: number; accountId?: number; status?: string; source?: string; currentOwner?: string; assignments: Array<{ id: number; salesName: string; mode: string; status: string; assignedAt: number; sla1Stopped: boolean }>; message: string } }>
+    leadQrSave: (fileName: string, srcPath: string) => Promise<{ ok: boolean; path?: string }>
+    leadHistoryImport: (fileName: string, rows: Array<{ contactType?: string; contactValue?: string; sales?: string; assignedAt?: string | number; endState?: string; source?: string; note?: string }>) => Promise<{ total: number; leadsCreated: number; leadsReused: number; assignmentsCreated: number; recycled: number; skipped: Array<{ line: number; contactMasked: string; reason: string }> }>
+    dupGroupList: () => Promise<{ groupCount: number; leadMatches: Record<string, { mask: string; others: string[] }>; customerMatches: Record<string, { mask: string; others: string[] }> }>
     leadList: (opts?: { status?: string; source?: string; overdueOnly?: boolean; q?: string; limit?: number; offset?: number }) => Promise<LeadRow[]>
     leadDetail: (id: number) => Promise<{ lead: LeadRow | null; activities: Array<{ id: number; lead_id: number; action: string; note?: string; created_at: number }> }>
     leadOverview: () => Promise<{ total: number; byStatus: Record<string, number>; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; sources: Array<{ source: string; count: number }> }>

@@ -10,6 +10,8 @@ import { autoUpdater } from 'electron-updater'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { ConfigService } from './services/config'
+import { readRendererConfig, writeRendererConfig } from './services/rendererConfigPolicy'
+import { registerSecretConfigIpc } from './services/secretConfigIpc'
 import { dbPathService } from './services/dbPathService'
 import { wcdbService } from './services/wcdbService'
 import { chatService } from './services/chatService'
@@ -20,6 +22,7 @@ import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
 import { ExportOptions, ExportProgress } from './services/export'
 import { exportTaskControlService } from './services/exportTaskControlService'
+import { exportPathAuthorizer } from './services/exportPathAuthorizer'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
@@ -1983,9 +1986,10 @@ function registerIpcHandlers() {
   registerNotificationHandlers()
   ensureNotificationNavigateHandlerRegistered()
   bizService.registerHandlers()
-  // 配置相关
+  // 配置相关（H2：白名单边界——秘密键与未知键一律拒绝；秘密走 secret:* 专用端点）
   ipcMain.handle('config:get', async (_, key: string) => {
-    return configService?.get(key as any)
+    if (!configService) return undefined
+    return readRendererConfig(configService, String(key || ''))
   })
 
   // §2.40 微信号分库：业务库归属 wxid（清洗后；空 = 未完成引导，回退 legacy 名）
@@ -2006,6 +2010,57 @@ function registerIpcHandlers() {
     })
   }
 
+  // H2：秘密专用端点 + 主进程账号切换能力（wxidConfigs 密钥整包永不回渲染层）
+  // P0：dbPath 对话框批准校验 / 主进程验证回调注入
+  registerSecretConfigIpc(ipcMain as never, () => configService as ConfigService, {
+    switchBusinessDbs: switchBusinessDbsForWxid,
+    onAccountChanged: () => hermesUtilityManager.invalidateCapabilities('account_changed'),
+    checkDialogGrant: (path, expect) => exportPathAuthorizer.check(path, expect),
+    verifyDbPath: (p) => {
+      // 自动检测结果一致性验证：路径必须等于主进程当下 autoDetect 的结果（防渲染层任意路径）
+      const detected = dbPathService.autoDetect()
+      const detectedPath = String((detected as { path?: string })?.path || '')
+      return detectedPath && detectedPath === String(p).trim()
+        ? { ok: true }
+        : { ok: false, reason: '路径与主进程自动检测结果不一致' }
+    }
+  })
+
+  // P1b：导出授权器——持久化根走主进程托管 config 键（渲染层白名单外），内置根 = 系统 Downloads
+  exportPathAuthorizer.configure({
+    loadRoots: () => {
+      const raw = configService?.get('exportAuthorizedRoots') as Record<string, { realPath?: string; grantedAt?: number }> | undefined
+      return Object.entries(raw || {}).map(([path, meta]) => ({
+        path, realPath: String(meta?.realPath || path), grantedAt: Number(meta?.grantedAt || 0)
+      }))
+    },
+    saveRoots: (roots) => {
+      try {
+        const map: Record<string, { realPath: string; grantedAt: number }> = {}
+        for (const r of roots) map[r.path] = { realPath: r.realPath, grantedAt: r.grantedAt }
+        configService?.set('exportAuthorizedRoots', map)
+      } catch (e) {
+        console.warn('[Export] 持久化导出授权根失败:', e)
+      }
+    },
+    builtinRoots: () => [app.getPath('downloads')]
+  })
+
+  // P1b：导出根目录专用选择端点——主进程弹目录对话框 → 会话授权 + 持久化根 + 更新导出偏好路径
+  ipcMain.handle('export:chooseRoot', async () => {
+    const { dialog } = await import('electron')
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      title: '选择导出目录'
+    })
+    if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
+    const chosen = result.filePaths[0]
+    const grant = exportPathAuthorizer.grant(chosen, 'dir', { persist: true })
+    if (!grant) return { canceled: false, ok: false, error: '目录授权失败' }
+    try { configService?.set('exportPath', chosen) } catch { /* 偏好写失败不影响授权 */ }
+    return { canceled: false, ok: true, path: chosen }
+  })
+
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     let result: unknown
     const previousMyWxid = key === 'myWxid' ? String(configService?.get('myWxid') ?? '') : ''
@@ -2024,7 +2079,9 @@ function registerIpcHandlers() {
     if (key === 'launchAtStartup') {
       result = applyLaunchAtStartupPreference(value === true)
     } else {
-      result = configService?.set(key as any, value)
+      // H2：白名单校验在真实写入前执行（秘密/托管/未知 key 抛错，绝不落库）
+      if (configService) writeRendererConfig(configService, String(key || ''), value)
+      result = undefined
     }
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
@@ -2082,6 +2139,11 @@ function registerIpcHandlers() {
   // AI 见解
   ipcMain.handle('insight:testConnection', async () => {
     return insightService.testConnection()
+  })
+
+  // 企业微信群机器人「发送测试消息」：真实 POST 一条测试文本（webhook 密钥不进日志）
+  ipcMain.handle('insight:sendWecomTest', async (_, webhook: string) => {
+    return insightService.sendWecomTest(webhook)
   })
 
   ipcMain.handle('insight:listRecords', async (_, filters?: {
@@ -2253,23 +2315,29 @@ function registerIpcHandlers() {
     return true
   })
 
-  // 文件对话框
+  // 文件对话框（H3：用户经原生对话框确认的路径登记为本次会话的导出授权；导出 IPC 写前强制校验）
   ipcMain.handle('dialog:openFile', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showOpenDialog(options)
+    const result = await dialog.showOpenDialog(options)
+    for (const p of result.filePaths || []) exportPathAuthorizer.grant(p)
+    return result
   })
 
   ipcMain.handle('dialog:openDirectory', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showOpenDialog({
+    const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
       ...options
     })
+    for (const p of result.filePaths || []) exportPathAuthorizer.grant(p, 'dir')
+    return result
   })
 
   ipcMain.handle('dialog:saveFile', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showSaveDialog(options)
+    const result = await dialog.showSaveDialog(options)
+    if (result.filePath) exportPathAuthorizer.grant(result.filePath, 'file')
+    return result
   })
 
   ipcMain.handle('shell:openPath', async (_, path: string) => {
@@ -2664,9 +2732,14 @@ function registerIpcHandlers() {
     }
   })
 
-  // 数据库路径相关
+  // 数据库路径相关（P0：autoDetect 是主进程可信来源，检测成功后由主进程直接落库 dbPath）
   ipcMain.handle('dbpath:autoDetect', async () => {
-    return dbPathService.autoDetect()
+    const detected = await dbPathService.autoDetect()
+    const detectedPath = String((detected as { path?: string })?.path || '')
+    if ((detected as { success?: boolean })?.success && detectedPath) {
+      try { configService?.set('dbPath', detectedPath) } catch { /* 落库失败时返回原结果 */ }
+    }
+    return detected
   })
 
   ipcMain.handle('dbpath:scanWxids', async (_, rootPath: string) => {
@@ -3107,6 +3180,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('chat:exportMyFootprint', async (_, beginTimestamp: number, endTimestamp: number, format: 'csv' | 'json', filePath: string) => {
+    exportPathAuthorizer.assertAllowed(filePath, 'file')
     return chatService.exportMyFootprint(beginTimestamp, endTimestamp, format, filePath)
   })
 
@@ -3138,6 +3212,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sns:exportTimeline', async (event, options: any) => {
     const exportOptions = { ...(options || {}) }
+    exportPathAuthorizer.assertAllowed(String(exportOptions.outputDir || ''), 'dir')
     const taskId = normalizeExportTaskId(exportOptions.taskId)
     delete exportOptions.taskId
     const taskControl = taskId ? exportTaskControlService.createControl(taskId, String(exportOptions.outputDir || '')) : undefined
@@ -3168,6 +3243,9 @@ function registerIpcHandlers() {
     if (result.canceled || !result.filePaths?.[0]) {
       return { canceled: true }
     }
+    // P1b：导出专用目录选择 = 会话授权 + 持久化根 + 偏好路径
+    exportPathAuthorizer.grant(result.filePaths[0], 'dir', { persist: true })
+    try { configService?.set('exportPath', result.filePaths[0]) } catch { /* 偏好写失败不影响授权 */ }
     return { canceled: false, filePath: result.filePaths[0] }
   })
 
@@ -3469,6 +3547,31 @@ function registerIpcHandlers() {
     return configService?.verifyAuthEnabled() ?? false
   })
 
+  // H2：应用锁密码写入走主进程端点（authPassword/authEnabled 不再经通用 config:set）
+  // 语义 = 首次引导保存「密码哈希 + 启用开关」，与 auth:enableLock 的密钥重加密不同
+  ipcMain.handle('auth:setPasswordHash', async (_event, passwordHash: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    try {
+      const hash = String(passwordHash || '')
+      if (!/^[0-9a-f]{64}$/i.test(hash)) return { success: false, error: '密码哈希格式非法' }
+      configService.set('authPassword', hash)
+      configService.set('authEnabled', true)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('auth:setUseHello', async (_event, useHello: boolean) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    try {
+      configService.set('authUseHello', useHello === true)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 密码解锁（验证 + 解密密钥到内存）
   ipcMain.handle('auth:unlock', async (_event, password: string) => {
     if (!configService) return { success: false, error: '配置服务未初始化' }
@@ -3544,6 +3647,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => {
+    exportPathAuthorizer.assertAllowed(outputDir, 'dir')
     const taskId = normalizeExportTaskId(controlOptions?.taskId)
     if (taskId) exportTaskControlService.createControl(taskId, outputDir)
     if (taskId) activeExportTasks.add(taskId)
@@ -3736,6 +3840,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('export:exportContacts', async (_, outputDir: string, options: any) => {
+    exportPathAuthorizer.assertAllowed(outputDir, 'dir')
     const cfg = configService || new ConfigService()
     configService = cfg
     const workerPath = join(__dirname, 'exportWorker.js')
@@ -3923,12 +4028,14 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('groupAnalytics:exportGroupMembers', async (_, chatroomId: string, outputPath: string) => {
+    exportPathAuthorizer.assertAllowed(outputPath, 'file')
     return groupAnalyticsService.exportGroupMembers(chatroomId, outputPath)
   })
 
   ipcMain.handle(
     'groupAnalytics:exportGroupMemberMessages',
     async (_, chatroomId: string, memberUsername: string, outputPath: string, startTime?: number, endTime?: number) => {
+      exportPathAuthorizer.assertAllowed(outputPath, 'file')
       return groupAnalyticsService.exportGroupMemberMessages(chatroomId, memberUsername, outputPath, startTime, endTime)
     }
   )
@@ -4883,7 +4990,10 @@ function registerIpcHandlers() {
     return { success: true }
   })
 
-  ipcMain.handle('sales:action:refresh', async () => { void refreshActionSignals().catch(e => salesLog('WARN', String(e))); return { ok: true } })
+  // 等扫描任务真正跑完再返回：前端「重算今日信号」据此在重算完成后取数，否则
+  // fire-and-forget 会让随后的 getUnified 读到重算前的旧数据（按钮点了数据不动）。
+  // refreshActionSignals 内部已 enqueue（最外层入口），此处只 await 不再入队。
+  ipcMain.handle('sales:action:refresh', async () => { try { await refreshActionSignals() } catch (e) { salesLog('WARN', String(e)) } return { ok: true } })
   ipcMain.handle('sales:action:getUnified', async () => {
     return getUnifiedSignals()
   })
