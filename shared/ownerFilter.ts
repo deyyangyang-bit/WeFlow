@@ -85,17 +85,13 @@ export function filterByOwner<T extends { owner_sales?: string | null }>(rows: T
 }
 
 /**
- * 到款过滤档（§2.80 跟单中心收口，2026-09-19）：到款归属 = allocation.sales_name（paymentsByDay 带出），
- * 销售视角可见 ⟺ !sales_name（未认领，公共认领池）∪ isOwnedName(identity, sales_name)。
- * 物流（owner_sales）与客户/商机/合同直接用 filterByOwner，勿为同语义再造第三个函数。
+ * 到款「我的」过滤档：只返回本人已认领；未认领属于独立公共池，由页面显式展示，
+ * 不能再混进「只看我的」。管理视角仍原样返回。
  */
 export function filterPaymentsForView<T extends { sales_name?: string | null }>(rows: T[], identity: IdentityLike): T[] {
   if (!isSalesView(identity)) return rows
   if (!identity.name.trim()) return rows
-  return rows.filter((p) => {
-    const sales = String(p.sales_name || '').trim()
-    return !sales || isOwnedName(identity, sales)
-  })
+  return rows.filter((p) => isOwnedName(identity, String(p.sales_name || '').trim()))
 }
 
 /**

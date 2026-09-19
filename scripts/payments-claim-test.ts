@@ -6,13 +6,14 @@
  *
  * 断言：
  *   A 静态：
- *     1  paymentsByDay 存在且 JOIN 认领/客户/合同/开票四轴（invoice 子查询 status != 'voided'）
+ *     1  paymentsByDay 存在且 JOIN 认领/客户/合同/开票四轴（发票按明确合同关联，禁止拿客户其他订单发票冒充）
  *     2  claimPayment 三步：无归属先建（approvePayment）→ 已确认拒绝重复认领 → confirmAllocation 到客户/合同
  *     3  CrmReviewPage 零 AI 自动确认（autoSummary/runAutoConfirm/undoAutoConfirm 不再被引用）
  *     4  CrmReviewPage 每日到款：paymentsByDay 调用 + invoiceBadgeOf 开票状态 + paymentClaim 认领
  *     5  桥接齐全：preload/electron.d.ts 均有 paymentsByDay + paymentClaim
- *     16-18 销售归属收口 + 布局收编（§2.80，2026-09-19）：identity 视图档过滤（未认领∪本人，isOwnedName
+ *     16-18 销售归属收口 + 布局收编（§2.80，2026-09-19）：identity 视图档过滤（本人认领与公共池分离，isOwnedName
  *           唯一姓名口径）/ rail 三档发票一等 / 页器入节标题行 / 已确认默认折叠 / 安静徽标
+ *     19-21 销售认领与财务核销分离 / 订单级开票需求 / 引用消息稳定 server id 关联
  *   B 真实库只读（sql.js 字节进内存，同款 SQL 与 crmDbService.paymentsByDay 同步维护）：
  *     11 近 30 天到款可查，字段带认领/开票轴（account_name/invoice_no/invoice_status）
  *     12 已认领（alloc_status='confirmed'）行有客户名，开票状态可读
@@ -40,13 +41,13 @@ async function main(): Promise<void> {
   const dbCode = strip(dbSrc)
   const pageSrc = readFileSync(join(ROOT, 'src/pages/CrmReviewPage.tsx'), 'utf8')
 
-  // A1: paymentsByDay 四轴 JOIN（认领/客户/合同/开票；invoice 取该账户最近一张非作废）
-  ok('A1 paymentsByDay 存在 + JOIN 认领/客户/合同/开票四轴（invoice 子查询 status != voided）',
+  // A1: paymentsByDay 四轴 JOIN（认领/客户/合同/开票；invoice 只取明确关联合同的最近一张非作废）
+  ok('A1 paymentsByDay 存在 + JOIN 认领/客户/合同/开票四轴（invoice 按合同关联）',
     /paymentsByDay\(days = 30\)/.test(dbCode) &&
     /LEFT JOIN allocation al ON al\.payment_record_id = pr\.id/.test(dbCode) &&
     /LEFT JOIN account ac ON ac\.id = al\.account_id/.test(dbCode) &&
     /LEFT JOIN contract c ON c\.id = al\.contract_id/.test(dbCode) &&
-    /LEFT JOIN invoice iv ON iv\.id = \(/.test(dbCode) && /status != 'voided'/.test(dbCode))
+    /LEFT JOIN invoice iv ON iv\.id = \(/.test(dbCode) && /al\.contract_id IS NOT NULL AND contract_id = al\.contract_id/.test(dbCode) && /status != 'voided'/.test(dbCode))
 
   // A2: claimPayment 四步（无归属先建 / 已认领拒绝 / 旧自动确认遗留补挂 / confirmAllocation 到客户合同）
   ok('A2 claimPayment 闭环（approvePayment 兜底 + 已认领拒绝 + 旧数据补挂 + confirmAllocation）',
@@ -62,7 +63,7 @@ async function main(): Promise<void> {
   // A4: 每日到款 UI（paymentsByDay + 开票状态 + 手动认领）
   ok('A4 每日到款三要素（paymentsByDay 调用 + invoiceBadgeOf 开票状态 + paymentClaim 认领）',
     /paymentsByDay\(30\)/.test(pageSrc) && /invoiceBadgeOf/.test(pageSrc) && /paymentClaim\(/.test(pageSrc) &&
-    /已开票/.test(pageSrc) && /未开票/.test(pageSrc) && /认领/.test(pageSrc))
+    /已开票/.test(pageSrc) && /本单不开发票/.test(pageSrc) && /待确认是否开票/.test(pageSrc) && /认领/.test(pageSrc))
 
   // A5: 桥接齐全（preload + electron.d.ts）
   const preload = readFileSync(join(ROOT, 'electron/preload.ts'), 'utf8')
@@ -154,20 +155,21 @@ async function main(): Promise<void> {
     /salesTeamAdd\(n\)/.test(pageSrc) && /removeSalesMember/.test(pageSrc) &&
     /sales-team-drop--inline/.test(pageSrc))
 
-  // A16: 销售归属收口（§2.80，2026-09-19）：identity 接入 + 展示层视图档——到款/物流/发票拉全量后前端 filter，
-  // 一份过滤结果喂 列表+四格+hero+rail；禁止手写 === 姓名比对（唯一口径 shared/ownerFilter.isOwnedName）
+  // A16: 「我的」与公共待认领池分离：本人已认领走共享 owner 过滤；未归属到款/物流由页面显式公共池承载；
+  // 发票按客户 owner 或申请人归属，不再把无归属发票混进所有销售的「我的」。
   const ownerFilterSrc = strip(readFileSync(join(ROOT, 'shared/ownerFilter.ts'), 'utf8'))
-  ok('A16 销售归属收口（identity.get→identityLikeFromIpc + filterPaymentsForView/filterByOwner/filterByOwnerOf 视图档派生，payments/logiUnlinked/logiLinked/logiSigned/invoices 全部走过滤结果）',
+  ok('A16 销售归属收口（我的业务与公共待认领池分离）',
     /identity\.get\(\)/.test(pageSrc) && /identityLikeFromIpc/.test(pageSrc) &&
-    /filterPaymentsForView/.test(pageSrc) && /filterByOwner\(/.test(pageSrc) && /filterByOwnerOf/.test(pageSrc) &&
+    /filterPaymentsForView/.test(pageSrc) && /filterByOwner\(/.test(pageSrc) && /isOwnedName/.test(pageSrc) &&
     /const payments = salesScope \? filterPaymentsForView\(paymentsAll, identity\) : paymentsAll/.test(pageSrc) &&
-    /const logiUnlinked = salesScope \? filterByOwner\(queues\.logistics, identity\) : queues\.logistics/.test(pageSrc) &&
-    /const invoices = salesScope \? filterByOwnerOf\(queues\.invoices, identity, invoiceOwnerSalesOf\) : queues\.invoices/.test(pageSrc) &&
+    /queues\.logistics\.filter\(\(l: any\) => !String\(l\.owner_sales/.test(pageSrc) &&
+    /queues\.invoices\.filter\(\(inv: any\) => isOwnedName\(identity, invoiceOwnerSalesOf\(inv\)\)\)/.test(pageSrc) &&
+    /公共待认领/.test(pageSrc) &&
     !/=== mySalesName|=== identity\.name|sales_name ===/.test(pageSrc))
-  ok('A16b ownerFilter 语义源（filterPaymentsForView/filterByOwnerOf 定义于 shared/ownerFilter，姓名核对复用 isOwnedName）',
+  ok('A16b ownerFilter 语义源（filterPaymentsForView 的我的口径严格只认本人）',
     /export function filterPaymentsForView/.test(ownerFilterSrc) &&
     /export function filterByOwnerOf/.test(ownerFilterSrc) &&
-    /!sales \|\| isOwnedName\(identity, sales\)/.test(ownerFilterSrc) &&
+    /return rows\.filter\(\(p\) => isOwnedName\(identity, String\(p\.sales_name/.test(ownerFilterSrc) &&
     /!owner \|\| isOwnedName\(identity, owner\)/.test(ownerFilterSrc))
 
   // A17: 视图档 chipbar（§2.80 A3）：销售默认「只看我的」可切「全员」（quiet chips，isSalesView 才渲染，管理视角隐藏）；
@@ -189,6 +191,26 @@ async function main(): Promise<void> {
     /review-tag/.test(pageSrc) && /未关联合同/.test(pageSrc) &&
     /if \(isSalesView\(identity\)\) setOnlyUnclaimed\(true\)/.test(pageSrc))
 
+  // A19-A21: 真实群流程收口——销售认领不直接计回款，财务显式核销；订单级开票需求可人工覆盖；
+  // 引用认领优先按 refermsg.svrid 命中原始银行消息，文本仅作旧库兼容回退。
+  const parseServiceSrc = strip(readFileSync(join(ROOT, 'electron/services/crmParseService.ts'), 'utf8'))
+  ok('A19 销售认领与财务核销分离（新认领 pending；统计只计 allocated/legacy_confirmed；显式核销桥接齐全）',
+    /reconciliation_status: 'pending'/.test(dbCode) &&
+    /reconcileAllocation\(/.test(dbCode) &&
+    /reconciliation_status IN \('allocated','legacy_confirmed'\)/.test(dbCode) &&
+    /allocationReconcile/.test(preload) && /allocationReconcile/.test(types) &&
+    /crm:allocation:reconcile/.test(handlersSrc) && /财务确认核销/.test(pageSrc))
+  ok('A20 订单级开票需求（四态持久化 + 手工选择桥接齐全 + 不开发票 UI）',
+    /setAllocationInvoiceRequirement\(/.test(dbCode) &&
+    /unknown.*required.*not_required.*info_pending/.test(dbCode) &&
+    /allocationInvoiceRequirement/.test(preload) && /allocationInvoiceRequirement/.test(types) &&
+    /crm:allocation:invoiceRequirement/.test(handlersSrc) && /本单不开发票/.test(pageSrc))
+  ok('A21 引用消息按稳定 server id 关联（source_server_id + refermsg.svrid，文本仅兼容回退）',
+    /source_server_id/.test(dbCode) &&
+    /<refermsg>.*?<svrid>/.test(parseServiceSrc) &&
+    /WHERE source_server_id = \?/.test(parseServiceSrc) &&
+    /SELECT \* FROM payment_record ORDER BY id DESC LIMIT 500/.test(parseServiceSrc))
+
   // ── B. 真实库只读（与 crmDbService.paymentsByDay 同款 SQL，同步维护）──────────
   const SQL = await initSqlJs()
   // §2.40 分库：按账号命名的业务库优先（多个账号取最近使用），回退 legacy 名
@@ -206,7 +228,7 @@ async function main(): Promise<void> {
        LEFT JOIN account ac ON ac.id = al.account_id
        LEFT JOIN contract c ON c.id = al.contract_id
        LEFT JOIN invoice iv ON iv.id = (
-         SELECT id FROM invoice WHERE account_id = al.account_id AND status != 'voided'
+         SELECT id FROM invoice WHERE al.contract_id IS NOT NULL AND contract_id = al.contract_id AND status != 'voided'
          ORDER BY id DESC LIMIT 1)
        WHERE pr.pay_time >= ? ORDER BY pr.pay_time DESC`, [Date.now() - 30 * 24 * 3600 * 1000])
   const list = rows.length ? rows[0].values : []

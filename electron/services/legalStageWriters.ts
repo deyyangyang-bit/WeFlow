@@ -16,7 +16,8 @@
  * 独立成模块：不依赖 Electron，测试（scripts/legal-stage-writers-test.ts）可加载验证写路径。
  */
 import { salesDbService, type IntentTagLog } from './salesDbService'
-import { normalizeStage } from '../../shared/salesStage'
+import { crmDbService } from './crmDbService'
+import { normalizeStage, CANONICAL_TO_CN, type StageCanonical } from '../../shared/salesStage'
 
 /**
  * manual 阶段编辑的合法值判断：已知中文档位或 canonical 英文（normalizeStage 能归一且非 unknown），
@@ -31,15 +32,46 @@ function isManualStageValue(stage: string): boolean {
   return canonical !== 'unknown' || trimmed === 'unknown' || trimmed === '未知'
 }
 
+/** 人工纠正成功后向 crmDb 的同步结果（H6）：account 侧同步失败不推翻 salesDb 操作成功 */
+export interface ManualStageSyncResult {
+  accountUpdated: boolean
+  accountId?: number
+  /** 经 syncOpportunityStageByAccount 实际推进的 active 商机数 */
+  opportunitiesChanged: number
+  /** 未同步原因（account 未建档 / crmDb 未就绪或异常） */
+  note?: string
+}
+
+/**
+ * 人工阶段纠正向 crmDb 的同步（H6）：写 account.sales_stage（canonical）+ 调既有
+ * syncOpportunityStageByAccount 推进 active 商机。人工是矩阵 🔶 格的唯一合法路径，
+ * 这里不设推进拦截；找不到 account 时 salesDb 操作仍成功，返回带 note 的未同步结果。
+ */
+function syncManualStageToCrm(sessionId: string, canonical: StageCanonical): ManualStageSyncResult {
+  try {
+    const rows = crmDbService.all('SELECT id FROM account WHERE session_id = ? LIMIT 1', [sessionId])
+    if (!rows.length || !crmDbService.currentDbPath()) {
+      return { accountUpdated: false, opportunitiesChanged: 0, note: 'account 未建档，仅更新 salesDb' }
+    }
+    const accountId = Number(rows[0].id)
+    crmDbService.update('account', accountId, { sales_stage: canonical, updated_at: Date.now() })
+    const opportunitiesChanged = crmDbService.syncOpportunityStageByAccount(accountId, CANONICAL_TO_CN[canonical] || canonical)
+    return { accountUpdated: true, accountId, opportunitiesChanged }
+  } catch (e) {
+    return { accountUpdated: false, opportunitiesChanged: 0, note: `crmDb 同步失败：${String(e)}` }
+  }
+}
+
 /**
  * manual 写者：校验 + 写 intent_tag_log(source=manual) + 同步 stage + 阶段变更时写 last_stage_change_at。
- * @returns 校验失败返回 { success:false, error }；成功返回 { success:true, tag }
+ * H6：成功后同步 account.sales_stage 与可推进的 active 商机（sync 字段携带同步结果，失败不影响主操作）。
+ * @returns 校验失败返回 { success:false, error }；成功返回 { success:true, tag, sync }
  */
 export function applyManualStageCorrection(
   sessionId: string,
   stage: string,
   reason?: string
-): { success: boolean; tag?: IntentTagLog; error?: string } {
+): { success: boolean; tag?: IntentTagLog; error?: string; sync?: ManualStageSyncResult } {
   if (!sessionId) return { success: false, error: '缺少 sessionId' }
   if (!isManualStageValue(stage)) return { success: false, error: `非法阶段值：${stage}` }
   const existing = salesDbService.customerGetBySession(sessionId)
@@ -48,7 +80,8 @@ export function applyManualStageCorrection(
   salesDbService.customerUpsert({ session_id: sessionId, stage })
   // changedAt 语义 = 当前阶段最近变更时间：仅阶段真正变化时更新（幂等拦截，对齐 classifier 标杆）
   if (changed) salesDbService.updateStageChangeTime(sessionId, Date.now())
-  return { success: true, tag }
+  const sync = syncManualStageToCrm(sessionId, normalizeStage(stage))
+  return { success: true, tag, sync }
 }
 
 /**

@@ -5,9 +5,16 @@
  */
 
 export interface BankPayment { bank: string; accountTail: string; timeText: string; amount: number; payer: string; memo: string }
-export interface AllocationRow { customerHint: string; salesHint: string; amountHint: number }
-export interface LogisticsRow { trackingNo: string; brand: string; receiver: string; city: string }
-export interface InvoicePdfInfo { invoiceNo: string; buyerPrefix: string; tail: string }
+export type InvoiceIntent = 'required' | 'not_required' | 'info_pending' | null
+export interface AllocationRow { customerHint: string; salesHint: string; amountHint: number; invoiceIntent?: InvoiceIntent }
+export interface LogisticsRow { trackingNo: string; brand: string; receiver: string; city: string; courierHint?: string }
+export interface LogisticsExceptionInfo {
+  trackingNo: string
+  status: 'cancelled' | 'returned' | 'self_pickup' | 'partial' | 'delayed' | 'urgent' | 'exception'
+  note: string
+}
+export interface InvoicePdfInfo { invoiceNo: string; buyerPrefix: string; tail: string; issuedAtText?: string }
+export interface InvoiceApplicationInfo { buyerHint: string; fileName: string }
 
 // ─── 银行文本（当前仅江苏银行一家，模版可配置扩展）─────────────────────────
 const BANK_RE = /【(?<bank>[^】]+)】您(?<company>\S+?)尾号(?<acct>\d{4,6})账户于(?<time>\d{1,2}月\d{1,2}日[\d:]{8})转入人民币(?<amount>[\d,]+\.\d{2})元，+对方户名为(?<payer>[^，,]+)，摘要：(?<memo>[^。]+)。/
@@ -88,6 +95,17 @@ export function wechatTimeToMs(timeText: string, now = new Date()): number {
 
 // ─── 归属简语（多行，一行一条归属：客户提示 金额 销售）──────────────────────
 const ALLOC_LINE_RE = /^(?<customer>\S+?)\s+(?<amount>\d+(?:\.\d{1,2})?)\s+(?<sales>\S+)$/
+const ALLOC_AMOUNT_RE = /(?<!\d)(\d[\d,]*(?:\.\d{1,2})?)\s*元?(?!\d)/
+const INVOICE_NOT_REQUIRED_RE = /(?:不|无需|不要)开票/
+const INVOICE_INFO_PENDING_RE = /(?:暂无|没有|未有|待补)(?:开票)?(?:资料|信息)/
+const INVOICE_REQUIRED_RE = /(?:需要|要|申请|麻烦)?开票/
+
+function invoiceIntentOf(text: string): InvoiceIntent {
+  if (INVOICE_NOT_REQUIRED_RE.test(text)) return 'not_required'
+  if (INVOICE_INFO_PENDING_RE.test(text)) return 'info_pending'
+  if (INVOICE_REQUIRED_RE.test(text)) return 'required'
+  return null
+}
 
 export function parseAllocationShorthand(content: string): AllocationRow[] | null {
   if (!content) return null
@@ -96,17 +114,49 @@ export function parseAllocationShorthand(content: string): AllocationRow[] | nul
   const rows: AllocationRow[] = []
   for (const line of lines) {
     const m = line.match(ALLOC_LINE_RE)
-    if (!m?.groups) return null
-    rows.push({ customerHint: m.groups.customer, salesHint: m.groups.sales, amountHint: parseFloat(m.groups.amount) })
+    if (m?.groups && !invoiceIntentOf(m.groups.sales)) {
+      rows.push({ customerHint: m.groups.customer, salesHint: m.groups.sales, amountHint: parseFloat(m.groups.amount), invoiceIntent: invoiceIntentOf(line) })
+      continue
+    }
+    // 真实财付通拆分行字段顺序不固定，且会夹「不开票/暂无开票资料」。
+    // 此处只做保守结构化：金额必须唯一；未明确写销售时由调用方使用引用回复发送人。
+    const amounts = [...line.matchAll(new RegExp(ALLOC_AMOUNT_RE.source, 'g'))]
+    if (amounts.length !== 1) return null
+    const amount = Number(String(amounts[0][1]).replace(/,/g, ''))
+    if (!Number.isFinite(amount) || amount <= 0) return null
+    const intent = invoiceIntentOf(line)
+    let rest = line
+      .replace(amounts[0][0], ' ')
+      .replace(INVOICE_NOT_REQUIRED_RE, ' ')
+      .replace(INVOICE_INFO_PENDING_RE, ' ')
+      .replace(INVOICE_REQUIRED_RE, ' ')
+      .replace(/[，,、;；]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!rest) return null
+    const parts = rest.split(' ').filter(Boolean)
+    let salesHint = ''
+    const afterAmount = line.slice((amounts[0].index || 0) + amounts[0][0].length)
+      .replace(INVOICE_NOT_REQUIRED_RE, ' ').replace(INVOICE_INFO_PENDING_RE, ' ').replace(INVOICE_REQUIRED_RE, ' ')
+      .replace(/[，,、;；\s]+/g, '')
+    // 仅把「金额之后」的短姓名认作显式销售；金额前的联系人仍属于客户提示。
+    if (parts.length >= 2 && afterAmount === parts[parts.length - 1] && /^[\u4e00-\u9fa5A-Za-z]{2,8}$/.test(afterAmount) && !/[公司厂店司行中心]/.test(afterAmount)) {
+      salesHint = parts.pop() || ''
+    }
+    rest = parts.join('/')
+    rows.push({ customerHint: rest, salesHint, amountHint: amount, invoiceIntent: intent })
   }
   return rows.length ? rows : null
 }
 
 // ─── 认领关键词 ──────────────────────────────────────────────────────────────
-const CLAIM_WORDS = ['收到', '👌', 'OK', 'ok', '好的', '确认', '知道了']
 export function isClaimKeyword(content: string): boolean {
-  const t = (content || '').trim()
-  return CLAIM_WORDS.includes(t)
+  const t = (content || '').trim().replace(/^\[|\]$/g, '').replace(/[。！!]+$/g, '')
+  return /^(?:收到(?:[，,]\s*(?:谢谢|开票))?|👌|OK)$/i.test(t)
+}
+
+export function claimInvoiceIntent(content: string): InvoiceIntent {
+  return isClaimKeyword(content) ? invoiceIntentOf(content) : null
 }
 
 
@@ -171,7 +221,8 @@ export function parseShippingInfo(content: string): ShippingInfo | null {
 // ─── 物流批量（一行：单号 品牌 收件人 城市，尾部可跟催单/备注等闲聊文本）────────
 // 尾部容忍：物流群发货列表有时同条消息带跟进话（如「@妙妙 查一下这个快递，客户在催」），
 // 只取前 4 段（单号 品牌 收件人 城市），尾部文本不参与匹配也不影响整批识别。
-const LOGI_LINE_RE = /^(?<no>\d{10,15})\s+(?<brand>\S+)\s+(?<name>\S+)\s+(?<city>\S+)(?:\s+\S.*)?$/
+const LOGI_LINE_RE = /^(?<no>\d{10,15})\s+(?<brand>\S+)\s+(?<name>\S+)\s+(?<city>\S+)(?<tail>(?:\s+\S.*)?)$/
+const COURIER_HINT_RE = /(?:^|\s)(中通|安能|顺丰|德邦|京东|圆通|申通|韵达|专线)(?:物流|快递)?(?:\s|$)/
 
 export function parseLogisticsBatch(content: string): LogisticsRow[] | null {
   if (!content) return null
@@ -180,20 +231,59 @@ export function parseLogisticsBatch(content: string): LogisticsRow[] | null {
   const rows: LogisticsRow[] = []
   for (const line of lines) {
     const m = line.match(LOGI_LINE_RE)
-    if (!m?.groups) return null
-    rows.push({ trackingNo: m.groups.no, brand: m.groups.brand, receiver: m.groups.name, city: m.groups.city })
+    if (!m?.groups) continue
+    const courier = String(m.groups.tail || '').match(COURIER_HINT_RE)?.[1]
+    rows.push({ trackingNo: m.groups.no, brand: m.groups.brand, receiver: m.groups.name, city: m.groups.city, courierHint: courier || undefined })
   }
   return rows.length ? rows : null
 }
 
+/** 带明确单号的物流异常；没有单号的闲聊不猜关联对象。 */
+export function parseLogisticsException(content: string): LogisticsExceptionInfo | null {
+  const text = String(content || '').trim()
+  const trackingNo = text.match(/(?:^|\D)(\d{10,15})(?!\d)/)?.[1] || ''
+  if (!trackingNo) return null
+  let status: LogisticsExceptionInfo['status'] | null = null
+  if (/(?:删单|取消发货|不发(?:货|了)?|安排退款)/.test(text)) status = 'cancelled'
+  else if (/(?:退回|退货|返厂)/.test(text)) status = 'returned'
+  else if (/(?:自提|没有单号|没单号)/.test(text)) status = 'self_pickup'
+  else if (/(?:少件|分批|还有\s*\d+\s*件)/.test(text)) status = 'partial'
+  else if (/(?:一直)?没(?:有)?物流|没更新|不更新|物流.*未知/.test(text)) status = 'delayed'
+  else if (/(?:催件|客户.*催|帮我催|加急|务必送到)/.test(text)) status = 'urgent'
+  else if (/(?:破损|摔坏|拒收|没收到|未收到|丢失|错签)/.test(text)) status = 'exception'
+  return status ? { trackingNo, status, note: text.slice(0, 300) } : null
+}
+
 // ─── 电子发票 PDF 文件名：dzfp_<20位发票号>_<买方前缀>…<尾4>.pdf ─────────────
-const INVOICE_RE = /^dzfp_(?<no>\d{20,22})_(?<buyer>.+?)(?:\.\.\.|…)(?<tail>\d{4})\.pdf$/
+const INVOICE_FULL_RE = /^dzfp_(?<no>\d{20,22})_(?<buyer>.+?)_(?<issued>\d{14})\.pdf$/i
+const INVOICE_TRUNCATED_RE = /^dzfp_(?<no>\d{20,22})_(?<buyer>.+?)(?:\.\.\.|…)(?<tail>\d{4})\.pdf$/i
 
 export function parseInvoicePdfName(fileName: string): InvoicePdfInfo | null {
   if (!fileName) return null
-  const m = fileName.match(INVOICE_RE)
-  if (!m?.groups) return null
-  return { invoiceNo: m.groups.no, buyerPrefix: m.groups.buyer, tail: m.groups.tail }
+  const full = fileName.trim().match(INVOICE_FULL_RE)
+  if (full?.groups) return {
+    invoiceNo: full.groups.no,
+    buyerPrefix: full.groups.buyer.trim(),
+    tail: full.groups.issued.slice(-4),
+    issuedAtText: full.groups.issued
+  }
+  const truncated = fileName.trim().match(INVOICE_TRUNCATED_RE)
+  if (!truncated?.groups) return null
+  return { invoiceNo: truncated.groups.no, buyerPrefix: truncated.groups.buyer.trim(), tail: truncated.groups.tail }
+}
+
+/** 开票申请文件（真实群主要为 xlsx）；只识别文件名明确含「开票申请」的表格。 */
+export function parseInvoiceApplicationName(fileName: string): InvoiceApplicationInfo | null {
+  const clean = String(fileName || '').trim()
+  if (!/\.xlsx$/i.test(clean) || !clean.includes('开票申请')) return null
+  const stem = clean.replace(/\.xlsx$/i, '').replace(/[（）]/g, (c) => c === '（' ? '(' : ')')
+  let buyerHint = ''
+  const after = stem.match(/^开票申请\s*[-—_]?\s*\(([^)]+)\)/)
+  const before = stem.match(/^\(([^)]+)\)\s*开票申请/)
+  if (after?.[1]) buyerHint = after[1]
+  else if (before?.[1]) buyerHint = before[1]
+  else buyerHint = stem.replace(/开票申请/g, ' ').replace(/\(\d+\)\s*$/g, ' ').replace(/[-—_()]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return buyerHint ? { buyerHint, fileName: clean } : null
 }
 
 // ─── 发票文件名金额提取（保守）：仅识别带金额标记（金额/¥/￥/价款/价税合计）的数值，

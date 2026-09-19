@@ -11,6 +11,7 @@ import { wcdbService } from './wcdbService'
 import { salesLog } from './salesLogger'
 import type { ConfigService } from './config'
 import type { InsightProfileRecord } from './insightProfileService'
+import { normalizeStage } from '../../shared/salesStage'
 
 // 判定 prompt：基于 AI 画像判断 B2B 工业设备销售意向
 const INTENT_JUDGE_PROMPT = `你是 B2B 工业设备（叉车/仓储搬运设备）销售意向判定器。
@@ -67,10 +68,9 @@ export async function collectInternalGroupMembers(groupNames: string[]): Promise
   return Array.from(new Set(names.filter(Boolean)))
 }
 
-// 往期灵感信箱记录回填导入：按 salesStage 中文标签直接判定，不再调 AI（幂等）
-const BACKFILL_STAGE_TO_CRM: Record<string, string> = {
-  了解: 'contacted', 比价: 'negotiating', 决策: 'negotiating', 成交: 'won'
-}
+// 往期灵感信箱记录回填导入：阶段归一走 shared/salesStage.normalizeStage 唯一语义源
+// （H6：删除本模块重复且错误的 BACKFILL_STAGE_TO_CRM——曾把「比价」映射成 negotiating），不再调 AI（幂等）
+const INTENT_CRM_STAGES = ['contacted', 'quoted', 'negotiating', 'won']
 
 export function backfillImportFromInsightRecords(
   records: Array<{ sessionId: string; displayName: string; salesStage?: string; createdAt: number }>
@@ -82,8 +82,8 @@ export function backfillImportFromInsightRecords(
   const sorted = [...records].sort((a, b) => a.createdAt - b.createdAt)
   for (const r of sorted) {
     if (!r.sessionId || seen.has(r.sessionId)) continue
-    const crmStage = BACKFILL_STAGE_TO_CRM[String(r.salesStage || '')]
-    if (!crmStage) continue
+    const crmStage = normalizeStage(String(r.salesStage || ''))
+    if (!INTENT_CRM_STAGES.includes(crmStage)) continue
     seen.add(r.sessionId)
     try {
       const res = crmDbService.importCustomerFromProfile({

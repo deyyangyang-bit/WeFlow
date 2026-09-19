@@ -14,7 +14,8 @@ import { enqueueSalesTask } from './salesQueue'
 import { salesLog } from './salesLogger'
 import {
   parseBankText, detectPayChannel, wechatTimeToMs, parseAllocationShorthand,
-  isClaimKeyword, parseLogisticsBatch, parseInvoicePdfName, feeCheck,
+  isClaimKeyword, claimInvoiceIntent, parseLogisticsBatch, parseLogisticsException,
+  parseInvoicePdfName, parseInvoiceApplicationName, feeCheck,
   isCompanyHint, splitAliasHints, parseShippingInfo, isDealSignal, parseQuoteSignal, parseBuySignal, parseRiskSignal, type AllocationRow, type ShippingInfo
 } from './crmParseRules'
 import { applyDealStageWon } from './legalStageWriters'
@@ -116,6 +117,7 @@ async function scanAll(): Promise<number> {
       }
       if (maxMs > lastScan) crmDbService.updateGroup(Number(group.id), { last_scan: maxMs })
     }
+    await backfillFollowupHistory(groups, byId)
     // ── 私聊收货地址扫描：客户付款后发地址/联系人 → 落 shipping_info 并回填未链接物流 ──
     const nowMs = Date.now()
     let privBudget = 150
@@ -332,30 +334,57 @@ async function scanAll(): Promise<number> {
 }
 
 // ─── 单消息分发 ──────────────────────────────────────────────────────────────
-async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
+async function handle(group: CrmRow, msg: CrmRow, opts: { allowAi?: boolean; archiveFiles?: boolean } = {}): Promise<void> {
   const content = String(msg.content ?? msg.parsedContent ?? '')
   const sender = String(msg.senderUsername ? (msg.senderName || msg.senderUsername) : (msg.senderName || ''))
   const senderName = String(msg.senderName || sender || '')
+  const senderWxid = String(msg.senderUsername || '')
   const groupType = String(group.group_type)
 
-  // 1) 发票 PDF 文件消息
+  // 1) 开票文件：xlsx=开票申请，PDF=已开票结果。混合群按内容路由，不再依赖 group_type。
   if (msg.appMsgKind === 'file') {
-    const fileNameMatch = content.match(/\[文件\]\s*(.+\.pdf)/i) || content.match(/(.+\.pdf)/i)
-    const fileName = fileNameMatch ? fileNameMatch[1].trim() : ''
+    const fileNameMatch = content.match(/\[文件\]\s*(.+\.(?:pdf|xlsx))/i) || content.match(/(.+\.(?:pdf|xlsx))/i)
+    const fileName = String(msg.fileName || (fileNameMatch ? fileNameMatch[1] : '')).trim()
+    const request = parseInvoiceApplicationName(fileName)
+    if (request) {
+      const sourceMsgId = String(msg.messageKey || '')
+      if (sourceMsgId && crmDbService.all('SELECT id FROM invoice WHERE source_msg_id = ? LIMIT 1', [sourceMsgId]).length) return
+      const account = crmDbService.findAccountByPrefix(request.buyerHint)
+      const archived = opts.archiveFiles === false ? null : crmFileService.archive(fileName, userDataPath(), String(msg.fileMd5 || ''))
+      const invId = crmDbService.create('invoice', {
+        invoice_no: null, buyer: account ? account.name : request.buyerHint,
+        account_id: account ? account.id : null, contract_id: null,
+        amount: 0, requirement_status: 'required', status: 'pre_issue',
+        request_attachment_path: archived || '', source_msg_id: sourceMsgId,
+        requested_by: senderName || senderWxid, created_at: Number(msg.createTime || 0) * 1000 || Date.now()
+      })
+      if (invId) crmDbService.logActivity('invoice', invId, 'requested',
+        `群内提交开票申请 ${fileName}${account ? `，客户 ${account.name}` : '（客户待确认）'}`, senderName)
+      return
+    }
     const info = parseInvoicePdfName(fileName)
     if (info) {
       const account = crmDbService.findAccountByPrefix(info.buyerPrefix)
-      const archived = crmFileService.archive(fileName, userDataPath(), String(msg.fileMd5 || ''))
-      // 发票挂到该客户最近一条可挂款合同，未命中留空待确认中心人工关联
-      const contract = account ? crmDbService.activeContractForAccount(Number(account.id)) : null
-      const invId = crmDbService.create('invoice', {
+      const archived = opts.archiveFiles === false ? null : crmFileService.archive(fileName, userDataPath(), String(msg.fileMd5 || ''))
+      const existingIssued = crmDbService.all('SELECT * FROM invoice WHERE invoice_no = ? ORDER BY id DESC LIMIT 1', [info.invoiceNo])[0]
+      const pending = existingIssued || (account
+        ? crmDbService.all("SELECT * FROM invoice WHERE account_id = ? AND status = 'pre_issue' ORDER BY id DESC LIMIT 1", [Number(account.id)])[0]
+        : crmDbService.all("SELECT * FROM invoice WHERE buyer LIKE ? AND status = 'pre_issue' ORDER BY id DESC LIMIT 1", [`${info.buyerPrefix}%`])[0])
+      const invoiceDate = info.issuedAtText
+        ? new Date(`${info.issuedAtText.slice(0, 4)}-${info.issuedAtText.slice(4, 6)}-${info.issuedAtText.slice(6, 8)}T${info.issuedAtText.slice(8, 10)}:${info.issuedAtText.slice(10, 12)}:${info.issuedAtText.slice(12, 14)}`).getTime()
+        : Number(msg.createTime || 0) * 1000
+      let invId = Number(pending?.id || 0)
+      const issuedPatch = {
         invoice_no: info.invoiceNo, buyer: account ? account.name : info.buyerPrefix,
-        account_id: account ? account.id : null, contract_id: contract ? Number(contract.id) : null,
-        amount: 0,
-        status: archived ? 'issued' : 'pre_issue', attachment_path: archived, created_at: Date.now()
-      })
+        account_id: account ? account.id : (pending?.account_id ?? null),
+        amount: Number(pending?.amount || 0), requirement_status: 'required',
+        status: 'issued', attachment_path: archived || '', invoice_date: invoiceDate || Date.now(),
+        custom_fields: archived ? String(pending?.custom_fields || '{}') : JSON.stringify({ attachment_missing: true })
+      }
+      if (invId) crmDbService.update('invoice', invId, issuedPatch)
+      else invId = crmDbService.create('invoice', { ...issuedPatch, contract_id: null, source_msg_id: String(msg.messageKey || ''), created_at: Date.now() })
       if (invId) crmDbService.logActivity('invoice', invId, 'archived',
-        `群归档发票 ${info.invoiceNo}${account ? `，客户 ${account.name}` : ''}${archived ? '' : '（文件未定位，待归档）'}`)
+        `群内发票已开 ${info.invoiceNo}${account ? `，客户 ${account.name}` : ''}${archived ? '' : '（文件未定位）'}`)
       return
     }
   }
@@ -363,13 +392,23 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
   // 2) 银行文本到款
   const bank = parseBankText(content)
   if (bank) {
+    const serverId = String(msg.serverIdRaw || msg.serverId || '')
+    const msgId = String(msg.messageKey || '')
+    const duplicate = crmDbService.all(
+      'SELECT * FROM payment_record WHERE (? != \'\' AND source_server_id = ?) OR (? != \'\' AND msg_id = ?) ORDER BY id DESC LIMIT 1',
+      [serverId, serverId, msgId, msgId]
+    )[0]
+    if (duplicate) {
+      if (serverId && !duplicate.source_server_id) crmDbService.update('payment_record', Number(duplicate.id), { source_server_id: serverId })
+      return
+    }
     const channel = detectPayChannel(bank.payer)
     const account = channel === 'bank_direct' ? crmDbService.matchAccountByName(bank.payer) : null
     const payId = crmDbService.createPaymentRecord({
       bank: bank.bank, account_tail: bank.accountTail, payer: bank.payer,
       amount_net: bank.amount, pay_time: wechatTimeToMs(bank.timeText), memo: bank.memo,
       pay_channel: channel, source: 'bank_text', group_id: String(group.group_id),
-      msg_id: String(msg.messageKey || ''), raw_content: content,
+      msg_id: msgId, source_server_id: serverId, raw_content: content,
       // 前置小修：银行直连到款但客户未命中 → 进到款待审队列（needs_review=1），
       // 避免"客户没登记 → 无归属可建 → 钱静默消失"。财付通走认领，保持原状。
       needs_review: channel === 'bank_direct' && !account ? 1 : 0
@@ -383,38 +422,42 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
   // 3) 引用类消息：认领 / 归属简语 / AI 兜底
   const quotedContent = msg.quotedContent != null ? String(msg.quotedContent) : null
   if (quotedContent) {
-    const payment = findPaymentByRaw(quotedContent)
+    const payment = findQuotedPayment(String(msg.rawContent || msg.content || ''), quotedContent)
     if (isClaimKeyword(content)) {
-      if (payment) applyClaim(payment, senderName)
+      if (payment) applyClaim(payment, senderName, senderWxid, claimInvoiceIntent(content))
       return
     }
     let rows = parseAllocationShorthand(content)
     let aiParsed = false
-    if (!rows && payment && configRef && isAiConfigured(configRef)) {
+    if (!rows && payment && opts.allowAi !== false && configRef && isAiConfigured(configRef)) {
       rows = await aiParseShorthand(content, quotedContent)
       aiParsed = true
     }
     if (rows && payment) {
-      applyAllocations(payment, rows, aiParsed)
+      applyAllocations(payment, rows, aiParsed, senderName, senderWxid)
       return
     }
   }
 
   // 4) 物流批量
-  if (groupType === 'logistics') {
-    const logiRows = parseLogisticsBatch(content)
-    if (logiRows) {
+  {
+    const parsedLogiRows = parseLogisticsBatch(content)
+    const logiRows = parsedLogiRows?.filter((r) => groupType === 'logistics' || /艾驱|库叉/.test(r.brand)) || null
+    if (logiRows?.length) {
       for (const r of logiRows) {
         const ts = Number(msg.createTime || 0) * 1000
         // 单号幂等：物流群每晚同批列表重扫/补扫时已存在只刷新更新时间，不重复建单
         const existing = crmDbService.logisticsByTrackingNo(r.trackingNo)
         if (existing) {
-          crmDbService.update('logistics', Number(existing.id), { latest_update_at: ts })
+          crmDbService.update('logistics', Number(existing.id), {
+            latest_update_at: Math.max(Number(existing.latest_update_at || 0), ts),
+            ...(r.courierHint ? { courier: r.courierHint } : {})
+          })
           continue
         }
         const lid = crmDbService.create('logistics', {
           tracking_no: r.trackingNo, brand: r.brand, receiver: r.receiver, city: r.city,
-          courier: String(group.default_courier || '安能物流'), status: 'shipped',
+          courier: String(r.courierHint || group.default_courier || '待确认'), status: 'shipped',
           latest_update_at: ts,
           source_msg_id: String(msg.messageKey || ''), created_at: Date.now()
         })
@@ -423,13 +466,71 @@ async function handle(group: CrmRow, msg: CrmRow): Promise<void> {
           // 未命中则保持 unlinked，待确认中心手动/自动匹配
         }
       }
-      return
     }
+    const exception = parseLogisticsException(content)
+    if (exception) {
+      const existing = crmDbService.logisticsByTrackingNo(exception.trackingNo)
+      const eventAt = Number(msg.createTime || 0) * 1000 || Date.now()
+      if (existing && eventAt >= Number(existing.latest_update_at || 0)) {
+        crmDbService.update('logistics', Number(existing.id), {
+          status: exception.status, exception_note: exception.note, latest_update_at: eventAt
+        })
+      }
+    }
+    if (logiRows?.length || exception) return
   }
 
   // 5) 截图到款（vision 开关，默认关→手工登记降级）
   if (msg.localType === 3 && groupType === 'order' && configRef && isVisionEnabled()) {
     await handleScreenshot(group, msg)
+  }
+}
+
+/**
+ * 真实群流程上线的一次性历史回补：绕过 processed_msg，只重放有幂等保护的款/票/物流事件。
+ * 每群最多回看最近 10,000 条；不调 AI、不逐文件扫描微信缓存，避免启动时产生外部调用或 I/O 风暴。
+ */
+async function backfillFollowupHistory(groups: CrmRow[], sessions: Map<string, CrmRow>): Promise<void> {
+  const BATCH = 100
+  const MAX_PAGES = 100
+  for (const group of groups) {
+    const gid = String(group.group_id || '')
+    if (!gid || !sessions.has(gid)) continue
+    const marker = `followup-v2:${gid}`
+    if (crmDbService.getScanState(marker)) continue
+    let offset = 0
+    let ok = true
+    let handled = 0
+    const replay: CrmRow[] = []
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const result = await chatService.getMessages(gid, offset, BATCH, 0)
+      if (!result?.success) { ok = false; break }
+      if (!result.messages?.length) break
+      for (const msg of result.messages) {
+        const content = String(msg.content ?? msg.parsedContent ?? '')
+        const fileName = String(msg.fileName || '')
+        const relevant = Boolean(
+          (msg.appMsgKind === 'file' && /\.(?:pdf|xlsx)$/i.test(fileName || content)) ||
+          msg.quotedContent || parseBankText(content) || parseLogisticsBatch(content) || parseLogisticsException(content)
+        )
+        if (relevant) replay.push(msg)
+      }
+      if (!result.hasMore) break
+      offset = Number(result.nextOffset ?? offset + result.messages.length)
+    }
+    if (ok) {
+      replay.sort((a, b) => Number(a.createTime || 0) - Number(b.createTime || 0))
+      for (const msg of replay) {
+        try {
+          await handle(group, msg, { allowAi: false, archiveFiles: false })
+          handled++
+        } catch (e) {
+          salesLog('WARN', `[CrmParse] history backfill error group=${gid} key=${String(msg.messageKey || '')}: ${e}`)
+        }
+      }
+      crmDbService.setScanState(marker, Date.now())
+      salesLog('INFO', `[CrmParse] history backfill done group=${gid} handled=${handled}`)
+    }
   }
 }
 
@@ -441,17 +542,43 @@ function isVisionEnabled(): boolean {
   return configRef ? Boolean((configRef as any).get('crmVisionEnabled')) : false
 }
 
-function findPaymentByRaw(quotedContent: string): CrmRow | null {
-  const rows = crmDbService.all('SELECT * FROM payment_record WHERE raw_content = ? ORDER BY id DESC LIMIT 1', [quotedContent.trim()])
-  return rows.length ? rows[0] : null
+function findQuotedPayment(rawQuoteMessage: string, quotedContent: string): CrmRow | null {
+  const quoteXml = rawQuoteMessage.replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&amp;/gi, '&')
+  const quotedServerId = quoteXml.match(/<refermsg>[\s\S]*?<svrid>(\d+)<\/svrid>[\s\S]*?<\/refermsg>/i)?.[1] || ''
+  if (quotedServerId) {
+    const byServer = crmDbService.all('SELECT * FROM payment_record WHERE source_server_id = ? ORDER BY id DESC LIMIT 1', [quotedServerId])
+    if (byServer.length) return byServer[0]
+  }
+  // 兼容旧库没有 source_server_id：实体/换行/空白归一化后比对，不再依赖原文逐字相等。
+  const normalize = (v: unknown): string => String(v || '')
+    .replace(/&#x0*A;|&#10;|&NewLine;/gi, '\n')
+    .replace(/\r\n?/g, '\n').replace(/[\t \u00a0]+/g, ' ').replace(/\n+/g, '\n').trim()
+  const wanted = normalize(quotedContent)
+  const candidates = crmDbService.all('SELECT * FROM payment_record ORDER BY id DESC LIMIT 500')
+  return candidates.find((row) => normalize(row.raw_content) === wanted) || null
 }
 
-function applyClaim(payment: CrmRow, senderName: string): void {
+function applyClaim(payment: CrmRow, senderName: string, senderWxid: string, invoiceIntent: ReturnType<typeof claimInvoiceIntent>): void {
+  const alreadyClaimed = crmDbService.all(
+    "SELECT * FROM allocation WHERE payment_record_id = ? AND status = 'confirmed' AND ((sales_wxid != '' AND sales_wxid = ?) OR sales_name = ?) LIMIT 1",
+    [payment.id, senderWxid || '__none__', senderName]
+  )[0]
+  if (alreadyClaimed) {
+    if (invoiceIntent) crmDbService.update('allocation', Number(alreadyClaimed.id), {
+      invoice_requirement: invoiceIntent, invoice_requirement_source: 'claim_message'
+    })
+    return
+  }
   const allocs = crmDbService.all('SELECT * FROM allocation WHERE payment_record_id = ? AND status = ?', [payment.id, 'pending'])
   if (allocs.length) {
     for (const a of allocs) {
-      const patch: CrmRow = { status: 'confirmed', confirmed_at: Date.now() }
-      if (!a.sales_hint) patch.sales_name = senderName
+      const patch: CrmRow = { status: 'confirmed', confirmed_at: Date.now(), reconciliation_status: 'pending' }
+      patch.sales_name = String(a.sales_hint || senderName)
+      patch.sales_wxid = a.sales_hint ? null : (senderWxid || null)
+      if (invoiceIntent) {
+        patch.invoice_requirement = invoiceIntent
+        patch.invoice_requirement_source = 'claim_message'
+      }
       if (!a.account_id) resolveAccountForAllocation(a, patch)
       crmDbService.update('allocation', Number(a.id), patch)
     }
@@ -462,8 +589,9 @@ function applyClaim(payment: CrmRow, senderName: string): void {
     crmDbService.create('allocation', {
       payment_record_id: payment.id, customer_hint: payment.payer, sales_hint: senderName,
       amount_hint: payment.amount_net, credited_amount: payment.amount_net,
-      account_id: account ? account.id : null, sales_name: senderName,
-      status: 'confirmed', created_at: Date.now(), confirmed_at: Date.now()
+      account_id: account ? account.id : null, sales_name: senderName, sales_wxid: senderWxid || null,
+      invoice_requirement: invoiceIntent || 'unknown', invoice_requirement_source: invoiceIntent ? 'claim_message' : null,
+      reconciliation_status: 'pending', status: 'confirmed', created_at: Date.now(), confirmed_at: Date.now()
     })
     return
   }
@@ -471,7 +599,9 @@ function applyClaim(payment: CrmRow, senderName: string): void {
   crmDbService.create('allocation', {
     payment_record_id: payment.id, customer_hint: '企业微信扫码', sales_hint: senderName,
     amount_hint: payment.amount_net, credited_amount: payment.amount_net,
-    account_id: null, sales_name: senderName, status: 'pending', created_at: Date.now()
+    account_id: null, sales_name: senderName, sales_wxid: senderWxid || null,
+    invoice_requirement: invoiceIntent || 'unknown', invoice_requirement_source: invoiceIntent ? 'claim_message' : null,
+    reconciliation_status: 'pending', status: 'pending', created_at: Date.now()
   })
 }
 
@@ -490,14 +620,23 @@ function resolveAccountForAllocation(a: CrmRow, patch: CrmRow): void {
   }
 }
 
-function applyAllocations(payment: CrmRow, rows: AllocationRow[], aiParsed: boolean): void {
+function applyAllocations(payment: CrmRow, rows: AllocationRow[], aiParsed: boolean, senderName: string, senderWxid: string): void {
   const sum = rows.reduce((s, r) => s + r.amountHint, 0)
   const pass = feeCheck(sum, Number(payment.amount_net || 0))
-  const ids = crmDbService.addAllocations(Number(payment.id), rows)
+  const existing = crmDbService.all('SELECT * FROM allocation WHERE payment_record_id = ?', [Number(payment.id)])
+  const freshRows = rows.filter((row) => !existing.some((a) =>
+    Math.abs(Number(a.amount_hint || 0) - row.amountHint) < 0.005 &&
+    String(a.customer_hint || '').replace(/\s+/g, '') === row.customerHint.replace(/\s+/g, '')))
+  if (!freshRows.length) return
+  const ids = crmDbService.addAllocations(Number(payment.id), freshRows)
   if (pass && !aiParsed) {
     ids.forEach((id, i) => {
-      const patch: CrmRow = { status: 'confirmed', confirmed_at: Date.now(), sales_name: rows[i].salesHint }
-      const hint = rows[i].customerHint
+      const patch: CrmRow = {
+        status: 'confirmed', confirmed_at: Date.now(), reconciliation_status: 'pending',
+        sales_name: freshRows[i].salesHint || senderName,
+        sales_wxid: freshRows[i].salesHint ? null : (senderWxid || null)
+      }
+      const hint = freshRows[i].customerHint
       if (isCompanyHint(hint)) {
         const acc = crmDbService.ensureAccount(hint)
         patch.account_id = acc
@@ -505,11 +644,7 @@ function applyAllocations(payment: CrmRow, rows: AllocationRow[], aiParsed: bool
         const alias = crmDbService.aliasLookup(hint)
         if (alias) patch.account_id = alias.account_id
       }
-      // 归属挂到该客户最近一条可挂款合同（pending_sign/signed），无则留空待人工
-      if (patch.account_id) {
-        const contract = crmDbService.activeContractForAccount(Number(patch.account_id))
-        if (contract) patch.contract_id = Number(contract.id)
-      }
+      // 群消息没有订单/合同标识时只认到客户，不猜挂“最近合同”；由人工选择本次订单。
       crmDbService.update('allocation', id, patch)
     })
   } else {

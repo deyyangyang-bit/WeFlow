@@ -26,7 +26,10 @@
     "test:central-tls": "npx tsx scripts/central-tls-deployment-test.ts",
     "test:central-native-tls": "npx tsx scripts/central-native-caddy-test.ts",
     "test:local-owner-id": "npx tsx scripts/local-write-owner-id-test.ts",
-    "typecheck:node": "node scripts/typecheck-node-ratchet.cjs"
+    "test:lead-entry": "npx tsx scripts/crm-lead-entry-test.ts",
+    "typecheck:node": "node scripts/typecheck-node-ratchet.cjs",
+    "test:dup-group": "npx tsx scripts/crm-dup-group-test.ts",
+    "test:wecom-push": "npx tsx scripts/wecom-push-test.ts"
   },
   "dependencies": {
     "@hicccc77/electron-liquid-glass": "^0.3.0",

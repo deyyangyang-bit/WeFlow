@@ -19,9 +19,10 @@ import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
-import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail } from './crmLeadService'
+import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail, checkLeadDuplicate, createLead, importHistoricalAssignments } from './crmLeadService'
 import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
 import { bindLeadWxid } from './crmFriendDetectService'
+import { listDupMatches } from './crmDupGroupService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
 import { registerDelivery, saveEquipment, proposeTradeIn, decideTradeIn, runDeliveryScan, listDeliveryTasks, suggestDeliveryDate, recomputeAllRepeatLevels } from './crmDeliveryService'
@@ -31,8 +32,10 @@ import { listNotifyInbox, markNotifyRead } from './crmNotifyService'
 import { sla2EvidenceGetForLead } from './crmSla2EvidenceService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'fs'
 import type { ConfigService } from './config'
+import { getActorLabel } from './identityService'
+import { crmImagesRoot, resolveInsideRoot, isRegularFile, detectImageMime, sanitizeImageFileName } from './crmImageFile'
 
 // 微信备注是客户名真相源：存量 account.name / profile.display_name 若为微信号格式（wan923121735、wxid_xxx），
 // 从 WCDB contact 表取真实备注回填。幂等：只处理微信号格式名字；WCDB 未连接 / 无备注则跳过。
@@ -240,7 +243,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:payment:approve', async (_, id: number) => crmDbService.approvePayment(id))
   ipcMain.handle('crm:payments:byDay', async (_, days?: number) => crmDbService.paymentsByDay(days))
   ipcMain.handle('crm:payment:claim', async (_, id: number, patch) => crmDbService.claimPayment(id, patch || {}))
-  // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
+  ipcMain.handle('crm:allocation:reconcile', async (_, id: number) =>
+    crmDbService.reconcileAllocation(Number(id), { actor: getActorLabel() || '' }))
+  ipcMain.handle('crm:allocation:invoiceRequirement', async (_, id: number, requirement: string) =>
+    crmDbService.setAllocationInvoiceRequirement(Number(id), String(requirement || 'unknown'), { actor: getActorLabel() || '' }))
   // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
   const resolveMySalesName = async (): Promise<string> => {
     const myWxid = String(config.get('myWxid') || '').trim()
@@ -340,22 +346,33 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     const m = out.match(/\{[\s\S]*\}/)
     return m ? JSON.parse(m[0]) : {}
   })
+  // H1 收口：只允许读 userData/crm-images 内的常规文件；MIME 由 magic bytes 判定（不信任扩展名）；
+  // 拒绝时与「目标不存在」同款返回 ''，不泄露目标是否存在。
   ipcMain.handle('crm:file:readImage', async (_, filePath: string) => {
     try {
-      if (!filePath || !existsSync(filePath)) return ''
-      const buf = readFileSync(filePath)
-      const ext = String(filePath).split('.').pop()?.toLowerCase() || 'jpg'
-      const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+      const root = crmImagesRoot(app.getPath('userData'))
+      const check = resolveInsideRoot(root, String(filePath || ''))
+      if (!check.ok) return ''
+      if (!isRegularFile(check.path)) return ''
+      const buf = readFileSync(check.path)
+      const mime = detectImageMime(buf)
+      if (!mime) return ''
       return `data:${mime};base64,${buf.toString('base64')}`
     } catch { return '' }
   })
+  // H1 收口：保存目标严格位于 crm-images 下；文件名清洗后不得为空（空回退 img.jpg），
+  // 最终路径再过一次路径闸门（../、前缀碰撞、symlink 逃逸全拒绝）。
   ipcMain.handle('crm:file:saveImage', async (_, dataUrl: string, fileName: string) => {
-    const dir = join(app.getPath('userData'), 'crm-images')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    const b64 = String(dataUrl || '').includes(',') ? String(dataUrl).split(',')[1] : String(dataUrl)
-    const dest = join(dir, `${Date.now()}_${String(fileName || 'img.jpg').replace(/[^\w.\-]/g, '_')}`)
-    writeFileSync(dest, Buffer.from(b64, 'base64'))
-    return dest
+    try {
+      const dir = crmImagesRoot(app.getPath('userData'))
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const clean = sanitizeImageFileName(String(fileName || '')) || 'img.jpg'
+      const b64 = String(dataUrl || '').includes(',') ? String(dataUrl).split(',')[1] : String(dataUrl)
+      const check = resolveInsideRoot(dir, join(dir, `${Date.now()}_${clean}`))
+      if (!check.ok) return ''
+      writeFileSync(check.path, Buffer.from(b64, 'base64'))
+      return check.path
+    } catch { return '' }
   })
 
   // ── 单机线索流转：导入 / 列表 / 详情 / 状态流转 / 转客户 / SLA ──────────────
@@ -370,6 +387,28 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:lead:slaComplete', async (_, taskId: number) => completeLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:slaSkip', async (_, taskId: number) => skipLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:deadReasons', async () => DEFAULT_DEAD_REASONS)
+
+  // ── 单条录入 + 查重面板 + 历史分配导入（2026-09-19，宪法 §1.4/§3 登记行）─────────────
+  // 查重 = 输入即查（只读无审计）；create 硬拒收重复（E201 携带历史分配明细，前端三选一面板导航，
+  // 三选一全部不建新线索）；历史导入 = assignment 历史回填，sla1_deadline 强制 2100 哨兵（宪法 §3）。
+  // 角色可见性 = UI 门禁（与「导入线索」同口径，宪法 §1.12 角色仅署名，本地不新增强拦截）。
+  ipcMain.handle('crm:lead:dupCheck', async (_, input) => checkLeadDuplicate((input || {}) as { phone?: string; wechat?: string }))
+  ipcMain.handle('crm:lead:create', async (_, input) => createLead((input || {}) as { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }))
+  // 二维码图片：渲染层传选取文件的绝对路径，主进程复制进 userData/lead-qr/ 存图不解析（宪法 §3）
+  ipcMain.handle('crm:lead:qrSave', async (_, fileName: string, srcPath: string) => {
+    if (!srcPath) return { ok: false }
+    try {
+      const dir = join(app.getPath('userData'), 'lead-qr')
+      mkdirSync(dir, { recursive: true })
+      const ext = /\.(png|jpe?g|webp|gif)$/i.exec(String(fileName || ''))?.[1]?.toLowerCase() || 'png'
+      const dest = join(dir, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`)
+      copyFileSync(String(srcPath), dest)
+      return { ok: true, path: dest }
+    } catch { return { ok: false } }
+  })
+  ipcMain.handle('crm:lead:historyImport', async (_, fileName: string, rows) => importHistoricalAssignments(String(fileName || '粘贴文本'), Array.isArray(rows) ? rows : []))
+  // 撞客一期：重复组徽标匹配（只回对方归属人姓名，不回对方任何资料）
+  ipcMain.handle('crm:dupGroup:list', async () => listDupMatches())
 
   // ── 线索分配（Phase 1 完整版，API-CONTRACT §1.14 契约五端点，统一信封）──
   // actor 兜底链：显式 > 身份档案 getActorLabel() > 「分配员」（仅署名，宪法 §1.12）

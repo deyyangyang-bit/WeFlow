@@ -19,7 +19,7 @@ import { join } from 'path'
 import { crmDbService } from '../electron/services/crmDbService'
 import { salesDbService } from '../electron/services/salesDbService'
 import { importLeads, scanLeadSla, completeLeadFirstContact } from '../electron/services/crmLeadService'
-import { runFullScan, getUnifiedSignals } from '../electron/services/salesActionEngine'
+import { runFullScan, getUnifiedSignals, completeUnifiedSignal } from '../electron/services/salesActionEngine'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -63,16 +63,52 @@ async function main(): Promise<void> {
   crmDbService.update('lead', Number(leads[2].id), { first_contact_deadline: Date.now() - 3600_000 })
   const unified = await getUnifiedSignals()
   ok('1f getUnifiedSignals 纯读：第三条到期线索不出卡（F1 无扫描副作用）', slaCards().length === 2)
-  ok('1g 主卡流不含 lead: 首触卡（散任务只在右侧侧栏，避免重影）', !unified.signals.some((s: any) => String(s.sessionId).startsWith('lead:')))
+  // H5 修正：假阴性修复——旧断言只查 sessionId 前缀 lead:，但缺陷是无 session_id 的 sla_lead
+  // 卡被包装成 todo:<id> 进主卡流。现在按 sourceKind / 来源任务类型断言，两种形态都拦住。
+  ok('1g 主卡流不含 sla_lead 项目（按 sourceKind/trigger_type 断言，而非仅 sessionId 前缀）',
+    !unified.signals.some((s: any) => String((s as any).sourceKind || '') === 'sla_lead' ||
+      String(s.sessionId).startsWith('lead:')))
+  ok('1g-fix 无 session_id 的 SLA 卡不再包装成 todo:<id> 进入主卡流',
+    !unified.signals.some((s: any) => {
+      if (!String(s.sessionId || '').startsWith('todo:')) return false
+      const task = salesDbService.getTask(Number(String(s.sessionId).slice(5)))
+      return task && String(task.trigger_type) === 'sla_lead'
+    }))
   ok('1g2 显式 scanLeadSla 后第三条出卡（扫描行为本身仍有效，卡留在 todoList 散任务源）', scanLeadSla() === 1 && slaCards().length === 3)
 
-  // ── 闭环：完成 SLA 卡 → lead 置 CONTACTED ──────────────────────────────────
+  // ── H5 专项：直接调用 completeUnifiedSignal 完成/跳过 SLA 卡 → lead 回写链路 ──
+  // 修复前：completeUnifiedSignal 对 sla_lead 卡走普通 completeAction（只改卡状态，线索永不回写）。
+  const slaCard2 = slaCards().find((c) => Number(c.source_id) === Number(leads[1].id))
+  ok('2a 找到线索 2 的 SLA 卡', !!slaCard2?.id)
+  if (slaCard2?.id) {
+    const sid2 = String(slaCard2.session_id || `todo:${slaCard2.id}`)
+    completeUnifiedSignal(sid2, 'done', Number(slaCard2.id))
+    const lead2 = crmDbService.getById('lead', Number(leads[1].id))
+    ok('2b done：lead NEW→CONTACTED', String(lead2?.status) === 'CONTACTED')
+    ok('2c done：first_contacted_at 已写入', Number(lead2?.first_contacted_at || 0) > 0)
+    ok('2d done：lead_activity 写入 CONTACTED 流水',
+      crmDbService.all('SELECT id FROM lead_activity WHERE lead_id = ? AND action = ?', [Number(leads[1].id), 'CONTACTED']).length >= 1)
+    ok('2e done：卡不再 pending', !slaCards().some((c) => Number(c.id) === Number(slaCard2.id)))
+  }
+
+  const slaCard3 = slaCards().find((c) => Number(c.source_id) === Number(leads[2].id))
+  ok('2f 找到线索 3 的 SLA 卡', !!slaCard3?.id)
+  if (slaCard3?.id) {
+    const sid3 = String(slaCard3.session_id || `todo:${slaCard3.id}`)
+    completeUnifiedSignal(sid3, 'skipped', Number(slaCard3.id))
+    const lead3 = crmDbService.getById('lead', Number(leads[2].id))
+    ok('2g skipped：lead 保持 NEW', String(lead3?.status) === 'NEW')
+    ok('2h skipped：卡不再 pending', !slaCards().some((c) => Number(c.id) === Number(slaCard3.id)))
+    ok('2i skipped：线索无 first_contacted_at', Number(lead3?.first_contacted_at || 0) === 0)
+  }
+
+  // ── 闭环：TodoSidebar 专用完成路径（crm:lead:slaComplete 底层）继续工作 ──────
   const card = slaCards().find((c) => Number(c.source_id) === Number(leads[0].id))
   ok('1h 找到线索 1 的 SLA 卡', !!card)
   if (card?.id) {
     completeLeadFirstContact(Number(card.id))
     ok('1i 完成卡后 lead=CONTACTED', crmDbService.getById('lead', Number(leads[0].id))?.status === 'CONTACTED')
-    ok('1j 完成卡后卡不再是 pending', slaCards().length === 2)
+    ok('1j 完成卡后卡不再是 pending', slaCards().length === 0)
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
