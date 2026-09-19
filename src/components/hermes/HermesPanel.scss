@@ -40,7 +40,7 @@
   flex-direction: column;
   background: var(--color-bg-surface);
   border-left: 1px solid var(--color-border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-menu);
   transform: translateX(100%);
   transition: transform 0.24s ease;
 }
@@ -130,12 +130,13 @@
   gap: 8px;
 }
 
+// 推荐目标 chips：发丝行（surface 底 + 1px 描边 + 小圆角），hover 才 accent 描边
 .hermes-chip {
   text-align: left;
   padding: 10px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg-surface-muted);
+  border-radius: var(--radius-small);
+  background: var(--color-bg-surface);
   color: var(--color-text-primary);
   font-size: 13px;
   line-height: 1.45;
@@ -143,7 +144,7 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 
   &:hover {
-    background: var(--color-accent-bg);
+    background: var(--color-bg-hover);
     border-color: var(--color-accent-border);
   }
 }
@@ -165,13 +166,15 @@
   gap: 8px;
 }
 
+// 步骤行：去灰底块，发丝分隔（状态色只进图标）
 .hermes-step {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--color-bg-surface-muted);
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--color-divider);
+
+  &:last-child { border-bottom: none; }
 
   .hermes-step__icon {
     flex-shrink: 0;
@@ -183,7 +186,7 @@
   }
 
   .hermes-step__icon--error {
-    color: var(--danger);
+    color: var(--color-danger);
   }
 
   .hermes-step__icon--running {
@@ -240,30 +243,24 @@
   }
 }
 
-.hermes-panel__cancel {
-  padding: 6px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
+// 停止 / 换目标 / 让 Hermes 分析按钮外观交给共享 .btn--plain / .btn--quiet / .btn--primary-soft，这里不再另立皮肤
 
-  &:hover {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-}
-
+// 结果区：发丝分节；结论块走「左 2px accent 线 + 弱底」的依据块语法（同 .verdict__evi）
 .hermes-card {
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--color-bg-surface-muted);
+  border-top: 1px solid var(--color-divider);
+  padding: 10px 2px 0;
 
   &.hermes-card--summary {
-    background: var(--color-accent-bg);
-    border-color: var(--color-accent-border);
+    border-top: none;
+    border-left: 2px solid var(--color-accent-border);
+    background: var(--color-bg-surface-muted);
+    border-radius: 0 var(--radius-small) var(--radius-small) 0;
+    padding: 10px 12px;
+    margin-top: 2px;
+  }
+
+  &:not(.hermes-card--summary) {
+    margin-top: 10px;
   }
 
   .hermes-card__tag {
@@ -273,11 +270,16 @@
     letter-spacing: 0.04em;
   }
 
+  &.hermes-card--summary .hermes-card__tag {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+
   .hermes-card__text {
     margin: 0;
-    font-size: 14px;
+    font-size: 13.5px;
     color: var(--color-text-primary);
-    line-height: 1.55;
+    line-height: 1.6;
     overflow-wrap: anywhere;
   }
 
@@ -458,45 +460,7 @@
   }
 }
 
-.hermes-panel__go {
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  border: none;
-  border-radius: 9px;
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-
-  &:hover:not(:disabled) {
-    background: var(--color-accent-hover);
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-}
-
-.hermes-panel__new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 9px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-}
+// 发起 / 追问 / 换个目标按钮外观交给共享 .btn--primary-soft / .btn--quiet（上注），不另立皮肤
 
 .spin {
   animation: hermes-spin 1s linear infinite;

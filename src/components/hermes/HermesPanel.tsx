@@ -317,7 +317,7 @@ export default function HermesPanel() {
         {isRunning && (
           <div className="hermes-panel__footer hermes-panel__footer--acting">
             <span className="hermes-panel__footer-note">正在执行，完成后可继续追问</span>
-            <button className="hermes-panel__cancel" onClick={() => void handleCancel()}>停止</button>
+            <button className="btn btn--plain btn--sm hermes-panel__cancel" onClick={() => void handleCancel()}>停止</button>
           </div>
         )}
 
@@ -332,7 +332,7 @@ export default function HermesPanel() {
                 placeholder="例如：帮我分析这个客户下一步该怎么谈…"
                 disabled={starting}
               />
-              <button className="hermes-panel__go" onClick={() => void handleStart()} disabled={starting || !goal.trim()}>
+              <button className="btn btn--primary-soft hermes-panel__go" onClick={() => void handleStart()} disabled={starting || !goal.trim()}>
                 {starting ? <Loader2 size={14} className="spin" /> : '让 Hermes 分析'}
               </button>
             </div>
@@ -357,13 +357,13 @@ export default function HermesPanel() {
                 placeholder="继续追问…"
                 disabled={continuing}
               />
-              <button className="hermes-panel__go" onClick={() => void handleContinue()} disabled={continuing || !followUp.trim()}>
+              <button className="btn btn--primary-soft hermes-panel__go" onClick={() => void handleContinue()} disabled={continuing || !followUp.trim()}>
                 {continuing ? <Loader2 size={14} className="spin" /> : '让 Hermes 分析'}
               </button>
             </div>
             <div className="hermes-panel__footer-acts">
               <span className="hermes-panel__footer-note">追问沿用本任务上下文</span>
-              <button className="hermes-panel__new" onClick={() => { setTask(null); setStartError(''); setContinueError('') }}>
+              <button className="btn btn--quiet btn--sm hermes-panel__new" onClick={() => { setTask(null); setStartError(''); setContinueError('') }}>
                 <Undo2 size={13} />换个目标
               </button>
             </div>
