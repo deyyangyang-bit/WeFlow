@@ -63,7 +63,7 @@
 | `crm:customers` | — | `account[]` + `profile_stage` / `profile_display_name`（salesDb 联查） | R。副作用：首次调用回填「微信号格式名 → 微信备注」（幂等，WCDB 未连则重试） |
 | `crm:customer:profile` | `sessionId: string` | `{ success, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, currentView, activities } }` | R。sessionId 空 → `{ success:false, error }` |
 | `crm:customer:deepAnalysis` | `sessionId, displayName: string` | AI 七板块分析报告 | N（现场调 LLM，贵） |
-| `crm:customer:delete` | `id: number` | `boolean` | N。级联删 + 删前备份 `crm-backups/` |
+| `crm:customer:delete` | `id: number` | `{ ok, removed? }` | N。**单事务完整级联**（合同链复用既有合同删除语义 + 商机（事件先于商机删）/crm_risk/payment_promise/quote_signal/contact/shipping_info/alias_map/账户级 logistics/账户级 allocation），`payment_record` 原始到款事实按宪法 §3 保留，customer/customer_identity/lead（独立事实源）不误删（lead 仅解除 account_id 挂接）；任一步失败整体回滚；删前备份 `crm-backups/`；`removed` = 级联删除行数（子资源及其 activity_log 行，**不含 account 行自身**） |
 | `crm:account:ensure` | `name: string` | account（不存在则建） | U（按名 ensure） |
 | `crm:accounts:bySessions` | `sessionIds: string[]` | 会话 → account 映射 | R |
 | `crm:enrich:manualSet` | `accountId: number, field: string, value: string` | `boolean` | N。手动编辑并**锁定字段**（AI 不再覆盖，enrich_meta.locked） |
@@ -106,6 +106,11 @@
 | `crm:lead:slaComplete` | `taskId: number` | 完成（卡 done + lead→CONTACTED + 流水） | S |
 | `crm:lead:slaSkip` | `taskId: number` | 跳过 | S |
 | `crm:lead:deadReasons` | — | `DEFAULT_DEAD_REASONS` | R |
+| `crm:lead:dupCheck` | `{ phone?, wechat? }` | `{ duplicate, detail }`（kind=lead/customer/conflict + 当前归属 + assignment 历史 1:N） | R。输入即查只读无审计；口径同 importLeads 库内查重（2026-09-19） |
+| `crm:lead:create` | `{ source, phone?, wechat?, wxNickname?, qrPath?, note? }` | `{ ok, data.leadId }` / `{ ok:false, code:'E101'\|'E201', message, duplicate? }` | U。单条录入（宪法 §1.4 通道增补）：命中硬拒收 E201（三选一面板导航，全部不建新线索）；手机号必带 wx_nickname（2026-09-19 拍板）；入池 deadline=2100 哨兵 |
+| `crm:lead:qrSave` | `fileName: string, srcPath: string` | `{ ok, path? }` | U。二维码复制进 userData/lead-qr/，存图不解析（宪法 §3 lead.qr_path） |
+| `crm:lead:historyImport` | `fileName: string, rows: Array<{ contactType, contactValue, sales, assignedAt, endState?, source? }>` | `{ total, leadsCreated, leadsReused, assignmentsCreated, recycled, skipped[] }` | U。历史分配回填（宪法 §3 assignment 第 4 写者）：**sla1_deadline 强制 2100 哨兵**；幂等（已归属同销售/回收行已存在跳过） |
+| `crm:dupGroup:list` | — | `{ groupCount, leadMatches, customerMatches }`（命中键 → `{ mask, others[] }`，others = 对方归属人姓名） | R。撞客一期：中央下行 `duplicate_group` 投影（下行投影白名单）落 `crmDb.dup_group` 后的徽标匹配；**只回对方归属人姓名，不回对方任何资料** |
 
 ### 1.6 合同 / 报价 / 文档（10 通道）
 
@@ -122,7 +127,7 @@
 | `crm:contract:entryQuotation` | `data: { contract_id, items, creation_request_id }, scope` | `{ ok, id?, reason? }` | S。同合同同标识已存在报价版本则跳过创建；成功后 `persistNowStrict` 立即落盘 |
 | `crm:contract:byCreationRequest` | `requestId: string, scope` | 合同 \| null | R。标识格式非法（非 `^[a-zA-Z0-9-]{16,80}$`）直接返回 null；页面刷新后按库恢复未完成流程，**防重复的权威防线是这次查询而非本地草稿** |
 
-### 1.7 到款认领（allocation / payment，5 通道）
+### 1.7 到款认领（allocation / payment，7 通道）
 
 | 通道 | 请求参数 | 响应 | 幂等/备注 |
 |---|---|---|---|
@@ -131,6 +136,8 @@
 | `crm:payment:approve` | `id: number` | `boolean` | S |
 | `crm:payment:claim` | `id: number, patch: object` | 认领结果 | S。认领销售默认 `crm:currentSalesName` |
 | `crm:payments:byDay` | `days?: number` | 每日到款列表 | R |
+| `crm:allocation:reconcile` | `id: number` | `{ ok, reason? }` | S。财务显式核销；销售认领不会自动核销 |
+| `crm:allocation:invoiceRequirement` | `id: number, requirement: 'unknown' \| 'required' \| 'not_required' \| 'info_pending'` | `{ ok, reason? }` | S。订单/认领级开票需求，人工选择优先于客户默认偏好 |
 
 ### 1.8 物流（logistics，4 通道）
 
@@ -170,8 +177,8 @@
 | `crm:product:aiDesc` | `payload: object` | 产品描述文本 | N（LLM） |
 | `crm:product:aiExtract` | `template: string[], dataUrl: string` | 提取参数 JSON | N（LLM 视觉） |
 | `crm:alias:learn` | `alias: string, accountId: number` | `boolean` | U。别名学习 |
-| `crm:file:readImage` | `filePath: string` | data URL \| '' | R |
-| `crm:file:saveImage` | `dataUrl, fileName: string` | 落盘路径 | N |
+| `crm:file:readImage` | `filePath: string` | data URL \| '' | R。**只允许读 userData/crm-images 内的常规文件**；MIME 由 magic bytes 判定（JPEG/PNG/WebP，不信任扩展名）；拒绝（目录外/非常规文件/非图片内容/../、前缀碰撞、symlink 逃逸）一律返回 ''，不泄露目标是否存在 |
+| `crm:file:saveImage` | `dataUrl, fileName: string` | 落盘路径 \| '' | N。文件名清洗后不得为空（空回退 img.jpg），最终目标严格位于 crm-images 内（同上路径闸门） |
 | `crm:quotation:ai` | （见 §1.6） | | |
 
 ### 1.12 sales 域（47 通道，注册于 main.ts）
@@ -319,6 +326,49 @@
 | `crm:delivery:suggestDate` | `oppId: number` | `{ date, source } \| null` | — | R：签收日期建议（只读 Suggestion；真实写入必须经 register 人工确认） |
 | `crm:delivery:recomputeRepeat` | — | `number`（等级变化客户数） | — | U：全量重算复购等级，等级变化写 audit_event（customer_repeat_level_change） |
 
+### 1.16 配置白名单与秘密专用端点（2026-09-20 H2/H3 收口；注册于 main.ts）
+
+> 通用 `config:get` / `config:set` 建立白名单边界（真源 = `electron/services/rendererConfigPolicy.ts`）：
+> **秘密键**（`decryptKey` / `imageAesKey` / `imageXorKey` / `wxidConfigs` / `authPassword` / `authHelloSecret` /
+> `httpApiToken` / `aiModelApiKey` / `aiInsightApiKey`（旧）/ `centralSyncDeviceToken` / `aiInsightWeiboCookie`）
+> 在读写两个方向都**一律拒绝**——它们不进白名单，只经本节专用端点读写；**主进程托管状态键**
+> （`centralSyncWorkspaceId/EmployeeId/DeviceId/Role/DisplayName/LastError/LastErrorAt`）可读不可写；
+> 未知键读写都拒绝（读返回 undefined，写抛错）。秘密读取只回 `hasValue` / `maskedValue` 状态，
+> **已保存的完整秘密永不回传渲染层**；设置页编辑语义 =「留空表示不修改 + 显式清除」，掩码串不落库。
+
+| 通道 | 请求参数 | 响应 | 幂等/备注 |
+|---|---|---|---|
+| `secret:status` | — | `{ dbKey, imageXorKey, imageAesKey, httpApiToken, aiModelApiKey, weiboCookie }`（各 `{ hasValue, masked }`）+ `wxidConfigs: Record<wxid, { hasDecryptKey, hasImageXorKey, hasImageAesKey, updatedAt }>` | R。wxidConfigs 只以状态露出，**密钥面不出主进程** |
+| `secret:setDbKey` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setImageKeys` | `{ xorKey?: number\|null, aesKey?: string\|null }` | `{ imageXorKey, imageAesKey }`（各 `{ hasValue, masked }`） | U。`undefined` = 不修改；`null/0/''` = 清除 |
+| `secret:setHttpApiToken` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setAiModelApiKey` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setWxidConfig` | `wxid: string, patch: { decryptKey?, imageAesKey?, imageXorKey? }` | `{ hasDecryptKey, hasImageXorKey, hasImageAesKey, updatedAt }` | U。补丁语义：`undefined` = 不修改、`null/''` = 清除；主进程合并后整包加密落库 |
+| `secret:removeWxidConfig` | `wxid: string` | `{ ok, removed, undoToken? }` | U。删除该 wxid 全部配置（精确 + 归一化匹配）；撤销快照只在主进程内存（30min TTL，上限 20） |
+| `secret:undoRemoveWxidConfig` | `token: string` | `{ ok, restored }` | U。按 token 恢复主进程内存快照（密钥不经渲染层往返）；token 一次性 |
+| `account:switchTo` | `wxid: string` | `{ ok, reason? }` | U。**账号切换在主进程执行**：读该 wxid 已保存密钥 → 写全局密钥位 → 切业务库（enqueueSalesTask 串行）→ 失效 Hermes 能力；无配置拒绝；密钥不经过渲染层 |
+| `account:applySavedKey` | — | `{ hasDbPath, hasKey, myWxid, onboardingDone, appliedSavedKey }` | R。**自动连接前置判断**：wxidConfigs 中该账号的已保存密钥由主进程应用到全局密钥位，渲染层只拿非秘密状态 |
+| `secret:setTelegramToken` | `value: string` | `{ hasValue, masked }` | U（2026-09-20 P1a）。`''` = 清除；原值经 safeStorage 加密，读取只走 `secret:status.telegramToken` |
+| `secret:setWecomWebhook` | `value: string` | `{ hasValue, masked }` | U（P1a）。`''` = 清除；webhook 内含 key= 密钥，同上状态化读取 |
+| `serviceaddr:setAiModelBaseUrl` | `url: string` | `{ changed, url, credentialsCleared, apiKey }` | U（P0）。仅 http/https；生产远端强制 HTTPS（localhost/127.0.0.1/::1 开发例外，与中央客户端规则一致）；**地址变化原子清除 aiModelApiKey + 旧 aiInsightApiKey**，要求重新录入 Key；地址不变零副作用 |
+| `serviceaddr:setAiInsightBaseUrl` | `url: string` | `{ changed, url, credentialsCleared }` | U（P0）。地址变化原子清除 aiInsightApiKey |
+| `serviceaddr:setCentralSyncBaseUrl` | `url: string` | `{ changed, url, credentialsCleared }` | U（P0）。**地址变化原子清除 centralSyncDeviceToken 与全部绑定身份状态**（workspace/employee/device/role/displayName/lastError/**centralSyncEnabled**），要求重新绑定；含「baseUrl 为空但绑定字段残留」的历史脏数据场景；旧设备令牌永不发往新 origin（`centralsync:claim` 携带新 baseUrl 时同样先清旧凭据） |
+| `dbpath:setFromDialog` | `path: string` | `{ ok, path? }` / `{ ok:false, reason }` | U（P0）。路径必须在本会话经原生目录对话框批准（exportPathAuthorizer 会话授权），否则拒绝——dbPath 任意重定向口子关闭；`dbpath:autoDetect` 改为主进程检测成功后直接落库 |
+| `export:chooseRoot` | — | `{ canceled, ok?, path? }` | U（2026-09-20 P1b）。主进程弹目录对话框 → 会话授权 + **持久化授权根**（主进程托管 config 键 `exportAuthorizedRoots`，渲染层白名单外）+ 更新 exportPath 偏好；`sns:selectExportDir` 同语义 |
+| （边界声明） | — | — | 导出授权根恢复：重启后主进程从托管存储恢复并**重新验证**（存在 + 真实目录 + 非符号链接 + realpath 与批准时一致），失效根剔除并要求用户重新选择；**系统 Downloads 为内置授权根**（首次默认导出可用）；自动化导出只能落在持久授权根 / 内置根（或本会话新批准目录），未授权 outputDir 由 assertAllowed 在写入前明确拒绝；通用 config 里的 exportPath 仅是 UI 偏好展示，**不构成授权**。通用 `config:set` 对 `aiModelApiBaseUrl` / `aiInsightApiBaseUrl` / `centralSyncBaseUrl` / `dbPath` / `exportPath` 一律拒绝（rendererConfigPolicy.RESTRICTED_WRITE_CONFIG_KEYS） |
+
+> 应用锁密码/Hello 走既有 `auth:*` 通道并新增 `auth:setPasswordHash`（64hex 校验 + authEnabled 同写）与
+> `auth:setUseHello`；微博 Cookie 写入走既有 `social:saveWeiboCookie`（状态化读取经 `secret:status.weiboCookie`）。
+>
+> **导出 IPC 的用户批准路径闸门**（2026-09-20 H3 收口；真源 = `electron/services/exportPathAuthorizer.ts`）：
+> `chat:exportMyFootprint`、`groupAnalytics:exportGroupMembers`、`groupAnalytics:exportGroupMemberMessages`、
+> `export:exportSessions`、`export:exportContacts`、`sns:exportTimeline` 六个通道的输出目标必须是
+> **本次应用会话中由 Electron 原生 open/save dialog 返回并登记**的路径（`dialog:openFile` /
+> `dialog:openDirectory` / `dialog:saveFile` / `sns:selectExportDir` 在用户确认后登记；目录授权允许其内
+> 创建导出文件，文件授权只允许对应文件本身）。校验在真正写入前的主进程入口执行：`../`、路径前缀碰撞、
+> 已有符号链接、最近存在祖先 realpath 逃出授权真径一律抛错。授权保存在进程内存（24h TTL，上限 200，
+> 重启即清空），不做全局永久白名单。HTTP API（独立鉴权信任面）不套用本闸门。
+
 ---
 
 ## 2. 本机 HTTP 只读层（端点级；详情 = docs/HTTP-API.md）
@@ -410,7 +460,10 @@
 | `sync.push` 上行推送 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `sync.pull` 下行拉取 | ✅ | ✅ | ✅ | ✅ | ✅（只读） |
 | `sync.ack` 回执 | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `command.issue` 下发指令 | ❌ | ✅ | ✅ | ✅ | ❌ |
+| `command.assign` 分配/回收指令（assign/recycle） | ❌ | ✅ | ✅ | ✅ | ❌ |
+| `command.transfer` 移交/主管修正指令（transfer/supervisor_correction） | ❌ | ✅ | ❌ | ✅ | ❌ |
+| `command.permission` 权限变更指令（permission_change） | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `command.notify` SLA 升级通知（sla1_escalate_supervisor） | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `invite.create` 签发邀请码 | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `device.rotate` 轮换本机令牌 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `device.revokeSelf` 自助解绑 | ✅ | ✅ | ✅ | ✅ | ❌ |
@@ -441,7 +494,7 @@
 | 8 | POST | `/api/v1/sync/push` | Bearer | `sync.push` | 上行事件批推（≤100 条/批） |
 | 9 | GET | `/api/v1/sync/pull` | Bearer | `sync.pull` | 按游标拉取本设备下行事件 |
 | 10 | POST | `/api/v1/sync/ack` | Bearer | `sync.ack` | 下行事件回执（applied/conflict/invalid/retry） |
-| 11 | POST | `/api/v1/sync/commands` | Bearer | `command.issue` | 下发中央指令（归属/移交/回收/主管修正/权限变更） |
+| 11 | POST | `/api/v1/sync/commands` | Bearer | 按 eventType 细分（§3.2 指令域） | 下发中央指令：assign/recycle→`command.assign`；transfer/supervisor_correction→`command.transfer`；permission_change→`command.permission`；sla1_escalate_supervisor→`command.notify` |
 
 #### 3 邀请码签发
 

@@ -3259,3 +3259,102 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 - `dcf834e` fix: 移除 chatService 依赖
 - `38d7370` fix: 消息读取和会话过滤
 - `380dd40` fix: main.ts 多余括号
+
+## 2.117 权限矩阵拆分：command.issue → 四域指令能力位（2026-09-19）
+
+### 2.117.1 问题与根因
+
+权限矩阵审查发现越权漏洞：`/sync/commands` 仅有 `command.issue` 一个能力位（app.ts preHandler），
+而 `permissions.ts` 中 **allocator 与 supervisor 能力完全相同**，下行指令注册表（DOWN_COMMAND_SPECS）
+却含 `permission_change`（权限变更）与 `supervisor_correction`（主管修正）两类高危指令——
+**分配员可越权给自己/他人改角色**，与 PRD §3「权限变更归管理员」的矩阵意图不符。
+
+### 2.117.2 修复口径（方案 a：能力位按指令域拆分）
+
+- `command.issue` 拆为四域，映射登记在 `shared/centralDownCommand.ts` 每个指令 spec 的
+  `capability` 字段（单一事实源，中央下发端按 spec 查表鉴权，不在路由散落比较）：
+  `assign`/`recycle` → `command.assign`；`transfer`/`supervisor_correction` → `command.transfer`；
+  `permission_change` → `command.permission`；`sla1_escalate_supervisor` → `command.notify`；
+- 角色授予：allocator = assign+notify；supervisor = assign+transfer+notify；
+  admin = 全部四域；**sales = notify**（权限表 §三.6 本就声明 SLA 升级通知由持有分配行的设备
+  产生，销售机可上报 `sla1_escalate_supervisor`——此前 sales 无 command.issue，销售机产生的
+  升级通知经 /sync/commands 会被 403 丢弃，本次一并修复）；service 仍零指令域；
+- 鉴权点：`/sync/commands` handler 内按 `spec.capability` 检查（未登记类型仍由后置 E103 拒收，
+  不在鉴权位提前泄密）；`DownCommandSpec.capability` 为必填字段，新增指令类型漏配能力位 =
+  编译失败；
+- 迁移（升级当天自动生效，无需任何手工动作）：能力位由服务端 `employee.role` **实时派生**、
+  不落盘不进令牌，设备令牌/邀请码/绑定关系零操作；本地客户端不检查能力位、无需更新；
+  唯一行为变化 = 分配员/主管下发 `permission_change`、分配员下发 `supervisor_correction`
+  由 201 → 403（即本次要修的越权），assign/transfer/recycle/sla1 通知全部不变；
+  回滚 = 镜像 tag 回退（无 schema/数据变更）；
+- 文档同步：`docs/API-CONTRACT.md` §3.2 能力矩阵 + §端点表第 11 行；electron 两条注释
+  （centralSyncClient / centralSyncService）。
+
+### 2.117.3 验证
+
+- `central/test/app-test.ts` 新增 C13-C18：分配员发 supervisor_correction / permission_change
+  → 403；主管发 supervisor_correction → 201、发 permission_change → 403；管理员发
+  permission_change → 201；**销售发 sla1_escalate_supervisor → 201**（notify 域新断言）；
+  原 C1-C4/C11（recycle 域）语义不变全绿；
+- `central` typecheck + 全部测试通过；根目录 `npx tsc --noEmit` 零错误（shared 改动影响主工程）。
+
+## 2.118 单条录入 + 查重面板 + 历史分配导入（2026-09-19）
+
+### 2.118.1 需求拍板（用户 2026-09-19）
+
+- 新增线索表单：**去掉姓名**（客户可能没留）；手机号/微信号**二选一必填**（可都填→both）；可能留**微信二维码**（存图不解析）；**填手机号必须同步填微信昵称**（加好友人工核对锚点）；
+- 录入时**必须显示分配过给谁**：输入即查重，命中强制三选一（联系原销售/走移交/复购归并），三者都不建新线索；
+- 历史客户分配情况导入：**SLA 哨兵强制 2100**（历史行永不参与 SLA 计时）；
+- 入口仅主管/分配员可见（UI 门禁 `!salesView`，与「导入线索」同口径；宪法 §1.12 角色仅署名，本地不新增强拦截）。
+
+### 2.118.2 实现
+
+- **宪法先行**（§1.4 写入者增补 + §3 三个登记行）：`lead.wx_nickname`（人工核对锚点，永不参与自动好友判定，§2.4 铁律不变）/ `lead.qr_path`（存图不解析，userData/lead-qr/）/ assignment 第 4 写者（历史导入通道，哨兵铁律入宪）；幂等 ALTER 加列（crmDbService 双路径模式）；
+- **服务层**（crmLeadService）：`checkLeadDuplicate`（双标识跨 contact_type 实时查重，口径同 importLeads：先正式客户后线索池，conflict 待人工；命中返回当前归属 + assignment 历史 1:N）、`createLead`（E101 参数校验 / E201 硬拒收重复 + UNIQUE 索引兜底；contact_type both 落库口径同导入；入池 deadline=2100 哨兵）、`importHistoricalAssignments`（claimed/recycled 状态回填 + ownership_history（仅 active 归属变化）+ lead_activity `ASSIGN_HISTORY` + audit_event 批次汇总；**sla1_deadline 强制哨兵**；幂等：active 已归属同销售 / recycled 行已存在均跳过）；
+- **IPC**：`crm:lead:dupCheck / create / qrSave / historyImport` 四通道（API-CONTRACT §1.5 增补；qrSave 复制文件进 userData/lead-qr/）；
+- **UI**（CrmLeadPage）：工具栏「新增线索」「导入历史分配」两按钮（`!salesView`）；录入表单（渠道下拉/手机号/微信号/微信昵称条件必填/二维码/备注）+ 手机号/微信号 blur 即查重 + 查重面板（归属/状态/分配历史表格 + 三选一按钮）；历史导入粘贴框（`联系方式,销售,分配时间[,结束状态][,渠道]` 逐行解析）+ 结果/跳过明细展示。
+
+### 2.118.3 验证
+
+- `npm run test:lead-entry`（scripts/crm-lead-entry-test.ts）：24/24 通过——创建落库/哨兵/昵称必填/格式校验/both 命中/历史导入哨兵铁律/SLA 扫描不回收历史行/幂等跳过/非法行明细全覆盖；
+- `npx tsc --noEmit` 零错误（renderer + electron 主进程）。
+
+## 2.119 撞客方案一期：重复组登记 + 下行投影 + 「重复」徽标（2026-09-19）
+
+### 2.119.1 需求（用户 2026-09-19）
+
+① 中央在身份锚点冲突（`identity_anchor_conflict`）时，除 `sync_entity_conflict` 审计外登记
+「重复组」投影（身份哈希 + 双方客户引用 + 各自归属销售，**不含聊天内容**）；② 重复组进中央
+下行投影白名单随同步下发各端；③ 客户端在线索/客户行渲染「重复」徽标，点开**只显示
+「与同事某某的客户重复」（对方归属人姓名），不显示对方任何资料**；④ 沿用现有 token 与组件类。
+
+### 2.119.2 实现
+
+- **入宪先行**（§3.1 登记行 + 新增「下行投影白名单」条款）：`duplicate_group` = 第 11 实体、
+  **中央自产**（设备永不上行，上行会命中归属/身份闸门）；表 `central_duplicate_group`（标准投影
+  形态：(workspace_id, entity_id) 主键 + aggregate_version + source_device_id + deleted；
+  entity_id = `dupgroup:<anchor_type>:<anchor_hash>` 业务键 + 锚点唯一索引）。
+- **中央**：`shared/centralSync` 增 `duplicate_group` 实体 + `DOWN_PROJECTION_ENTITY_TYPES`
+  下行投影白名单（与下行指令互斥：投影是事实通告，不走 `validateDownCommand` /
+  `applyDownEventDirect`）；`projections.ts` 注册表补 `duplicate_group` 项（required:
+  anchorType/anchorHash/membersJson/memberCount）；`migrations/003_duplicate_group.sql`；
+  `postgresStore.registerDuplicateGroup`（身份锚点冲突分支单点调用，独立连接不随被拒事件
+  savepoint 回滚；组行 upsert + 广播下行事件，**幂等键含成员数**——成员不变不重发，第三位
+  成员进组自动重新广播）；`memoryStore` 同构实现 + `dupGroupRows()` 测试视图。
+- **客户端**：`centralSyncService.pullAndApply` 对 `entityType==='duplicate_group'` 分流（ack
+  applied/invalid，不进指令链）；新服务 `crmDupGroupService`——`applyDupGroupEvent` 落地
+  `crmDb.dup_group`（ENTITIES 白名单已登记；member_count 单调防晚到旧事件回退）+
+  `listDupMatches`（本机联系方式用与上行投影同一 `identityHash` 算法锚定到组；线索行按
+  contact_type 双锚点、客户卡按 account.phone + custom_fields 内嵌 wxid；others = 成员
+  ownerSales 过滤本机署名）；IPC `crm:dupGroup:list`；CrmLeadPage 线索行 +
+  CustomerWorkspacePage 客户队列行渲染 `.tag.tag--insight`「重复」徽标（既有组件类 +
+  warning token），点击行内展开「与同事某某的客户重复」，无新增设计 token、无造假数据。
+
+### 2.119.3 验证
+
+- central 全套：app 172（新增 I17–I21：冲突登记重复组 / 广播可见 / 成员=双方引用+归属销售 /
+  锚点哈希一致 / 无禁出字段 / 幂等不重发）、projection 36、migration 23（B2–B4 标准投影形态）、
+  context 6、build-guard 8 —— 全绿；
+- 客户端 `npm run test:dup-group`（scripts/crm-dup-group-test.ts）14/14：落地/校验拒收/单调
+  防回退/三方组/徽标匹配/对方姓名过滤/无对方资料字段；
+- 根 `npx tsc --noEmit` 零错误。
