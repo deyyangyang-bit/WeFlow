@@ -84,8 +84,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
   ok('b3 空态「都处理完了」+ 引导（屏 2）', pageSrc.includes('都处理完了') && pageSrc.includes('今日行动'))
   ok('b4 搜索态：无关键词不渲染全量列表（searchActive 门控）',
     pageSrc.includes('searchActive') && pageSrc.includes('搜客户名 / 公司'))
-  ok('b5 抽屉头部按钮 5→2 + AI 工具下拉（补全/深度分析/报价收编）',
-    pageSrc.includes('AI 工具 ▾') && pageSrc.includes('cws-aitools__item')
+  ok('b5 抽屉动作行 + AI 工具扁平清单（AI 补全/深度分析/AI 报价/Hermes，动态箭头折叠）',
+    pageSrc.includes('AI 工具 {showAiTools') && pageSrc.includes("aria-expanded={showAiTools}")
+    && (pageSrc.match(/cws-aitools__item/g) || []).length >= 5
+    && pageSrc.includes('AI 报价') && pageSrc.includes('让 Hermes 分析')
     && !pageSrc.includes('onClick={() => void runEnrichOne(selectedCustomer)} disabled={!selectedCustomer.session_id}><Sparkles size={13} /> AI 补全</button>\n              <button'))
   ok('b6 卡面「AI 深度分析」按钮撤除', !pageSrc.includes('AI 深度分析</button>'))
   ok('b7 时间线/画像/业务默认折叠（fold 状态三件套）',
@@ -93,8 +95,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
     && pageSrc.includes("useState(false)") && pageSrc.includes('cws-fold'))
   ok('b8 深链三协议保留（?id= / ?sid= / ?stage=）',
     pageSrc.includes("searchParams.get('id')") && pageSrc.includes("searchParams.get('sid')") && pageSrc.includes("searchParams.get('stage')"))
-  ok('b9 verdict 置顶（AI 当前判断块在抽屉内容区最上）',
-    pageSrc.indexOf('cws-verdict') > -1 && pageSrc.indexOf('cws-verdict') < pageSrc.indexOf('跟进待办'))
+  ok('b9 本机判断四格置顶（判断区先于跟进待办出现，共用 .side-block 节奏）',
+    pageSrc.includes('本机判断') && pageSrc.includes('className="verdicts"') &&
+    pageSrc.indexOf('本机判断') < pageSrc.indexOf('跟进待办'))
   ok('b10 处理成功即从队列移除（乐观移除 dismissed）', pageSrc.includes('dismissed') && pageSrc.includes('handleComplete'))
   ok('b11 主按钮 handler 复用（openChat/handleComplete→completeSignal/handleInfo→applyInfo）',
     pageSrc.includes('openChat(it.customer)') && pageSrc.includes('void handleComplete(it)')
@@ -104,11 +107,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
   ok('b12 buildActionQueue 抽到可测位置（独立纯函数模块，零 react/electron 依赖）',
     utilSrc.includes('export function buildActionQueue') && !utilSrc.includes('react') && !utilSrc.includes('electron'))
 
-  // 零硬编码 hex：新增 scss 类块（从简化改版注释起）
+  // 零硬编码 hex：整份 stylesheet 只用 --color-* / --radius-* / --font-* 语义变量族
   const scssSrc = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.scss'), 'utf-8')
-  const newBlock = scssSrc.slice(scssSrc.indexOf('客户工作台简化改版'))
-  ok('b13 新 scss 零硬编码 hex（--color-* 族）', newBlock.includes('var(--color-') && !/#[0-9a-fA-F]{3,8}\b/.test(newBlock))
-  ok('b14 pill 五语义类齐备', ['--blue', '--amber', '--success', '--danger', '--neutral'].every((c) => newBlock.includes(`&${c}`)))
+  ok('b13 scss 零硬编码 hex（--color-* 语义变量族，全文件）',
+    scssSrc.includes('var(--color-') && !/#[0-9a-fA-F]{3,8}\b/.test(scssSrc))
+  ok('b14 行内状态标记语义类齐备（follow/insight 发丝边两档；阶段 pill 走共享 main.scss 体系）',
+    scssSrc.includes('.cws-q__tag--follow') && scssSrc.includes('.cws-q__tag--insight') &&
+    pageSrc.includes('stagePillClass'))
 
   // owner 过滤（任务四）：HEAD 已含 filterByOwner → 队列与搜索继承（customers 源头过滤）
   ok('b15 队列与搜索继承 owner 过滤（customers 在 fetchAll 已 filterByOwner）',
@@ -118,13 +123,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
   // ─── c. 搜索结果分页 + follow 卡「完成待办」次级入口（§2.75 前端遗留四项 ①②）────
   {
     const src2 = readFileSync(join(ROOT, 'src/pages/CustomerWorkspacePage.tsx'), 'utf-8')
-    ok('c1 搜索态结果表接 SearchTable 骨架（合同工作台试点复用）',
-      src2.includes("import SearchTable, { type SearchTableColumn } from '../components/crm/SearchTable'") && src2.includes('<SearchTable'))
-    ok('c2 每页 10 条 + 受控分页（page/onPageChange/searchPage）',
-      src2.includes('pageSize={10}') && src2.includes('page={searchPage}') && src2.includes('onPageChange={setSearchPage}'))
+    ok('c1 搜索态结果为概念稿自绘索引表（cws-ix 表头列 + 行级发丝结构，不再复用 SearchTable）',
+      src2.includes('className="thead cws-ix"') && src2.includes('cws-ix--row'))
+    ok('c2 索引分页受控（INDEX_PAGE_SIZE 切片 + 上一页/下一页 setSearchPage + 页码摘要）',
+      src2.includes('INDEX_PAGE_SIZE') &&
+      src2.includes('searchResults.slice((indexPage - 1) * INDEX_PAGE_SIZE, indexPage * INDEX_PAGE_SIZE)') &&
+      src2.includes('setSearchPage(indexPage - 1)') && src2.includes('setSearchPage(indexPage + 1)') &&
+      src2.includes('第 {indexPage} / {indexTotalPages} 页'))
     ok('c3 搜索/阶段筛选变化回第 1 页', /useEffect\(\(\) => \{ setSearchPage\(1\) \}, \[searchKw, stageFilter\]\)/.test(src2))
-    ok('c4 空态文案保留（无匹配客户）', src2.includes('emptyText="无匹配客户"'))
-    ok('c5 结果行可点开档案（onRowClick→openCustomer）', src2.includes('onRowClick={(c) => void openCustomer(c)}'))
+    ok('c4 空态文案保留（无匹配客户）', src2.includes('cws-ix__empty') && src2.includes('无匹配客户'))
+    ok('c5 结果行可点开档案（行 onClick → openCustomer）', src2.includes('onClick={() => void openCustomer(c)}'))
 
     ok('c6 follow 卡次级入口「完成待办」（task 源解析 pendingTodoIdOf）',
       src2.includes('pendingTodoIdOf') && src2.includes("s.type === 'task'") && src2.includes('rawTaskId'))

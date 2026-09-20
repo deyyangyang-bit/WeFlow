@@ -43,7 +43,11 @@ async function main(): Promise<void> {
   const r = crmDbService.importCustomerFromProfile({ name: '李经理', sessionId: 'wx_new', stage: '已报价' })
   const oldAcc = crmDbService.getById('account', idOld)
   ok('C1 同名不同 session 仍合并到同一客户（幂等导入语义）', !r.created && r.id === idOld)
-  ok('C2 合并时联动列更新不覆盖已有 session_id', oldAcc?.session_id === 'wx_old' && oldAcc?.sales_stage === '已报价')
+  ok('C2 合并时联动列更新不覆盖已有 session_id', oldAcc?.session_id === 'wx_old')
+  ok('C2b 阶段单调推进：谈判中收到已报价不回退（effectiveStage 停留 negotiating）',
+    r.effectiveStage === 'negotiating' && oldAcc?.sales_stage === '谈判中')
+  ok('C2c 返回阶段裁决：stageChanged=false + regression-blocked',
+    r.stageChanged === false && r.stageDecisionReason === 'regression-blocked')
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
   if (fail > 0) process.exit(1)

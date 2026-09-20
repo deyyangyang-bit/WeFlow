@@ -44,10 +44,15 @@ async function main(): Promise<void> {
   // 未绑定合同 → creditedTotal 为 0（断点 1 复现）
   ok('1b 未绑定合同 creditedTotal=0', crmDbService.creditedTotal(contractId) === 0)
 
-  // 确认并绑定合同 → creditedTotal 上涨
-  const confirmRes = crmDbService.confirmAllocation(allocIds[0], { contract_id: contractId })
-  ok('1c 确认绑定成功', confirmRes.ok)
-  ok('1d 绑定后 creditedTotal=7600', crmDbService.creditedTotal(contractId) === 7600)
+  // 确认并绑定合同 → 认领≠核销：确认后 reconciliation_status 仍为 pending，显式核销后才计入 creditedTotal
+  const confirmRes = crmDbService.confirmAllocation(allocIds[0], { account_id: accountId, contract_id: contractId })
+  ok('1c 确认绑定成功（显式选择合同 → linked=true）', confirmRes.ok && confirmRes.linked === true)
+  const confirmedAlloc = crmDbService.getById('allocation', allocIds[0])
+  ok('1c2 确认后 status=confirmed 且 reconciliation_status 仍为 pending（认领≠核销）',
+    String(confirmedAlloc?.status ?? '') === 'confirmed' && String(confirmedAlloc?.reconciliation_status ?? '') === 'pending')
+  ok('1d 认领未核销前 creditedTotal=0（confirmAllocation 不直接计入回款）', crmDbService.creditedTotal(contractId) === 0)
+  ok('1d2 显式财务核销成功', crmDbService.reconcileAllocation(allocIds[0]).ok)
+  ok('1d3 核销后 creditedTotal=7600', crmDbService.creditedTotal(contractId) === 7600)
   ok('1e 已确认归属不再出现在待确认队列', crmDbService.pendingAllocations().length === 0)
 
   // ── 2 签约状态机 ───────────────────────────────────────────────────────────
@@ -63,8 +68,20 @@ async function main(): Promise<void> {
   const ghost = crmDbService.activeContractForAccount(999999)
   ok('3b 无合同返回 null', ghost === null)
 
-  // ── 4 发货卡点（全款到账才发货）────────────────────────────────────────────
-  // 新合同金额 10000，先绑 7600 → 缺口 2400 拒发；补 2400 → 放行
+  // ── 4 发货卡点（核销分离语义：creditedTotal 只计已核销金额）─────────────────
+  // 4a 未核销拒发：归属已确认但未财务核销 → creditedTotal=0 → 全额缺口拒发
+  const unreconciledContractId = crmDbService.create('contract', {
+    account_id: accountId, name: '未核销拒发合同', amount: 5000, status: 'pending_sign',
+    created_at: Date.now(), updated_at: Date.now()
+  })
+  crmDbService.signContract(unreconciledContractId)
+  const pay0 = crmDbService.createPaymentRecord({ payer: '上海普绿包装制品有限公司', amount_net: 5000, pay_channel: 'bank_direct', created_at: Date.now() })
+  const alloc0 = crmDbService.addAllocations(pay0, [{ customerHint: '上海普绿包装制品有限公司', salesHint: '许丽娟', amountHint: 5000 }])
+  crmDbService.confirmAllocation(alloc0[0], { account_id: accountId, contract_id: unreconciledContractId })
+  const shipUnrec = crmDbService.shipContract(unreconciledContractId)
+  ok('4a 未核销时拒绝发货（确认≠核销，creditedTotal 仍为 0）',
+    !shipUnrec.ok && shipUnrec.reason === '未全款到账' && crmDbService.creditedTotal(unreconciledContractId) === 0)
+  // 4a2 部分核销缺口：合同金额 10000，核销 7600 → 缺口 2400 拒发；补核销 2400 → 放行
   const gapContractId = crmDbService.create('contract', {
     account_id: accountId, name: '上海普绿-大额合同', amount: 10000, status: 'pending_sign',
     created_at: Date.now(), updated_at: Date.now()
@@ -72,13 +89,16 @@ async function main(): Promise<void> {
   crmDbService.signContract(gapContractId)
   const pay2 = crmDbService.createPaymentRecord({ payer: '上海普绿包装制品有限公司', amount_net: 7600, pay_channel: 'bank_direct', created_at: Date.now() })
   const alloc2 = crmDbService.addAllocations(pay2, [{ customerHint: '上海普绿包装制品有限公司', salesHint: '许丽娟', amountHint: 7600 }])
-  crmDbService.confirmAllocation(alloc2[0], { contract_id: gapContractId })
+  crmDbService.confirmAllocation(alloc2[0], { account_id: accountId, contract_id: gapContractId })
+  ok('4a2-1 第二笔认领未核销时不计入（ creditedTotal 仍为 0）', crmDbService.creditedTotal(gapContractId) === 0)
+  crmDbService.reconcileAllocation(alloc2[0])
   const shipReject = crmDbService.shipContract(gapContractId)
-  ok('4a 全款未到齐拒发货并返回缺口', !shipReject.ok && shipReject.gap === 2400)
+  ok('4a2 部分核销 7600/10000 拒发货并返回正确缺口 2400', !shipReject.ok && shipReject.gap === 2400)
   const pay3 = crmDbService.createPaymentRecord({ payer: '上海普绿包装制品有限公司', amount_net: 2400, pay_channel: 'bank_direct', created_at: Date.now() })
   const alloc3 = crmDbService.addAllocations(pay3, [{ customerHint: '上海普绿包装制品有限公司', salesHint: '许丽娟', amountHint: 2400 }])
-  crmDbService.confirmAllocation(alloc3[0], { contract_id: gapContractId })
-  ok('4b 全款到齐后发货放行', crmDbService.shipContract(gapContractId).ok)
+  crmDbService.confirmAllocation(alloc3[0], { account_id: accountId, contract_id: gapContractId })
+  crmDbService.reconcileAllocation(alloc3[0])
+  ok('4b 全额核销后发货放行', crmDbService.shipContract(gapContractId).ok)
   ok('4c 发货后不可回退', crmDbService.shipContract(gapContractId).ok === false)
   ok('4d 发货后不可签约', crmDbService.signContract(gapContractId).ok === false)
 
@@ -163,7 +183,9 @@ async function main(): Promise<void> {
   const imp1b = crmDbService.importCustomerFromProfile({ name: '苏州鼎盛机械有限公司', sessionId: 'wxid_suzhou', stage: 'quoted' })
   ok('7b 重复导入幂等（不新建）', !imp1b.created && imp1b.id === imp1.id)
   const acc = crmDbService.getById('account', imp1.id)
-  ok('7c 联动列已写（session_id/stage）', acc?.session_id === 'wxid_suzhou' && acc?.sales_stage === 'quoted')
+  ok('7c 联动列：session_id 已写；阶段单调推进——negotiating 收到 quoted 不回退',
+    acc?.session_id === 'wxid_suzhou' && acc?.sales_stage === 'negotiating' &&
+    imp1b.stageChanged === false && imp1b.stageDecisionReason === 'regression-blocked' && imp1b.effectiveStage === 'negotiating')
   // 同名不同 session → 匹配已有客户（同人）
   const imp2 = crmDbService.importCustomerFromProfile({ name: '苏州鼎盛机械有限公司', sessionId: 'wxid_suzhou2', stage: 'contacted' })
   ok('7d 同名字匹配已存在客户', !imp2.created && imp2.id === imp1.id)
@@ -174,10 +196,11 @@ async function main(): Promise<void> {
   })
   const pay4 = crmDbService.createPaymentRecord({ payer: '苏州鼎盛机械有限公司', amount_net: 5000, pay_channel: 'bank_direct', created_at: Date.now() })
   const alloc4 = crmDbService.addAllocations(pay4, [{ customerHint: '苏州鼎盛机械有限公司', salesHint: '许丽娟', amountHint: 5000 }])
-  crmDbService.confirmAllocation(alloc4[0], { contract_id: accContract })
+  crmDbService.confirmAllocation(alloc4[0], { account_id: imp1.id, contract_id: accContract })
+  ok('7f1 显式核销后聚合才计入', crmDbService.reconcileAllocation(alloc4[0]).ok)
   const custRow = crmDbService.customers().find((x) => x.id === imp1.id)
   ok('7e 聚合合同数=1', Number(custRow?.contract_count) === 1)
-  ok('7f 聚合累计回款=5000', Number(custRow?.credited_total) === 5000)
+  ok('7f 聚合累计回款=5000（核销后才计入）', Number(custRow?.credited_total) === 5000)
   const impAct = crmDbService.activityBy('account', imp1.id)
   ok('7g 导入写入 activity', impAct.some((a) => a.action === 'imported'))
 
@@ -233,8 +256,14 @@ async function main(): Promise<void> {
   const payB = crmDbService.createPaymentRecord({ payer: '自动挂合同测试客户', amount_net: 1000, pay_channel: 'bank_direct', created_at: Date.now() })
   const ab = crmDbService.addAllocations(payB, [{ customerHint: '自动挂合同测试客户', salesHint: '', amountHint: 1000 }])
   const crRes = crmDbService.confirmAllocation(ab[0], { account_id: accX })
-  ok('10d 确认时自动挂客户合同', crRes.ok && crRes.linked === true)
-  ok('10e 归属已关联合同', Number(crmDbService.getById('allocation', ab[0])?.contract_id) === cx)
+  ok('10d 未显式选合同 → 不自动猜挂最近合同（linked=false）', crRes.ok && crRes.linked === false)
+  ok('10e 归属未关联合同（contract_id 为空）', crmDbService.getById('allocation', ab[0])?.contract_id == null)
+  // 显式传入 contract_id 时才建立合同关联
+  const payB2 = crmDbService.createPaymentRecord({ payer: '自动挂合同测试客户', amount_net: 800, pay_channel: 'bank_direct', created_at: Date.now() })
+  const ab2 = crmDbService.addAllocations(payB2, [{ customerHint: '自动挂合同测试客户', salesHint: '', amountHint: 800 }])
+  const crRes2 = crmDbService.confirmAllocation(ab2[0], { account_id: accX, contract_id: cx })
+  ok('10d2 显式传入 contract_id → linked=true（合同关联正确）', crRes2.ok && crRes2.linked === true)
+  ok('10e2 归属已关联合同', Number(crmDbService.getById('allocation', ab2[0])?.contract_id) === cx)
 
   const e1 = crmDbService.ensureAccount('去重测试客户')
   const e2 = crmDbService.ensureAccount('去重测试客户')
@@ -260,20 +289,22 @@ async function main(): Promise<void> {
   // ── 12 展示层简化（设计稿 docs/UI设计稿-四页简化.html 屏 3）：静态断言 ──
   {
     const src = readFileSync(join(__dirname, '..', 'src/pages/CrmWorkbenchPage.tsx'), 'utf8')
-    ok('12a 顶部统计卡收成一行小字（crm-kpi-line：本月到账/待签/预警；预警非零 is-hot 红色）',
-      /className="crm-kpi-line"/.test(src) && /stats\.monthPaid/.test(src) &&
-      /pendingSignCount/.test(src) && /warningCount/.test(src) &&
-      /warningCount > 0 \? 'is-hot' : ''/.test(src))
+    ok('12a KPI 行降权为一行 mono 小字（crm-dash-row/crm-meta-line：客户+管道；四格副行带待签/预警）',
+      src.includes('className="crm-dash-row"') && src.includes('crm-meta-line') &&
+      src.includes('CONTRACT_STATUS_MAP[p.status]') &&
+      src.includes('pendingSignCount') && src.includes('warningCount') && src.includes('有预警 ${warningCount} 份'))
     ok('12b 待签/预警计数走销售视角名单（myWorkbench = filterByOwner 后），本月到账沿用 statsOverview 口径',
       /myWorkbench\.filter\(\(c: any\) => c\.status === 'pending_sign'\)/.test(src) &&
       /myWorkbench\.filter\(\(c: any\) => c\.warning\)/.test(src) &&
       /filterByOwner\(workbench, identity\)/.test(src))
-    ok('12c 数据看板折叠区默认收起（dashboardOpen useState(false)：2 图 + AI 准确率 + 原 4 统计卡原样折叠保留，零删除）',
+    ok('12c 数据看板折叠区默认收起（dashboardOpen useState(false)：到款趋势/阶段分布两图 + AI 准确率卡折叠保留，零删除）',
       /const \[dashboardOpen, setDashboardOpen\] = useState\(false\)/.test(src) &&
-      /数据看板（到款趋势 \/ 客户阶段分布 \/ AI 准确率）/.test(src) &&
-      /crm-stats-row/.test(src) && /crm-overview-charts/.test(src) &&
+      /className="crm-fold"/.test(src) && /crm-fold__state/.test(src) &&
+      /title="到款趋势 \/ 客户阶段分布 \/ AI 准确率"/.test(src) &&
+      /crm-overview-charts/.test(src) &&
       /paidTrendOption && <ReactECharts/.test(src) && /stageDistOption && <ReactECharts/.test(src) &&
-      src.indexOf('crm-kpi-line') < src.indexOf('crm-fold') && src.indexOf('crm-fold') < src.indexOf('dashboardOpen && ('))
+      src.includes('近 8 周到款趋势') && src.includes('客户阶段分布') && src.includes('AI 准确率') &&
+      src.indexOf('crm-stats') < src.indexOf('crm-dash-row') && src.indexOf('crm-dash-row') < src.indexOf('dashboardOpen && ('))
     ok('12d 合同列表 + 子资源四块不动（SearchTable/全款进度列/报价单/发票/回款归属/物流）',
       /<SearchTable/.test(src) && /全款进度/.test(src) && /报价单/.test(src) &&
       /发票/.test(src) && /回款归属/.test(src) && /物流/.test(src))
