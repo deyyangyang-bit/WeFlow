@@ -658,9 +658,11 @@ class SalesDbService {
   }
 
   /**
-   * 执行查询并返回所有行（对象数组）
+   * 执行查询并返回所有行（对象数组）。
+   * 2026-09-20 S3：由 private 放宽为 public——annualReviewService 以本服务实例作为
+   * SqlQueryRunner 注入 S2 窄加载器（静态 SQL、参数绑定），避免复制第二套查询入口。
    */
-  private all<T>(sql: string, params: unknown[] = []): T[] {
+  all<T>(sql: string, params: unknown[] = []): T[] {
     const db = this.getDb()
     const stmt = db.prepare(sql)
     stmt.bind(params as any[])

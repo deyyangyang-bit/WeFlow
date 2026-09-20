@@ -594,6 +594,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // 年度经营复盘（S3：确定性统计报告与生成编排；旧 annualReport:* 通道保持原样、互不混用）
+  annualReview: {
+    getAvailableYears: () => ipcRenderer.invoke('annualReview:getAvailableYears'),
+    generate: (year: number) => ipcRenderer.invoke('annualReview:generate', { year }),
+    getReport: (year: number) => ipcRenderer.invoke('annualReview:getReport', { year }),
+    cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', taskId),
+    onProgress: (callback: (payload: {
+      taskId: string
+      year: number
+      phase: 'loading' | 'computing' | 'completed' | 'failed'
+      progress: number
+      statusText?: string
+      done: boolean
+      error?: { code: string; message: string }
+    }) => void) => {
+      ipcRenderer.on('annualReview:progress', (_, payload) => callback(payload))
+      return () => ipcRenderer.removeAllListeners('annualReview:progress')
+    }
+  },
+
   // 导出
   export: {
     exportSessions: (sessionIds: string[], outputDir: string, options: any, controlOptions?: { taskId?: string }) =>

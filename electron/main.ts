@@ -71,7 +71,12 @@ import { judgeAndImportCrmCustomer, backfillImportFromInsightRecords, collectInt
 import { enrichCustomer } from './services/crmEnrichService'
 import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
-import { migrateLegacyBusinessDbs } from './services/businessDbPath'
+import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbPath'
+import { AnnualReviewService, type AnnualReviewAccountContext } from './services/annualReviewService'
+import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
+import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
+import { validateAnnualReviewYearInput } from './services/annualReviewReport'
+import { onAssignmentInvalidated } from './services/assignmentInvalidationBus'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFirstClassifyScheduler } from './services/crmFirstClassifyService'
@@ -814,6 +819,60 @@ const normalizeAnnualReportYearsSnapshot = (snapshot: AnnualReportYearsProgressP
 const buildAnnualReportYearsCacheKey = (dbPath: string, wxid: string): string => {
   return `${String(dbPath || '').trim()}\u0001${String(wxid || '').trim()}`
 }
+
+// ─── 年度经营复盘（S3）：主进程编排 + 账号作用域缓存 + Worker 纯统计 ─────────
+// 数据库访问只在主进程服务边界内（salesDb/crmDb/wcdb 既有单例）；Worker 只接收可序列化的
+// 窄事实。排除名单取现有真实来源（reportExcludedSessions + crmInternalList）。
+// WCDB 重连/切号与部分同步写入暂无统一失效事件 → 10 分钟 TTL + generate 强制重算兜底
+// （不保证实时一致，规格 §7.2）。
+// SqlQueryRunner 适配：既有服务 all() 的行类型（CrmRow/泛型直返）与统计层窄接口在此对接；
+// 仅做行形状的边界转换（同构对象数组），不改变任何查询语义。
+const annualReviewCrmRunner = {
+  all<T = Record<string, unknown>>(sql: string, params?: ReadonlyArray<unknown>): T[] {
+    return crmDbService.all(sql, [...(params ?? [])]) as unknown as T[]
+  }
+}
+const annualReviewSalesRunner = {
+  all<T = Record<string, unknown>>(sql: string, params?: ReadonlyArray<unknown>): T[] {
+    return salesDbService.all(sql, [...(params ?? [])])
+  }
+}
+const buildAnnualReviewAccountContext = (): AnnualReviewAccountContext => {
+  const cfg = configService || new ConfigService()
+  configService = cfg
+  const wxid = (cfg.getMyWxidCleaned() || '').trim()
+  const rawManual = cfg.get('reportExcludedSessions')
+  const rawInternal = cfg.get('crmInternalList')
+  const toSessionList = (raw: unknown): string[] =>
+    Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : []
+  return {
+    wxid,
+    salesDbName: businessDbName(wxid, 'sales'),
+    crmDbName: businessDbName(wxid, 'crm'),
+    exclusions: {
+      manualSessions: toSessionList(rawManual),
+      internalSessions: toSessionList(rawInternal)
+    }
+  }
+}
+
+const annualReviewService = new AnnualReviewService({
+  loadFacts: async () => loadAnnualReviewFacts(annualReviewCrmRunner),
+  loadSalesSegments: async () => loadAnnualReviewSalesSegments(annualReviewSalesRunner),
+  loadCrmSegments: async () => loadAnnualReviewCrmSegments(annualReviewCrmRunner),
+  loadMessageStats: async (sessionIds, beginSec, endSec): Promise<AnnualReviewMessageStats> => {
+    const result = await wcdbService.getAnnualReportStats(sessionIds, beginSec, endSec)
+    if (!result.success || !result.data || typeof result.data !== 'object') {
+      return { ok: false, sessions: {} }
+    }
+    const sessions = (result.data as { sessions?: unknown }).sessions
+    return {
+      ok: true,
+      sessions: sessions && typeof sessions === 'object' ? sessions as AnnualReviewMessageStats['sessions'] : {}
+    }
+  },
+  getAccountContext: buildAnnualReviewAccountContext
+})
 
 const pruneAnnualReportYearsSnapshotCache = (): void => {
   const now = Date.now()
@@ -2007,6 +2066,7 @@ function registerIpcHandlers() {
       }
       await crmDbService.reopenForWxid(userData, wxid)
       await salesDbService.reopenForWxid(userData, wxid)
+      annualReviewService.invalidateAll() // 账号切换/业务库重开：清空年度复盘缓存与可用年份
       console.log(`[Sales] 业务库已切换到账号 ${wxid || '(未设置)'}`)
     })
   }
@@ -3072,6 +3132,7 @@ function registerIpcHandlers() {
         }
         await crmDbService.reopenForWxid(userData, wxid)
         await salesDbService.reopenForWxid(userData, wxid)
+        annualReviewService.invalidateAll() // 业务库重开：清空年度复盘缓存
         console.log(`[Sales] 业务数据已归档（账号 ${wxid || '(未设置)'}）：${archived.map((a) => a.to).join(', ') || '无库文件'}`)
         return { success: true, archived }
       })
@@ -4089,6 +4150,68 @@ function registerIpcHandlers() {
   })
 
   // 年度报告相关
+  // ── 年度经营复盘（S3）：独立 annualReview:* 命名空间；旧 annualReport:* / dualReport:* 原样保留 ──
+  // 进度广播：任务状态机统一推送，phase ∈ loading/computing/completed/failed，done 后锁定。
+  annualReviewService.onProgress((event) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('annualReview:progress', event)
+      }
+    }
+  })
+  // 数据写入失效：assignment 失效总线（含 LAN/中央下行的 assign/transfer）→ coarse 清空
+  // 年度复盘缓存；账号切换/业务库重开在 switchBusinessDbsForWxid 与归档逃生舱内单独失效。
+  onAssignmentInvalidated(() => annualReviewService.handleDataChanged())
+
+  ipcMain.handle('annualReview:getAvailableYears', async () => {
+    try {
+      return { success: true, data: await annualReviewService.getAvailableYears() }
+    } catch (e) {
+      // 非敏感信封：只回 message，不回堆栈/路径
+      return { success: false, error: e instanceof Error ? e.message : '可用年份查询失败' }
+    }
+  })
+
+  ipcMain.handle('annualReview:generate', async (_, payload: unknown) => {
+    // 运行时校验：只接受 { year: 合法整数 | 0 }；拒绝未来年份与任意非整型输入
+    const year = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { year?: unknown }).year
+      : payload
+    const validation = validateAnnualReviewYearInput(year, Date.now())
+    if (!validation.ok) {
+      return { success: false, error: validation.message }
+    }
+    const result = await annualReviewService.generate(validation.year)
+    if (result.success) {
+      return { success: true, taskId: result.taskId, reused: result.reused === true }
+    }
+    return { success: false, taskId: result.taskId, error: result.error?.message ?? '年度复盘生成失败' }
+  })
+
+  ipcMain.handle('annualReview:getReport', async (_, payload: unknown) => {
+    const year = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { year?: unknown }).year
+      : payload
+    const validation = validateAnnualReviewYearInput(year, Date.now())
+    if (!validation.ok) {
+      return { success: false, cache: 'miss', error: validation.message }
+    }
+    const result = annualReviewService.getReport(validation.year)
+    if (!result.success) {
+      return { success: false, cache: result.cache, error: result.error?.message ?? '年度复盘报告查询失败' }
+    }
+    return result.cache === 'hit'
+      ? { success: true, cache: 'hit', report: result.report }
+      : { success: true, cache: result.cache }
+  })
+
+  ipcMain.handle('annualReview:cancel', async (_, taskId: unknown) => {
+    if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > 128) {
+      return { success: false, error: '非法的任务标识' }
+    }
+    return annualReviewService.cancel(taskId)
+  })
+
   ipcMain.handle('annualReport:getAvailableYears', async () => {
     const cfg = configService || new ConfigService()
     configService = cfg

@@ -1792,6 +1792,61 @@ export interface ElectronAPI {
     }) => void) => () => void
     onProgress: (callback: (payload: { status: string; progress: number }) => void) => () => void
   }
+
+  /** 年度经营复盘（S3）：确定性统计报告；口径详见 docs/设计-年度经营复盘-规格.md §7.2 */
+  annualReview: {
+    getAvailableYears: () => Promise<{
+      success: boolean
+      data?: {
+        years: Array<{
+          /** 年份；0 = 历史以来 */
+          year: number
+          coverage: {
+            source: string
+            status: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+            coverageFrom?: number
+            coverageTo?: number
+            rows: number
+            reasonCodes: string[]
+          }
+        }>
+        currentYear: number
+        supportsAllTime: boolean
+        defaultYear: number
+        generatedAt: number
+      }
+      error?: string
+    }>
+    /** 触发生成并等待完成（进度经 onProgress 并行推送）；同一账号同年份已有任务时合并等待 */
+    generate: (year: number) => Promise<{
+      success: boolean
+      taskId?: string
+      /** true = 合并等待了同键已有任务（未重复启动 Worker） */
+      reused?: boolean
+      error?: string
+    }>
+    /** 查询报告：cache='hit' 携带 report；'miss' 无缓存；'stale' 已过期（>10 分钟） */
+    getReport: (year: number) => Promise<{
+      success: boolean
+      cache: 'hit' | 'miss' | 'stale'
+      report?: AnnualReviewReport
+      error?: string
+    }>
+    cancel: (taskId: string) => Promise<{
+      success: boolean
+      error?: string
+    }>
+    onProgress: (callback: (payload: {
+      taskId: string
+      year: number
+      phase: 'loading' | 'computing' | 'completed' | 'failed'
+      /** 0–100，单调不回退 */
+      progress: number
+      statusText?: string
+      done: boolean
+      error?: { code: string; message: string }
+    }) => void) => () => void
+  }
   dualReport: {
     generateReport: (payload: { friendUsername: string; year: number }) => Promise<{
       success: boolean
@@ -2708,6 +2763,130 @@ declare global {
       filePath?: string
     }
   }
+}
+
+// ─── 年度经营复盘（S3）报告类型（与 electron/services/annualReviewReport.ts / S1/S2 统计层同源）───
+// 口径语义详见 docs/设计-年度经营复盘-规格.md；UI 只渲染不推断（§7.1）。
+
+export interface AnnualReviewMetricWarning {
+  code: string
+  message: string
+  count?: number
+}
+
+export interface AnnualReviewCoverage {
+  source: string
+  status: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+  coverageFrom?: number
+  coverageTo?: number
+  rows?: number
+  reasonCodes?: string[]
+  exactCoverage?: boolean
+  coverageRatio?: number | null
+}
+
+export interface AnnualReviewMetric<T> {
+  /** unavailable 时为 null；0 是真实零 */
+  value: T | null
+  state: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewSummaryMetrics {
+  customerTotal: AnnualReviewMetric<number>
+  customerNew: AnnualReviewMetric<number>
+  customerActive: AnnualReviewMetric<number>
+  contractCount: AnnualReviewMetric<number>
+  contractAmount: AnnualReviewMetric<number>
+  creditedAmount: AnnualReviewMetric<number>
+  shippedCount: AnnualReviewMetric<number>
+  shippedAmount: AnnualReviewMetric<number>
+  dealingCustomers: AnnualReviewMetric<number>
+  avgDealSize: AnnualReviewMetric<number>
+}
+
+export interface AnnualReviewFunnelBucketCount {
+  bucket: '了解' | '比价' | '决策' | '成交' | '流失' | '未知'
+  count: number
+}
+
+export interface AnnualReviewDistributionBlock {
+  kind: 'current_snapshot' | 'historical_reconstruction'
+  /** unavailable（覆盖率不足/总体为空声明）时可能为 null 或全零分布，以 coverage.status 为准 */
+  distribution: AnnualReviewFunnelBucketCount[] | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewStageFlowBlock {
+  distribution: AnnualReviewFunnelBucketCount[]
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewStuckBlock {
+  value: number | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewLostBreakdownBlock {
+  kind: 'current_snapshot' | 'historical_reconstruction'
+  customerPreviousStage: AnnualReviewFunnelBucketCount[] | null
+  opportunityReasons: Array<{ reason: string; count: number }> | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewFunnelBlock {
+  customerStage: AnnualReviewDistributionBlock
+  opportunityStage: AnnualReviewDistributionBlock
+  stageFlow: AnnualReviewStageFlowBlock
+  stuck: AnnualReviewStuckBlock
+  lostBreakdown: AnnualReviewLostBreakdownBlock
+}
+
+export interface AnnualReviewListBlock<T> {
+  value: T | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewCustomersBlock {
+  highValue: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; creditedAmount: number; contractAmount: number }>>
+  newCustomers: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; createdAt: number; imported: boolean }>>
+  dealing: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number; firstSignDate: number }>>
+  repeat: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number }>>
+  active: AnnualReviewListBlock<Array<{ sessionId: string }>>
+  silent: AnnualReviewListBlock<Array<{ sessionId: string; lastContactAtMs: number }>>
+  risk: AnnualReviewListBlock<Array<{ sessionId: string; stage: string; lastContactAtMs: number }>>
+  priority: AnnualReviewListBlock<Array<{ sessionId: string; lastContactAtMs: number }>>
+}
+
+/** 尚未实现区块的显式占位（D/E 组、月度趋势）：UI 按 unavailable 渲染，绝不显示为 0 */
+export interface AnnualReviewUnavailableBlock {
+  status: 'unavailable'
+  reasonCodes: string[]
+}
+
+export interface AnnualReviewReport {
+  reportSchemaVersion: number
+  /** 年份；0 = 历史以来 */
+  year: number
+  scopeKind: 'current_year' | 'historical_year' | 'all_time'
+  periodStart: number | null
+  periodEndExclusive: number | null
+  /** current_year/all_time = generatedAt；historical_year = periodEndExclusive */
+  asOf: number
+  /** 永远只表示报告实际生成时间，不兼作历史数据时点 */
+  generatedAt: number
+  timezoneNote: 'local'
+  summary: AnnualReviewSummaryMetrics
+  funnel: AnnualReviewFunnelBlock
+  customers: AnnualReviewCustomersBlock
+  monthly: AnnualReviewUnavailableBlock
+  communication: AnnualReviewUnavailableBlock
+  salesAssignment: AnnualReviewUnavailableBlock
 }
 
 export { }

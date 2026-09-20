@@ -388,6 +388,44 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 > 已有符号链接、最近存在祖先 realpath 逃出授权真径一律抛错。授权保存在进程内存（24h TTL，上限 200，
 > 重启即清空），不做全局永久白名单。HTTP API（独立鉴权信任面）不套用本闸门。
 
+### 1.15 年度经营复盘（S3 · 2026-09-20；实现 = electron/services/annualReviewService.ts + annualReviewWorker.ts）
+
+> 确定性统计报告（规格 docs/设计-年度经营复盘-规格.md §7.2）。独立 `annualReview:*` 命名空间；
+> 旧 `annualReport:*` / `dualReport:*` 通道保持原样、互不混用。preload 命名空间 `annualReview`。
+> 通道命名与本域其余 `域:动作` 二段式略异（三段式对齐规格草案），以本节为准。
+
+**报告结构**（`AnnualReviewReport`，完整类型见 `src/types/electron.d.ts`）：
+`{ reportSchemaVersion, year, scopeKind: 'current_year'|'historical_year'|'all_time', periodStart,
+periodEndExclusive, asOf, generatedAt, timezoneNote: 'local', summary(A1–A9), funnel(B1/B2/B3/B6/B7),
+customers(C1–C8), monthly, communication, salesAssignment }`。每区块的 value/state/warnings/coverage
+原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly` / `communication`（D 组）/
+`salesAssignment`（E 组）当前版本未实现，为显式 `{ status:'unavailable', reasonCodes:['metric_not_implemented'] }`
+区块，**不是 0/空数组**。输出可结构化克隆；不含数据库路径、SQL、wxid 原文、Token、原始聊天内容、堆栈。
+
+**时间契约**：`current_year` 区间 `[periodStart, generatedAt)`；`historical_year` asOf=periodEndExclusive、
+区间 `[periodStart, periodEndExclusive)`；`all_time`（year=0）无下界、右开 generatedAt。UI/渲染层不自行推导年份边界。
+
+| 通道 | 幂等 | 请求 → 响应 | 说明 |
+|---|---|---|---|
+| `annualReview:getAvailableYears` | R | `()` → `{ success, data?: { years: Array<{ year, coverage: { source, status:'complete', coverageFrom?, coverageTo?, rows, reasonCodes } }>, currentYear, supportsAllTime, defaultYear, generatedAt }, error? }` | 主进程全量扫描本地事实（account.created_at / contract.sign_date（sign_date 有效值）/ A6 核销计入时间 / intent_tag_log.created_at / opportunity.created_at，全部右开 generatedAt）推导年份；升序确定排序；含 0=历史以来（有数据时）；2000 年前与未来年份的秒/毫秒混存脏值不生成候选；`coverage.rows` 仅陈述「该年度存在 N 条事实」，**不代表该年度各指标完整性**（完整性以 `getReport` 各区块 coverage 为准）。空库 → `years: []`、`supportsAllTime: false`。按 accountScopeId 隔离缓存（TTL 10 分钟）。 |
+| `annualReview:generate` | N | `{ year: number }` → `{ success, taskId?, reused?, error? }` | year 只接受合法整数年份或 `0`（运行时校验，拒绝未来/小数/字符串/NaN）；阻塞至任务完成（进度经 `annualReview:progress` 并行推送）；同一 {accountScopeId, year} 已有运行中任务 → 合并等待同一任务（`reused: true`，不重复启动 Worker）；不同账号作用域独立运行。generate 无条件重算并覆盖同键缓存。失败返回 `{ success: false, error }`（非敏感 message）。 |
+| `annualReview:getReport` | R | `{ year: number }` → `{ success, cache: 'hit'\|'miss'\|'stale', report?, error? }` | 只读当前账号作用域内存缓存；`hit` 携带 report（TTL 10 分钟内）；`miss` 无缓存；`stale` 有缓存但已过期（**明确区分，绝不回退其他账号/其他作用域缓存**）。历史年度同样受 TTL 约束——迟到同步/补录/迁移/删除都可能改变结果。 |
+| `annualReview:cancel` | N | `taskId: string` → `{ success, error? }` | 终止运行中任务（Worker terminate，任务收敛为 failed，error.code=`cancelled`）；已完成/已失败任务幂等成功（终态不可变）；未知 taskId → `{ success: false, error }`。 |
+| `annualReview:progress`（广播） | — | 主进程 → 渲染层：`{ taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } }` | 单调不回退；completed/failed 为终态（done=true）且进度锁定；taskId 标记使旧任务迟到消息不覆盖新任务。preload `annualReview.onProgress(cb)` 返回清理函数。 |
+
+**缓存与失效**：键 `{accountScopeId, year, reportSchemaVersion}`；`accountScopeId` = 主进程由
+（规范化 wxid + salesDb/crmDb 文件名，FNV-1a 折叠）派生的不透明标识——区分账号与实际业务库身份，
+不含路径、不含密钥/Token，不向渲染层暴露。仅主进程内存缓存，TTL 10 分钟，不持久化、不写 config。
+失效：① 账号切换/业务库 reopen（`switchBusinessDbsForWxid` / 归档逃生舱）→ 全量失效；② assignment
+失效总线（含 LAN/中央下行 assign/transfer）→ 全量失效；③ WCDB 重连与部分同步写入暂无统一事件 →
+TTL + generate 强制重算兜底。**不保证实时一致**。
+
+**Worker 边界**：Worker（`dist-electron/annualReviewWorker.js`，vite 独立 entry）只接收可序列化
+`{ taskId, reportSchemaVersion, period, facts, sales, crm, messageStats, exclusions }`——不打开任何数据库、
+不接触路径/密钥；内部只调用 S1/S2 已验收纯统计。Worker throw/exit/非法消息/超时进度消息一律收敛为
+`failed`（error.code ∈ worker_error/worker_exit/invalid_worker_result/fact_load_failed/cancelled/internal），
+不留下永久 loading，错误不携带堆栈。
+
 ---
 
 ## 2. 本机 HTTP 只读层（端点级；详情 = docs/HTTP-API.md）
