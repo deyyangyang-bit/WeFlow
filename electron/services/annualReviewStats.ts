@@ -19,6 +19,11 @@
  *
  * 输出 MetricValue 结构（value/state/warnings 成对）即未来 AnnualReviewReport.summary 的来源；
  * 本模块不实现 IPC / Worker / UI / 缓存 / 导出 / AI（S1 范围）。
+ *
+ * S2 共享面（annualReviewSegments.ts 复用，禁止第二套口径）：时间/区间/求和工具、排除规则、
+ * WarningCollector、A2/A3/A4/A6 的口径子计算（annualReviewNewAccountsInRange /
+ * computeAnnualReviewCustomerActiveDetail / annualReviewSignedContractsInRange /
+ * annualReviewCreditedAllocationsInRange）。B/C 组不在此文件堆叠，见 annualReviewSegments.ts。
  */
 import type { Database as SqlJsDatabase } from 'sql.js'
 
@@ -81,7 +86,7 @@ function assertPeriodInputs(year: number, generatedAt: number): void {
 }
 
 /** 校验完整 period 形状（防手工构造出 NaN 边界的 period 静默产生全零结果） */
-function assertValidPeriod(period: AnnualReviewPeriod): void {
+export function assertValidPeriod(period: AnnualReviewPeriod): void {
   assertPeriodInputs(period.year, period.generatedAt)
   if (!Number.isFinite(period.asOf) || period.asOf <= 0) {
     throw new AnnualReviewPeriodError('invalid_generated_at', `非法的 asOf：${String(period.asOf)}`)
@@ -182,6 +187,8 @@ export interface AnnualReviewSummary {
 
 export interface AnnualReviewAccountFact {
   id: number
+  /** 客户名称（crmDb account.name，C 组明细展示用；不参与任何口径计算） */
+  name: string | null
   /** 毫秒；null = 缺失/非法（排除并告警） */
   createdAt: number | null
   /** 毫秒；null = 非导入建档 */
@@ -253,18 +260,18 @@ export interface AnnualReviewComputeOptions {
 
 // ─── 内部工具 ────────────────────────────────────────────────────────────────
 
-/** 有限数 → 原值；null/NaN/±Infinity → null（非法数值绝不进入统计） */
-function asFinite(v: unknown): number | null {
+/** 有限数 → 原值；null/NaN/±Infinity → null（非法数值绝不进入统计）。S2 segments 复用 */
+export function asFinite(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
-/** 左闭右开区间判定：t >= start（start 为 null 表示无下界）&& t < endExclusive */
-function inRange(t: number, start: number | null, endExclusive: number): boolean {
+/** 左闭右开区间判定：t >= start（start 为 null 表示无下界）&& t < endExclusive。S2 segments 复用 */
+export function inRange(t: number, start: number | null, endExclusive: number): boolean {
   return (start === null || t >= start) && t < endExclusive
 }
 
-/** 确定性求和：排序副本后累加，结果与输入行序无关，中间步骤不舍入 */
-function deterministicSum(values: number[]): number {
+/** 确定性求和：排序副本后累加，结果与输入行序无关，中间步骤不舍入。S2 segments 复用 */
+export function deterministicSum(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
   let sum = 0
   for (const v of sorted) sum += v
@@ -293,13 +300,20 @@ const WARN = {
 
 type WarnCode = keyof typeof WARN
 
-/** 按指标聚合 warnings：同 code 去重（首个生效），输出顺序 = 添加顺序，确定性 */
-class WarningCollector {
-  private readonly byCode = new Map<WarnCode, MetricWarning>()
+/** 按指标聚合 warnings：同 code 去重（首个生效），输出顺序 = 添加顺序，确定性。
+ *  S2 segments 复用：新 code 用 addCustom 携带稳定文案；shared code 直接 add。 */
+export class WarningCollector {
+  private readonly byCode = new Map<string, MetricWarning>()
 
   add(code: WarnCode, count?: number): void {
     if (this.byCode.has(code)) return
     this.byCode.set(code, count === undefined ? { code, message: WARN[code] } : { code, message: WARN[code], count })
+  }
+
+  /** 自定义 code + 稳定文案（segments 新增 code 用；同 code 去重，首个生效） */
+  addCustom(code: string, message: string, count?: number): void {
+    if (this.byCode.has(code)) return
+    this.byCode.set(code, count === undefined ? { code, message } : { code, message, count })
   }
 
   /** 合并另一个收集器的全部 code（同 code 保留自身） */
@@ -324,17 +338,17 @@ function metric(value: number | null, warnings: WarningCollector, forceState?: M
   return { value, state, warnings: warningsList }
 }
 
-function normSession(v: unknown): string {
+export function normSession(v: unknown): string {
   const s = String(v ?? '').trim()
   return s
 }
 
-/** 结构性排除：群聊 / 公众号 / 系统账号 */
-function isStructurallyExcluded(sid: string): boolean {
+/** 结构性排除：群聊 / 公众号 / 系统账号。S2 segments 复用 */
+export function isStructurallyExcluded(sid: string): boolean {
   return sid.endsWith('@chatroom') || sid.startsWith('gh_') || WCDB_SYSTEM_ACCOUNTS.has(sid)
 }
 
-function buildExclusionSet(exclusions: AnnualReviewExclusions | undefined): Set<string> {
+export function buildExclusionSet(exclusions: AnnualReviewExclusions | undefined): Set<string> {
   const set = new Set<string>()
   const addAll = (list: string[] | undefined): void => {
     for (const raw of list ?? []) {
@@ -345,6 +359,228 @@ function buildExclusionSet(exclusions: AnnualReviewExclusions | undefined): Set<
   addAll(exclusions?.manualSessions)
   addAll(exclusions?.internalSessions)
   return set
+}
+
+// ─── 口径子计算（S2 segments 复用同一实现，禁止第二套口径） ───────────────────
+
+export interface SignedContractsInRange {
+  /** sign_date 有效且 ∈ [periodStart, asOf) 的合同（A4/A5/A8 与 C1/C3/C4 的同一集合；signDate 已收窄为有效值） */
+  signedInRange: Array<AnnualReviewContractFact & { signDate: number }>
+  /** signed/shipped 但 sign_date 缺失/非法的数量（partial 依据，禁止回退 created_at） */
+  signMissing: number
+}
+
+/** A4 签约集合：只认 sign_date 左闭右开；缺失一律不计入（§3.2） */
+export function annualReviewSignedContractsInRange(
+  period: AnnualReviewPeriod,
+  contracts: AnnualReviewContractFact[]
+): SignedContractsInRange {
+  assertValidPeriod(period)
+  const signedInRange: Array<AnnualReviewContractFact & { signDate: number }> = []
+  let signMissing = 0
+  for (const c of contracts) {
+    const sd = asFinite(c.signDate)
+    if (sd !== null) {
+      if (inRange(sd, period.periodStart, period.asOf)) signedInRange.push({ ...c, signDate: sd })
+    } else if (c.status === 'signed' || c.status === 'shipped') {
+      signMissing++
+    }
+  }
+  return { signedInRange, signMissing }
+}
+
+export interface NewAccountsInRange {
+  /** created_at 有效且 ∈ [periodStart, asOf) 的 account（A2 计数与 C2 明细的同一集合） */
+  accounts: Array<AnnualReviewAccountFact & { createdAt: number }>
+  missingCreatedAt: number
+}
+
+/** A2 新增客户集合：created_at 左闭右开；缺 created_at 排除（由调用方告警） */
+export function annualReviewNewAccountsInRange(
+  period: AnnualReviewPeriod,
+  accounts: AnnualReviewAccountFact[]
+): NewAccountsInRange {
+  assertValidPeriod(period)
+  const inRangeAccounts: Array<AnnualReviewAccountFact & { createdAt: number }> = []
+  let missingCreatedAt = 0
+  for (const acc of accounts) {
+    const created = asFinite(acc.createdAt)
+    if (created === null) {
+      missingCreatedAt++
+      continue
+    }
+    if (inRange(created, period.periodStart, period.asOf)) inRangeAccounts.push({ ...acc, createdAt: created })
+  }
+  return { accounts: inRangeAccounts, missingCreatedAt }
+}
+
+export interface CreditedAllocationRow {
+  allocation: AnnualReviewAllocationFact
+  /** 有效核销金额（元） */
+  amount: number
+  /** 计入时间：allocated=reconciled_at；legacy_confirmed 回退 confirmed_at */
+  time: number
+  viaLegacyFallback: boolean
+}
+
+export interface CreditedAllocationsInRange {
+  rows: CreditedAllocationRow[]
+  legacyFallback: number
+  allocatedNoTime: number
+  legacyNoTime: number
+  creditedInvalid: number
+}
+
+/**
+ * A6 核销集合（= creditedTotal 同款状态口径 + 时间维度）：
+ *   allocated → 仅 reconciled_at（缺失排除计数，不伪造）；legacy_confirmed → reconciled_at
+ *   优先、缺失回退 confirmed_at（partial）；confirmed+pending 认领 / conflict / 撤销一概不计。
+ */
+export function annualReviewCreditedAllocationsInRange(
+  period: AnnualReviewPeriod,
+  allocations: AnnualReviewAllocationFact[]
+): CreditedAllocationsInRange {
+  assertValidPeriod(period)
+  const rows: CreditedAllocationRow[] = []
+  let legacyFallback = 0
+  let allocatedNoTime = 0
+  let legacyNoTime = 0
+  let creditedInvalid = 0
+  for (const al of allocations) {
+    if (al.status !== 'confirmed') continue
+    if (al.reconciliationStatus !== 'allocated' && al.reconciliationStatus !== 'legacy_confirmed') continue
+    const reconciled = asFinite(al.reconciledAt)
+    let t: number | null = null
+    let viaFallback = false
+    if (al.reconciliationStatus === 'allocated') {
+      if (reconciled === null) {
+        allocatedNoTime++
+        continue
+      }
+      t = reconciled
+    } else if (reconciled !== null) {
+      t = reconciled
+    } else {
+      const confirmed = asFinite(al.confirmedAt)
+      if (confirmed === null) {
+        legacyNoTime++
+        continue
+      }
+      t = confirmed
+      viaFallback = true
+    }
+    if (!inRange(t, period.periodStart, period.asOf)) continue
+    if (viaFallback) legacyFallback++
+    const amt = asFinite(al.creditedAmount)
+    if (amt === null) {
+      creditedInvalid++
+      continue
+    }
+    rows.push({ allocation: al, amount: amt, time: t, viaLegacyFallback: viaFallback })
+  }
+  return { rows, legacyFallback, allocatedNoTime, legacyNoTime, creditedInvalid }
+}
+
+export interface CustomerActiveDetail {
+  metric: MetricValue<number>
+  /** 活跃会话（sessionId 升序）；unavailable 时为 null。C5 明细与 A3 共用同一计算结果 */
+  activeSessions: string[] | null
+}
+
+/**
+ * A3 年度活跃客户完整计算（值 + 状态 + warnings + 活跃会话明细）。
+ * 主口径 = CRM 绑定会话（account.session_id，去重）∩ 注入消息统计 sent+received>0；
+ * 回退（仅 current_year/all_time）= session 最大有效 last_contact_at（秒×1000）∈ [start, asOf)；
+ * historical_year 一律 unavailable（当前投影 ≠ 历史时点）。
+ */
+export function computeAnnualReviewCustomerActiveDetail(
+  period: AnnualReviewPeriod,
+  facts: AnnualReviewFacts,
+  opts: AnnualReviewComputeOptions = {}
+): CustomerActiveDetail {
+  assertValidPeriod(period)
+  const start = period.periodStart
+  const end = period.asOf
+  const exclusions = buildExclusionSet(opts.exclusions)
+  const boundSessions = new Set<string>()
+  for (const acc of facts.accounts ?? []) {
+    const sid = normSession(acc.sessionId)
+    if (!sid || isExcluded(exclusions, sid)) continue
+    boundSessions.add(sid)
+  }
+  const a3 = new WarningCollector()
+  let activeValue: number | null = null
+  let activeSessions: string[] | null = null
+  let activeState: MetricState
+  const messageStats = opts.messageStats ?? null
+  if (messageStats && messageStats.ok) {
+    let active = 0
+    let sanitized = 0
+    const sessions = messageStats.sessions ?? {}
+    const activeSet = new Set<string>()
+    for (const sid of boundSessions) {
+      const stat = sessions[sid]
+      if (!stat) continue
+      const sent = sanitizeCount(stat.sent)
+      const received = sanitizeCount(stat.received)
+      if (sent === null || received === null) sanitized++
+      if ((sent ?? 0) + (received ?? 0) > 0) {
+        active++
+        activeSet.add(sid)
+      }
+    }
+    if (sanitized > 0) a3.add('message_stats_invalid', sanitized)
+    activeValue = active
+    activeSessions = [...activeSet].sort(cmpString)
+    activeState = a3.nonEmpty() ? 'partial' : 'complete'
+  } else if (period.scopeKind === 'historical_year') {
+    // 历史年度禁止回退 last_contact_at（§3.0：last_contact_at 是当前投影，当前投影 ≠ 历史时点）。
+    // 宁可 unavailable，不得用今天的最近联系时间冒充历史事实，也不得错误降级为 0 或 partial 近似。
+    a3.add('historical_contact_unavailable')
+    activeValue = null
+    activeState = 'unavailable'
+  } else {
+    // 回退（仅 current_year / all_time）：与主口径同一统计对象——绑定会话去重。
+    // 会话最近联系 = 该 session 下各 account.last_contact_at（秒×1000）的最大有效值；
+    // 最大值在区间外时，不得因同会话其他 account 较早的区间内值而误计该会话。
+    const lastContactBySession = new Map<string, number>()
+    for (const acc of facts.accounts ?? []) {
+      const sid = normSession(acc.sessionId)
+      if (!sid || isExcluded(exclusions, sid)) continue
+      const sec = asFinite(acc.lastContactAtSec)
+      if (sec === null || sec <= 0) continue
+      const ms = sec * 1000
+      const prev = lastContactBySession.get(sid)
+      if (prev === undefined || ms > prev) lastContactBySession.set(sid, ms)
+    }
+    if (boundSessions.size === 0) {
+      // 没有任何符合条件的绑定会话：0 是真实零，但未经消息主口径验证 → 保守 partial
+      a3.add('last_contact_fallback')
+      activeValue = 0
+      activeSessions = []
+      activeState = 'partial'
+    } else if (lastContactBySession.size === 0) {
+      // 有绑定会话但全部无有效 last_contact_at：不得把查询失败显示成 0
+      a3.add('customer_active_unavailable')
+      activeValue = null
+      activeState = 'unavailable'
+    } else {
+      const activeSet = new Set<string>()
+      for (const [sid, ms] of lastContactBySession) {
+        if (inRange(ms, start, end)) activeSet.add(sid)
+      }
+      a3.add('last_contact_fallback')
+      activeValue = activeSet.size
+      activeSessions = [...activeSet].sort(cmpString)
+      activeState = 'partial'
+    }
+  }
+  return { metric: { value: activeValue, state: activeState, warnings: a3.list() }, activeSessions }
+}
+
+/** 确定性字符串比较（code-unit 序，跨平台稳定；禁用 localeCompare） */
+export function cmpString(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 // ─── A1–A9 纯统计层 ──────────────────────────────────────────────────────────
@@ -372,11 +608,10 @@ export function computeAnnualReviewSummary(
   // ── A1 customer_total / A2 customer_new ──────────────────────────────────
   // A1：asOf 时点存量 = created_at < asOf（无下界；SQL NULL 语义同款：缺 created_at 不计入）。
   // A2：新增 = created_at ∈ [start, asOf)；all_time 即 created_at < asOf。
+  //     集合来自 annualReviewNewAccountsInRange（C2 明细共用同一口径，禁止第二套）。
   const a1 = new WarningCollector()
   const a2 = new WarningCollector()
   let totalBeforeAsOf = 0
-  let newInRange = 0
-  let newImported = 0
   let missingCreatedAt = 0
   for (const acc of accounts) {
     const created = asFinite(acc.createdAt)
@@ -385,14 +620,16 @@ export function computeAnnualReviewSummary(
       continue
     }
     if (created < end) totalBeforeAsOf++
-    if (inRange(created, start, end)) {
-      newInRange++
-      if (asFinite(acc.importedAt) !== null) newImported++
-    }
+  }
+  const newAcc = annualReviewNewAccountsInRange(period, accounts)
+  const newInRange = newAcc.accounts.length
+  let newImported = 0
+  for (const acc of newAcc.accounts) {
+    if (asFinite(acc.importedAt) !== null) newImported++
   }
   if (missingCreatedAt > 0) {
     a1.add('account_created_at_missing', missingCreatedAt)
-    a2.add('account_created_at_missing', missingCreatedAt)
+    a2.add('account_created_at_missing', newAcc.missingCreatedAt)
   }
   // 历史年度存量受物理删除影响：一律 partial + tombstone_gap（规格 §5.1 A1）
   if (period.scopeKind === 'historical_year') a1.add('tombstone_gap')
@@ -402,96 +639,17 @@ export function computeAnnualReviewSummary(
   const customerNew = metric(newInRange, a2)
 
   // ── A3 customer_active ───────────────────────────────────────────────────
-  // 主口径：CRM 绑定会话（account.session_id，去重）∩ 注入消息统计，sent+received>0 活跃。
-  // 回退（仅 current_year/all_time）：绑定会话去重后按 session 最大有效 last_contact_at
-  //（秒 → ×1000 毫秒）∈ [start, asOf) 判定；historical_year 一律 unavailable（§3.0）。
-  const exclusions = buildExclusionSet(opts.exclusions)
-  const boundSessions = new Set<string>()
-  for (const acc of accounts) {
-    const sid = normSession(acc.sessionId)
-    if (!sid || isExcluded(exclusions, sid)) continue
-    boundSessions.add(sid)
-  }
-  const a3 = new WarningCollector()
-  let activeValue: number | null = null
-  let activeState: MetricState
-  const messageStats = opts.messageStats ?? null
-  if (messageStats && messageStats.ok) {
-    let active = 0
-    let sanitized = 0
-    const sessions = messageStats.sessions ?? {}
-    for (const sid of boundSessions) {
-      const stat = sessions[sid]
-      if (!stat) continue
-      const sent = sanitizeCount(stat.sent)
-      const received = sanitizeCount(stat.received)
-      if (sent === null || received === null) sanitized++
-      if ((sent ?? 0) + (received ?? 0) > 0) active++
-    }
-    if (sanitized > 0) a3.add('message_stats_invalid', sanitized)
-    activeValue = active
-    activeState = a3.nonEmpty() ? 'partial' : 'complete'
-  } else if (period.scopeKind === 'historical_year') {
-    // 历史年度禁止回退 last_contact_at（§3.0：last_contact_at 是当前投影，当前投影 ≠ 历史时点）。
-    // 宁可 unavailable，不得用今天的最近联系时间冒充历史事实，也不得错误降级为 0 或 partial 近似。
-    a3.add('historical_contact_unavailable')
-    activeValue = null
-    activeState = 'unavailable'
-  } else {
-    // 回退（仅 current_year / all_time）：与主口径同一统计对象——绑定会话去重。
-    // 会话最近联系 = 该 session 下各 account.last_contact_at（秒×1000）的最大有效值；
-    // 最大值在区间外时，不得因同会话其他 account 较早的区间内值而误计该会话。
-    const lastContactBySession = new Map<string, number>()
-    for (const acc of accounts) {
-      const sid = normSession(acc.sessionId)
-      if (!sid || isExcluded(exclusions, sid)) continue
-      const sec = asFinite(acc.lastContactAtSec)
-      if (sec === null || sec <= 0) continue
-      const ms = sec * 1000
-      const prev = lastContactBySession.get(sid)
-      if (prev === undefined || ms > prev) lastContactBySession.set(sid, ms)
-    }
-    if (boundSessions.size === 0) {
-      // 没有任何符合条件的绑定会话：0 是真实零，但未经消息主口径验证 → 保守 partial
-      a3.add('last_contact_fallback')
-      activeValue = 0
-      activeState = 'partial'
-    } else if (lastContactBySession.size === 0) {
-      // 有绑定会话但全部无有效 last_contact_at：不得把查询失败显示成 0
-      a3.add('customer_active_unavailable')
-      activeValue = null
-      activeState = 'unavailable'
-    } else {
-      let active = 0
-      for (const ms of lastContactBySession.values()) {
-        if (inRange(ms, start, end)) active++
-      }
-      a3.add('last_contact_fallback')
-      activeValue = active
-      activeState = 'partial'
-    }
-  }
-  const customerActive: MetricValue<number> = {
-    value: activeValue,
-    state: activeState,
-    warnings: a3.list()
-  }
+  // 完整计算在 computeAnnualReviewCustomerActiveDetail（C5 明细共用同一结果，禁止第二套）。
+  const customerActive = computeAnnualReviewCustomerActiveDetail(period, facts, opts).metric
 
   // ── A4 contract_count / A5 contract_amount / A8 dealing_customers ────────
-  // 签约集合只认 sign_date ∈ [start, asOf)（all_time 即 sign_date < asOf）；
+  // 签约集合 = annualReviewSignedContractsInRange（C1/C3/C4 共用同一集合，禁止第二套）：
+  // 只认 sign_date ∈ [start, asOf)（all_time 即 sign_date < asOf）；
   // sign_date 缺失一律不计（禁止回退 created_at）；signed/shipped 遗留缺失 → partial + 数量。
   const a4 = new WarningCollector()
-  const signedInRange: AnnualReviewContractFact[] = []
-  let signMissing = 0
-  for (const c of contracts) {
-    const sd = asFinite(c.signDate)
-    if (sd !== null) {
-      if (inRange(sd, start, end)) signedInRange.push(c)
-    } else if (c.status === 'signed' || c.status === 'shipped') {
-      signMissing++
-    }
-  }
-  if (signMissing > 0) a4.add('sign_date_missing', signMissing)
+  const signed = annualReviewSignedContractsInRange(period, contracts)
+  const signedInRange = signed.signedInRange
+  if (signed.signMissing > 0) a4.add('sign_date_missing', signed.signMissing)
   const contractCount = metric(signedInRange.length, a4)
 
   // A5：与 A4 完全同一集合 SUM(amount)；非法金额排除并告警，不影响计数集合
@@ -535,53 +693,19 @@ export function computeAnnualReviewSummary(
   const avgDealSize: MetricValue<number> = { value: avgValue, state: avgState, warnings: a9.list() }
 
   // ── A6 credited_amount ───────────────────────────────────────────────────
-  // 口径 = creditedTotal 同款（status='confirmed' AND reconciliation_status IN
+  // 口径 = annualReviewCreditedAllocationsInRange（C1 高价值客户共用同一集合，禁止第二套）：
+  // creditedTotal 同款状态口径（status='confirmed' AND reconciliation_status IN
   // ('allocated','legacy_confirmed')，规格 §2.3/§5.1）加时间维度：
   //   allocated → 仅 reconciled_at（缺失 → 排除 + 数据异常告警，绝不拿 confirmed_at 伪装）；
   //   legacy_confirmed → reconciled_at 优先，缺失回退 confirmed_at → partial；
   // confirmed+pending（认领）/ conflict / 撤销回 pending 一概不计。
   const a6 = new WarningCollector()
-  const creditedAmounts: number[] = []
-  let legacyFallback = 0
-  let allocatedNoTime = 0
-  let legacyNoTime = 0
-  let creditedInvalid = 0
-  for (const al of allocations) {
-    if (al.status !== 'confirmed') continue
-    if (al.reconciliationStatus !== 'allocated' && al.reconciliationStatus !== 'legacy_confirmed') continue
-    const reconciled = asFinite(al.reconciledAt)
-    let t: number | null = null
-    let viaFallback = false
-    if (al.reconciliationStatus === 'allocated') {
-      if (reconciled === null) {
-        allocatedNoTime++
-        continue
-      }
-      t = reconciled
-    } else if (reconciled !== null) {
-      t = reconciled
-    } else {
-      const confirmed = asFinite(al.confirmedAt)
-      if (confirmed === null) {
-        legacyNoTime++
-        continue
-      }
-      t = confirmed
-      viaFallback = true
-    }
-    if (!inRange(t, start, end)) continue
-    if (viaFallback) legacyFallback++
-    const amt = asFinite(al.creditedAmount)
-    if (amt === null) {
-      creditedInvalid++
-      continue
-    }
-    creditedAmounts.push(amt)
-  }
-  if (legacyFallback > 0) a6.add('legacy_time_fallback', legacyFallback)
-  if (allocatedNoTime > 0) a6.add('allocated_reconciled_at_missing', allocatedNoTime)
-  if (legacyNoTime > 0) a6.add('legacy_time_missing', legacyNoTime)
-  if (creditedInvalid > 0) a6.add('credited_amount_invalid', creditedInvalid)
+  const credited = annualReviewCreditedAllocationsInRange(period, allocations)
+  const creditedAmounts = credited.rows.map((r) => r.amount)
+  if (credited.legacyFallback > 0) a6.add('legacy_time_fallback', credited.legacyFallback)
+  if (credited.allocatedNoTime > 0) a6.add('allocated_reconciled_at_missing', credited.allocatedNoTime)
+  if (credited.legacyNoTime > 0) a6.add('legacy_time_missing', credited.legacyNoTime)
+  if (credited.creditedInvalid > 0) a6.add('credited_amount_invalid', credited.creditedInvalid)
   const creditedAmount = metric(deterministicSum(creditedAmounts), a6)
 
   // ── A7 shippedCount / shippedAmount ──────────────────────────────────────
@@ -709,9 +833,10 @@ function strOrNull(v: unknown): string | null {
  */
 export function loadAnnualReviewFacts(runner: SqlQueryRunner): AnnualReviewFacts {
   const accounts = runner.all<SqlRow>(
-    'SELECT id, created_at, imported_at, session_id, last_contact_at FROM account'
+    'SELECT id, name, created_at, imported_at, session_id, last_contact_at FROM account'
   ).map<AnnualReviewAccountFact>((r) => ({
     id: numOrNull(r.id) ?? 0,
+    name: strOrNull(r.name),
     createdAt: numOrNull(r.created_at),
     importedAt: numOrNull(r.imported_at),
     sessionId: strOrNull(r.session_id),

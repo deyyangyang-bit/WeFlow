@@ -167,7 +167,7 @@ function main(): void {
   // ══ B A1/A2 ══════════════════════════════════════════════════════════════
   {
     const acc = (id: number, createdAt: number | null, importedAt: number | null = null): AnnualReviewFacts['accounts'][number] =>
-      ({ id, createdAt, importedAt, sessionId: null, lastContactAtSec: null })
+      ({ id, name: null, createdAt, importedAt, sessionId: null, lastContactAtSec: null })
     // 2025 年度：边界 created_at ∈ [J2025, J2026)
     const facts: AnnualReviewFacts = {
       ...emptyFacts(),
@@ -210,7 +210,7 @@ function main(): void {
   // ══ C A3 ═════════════════════════════════════════════════════════════════
   {
     const account = (id: number, sessionId: string | null, lastContactAtSec: number | null = null): AnnualReviewFacts['accounts'][number] =>
-      ({ id, createdAt: T(2024, 1, 1), importedAt: null, sessionId, lastContactAtSec })
+      ({ id, name: null, createdAt: T(2024, 1, 1), importedAt: null, sessionId, lastContactAtSec })
     const facts: AnnualReviewFacts = {
       ...emptyFacts(),
       accounts: [
@@ -486,7 +486,7 @@ function main(): void {
     }
     // 输入不可变：深度冻结 + 快照比对
     const facts: AnnualReviewFacts = freezeDeep({
-      accounts: [{ id: 1, createdAt: T(2025, 2, 1), importedAt: T(2025, 2, 2), sessionId: 'wx_a', lastContactAtSec: 1000 }],
+      accounts: [{ id: 1, name: '甲', createdAt: T(2025, 2, 1), importedAt: T(2025, 2, 2), sessionId: 'wx_a', lastContactAtSec: 1000 }],
       contracts: [{ id: 1, accountId: 1, amount: 1.5, status: 'signed', signDate: T(2025, 3, 1) }],
       allocations: [{ id: 1, contractId: 1, accountId: 1, creditedAmount: 0.3, status: 'confirmed', reconciliationStatus: 'allocated', reconciledAt: T(2025, 4, 1), confirmedAt: null }],
       shippedEvents: [{ id: 1, contractId: 1, toStatus: 'shipped', createdAt: T(2025, 5, 1) }]
@@ -577,7 +577,7 @@ function main(): void {
     ins('INSERT INTO contract_status_history (id, contract_id, from_status, to_status, created_at) VALUES (?,?,?,?,?)', [3, 1, 'shipped', 'signed', T(2025, 5, 3)]) // 非 shipped → 剔除
 
     const facts = loadAnnualReviewFacts(sqlJsQueryRunner(db))
-    ok('H1 account 规范化（null/数字/秒字段原样）', facts.accounts.length === 2 && facts.accounts[0].lastContactAtSec === Math.floor(T(2025, 2, 1) / 1000) && facts.accounts[1].createdAt === null && facts.accounts[1].importedAt === T(2025, 2, 2))
+    ok('H1 account 规范化（null/数字/秒字段原样 + name）', facts.accounts.length === 2 && facts.accounts[0].lastContactAtSec === Math.floor(T(2025, 2, 1) / 1000) && facts.accounts[1].createdAt === null && facts.accounts[1].importedAt === T(2025, 2, 2) && facts.accounts[0].name === '甲' && facts.accounts[1].name === '乙')
     ok('H2 contract 规范化（amount null → null）', facts.contracts.length === 3 && facts.contracts[1].amount === null && facts.contracts[2].status === 'pending_sign')
     ok('H3 allocation 预过滤 = creditedTotal 同款 WHERE（剔除 confirmed+pending）', facts.allocations.length === 2 && facts.allocations[0].reconciliationStatus === 'allocated' && facts.allocations[1].reconciliationStatus === 'legacy_confirmed')
     ok('H4 shipped 事件预过滤 to_status=shipped（非 shipped 剔除）', facts.shippedEvents.length === 2)
