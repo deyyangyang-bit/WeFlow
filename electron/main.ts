@@ -5,7 +5,7 @@ import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, utilityProcess } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -23,6 +23,7 @@ import { annualReportService } from './services/annualReportService'
 import { ExportOptions, ExportProgress } from './services/export'
 import { exportTaskControlService } from './services/exportTaskControlService'
 import { exportPathAuthorizer } from './services/exportPathAuthorizer'
+import { validateAnnualReportExportPayload } from './services/annualReportExportPolicy'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
@@ -4414,30 +4415,27 @@ function registerIpcHandlers() {
     })
   })
 
-  ipcMain.handle('annualReport:exportImages', async (_, payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) => {
+  ipcMain.handle('annualReport:exportImages', async (_, payload: unknown) => {
     try {
-      const { baseDir, folderName, images } = payload
-      if (!baseDir || !folderName || !Array.isArray(images) || images.length === 0) {
-        return { success: false, error: '导出参数无效' }
-      }
+      const { baseDir, folderName, images } = validateAnnualReportExportPayload(payload)
+      exportPathAuthorizer.assertAllowed(baseDir, 'dir')
 
-      let targetDir = join(baseDir, folderName)
+      let targetDir = resolve(baseDir, folderName)
       if (existsSync(targetDir)) {
         let idx = 2
-        while (existsSync(`${targetDir}_${idx}`)) idx++
+        while (idx <= 1000 && existsSync(`${targetDir}_${idx}`)) idx++
+        if (idx > 1000) throw new Error('同名报告目录过多')
         targetDir = `${targetDir}_${idx}`
       }
 
-      await mkdir(targetDir, { recursive: true })
+      exportPathAuthorizer.assertAllowed(targetDir, 'dir')
+      await mkdir(targetDir)
+      exportPathAuthorizer.assertAllowed(targetDir, 'dir')
 
       for (const img of images) {
-        const dataUrl = img.dataUrl || ''
-        const commaIndex = dataUrl.indexOf(',')
-        if (commaIndex <= 0) continue
-        const base64 = dataUrl.slice(commaIndex + 1)
-        const buffer = Buffer.from(base64, 'base64')
-        const filePath = join(targetDir, img.name)
-        await writeFile(filePath, buffer)
+        const filePath = resolve(targetDir, img.name)
+        exportPathAuthorizer.assertAllowed(filePath, 'file')
+        await writeFile(filePath, img.buffer, { flag: 'wx', mode: 0o600 })
       }
 
       return { success: true, dir: targetDir }
