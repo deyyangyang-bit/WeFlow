@@ -5,7 +5,7 @@ import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, utilityProcess } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
-import { join, dirname, resolve } from 'path'
+import { join, dirname } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -23,7 +23,7 @@ import { annualReportService } from './services/annualReportService'
 import { ExportOptions, ExportProgress } from './services/export'
 import { exportTaskControlService } from './services/exportTaskControlService'
 import { exportPathAuthorizer } from './services/exportPathAuthorizer'
-import { validateAnnualReportExportPayload } from './services/annualReportExportPolicy'
+import { exportAnnualReportImages } from './services/annualReportImageExport'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
@@ -4417,28 +4417,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('annualReport:exportImages', async (_, payload: unknown) => {
     try {
-      const { baseDir, folderName, images } = validateAnnualReportExportPayload(payload)
-      exportPathAuthorizer.assertAllowed(baseDir, 'dir')
-
-      let targetDir = resolve(baseDir, folderName)
-      if (existsSync(targetDir)) {
-        let idx = 2
-        while (idx <= 1000 && existsSync(`${targetDir}_${idx}`)) idx++
-        if (idx > 1000) throw new Error('同名报告目录过多')
-        targetDir = `${targetDir}_${idx}`
-      }
-
-      exportPathAuthorizer.assertAllowed(targetDir, 'dir')
-      await mkdir(targetDir)
-      exportPathAuthorizer.assertAllowed(targetDir, 'dir')
-
-      for (const img of images) {
-        const filePath = resolve(targetDir, img.name)
-        exportPathAuthorizer.assertAllowed(filePath, 'file')
-        await writeFile(filePath, img.buffer, { flag: 'wx', mode: 0o600 })
-      }
-
-      return { success: true, dir: targetDir }
+      const dir = await exportAnnualReportImages(payload)
+      return { success: true, dir }
     } catch (e) {
       return { success: false, error: String(e) }
     }
