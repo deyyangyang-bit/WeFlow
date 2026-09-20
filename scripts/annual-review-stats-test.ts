@@ -546,17 +546,22 @@ function main(): void {
     const wasmPath = join(ROOT, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm')
     const SQL = await initSqlJs({ locateFile: () => wasmPath })
     const db = new SQL.Database()
-    // 与 crmDb SCHEMA_SQL 同列名子集（仅夹具用途，非第二套语义）
+    // 与 crmDb SCHEMA_SQL 同列名子集（仅夹具用途，非第二套语义）；S5 增量列/表与真实 DDL 同步
     db.run(`
       CREATE TABLE account (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, created_at INTEGER, updated_at INTEGER,
-        session_id TEXT, sales_stage TEXT, last_contact_at INTEGER, imported_at INTEGER, customer_id INTEGER);
+        session_id TEXT, sales_stage TEXT, last_contact_at INTEGER, imported_at INTEGER, customer_id INTEGER, owner_sales TEXT);
       CREATE TABLE contract (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT, amount REAL,
         status TEXT DEFAULT 'pending_sign', sign_date INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE allocation (id INTEGER PRIMARY KEY AUTOINCREMENT, payment_record_id INTEGER, credited_amount REAL,
         account_id INTEGER, contract_id INTEGER, status TEXT DEFAULT 'pending', created_at INTEGER, confirmed_at INTEGER,
-        reconciliation_status TEXT DEFAULT 'pending', reconciled_at INTEGER);
+        reconciliation_status TEXT DEFAULT 'pending', reconciled_at INTEGER, sales_name TEXT);
       CREATE TABLE contract_status_history (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
         from_status TEXT, to_status TEXT, operator TEXT, created_at INTEGER);
+      CREATE TABLE assignment (id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER, sales_name TEXT, mode TEXT,
+        claimed_at INTEGER, status TEXT);
+      CREATE TABLE lead (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, first_contacted_at INTEGER);
+      CREATE TABLE audit_event (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT, entity_type TEXT,
+        entity_id INTEGER, detail TEXT, created_at INTEGER);
     `)
     const ins = (sql: string, params: ReadonlyArray<unknown>): void => db.run(sql, params as never)
     ins('INSERT INTO account (id, name, created_at, session_id, last_contact_at, imported_at) VALUES (?,?,?,?,?,?)',

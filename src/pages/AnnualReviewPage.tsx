@@ -69,6 +69,29 @@ function fmtDate(ts: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** 数值指标单元（D/E 组共用；unavailable 显示「暂无可靠数据」，绝不显示 0） */
+function MetricValueCell({ label, metric, format }: {
+  label: string
+  metric: { value: number | null; state: string; warnings: Array<{ code: string; message: string; count?: number }> }
+  format: (v: number) => string
+}) {
+  const unavailable = metric.state === 'unavailable' || metric.value === null
+  return (
+    <div className={`ar-metric ar-metric--${metric.state}`} title={metric.warnings.map((w) => w.message).join('；') || undefined}>
+      <div className="ar-metric__top">
+        <span className="ar-metric__label">{label}</span>
+        <span className={`ar-dot ar-dot--${metric.state}`} aria-hidden="true" />
+      </div>
+      <div className="ar-metric__value num">
+        {unavailable ? <span className="ar-metric__na">暂无可靠数据</span> : format(metric.value as number)}
+      </div>
+      {(metric.state === 'partial' || metric.state === 'snapshot_only') && (
+        <div className="ar-metric__note">{METRIC_STATE_LABELS[metric.state]}</div>
+      )}
+    </div>
+  )
+}
+
 export default function AnnualReviewPage() {
   const apiRef = useRef<ReturnType<typeof createIpcAnnualReviewApi> | null>(null)
   if (apiRef.current === null) apiRef.current = createIpcAnnualReviewApi()
@@ -357,13 +380,145 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
         </div>
       </section>
 
+      {/* ── 沟通质量（D1/D2/D3/D5/D7）── */}
+      <section className="ar-section">
+        <div className="seclabel"><span className="seclabel__t">沟通质量</span></div>
+        <div className="ar-metric-grid ar-metric-grid--3">
+          <MetricValueCell label="年度客户消息量" metric={report.communication.volume} format={(v) => String(v)} />
+          <MetricValueCell label="有沟通客户数" metric={report.communication.contacted} format={(v) => String(v)} />
+          <MetricValueCell label="主动联系率" metric={report.communication.outboundRate} format={(v) => `${Math.round(v * 100)}%`} />
+        </div>
+        <div className="ar-two-col">
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>月度沟通趋势</span>
+              <span className={`ar-chip ar-chip--${report.communication.monthlyTrend.state}`}>{METRIC_STATE_LABELS[report.communication.monthlyTrend.state]}</span>
+            </div>
+            {report.communication.monthlyTrend.months === null ? (
+              <UnavailableCard label="月度沟通趋势" reasonCodes={['日消息统计缺失']} />
+            ) : (
+              <DistributionBars rows={report.communication.monthlyTrend.months.map((m) => ({ bucket: m.month, count: m.count }))} />
+            )}
+          </div>
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>长期未联系客户</span>
+              <span className={`ar-chip ar-chip--${report.communication.longSilent.state}`}>{METRIC_STATE_LABELS[report.communication.longSilent.state]}</span>
+            </div>
+            {report.communication.longSilent.value === null ? (
+              <UnavailableCard label="长期未联系客户" reasonCodes={[]} />
+            ) : report.communication.longSilent.value.length === 0 ? (
+              <p className="ar-empty-list">该年度没有符合条件的事实（真实零）</p>
+            ) : (
+              <ul className="ar-customer-list">
+                {report.communication.longSilent.value.map((r, i) => (
+                  <li key={`ls${r.accountId ?? r.customerId ?? i}`}>
+                    <span className="ar-customer-list__main">{identityLabelSafe(r)}</span>
+                    <span className="ar-customer-list__sub">最近联系 {fmtDate(r.lastContactAtMs)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 销售与分配（E1/E3/E4/E5；本机记录视角，无 E2/E6/E7）── */}
+      <section className="ar-section">
+        <div className="seclabel"><span className="seclabel__t">销售与分配</span></div>
+        <div className="ar-facts">
+          <div className="ar-facts__item">
+            <div className="ar-facts__n num">{report.salesAssignment.assignedFacts.initialAssignments.total}</div>
+            <div className="ar-facts__l">初始分配</div>
+          </div>
+          <div className="ar-facts__item">
+            <div className="ar-facts__n num">{report.salesAssignment.assignedFacts.transfersIn.total}</div>
+            <div className="ar-facts__l">移交转入</div>
+          </div>
+          <div className="ar-facts__item">
+            <div className="ar-facts__n num">{report.salesAssignment.assignedFacts.transfersOut.total}</div>
+            <div className="ar-facts__l">移交转出</div>
+          </div>
+        </div>
+        <p className="ar-kind-note">分配事实来自本机操作审计（append-only），初始分配与移交分项展示、不相加；转移经手人明细见下。</p>
+        {report.salesAssignment.coverage.status === 'partial' && (
+          <div className="ar-sync-note">
+            检测到中枢下发的分配/移交记录；当前统计只覆盖本机审计事件，实际总量可能更高（不显示覆盖率）
+          </div>
+        )}
+        <div className="ar-two-col">
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>初始分配明细（按销售）</span>
+              <span className={`ar-chip ar-chip--${report.salesAssignment.coverage.status}`}>{METRIC_STATE_LABELS[report.salesAssignment.coverage.status]}</span>
+            </div>
+            {report.salesAssignment.assignedFacts.initialAssignments.groups.length === 0 ? (
+              <p className="ar-empty-list">本机审计中无分配事实（真实零）</p>
+            ) : (
+              <div className="ar-reasons">
+                {report.salesAssignment.assignedFacts.initialAssignments.groups.map((g) => (
+                  <div key={`${g.salesName ?? ''}-${g.mode ?? ''}`} className="ar-reasons__row">
+                    <span>{g.salesName ?? '未署名'}{g.mode ? ` · ${g.mode}` : ''}</span><span className="num">{g.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>有效跟进客户（认领且已首触）</span>
+              <span className={`ar-chip ar-chip--${report.salesAssignment.effectiveFollowup.state}`}>{METRIC_STATE_LABELS[report.salesAssignment.effectiveFollowup.state]}</span>
+            </div>
+            {report.salesAssignment.effectiveFollowup.value === null ? (
+              <UnavailableCard label="有效跟进客户" reasonCodes={[]} />
+            ) : (
+              <p className="ar-big-num num">{report.salesAssignment.effectiveFollowup.value}</p>
+            )}
+          </div>
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>合同贡献（按当前归属销售）</span>
+              <span className={`ar-chip ar-chip--${report.salesAssignment.contractContribution.state}`}>{METRIC_STATE_LABELS[report.salesAssignment.contractContribution.state]}</span>
+            </div>
+            {report.salesAssignment.contractContribution.value === null || report.salesAssignment.contractContribution.value.length === 0 ? (
+              <p className="ar-empty-list">该年度没有符合条件的事实（真实零）</p>
+            ) : (
+              <div className="ar-reasons">
+                {report.salesAssignment.contractContribution.value.map((row) => (
+                  <div key={`cc${row.ownerSales ?? ''}`} className="ar-reasons__row">
+                    <span>{row.ownerSales ?? '未归属'} · {row.contractCount} 份</span>
+                    <span className="num">{row.totalAmount.toLocaleString('zh-CN')} 元</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="ar-panel">
+            <div className="ar-panel__h">
+              <span>核销回款贡献（按认领销售）</span>
+              <span className={`ar-chip ar-chip--${report.salesAssignment.creditedContribution.state}`}>{METRIC_STATE_LABELS[report.salesAssignment.creditedContribution.state]}</span>
+            </div>
+            {report.salesAssignment.creditedContribution.value === null || report.salesAssignment.creditedContribution.value.length === 0 ? (
+              <p className="ar-empty-list">该年度没有符合条件的事实（真实零）</p>
+            ) : (
+              <div className="ar-reasons">
+                {report.salesAssignment.creditedContribution.value.map((row) => (
+                  <div key={`kc${row.salesName ?? ''}`} className="ar-reasons__row">
+                    <span>{row.salesName ?? '未认领'}</span>
+                    <span className="num">{row.totalAmount.toLocaleString('zh-CN')} 元</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* ── 未实现区块：显式 unavailable，不伪造 0/空数组 ── */}
       <section className="ar-section">
         <div className="seclabel"><span className="seclabel__t">更多维度</span></div>
         <div className="ar-two-col">
-          <UnavailableCard label="月度趋势（当前版本暂不支持）" reasonCodes={report.monthly.reasonCodes} />
-          <UnavailableCard label="沟通质量（当前版本暂不支持）" reasonCodes={report.communication.reasonCodes} />
-          <UnavailableCard label="销售与分配（当前版本暂不支持）" reasonCodes={report.salesAssignment.reasonCodes} />
+          <UnavailableCard label="月度趋势——合同/核销/消息按月（当前版本暂不支持）" reasonCodes={report.monthly.reasonCodes} />
         </div>
       </section>
 

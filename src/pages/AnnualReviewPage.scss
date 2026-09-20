@@ -193,3 +193,27 @@
   .ar-metric:nth-child(2n) { border-right: 0; }
   .ar-two-col, .ar-lists { grid-template-columns: 1fr; }
 }
+
+// 三列指标格（沟通质量）：边线规则与五列版独立
+.ar-metric-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ar-metric-grid--3 .ar-metric {
+  &:nth-child(5n) { border-right: 1px solid var(--color-divider); }
+  &:nth-child(3n) { border-right: 0; }
+  &:nth-last-child(-n + 5) { border-bottom: 0; }
+}
+
+// 分配事实三格（初始分配 / 移入 / 移出，分项展示不相加）
+.ar-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden;
+  background: var(--color-bg-surface);
+  &__item { padding: 12px 14px; border-right: 1px solid var(--color-divider); &:last-child { border-right: 0; } }
+  &__n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 21px; font-weight: 600; }
+  &__l { font-size: 11.5px; color: var(--color-text-secondary); margin-top: 3px; }
+}
+
+// sync 缺口固定文案（E1；禁止显示覆盖率百分比）
+.ar-sync-note {
+  border-left: 2px solid var(--color-warning); background: var(--color-bg-surface-muted);
+  padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);
+}

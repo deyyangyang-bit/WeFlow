@@ -313,19 +313,24 @@ async function main(): Promise<void> {
     })())
   }
 
-  // ══ 5 D/E 未实现 → 显式 unavailable，非 0/空数组 ══════════════════════════
+  // ══ 5 区块实现状态：monthly 仍显式 unavailable；D/E 已实现（S5） ═════════════
   {
     const report = composeAnnualReviewReport({
       period: resolveAnnualReviewPeriod(2026, GEN), facts, sales, crm, opts: { messageStats: { ok: false, sessions: {} } }
     })
-    for (const block of ['monthly', 'communication', 'salesAssignment'] as const) {
-      const b = report[block]
-      ok(`5 ${block} unavailable + metric_not_implemented`, b.status === 'unavailable' && b.reasonCodes.length === 1 && b.reasonCodes[0] === 'metric_not_implemented')
-      ok(`5b coverage.${block} 同步 unavailable`, report.coverage[block].status === 'unavailable')
-    }
-    ok('5c completeness.blocks 未实现区块恒 unavailable（不得伪装 complete）',
-      report.completeness.blocks.monthly === 'unavailable' && report.completeness.blocks.communication === 'unavailable' &&
-      report.completeness.blocks.salesAssignment === 'unavailable' && report.completeness.overall === 'unavailable')
+    ok('5 monthly unavailable + metric_not_implemented', report.monthly.status === 'unavailable' && report.monthly.reasonCodes.length === 1 && report.monthly.reasonCodes[0] === 'metric_not_implemented')
+    ok('5b coverage.monthly unavailable', report.coverage['monthly'].status === 'unavailable')
+    // D 组：消息主口径不可用 → D1/D3 unavailable（不伪造 0）；D7 历史年度 unavailable
+    ok('5c communication.volume unavailable（消息库不可用）', report.communication.volume.value === null && report.communication.volume.state === 'unavailable')
+    ok('5d communication.outboundRate unavailable', report.communication.outboundRate.value === null)
+    // E 组：夹具未注入 audit/assignment 事实 → 显式 unavailable（不伪造 0）
+    ok('5e salesAssignment.coverage unavailable（事实缺失）', report.salesAssignment.coverage.status === 'unavailable' &&
+      report.salesAssignment.coverage.reasonCodes?.includes('facts_missing') === true)
+    ok('5f salesAssignment.effectiveFollowup unavailable', report.salesAssignment.effectiveFollowup.value === null &&
+      report.salesAssignment.effectiveFollowup.state === 'unavailable')
+    ok('5g completeness.blocks 同步推导', report.completeness.blocks.monthly === 'unavailable' &&
+      report.completeness.blocks.communication === 'unavailable' && report.completeness.blocks.salesAssignment === 'unavailable' &&
+      report.completeness.overall === 'unavailable')
   }
 
   // ══ 17/18 序列化与敏感信息（递归扫描） ════════════════════════════════════
@@ -850,15 +855,17 @@ async function main(): Promise<void> {
         richReport.completeness.overall === aggregateMetricStates(Object.values(b))
     })())
 
-    // coverage：metricKey 完整且稳定（26 键全集）
+    // coverage：metricKey 完整且稳定（33 键全集 = A10+B5+C8+monthly+D5+E4）
     const expectedCoverageKeys = [
       'summary.customerTotal', 'summary.customerNew', 'summary.customerActive', 'summary.contractCount', 'summary.contractAmount',
       'summary.creditedAmount', 'summary.shippedCount', 'summary.shippedAmount', 'summary.dealingCustomers', 'summary.avgDealSize',
       'funnel.customerStage', 'funnel.opportunityStage', 'funnel.stageFlow', 'funnel.stuck', 'funnel.lostBreakdown',
       'customers.highValue', 'customers.newCustomers', 'customers.dealing', 'customers.repeat', 'customers.active', 'customers.silent', 'customers.risk', 'customers.priority',
-      'monthly', 'communication', 'salesAssignment'
+      'monthly',
+      'communication.volume', 'communication.contacted', 'communication.outboundRate', 'communication.monthlyTrend', 'communication.longSilent',
+      'salesAssignment.assignedFacts', 'salesAssignment.effectiveFollowup', 'salesAssignment.contractContribution', 'salesAssignment.creditedContribution'
     ]
-    eq('K2 coverage metricKey 完整且稳定（26 键）', Object.keys(richReport.coverage).sort(), [...expectedCoverageKeys].sort())
+    eq('K2 coverage metricKey 完整且稳定（33 键）', Object.keys(richReport.coverage).sort(), [...expectedCoverageKeys].sort())
     ok('K2b B/C 组原样复用统计层 coverage', JSON.stringify(richReport.coverage['funnel.customerStage']) === JSON.stringify(richReport.funnel.customerStage.coverage) &&
       JSON.stringify(richReport.coverage['customers.highValue']) === JSON.stringify(richReport.customers.highValue.coverage))
     ok('K2c A 组 status=metric.state、A3 主口径 source=wcdb.messages', richReport.coverage['summary.customerTotal'].status === richReport.summary.customerTotal.state &&

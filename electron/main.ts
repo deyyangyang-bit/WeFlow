@@ -868,9 +868,19 @@ const annualReviewService = new AnnualReviewService({
       return { ok: false, sessions: {} }
     }
     const sessions = (result.data as { sessions?: unknown }).sessions
+    // D5 月度趋势用：native 全局 daily（本地日期 → 消息量）；形状异常时留空（D5 自行降级）
+    const rawDaily = (result.data as { daily?: unknown }).daily
+    const daily: Record<string, number> = {}
+    if (rawDaily && typeof rawDaily === 'object' && !Array.isArray(rawDaily)) {
+      for (const [day, count] of Object.entries(rawDaily as Record<string, unknown>)) {
+        const n = typeof count === 'number' && Number.isFinite(count) ? count : Number(count)
+        if (typeof day === 'string' && day !== '' && Number.isFinite(n) && n >= 0) daily[day] = n
+      }
+    }
     return {
       ok: true,
-      sessions: sessions && typeof sessions === 'object' ? sessions as AnnualReviewMessageStats['sessions'] : {}
+      sessions: sessions && typeof sessions === 'object' ? sessions as AnnualReviewMessageStats['sessions'] : {},
+      daily
     }
   },
   getAccountContext: buildAnnualReviewAccountContext

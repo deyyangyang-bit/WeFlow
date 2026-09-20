@@ -60,6 +60,8 @@ import {
   type AnnualReviewCrmSegmentsFacts,
   type AnnualReviewSalesSegmentsFacts
 } from './annualReviewSegments'
+import { computeAnnualReviewCommunication } from './annualReviewCommunication'
+import { computeAnnualReviewSalesAssignment } from './annualReviewAssignment'
 
 // ─── 报告结构 ────────────────────────────────────────────────────────────────
 
@@ -160,6 +162,36 @@ export interface AnnualReviewSourceSummaryRow {
   note?: string
 }
 
+// ─── D/E 组区块类型（S5：组装层把统计层的 sessionId 行映射为公开身份） ────────
+
+interface BlockMetric<T> { value: T | null; state: MetricState; warnings: MetricWarning[] }
+interface BlockMetricRows<T> { value: T[] | null; state: MetricState; warnings: MetricWarning[] }
+
+/** D 组沟通质量区块（规格 §5.4；D7 行已映射业务身份，无 sessionId） */
+export interface AnnualReviewCommunicationBlock {
+  volume: BlockMetric<number>
+  contacted: BlockMetric<number>
+  /** 0–1；unavailable（无消息）时为 null */
+  outboundRate: BlockMetric<number>
+  monthlyTrend: { months: Array<{ month: string; count: number }> | null; state: MetricState; warnings: MetricWarning[] }
+  longSilent: BlockMetricRows<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }>
+}
+
+/** E 组销售与分配区块（规格 §5.5；无 E2/E6/E7，初始分配与移交分项不相加） */
+export interface AnnualReviewSalesAssignmentBlock {
+  assignedFacts: {
+    initialAssignments: { total: number; groups: Array<{ salesName: string | null; mode: string | null; count: number }> }
+    transfersIn: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+    transfersOut: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+  }
+  /** sync 缺口 → partial + exactCoverage=false + coverageRatio=null */
+  coverage: AnnualReviewCoverage
+  warnings: MetricWarning[]
+  effectiveFollowup: BlockMetric<number>
+  contractContribution: { value: Array<{ ownerSales: string | null; contractCount: number; totalAmount: number }> | null; state: MetricState; warnings: MetricWarning[] }
+  creditedContribution: { value: Array<{ salesName: string | null; totalAmount: number }> | null; state: MetricState; warnings: MetricWarning[] }
+}
+
 export interface AnnualReviewReport {
   reportSchemaVersion: number
   /** 年份；0 = 历史以来 */
@@ -186,10 +218,10 @@ export interface AnnualReviewReport {
   customers: AnnualReviewCustomersBlock
   /** 月度趋势（合同金额/核销回款/消息量按月序列）——当前版本未实现，显式 unavailable */
   monthly: AnnualReviewUnavailableBlock
-  /** D 组沟通质量——当前版本未实现，显式 unavailable */
-  communication: AnnualReviewUnavailableBlock
-  /** E 组销售与分配——当前版本未实现，显式 unavailable */
-  salesAssignment: AnnualReviewUnavailableBlock
+  /** D 组沟通质量（S5：D1/D2/D3/D5/D7） */
+  communication: AnnualReviewCommunicationBlock
+  /** E 组销售与分配（S5：E1/E3/E4/E5；E2/E6/E7 移出 V1） */
+  salesAssignment: AnnualReviewSalesAssignmentBlock
   /** 真实输入事实与消息统计来源摘要（行数确定、无敏感内容） */
   sourceSummary: AnnualReviewSourceSummaryRow[]
 }
@@ -249,7 +281,16 @@ const SUMMARY_METRIC_KEYS = [
 /** 顶层 coverage 的稳定 metricKey 全集（B/C 组 = 区块字段名，A 组 = summary.<metric>） */
 const FUNNEL_METRIC_KEYS = ['customerStage', 'opportunityStage', 'stageFlow', 'stuck', 'lostBreakdown'] as const
 const CUSTOMERS_METRIC_KEYS = ['highValue', 'newCustomers', 'dealing', 'repeat', 'active', 'silent', 'risk', 'priority'] as const
-const NOT_IMPLEMENTED_METRIC_KEYS = ['monthly', 'communication', 'salesAssignment'] as const
+/** V1 仍未实现的区块（显式 unavailable 占位） */
+const NOT_IMPLEMENTED_METRIC_KEYS = ['monthly'] as const
+const COMMUNICATION_METRIC_KEYS = ['volume', 'contacted', 'outboundRate', 'monthlyTrend', 'longSilent'] as const
+/** E 组指标式子项（assignedFacts 用区块 coverage，单独处理） */
+const SALES_ASSIGNMENT_METRIC_KEYS = ['effectiveFollowup', 'contractContribution', 'creditedContribution'] as const
+
+/** 指标 → Coverage（A/D/E 组组装层单一映射：status=metric.state、reasonCodes=warnings codes） */
+function toMetricCoverage(source: string, metric: { state: MetricState; warnings: MetricWarning[] }): AnnualReviewCoverage {
+  return { source, status: metric.state, reasonCodes: warningsToReasonCodes(metric.warnings) }
+}
 
 function cloneCoverage(c: AnnualReviewCoverage): AnnualReviewCoverage {
   const out: AnnualReviewCoverage = { ...c }
@@ -537,10 +578,32 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     }
   }
 
-  // completeness：统计层结果聚合（UI 不计算）；未实现区块恒 unavailable
+  // D/E 组：S5 确定性统计；D7 行映射业务身份（sessionId 留在统计层）
+  const communicationStats = computeAnnualReviewCommunication(period, inputs, opts)
+  const communication: AnnualReviewCommunicationBlock = {
+    volume: communicationStats.volume,
+    contacted: communicationStats.contacted,
+    outboundRate: communicationStats.outboundRate,
+    monthlyTrend: communicationStats.monthlyTrend,
+    longSilent: {
+      value: communicationStats.longSilent.sessionIds === null
+        ? null
+        : communicationStats.longSilent.sessionIds.map((row) => {
+            const identity = identityOf(identityIndex, row.sessionId)
+            return { accountId: identity.accountId, customerId: identity.customerId, name: identity.name, lastContactAtMs: row.lastContactAtMs }
+          }),
+      state: communicationStats.longSilent.state,
+      warnings: communicationStats.longSilent.warnings
+    }
+  }
+  const salesAssignment = computeAnnualReviewSalesAssignment(period, inputs)
+
+  // completeness：统计层结果聚合（UI 不计算）；月度趋势未实现恒 unavailable
   const summaryStates = SUMMARY_METRIC_KEYS.map((key) => summary[key].state)
   const funnelStates = FUNNEL_METRIC_KEYS.map((key) => funnel[key].coverage.status)
   const customersStates = CUSTOMERS_METRIC_KEYS.map((key) => customers[key].coverage.status)
+  const communicationStates = COMMUNICATION_METRIC_KEYS.map((key) => communication[key].state)
+  const salesAssignmentStates = [salesAssignment.coverage.status, ...SALES_ASSIGNMENT_METRIC_KEYS.map((key) => salesAssignment[key].state)]
   const completeness: AnnualReviewCompleteness = {
     overall: 'unavailable',
     blocks: {
@@ -548,8 +611,8 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
       funnel: aggregateMetricStates(funnelStates),
       customers: aggregateMetricStates(customersStates),
       monthly: 'unavailable',
-      communication: 'unavailable',
-      salesAssignment: 'unavailable'
+      communication: aggregateMetricStates(communicationStates),
+      salesAssignment: aggregateMetricStates(salesAssignmentStates)
     }
   }
   completeness.overall = aggregateMetricStates(Object.values(completeness.blocks))
@@ -567,15 +630,25 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
   }
   for (const key of FUNNEL_METRIC_KEYS) coverage[`funnel.${key}`] = cloneCoverage(funnel[key].coverage)
   for (const key of CUSTOMERS_METRIC_KEYS) coverage[`customers.${key}`] = cloneCoverage(customers[key].coverage)
-  for (const key of NOT_IMPLEMENTED_METRIC_KEYS) {
-    coverage[key] = { source: 'not_implemented', status: 'unavailable', reasonCodes: ['metric_not_implemented'] }
-  }
+  coverage['monthly'] = { source: 'not_implemented', status: 'unavailable', reasonCodes: ['metric_not_implemented'] }
+  coverage['communication.volume'] = toMetricCoverage('wcdb.messages', communication.volume)
+  coverage['communication.contacted'] = toMetricCoverage(messageStatsAvailable ? 'wcdb.messages' : 'crmdb.account', communication.contacted)
+  coverage['communication.outboundRate'] = toMetricCoverage('wcdb.messages', communication.outboundRate)
+  coverage['communication.monthlyTrend'] = toMetricCoverage('wcdb.messages', communication.monthlyTrend)
+  coverage['communication.longSilent'] = toMetricCoverage('crmdb.account', communication.longSilent)
+  coverage['salesAssignment.assignedFacts'] = { ...salesAssignment.coverage }
+  coverage['salesAssignment.effectiveFollowup'] = toMetricCoverage('crmdb.assignment', salesAssignment.effectiveFollowup)
+  coverage['salesAssignment.contractContribution'] = toMetricCoverage('crmdb.contract', salesAssignment.contractContribution)
+  coverage['salesAssignment.creditedContribution'] = toMetricCoverage('crmdb.allocation', salesAssignment.creditedContribution)
 
   // warnings：全指标聚合（固定遍历顺序 + 全排序输出 → 与输入行序无关）
   const warningEntries: Array<{ metricKey: string; warnings: MetricWarning[] }> = []
   for (const key of SUMMARY_METRIC_KEYS) warningEntries.push({ metricKey: `summary.${key}`, warnings: summary[key].warnings })
   for (const key of FUNNEL_METRIC_KEYS) warningEntries.push({ metricKey: `funnel.${key}`, warnings: funnel[key].warnings })
   for (const key of CUSTOMERS_METRIC_KEYS) warningEntries.push({ metricKey: `customers.${key}`, warnings: customers[key].warnings })
+  for (const key of COMMUNICATION_METRIC_KEYS) warningEntries.push({ metricKey: `communication.${key}`, warnings: communication[key].warnings })
+  warningEntries.push({ metricKey: 'salesAssignment.assignedFacts', warnings: salesAssignment.warnings })
+  for (const key of SALES_ASSIGNMENT_METRIC_KEYS) warningEntries.push({ metricKey: `salesAssignment.${key}`, warnings: salesAssignment[key].warnings })
 
   return {
     reportSchemaVersion: ANNUAL_REVIEW_REPORT_SCHEMA_VERSION,
@@ -594,8 +667,8 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     funnel,
     customers,
     monthly: { ...NOT_IMPLEMENTED_BLOCK, reasonCodes: ['metric_not_implemented'] },
-    communication: { ...NOT_IMPLEMENTED_BLOCK, reasonCodes: ['metric_not_implemented'] },
-    salesAssignment: { ...NOT_IMPLEMENTED_BLOCK, reasonCodes: ['metric_not_implemented'] },
+    communication,
+    salesAssignment,
     sourceSummary: buildSourceSummary(facts, sales, crm, opts)
   }
 }
@@ -736,7 +809,10 @@ const EXPECTED_COVERAGE_KEYS: readonly string[] = [
   ...SUMMARY_METRIC_KEYS.map((key) => `summary.${key}`),
   ...FUNNEL_METRIC_KEYS.map((key) => `funnel.${key}`),
   ...CUSTOMERS_METRIC_KEYS.map((key) => `customers.${key}`),
-  ...NOT_IMPLEMENTED_METRIC_KEYS
+  ...NOT_IMPLEMENTED_METRIC_KEYS,
+  ...COMMUNICATION_METRIC_KEYS.map((key) => `communication.${key}`),
+  ...SALES_ASSIGNMENT_METRIC_KEYS.map((key) => `salesAssignment.${key}`),
+  'salesAssignment.assignedFacts'
 ]
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -780,6 +856,8 @@ function isCoverageShape(v: unknown): boolean {
  * 递归深度检查：拒绝 NaN/±Infinity、function/symbol/bigint 值、循环引用。
  * undefined 属性值按 JSON 语义视为缺省（JSON.stringify 静默丢弃、structuredClone 保留，
  * 统计层 coverage 以 `x ?? undefined` 形式产出可选键，不构成序列化失败）。
+ * seen 为 DFS 路径栈（回溯删除）：兄弟子树间的共享引用（如 A3/D2 共用同一计算结果）
+ * 不是循环；只有真正出现在自身祖先链上的引用才判循环。
  */
 function deepSerializableCheck(v: unknown, seen: Set<object>): string | null {
   if (v === null || v === undefined) return null
@@ -793,8 +871,12 @@ function deepSerializableCheck(v: unknown, seen: Set<object>): string | null {
   seen.add(obj)
   for (const item of Object.values(obj)) {
     const reason = deepSerializableCheck(item, seen)
-    if (reason) return reason
+    if (reason) {
+      seen.delete(obj)
+      return reason
+    }
   }
+  seen.delete(obj)
   return null
 }
 
@@ -915,6 +997,74 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     }
   }
 
+  // D 组沟通质量（S5）：volume/contacted/outboundRate 数值指标 + monthlyTrend 序列 + longSilent 名单
+  const communication = report.communication
+  if (!isPlainObject(communication)) return invalid('communication 缺失')
+  for (const key of ['volume', 'contacted', 'outboundRate'] as const) {
+    const metric = communication[key]
+    if (!isPlainObject(metric) || !isMetricState(metric.state) || !isWarningsArray(metric.warnings)) return invalid(`communication.${key} 形状非法`)
+    if (!isFiniteNumber(metric.value) && metric.value !== null) return invalid(`communication.${key}.value 非法`)
+    if ((metric.state === 'unavailable') !== (metric.value === null)) return invalid(`communication.${key} 的 unavailable 与 value 不一致`)
+  }
+  const trend = communication.monthlyTrend
+  if (!isPlainObject(trend) || !isMetricState(trend.state) || !isWarningsArray(trend.warnings)) return invalid('communication.monthlyTrend 形状非法')
+  if (trend.months !== null) {
+    if (!Array.isArray(trend.months) || trend.months.some((m) => !isPlainObject(m) || typeof m.month !== 'string' || !/^\d{4}-\d{2}$/.test(m.month) || !isFiniteNumber(m.count) || (m.count as number) < 0)) {
+      return invalid('communication.monthlyTrend.months 形状非法')
+    }
+  }
+  if ((trend.state === 'unavailable') !== (trend.months === null)) return invalid('communication.monthlyTrend 的 unavailable 与 months 不一致')
+  const longSilent = communication.longSilent
+  if (!isPlainObject(longSilent) || !isMetricState(longSilent.state) || !isWarningsArray(longSilent.warnings)) return invalid('communication.longSilent 形状非法')
+  if (longSilent.value !== null) {
+    if (!Array.isArray(longSilent.value) || longSilent.value.some((row) => !isPlainObject(row) || 'sessionId' in row || 'session_id' in row)) {
+      return invalid('communication.longSilent 行不得携带 sessionId')
+    }
+  }
+  if ((longSilent.state === 'unavailable') !== (longSilent.value === null)) return invalid('communication.longSilent 的 unavailable 与 value 不一致')
+
+  // E 组销售与分配（S5）：分项事实 + coverage + 有效跟进 + 两项贡献（无 E2/E6/E7）
+  const salesAssignment = report.salesAssignment
+  if (!isPlainObject(salesAssignment)) return invalid('salesAssignment 缺失')
+  const af = salesAssignment.assignedFacts
+  if (!isPlainObject(af) || !isPlainObject(af.initialAssignments) || !isPlainObject(af.transfersIn) || !isPlainObject(af.transfersOut)) {
+    return invalid('salesAssignment.assignedFacts 形状非法')
+  }
+  const groupsOk = (g: unknown, withMode: boolean): boolean => {
+    if (!isPlainObject(g) || !isFiniteNumber(g.total) || (g.total as number) < 0 || !Number.isInteger(g.total) || !Array.isArray(g.groups)) return false
+    return (g.groups as unknown[]).every((row) => {
+      if (!isPlainObject(row) || !isFiniteNumber(row.count) || (row.count as number) < 0 || !Number.isInteger(row.count)) return false
+      if (row.salesName !== null && typeof row.salesName !== 'string') return false
+      if (withMode && row.mode !== null && typeof row.mode !== 'string') return false
+      return true
+    })
+  }
+  if (!groupsOk(af.initialAssignments, true) || !groupsOk(af.transfersIn, false) || !groupsOk(af.transfersOut, false)) {
+    return invalid('salesAssignment.assignedFacts 分组形状非法')
+  }
+  if (!isCoverageShape(salesAssignment.coverage)) return invalid('salesAssignment.coverage 非法')
+  if (!isWarningsArray(salesAssignment.warnings)) return invalid('salesAssignment.warnings 非法')
+  const followup = salesAssignment.effectiveFollowup
+  if (!isPlainObject(followup) || !isMetricState(followup.state) || !isWarningsArray(followup.warnings)) return invalid('salesAssignment.effectiveFollowup 形状非法')
+  if (!isFiniteNumber(followup.value) && followup.value !== null) return invalid('salesAssignment.effectiveFollowup.value 非法')
+  if ((followup.state === 'unavailable') !== (followup.value === null)) return invalid('salesAssignment.effectiveFollowup 的 unavailable 与 value 不一致')
+  const contribution = salesAssignment.contractContribution
+  if (!isPlainObject(contribution) || !isMetricState(contribution.state) || !isWarningsArray(contribution.warnings)) return invalid('salesAssignment.contractContribution 形状非法')
+  if (contribution.value !== null) {
+    if (!Array.isArray(contribution.value) || contribution.value.some((row) => !isPlainObject(row) || !isFiniteNumber(row.totalAmount) || !isFiniteNumber(row.contractCount) || (row.contractCount as number) < 0)) {
+      return invalid('salesAssignment.contractContribution.value 形状非法')
+    }
+  }
+  if ((contribution.state === 'unavailable') !== (contribution.value === null)) return invalid('salesAssignment.contractContribution 的 unavailable 与 value 不一致')
+  const credited = salesAssignment.creditedContribution
+  if (!isPlainObject(credited) || !isMetricState(credited.state) || !isWarningsArray(credited.warnings)) return invalid('salesAssignment.creditedContribution 形状非法')
+  if (credited.value !== null) {
+    if (!Array.isArray(credited.value) || credited.value.some((row) => !isPlainObject(row) || !isFiniteNumber(row.totalAmount))) {
+      return invalid('salesAssignment.creditedContribution.value 形状非法')
+    }
+  }
+  if ((credited.state === 'unavailable') !== (credited.value === null)) return invalid('salesAssignment.creditedContribution 的 unavailable 与 value 不一致')
+
   const dataRange = report.dataRange
   if (!isPlainObject(dataRange)) return invalid('dataRange 缺失')
   const bothNull = dataRange.from === null && dataRange.to === null
@@ -929,14 +1079,17 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     if (!isMetricState((completeness.blocks as Record<string, unknown>)[blockId])) return invalid(`completeness.blocks.${blockId} 非法`)
   }
   // 不相信 Worker 自报：completeness 必须与各指标/区块状态严格一致（complete 不得含
-  // unavailable/partial/snapshot_only；未实现区块恒 unavailable——由推导核对统一保证）
+  // unavailable/partial/snapshot_only；未实现的 monthly 恒 unavailable——由推导核对统一保证）
   const derivedBlocks = {
     summary: aggregateMetricStates(SUMMARY_METRIC_KEYS.map((key) => (summary[key] as { state: MetricState }).state)),
     funnel: aggregateMetricStates(FUNNEL_METRIC_KEYS.map((key) => (funnel[key] as { coverage: { status: MetricState } }).coverage.status)),
     customers: aggregateMetricStates(CUSTOMERS_METRIC_KEYS.map((key) => (customers[key] as { coverage: { status: MetricState } }).coverage.status)),
     monthly: 'unavailable' as const,
-    communication: 'unavailable' as const,
-    salesAssignment: 'unavailable' as const
+    communication: aggregateMetricStates(COMMUNICATION_METRIC_KEYS.map((key) => (communication[key] as { state: MetricState }).state)),
+    salesAssignment: aggregateMetricStates([
+      (salesAssignment.coverage as { status: MetricState }).status,
+      ...SALES_ASSIGNMENT_METRIC_KEYS.map((key) => (salesAssignment[key] as { state: MetricState }).state)
+    ])
   }
   if (completeness.overall !== aggregateMetricStates(Object.values(derivedBlocks))) {
     return invalid('completeness.overall 与指标/区块状态推导不一致')

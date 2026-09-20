@@ -399,9 +399,13 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 periodEndExclusive, asOf, generatedAt, timezoneNote: 'local', dataRange, completeness, coverage,
 warnings, summary(A1–A9), funnel(B1/B2/B3/B6/B7), customers(C1–C8), monthly, communication,
 salesAssignment, sourceSummary }`。每区块的 value/state/warnings/coverage
-原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly` / `communication`（D 组）/
-`salesAssignment`（E 组）当前版本未实现，为显式 `{ status:'unavailable', reasonCodes:['metric_not_implemented'] }`
-区块，**不是 0/空数组**。补全字段（规格 §7.2）：`dataRange = { from, to }` = **本次报告实际
+原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly`（月度趋势：合同/核销/
+消息按月序列）当前版本未实现，为显式 `{ status:'unavailable', reasonCodes:['metric_not_implemented'] }`
+区块，**不是 0/空数组**；`communication`（D 组：D1 消息量/D2 有沟通客户/D3 主动联系率/D5
+月度趋势单序列/D7 长期未联系名单，S5 已实现）与 `salesAssignment`（E 组：E1 分项分配事实
++ sync 缺口检测/E3 有效跟进/E4 合同贡献/E5 核销贡献；E2/E6/E7 移出 V1，初始分配与移交
+**分项展示不相加**；sync 缺口 → partial + exactCoverage=false + coverageRatio=null，禁止
+覆盖率百分比）为真实区块。补全字段（规格 §7.2）：`dataRange = { from, to }` = **本次报告实际
 输入并参与计算的有效事实时间范围**（各指标参与窗口的并集：存量类无下界——account.createdAt
 < asOf，A1 等存量事实不因早于 periodStart 被排除；区间类按时间契约——signDate/核销计入时间/
 shipped 事件/A3 回退 last_contact ∈ [periodStart, asOf)；重放类 < asOf——intent 事件、商机、
@@ -410,8 +414,11 @@ shipped 事件/A3 回退 last_contact ∈ [periodStart, asOf)；重放类 < asOf
 真实范围 → `{from:null,to:null}`。`completeness = { overall, blocks }`（四态聚合，优先级
 确定性：unavailable > partial > snapshot_only > complete，由主进程聚合、UI 不计算；
 未实现的 D/E/monthly 恒 unavailable，不得把 A/B/C 数字伪装为 complete）；`coverage` =
-稳定 metricKey（`summary.*` / `funnel.*` / `customers.*` / `monthly` / `communication` /
-`salesAssignment`）→ `Coverage` 映射（B/C 组原样复用统计层 coverage；A 组由组装层单一
+稳定 metricKey（33 键全集：`summary.*`×10 / `funnel.*`×5 / `customers.*`×8 / `monthly` /
+`communication.volume|contacted|outboundRate|monthlyTrend|longSilent` /
+`salesAssignment.assignedFacts|effectiveFollowup|contractContribution|creditedContribution`）
+→ `Coverage` 映射（键集合固定，缺一/多一/未知键被运行时校验拒绝；B/C 组原样复用统计层
+coverage；A/D/E 组由组装层单一
 映射 source/status/reasonCodes，reasonCodes 与统计结果 warnings 一致）；`warnings` =
 全指标聚合数组 `{ code, message, metricKeys[], counts? }`（同 code 合并；metricKeys 与
 counts 键稳定排序；**count 按指标拆分、不相加**；输出与输入顺序无关）；`sourceSummary`

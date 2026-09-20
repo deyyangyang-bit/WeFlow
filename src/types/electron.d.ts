@@ -2901,6 +2901,38 @@ export interface AnnualReviewSourceSummaryRow {
   note?: string
 }
 
+/** D 组沟通质量区块（S5；D7 行已映射业务身份，无 sessionId） */
+export interface AnnualReviewCommunicationBlock {
+  /** D1 年度客户消息量 */
+  volume: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D2 有沟通客户数（=A3 同一结果） */
+  contacted: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D3 主动联系率（0–1）；unavailable（无消息）时为 null */
+  outboundRate: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D5 月度沟通趋势（本地月 'YYYY-MM' 升序单序列） */
+  monthlyTrend: { months: Array<{ month: string; count: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D7 长期未联系客户（仅 current_year/all_time；历史年度 unavailable） */
+  longSilent: { value: Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
+/** E 组销售与分配区块（S5；E1 分项事实不相加，无 E2/E6/E7） */
+export interface AnnualReviewSalesAssignmentBlock {
+  assignedFacts: {
+    /** 初始分配（lead_assign，按 salesName+mode 分组）——不得与移交相加命名 */
+    initialAssignments: { total: number; groups: Array<{ salesName: string | null; mode: string | null; count: number }> }
+    /** 移入（lead_transfer 按 detail.toSales） */
+    transfersIn: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+    /** 移出（lead_transfer 按 detail.fromSales） */
+    transfersOut: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+  }
+  /** sync 缺口 → partial + exactCoverage=false + coverageRatio=null */
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+  effectiveFollowup: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  contractContribution: { value: Array<{ ownerSales: string | null; contractCount: number; totalAmount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  creditedContribution: { value: Array<{ salesName: string | null; totalAmount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
 export interface AnnualReviewReport {
   reportSchemaVersion: number
   /** 年份；0 = 历史以来 */
@@ -2925,8 +2957,10 @@ export interface AnnualReviewReport {
   funnel: AnnualReviewFunnelBlock
   customers: AnnualReviewCustomersBlock
   monthly: AnnualReviewUnavailableBlock
-  communication: AnnualReviewUnavailableBlock
-  salesAssignment: AnnualReviewUnavailableBlock
+  /** D 组沟通质量（S5） */
+  communication: AnnualReviewCommunicationBlock
+  /** E 组销售与分配（S5） */
+  salesAssignment: AnnualReviewSalesAssignmentBlock
   /** 真实输入事实与消息统计来源摘要（行数确定、无敏感内容） */
   sourceSummary: AnnualReviewSourceSummaryRow[]
 }

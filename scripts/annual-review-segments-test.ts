@@ -1303,14 +1303,19 @@ function main(): void {
         id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_id INTEGER NOT NULL, event_type TEXT NOT NULL,
         stage TEXT DEFAULT '', detail TEXT DEFAULT '', created_at INTEGER NOT NULL);
       CREATE TABLE account (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, created_at INTEGER,
-        session_id TEXT, sales_stage TEXT, last_contact_at INTEGER, imported_at INTEGER);
+        session_id TEXT, sales_stage TEXT, last_contact_at INTEGER, imported_at INTEGER, owner_sales TEXT);
       CREATE TABLE contract (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, name TEXT,
         amount REAL, status TEXT DEFAULT 'pending_sign', sign_date INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE allocation (id INTEGER PRIMARY KEY AUTOINCREMENT, payment_record_id INTEGER,
         credited_amount REAL, account_id INTEGER, contract_id INTEGER, status TEXT DEFAULT 'pending',
-        created_at INTEGER, confirmed_at INTEGER, reconciliation_status TEXT DEFAULT 'pending', reconciled_at INTEGER);
+        created_at INTEGER, confirmed_at INTEGER, reconciliation_status TEXT DEFAULT 'pending', reconciled_at INTEGER, sales_name TEXT);
       CREATE TABLE contract_status_history (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
         from_status TEXT, to_status TEXT, created_at INTEGER);
+      CREATE TABLE assignment (id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER, sales_name TEXT, mode TEXT,
+        claimed_at INTEGER, status TEXT);
+      CREATE TABLE lead (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, first_contacted_at INTEGER);
+      CREATE TABLE audit_event (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT, entity_type TEXT,
+        entity_id INTEGER, detail TEXT, created_at INTEGER);
     `)
     const ins = (sql: string, params: ReadonlyArray<unknown>): void => db.run(sql, params as never)
     // salesDb

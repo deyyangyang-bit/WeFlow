@@ -196,6 +196,8 @@ export interface AnnualReviewAccountFact {
   sessionId: string | null
   /** WCDB/回填口径为秒；比较前必须 ×1000 */
   lastContactAtSec: number | null
+  /** 当前归属销售（E4 合同贡献分组用；会被离职移交改写 → 历史归属不可重现） */
+  ownerSales?: string | null
 }
 
 export interface AnnualReviewContractFact {
@@ -218,6 +220,8 @@ export interface AnnualReviewAllocationFact {
   reconciliationStatus: string | null
   reconciledAt: number | null
   confirmedAt: number | null
+  /** 认领销售（E5 回款贡献主口径分组用；认领动作事实） */
+  salesName?: string | null
 }
 
 export interface AnnualReviewShippedEventFact {
@@ -225,6 +229,42 @@ export interface AnnualReviewShippedEventFact {
   contractId: number | null
   toStatus: string | null
   createdAt: number | null
+}
+
+/** assignment 行（E3 有效跟进用；claimed_at 为认领动作一次性写入，历史可靠） */
+export interface AnnualReviewAssignmentFact {
+  id: number
+  leadId: number | null
+  salesName: string | null
+  mode: string | null
+  /** 认领时间毫秒；null = 未认领（E3 不计） */
+  claimedAt: number | null
+}
+
+/** lead 行（E3 有效跟进用） */
+export interface AnnualReviewLeadFact {
+  id: number
+  accountId: number | null
+  /** 首次触达时间毫秒；null = 未触达 */
+  firstContactedAt: number | null
+}
+
+/**
+ * audit_event 行（E1 分配事实源；append-only，不用 assignment.updated_at）。
+ * loader 预过滤 action ∈ (lead_assign / lead_transfer / sync_apply)，detail JSON 防御性解析。
+ */
+export interface AnnualReviewAuditEventFact {
+  id: number
+  action: string
+  /** 毫秒；null = 缺失/非法（排除并告警） */
+  createdAt: number | null
+  /** detail 解析出的稳定字段；解析失败 → detailInvalid=true */
+  detailType: string | null
+  salesName: string | null
+  toSales: string | null
+  fromSales: string | null
+  mode: string | null
+  assignmentId: number | null
 }
 
 export interface AnnualReviewFacts {
@@ -235,6 +275,12 @@ export interface AnnualReviewFacts {
   allocations: AnnualReviewAllocationFact[]
   /** contract_status_history 事件（loader 预过滤 to_status='shipped'；计算层仍自行过滤） */
   shippedEvents: AnnualReviewShippedEventFact[]
+  /** assignment 行（E3 用；可选 = 旧载荷无此事实，E3 unavailable） */
+  assignments?: AnnualReviewAssignmentFact[]
+  /** lead 行（E3 用；可选同上） */
+  leads?: AnnualReviewLeadFact[]
+  /** audit_event 事件（E1 用；loader 预过滤三类 action；可选同上） */
+  auditEvents?: AnnualReviewAuditEventFact[]
 }
 
 /** A3 主口径注入：wcdbService.getAnnualReportStats 规范化结果 */
@@ -243,6 +289,8 @@ export interface AnnualReviewMessageStats {
   ok: boolean
   /** sessionId → 收发统计（区间 [beginSec, endSec) 内） */
   sessions: Record<string, { sent: number; received: number }>
+  /** 本地日期（YYYY-MM-DD）→ 消息总量（D5 月度趋势聚合用；可选） */
+  daily?: Record<string, number>
 }
 
 export interface AnnualReviewExclusions {
@@ -833,14 +881,15 @@ function strOrNull(v: unknown): string | null {
  */
 export function loadAnnualReviewFacts(runner: SqlQueryRunner): AnnualReviewFacts {
   const accounts = runner.all<SqlRow>(
-    'SELECT id, name, created_at, imported_at, session_id, last_contact_at FROM account'
+    'SELECT id, name, created_at, imported_at, session_id, last_contact_at, owner_sales FROM account'
   ).map<AnnualReviewAccountFact>((r) => ({
     id: numOrNull(r.id) ?? 0,
     name: strOrNull(r.name),
     createdAt: numOrNull(r.created_at),
     importedAt: numOrNull(r.imported_at),
     sessionId: strOrNull(r.session_id),
-    lastContactAtSec: numOrNull(r.last_contact_at)
+    lastContactAtSec: numOrNull(r.last_contact_at),
+    ownerSales: strOrNull(r.owner_sales)
   }))
 
   const contracts = runner.all<SqlRow>(
@@ -855,7 +904,7 @@ export function loadAnnualReviewFacts(runner: SqlQueryRunner): AnnualReviewFacts
 
   // WHERE 子句与 crmDbService.creditedTotal 同款（§2.3 回款计入口径）
   const allocations = runner.all<SqlRow>(
-    'SELECT id, contract_id, account_id, credited_amount, status, reconciliation_status, reconciled_at, confirmed_at '
+    'SELECT id, contract_id, account_id, credited_amount, status, reconciliation_status, reconciled_at, confirmed_at, sales_name '
     + "FROM allocation WHERE status = 'confirmed' AND reconciliation_status IN ('allocated', 'legacy_confirmed')"
   ).map<AnnualReviewAllocationFact>((r) => ({
     id: numOrNull(r.id) ?? 0,
@@ -865,7 +914,8 @@ export function loadAnnualReviewFacts(runner: SqlQueryRunner): AnnualReviewFacts
     status: strOrNull(r.status) ?? '',
     reconciliationStatus: strOrNull(r.reconciliation_status),
     reconciledAt: numOrNull(r.reconciled_at),
-    confirmedAt: numOrNull(r.confirmed_at)
+    confirmedAt: numOrNull(r.confirmed_at),
+    salesName: strOrNull(r.sales_name)
   }))
 
   const shippedEvents = runner.all<SqlRow>(
@@ -877,5 +927,56 @@ export function loadAnnualReviewFacts(runner: SqlQueryRunner): AnnualReviewFacts
     createdAt: numOrNull(r.created_at)
   }))
 
-  return { accounts, contracts, allocations, shippedEvents }
+  // E3 事实：assignment 认领行（claimed_at 为认领动作一次性写入）+ lead 首触时间
+  const assignments = runner.all<SqlRow>(
+    'SELECT id, lead_id, sales_name, mode, claimed_at FROM assignment WHERE claimed_at IS NOT NULL'
+  ).map<AnnualReviewAssignmentFact>((r) => ({
+    id: numOrNull(r.id) ?? 0,
+    leadId: numOrNull(r.lead_id),
+    salesName: strOrNull(r.sales_name),
+    mode: strOrNull(r.mode),
+    claimedAt: numOrNull(r.claimed_at)
+  }))
+  const leads = runner.all<SqlRow>(
+    'SELECT id, account_id, first_contacted_at FROM lead'
+  ).map<AnnualReviewLeadFact>((r) => ({
+    id: numOrNull(r.id) ?? 0,
+    accountId: numOrNull(r.account_id),
+    firstContactedAt: numOrNull(r.first_contacted_at)
+  }))
+
+  // E1 事实：append-only 审计事件（预过滤三类 action；detail JSON 防御性解析，不参与任何 SQL 拼接）
+  const auditEvents = runner.all<SqlRow>(
+    "SELECT id, action, detail, created_at FROM audit_event WHERE action IN ('lead_assign', 'lead_transfer', 'sync_apply')"
+  ).map<AnnualReviewAuditEventFact>((r) => {
+    let d: { type?: unknown; salesName?: unknown; toSales?: unknown; fromSales?: unknown; mode?: unknown; assignmentId?: unknown } = {}
+    let detailInvalid = false
+    const rawDetail = r.detail
+    if (rawDetail !== null && rawDetail !== undefined && rawDetail !== '') {
+      try {
+        const parsed = JSON.parse(String(rawDetail)) as Record<string, unknown>
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          d = parsed as typeof d
+        } else {
+          detailInvalid = true
+        }
+      } catch {
+        detailInvalid = true
+      }
+    }
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    return {
+      id: numOrNull(r.id) ?? 0,
+      action: strOrNull(r.action) ?? '',
+      createdAt: numOrNull(r.created_at),
+      detailType: detailInvalid ? null : strOrNull(d.type),
+      salesName: strOrNull(d.salesName),
+      toSales: strOrNull(d.toSales),
+      fromSales: strOrNull(d.fromSales),
+      mode: strOrNull(d.mode),
+      assignmentId: num(d.assignmentId)
+    }
+  })
+
+  return { accounts, contracts, allocations, shippedEvents, assignments, leads, auditEvents }
 }
