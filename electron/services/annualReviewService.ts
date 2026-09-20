@@ -5,14 +5,27 @@
  *   - 生成任务状态机：idle → loading → computing → completed/failed；进度单调不回退、
  *     终态锁定；同一 {accountScopeId, year} 已有运行中任务时合并等待（不重复启动 Worker）；
  *     不同账号作用域独立运行；旧任务迟到消息（taskId 不匹配）不得覆盖新任务。
- *   - 账号作用域内存缓存：键 {accountScopeId, year, reportSchemaVersion}；仅主进程内存、
- *     TTL 10 分钟、不持久化；generate 强制重算覆盖同键缓存；getReport 只读当前作用域
- *     未过期缓存，miss/stale 明确区分，绝不回退其他账号。**不保证实时一致**：迟到同步、
- *     补录、迁移、删除都可能改变结果，靠 TTL + generate 强制重算 + 失效事件兜底。
+ *   - 取消（TaskControl）：cancel 对 loading 与 computing 都有效。loading 阶段取消后
+ *     不再启动 Worker；computing 阶段取消真实 terminate Worker（runner.cancel）。
+ *     服务级 cancel signal（Promise race）让阻塞中的 generate() 立即收敛为
+ *     failed + error.code='cancelled'，不必等待无法中断的数据库查询；迟到的底层
+ *     查询结果与 Worker 结果一律丢弃。终态任务重复 cancel 幂等成功；未知 taskId
+ *     返回 task_not_found；多次 cancel 不抛错、不产生相互冲突的终态。
+ *   - 失效 epoch：每次 invalidateAll()/handleDataChanged() 递增失效纪元；任务与
+ *     getAvailableYears 在开始时捕获 epoch 与账号作用域，任一 await 完成后、Worker
+ *     启动前、缓存写入前复核；epoch 或账号上下文已变化的旧任务收敛为
+ *     failed + error.code='invalidated'，绝不写回任何账号的报告/年份缓存；失效后
+ *     新请求重新加载事实。
+ *   - 账号作用域内存缓存：键 = 完整复合作用域（JSON 复合键，无哈希折叠碰撞）+
+ *     year + reportSchemaVersion；仅主进程内存、TTL 10 分钟、不持久化；generate 强制
+ *     重算覆盖同键缓存；getReport 只读当前作用域未过期缓存，miss/stale 明确区分，
+ *     绝不回退其他账号。**不保证实时一致**：迟到同步、补录、迁移、删除都可能改变
+ *     结果，靠 TTL + generate 强制重算 + 失效事件兜底。
  *   - Worker 边界：主进程加载数据库窄事实（由外部注入 loader），Worker 只接收可序列化的
  *     period/facts/messageStats/exclusions/reportSchemaVersion/taskId，内部调用已验收纯函数。
- *     本模块零数据库导入、零秘密；Worker 错误结构化（code + 非敏感 message），
- *     不回传堆栈/数据库路径/SQL/原始聊天内容。
+ *     本模块零数据库导入、零秘密；Worker 结果经 validateAnnualReviewReport 运行时结构
+ *     校验（非法结果不写缓存，收敛 failed/invalid_worker_result）；错误结构化
+ *     （code + 非敏感 message），不回传堆栈/数据库路径/SQL/原始聊天内容。
  *
  * 测试纪律：全部外部依赖（事实加载、消息统计、账号上下文、Worker runner、时钟）经
  * AnnualReviewServiceDeps 注入，tsx 测试用假依赖驱动完整状态机，不触碰真实数据库。
@@ -38,6 +51,7 @@ import type {
 import {
   computeAnnualReviewAvailableYears,
   composeAnnualReviewReport,
+  validateAnnualReviewReport,
   validateAnnualReviewYearInput,
   type AnnualReviewAvailableYearsResult,
   type AnnualReviewReport
@@ -73,10 +87,65 @@ export interface AnnualReviewProgressEvent {
 
 export type AnnualReviewProgressListener = (event: AnnualReviewProgressEvent) => void
 
-/** 结构化错误（面向用户，非敏感；绝不携带堆栈/路径/SQL/原文） */
+/**
+ * 结构化错误（面向用户，非敏感；绝不携带堆栈/路径/SQL/原文）。
+ * invalidated = 失效纪元或账号上下文在任务运行期间发生变化（规格 §7.2 失效条件命中），
+ * 任务被收敛终止；与用户主动取消（cancelled）语义区分，code 稳定且对 UI 可文档化。
+ */
 export interface AnnualReviewTaskError {
-  code: 'worker_error' | 'worker_exit' | 'invalid_worker_result' | 'fact_load_failed' | 'cancelled' | 'internal'
+  code: 'worker_error' | 'worker_exit' | 'invalid_worker_result' | 'fact_load_failed' | 'cancelled' | 'invalidated' | 'internal'
   message: string
+}
+
+// ─── 取消/失效控制（服务级 TaskControl） ─────────────────────────────────────
+
+const CANCELLED_MESSAGE = '年度复盘生成已取消'
+const INVALIDATED_MESSAGE = '数据已失效（账号/业务库变更或数据写入），本次生成已终止'
+
+function abortError(code: 'cancelled' | 'invalidated'): Error {
+  return Object.assign(new Error(code === 'cancelled' ? CANCELLED_MESSAGE : INVALIDATED_MESSAGE), { code })
+}
+
+type AbortCode = 'cancelled' | 'invalidated'
+
+/**
+ * 单任务的取消/失效控制。abort(code) 让所有经 race() 挂起的 await 立即以该 code 收敛，
+ * 不依赖底层查询/Worker 可中断；迟到的底层结果由调用方在 race 收敛后统一丢弃。
+ * promise 常驻一个 no-op catch，保证「无人 race 时 abort」不产生 unhandled rejection。
+ */
+class TaskControl {
+  readonly promise: Promise<never>
+  private trigger!: (e: Error) => void
+  private state: 'running' | AbortCode = 'running'
+
+  constructor() {
+    this.promise = new Promise<never>((_, reject) => { this.trigger = reject })
+    this.promise.catch(() => { /* 常驻处理：abort 无人 race 时静默 */ })
+  }
+
+  get cancelled(): boolean { return this.state === 'cancelled' }
+  get invalidated(): boolean { return this.state === 'invalidated' }
+  get aborted(): boolean { return this.state !== 'running' }
+
+  /** 幂等；首个 code 生效（取消与失效互斥，先到先得，不产生冲突终态） */
+  abort(code: AbortCode): void {
+    if (this.state !== 'running') return
+    this.state = code
+    this.trigger(abortError(code))
+  }
+
+  /** 同步检查点：已中止则抛出（Worker 启动前 / 缓存写入前等） */
+  check(): void {
+    if (this.state !== 'running') throw abortError(this.state)
+  }
+
+  /**
+   * race 一个异步步骤：abort 时立刻以 abortError 收敛，p 的结果被丢弃
+   * （p 的 rejection 由 race 挂接的 handler 吸收，不产生 unhandled rejection）。
+   */
+  race<T>(p: Promise<T>): Promise<T> {
+    return Promise.race([p, this.promise])
+  }
 }
 
 // ─── Worker runner（窄接口，可注入） ────────────────────────────────────────
@@ -128,7 +197,11 @@ export interface AnnualReviewWorkerRunner {
 export interface AnnualReviewAccountContext {
   /** 规范化微信账号（仅参与作用域派生，不进入缓存键原文、不发给渲染层） */
   wxid: string
-  /** salesDb/crmDb 文件名（非路径）——参与作用域派生，区分实际业务库身份 */
+  /**
+   * 实际业务库身份（主进程内部键；不发给渲染层、不写日志）。
+   * 生产来源 = salesDbService/crmDbService.currentDbPath()（当前实际打开的库文件路径），
+   * 未打开时回退按 wxid 推导的规范文件名；路径只参与作用域派生。
+   */
   salesDbName: string
   crmDbName: string
   exclusions: AnnualReviewExclusions
@@ -143,7 +216,7 @@ export interface AnnualReviewServiceDeps {
   loadCrmSegments: () => Promise<AnnualReviewCrmSegmentsFacts>
   /** WCDB 消息统计（A3 主口径；秒区间已换算后调用） */
   loadMessageStats: (sessionIds: string[], beginSec: number, endSec: number) => Promise<AnnualReviewMessageStats>
-  /** 当前账号上下文（主进程真实来源：config wxid + 业务库名 + 排除名单） */
+  /** 当前账号上下文（主进程真实来源：config wxid + 实际业务库身份 + 排除名单） */
   getAccountContext: () => AnnualReviewAccountContext
   /** Worker runner；缺省 = 真实线程 runner（annualReviewWorker.js） */
   runner?: AnnualReviewWorkerRunner
@@ -165,7 +238,7 @@ interface AnnualReviewCacheEntry {
 export type AnnualReviewCacheLookup = { hit: true; report: AnnualReviewReport } | { hit: false; stale: boolean }
 
 /**
- * 账号作用域内存缓存。键 = accountScopeId \u0001 year \u0001 reportSchemaVersion。
+ * 账号作用域内存缓存。键 = accountScopeId（完整复合键）\u0001 year \u0001 reportSchemaVersion。
  * 仅内存、TTL 10 分钟、不持久化、不写 config；历史年度同样受 TTL 约束
  * （边界稳定 ≠ 底层数据不可变：迟到同步/补录/迁移/删除都会改变结果）。
  */
@@ -206,26 +279,19 @@ export class AnnualReviewCache {
 
 // ─── accountScopeId ──────────────────────────────────────────────────────────
 
-/** FNV-1a 32 位哈希（十六进制）：把账号上下文折叠为不透明短标识，不暴露路径/原文 */
-function fnv1aHex(input: string): string {
-  let hash = 0x811c9dc5
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
 /**
- * 生成账号作用域标识：由规范化 wxid + salesDb/crmDb 文件名（非路径）派生的不透明短 id。
- *   - 区分不同规范化微信账号；
- *   - 区分实际业务库身份（含 legacy 回退名）；
- *   - 不包含数据库路径；wxid/库名经哈希折叠，不向渲染层暴露原文；
- *   - 密钥、Token、解密信息绝不参与派生。
+ * 生成账号作用域标识：完整复合键（JSON 数组编码，长度自描述、字符转义无歧义，
+ * 任意输入组合两两可区分——无 32/64 位哈希折叠碰撞面）。
+ *   - 区分不同规范化微信账号与实际业务库身份（含 legacy 回退名）；
+ *   - 仅作为主进程内部 Map 键使用，绝不写日志、绝不返回渲染层、绝不进入 Worker 载荷；
+ *   - 不包含解密密钥/Token；数据库路径仅以 currentDbPath 身份参与派生（内部键允许）。
  */
 export function buildAccountScopeId(ctx: { wxid: string; salesDbName: string; crmDbName: string }): string {
-  const raw = [String(ctx.wxid || '').trim(), String(ctx.salesDbName || '').trim(), String(ctx.crmDbName || '').trim()].join('\u0001')
-  return `as-${fnv1aHex(raw)}`
+  return JSON.stringify([
+    String(ctx.wxid || '').trim(),
+    String(ctx.salesDbName || '').trim(),
+    String(ctx.crmDbName || '').trim()
+  ])
 }
 
 // ─── 默认线程 runner（生产） ─────────────────────────────────────────────────
@@ -236,6 +302,7 @@ export function buildAccountScopeId(ctx: { wxid: string; salesDbName: string; cr
  * dev 与打包均为 __dirname 同级产物，scripts/verify-electron-bundle.cjs 扩展守卫覆盖）。
  * 消息契约：{type:'annualReview:progress'|'annualReview:result'|'annualReview:error', taskId, …}；
  * 非法消息 / taskId 不匹配 / exit 无结果 一律 reject，不留下永久 loading。
+ * cancel(taskId) 真实 terminate Worker（computing 阶段取消的落地动作）。
  */
 export function createThreadRunner(workerFileName = 'annualReviewWorker.js'): AnnualReviewWorkerRunner {
   const workerPath = join(__dirname, workerFileName)
@@ -311,7 +378,7 @@ export function createThreadRunner(workerFileName = 'annualReviewWorker.js'): An
             entry.settled = true
             running.delete(taskId)
             const failCode = entry.cancelled ? 'cancelled' : 'worker_exit'
-            reject(Object.assign(new Error(failCode === 'cancelled' ? '年度复盘生成已取消' : `年度复盘线程异常退出：${code}`), { code: failCode }))
+            reject(Object.assign(new Error(failCode === 'cancelled' ? CANCELLED_MESSAGE : `年度复盘线程异常退出：${code}`), { code: failCode }))
           }
         })
       })
@@ -335,6 +402,7 @@ export function createThreadRunner(workerFileName = 'annualReviewWorker.js'): An
 
 interface RunningTask {
   promise: Promise<void>
+  control: TaskControl
 }
 
 interface TaskRecord {
@@ -358,6 +426,11 @@ export interface AnnualReviewGetReportResult {
   error?: { code: string; message: string }
 }
 
+/** 失效收敛错误（assertCurrent 抛出；runTask 捕获后映射为 failed/invalidated） */
+function invalidationError(message: string): Error {
+  return Object.assign(new Error(message), { code: 'invalidated' as const })
+}
+
 export class AnnualReviewService {
   private readonly cache: AnnualReviewCache
   private readonly tasks = new Map<string, TaskRecord>() // key: scopeId \u0001 year
@@ -367,6 +440,8 @@ export class AnnualReviewService {
   private readonly newTaskId: () => string
   private yearsCache = new Map<string, { result: AnnualReviewAvailableYearsResult & { generatedAt: number }; cachedAt: number }>()
   private runningTasksByTaskId = new Map<string, RunningTask>()
+  /** 失效纪元：invalidateAll/handleDataChanged 各自递增；任务开始时捕获、完成后复核 */
+  private epoch = 0
 
   constructor(private readonly deps: AnnualReviewServiceDeps) {
     this.cache = new AnnualReviewCache(ANNUAL_REVIEW_CACHE_TTL_MS, deps.now ?? Date.now)
@@ -420,7 +495,8 @@ export class AnnualReviewService {
   /**
    * 发起生成并等待完成（与旧 annualReport:generateReport 同款阻塞信封；进度经事件并行推送）。
    * 同一 {scopeId, year} 已有运行中任务 → 合并等待同一任务（reused=true，不重复启动 Worker）。
-   * 返回值携带最终状态：completed → success:true；failed → success:false + 结构化错误。
+   * 返回值携带最终状态：completed → success:true；failed（含 cancelled/invalidated）→
+   * success:false + 结构化错误。
    */
   async generate(year: number): Promise<AnnualReviewGenerateResult> {
     const ctx = this.deps.getAccountContext()
@@ -448,8 +524,10 @@ export class AnnualReviewService {
     }
     const record: TaskRecord = { snapshot, running: true }
     this.tasks.set(scopeKey, record)
+    const control = new TaskControl()
     const running: RunningTask = {
-      promise: this.runTask(scopeId, scopeKey, taskId, year, ctx)
+      control,
+      promise: this.runTask({ scopeId, scopeKey, taskId, year, ctx, control, epochAtStart: this.epoch })
         .catch(() => { /* runTask 内部已收敛为 failed；此层只防 unhandled rejection */ })
         .finally(() => {
           record.running = false
@@ -470,39 +548,73 @@ export class AnnualReviewService {
     }
   }
 
-  private async runTask(scopeId: string, scopeKey: string, taskId: string, year: number, ctx: AnnualReviewAccountContext): Promise<void> {
-    const generatedAt = this.now()
-    let period: AnnualReviewPeriod
-    try {
-      period = resolveAnnualReviewPeriod(year, generatedAt)
-    } catch (e) {
-      this.failTask(scopeKey, taskId, 'internal', e instanceof Error ? e.message : '时间契约解析失败')
-      return
+  /**
+   * 时效复核：失效纪元或账号上下文（账号/实际业务库身份）已变化 → 抛 invalidated。
+   * 调用点 = 每个 await 完成后、Worker 启动前、缓存写入前（规格 §2 强制失效条件）。
+   */
+  private assertCurrent(scopeId: string, epochAtStart: number): void {
+    if (this.epoch !== epochAtStart) {
+      throw invalidationError(INVALIDATED_MESSAGE)
     }
-
-    // ── loading：主进程加载窄事实（数据库访问只在主进程服务边界内） ──
-    this.updateTask(scopeKey, taskId, { progress: 5, statusText: '加载本地业务数据' })
-    let facts: AnnualReviewFacts
-    let sales: AnnualReviewSalesSegmentsFacts
-    let crm: AnnualReviewCrmSegmentsFacts
-    try {
-      ;[facts, sales, crm] = await Promise.all([
-        this.deps.loadFacts(),
-        this.deps.loadSalesSegments(),
-        this.deps.loadCrmSegments()
-      ])
-    } catch {
-      this.failTask(scopeKey, taskId, 'fact_load_failed', '本地业务数据加载失败，无法生成年报复盘')
-      return
+    const currentScopeId = buildAccountScopeId(this.deps.getAccountContext())
+    if (currentScopeId !== scopeId) {
+      throw invalidationError('账号或业务库已变更，本次生成结果已作废')
     }
+  }
 
+  private async runTask(args: {
+    scopeId: string
+    scopeKey: string
+    taskId: string
+    year: number
+    ctx: AnnualReviewAccountContext
+    control: TaskControl
+    epochAtStart: number
+  }): Promise<void> {
+    const { scopeId, scopeKey, taskId, year, ctx, control, epochAtStart } = args
     try {
+      const generatedAt = this.now()
+      let period: AnnualReviewPeriod
+      try {
+        period = resolveAnnualReviewPeriod(year, generatedAt)
+      } catch (e) {
+        this.failTask(scopeKey, taskId, 'internal', e instanceof Error ? e.message : '时间契约解析失败')
+        return
+      }
+
+      // ── loading：主进程加载窄事实（数据库访问只在主进程服务边界内） ──
+      this.updateTask(scopeKey, taskId, { progress: 5, statusText: '加载本地业务数据' })
+      control.check() // loading 阶段已取消 → 不发起任何加载，更不启动 Worker
+      let facts: AnnualReviewFacts
+      let sales: AnnualReviewSalesSegmentsFacts
+      let crm: AnnualReviewCrmSegmentsFacts
+      try {
+        ;[facts, sales, crm] = await control.race(Promise.all([
+          this.deps.loadFacts(),
+          this.deps.loadSalesSegments(),
+          this.deps.loadCrmSegments()
+        ]))
+      } catch (e) {
+        if (control.aborted) {
+          this.failTask(scopeKey, taskId, control.cancelled ? 'cancelled' : 'invalidated', control.cancelled ? CANCELLED_MESSAGE : INVALIDATED_MESSAGE)
+          return
+        }
+        this.failTask(scopeKey, taskId, 'fact_load_failed', '本地业务数据加载失败，无法生成年报复盘')
+        return
+      }
+      this.assertCurrent(scopeId, epochAtStart)
+      control.check()
+
       this.updateTask(scopeKey, taskId, { progress: 30, statusText: '加载消息统计' })
-      const messageStats = await this.loadMessageStatsSafe(facts, period, ctx)
+      const messageStats = await control.race(this.loadMessageStatsSafe(facts, period, ctx))
+      this.assertCurrent(scopeId, epochAtStart)
+      control.check()
       this.updateTask(scopeKey, taskId, { progress: 35, statusText: '计算年度统计' })
 
       // ── computing：Worker 执行已验收纯统计（只传可序列化载荷，无路径/密钥） ──
       this.updateTask(scopeKey, taskId, { status: 'computing', progress: 40 })
+      this.assertCurrent(scopeId, epochAtStart)
+      control.check() // Worker 启动前最后检查：取消/失效后绝不启动 Worker
       const payload: AnnualReviewWorkerPayload = {
         taskId,
         reportSchemaVersion: ANNUAL_REVIEW_REPORT_SCHEMA_VERSION,
@@ -513,11 +625,15 @@ export class AnnualReviewService {
         messageStats,
         exclusions: ctx.exclusions
       }
-      const report = await this.runner.run(payload, (p) => {
+      const report = await control.race(this.runner.run(payload, (p) => {
         this.updateTask(scopeKey, taskId, { progress: Math.max(40, Math.min(95, p.progress)), statusText: p.statusText })
-      })
+      }))
 
-      if (!report || typeof report !== 'object' || Array.isArray(report)) {
+      // Worker 返回后、缓存写入前：终检（取消/失效的迟到收敛一律丢弃结果）
+      this.assertCurrent(scopeId, epochAtStart)
+      control.check()
+      const validation = validateAnnualReviewReport(report, year)
+      if (!validation.ok) {
         this.failTask(scopeKey, taskId, 'invalid_worker_result', '年度复盘生成结果非法')
         return
       }
@@ -525,9 +641,21 @@ export class AnnualReviewService {
       this.cache.set(scopeId, year, report)
       this.updateTask(scopeKey, taskId, { status: 'completed', progress: 100, statusText: '生成完成' })
     } catch (e) {
+      if (control.cancelled) {
+        this.failTask(scopeKey, taskId, 'cancelled', CANCELLED_MESSAGE)
+        return
+      }
+      if (control.invalidated) {
+        this.failTask(scopeKey, taskId, 'invalidated', INVALIDATED_MESSAGE)
+        return
+      }
       const err = e as { code?: unknown; message?: unknown }
       if (err?.code === 'cancelled') {
-        this.failTask(scopeKey, taskId, 'cancelled', '年度复盘生成已取消')
+        this.failTask(scopeKey, taskId, 'cancelled', CANCELLED_MESSAGE)
+        return
+      }
+      if (err?.code === 'invalidated') {
+        this.failTask(scopeKey, taskId, 'invalidated', e instanceof Error && e.message ? e.message : INVALIDATED_MESSAGE)
         return
       }
       this.failTask(scopeKey, taskId, 'worker_error', e instanceof Error && e.message ? e.message : '年度复盘生成失败')
@@ -579,10 +707,17 @@ export class AnnualReviewService {
     return record ? { ...record.snapshot } : null
   }
 
+  /**
+   * 取消任务：loading 与 computing 都有效（loading = 收敛并不再启动 Worker；
+   * computing = control 收敛 + runner.cancel 真实 terminate Worker）。
+   * 终态任务幂等成功（终态不可变）；未知 taskId → task_not_found；
+   * 多次 cancel 幂等，不抛错、不产生相互冲突的终态。
+   */
   cancel(taskId: string): { success: boolean; error?: { code: string; message: string } } {
     if (!this.validateTaskId(taskId)) return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
     const running = this.runningTasksByTaskId.get(taskId)
     if (running) {
+      running.control.abort('cancelled')
       this.runner.cancel?.(taskId)
       return { success: true }
     }
@@ -598,9 +733,15 @@ export class AnnualReviewService {
   }
 
   // ── 可用年份 ──
+  /**
+   * 可用年份（主进程计算，renderer 不推断）。开始时捕获失效纪元与账号作用域；
+   * 加载完成后复核——失效或账号已变化的旧结果绝不写回年份缓存（也不返回），
+   * 新请求会重新加载事实。失效期间并发到达的调用以结构化 invalidated 错误收敛。
+   */
   async getAvailableYears(): Promise<AnnualReviewAvailableYearsResult & { generatedAt: number }> {
     const ctx = this.deps.getAccountContext()
     const scopeId = buildAccountScopeId(ctx)
+    const epochAtStart = this.epoch
     const cached = this.yearsCache.get(scopeId)
     const now = this.now()
     if (cached && now - cached.cachedAt <= ANNUAL_REVIEW_CACHE_TTL_MS) {
@@ -611,6 +752,7 @@ export class AnnualReviewService {
       this.deps.loadSalesSegments(),
       this.deps.loadCrmSegments()
     ])
+    this.assertCurrent(scopeId, epochAtStart)
     const result: AnnualReviewAvailableYearsResult & { generatedAt: number } = {
       ...computeAnnualReviewAvailableYears({ facts, sales, crm, generatedAt: now }),
       generatedAt: now
@@ -620,15 +762,31 @@ export class AnnualReviewService {
   }
 
   // ── 失效 ──
-  /** 账号切换 / salesDb/crmDb reopen：清空全部缓存（所有作用域），运行中任务照常收敛但不落新作用域缓存之外的位置 */
+  /**
+   * 账号切换 / salesDb/crmDb reopen：递增失效纪元 + 清空全部缓存（所有作用域）+
+   * 终止全部运行中任务（收敛 failed/invalidated）。旧作用域任务绝不写回任何缓存。
+   */
   invalidateAll(): void {
+    this.epoch++
     this.cache.invalidateAll()
     this.yearsCache.clear()
+    this.abortRunningTasks()
   }
 
-  /** 订阅型的数据写入失效（assignment 总线等）：coarse 失效当前全部缓存 */
+  /**
+   * 订阅型的数据写入失效（assignment 总线等）：递增失效纪元 + coarse 清空全部缓存 +
+   * 终止全部运行中任务（收敛 failed/invalidated，结果一律丢弃不写缓存）。
+   */
   handleDataChanged(): void {
+    this.epoch++
     this.cache.invalidateAll()
     this.yearsCache.clear()
+    this.abortRunningTasks()
+  }
+
+  private abortRunningTasks(): void {
+    for (const [, running] of this.runningTasksByTaskId) {
+      running.control.abort('invalidated')
+    }
   }
 }

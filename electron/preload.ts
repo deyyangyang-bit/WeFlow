@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 // 分配模式只有一份定义（shared/centralDownCommand.ASSIGNMENT_MODES）；此处只做类型引用，不另建枚举
 import type { AssignmentMode } from '../shared/centralDownCommand'
+// annualReview:progress 订阅辅助：wrapper + removeListener（多订阅者独立清理，不用 removeAllListeners）
+import { subscribeIpcEvent } from './services/ipcEventSubscription'
 
 type CloseConfirmPayload = {
   canMinimizeToTray: boolean
@@ -599,7 +601,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAvailableYears: () => ipcRenderer.invoke('annualReview:getAvailableYears'),
     generate: (year: number) => ipcRenderer.invoke('annualReview:generate', { year }),
     getReport: (year: number) => ipcRenderer.invoke('annualReview:getReport', { year }),
-    cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', taskId),
+    cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', { taskId }),
     onProgress: (callback: (payload: {
       taskId: string
       year: number
@@ -609,8 +611,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       done: boolean
       error?: { code: string; message: string }
     }) => void) => {
-      ipcRenderer.on('annualReview:progress', (_, payload) => callback(payload))
-      return () => ipcRenderer.removeAllListeners('annualReview:progress')
+      // 只移除本次注册的 wrapper：A/B 两个订阅者并存时，清理 A 后 B 继续收到事件（幂等）
+      return subscribeIpcEvent(ipcRenderer, 'annualReview:progress', (payload) => callback(payload as Parameters<typeof callback>[0]))
     }
   },
 

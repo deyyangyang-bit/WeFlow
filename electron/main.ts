@@ -845,10 +845,12 @@ const buildAnnualReviewAccountContext = (): AnnualReviewAccountContext => {
   const rawInternal = cfg.get('crmInternalList')
   const toSessionList = (raw: unknown): string[] =>
     Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : []
+  // 实际业务库身份 = 当前真正打开的库文件（currentDbPath）；未打开时回退按 wxid 推导的
+  // 规范名。路径只参与主进程内部作用域键派生，不写日志、不返回渲染层。
   return {
     wxid,
-    salesDbName: businessDbName(wxid, 'sales'),
-    crmDbName: businessDbName(wxid, 'crm'),
+    salesDbName: salesDbService.currentDbPath() ?? businessDbName(wxid, 'sales'),
+    crmDbName: crmDbService.currentDbPath() ?? businessDbName(wxid, 'crm'),
     exclusions: {
       manualSessions: toSessionList(rawManual),
       internalSessions: toSessionList(rawInternal)
@@ -4167,8 +4169,9 @@ function registerIpcHandlers() {
     try {
       return { success: true, data: await annualReviewService.getAvailableYears() }
     } catch (e) {
-      // 非敏感信封：只回 message，不回堆栈/路径
-      return { success: false, error: e instanceof Error ? e.message : '可用年份查询失败' }
+      // 结构化错误信封：保留稳定 code，不回堆栈/路径/SQL
+      const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
+      return { success: false, error: { code, message: e instanceof Error ? e.message : '可用年份查询失败' } }
     }
   })
 
@@ -4179,13 +4182,13 @@ function registerIpcHandlers() {
       : payload
     const validation = validateAnnualReviewYearInput(year, Date.now())
     if (!validation.ok) {
-      return { success: false, error: validation.message }
+      return { success: false, error: { code: validation.code, message: validation.message } }
     }
     const result = await annualReviewService.generate(validation.year)
     if (result.success) {
       return { success: true, taskId: result.taskId, reused: result.reused === true }
     }
-    return { success: false, taskId: result.taskId, error: result.error?.message ?? '年度复盘生成失败' }
+    return { success: false, taskId: result.taskId, reused: result.reused === true, error: result.error ?? { code: 'internal', message: '年度复盘生成失败' } }
   })
 
   ipcMain.handle('annualReview:getReport', async (_, payload: unknown) => {
@@ -4194,20 +4197,24 @@ function registerIpcHandlers() {
       : payload
     const validation = validateAnnualReviewYearInput(year, Date.now())
     if (!validation.ok) {
-      return { success: false, cache: 'miss', error: validation.message }
+      return { success: false, cache: 'miss', error: { code: validation.code, message: validation.message } }
     }
     const result = annualReviewService.getReport(validation.year)
     if (!result.success) {
-      return { success: false, cache: result.cache, error: result.error?.message ?? '年度复盘报告查询失败' }
+      return { success: false, cache: result.cache, error: result.error ?? { code: 'internal', message: '年度复盘报告查询失败' } }
     }
     return result.cache === 'hit'
       ? { success: true, cache: 'hit', report: result.report }
       : { success: true, cache: result.cache }
   })
 
-  ipcMain.handle('annualReview:cancel', async (_, taskId: unknown) => {
+  ipcMain.handle('annualReview:cancel', async (_, payload: unknown) => {
+    // 规格契约：请求对象 { taskId }；非法载荷返回稳定 code，不回传堆栈/路径
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
     if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > 128) {
-      return { success: false, error: '非法的任务标识' }
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
     }
     return annualReviewService.cancel(taskId)
   })

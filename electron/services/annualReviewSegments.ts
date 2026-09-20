@@ -125,6 +125,12 @@ export interface AnnualReviewProfileFact {
   /** 原始 stage（中英混存），使用时一律经 normalizeStage 归一化 */
   stage: string | null
   lastContactAtSec: number | null
+  /**
+   * customer_profile.customer_id（TEXT，迁移模块⑤对齐到 crmDb customer.id 的数字串）。
+   * 仅用于公开报告的客户身份映射（规格 §7.2「客户身份只引用 account.id/customer_id」），
+   * 不参与任何统计口径；缺省/未对齐为 null。可选字段以保持 S2 夹具与统计行为不变。
+   */
+  customerId?: string | null
 }
 
 /** salesDb intent_tag_log append-only 阶段事件（created_at 毫秒；四写者事件全算） */
@@ -1460,12 +1466,13 @@ function numOrNull(v: unknown): number | null {
 /** salesDb 窄加载：customer_profile + intent_tag_log。SQL 静态常量、零拼接、零时间过滤 */
 export function loadAnnualReviewSalesSegments(runner: SqlQueryRunner): AnnualReviewSalesSegmentsFacts {
   const profiles = runner.all<SqlRow>(
-    'SELECT id, session_id, stage, last_contact_at FROM customer_profile'
+    'SELECT id, session_id, stage, last_contact_at, customer_id FROM customer_profile'
   ).map<AnnualReviewProfileFact>((r) => ({
     id: numOrNull(r.id) ?? 0,
     sessionId: strOrNull(r.session_id),
     stage: strOrNull(r.stage),
-    lastContactAtSec: numOrNull(r.last_contact_at)
+    lastContactAtSec: numOrNull(r.last_contact_at),
+    customerId: strOrNull(r.customer_id)
   }))
   const intentEvents = runner.all<SqlRow>(
     'SELECT id, session_id, stage, created_at FROM intent_tag_log'

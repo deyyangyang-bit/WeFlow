@@ -1,21 +1,27 @@
 /**
  * annual-review-service-test.ts —— 年度经营复盘 S3 护栏（编排/Worker 边界/IPC 契约/缓存）
  *
- * 覆盖（S3 任务 §九 20 项）：
- *   1  完整 current_year 报告组装          2  historical_year asOf/边界
- *   3  all_time                            4  S1/S2 装配且 warnings/coverage 不丢失
- *   5  D/E 未实现不显示为真实 0            6  非法/未来年份与 IPC 载荷校验
- *   7  getAvailableYears（空库/多年/脏时间/排序）
- *   8  缓存命中/TTL 过期/generate 强制重算/失效  9  两个 accountScopeId 绝不串缓存
- *   10 同键并发只启动一个任务              11 不同 scope 独立运行
- *   12 旧任务迟到消息不覆盖新任务          13 Worker throw/exit/非法结果/加载失败 → failed
- *   14 progress 单调                       15 IPC/preload/electron.d.ts 命名一致（源码扫描）
- *   16 事件监听清理函数有效                17 报告可 structuredClone/JSON 序列化
- *   18 输出无数据库路径/SQL/Token/原文     19 Worker 打包接线守卫（vite entry + 产物名 + Worker 零 DB 导入）
- *   20 S1/S2/旧年度报告回归由各自测试脚本承担（本套不重复）
+ * 覆盖：
+ *   1  完整 current_year 报告组装 + 顶层契约（dataRange/completeness/coverage/warnings/sourceSummary）
+ *   2  historical_year asOf/边界            3  all_time
+ *   4  S1/S2 装配且 warnings/coverage 不丢失  5  D/E 未实现不显示为真实 0
+ *   6  非法/未来年份与 IPC 载荷校验          7  getAvailableYears（自然年升序、0 固定末尾/空库/脏时间）
+ *   8  缓存命中/TTL/generate 强制重算/失效    9  账号作用域隔离 + FNV 碰撞反例完全隔离
+ *   10 同键并发只启动一个任务                11 不同 scope 独立运行
+ *   12 旧任务迟到消息不覆盖新任务            13 Worker throw/exit/非法结果/加载失败 → failed
+ *   C  取消状态机：loading/computing 取消、Worker 卡死收敛、不缓存、幂等、task_not_found
+ *   I  失效竞态：loading/computing 中 invalidate、getAvailableYears 中途 invalidate、账号 A→B 切换
+ *   V  validateAnnualReviewReport：{}/错年份/错版本/缺区块/NaN/不可克隆/unavailable 伪装 0
+ *   K  契约补全：completeness 聚合、coverage metricKey、warnings 聚合确定性、dataRange、sourceSummary
+ *   P  公开报告隐私：无 sessionId/session_id/wxid 原文/路径/SQL/Token/正文（递归扫描）
+ *   S  preload 多订阅者独立清理（可注入 IPC renderer 行为测试）
+ *   14 progress 单调                          16 事件监听清理函数有效
+ *   15 IPC/preload/electron.d.ts 命名与结构化错误一致（源码扫描）
+ *   19 Worker 打包接线守卫                    20 reportSchemaVersion 单一来源
+ *   21 真实 Worker 文件端到端 + 结果过运行时校验
  *
- * 时间相关全部使用注入时钟（无真实 sleep）；数据库/Worker 经窄接口注入假实现，
- * 不访问真实用户数据库。运行：npx tsx scripts/annual-review-service-test.ts
+ * 竞态测试全部使用 deferred promise/可注入依赖（无真实 sleep）；数据库/Worker 经窄接口
+ * 注入假实现，不访问真实用户数据库。运行：npx tsx scripts/annual-review-service-test.ts
  */
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
@@ -29,8 +35,10 @@ import type { AnnualReviewSalesSegmentsFacts, AnnualReviewCrmSegmentsFacts } fro
 import {
   composeAnnualReviewReport,
   computeAnnualReviewAvailableYears,
+  validateAnnualReviewReport,
   validateAnnualReviewYearInput,
   validateAnnualReviewTaskId,
+  aggregateMetricStates,
   type AnnualReviewReport
 } from '../electron/services/annualReviewReport'
 import {
@@ -42,6 +50,7 @@ import {
   type AnnualReviewProgressEvent,
   type AnnualReviewAccountContext
 } from '../electron/services/annualReviewService'
+import { subscribeIpcEvent, type IpcEventRegistrar } from '../electron/services/ipcEventSubscription'
 
 let pass = 0, fail = 0
 function ok(name: string, cond: boolean): void {
@@ -61,6 +70,14 @@ const GEN = T(2026, 6, 15, 12, 0, 0)
 /** 让出微任务/定时器队列：generate 内部异步链跑到位后再操纵假 runner */
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
 
+/** deferred promise：竞态测试用（不真实 sleep） */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
 // ── 夹具 ─────────────────────────────────────────────────────────────────────
 const emptyFacts = (): AnnualReviewFacts => ({ accounts: [], contracts: [], allocations: [], shippedEvents: [] })
 const emptySales = (): AnnualReviewSalesSegmentsFacts => ({ profiles: [], intentEvents: [] })
@@ -72,8 +89,8 @@ const conF = (id: number, accountId: number | null, signDate: number | null, amo
   ({ id, accountId, amount, status, signDate, createdAt: T(2024, 1, 1) })
 const allocF = (id: number, accountId: number | null, creditedAmount: number | null, reconciledAt: number | null, reconciliationStatus = 'allocated', confirmedAt: number | null = null) =>
   ({ id, accountId, creditedAmount, reconciledAt, status: 'confirmed', reconciliationStatus, confirmedAt, contractId: 1 })
-const profF = (id: number, sessionId: string | null, stage: string | null, lastContactAtSec: number | null = null) =>
-  ({ id, sessionId, stage, lastContactAtSec })
+const profF = (id: number, sessionId: string | null, stage: string | null, lastContactAtSec: number | null = null, customerId: string | null = null) =>
+  ({ id, sessionId, stage, lastContactAtSec, customerId })
 const ievF = (id: number, sessionId: string | null, stage: string | null, createdAt: number | null) =>
   ({ id, sessionId, stage, createdAt })
 const oppF = (id: number, stage: string | null, status: string | null, createdAt: number | null) =>
@@ -81,7 +98,7 @@ const oppF = (id: number, stage: string | null, status: string | null, createdAt
 const oevF = (id: number, opportunityId: number, eventType: string | null, stage: string | null, detail: string | null, createdAt: number | null) =>
   ({ id, opportunityId, eventType, stage, detail, createdAt })
 
-/** 标准多源夹具：S1 金额 + S2 阶段 + 非法事件（验证装配与告警透传） */
+/** 标准多源夹具：S1 金额 + S2 阶段 + 非法事件 + C6/C8 画像行 + profile-only 客户（身份映射用） */
 function richFacts(): { facts: AnnualReviewFacts; sales: AnnualReviewSalesSegmentsFacts; crm: AnnualReviewCrmSegmentsFacts } {
   const facts: AnnualReviewFacts = {
     accounts: [
@@ -93,7 +110,11 @@ function richFacts(): { facts: AnnualReviewFacts; sales: AnnualReviewSalesSegmen
     shippedEvents: []
   }
   const sales: AnnualReviewSalesSegmentsFacts = {
-    profiles: [profF(1, 'wx_a', 'quoted'), profF(2, 'wx_b', '决策')],
+    profiles: [
+      profF(1, 'wx_a', 'quoted', Math.floor(T(2026, 1, 5) / 1000), '501'),
+      profF(2, 'wx_b', '决策', Math.floor(T(2026, 6, 10) / 1000)),
+      profF(3, 'wx_profile_only', 'contacted', Math.floor(T(2026, 2, 1) / 1000), '777')
+    ],
     intentEvents: [
       ievF(1, 'wx_a', 'contacted', T(2025, 2, 1)),
       ievF(2, 'wx_a', 'quoted', T(2025, 3, 1)),
@@ -120,6 +141,17 @@ const buildRealReport = (): AnnualReviewReport => {
   return composeAnnualReviewReport({
     period: resolveAnnualReviewPeriod(2026, GEN), facts, sales, crm,
     opts: { messageStats: messageStatsOk({ wx_a: { sent: 1, received: 0 } }) }
+  })
+}
+
+/** 另一份内容不同的合法报告（customerTotal=1；用于作用域隔离断言） */
+const buildRealReportB = (): AnnualReviewReport => {
+  const { facts, sales, crm } = richFacts()
+  return composeAnnualReviewReport({
+    period: resolveAnnualReviewPeriod(2026, GEN),
+    facts: { ...facts, accounts: facts.accounts.slice(0, 1) },
+    sales, crm,
+    opts: { messageStats: messageStatsOk({}) }
   })
 }
 
@@ -159,6 +191,12 @@ function createService(opts?: {
   loadFactsFail?: boolean
   messageStatsFail?: boolean
   now?: () => number
+  /** 竞态测试注入：覆盖事实加载（deferred/永不收敛等） */
+  overrides?: Partial<{
+    loadFacts: () => Promise<AnnualReviewFacts>
+    loadSalesSegments: () => Promise<AnnualReviewSalesSegmentsFacts>
+    loadCrmSegments: () => Promise<AnnualReviewCrmSegmentsFacts>
+  }>
 }): Harness {
   const ctxBox: { current: AnnualReviewAccountContext } = {
     current: {
@@ -171,21 +209,21 @@ function createService(opts?: {
   let loadCount = 0
   const rich = richFacts()
   const deps = {
-    loadFacts: async (): Promise<AnnualReviewFacts> => {
+    loadFacts: opts?.overrides?.loadFacts ?? (async (): Promise<AnnualReviewFacts> => {
       loadCount++
       if (opts?.loadFactsFail) throw new Error('db closed')
       return rich.facts
-    },
-    loadSalesSegments: async () => {
+    }),
+    loadSalesSegments: opts?.overrides?.loadSalesSegments ?? (async () => {
       loadCount++
       if (opts?.loadFactsFail) throw new Error('db closed')
       return rich.sales
-    },
-    loadCrmSegments: async () => {
+    }),
+    loadCrmSegments: opts?.overrides?.loadCrmSegments ?? (async () => {
       loadCount++
       if (opts?.loadFactsFail) throw new Error('db closed')
       return rich.crm
-    },
+    }),
     loadMessageStats: async (): Promise<AnnualReviewMessageStats> => {
       if (opts?.messageStatsFail) throw new Error('wcdb down')
       return messageStatsOk({ wx_a: { sent: 1, received: 0 } })
@@ -200,7 +238,7 @@ function createService(opts?: {
 async function main(): Promise<void> {
   const { facts, sales, crm } = richFacts()
 
-  // ══ 1 完整 current_year 报告组装 ══════════════════════════════════════════
+  // ══ 1 完整 current_year 报告组装 + 顶层契约 ═══════════════════════════════
   {
     const period = resolveAnnualReviewPeriod(2026, GEN)
     const report = composeAnnualReviewReport({
@@ -213,9 +251,15 @@ async function main(): Promise<void> {
     ok('1c summary A1（存量=2）/A4（2026 无签约 → 真实零）', report.summary.customerTotal.value === 2 && report.summary.contractCount.value === 0)
     ok('1d funnel.customerStage 当前快照（比价1）', report.funnel.customerStage.kind === 'current_snapshot' &&
       report.funnel.customerStage.distribution?.find((b) => b.bucket === '比价')?.count === 1)
-    ok('1e customers.active=A3 主口径（wx_a 活跃）', report.customers.active.value?.length === 1 &&
-      report.customers.active.value?.[0].sessionId === 'wx_a')
-    ok('1f customers.priority current_year 可用（C8）', report.customers.priority.coverage.status === 'partial')
+    ok('1e customers.active=A3 主口径（映射为 accountId=1，无 sessionId）', report.customers.active.value?.length === 1 &&
+      report.customers.active.value?.[0].accountId === 1 && report.customers.active.value?.[0].name === '客户1' &&
+      !('sessionId' in (report.customers.active.value?.[0] as object)))
+    ok('1f customers.priority current_year 可用（C8，映射 accountId=2）', report.customers.priority.coverage.status === 'partial' &&
+      report.customers.priority.value?.length === 1 && report.customers.priority.value?.[0].accountId === 2)
+    ok('1g 顶层契约 19 键（含 dataRange/completeness/coverage/warnings/sourceSummary）',
+      Object.keys(report).length === 19 &&
+      ['dataRange', 'completeness', 'coverage', 'warnings', 'sourceSummary'].every((k) => k in report))
+    ok('1h 报告过运行时结构校验', validateAnnualReviewReport(report, 2026).ok === true)
   }
 
   // ══ 2 historical_year asOf/边界 ═══════════════════════════════════════════
@@ -229,6 +273,7 @@ async function main(): Promise<void> {
     ok('2d C8 历史年度 unavailable/unsupported_scope', report.customers.priority.value === null &&
       report.customers.priority.coverage.status === 'unavailable')
     ok('2e B6 历史年度 unavailable', report.funnel.stuck.value === null && report.funnel.stuck.coverage.status === 'unavailable')
+    ok('2f 历史年度报告过运行时校验', validateAnnualReviewReport(report, 2025).ok === true)
   }
 
   // ══ 3 all_time ════════════════════════════════════════════════════════════
@@ -240,6 +285,7 @@ async function main(): Promise<void> {
     ok('3b all_time A4=全部签约（2）', report.summary.contractCount.value === 2)
     ok('3c all_time C8 unsupported_scope', report.customers.priority.coverage.status === 'unavailable' &&
       report.customers.priority.coverage.reasonCodes?.includes('unsupported_scope'))
+    ok('3d all_time 报告过运行时校验', validateAnnualReviewReport(report, 0).ok === true)
   }
 
   // ══ 4 S1/S2 装配 + warnings/coverage 不丢失 ═══════════════════════════════
@@ -256,6 +302,15 @@ async function main(): Promise<void> {
     ok('4b C1 继承同一 legacy 告警（不丢失）', report.customers.highValue.warnings.some((w) => w.code === 'legacy_time_fallback'))
     ok('4c intent 垃圾阶段告警透传到 B3', report.funnel.stageFlow.warnings.some((w) => w.code === 'intent_event_stage_invalid'))
     ok('4d B1 coverage.reasonCodes 来自统计层（重建说明）', report.funnel.customerStage.coverage.reasonCodes?.includes('history_reconstruction_not_complete'))
+    ok('4e A 组 coverage 单一映射（status=metric.state、reasonCodes=warnings codes）',
+      report.coverage['summary.creditedAmount'].status === report.summary.creditedAmount.state &&
+      report.coverage['summary.creditedAmount'].reasonCodes?.includes('legacy_time_fallback') === true &&
+      report.coverage['summary.creditedAmount'].source === 'crmdb.allocation')
+    ok('4f warnings 聚合含 legacy_time_fallback（counts 按指标拆分）', (() => {
+      const row = report.warnings.find((w) => w.code === 'legacy_time_fallback')
+      return row !== undefined && row.metricKeys.includes('summary.creditedAmount') && row.metricKeys.includes('customers.highValue') &&
+        row.counts?.['summary.creditedAmount'] === 1 && row.counts?.['customers.highValue'] === 1
+    })())
   }
 
   // ══ 5 D/E 未实现 → 显式 unavailable，非 0/空数组 ══════════════════════════
@@ -266,10 +321,14 @@ async function main(): Promise<void> {
     for (const block of ['monthly', 'communication', 'salesAssignment'] as const) {
       const b = report[block]
       ok(`5 ${block} unavailable + metric_not_implemented`, b.status === 'unavailable' && b.reasonCodes.length === 1 && b.reasonCodes[0] === 'metric_not_implemented')
+      ok(`5b coverage.${block} 同步 unavailable`, report.coverage[block].status === 'unavailable')
     }
+    ok('5c completeness.blocks 未实现区块恒 unavailable（不得伪装 complete）',
+      report.completeness.blocks.monthly === 'unavailable' && report.completeness.blocks.communication === 'unavailable' &&
+      report.completeness.blocks.salesAssignment === 'unavailable' && report.completeness.overall === 'unavailable')
   }
 
-  // ══ 17/18 序列化与敏感信息 ════════════════════════════════════════════════
+  // ══ 17/18 序列化与敏感信息（递归扫描） ════════════════════════════════════
   {
     const report = composeAnnualReviewReport({
       period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm, opts: { messageStats: messageStatsOk({ wx_a: { sent: 1, received: 0 } }) }
@@ -277,10 +336,27 @@ async function main(): Promise<void> {
     const cloned = structuredClone(report)
     ok('17 structuredClone 深拷贝一致', JSON.stringify(cloned) === JSON.stringify(report))
     ok('17b JSON 往返一致', JSON.stringify(JSON.parse(JSON.stringify(report))) === JSON.stringify(report))
-    const text = JSON.stringify(report)
-    ok('18 无 SQL/路径/密钥/Token/wxid/堆栈', !text.includes('SELECT') && !text.includes('.db') &&
-      !text.includes('decryptKey') && !text.includes('token') && !text.includes('wx_account') &&
-      !text.includes('/Users/') && !text.includes('at Object') && !text.includes('stack'))
+
+    // 递归检查：键与字符串值双层扫描
+    const keys = new Set<string>()
+    const strings = new Set<string>()
+    const walk = (v: unknown): void => {
+      if (v === null || typeof v !== 'object') {
+        if (typeof v === 'string') strings.add(v)
+        return
+      }
+      if (Array.isArray(v)) { v.forEach(walk); return }
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        keys.add(k)
+        walk(val)
+      }
+    }
+    walk(report)
+    const badKeys = [...keys].filter((k) => k === 'sessionId' || k === 'session_id')
+    ok('18 递归键扫描：无 sessionId/session_id 键', badKeys.length === 0)
+    const forbidden = ['wx_a', 'wx_b', 'wx_profile_only', 'wx_account', '.db', 'SELECT', 'token', 'decryptKey', '/Users/', 'at Object', '客户1原话正文canary']
+    const badStrings = [...strings].filter((s) => forbidden.some((f) => s.includes(f)))
+    ok('18b 递归值扫描：无客户/当前账号 wxid 原文、路径、SQL、Token、堆栈、正文', badStrings.length === 0)
   }
 
   // ══ 6 年份/载荷运行时校验 ═════════════════════════════════════════════════
@@ -301,12 +377,12 @@ async function main(): Promise<void> {
       validateAnnualReviewTaskId('x'.repeat(200)) === false && validateAnnualReviewTaskId(42 as never) === false)
   }
 
-  // ══ 7 getAvailableYears（纯函数） ═════════════════════════════════════════
+  // ══ 7 getAvailableYears（纯函数；自然年升序、0 固定末尾） ═════════════════
   {
     const empty = computeAnnualReviewAvailableYears({ facts: emptyFacts(), sales: emptySales(), crm: emptyCrm(), generatedAt: GEN })
     ok('7 空库：years=[]、supportsAllTime=false、defaultYear=当年', empty.years.length === 0 && empty.supportsAllTime === false && empty.defaultYear === 2026)
     const full = computeAnnualReviewAvailableYears({ facts, sales, crm, generatedAt: GEN })
-    eq('7b 多年份升序 + 0（历史以来）', full.years.map((y) => y.year), [2024, 2025, 0])
+    eq('7b 多年份：自然年升序、0（历史以来）固定末尾', full.years.map((y) => y.year), [2024, 2025, 0])
     ok('7c currentYear/supportsAllTime', full.currentYear === 2026 && full.supportsAllTime === true)
     const y2025 = full.years.find((y) => y.year === 2025)
     ok('7d 年份覆盖摘要 rows/from/to（2025：建档+签约+核销+4 事件 = 7）', y2025 !== undefined && y2025.coverage.rows === 7 &&
@@ -362,7 +438,7 @@ async function main(): Promise<void> {
     ok('8g generate 强制重算（第 2 次 Worker）且覆盖后 hit', fake.calls.length === 2 && service.getReport(2026).cache === 'hit')
   }
 
-  // ══ 9 两个 accountScopeId 绝不串缓存 ══════════════════════════════════════
+  // ══ 9 账号作用域隔离 + FNV 碰撞反例完全隔离 ═══════════════════════════════
   {
     const fakeB = createFakeRunner()
     const svcB = createService({
@@ -380,6 +456,44 @@ async function main(): Promise<void> {
       buildAccountScopeId({ wxid: 'b', salesDbName: 's2', crmDbName: 'c2' }) &&
       buildAccountScopeId({ wxid: 'a', salesDbName: 's1', crmDbName: 'c1' }) !==
       buildAccountScopeId({ wxid: 'a', salesDbName: 's1x', crmDbName: 'c1' }))
+
+    // 反例（fb7f87b 上失败）：真实业务库命名格式的两个 wxid 曾同得 as-1a2962a7
+    const idA = buildAccountScopeId({
+      wxid: 'wxid_14zh58a1akgt75',
+      salesDbName: 'weflow-sales-wxid_14zh58a1akgt75.db',
+      crmDbName: 'weflow-crm-wxid_14zh58a1akgt75.db'
+    })
+    const idB = buildAccountScopeId({
+      wxid: 'wxid_1lbiz4e2fzwwl',
+      salesDbName: 'weflow-sales-wxid_1lbiz4e2fzwwl.db',
+      crmDbName: 'weflow-crm-wxid_1lbiz4e2fzwwl.db'
+    })
+    ok('9d 碰撞反例：两个真实命名 wxid 的内部作用域不同（无哈希折叠碰撞面）', idA !== idB)
+    // 复合键无长度歧义（JSON 编码自描述）
+    ok('9d2 复合键无分段歧义（["a","bc"] ≠ ["ab","c"]）', buildAccountScopeId({ wxid: 'a', salesDbName: 'bc', crmDbName: '' }) !==
+      buildAccountScopeId({ wxid: 'ab', salesDbName: 'c', crmDbName: '' }))
+
+    // 行为级：碰撞账号在同一服务内各自生成、各自命中（旧实现会合并等待同一任务）
+    const fakeC = createFakeRunner()
+    const ctxA = { wxid: 'wxid_14zh58a1akgt75', salesDbName: 'weflow-sales-wxid_14zh58a1akgt75.db', crmDbName: 'weflow-crm-wxid_14zh58a1akgt75.db', exclusions: {} }
+    const ctxB2 = { wxid: 'wxid_1lbiz4e2fzwwl', salesDbName: 'weflow-sales-wxid_1lbiz4e2fzwwl.db', crmDbName: 'weflow-crm-wxid_1lbiz4e2fzwwl.db', exclusions: {} }
+    const svcC = createService({ runner: fakeC.runner, now, ctx: ctxA })
+    const gA = svcC.service.generate(2026)
+    await tick()
+    fakeC.calls[0].resolve(buildRealReport())
+    const rA = await gA
+    svcC.ctxBox.current = ctxB2
+    const gB = svcC.service.generate(2026)
+    await tick()
+    ok('9e 碰撞账号 B 启动第二个 Worker（不合并 A 的任务）', fakeC.calls.length === 2)
+    fakeC.calls[1].resolve(buildRealReportB())
+    const rB = await gB
+    ok('9f B 未合并等待（reused 非 true）且成功', rB.success === true && rB.reused !== true)
+    ok('9g B 命中 B 的报告（customerTotal=1）', svcC.service.getReport(2026).cache === 'hit' &&
+      svcC.service.getReport(2026).report?.summary.customerTotal.value === 1)
+    svcC.ctxBox.current = ctxA
+    ok('9h 切回 A 命中 A 的报告（customerTotal=2，绝不串缓存）', svcC.service.getReport(2026).cache === 'hit' &&
+      svcC.service.getReport(2026).report?.summary.customerTotal.value === 2)
   }
 
   // ══ 10 同键并发只启动一个任务 ═════════════════════════════════════════════
@@ -448,11 +562,38 @@ async function main(): Promise<void> {
     const re = await svcExit.service.generate(2026)
     ok('13b exit 无结果 → failed', re.success === false && svcExit.service.getTaskState(2026)?.status === 'failed')
 
+    // 非法 Worker 结果反例集：{} / 42 / NaN / 错年份 / 错 schemaVersion —— 全部 invalid_worker_result 且不写缓存
     const junkRunner: AnnualReviewWorkerRunner = { run: () => Promise.resolve(42 as never) }
     const svcJunk = createService({ runner: junkRunner, now })
     const rj = await svcJunk.service.generate(2026)
     ok('13c 非法结果 → failed（invalid_worker_result）', rj.success === false &&
       svcJunk.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
+
+    const emptyRunner: AnnualReviewWorkerRunner = { run: () => Promise.resolve({} as never) }
+    const svcEmpty = createService({ runner: emptyRunner, now })
+    const rEmpty = await svcEmpty.service.generate(2026)
+    ok('13c2 {} 不被缓存且任务 failed', rEmpty.success === false &&
+      svcEmpty.service.getTaskState(2026)?.error?.code === 'invalid_worker_result' && svcEmpty.service.getReport(2026).cache === 'miss')
+
+    const nanReport = { ...realReport, summary: { ...realReport.summary, customerTotal: { ...realReport.summary.customerTotal, value: Number.NaN } } }
+    const nanRunner: AnnualReviewWorkerRunner = { run: () => Promise.resolve(nanReport as never) }
+    const svcNan = createService({ runner: nanRunner, now })
+    const rNan = await svcNan.service.generate(2026)
+    ok('13c3 NaN 报告拒绝且不缓存', rNan.success === false && svcNan.service.getReport(2026).cache === 'miss')
+
+    const wrongYearReport = { ...composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm }) }
+    const wrongYearRunner: AnnualReviewWorkerRunner = { run: () => Promise.resolve(wrongYearReport as never) }
+    const svcWrongYear = createService({ runner: wrongYearRunner, now })
+    const rWrongYear = await svcWrongYear.service.generate(2026)
+    ok('13c4 错误年份报告拒绝', rWrongYear.success === false &&
+      svcWrongYear.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
+
+    const wrongVersionReport = { ...realReport, reportSchemaVersion: 99 }
+    const wrongVersionRunner: AnnualReviewWorkerRunner = { run: () => Promise.resolve(wrongVersionReport as never) }
+    const svcWrongVersion = createService({ runner: wrongVersionRunner, now })
+    const rWrongVersion = await svcWrongVersion.service.generate(2026)
+    ok('13c5 错误 schemaVersion 拒绝', rWrongVersion.success === false &&
+      svcWrongVersion.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
 
     const svcLoad = createService({ runner: createFakeRunner().runner, now, loadFactsFail: true })
     const rl = await svcLoad.service.generate(2026)
@@ -467,19 +608,160 @@ async function main(): Promise<void> {
     fakeM.calls[0].resolve(buildRealReport())
     const rM = await rm
     ok('13e 消息统计失败仍生成（A3 裁决在统计层）', rM.success === true)
+  }
 
-    // 取消：cancel(taskId) → runner.terminate → 任务收敛 failed
-    const fakeX = createFakeRunner()
-    const svcX = createService({ runner: fakeX.runner, now })
-    const gx = svcX.service.generate(2026)
+  // ══ C 取消状态机（loading/computing 都有效） ══════════════════════════════
+  {
+    // C1 loading 阶段取消：Worker 未启动、收敛 cancelled、不缓存、迟到加载结果被丢弃
+    const gate = deferred<AnnualReviewFacts>()
+    const fake1 = createFakeRunner()
+    const svc1 = createService({ runner: fake1.runner, now, overrides: { loadFacts: () => gate.promise } })
+    const events1: AnnualReviewProgressEvent[] = []
+    svc1.service.onProgress((e) => events1.push(e))
+    const g1 = svc1.service.generate(2026)
     await tick()
-    const taskIdX = fakeX.calls[0].payload.taskId
-    const cancelled = svcX.service.cancel(taskIdX)
-    const rx = await gx
-    ok('13f cancel → 任务 failed/cancelled', cancelled.success === true && rx.success === false &&
-      svcX.service.getTaskState(2026)?.error?.code === 'cancelled')
-    ok('13g cancel 幂等（终态任务/未知 taskId）', svcX.service.cancel(taskIdX).success === true &&
-      svcX.service.cancel('unknown-task').success === false)
+    ok('C1 loading 阶段 Worker 未启动', fake1.calls.length === 0)
+    const taskId1 = svc1.service.getTaskState(2026)?.taskId ?? ''
+    const c1 = svc1.service.cancel(taskId1)
+    const r1 = await g1
+    ok('C1b cancel 成功且 generate 返回 success:false/cancelled', c1.success === true && r1.success === false &&
+      r1.error?.code === 'cancelled' && r1.taskId === taskId1)
+    ok('C1c 任务收敛 failed/done=true', svc1.service.getTaskState(2026)?.status === 'failed' &&
+      svc1.service.getTaskState(2026)?.error?.code === 'cancelled')
+    ok('C1d 终态进度事件恰好一个（无冲突终态）', events1.filter((e) => e.done && e.taskId === taskId1).length === 1 &&
+      events1.every((e) => e.taskId !== taskId1 || e.phase !== 'completed'))
+    gate.resolve(richFacts().facts)
+    await tick(); await tick()
+    ok('C1e 迟到的加载结果被丢弃：Worker 仍未启动、不写缓存', fake1.calls.length === 0 && svc1.service.getReport(2026).cache === 'miss')
+
+    // C2 computing 阶段取消：runner.cancel 被调用、收敛 cancelled、迟到 Worker 结果被丢弃、幂等
+    const fake2 = createFakeRunner()
+    const svc2 = createService({ runner: fake2.runner, now })
+    const g2 = svc2.service.generate(2026)
+    await tick()
+    const call2 = fake2.calls[0]
+    ok('C2 computing 阶段进入', svc2.service.getTaskState(2026)?.status === 'computing')
+    const c2a = svc2.service.cancel(call2.payload.taskId)
+    const c2b = svc2.service.cancel(call2.payload.taskId) // 多次 cancel 不抛错
+    const r2 = await g2
+    ok('C2b cancel 幂等成功 + generate success:false', c2a.success === true && c2b.success === true &&
+      r2.success === false && r2.error?.code === 'cancelled')
+    call2.resolve(buildRealReport()) // 迟到的 Worker 结果
+    await tick(); await tick()
+    ok('C2c 迟到 Worker 结果被丢弃：不写缓存', svc2.service.getReport(2026).cache === 'miss' &&
+      svc2.service.getTaskState(2026)?.status === 'failed')
+    ok('C2d 终态任务重复 cancel 仍幂等成功', svc2.service.cancel(call2.payload.taskId).success === true)
+    const notFound = svc2.service.cancel('no-such-task')
+    ok('C2e 未知 taskId → task_not_found', notFound.success === false && notFound.error?.code === 'task_not_found')
+
+    // C3 Worker 卡死（永不收敛）：cancel 仍让 generate 立即收敛（不必等待不可中断的计算）
+    const stuckCalls: string[] = []
+    const stuckRunner: AnnualReviewWorkerRunner = {
+      run: () => new Promise<AnnualReviewReport>(() => { /* 永不收敛 */ }),
+      cancel: (taskId) => { stuckCalls.push(taskId) }
+    }
+    const svc3 = createService({ runner: stuckRunner, now })
+    const g3 = svc3.service.generate(2026)
+    await tick()
+    svc3.service.cancel(svc3.service.getTaskState(2026)?.taskId ?? '')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const r3 = await Promise.race([
+      g3,
+      new Promise<'__timeout__'>((r) => { timer = setTimeout(() => r('__timeout__'), 2000) })
+    ])
+    if (timer) clearTimeout(timer)
+    ok('C3 Worker 卡死时 cancel 立即收敛（runner.cancel 已触达）', r3 !== '__timeout__' &&
+      (r3 as { success?: boolean }).success === false && (r3 as { error?: { code?: string } }).error?.code === 'cancelled' &&
+      stuckCalls.length === 1)
+
+    // C4 loading 阶段 DB 查询卡死：取消同样立即收敛，且 Worker 永不启动
+    const fake4 = createFakeRunner()
+    const svc4 = createService({
+      runner: fake4.runner, now,
+      overrides: { loadFacts: () => new Promise<AnnualReviewFacts>(() => { /* DB 查询永不返回 */ }) }
+    })
+    const g4 = svc4.service.generate(2026)
+    await tick()
+    svc4.service.cancel(svc4.service.getTaskState(2026)?.taskId ?? '')
+    const r4 = await g4
+    ok('C4 loading 卡死查询下取消立即收敛且 Worker 不启动', r4.success === false && r4.error?.code === 'cancelled' &&
+      fake4.calls.length === 0 && svc4.service.getReport(2026).cache === 'miss')
+  }
+
+  // ══ I 失效与运行中任务的竞态（epoch） ═════════════════════════════════════
+  {
+    // I1 loading 中 invalidateAll：Worker 不启动、收敛 invalidated、迟到结果丢弃
+    const gate = deferred<AnnualReviewFacts>()
+    const fake1 = createFakeRunner()
+    const svc1 = createService({ runner: fake1.runner, now, overrides: { loadFacts: () => gate.promise } })
+    const g1 = svc1.service.generate(2026)
+    await tick()
+    svc1.service.invalidateAll()
+    const r1 = await g1
+    ok('I1 loading 中 invalidate → failed/invalidated', r1.success === false && r1.error?.code === 'invalidated' &&
+      fake1.calls.length === 0)
+    gate.resolve(richFacts().facts)
+    await tick(); await tick()
+    ok('I1b 迟到加载结果被丢弃、不写缓存', svc1.service.getReport(2026).cache === 'miss')
+
+    // I2 computing 中 invalidateAll：迟到的 Worker 成功结果也必须被丢弃
+    const fake2 = createFakeRunner()
+    const svc2 = createService({ runner: fake2.runner, now })
+    const g2 = svc2.service.generate(2026)
+    await tick()
+    svc2.service.invalidateAll()
+    const r2 = await g2
+    ok('I2 computing 中 invalidate → failed/invalidated', r2.success === false && r2.error?.code === 'invalidated')
+    fake2.calls[0].resolve(buildRealReport())
+    await tick(); await tick()
+    ok('I2b 旧任务完成后不写回缓存（getReport miss）', svc2.service.getReport(2026).cache === 'miss')
+
+    // I2c handleDataChanged 同样收敛运行中任务
+    const fake3 = createFakeRunner()
+    const svc3 = createService({ runner: fake3.runner, now })
+    const g3 = svc3.service.generate(2026)
+    await tick()
+    svc3.service.handleDataChanged()
+    const r3 = await g3
+    ok('I2c handleDataChanged 中 computing 任务收敛 invalidated', r3.success === false && r3.error?.code === 'invalidated')
+    fake3.calls[0].resolve(buildRealReport())
+    await tick(); await tick()
+    ok('I2d 数据写入失效后旧结果不写缓存', svc3.service.getReport(2026).cache === 'miss')
+
+    // I3 getAvailableYears 加载中 invalidate：旧结果不缓存不返回，新请求重新加载
+    const gate4 = deferred<AnnualReviewFacts>()
+    const svc4 = createService({ runner: createFakeRunner().runner, now, overrides: { loadFacts: () => gate4.promise } })
+    const yearsPromise = svc4.service.getAvailableYears()
+    await tick()
+    svc4.service.invalidateAll()
+    gate4.resolve(richFacts().facts)
+    const yearsOutcome = await yearsPromise.then(() => 'resolved' as const, (e) => (e as { code?: string }).code ?? 'rejected')
+    ok('I3 getAvailableYears 加载中 invalidate → invalidated（不返回旧结果）', yearsOutcome === 'invalidated')
+    const loadsAfterFailed = svc4.getLoadCount()
+    await svc4.service.getAvailableYears()
+    ok('I3b 失效后新请求重新加载事实（旧结果未写缓存）', svc4.getLoadCount() > loadsAfterFailed)
+
+    // I4 账号 A→B 切换（不调用 invalidateAll）：旧任务不写任何账号缓存，新请求正常
+    const gate5 = deferred<AnnualReviewFacts>()
+    const fake5 = createFakeRunner()
+    const svc5 = createService({ runner: fake5.runner, now, overrides: { loadFacts: () => gate5.promise } })
+    const ctxA: AnnualReviewAccountContext = { wxid: 'wx_account_a', salesDbName: 'weflow-sales-wx_account_a.db', crmDbName: 'weflow-crm-wx_account_a.db', exclusions: {} }
+    const ctxB: AnnualReviewAccountContext = { wxid: 'wx_account_b', salesDbName: 'weflow-sales-wx_account_b.db', crmDbName: 'weflow-crm-wx_account_b.db', exclusions: {} }
+    const g5 = svc5.service.generate(2026)
+    await tick()
+    svc5.ctxBox.current = ctxB // A → B（无失效调用：服务级上下文复核兜底）
+    gate5.resolve(richFacts().facts)
+    const r5 = await g5
+    ok('I4 A→B 旧任务收敛 failed/invalidated', r5.success === false && r5.error?.code === 'invalidated' && fake5.calls.length === 0)
+    svc5.ctxBox.current = ctxA
+    ok('I4b A 无报告命中', svc5.service.getReport(2026).cache === 'miss')
+    svc5.ctxBox.current = ctxB
+    ok('I4c B 也无报告命中（不得写入任何账号缓存）', svc5.service.getReport(2026).cache === 'miss')
+    const g5b = svc5.service.generate(2026) // B 的新请求
+    await tick()
+    fake5.calls[0].resolve(buildRealReport())
+    const r5b = await g5b
+    ok('I4d 失效后新请求正常重新生成', r5b.success === true && svc5.service.getReport(2026).cache === 'hit')
   }
 
   // ══ 14 progress 单调 + 终态 ═══════════════════════════════════════════════
@@ -534,13 +816,136 @@ async function main(): Promise<void> {
     const loadAfterFirst = svcH.getLoadCount()
     await svcH.service.getAvailableYears()
     ok('8j 年份缓存命中（不再加载事实）', svcH.getLoadCount() === loadAfterFirst)
-    eq('8k 年份结果（含 2024/2025/0，升序）', y1.years.map((y) => y.year), [2024, 2025, 0])
+    eq('8k 年份结果（自然年升序、0 末尾）', y1.years.map((y) => y.year), [2024, 2025, 0])
     svcH.service.invalidateAll()
     await svcH.service.getAvailableYears()
     ok('8l 失效后重新加载年份', svcH.getLoadCount() > loadAfterFirst)
   }
 
-  // ══ 15/19 源码一致性守卫（IPC/preload/d.ts/vite/Worker 边界） ════════════
+  // ══ K 契约补全：completeness / coverage / warnings / dataRange / sourceSummary ══
+  {
+    const emptyReport = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2026, GEN), facts: emptyFacts(), sales: emptySales(), crm: emptyCrm() })
+    const richReport = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm, opts: { messageStats: messageStatsOk({ wx_a: { sent: 1, received: 0 } }) } })
+    const legacyReport = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN),
+      facts: { ...facts, allocations: [...facts.allocations, allocF(9, 2, 300, null, 'legacy_confirmed', T(2025, 5, 1))] },
+      sales, crm, opts: { messageStats: messageStatsOk({ wx_a: { sent: 1, received: 0 } }) }
+    })
+
+    // completeness 聚合纯函数：确定性优先级，与顺序无关
+    ok('K1 aggregateMetricStates 优先级（unavailable > partial > snapshot_only > complete）',
+      aggregateMetricStates(['complete', 'unavailable']) === 'unavailable' &&
+      aggregateMetricStates(['complete', 'partial', 'snapshot_only']) === 'partial' &&
+      aggregateMetricStates(['complete', 'snapshot_only']) === 'snapshot_only' &&
+      aggregateMetricStates(['complete', 'complete']) === 'complete' &&
+      aggregateMetricStates(['snapshot_only', 'partial']) === 'partial')
+    ok('K1b 与输入顺序无关', aggregateMetricStates(['unavailable', 'complete']) === aggregateMetricStates(['complete', 'unavailable']) &&
+      aggregateMetricStates(['snapshot_only', 'complete', 'partial']) === aggregateMetricStates(['partial', 'snapshot_only', 'complete']))
+    ok('K1c 报告 completeness.blocks 与逐块聚合一致', (() => {
+      const b = richReport.completeness.blocks
+      const summaryStates = Object.values(richReport.summary).map((m) => m.state)
+      return b.summary === aggregateMetricStates(summaryStates) &&
+        b.funnel === aggregateMetricStates(Object.values(richReport.funnel).map((x) => x.coverage.status)) &&
+        b.customers === aggregateMetricStates(Object.values(richReport.customers).map((x) => x.coverage.status)) &&
+        richReport.completeness.overall === aggregateMetricStates(Object.values(b))
+    })())
+
+    // coverage：metricKey 完整且稳定（26 键全集）
+    const expectedCoverageKeys = [
+      'summary.customerTotal', 'summary.customerNew', 'summary.customerActive', 'summary.contractCount', 'summary.contractAmount',
+      'summary.creditedAmount', 'summary.shippedCount', 'summary.shippedAmount', 'summary.dealingCustomers', 'summary.avgDealSize',
+      'funnel.customerStage', 'funnel.opportunityStage', 'funnel.stageFlow', 'funnel.stuck', 'funnel.lostBreakdown',
+      'customers.highValue', 'customers.newCustomers', 'customers.dealing', 'customers.repeat', 'customers.active', 'customers.silent', 'customers.risk', 'customers.priority',
+      'monthly', 'communication', 'salesAssignment'
+    ]
+    eq('K2 coverage metricKey 完整且稳定（26 键）', Object.keys(richReport.coverage).sort(), [...expectedCoverageKeys].sort())
+    ok('K2b B/C 组原样复用统计层 coverage', JSON.stringify(richReport.coverage['funnel.customerStage']) === JSON.stringify(richReport.funnel.customerStage.coverage) &&
+      JSON.stringify(richReport.coverage['customers.highValue']) === JSON.stringify(richReport.customers.highValue.coverage))
+    ok('K2c A 组 status=metric.state、A3 主口径 source=wcdb.messages', richReport.coverage['summary.customerTotal'].status === richReport.summary.customerTotal.state &&
+      richReport.coverage['summary.customerActive'].source === 'wcdb.messages')
+
+    // warnings 聚合确定性：与输入行序无关
+    const reversed = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN),
+      facts: { accounts: [...facts.accounts].reverse(), contracts: [...facts.contracts].reverse(), allocations: [...facts.allocations].reverse(), shippedEvents: [] },
+      sales: { profiles: [...sales.profiles].reverse(), intentEvents: [...sales.intentEvents].reverse() },
+      crm: { opportunities: [...crm.opportunities].reverse(), opportunityEvents: [...crm.opportunityEvents].reverse() },
+      opts: { messageStats: messageStatsOk({ wx_a: { sent: 1, received: 0 } }) }
+    })
+    eq('K3 warnings 聚合与输入顺序无关', reversed.warnings, richReport.warnings)
+    eq('K3b dataRange/coverage/completeness 与输入顺序无关', [reversed.dataRange, reversed.coverage, reversed.completeness], [richReport.dataRange, richReport.coverage, richReport.completeness])
+    ok('K3c warnings 行结构：metricKeys 排序、counts 键排序（不相加）', richReport.warnings.every((w) =>
+      JSON.stringify(w.metricKeys) === JSON.stringify([...w.metricKeys].sort()) &&
+      (w.counts === undefined || JSON.stringify(Object.keys(w.counts)) === JSON.stringify(Object.keys(w.counts).sort()))))
+
+    // dataRange：实际输入事实边界；空数据双 null；脏值不进入
+    ok('K4 空数据 dataRange = {from:null,to:null}', emptyReport.dataRange.from === null && emptyReport.dataRange.to === null)
+    ok('K4b 2025 实际范围（建档 2-1 → 核销 4-1；商机 2024 不入）', richReport.dataRange.from === T(2025, 2, 1) && richReport.dataRange.to === T(2025, 4, 1))
+    const dirtyRange = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(0, GEN),
+      facts: {
+        accounts: [
+          accF(1, null, { createdAt: 1_700_000_000 }),   // 秒值毫秒位（1970）→ 排除
+          accF(2, null, { createdAt: T(2024, 6, 1) }),   // 合法
+          accF(3, null, { createdAt: T(2026, 7, 1) })    // 晚于 asOf → 排除
+        ],
+        contracts: [], allocations: [], shippedEvents: []
+      },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('K4c all_time 秒值/未来值不进入 dataRange', dirtyRange.dataRange.from === T(2024, 6, 1) && dirtyRange.dataRange.to === T(2024, 6, 1))
+    ok('K4d 空数据报告过运行时校验（nullable dataRange）', validateAnnualReviewReport(emptyReport, 2026).ok === true)
+
+    // sourceSummary：真实输入行数、确定、无敏感内容
+    const ss = richReport.sourceSummary
+    ok('K5 sourceSummary 4 行（crmdb/salesdb/crmdb/wcdb）', ss.length === 4 &&
+      ss[0].source === 'crmdb' && ss[1].source === 'salesdb' && ss[2].source === 'crmdb' && ss[3].source === 'wcdb')
+    ok('K5b rows = 真实输入行数', ss[0].rows === facts.accounts.length + facts.contracts.length + facts.allocations.length &&
+      ss[1].rows === sales.profiles.length + sales.intentEvents.length && ss[2].rows === crm.opportunities.length + crm.opportunityEvents.length)
+    ok('K5c wcdb 行 = 消息统计会话数', ss[3].rows === 1)
+    const emptySs = emptyReport.sourceSummary
+    ok('K5d 空库 rows=0、消息统计不可用 note 稳定', emptySs[0].rows === 0 && emptySs[3].rows === 0 && emptySs[3].note?.includes('不可用') === true)
+  }
+
+  // ══ V validateAnnualReviewReport 运行时守卫单元 ═══════════════════════════
+  {
+    const good = buildRealReport()
+    ok('V 合法报告通过', validateAnnualReviewReport(good, 2026).ok === true)
+    ok('Vb {} 拒绝', validateAnnualReviewReport({}, 2026).ok === false)
+    ok('Vc 数组拒绝', validateAnnualReviewReport([], 2026).ok === false)
+    ok('Vd 错误年份拒绝', validateAnnualReviewReport(good, 2025).ok === false)
+    ok('Ve 错误 schemaVersion 拒绝', validateAnnualReviewReport({ ...good, reportSchemaVersion: 2 }, 2026).ok === false)
+    ok('Vf 缺核心区块拒绝', validateAnnualReviewReport({ ...good, funnel: undefined }, 2026).ok === false &&
+      validateAnnualReviewReport({ ...good, summary: undefined }, 2026).ok === false &&
+      validateAnnualReviewReport({ ...good, completeness: undefined }, 2026).ok === false)
+    const withNaN = { ...good, summary: { ...good.summary, contractAmount: { ...good.summary.contractAmount, value: Number.NaN } } }
+    ok('Vg NaN 拒绝', validateAnnualReviewReport(withNaN, 2026).ok === false)
+    const withInfinity = { ...good, generatedAt: Number.POSITIVE_INFINITY }
+    ok('Vg2 Infinity 拒绝', validateAnnualReviewReport(withInfinity, 2026).ok === false)
+    const withFunc = { ...good, generatedAt: (() => 1) as unknown as number }
+    ok('Vh 不可克隆值（function）拒绝', validateAnnualReviewReport(withFunc, 2026).ok === false)
+    const withCycle = { ...good } as { self?: unknown }
+    withCycle.self = withCycle
+    ok('Vi 循环引用（不可 JSON 序列化）拒绝', validateAnnualReviewReport(withCycle, 2026).ok === false)
+    const zeroAsUnavailable = {
+      ...good,
+      summary: { ...good.summary, customerTotal: { ...good.summary.customerTotal, state: 'unavailable', value: 0 } }
+    }
+    ok('Vj unavailable 区块不得伪装成数字 0', validateAnnualReviewReport(zeroAsUnavailable, 2026).ok === false)
+    const valueAsUnavailable = {
+      ...good,
+      summary: { ...good.summary, contractCount: { ...good.summary.contractCount, state: 'complete', value: null } }
+    }
+    ok('Vj2 unavailable↔null 双向一致', validateAnnualReviewReport(valueAsUnavailable, 2026).ok === false)
+    const badAsOf = { ...good, asOf: good.asOf + 1 }
+    ok('Vk 时间契约破坏拒绝（current_year asOf≠generatedAt）', validateAnnualReviewReport(badAsOf, 2026).ok === false)
+    const badScope = { ...good, scopeKind: 'all_time' }
+    ok('Vl scopeKind 与年份不一致拒绝', validateAnnualReviewReport(badScope, 2026).ok === false)
+    const sessionIdLeak = { ...good, customers: { ...good.customers, silent: { ...good.customers.silent, value: [{ sessionId: 'wx_a', lastContactAtMs: 1, accountId: null, customerId: null, name: null }] } } }
+    ok('Vm 泄漏 sessionId 的报告拒绝', validateAnnualReviewReport(sessionIdLeak, 2026).ok === false)
+  }
+
+  // ══ 15/19 源码一致性守卫（IPC/preload/d.ts/vite/Worker 边界 + 结构化错误） ══
   {
     const mainSrc = readFileSync(join(ROOT, 'electron', 'main.ts'), 'utf8')
     const preloadSrc = readFileSync(join(ROOT, 'electron', 'preload.ts'), 'utf8')
@@ -553,8 +958,9 @@ async function main(): Promise<void> {
       ok(`15 main.ts 注册 ${channel}`, mainSrc.includes(`'${channel}'`))
       ok(`15b preload 对接 ${channel}`, preloadSrc.includes(`'${channel}'`))
     }
-    ok('15c 进度广播通道（main 广播 + preload 订阅 + 清理函数）', mainSrc.includes("'annualReview:progress'") &&
-      preloadSrc.includes("on('annualReview:progress'") && preloadSrc.includes("removeAllListeners('annualReview:progress')"))
+    ok('15c preload 进度订阅：wrapper+removeListener（无 removeAllListeners 固化）',
+      preloadSrc.includes("subscribeIpcEvent(ipcRenderer, 'annualReview:progress'") &&
+      !preloadSrc.includes("removeAllListeners('annualReview:progress')"))
     ok('15d preload 暴露最小 API（5 方法均在 annualReview 命名空间）', (() => {
       const nsStart = preloadSrc.indexOf('annualReview: {')
       const nsEnd = preloadSrc.indexOf('\n  },', nsStart)
@@ -565,12 +971,70 @@ async function main(): Promise<void> {
     ok('15e electron.d.ts annualReview 签名与报告类型', dtsSrc.includes('annualReview: {') &&
       dtsSrc.includes('interface AnnualReviewReport') && dtsSrc.includes('generate: (year: number)') &&
       dtsSrc.includes("cache: 'hit' | 'miss' | 'stale'"))
+    ok('15e2 d.ts 结构化错误信封（annualReview 区段 error?: { code, message }）', (() => {
+      const nsStart = dtsSrc.indexOf('annualReview: {')
+      const nsEnd = dtsSrc.indexOf('dualReport: {', nsStart)
+      if (nsStart < 0 || nsEnd < 0) return false
+      const ns = dtsSrc.slice(nsStart, nsEnd)
+      return (ns.match(/error\?: \{ code: string; message: string \}/g) ?? []).length >= 4
+    })())
+    ok('15f cancel 请求对象 {taskId}（preload + main 双侧）', preloadSrc.includes("invoke('annualReview:cancel', { taskId })") &&
+      mainSrc.includes('(payload as { taskId?: unknown }).taskId'))
+    const arIpcStart = mainSrc.indexOf("'annualReview:getAvailableYears'")
+    const arIpcEnd = mainSrc.indexOf("'annualReport:getAvailableYears'")
+    const arIpc = mainSrc.slice(arIpcStart, arIpcEnd)
+    ok('15g IPC 失败返回结构化错误（4 处 error: { code … }，不丢 code）',
+      (arIpc.match(/error: \{ code/g) ?? []).length >= 4 &&
+      !arIpc.includes('error: validation.message') && !arIpc.includes('error: result.error?.message'))
+    ok('15g2 非法年份错误携带稳定 code', arIpc.includes('code: validation.code'))
+    ok('15h 账号上下文使用实际业务库身份（currentDbPath，路径只进内部键）',
+      mainSrc.includes("salesDbService.currentDbPath() ?? businessDbName(wxid, 'sales')") &&
+      mainSrc.includes("crmDbService.currentDbPath() ?? businessDbName(wxid, 'crm')"))
+    ok('15i 服务层无哈希折叠、无日志输出（内部键不外泄）', !serviceSrc.includes('fnv1a') && !/console\./.test(serviceSrc))
+    ok('15j 服务层使用运行时报告校验', serviceSrc.includes('validateAnnualReviewReport'))
     ok('19 Worker 构建接线（vite entry + 产物名）', viteSrc.includes("entry: 'electron/annualReviewWorker.ts'") &&
       viteSrc.includes("entryFileNames: 'annualReviewWorker.js'"))
     ok('19b Worker 路径解析约定（__dirname 同级产物）', serviceSrc.includes("'annualReviewWorker.js'"))
     ok('19c Worker 源文件存在', existsSync(join(ROOT, 'electron', 'annualReviewWorker.ts')))
     ok('19d Worker 零数据库/零秘密依赖', !/wcdbService|salesDbService|crmDbService|decryptKey|businessDbPath/.test(workerSrc))
     ok('19e Worker 只引用纯统计（annualReviewReport）', workerSrc.includes('annualReviewReport'))
+  }
+
+  // ══ S preload 多订阅者独立清理（可注入 IPC renderer 行为测试） ═════════════
+  {
+    class FakeIpcRenderer implements IpcEventRegistrar {
+      private readonly registered: Array<{ channel: string; listener: (...args: unknown[]) => void }> = []
+      on(channel: string, listener: (...args: unknown[]) => void): unknown {
+        this.registered.push({ channel, listener })
+        return undefined
+      }
+      removeListener(channel: string, listener: (...args: unknown[]) => void): unknown {
+        const idx = this.registered.findIndex((r) => r.channel === channel && r.listener === listener)
+        if (idx >= 0) this.registered.splice(idx, 1)
+        return undefined
+      }
+      emit(channel: string, payload: unknown): void {
+        for (const r of [...this.registered]) {
+          if (r.channel === channel) r.listener('event', payload)
+        }
+      }
+      get count(): number { return this.registered.length }
+    }
+    const ipc = new FakeIpcRenderer()
+    const received: string[] = []
+    const cleanupA = subscribeIpcEvent(ipc, 'annualReview:progress', (p) => received.push(`A:${(p as { taskId?: string }).taskId}`))
+    const cleanupB = subscribeIpcEvent(ipc, 'annualReview:progress', (p) => received.push(`B:${(p as { taskId?: string }).taskId}`))
+    ok('S 两个订阅者各自注册 wrapper', ipc.count === 2)
+    ipc.emit('annualReview:progress', { taskId: 't1' })
+    eq('Sb A/B 同时收到事件', received, ['A:t1', 'B:t1'])
+    cleanupA()
+    cleanupA() // 幂等：重复清理不抛错、不移除他人
+    ok('Sc 清理 A 后 B 的 wrapper 仍在', ipc.count === 1)
+    ipc.emit('annualReview:progress', { taskId: 't2' })
+    eq('Sd 清理 A 后 B 继续收到事件', received, ['A:t1', 'B:t1', 'B:t2'])
+    cleanupB()
+    ipc.emit('annualReview:progress', { taskId: 't3' })
+    ok('Se 清理 B 后无残留监听', ipc.count === 0 && received.length === 3)
   }
 
   // ══ 20 reportSchemaVersion 与 S1 单一来源 ═════════════════════════════════
@@ -580,7 +1044,8 @@ async function main(): Promise<void> {
   {
     const { Worker } = await import('worker_threads')
     const realReportKeys = ['reportSchemaVersion', 'year', 'scopeKind', 'periodStart', 'periodEndExclusive', 'asOf',
-      'generatedAt', 'timezoneNote', 'summary', 'funnel', 'customers', 'monthly', 'communication', 'salesAssignment']
+      'generatedAt', 'timezoneNote', 'dataRange', 'completeness', 'coverage', 'warnings',
+      'summary', 'funnel', 'customers', 'monthly', 'communication', 'salesAssignment', 'sourceSummary']
     const payload: AnnualReviewWorkerPayload = {
       taskId: 'real-worker-1',
       reportSchemaVersion: 1,
@@ -614,12 +1079,15 @@ async function main(): Promise<void> {
       })
       setTimeout(() => reject(new Error('real worker timeout')), 20000)
     })
-    ok('21 真实 Worker 返回完整报告（16 个顶层键）', workerResult.data !== undefined &&
+    ok('21 真实 Worker 返回完整报告（19 个顶层键）', workerResult.data !== undefined &&
       Object.keys(workerResult.data as unknown as object).length === realReportKeys.length &&
       realReportKeys.every((k) => k in (workerResult.data as object)))
     ok('21b 真实 Worker 统计值正确（A1=2；2025 年签约/核销不在 2026 区间 → 真实零）',
       workerResult.data?.summary.customerTotal.value === 2 &&
       workerResult.data?.summary.contractCount.value === 0 && workerResult.data?.summary.creditedAmount.value === 0)
+    ok('21c 真实 Worker 结果过运行时结构校验', workerResult.data !== undefined && validateAnnualReviewReport(workerResult.data, 2026).ok === true)
+    ok('21c2 真实 Worker 报告无 sessionId/wxid 原文', !JSON.stringify(workerResult.data).includes('wx_a') &&
+      !JSON.stringify(workerResult.data).includes('sessionId'))
 
     // 非法载荷 → 结构化错误（code=invalid_payload），不崩溃
     const badResult = await new Promise<{ type: string; error?: { code: string; message: string } }>((resolve, reject) => {
@@ -634,14 +1102,14 @@ async function main(): Promise<void> {
       w.on('exit', (code) => reject(new Error(`worker exit ${code} without error`)))
       setTimeout(() => reject(new Error('real worker timeout')), 20000)
     })
-    ok('21c 真实 Worker 非法载荷 → invalid_payload', badResult.error?.code === 'invalid_worker_result' || badResult.error?.code === 'invalid_payload')
+    ok('21d 真实 Worker 非法载荷 → invalid_payload', badResult.error?.code === 'invalid_worker_result' || badResult.error?.code === 'invalid_payload')
 
     // 真实 createThreadRunner：产物缺失 → worker_error（验证打包路径约定失败可收敛）
     const missingRunner = createThreadRunner('annualReviewWorker.nonexistent.js')
     const missingFailed = await new Promise<unknown>((resolve) => {
       missingRunner.run(payload, () => {}).catch(resolve)
     })
-    ok('21d 真实 runner 产物缺失收敛为 worker_error', (missingFailed as { code?: string })?.code === 'worker_error')
+    ok('21e 真实 runner 产物缺失收敛为 worker_error', (missingFailed as { code?: string })?.code === 'worker_error')
   }
 }
 

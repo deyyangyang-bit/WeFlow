@@ -1798,8 +1798,9 @@ export interface ElectronAPI {
     getAvailableYears: () => Promise<{
       success: boolean
       data?: {
+        /** 自然年份升序排列；特殊项 year=0（历史以来）固定放在最后 */
         years: Array<{
-          /** 年份；0 = 历史以来 */
+          /** 年份；0 = 历史以来（固定排在自然年之后） */
           year: number
           coverage: {
             source: string
@@ -1815,7 +1816,7 @@ export interface ElectronAPI {
         defaultYear: number
         generatedAt: number
       }
-      error?: string
+      error?: { code: string; message: string }
     }>
     /** 触发生成并等待完成（进度经 onProgress 并行推送）；同一账号同年份已有任务时合并等待 */
     generate: (year: number) => Promise<{
@@ -1823,18 +1824,19 @@ export interface ElectronAPI {
       taskId?: string
       /** true = 合并等待了同键已有任务（未重复启动 Worker） */
       reused?: boolean
-      error?: string
+      error?: { code: string; message: string }
     }>
     /** 查询报告：cache='hit' 携带 report；'miss' 无缓存；'stale' 已过期（>10 分钟） */
     getReport: (year: number) => Promise<{
       success: boolean
       cache: 'hit' | 'miss' | 'stale'
       report?: AnnualReviewReport
-      error?: string
+      error?: { code: string; message: string }
     }>
+    /** 取消：loading/computing 都有效；终态幂等成功；未知 taskId → task_not_found */
     cancel: (taskId: string) => Promise<{
       success: boolean
-      error?: string
+      error?: { code: string; message: string }
     }>
     onProgress: (callback: (payload: {
       taskId: string
@@ -2857,16 +2859,46 @@ export interface AnnualReviewCustomersBlock {
   newCustomers: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; createdAt: number; imported: boolean }>>
   dealing: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number; firstSignDate: number }>>
   repeat: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number }>>
-  active: AnnualReviewListBlock<Array<{ sessionId: string }>>
-  silent: AnnualReviewListBlock<Array<{ sessionId: string; lastContactAtMs: number }>>
-  risk: AnnualReviewListBlock<Array<{ sessionId: string; stage: string; lastContactAtMs: number }>>
-  priority: AnnualReviewListBlock<Array<{ sessionId: string; lastContactAtMs: number }>>
+  /** C5–C8 行只引用业务身份（规格 §7.2）；统计层 sessionId 不进入公开报告 */
+  active: AnnualReviewListBlock<Array<{ accountId: number | null; name: string | null }>>
+  silent: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }>>
+  risk: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; stage: string; lastContactAtMs: number }>>
+  priority: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }>>
 }
 
 /** 尚未实现区块的显式占位（D/E 组、月度趋势）：UI 按 unavailable 渲染，绝不显示为 0 */
 export interface AnnualReviewUnavailableBlock {
   status: 'unavailable'
   reasonCodes: string[]
+}
+
+/** 本报告涉及数据源的实际最早/最晚有效事实时间；空数据没有真实范围 → 双 null */
+export interface AnnualReviewDataRange {
+  from: number | null
+  to: number | null
+}
+
+/** 完整性区块 id（稳定枚举） */
+export type AnnualReviewBlockId = 'summary' | 'funnel' | 'customers' | 'monthly' | 'communication' | 'salesAssignment'
+
+export interface AnnualReviewCompleteness {
+  overall: AnnualReviewCoverage['status']
+  blocks: Record<AnnualReviewBlockId, AnnualReviewCoverage['status']>
+}
+
+/** 全指标 warnings 聚合行：同 code 合并；metricKeys/counts 稳定排序（count 不跨指标相加） */
+export interface AnnualReviewAggregatedWarning {
+  code: string
+  message: string
+  metricKeys: string[]
+  counts?: Record<string, number>
+}
+
+export interface AnnualReviewSourceSummaryRow {
+  source: string
+  tables: string[]
+  rows: number
+  note?: string
 }
 
 export interface AnnualReviewReport {
@@ -2881,12 +2913,22 @@ export interface AnnualReviewReport {
   /** 永远只表示报告实际生成时间，不兼作历史数据时点 */
   generatedAt: number
   timezoneNote: 'local'
+  /** 实际输入事实的最早/最晚有效时间；非名义 period 边界 */
+  dataRange: AnnualReviewDataRange
+  /** 四态完整性（统计层结果聚合；UI 不计算） */
+  completeness: AnnualReviewCompleteness
+  /** 稳定 metricKey → 覆盖结构（B/C 复用统计层；A 组组装层单一映射） */
+  coverage: Record<string, AnnualReviewCoverage>
+  /** 全指标 warnings 聚合 */
+  warnings: AnnualReviewAggregatedWarning[]
   summary: AnnualReviewSummaryMetrics
   funnel: AnnualReviewFunnelBlock
   customers: AnnualReviewCustomersBlock
   monthly: AnnualReviewUnavailableBlock
   communication: AnnualReviewUnavailableBlock
   salesAssignment: AnnualReviewUnavailableBlock
+  /** 真实输入事实与消息统计来源摘要（行数确定、无敏感内容） */
+  sourceSummary: AnnualReviewSourceSummaryRow[]
 }
 
 export { }
