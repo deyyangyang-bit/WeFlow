@@ -935,7 +935,9 @@ export function computeAnnualReviewLostBreakdown(
     }
   }
 
-  // current_year / all_time：当前快照（canonical lost 的画像会话）
+  // current_year / all_time：当前快照。流失名单与 B1/B3/B7 historical 同一 CRM accounts-only
+  // 总体（population）：customer_profile 只能为总体内会话补充当前 stage，profile-only 会话
+  // 即使画像为 lost 且有 quoted→lost 事件也完全排除（不入分布、流失计数、coverage.rows）。
   const reps = representativeProfilesBySession(inputs.sales.profiles, exclusionSet)
   const { bySession, invalidTime, invalidStage } = groupIntentEventsBySession(inputs.sales.intentEvents, population, (t) => t < asOf)
   if (invalidTime > 0) addSeg(warnings, 'intent_event_time_invalid', invalidTime)
@@ -943,6 +945,7 @@ export function computeAnnualReviewLostBreakdown(
   const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
   let lostSessions = 0
   for (const [sid, rep] of reps) {
+    if (!population.has(sid)) continue // CRM accounts-only 总体约束（防 profile-only 绕过）
     if (normalizeStage(rep.stageRaw) !== 'lost') continue
     lostSessions++
     counts[bucketIndex(lostPreviousStageBucket(bySession.get(sid)))]++

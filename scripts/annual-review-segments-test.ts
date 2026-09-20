@@ -1187,6 +1187,54 @@ function main(): void {
       below.coverage.status === 'unavailable' && below.distribution === null && below.coverage.coverageRatio === 3 / 5)
   }
 
+  // ══ 24 审查反例（B7 当前快照）：profile-only 会话完全排除出流失归因 ════════
+  {
+    // 正向 + 反例混合：crm_lost（CRM 总体内、画像 lost）正常计入；
+    // profile_only（无 CRM account 绑定、画像 lost 且带 quoted→lost 事件）必须完全排除
+    const mixed = withInputs({
+      facts: { accounts: [accF(1, 'crm_session'), accF(2, 'crm_lost')] },
+      sales: {
+        profiles: [
+          prof(1, 'crm_session', 'quoted'),   // a. CRM 会话、画像非 lost
+          prof(2, 'crm_lost', 'lost'),
+          prof(3, 'profile_only', 'lost')     // b. profile-only、画像 lost
+        ],
+        intentEvents: [
+          iev(1, 'crm_lost', 'quoted', T(2026, 2, 1)),
+          iev(2, 'crm_lost', 'lost', T(2026, 3, 1)),
+          iev(3, 'profile_only', 'quoted', T(2026, 2, 2)),  // c. 事件也不能使其进入结果
+          iev(4, 'profile_only', 'lost', T(2026, 3, 2))
+        ]
+      }
+    })
+    const rMixed = computeAnnualReviewLostBreakdown(P2026, mixed)
+    distIs('24 B7 当前快照仅计 CRM 总体内 lost（crm_lost 前序比价；profile_only 排除）',
+      rMixed.customerPreviousStage, [['比价', 1]])
+    ok('24b coverage.rows=1（旧实现 rows=2）', rMixed.coverage.rows === 1)
+
+    // 最小反例：CRM accounts 仅 crm_session（画像非 lost）；profile_only lost + quoted→lost 事件
+    const minimalInputs = withInputs({
+      facts: { accounts: [accF(1, 'crm_session')] },
+      sales: {
+        profiles: [prof(1, 'crm_session', 'quoted'), prof(2, 'profile_only', 'lost')],
+        intentEvents: [
+          iev(3, 'profile_only', 'quoted', T(2026, 2, 2)),
+          iev(4, 'profile_only', 'lost', T(2026, 3, 2))
+        ]
+      }
+    })
+    const rMin = computeAnnualReviewLostBreakdown(P2026, minimalInputs)
+    distIs('24c 最小反例：profile-only lost 完全排除 → 六桶总和为 0（旧实现「比价1/未知1」）',
+      rMin.customerPreviousStage, [])
+    ok('24d coverage.rows=0（旧实现 rows=1）', rMin.coverage.rows === 0)
+    eq('24e profile-only 不得影响 warnings', codesOf(rMin.warnings), ['current_snapshot_projection'])
+
+    // all_time 与 current_year 同一总体约束
+    const rAll = computeAnnualReviewLostBreakdown(PALL, minimalInputs)
+    distIs('24f all_time 同一约束：六桶总和为 0', rAll.customerPreviousStage, [])
+    ok('24g all_time coverage.rows=0', rAll.coverage.rows === 0)
+  }
+
   // ══ 最小反例显式验证（任务八：明确打印三个关键反例的实际结果） ═══════════
   {
     const crm = ['c1', 'c2', 'c3', 'c4']
