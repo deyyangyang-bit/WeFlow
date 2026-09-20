@@ -9,19 +9,30 @@
  *   - 纯统计层：B1/B2/B3/B6/B7/C1–C8 全部为纯函数；零 Electron 依赖、零全局单例，
  *     经注入事实（AnnualReviewSegmentInputs）工作；不修改输入；同输入同输出、与输入行序无关。
  *
- * 关键口径（规格 §3/§4/§5.2/§5.3 + S2 任务裁决）：
- *   - 阶段语义唯一源 = shared/salesStage（normalizeStage / stageToFunnel / FUNNEL_ORDER）；
- *     本模块零阶段映射副本。所有分布固定输出 FUNNEL_ORDER 六桶，无数据桶为 0。
+ * 关键口径（规格 §3/§4/§5.2/§5.3 + S2 任务裁决 + 2026-09-20 审查修正）：
+ *   - 阶段语义唯一源 = shared/salesStage（normalizeStage / stageToFunnel / FUNNEL_ORDER /
+ *     isRecognizedStage）；本模块零阶段映射副本。所有分布固定输出 FUNNEL_ORDER 六桶，
+ *     无数据桶为 0。
+ *   - B 组会话总体（B1/B3/B7）= 去重后的有效 CRM 绑定会话，唯一来源为
+ *     AnnualReviewFacts.accounts[].sessionId（应用与 A3 相同的结构性/手动/内部排除）；
+ *     customer_profile 只能为总体内会话补充 stage/last_contact_at 投影，不得扩大总体
+ *     （profile-only 会话不入分布、不入覆盖分母，其 intent 事件不入分子）。
+ *     A3/C5 活跃客户沿用 A3 原口径（account.session_id），由
+ *     computeAnnualReviewCustomerActiveDetail 单一实现保证 C5 ≡ A3；C6/C7/C8 维持
+ *     既有画像名单口径不变。
  *   - 事件重放：主排序 created_at 升序、同时间 id 升序；重放只取 created_at < asOf 的事件
- *     （右边界开区间，asOf 时刻事件不计）；非法时间/会话/stage 按明确规则排除或归「未知」，不崩溃。
- *   - 覆盖率（B1/B2/B3）：分子分母同一总体；阈值 80% 用整数运算 covered*5 >= total*4（恰好 80% 允许）；
- *     分母 0 → empty-zero 语义（空结果 + coverageRatio=null），绝不产生 NaN/Infinity，不伪造百分比。
+ *     （右边界开区间，asOf 时刻事件不计）；时间非法与阶段值不可识别（isRecognizedStage=false）
+ *     的事件排除并分别计数告警，绝不把空值/垃圾阶段当成有效事实抬高覆盖率；
+ *     合法 canonical `unknown` 与中文「未知」是有效阶段事实（入覆盖分子，归「未知」桶）。
+ *   - 覆盖率（B1/B2/B3/B7）：分子分母同一总体；阈值 80% 用整数运算 covered*5 >= total*4
+ *     （恰好 80% 允许）；分母 0 → empty-zero 语义（空结果 + coverageRatio=null），
+ *     绝不产生 NaN/Infinity，不伪造百分比。
+ *   - B2 可重建覆盖分子 = 至少有一条「能确定历史状态」事件的商机：created/stage_change
+ *     （stage 可识别）或 won/lost（不依赖 stage）；signal/deal_pending 等既不更新状态、
+ *     也不构成状态覆盖。
  *   - 历史年度（historical_year）：当前投影（customer_profile.stage / opportunity.stage/status /
  *     last_contact_at）一律不可用作时点事实；只有事件流重放合法；重建结果恒 partial（不宣称 complete），
  *     覆盖不足 80% → unavailable + history_not_reconstructable，不返回看似真实的分布。
- *   - B 组会话总体 = 去重后的有效 CRM 绑定会话（account.session_id ∪ customer_profile.session_id，
- *     应用与 A3 相同的结构性/手动/内部排除）；A3/C5 活跃客户沿用 A3 原口径（account.session_id），
- *     由 computeAnnualReviewCustomerActiveDetail 单一实现保证 C5 ≡ A3。
  *   - last_contact_at 为秒（WCDB 回填），比较前 ×1000；同 session 多画像去重取最大有效值。
  *
  * 本模块不实现 IPC / Worker / UI / 缓存 / 导出 / AI（S3+ 范围）。
@@ -51,6 +62,7 @@ import {
 import {
   FUNNEL_ORDER,
   funnelBucket,
+  isRecognizedStage,
   normalizeStage,
   stageToFunnel,
   type FunnelStage,
@@ -88,8 +100,10 @@ const SEG_WARN = {
   opportunity_tombstone_gap: '已物理删除的商机及其事件不可恢复，重建结果可能偏低',
   opportunity_created_at_missing: '部分商机缺少有效创建时间，未计入历史总体',
   opportunity_event_time_invalid: '部分商机事件缺少有效时间，已排除',
+  opportunity_event_stage_invalid: '部分商机事件阶段值不可识别，未计入状态覆盖',
   opportunity_event_unlinked: '部分商机事件无法关联到商机，已排除',
   intent_event_time_invalid: '部分阶段事件缺少有效时间，已排除',
+  intent_event_stage_invalid: '部分阶段事件阶段值不可识别，未计入覆盖',
   last_contact_missing: '部分目标阶段会话缺少最近联系时间，已排除（不伪造停滞/风险状态）',
   credited_account_missing: '存在未关联客户的核销记录，未计入高价值客户',
   unsupported_scope: '当前统计范围（scopeKind）不支持该指标'
@@ -201,22 +215,22 @@ function reasonCodesOf(warnings: MetricWarning[]): string[] {
 // ─── 会话总体与画像代表 ──────────────────────────────────────────────────────
 
 /**
- * B 组会话总体：去重后的有效 CRM 绑定会话 = account.session_id ∪ customer_profile.session_id，
- * 应用与 A3 相同的结构性（群聊/公众号/系统账号）及名单（手动/内部）排除。升序输出保证确定性。
+ * B 组会话总体（B1/B3/B7）：去重后的有效 CRM 绑定会话，唯一来源 = AnnualReviewFacts.accounts[]
+ * 的 session_id（2026-09-20 审查修正：customer_profile.session_id 不得并入总体——profile-only
+ * 会话不是 CRM 客户，并入会扩大覆盖分母、把真实 100% 覆盖错误降成不足 80%）。保留：非空、
+ * 非群聊、非公众号、非系统账号、不在手动/内部名单；按规范化 session_id 去重并升序输出。
+ * customer_profile 只能为总体内会话补充投影（representativeProfilesBySession），不得扩大总体。
  */
 function segmentSessionPopulation(
   accounts: AnnualReviewAccountFact[],
-  profiles: AnnualReviewProfileFact[],
   exclusionSet: Set<string>
 ): string[] {
   const set = new Set<string>()
-  const consider = (raw: unknown): void => {
-    const sid = normSession(raw)
-    if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid)) return
+  for (const acc of accounts) {
+    const sid = normSession(acc.sessionId)
+    if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid)) continue
     set.add(sid)
   }
-  for (const acc of accounts) consider(acc.sessionId)
-  for (const p of profiles) consider(p.sessionId)
   return [...set].sort(cmpString)
 }
 
@@ -266,16 +280,20 @@ interface SortedStageEvent {
 }
 
 interface GroupedIntentEvents {
-  /** 仅含总体内会话、时间合法且通过 timeOk 的事件；每会话按 (t, id) 升序 */
+  /** 仅含总体内会话、时间合法、在时间窗口内且 stage 可识别的事件；每会话按 (t, id) 升序 */
   bySession: Map<string, SortedStageEvent[]>
   invalidTime: number
+  /** stage 不可识别（isRecognizedStage=false）的事件数：不入重放、不入覆盖分子 */
+  invalidStage: number
   /** 参与分组的事件中最早时间（无 → null）；coverageFrom 用 */
   earliest: number | null
 }
 
 /**
- * intent_tag_log 分组：总体外会话（未绑定/被排除）静默跳过；时间非法 → 计数排除；
- * 同会话按 (created_at, id) 升序稳定排序（重放「同时间取 id 大」的顺序基础）。
+ * intent_tag_log 分组：总体外会话（非 CRM 绑定/被排除，含 profile-only）静默跳过；
+ * 时间非法 → 计数排除；不在时间窗口 → 静默跳过；stage 不可识别 → 计数排除（不入 bySession、
+ * 不入覆盖分子，较晚的垃圾事件因此不能覆盖较早的合法阶段）；canonical `unknown` 与中文
+ * 「未知」是可识别阶段事实（入分子、归未知桶）。同会话按 (created_at, id) 升序稳定排序。
  */
 function groupIntentEventsBySession(
   events: AnnualReviewIntentEventFact[],
@@ -284,6 +302,7 @@ function groupIntentEventsBySession(
 ): GroupedIntentEvents {
   const bySession = new Map<string, SortedStageEvent[]>()
   let invalidTime = 0
+  let invalidStage = 0
   let earliest: number | null = null
   for (const ev of events) {
     const sid = normSession(ev.sessionId)
@@ -294,6 +313,10 @@ function groupIntentEventsBySession(
       continue
     }
     if (!timeOk(t)) continue
+    if (!isRecognizedStage(ev.stage)) {
+      invalidStage++
+      continue
+    }
     const id = asFinite(ev.id) ?? 0
     const list = bySession.get(sid)
     const item: SortedStageEvent = { t, id, stageRaw: ev.stage }
@@ -304,7 +327,7 @@ function groupIntentEventsBySession(
   for (const list of bySession.values()) {
     list.sort((a, b) => a.t - b.t || a.id - b.id)
   }
-  return { bySession, invalidTime, earliest }
+  return { bySession, invalidTime, invalidStage, earliest }
 }
 
 // ─── B1 客户阶段分布 ─────────────────────────────────────────────────────────
@@ -332,17 +355,18 @@ export function computeAnnualReviewCustomerStageDistribution(
   assertValidPeriod(period)
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const warnings = new WarningCollector()
-  const populationArr = segmentSessionPopulation(inputs.facts.accounts, inputs.sales.profiles, exclusionSet)
+  const populationArr = segmentSessionPopulation(inputs.facts.accounts, exclusionSet)
   const population = new Set(populationArr)
 
   if (period.scopeKind === 'historical_year') {
     const asOf = period.asOf
-    const { bySession, invalidTime, earliest } = groupIntentEventsBySession(
+    const { bySession, invalidTime, invalidStage, earliest } = groupIntentEventsBySession(
       inputs.sales.intentEvents,
       population,
       (t) => t < asOf
     )
     if (invalidTime > 0) addSeg(warnings, 'intent_event_time_invalid', invalidTime)
+    if (invalidStage > 0) addSeg(warnings, 'intent_event_stage_invalid', invalidStage)
     const total = populationArr.length
     if (total === 0) {
       // 查询成功且总体为空 → empty-zero：空结果 + coverageRatio=null，不伪造百分比
@@ -433,15 +457,28 @@ interface SortedOppEvent {
   id: number
   eventType: string | null
   stageRaw: string | null
+  /** 该事件能否确定历史状态：created/stage_change（stage 可识别）或 won/lost（不依赖 stage） */
+  stateBearing: boolean
 }
 
 interface GroupedOppEvents {
   byOpp: Map<number, SortedOppEvent[]>
   invalidTime: number
+  /** created/stage_change 的 stage 不可识别：不更新状态、不入可重建覆盖 */
+  invalidStage: number
   unlinked: number
   earliest: number | null
 }
 
+/**
+ * 商机事件分组与「可重建」标记：
+ *   - won / lost：终态事实，stateBearing=true（不依赖 event.stage）；
+ *   - created / stage_change：仅当 stage 可识别（isRecognizedStage）才 stateBearing=true，
+ *     不可识别 → 计 opportunity_event_stage_invalid，不更新状态、不入覆盖分子；
+ *   - signal / deal_pending / 其他：不改变也不能确定阶段或 status → stateBearing=false
+ *     （保留在事实中用于重放完整性，但绝不抬高 coverageRatio）。
+ * 总体外商机（asOf 后创建/已删除）静默跳过；时间非法计数排除；每商机按 (t, id) 升序。
+ */
 function groupOpportunityEvents(
   events: AnnualReviewOpportunityEventFact[],
   oppIds: Set<number>,
@@ -449,6 +486,7 @@ function groupOpportunityEvents(
 ): GroupedOppEvents {
   const byOpp = new Map<number, SortedOppEvent[]>()
   let invalidTime = 0
+  let invalidStage = 0
   let unlinked = 0
   let earliest: number | null = null
   for (const ev of events) {
@@ -464,9 +502,21 @@ function groupOpportunityEvents(
       continue
     }
     if (!timeOk(t)) continue
+    let stateBearing: boolean
+    if (ev.eventType === 'won' || ev.eventType === 'lost') {
+      stateBearing = true
+    } else if (ev.eventType === 'created' || ev.eventType === 'stage_change') {
+      if (!isRecognizedStage(ev.stage)) {
+        invalidStage++
+        continue
+      }
+      stateBearing = true
+    } else {
+      stateBearing = false
+    }
     const id = asFinite(ev.id) ?? 0
     const list = byOpp.get(oid)
-    const item: SortedOppEvent = { t, id, eventType: ev.eventType, stageRaw: ev.stage }
+    const item: SortedOppEvent = { t, id, eventType: ev.eventType, stageRaw: ev.stage, stateBearing }
     if (list) list.push(item)
     else byOpp.set(oid, [item])
     if (earliest === null || t < earliest) earliest = t
@@ -474,13 +524,14 @@ function groupOpportunityEvents(
   for (const list of byOpp.values()) {
     list.sort((a, b) => a.t - b.t || a.id - b.id)
   }
-  return { byOpp, invalidTime, unlinked, earliest }
+  return { byOpp, invalidTime, invalidStage, unlinked, earliest }
 }
 
 /**
- * 商机事件重放（截至 asOf 的状态机）：stage_change / created 更新阶段（事件 stage 经
- * shared/salesStage 归一化）；won / lost 进入终态（首个终态生效——真实写路径禁止终态后再变更，
- * 防御性锁定）；signal / deal_pending 等其他类型不是阶段事实，仅参与覆盖计数。
+ * 商机事件重放（截至 asOf 的状态机）：stage_change / created 仅在 stage 可识别时更新阶段
+ * （事件 stage 经 shared/salesStage 归一化；不可识别事件不更新状态）；won / lost 进入终态
+ * （首个终态生效——真实写路径禁止终态后再变更，防御性锁定；不依赖 event.stage）；
+ * signal / deal_pending 等其他类型不更新状态。
  */
 function replayOpportunityState(evs: SortedOppEvent[] | undefined): { status: 'active' | 'won' | 'lost'; stage: StageCanonical | null } {
   if (!evs || evs.length === 0) return { status: 'active', stage: null }
@@ -496,7 +547,7 @@ function replayOpportunityState(evs: SortedOppEvent[] | undefined): { status: 'a
       terminal = 'lost'
       continue
     }
-    if (ev.eventType === 'stage_change' || ev.eventType === 'created') {
+    if ((ev.eventType === 'stage_change' || ev.eventType === 'created') && ev.stateBearing) {
       stage = normalizeStage(ev.stageRaw)
     }
   }
@@ -534,10 +585,11 @@ export function computeAnnualReviewOpportunityStageDistribution(
     if (createdAtMissing > 0) addSeg(warnings, 'opportunity_created_at_missing', createdAtMissing)
     const oppIds = new Set<number>()
     for (const o of denominator) oppIds.add(o.id)
-    const { byOpp, invalidTime, unlinked, earliest } = groupOpportunityEvents(
+    const { byOpp, invalidTime, invalidStage, unlinked, earliest } = groupOpportunityEvents(
       inputs.crm.opportunityEvents, oppIds, (t) => t < asOf
     )
     if (invalidTime > 0) addSeg(warnings, 'opportunity_event_time_invalid', invalidTime)
+    if (invalidStage > 0) addSeg(warnings, 'opportunity_event_stage_invalid', invalidStage)
     if (unlinked > 0) addSeg(warnings, 'opportunity_event_unlinked', unlinked)
     const total = denominator.length
     if (total === 0) {
@@ -554,11 +606,13 @@ export function computeAnnualReviewOpportunityStageDistribution(
       }
     }
     const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
+    // 覆盖分子 = 至少有一条「能确定历史状态」事件（created/stage_change 可识别 stage、won/lost）
+    // 的商机；仅有 signal/deal_pending 不构成状态覆盖（2026-09-20 审查修正）。
     let covered = 0
     for (const o of denominator) {
       const evs = byOpp.get(o.id)
-      if (!evs || evs.length === 0) {
-        counts[bucketIndex('未知')]++ // 无事件覆盖 → 未知（覆盖率已表达），不静默丢弃
+      if (!evs || evs.length === 0 || !evs.some((e) => e.stateBearing)) {
+        counts[bucketIndex('未知')]++ // 无状态覆盖 → 未知（覆盖率已表达），不静默丢弃
         continue
       }
       covered++
@@ -640,13 +694,14 @@ export function computeAnnualReviewStageFlow(
   assertValidPeriod(period)
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const warnings = new WarningCollector()
-  const populationArr = segmentSessionPopulation(inputs.facts.accounts, inputs.sales.profiles, exclusionSet)
+  const populationArr = segmentSessionPopulation(inputs.facts.accounts, exclusionSet)
   const population = new Set(populationArr)
   const asOf = period.asOf
-  const { bySession, invalidTime, earliest } = groupIntentEventsBySession(
+  const { bySession, invalidTime, invalidStage, earliest } = groupIntentEventsBySession(
     inputs.sales.intentEvents, population, (t) => inRange(t, period.periodStart, asOf)
   )
   if (invalidTime > 0) addSeg(warnings, 'intent_event_time_invalid', invalidTime)
+  if (invalidStage > 0) addSeg(warnings, 'intent_event_stage_invalid', invalidStage)
 
   const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
   for (const evs of bySession.values()) {
@@ -825,15 +880,16 @@ export function computeAnnualReviewLostBreakdown(
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const warnings = new WarningCollector()
   const asOf = period.asOf
-  const populationArr = segmentSessionPopulation(inputs.facts.accounts, inputs.sales.profiles, exclusionSet)
+  const populationArr = segmentSessionPopulation(inputs.facts.accounts, exclusionSet)
   const population = new Set(populationArr)
   const opportunityReasons = opportunityLostReasons(inputs.crm.opportunityEvents ?? [], asOf, warnings)
 
   if (period.scopeKind === 'historical_year') {
-    const { bySession, invalidTime, earliest } = groupIntentEventsBySession(
+    const { bySession, invalidTime, invalidStage, earliest } = groupIntentEventsBySession(
       inputs.sales.intentEvents, population, (t) => t < asOf
     )
     if (invalidTime > 0) addSeg(warnings, 'intent_event_time_invalid', invalidTime)
+    if (invalidStage > 0) addSeg(warnings, 'intent_event_stage_invalid', invalidStage)
     const total = populationArr.length
     const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
     let lostSessions = 0
@@ -881,8 +937,9 @@ export function computeAnnualReviewLostBreakdown(
 
   // current_year / all_time：当前快照（canonical lost 的画像会话）
   const reps = representativeProfilesBySession(inputs.sales.profiles, exclusionSet)
-  const { bySession, invalidTime } = groupIntentEventsBySession(inputs.sales.intentEvents, population, (t) => t < asOf)
+  const { bySession, invalidTime, invalidStage } = groupIntentEventsBySession(inputs.sales.intentEvents, population, (t) => t < asOf)
   if (invalidTime > 0) addSeg(warnings, 'intent_event_time_invalid', invalidTime)
+  if (invalidStage > 0) addSeg(warnings, 'intent_event_stage_invalid', invalidStage)
   const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
   let lostSessions = 0
   for (const [sid, rep] of reps) {

@@ -192,7 +192,12 @@ function main(): void {
 
   // ══ 1 中英文混存归一化（经 B1 当前快照全链路） ═══════════════════════════
   {
+    const sessionIds = [
+      's_cn_quote', 's_en_quote', 's_cn_contact', 's_en_contact', 's_cn_nego', 's_en_nego',
+      's_en_won', 's_cn_won', 's_cn_lost', 's_en_dormant', 's_garbage', 's_empty'
+    ]
     const inputs = withInputs({
+      facts: { accounts: sessionIds.map((s, i) => accF(i + 1, s)) },
       sales: {
         profiles: [
           prof(1, 's_cn_quote', '比价'), prof(2, 's_en_quote', 'quoted'),
@@ -468,6 +473,7 @@ function main(): void {
   // ══ 9 B7 流失归因 ════════════════════════════════════════════════════════
   {
     const inputs = withInputs({
+      facts: { accounts: [accF(1, 's_lost1'), accF(2, 's_lost2'), accF(3, 's_won')] },
       sales: {
         profiles: [
           prof(1, 's_lost1', 'lost'),
@@ -800,13 +806,13 @@ function main(): void {
     ok('18b B1 rows=1（仅有效绑定会话）', b1.coverage.rows === 1)
     const b3 = computeAnnualReviewStageFlow(P2025, inputs, opts)
     distIs('18c B3 排除后会话事件才计', b3.distribution, [['比价', 1]])
-    // 未绑定画像的 account 会话归「未知」，不静默丢弃
+    // profile-only 会话不入总体（总体唯一来源 = CRM account）；account 会话无画像归「未知」
     const noProfile = computeAnnualReviewCustomerStageDistribution(P2026, withInputs({
       facts: { accounts: [accF(1, 'wx_noprofile')] },
       sales: { profiles: [prof(1, 'wx_ok', 'quoted')], intentEvents: [] }
     }))
-    distIs('18d 没有画像的有效绑定会话归「未知」', noProfile.distribution, [['比价', 1], ['未知', 1]])
-    ok('18e rows=2', noProfile.coverage.rows === 2)
+    distIs('18d 没有画像的 account 会话归「未知」；profile-only 不入总体不显示', noProfile.distribution, [['未知', 1]])
+    ok('18e rows=1（仅 CRM account 会话）', noProfile.coverage.rows === 1)
   }
 
   // ══ 19 深冻结不修改输入 ══════════════════════════════════════════════════
@@ -913,7 +919,7 @@ function main(): void {
   {
     const inputs = withInputs({
       facts: {
-        accounts: [accF(1, 'wx_a')],
+        accounts: [accF(1, 'wx_a'), accF(2, 'wx_b')],
         contracts: [conF(1, 1, T(2025, 2, 1), Number.NaN), conF(2, 1, T(2025, 3, 1), Number.POSITIVE_INFINITY)],
         allocations: [allocF(1, 1, Number.NaN, T(2025, 3, 1)), allocF(2, 1, 99, Number.NaN)]
       },
@@ -922,9 +928,11 @@ function main(): void {
         intentEvents: [
           iev(1, 'wx_a', 'quoted', Number.NaN),           // 非法时间 → 排除
           iev(2, 'wx_a', 'quoted', Number.POSITIVE_INFINITY),
-          iev(3, 'wx_a', null, T(2025, 2, 1)),            // 空 stage → 未知桶
-          iev(4, null, 'won', T(2025, 2, 2)),             // 空会话 → 排除
-          iev(5, 'wx_b', '比价', T(2025, 3, 1))
+          iev(3, 'wx_a', null, T(2025, 2, 1)),            // null stage 不可识别 → 排除
+          iev(4, 'wx_a', 'unknown', T(2025, 2, 3)),       // canonical unknown → 有效事实，归未知桶
+          iev(5, null, 'won', T(2025, 2, 2)),             // 空会话 → 排除
+          iev(6, 'wx_b', '比价', T(2025, 3, 1)),           // 有效
+          iev(7, 'wx_b', '垃圾stage', T(2025, 3, 2))      // 垃圾 stage → 排除，不覆盖比价
         ]
       },
       crm: {
@@ -937,8 +945,10 @@ function main(): void {
       }
     })
     const r1 = computeAnnualReviewCustomerStageDistribution(P2025, inputs)
-    distIs('22 非法时间事件排除、空 stage 归未知', r1.distribution, [['未知', 1], ['比价', 1]])
-    ok('22b 非法时间告警计数=2', warnCount(r1.warnings, 'intent_event_time_invalid') === 2)
+    distIs('22 有效事件重放（unknown→未知桶；比价不被后续垃圾覆盖）', r1.distribution, [['未知', 1], ['比价', 1]])
+    ok('22b 非法时间告警=2、非法阶段告警=2', warnCount(r1.warnings, 'intent_event_time_invalid') === 2 &&
+      warnCount(r1.warnings, 'intent_event_stage_invalid') === 2)
+    ok('22b2 覆盖率 2/2（合法 unknown 与比价都是有效事实）', r1.coverage.coverageRatio === 1 && r1.coverage.status === 'partial')
     const r2 = computeAnnualReviewOpportunityStageDistribution(P2025, inputs)
     ok('22c B2 缺 createdAt 商机不入总体 + 告警', r2.coverage.rows === 1 && warnCount(r2.warnings, 'opportunity_created_at_missing') === 1)
     distIs('22d B2 商机2 有合法 lost 事件 → 流失桶', r2.distribution, [['流失', 1]])
@@ -948,6 +958,279 @@ function main(): void {
     ok('22f C1 非法核销金额排除 + 告警（不崩溃）', rc1.value.every((x) => Number.isFinite(x.creditedAmount)) && hasCode(rc1.warnings, 'credited_amount_invalid'))
     const rc3 = computeAnnualReviewDealingCustomers(P2025, inputs)
     ok('22g C3 非法合同金额排除 + 告警', rc3.value.every((x) => Number.isFinite(x.contractAmount)) && hasCode(rc3.warnings, 'contract_amount_invalid'))
+  }
+
+  // ══ 23 审查反例（2026-09-20 覆盖率修正）：A CRM 总体 / B 阶段有效性 / C B2 可重建覆盖 ══
+  // A1：4 个 CRM 会话全部有有效事件 + 2 个 profile-only 会话（无事件）
+  // 旧实现：总体 6、覆盖 4 → 4/6 → 错误 unavailable；新实现：总体 4、覆盖 4 → 1 → 允许重建
+  {
+    const crm = ['c1', 'c2', 'c3', 'c4']
+    const events: RawIntentEvent[] = [
+      iev(1, 'c1', 'quoted', T(2025, 2, 1)),
+      iev(2, 'c2', 'negotiating', T(2025, 3, 1)),
+      iev(3, 'c3', 'won', T(2025, 4, 1)),
+      iev(4, 'c4', 'lost', T(2025, 5, 1))
+      // profile-only 的 p5/p6 无事件
+    ]
+    const inputs = withInputs({
+      facts: { accounts: crm.map((s, i) => accF(i + 1, s)) },
+      sales: {
+        profiles: [
+          prof(1, 'c1', null), prof(2, 'c2', null), prof(3, 'c3', null), prof(4, 'c4', null),
+          prof(5, 'p5', 'won'), prof(6, 'p6', 'won') // profile-only：无 CRM account 绑定
+        ],
+        intentEvents: events
+      }
+    })
+    const r = computeAnnualReviewCustomerStageDistribution(P2025, inputs)
+    ok('23A1 profile-only 不入总体：coverageRatio=4/4=1（旧实现为 4/6 → unavailable）',
+      r.coverage.coverageRatio === 1 && r.coverage.rows === 4 && r.coverage.status === 'partial' && r.distribution !== null)
+    eq('23A1b 重建分布 = oracle（总体仅 4 个 CRM 会话）', r.distribution, oracleDistribution(crm, events, J2026))
+
+    // A2：B1 当前快照不得显示 profile-only 会话（c1..c4 画像无 stage → 未知；p5/p6 被排除。
+    // 旧实现：rows=6 且含 p5/p6 的成交×2；新实现：rows=4、全部未知）
+    const cur = computeAnnualReviewCustomerStageDistribution(P2026, inputs)
+    distIs('23A2 当前快照不含 profile-only（仅 4 个 CRM 会话，画像无 stage → 未知）', cur.distribution, [['未知', 4]])
+    ok('23A2b rows=4（旧实现 rows=6 且含成交×2）', cur.coverage.rows === 4)
+
+    // A3：B3 分母不含 profile-only（p5/p6 有事件，旧实现分母 4、分子 3）
+    const b3 = computeAnnualReviewStageFlow(P2025, withInputs({
+      facts: { accounts: [accF(1, 'c1'), accF(2, 'c2')] },
+      sales: {
+        profiles: [prof(1, 'c1', null), prof(2, 'c2', null), prof(3, 'p5', 'won'), prof(4, 'p6', 'won')],
+        intentEvents: [
+          iev(1, 'c1', 'quoted', T(2025, 2, 1)),
+          iev(2, 'p5', 'won', T(2025, 3, 1)),
+          iev(3, 'p6', 'won', T(2025, 4, 1))
+        ]
+      }
+    }))
+    ok('23A3 B3 分母=2（profile-only 不入）、分子=1 → 0.5（旧实现 3/4）',
+      b3.coverage.rows === 2 && b3.coverage.coverageRatio === 1 / 2)
+    distIs('23A3b B3 分布不含 p5/p6', b3.distribution, [['比价', 1]])
+
+    // A4：B7 历史覆盖分母不含 profile-only（旧实现 4/6 → unavailable）
+    const b7 = computeAnnualReviewLostBreakdown(P2025, inputs)
+    ok('23A4 B7 分母=4、覆盖 4/4=1 → 允许重建（旧实现 4/6 → unavailable）',
+      b7.coverage.status === 'partial' && b7.coverage.coverageRatio === 1)
+    distIs('23A4b B7 客户流失归因（仅 c4 流失且无前序 → 未知）', b7.customerPreviousStage, [['未知', 1]])
+  }
+
+  // B：intent_tag_log 阶段有效性
+  {
+    // B6：5 个 CRM 会话，4 条 null/空白/垃圾 stage 事件 → 1/5，unavailable（旧实现 5/5 重建）
+    const garbage = withInputs({
+      facts: { accounts: [1, 2, 3, 4, 5].map((i) => accF(i, `g${i}`)) },
+      sales: {
+        profiles: [],
+        intentEvents: [
+          iev(1, 'g1', null, T(2025, 2, 1)),
+          iev(2, 'g2', '', T(2025, 2, 2)),
+          iev(3, 'g3', '   ', T(2025, 2, 3)),
+          iev(4, 'g4', '随便什么', T(2025, 2, 4)),
+          iev(5, 'g5', 'quoted', T(2025, 2, 5))
+        ]
+      }
+    })
+    const r6 = computeAnnualReviewCustomerStageDistribution(P2025, garbage)
+    ok('23B6 空/垃圾阶段事件不抬高覆盖：1/5 → unavailable（旧实现 5/5 → 重建）',
+      r6.coverage.status === 'unavailable' && r6.coverage.coverageRatio === 1 / 5 && r6.distribution === null)
+    ok('23B6b warning=intent_event_stage_invalid（计数 4）', warnCount(r6.warnings, 'intent_event_stage_invalid') === 4)
+
+    // B7：canonical unknown 与中文「未知」是合法覆盖 → 未知桶（invalid 计数必须为 0）
+    const unknowns = withInputs({
+      facts: { accounts: [accF(1, 'u1'), accF(2, 'u2')] },
+      sales: {
+        profiles: [],
+        intentEvents: [iev(1, 'u1', 'unknown', T(2025, 2, 1)), iev(2, 'u2', '未知', T(2025, 2, 2))]
+      }
+    })
+    const r7 = computeAnnualReviewCustomerStageDistribution(P2025, unknowns)
+    distIs('23B7 合法 unknown/未知入未知桶且覆盖 2/2', r7.distribution, [['未知', 2]])
+    ok('23B7b 无 stage_invalid 误报（回归护栏：合法 unknown/未知不得被排除）',
+      (warnCount(r7.warnings, 'intent_event_stage_invalid') ?? 0) === 0)
+
+    // B8：先合法 quoted 后垃圾 stage → 最终仍比价（垃圾不能覆盖合法状态）
+    const late = withInputs({
+      facts: { accounts: [accF(1, 's1')] },
+      sales: {
+        profiles: [],
+        intentEvents: [iev(1, 's1', 'quoted', T(2025, 2, 1)), iev(2, 's1', '垃圾stage', T(2025, 4, 1))]
+      }
+    })
+    const r8 = computeAnnualReviewCustomerStageDistribution(P2025, late)
+    distIs('23B8 较晚垃圾事件不覆盖较早合法阶段（比价）', r8.distribution, [['比价', 1]])
+    ok('23B8b 覆盖 1/1 且垃圾计入告警', r8.coverage.coverageRatio === 1 && warnCount(r8.warnings, 'intent_event_stage_invalid') === 1)
+
+    // B9：B3 非法 stage 不进任何桶、不增加 covered
+    const b3 = computeAnnualReviewStageFlow(P2025, withInputs({
+      facts: { accounts: [accF(1, 's1'), accF(2, 's2')] },
+      sales: {
+        profiles: [],
+        intentEvents: [iev(1, 's1', '垃圾stage', T(2025, 2, 1)), iev(2, 's2', 'quoted', T(2025, 3, 1))]
+      }
+    }))
+    distIs('23B9 B3 垃圾事件不入桶（未知桶也为 0）', b3.distribution, [['比价', 1]])
+    ok('23B9b covered=1/2', b3.coverage.coverageRatio === 1 / 2 && warnCount(b3.warnings, 'intent_event_stage_invalid') === 1)
+
+    // B10：B7 非法 stage 不得形成 lost 或前序事实（lost 后的垃圾事件不改变最终 lost 判定）
+    const b7 = computeAnnualReviewLostBreakdown(P2025, withInputs({
+      facts: { accounts: [accF(1, 's1'), accF(2, 's2')] },
+      sales: {
+        profiles: [],
+        intentEvents: [
+          iev(1, 's1', 'lost', T(2025, 2, 1)),
+          iev(2, 's1', '垃圾stage', T(2025, 4, 1)),  // 旧实现：最终=unknown → 不算流失
+          iev(3, 's2', 'quoted', T(2025, 2, 2)),
+          iev(4, 's2', '垃圾stage', T(2025, 4, 2))   // 最终仍 quoted → 非流失
+        ]
+      }
+    }))
+    distIs('23B10 lost 后垃圾事件不掩盖流失事实（s1 流失、前序未知）', b7.customerPreviousStage, [['未知', 1]])
+  }
+
+  // C：opportunity_event 可重建覆盖
+  {
+    // C11/C12：只有 signal / deal_pending → 不入覆盖分子
+    const signalOnly = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: [oppF(1, 1, null, 'active', T(2024, 6, 1))],
+        opportunityEvents: [oev(1, 1, 'signal', '了解', '详情', T(2025, 2, 1))]
+      }
+    }))
+    ok('23C11 只有 signal：0/1 → unavailable（旧实现 1/1 → 重建）',
+      signalOnly.coverage.status === 'unavailable' && signalOnly.distribution === null && signalOnly.coverage.coverageRatio === 0)
+    const pendingOnly = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: [oppF(1, 1, null, 'active', T(2024, 6, 1))],
+        opportunityEvents: [oev(1, 1, 'deal_pending', '了解', '请登记成交表单', T(2025, 2, 1))]
+      }
+    }))
+    ok('23C12 只有 deal_pending：0/1 → unavailable', pendingOnly.coverage.status === 'unavailable' && pendingOnly.coverage.coverageRatio === 0)
+
+    // C13：created/stage_change + 合法 stage → 入覆盖并正确重放
+    const validChain = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: [oppF(1, 1, null, 'active', T(2024, 6, 1))],
+        opportunityEvents: [
+          oev(1, 1, 'created', '了解', '', T(2025, 1, 1)),
+          oev(2, 1, 'signal', '了解', '详情', T(2025, 2, 1)),
+          oev(3, 1, 'stage_change', '比价', 'ai：了解 → 比价', T(2025, 3, 1))
+        ]
+      }
+    }))
+    distIs('23C13 created+stage_change 合法重放（比价）', validChain.distribution, [['比价', 1]])
+    ok('23C13b 覆盖 1/1 且无 stage_invalid 误报（回归护栏）',
+      validChain.coverage.coverageRatio === 1 && (warnCount(validChain.warnings, 'opportunity_event_stage_invalid') ?? 0) === 0)
+
+    // C14：created/stage_change + 空白/垃圾 stage → 不入覆盖 + 告警
+    const invalidChain = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: [oppF(1, 1, null, 'active', T(2024, 6, 1))],
+        opportunityEvents: [
+          oev(1, 1, 'created', '垃圾stage', '', T(2025, 1, 1)),
+          oev(2, 1, 'stage_change', '   ', '', T(2025, 3, 1))
+        ]
+      }
+    }))
+    ok('23C14 created/stage_change 阶段不可识别：0/1 → unavailable（旧实现 1/1）',
+      invalidChain.coverage.status === 'unavailable' && invalidChain.distribution === null &&
+      warnCount(invalidChain.warnings, 'opportunity_event_stage_invalid') === 2)
+
+    // C15：won/lost 不依赖 stage，空 stage 也构成可重建终态
+    const terminals = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: [oppF(1, 1, null, 'active', T(2024, 6, 1)), oppF(2, 2, null, 'active', T(2024, 6, 1))],
+        opportunityEvents: [
+          oev(1, 1, 'won', '', '人工登记成交', T(2025, 2, 1)),
+          oev(2, 2, 'lost', null, '不买了', T(2025, 3, 1))
+        ]
+      }
+    }))
+    distIs('23C15 won/lost 空 stage 仍可重建（成交/流失）', terminals.distribution, [['成交', 1], ['流失', 1]])
+    ok('23C15b 覆盖 2/2', terminals.coverage.coverageRatio === 1 && terminals.coverage.status === 'partial')
+
+    // C16：5 个商机 4 个可重建 + 1 个仅 signal → 恰好 80% 允许重建（旧实现 ratio=5/5=1）
+    const opps5 = [1, 2, 3, 4, 5].map((i) => oppF(i, i, null, 'active', T(2024, 6, i)))
+    const exact80 = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: opps5,
+        opportunityEvents: [
+          oev(1, 1, 'created', 'quoted', '', T(2025, 1, 1)),
+          oev(2, 2, 'created', 'quoted', '', T(2025, 1, 2)),
+          oev(3, 3, 'created', 'negotiating', '', T(2025, 1, 3)),
+          oev(4, 4, 'created', 'contacted', '', T(2025, 1, 4)),
+          oev(5, 5, 'signal', '了解', '仅信号', T(2025, 1, 5))
+        ]
+      }
+    }))
+    ok('23C16 恰好 80%（4/5 商机真正可重建）→ 允许重建（旧实现 ratio=1）',
+      exact80.coverage.status === 'partial' && exact80.coverage.coverageRatio === 4 / 5 && exact80.distribution !== null)
+    distIs('23C16b 分布（比价2/决策1/了解1 + 仅 signal 商机归未知）', exact80.distribution, [
+      ['了解', 1], ['比价', 2], ['决策', 1], ['未知', 1]
+    ])
+
+    // C17：5 个商机 3 个可重建 + signal/deal_pending 各一 → 3/5 → unavailable（旧实现 5/5 重建）
+    const below = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: opps5,
+        opportunityEvents: [
+          oev(1, 1, 'created', 'quoted', '', T(2025, 1, 1)),
+          oev(2, 2, 'stage_change', 'negotiating', '', T(2025, 1, 2)),
+          oev(3, 3, 'won', '了解', '成交', T(2025, 1, 3)),
+          oev(4, 4, 'signal', '了解', '仅信号', T(2025, 1, 4)),
+          oev(5, 5, 'deal_pending', '了解', '待登记', T(2025, 1, 5))
+        ]
+      }
+    }))
+    ok('23C17 coverageRatio=3/5 → unavailable/null（旧实现 5/5 → 错误重建）',
+      below.coverage.status === 'unavailable' && below.distribution === null && below.coverage.coverageRatio === 3 / 5)
+  }
+
+  // ══ 最小反例显式验证（任务八：明确打印三个关键反例的实际结果） ═══════════
+  {
+    const crm = ['c1', 'c2', 'c3', 'c4']
+    const inputs = withInputs({
+      facts: { accounts: crm.map((s, i) => accF(i + 1, s)) },
+      sales: {
+        profiles: [prof(5, 'p5', 'won'), prof(6, 'p6', 'won')],
+        intentEvents: [
+          iev(1, 'c1', 'quoted', T(2025, 2, 1)), iev(2, 'c2', 'negotiating', T(2025, 3, 1)),
+          iev(3, 'c3', 'won', T(2025, 4, 1)), iev(4, 'c4', 'lost', T(2025, 5, 1))
+        ]
+      }
+    })
+    const r1 = computeAnnualReviewCustomerStageDistribution(P2025, inputs)
+    console.log(`反例1 CRM 4/4 + profile-only 2 → coverageRatio=${r1.coverage.coverageRatio}（必须=1） status=${r1.coverage.status} rows=${r1.coverage.rows}`)
+
+    const garbage = withInputs({
+      facts: { accounts: [1, 2, 3, 4, 5].map((i) => accF(i, `g${i}`)) },
+      sales: {
+        profiles: [],
+        intentEvents: [
+          iev(1, 'g1', null, T(2025, 2, 1)), iev(2, 'g2', '', T(2025, 2, 2)),
+          iev(3, 'g3', '   ', T(2025, 2, 3)), iev(4, 'g4', '随便什么', T(2025, 2, 4)),
+          iev(5, 'g5', 'quoted', T(2025, 2, 5))
+        ]
+      }
+    })
+    const r2 = computeAnnualReviewCustomerStageDistribution(P2025, garbage)
+    console.log(`反例2 4 条空/垃圾阶段事件 → coverageRatio=${r2.coverage.coverageRatio}（必须=1/5，不得虚抬到 4/5=0.8） status=${r2.coverage.status} stageInvalid=${r2.warnings.find((w) => w.code === 'intent_event_stage_invalid')?.count}`)
+
+    const opps5 = [1, 2, 3, 4, 5].map((i) => oppF(i, i, null, 'active', T(2024, 6, i)))
+    const r3 = computeAnnualReviewOpportunityStageDistribution(P2025, withInputs({
+      crm: {
+        opportunities: opps5,
+        opportunityEvents: [
+          oev(1, 1, 'created', 'quoted', '', T(2025, 1, 1)),
+          oev(2, 2, 'stage_change', 'negotiating', '', T(2025, 1, 2)),
+          oev(3, 3, 'won', '了解', '成交', T(2025, 1, 3)),
+          oev(4, 4, 'signal', '了解', '仅信号', T(2025, 1, 4)),
+          oev(5, 5, 'deal_pending', '了解', '待登记', T(2025, 1, 5))
+        ]
+      }
+    }))
+    console.log(`反例3 仅 signal/deal_pending 商机 → coverageRatio=${r3.coverage.coverageRatio}（必须=3/5，signal/deal_pending 不入分子） status=${r3.coverage.status}`)
   }
 
   // ══ 21 loader 真实 sql.js 行为与端到端 ═══════════════════════════════════
@@ -996,8 +1279,10 @@ function main(): void {
     ins('INSERT INTO opportunity_event (id, opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?,?)', [1, 1, 'created', '了解', 'AI 识别采购信号', T(2025, 1, 10)])
     ins('INSERT INTO opportunity_event (id, opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?,?)', [2, 1, 'signal', '了解', '详情', T(2025, 2, 1)])
     ins('INSERT INTO opportunity_event (id, opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?,?)', [3, 2, 'won', '迁移', '人工登记成交（¥100 · M ×1）', T(2024, 7, 1)])
-    // crmDb account/contract/allocation（S1 loader 复用 + name 列）
+    // crmDb account/contract/allocation（S1 loader 复用 + name 列）；wx_b/wx_c 也是 CRM account
     ins('INSERT INTO account (id, name, created_at, session_id, last_contact_at, imported_at) VALUES (?,?,?,?,?,?)', [1, '甲', T(2024, 5, 1), 'wx_a', null, null])
+    ins('INSERT INTO account (id, name, created_at, session_id, last_contact_at, imported_at) VALUES (?,?,?,?,?,?)', [2, '乙', T(2024, 5, 2), 'wx_b', null, null])
+    ins('INSERT INTO account (id, name, created_at, session_id, last_contact_at, imported_at) VALUES (?,?,?,?,?,?)', [3, '丙', T(2024, 5, 3), 'wx_c', null, null])
     ins('INSERT INTO contract (id, account_id, name, amount, status, sign_date) VALUES (?,?,?,?,?,?)', [1, 1, 'c1', 1200, 'signed', T(2025, 3, 1)])
     ins('INSERT INTO allocation (id, contract_id, account_id, credited_amount, status, reconciliation_status, reconciled_at, confirmed_at) VALUES (?,?,?,?,?,?,?,?)',
       [1, 1, 1, 800.5, 'confirmed', 'allocated', T(2025, 4, 1), null])
@@ -1010,7 +1295,8 @@ function main(): void {
       crm.opportunityEvents[2].detail === '人工登记成交（¥100 · M ×1）' && crm.opportunities[1].status === 'won')
     ok('21c 静态 SQL + 参数绑定 runner 可用', sqlJsQueryRunner(db).all('SELECT id FROM customer_profile WHERE session_id = ?', ['wx_a']).length === 1)
 
-    // 端到端：loader → 纯统计（2025 历史年度）。总体 {wx_a, wx_b, wx_c}，仅 2 者有事件 → 2/3 < 80%
+    // 端到端：loader → 纯统计（2025 历史年度）。CRM 总体 {wx_a, wx_b, wx_c}（accounts），
+    // wx_a/wx_b 有事件、wx_c 无 → 2/3 < 80%
     const facts = loadAnnualReviewFacts(sqlJsQueryRunner(db))
     const inputs: AnnualReviewSegmentInputs = { facts, sales, crm }
     const b1 = computeAnnualReviewCustomerStageDistribution(P2025, inputs)

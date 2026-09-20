@@ -50,6 +50,22 @@ export function normalizeStage(raw: string | null | undefined): StageCanonical {
   return CN_TO_CANONICAL[s] ?? (isCanonical(s) ? s : 'unknown')
 }
 
+/**
+ * 「可识别阶段值」判定（历史覆盖率用，2026-09-20 S2 审查补充）：
+ *   - canonical 阶段全部 recognized（含 canonical `unknown`）；
+ *   - 已登记中文阶段及别名全部 recognized（含「未知」）；
+ *   - null / undefined / 空白字符串 / 未登记任意字符串 → false。
+ * 覆盖率统计不得把空值/垃圾值当作阶段事实（normalizeStage 会把它们与合法 unknown
+ * 混同为 'unknown'，故覆盖率判定必须用本函数）。复用 CN_TO_CANONICAL 与 canonical
+ * 集合保证单一事实源；不改变 normalizeStage / stageToFunnel 的既有兼容行为。
+ * 注意用 hasOwnProperty 而非成员访问，避免 'constructor' 等原型链键误判 recognized。
+ */
+export function isRecognizedStage(raw: string | null | undefined): boolean {
+  const s = (raw || '').trim()
+  if (!s) return false
+  return Object.prototype.hasOwnProperty.call(CN_TO_CANONICAL, s) || isCanonical(s)
+}
+
 /** canonical → 中文展示名（当前状态卡片 / 报表标签用） */
 export function stageLabel(canonical: StageCanonical): string {
   return CANONICAL_TO_CN[canonical] ?? canonical
