@@ -45,6 +45,7 @@ const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const EvalAnnotatePage = lazy(() => import('./pages/EvalAnnotatePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
+const AnnualReviewPage = lazy(() => import('./pages/AnnualReviewPage'))
 const ActionFunnelPage = lazy(() => import('./pages/ActionFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
 const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
@@ -688,6 +689,8 @@ function App() {
                 <Route path="/eval-annotate" element={<EvalAnnotatePage />} />
                 <Route path="/hermes" element={<HermesPanel />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
+                {/* 年度经营复盘（S4）：独立路由，与旧 /annual-report（隐藏）互不混用 */}
+                <Route path="/annual-review" element={<AnnualReviewPage />} />
                 {/* 「漏斗」已并入商机「阶段分析」视图（2026-09-13）；旧链接/书签不失效 */}
                 <Route path="/sales-funnel" element={<RouteStateRedirect to="/opportunities?view=analysis" />} />
                 <Route path="/action-funnel" element={<ActionFunnelPage />} />
