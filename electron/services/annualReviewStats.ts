@@ -119,15 +119,19 @@ export function resolveAnnualReviewPeriod(year: number, generatedAt: number): An
 }
 
 /**
- * WCDB 查询秒区间（wcdbService.getAnnualReportStats 入参）：毫秒 → 秒向下取整。
+ * WCDB 查询秒区间（wcdbService.getAnnualReportStats 入参）：毫秒 → 秒，两侧统一取 ceil。
+ * 秒级时间戳 S 代表时段 [S.000, S+1.000)：右开上界若 floor（asOf 落在秒中间时）会把包含
+ * asOf 的那一整秒排除在统计外——该秒的时刻全部早于秒末，漏掉即漏算事实；ceil 保证
+ * [startMs, endMs) 在秒域的语义为 [ceil(startMs/1000), ceil(endMs/1000))。本项目年度
+ * periodStart 恒为整秒，ceil 后 beginSec 不变，仅防御手工非整秒 period。
  * all_time 无下界 → beginSec = 0（纪元，即「最早可用时间」的实用下界）。
- * 区间语义 [beginSec, endSec)，与毫秒层左闭右开一致（asOf 时刻本身不计入）。
+ * 已核实 wcdbCore.normalizeTimestamp：仅 >1e12 视为毫秒，秒级整数原样透传，无二次换算。
  */
 export function annualReviewWcdbSeconds(period: AnnualReviewPeriod): { beginSec: number; endSec: number } {
-  assertPeriodInputs(period.year, period.generatedAt)
+  assertValidPeriod(period)
   return {
-    beginSec: period.periodStart === null ? 0 : Math.floor(period.periodStart / 1000),
-    endSec: Math.floor(period.asOf / 1000)
+    beginSec: period.periodStart === null ? 0 : Math.ceil(period.periodStart / 1000),
+    endSec: Math.ceil(period.asOf / 1000)
   }
 }
 
@@ -274,6 +278,7 @@ const WARN = {
   bulk_import_dominant: '新增客户中导入建档占比超过一半',
   last_contact_fallback: '微信消息库不可用，活跃客户按最近联系时间近似统计',
   customer_active_unavailable: '消息库不可用且缺少最近联系时间，无法统计活跃客户',
+  historical_contact_unavailable: '历史年度消息统计不可用，当前最近联系时间不能代替历史事实',
   message_stats_invalid: '消息统计包含非法数值，已按 0 处理',
   sign_date_missing: '存在已签约/已发货但缺少签约时间的合同，未计入签约指标',
   contract_amount_invalid: '存在金额缺失或非法的合同，金额统计已排除',
@@ -398,7 +403,8 @@ export function computeAnnualReviewSummary(
 
   // ── A3 customer_active ───────────────────────────────────────────────────
   // 主口径：CRM 绑定会话（account.session_id，去重）∩ 注入消息统计，sent+received>0 活跃。
-  // 回退：account.last_contact_at（秒 → ×1000 毫秒）∈ [start, asOf)；回退一律 partial。
+  // 回退（仅 current_year/all_time）：绑定会话去重后按 session 最大有效 last_contact_at
+  //（秒 → ×1000 毫秒）∈ [start, asOf) 判定；historical_year 一律 unavailable（§3.0）。
   const exclusions = buildExclusionSet(opts.exclusions)
   const boundSessions = new Set<string>()
   for (const acc of accounts) {
@@ -425,32 +431,44 @@ export function computeAnnualReviewSummary(
     if (sanitized > 0) a3.add('message_stats_invalid', sanitized)
     activeValue = active
     activeState = a3.nonEmpty() ? 'partial' : 'complete'
+  } else if (period.scopeKind === 'historical_year') {
+    // 历史年度禁止回退 last_contact_at（§3.0：last_contact_at 是当前投影，当前投影 ≠ 历史时点）。
+    // 宁可 unavailable，不得用今天的最近联系时间冒充历史事实，也不得错误降级为 0 或 partial 近似。
+    a3.add('historical_contact_unavailable')
+    activeValue = null
+    activeState = 'unavailable'
   } else {
-    let fallbackUsable = false
-    let active = 0
+    // 回退（仅 current_year / all_time）：与主口径同一统计对象——绑定会话去重。
+    // 会话最近联系 = 该 session 下各 account.last_contact_at（秒×1000）的最大有效值；
+    // 最大值在区间外时，不得因同会话其他 account 较早的区间内值而误计该会话。
+    const lastContactBySession = new Map<string, number>()
     for (const acc of accounts) {
+      const sid = normSession(acc.sessionId)
+      if (!sid || isExcluded(exclusions, sid)) continue
       const sec = asFinite(acc.lastContactAtSec)
       if (sec === null || sec <= 0) continue
-      fallbackUsable = true
-      if (!inRange(sec * 1000, start, end)) continue
-      const sid = normSession(acc.sessionId)
-      if (sid && isExcluded(exclusions, sid)) continue
-      active++
+      const ms = sec * 1000
+      const prev = lastContactBySession.get(sid)
+      if (prev === undefined || ms > prev) lastContactBySession.set(sid, ms)
     }
-    if (fallbackUsable) {
-      a3.add('last_contact_fallback')
-      activeValue = active
-      activeState = 'partial'
-    } else if (accounts.length === 0) {
-      // 空客户档案：0 是真实零，但未经消息主口径验证 → 保守 partial
+    if (boundSessions.size === 0) {
+      // 没有任何符合条件的绑定会话：0 是真实零，但未经消息主口径验证 → 保守 partial
       a3.add('last_contact_fallback')
       activeValue = 0
       activeState = 'partial'
-    } else {
-      // 回退源整体不可用（有档案但全部缺 last_contact_at）：不得把查询失败显示成 0
+    } else if (lastContactBySession.size === 0) {
+      // 有绑定会话但全部无有效 last_contact_at：不得把查询失败显示成 0
       a3.add('customer_active_unavailable')
       activeValue = null
       activeState = 'unavailable'
+    } else {
+      let active = 0
+      for (const ms of lastContactBySession.values()) {
+        if (inRange(ms, start, end)) active++
+      }
+      a3.add('last_contact_fallback')
+      activeValue = active
+      activeState = 'partial'
     }
   }
   const customerActive: MetricValue<number> = {
