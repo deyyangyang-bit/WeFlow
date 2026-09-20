@@ -2188,6 +2188,12 @@ function registerIpcHandlers() {
       // 旧 capability 此后一律拒绝）。兜底防线是 Manager 每次 host.request 的指纹重校验
       hermesUtilityManager.invalidateCapabilities('account_changed')
     }
+    // 年度经营复盘（S3）：手动排除名单/内部人员名单变化 → 数据口径已变，立即失效
+    // 缓存并终止运行中任务（旧名单结果不得落缓存）。置于此处 = writeRendererConfig
+    // 已成功返回之后：写失败抛错时既不失效也不返回成功。
+    if (key === 'reportExcludedSessions' || key === 'crmInternalList') {
+      annualReviewService.handleDataChanged()
+    }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
     void groupSummaryService.handleConfigChanged(key)

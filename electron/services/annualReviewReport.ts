@@ -55,6 +55,7 @@ import {
   computeAnnualReviewSilentCustomers,
   computeAnnualReviewStageFlow,
   computeAnnualReviewStuckCustomers,
+  selectRepresentativeProfiles,
   type AnnualReviewCoverage,
   type AnnualReviewCrmSegmentsFacts,
   type AnnualReviewSalesSegmentsFacts
@@ -171,7 +172,7 @@ export interface AnnualReviewReport {
   /** 永远只表示报告实际生成时间，不兼作历史数据时点 */
   generatedAt: number
   timezoneNote: 'local'
-  /** 本报告涉及数据源的实际最早/最晚有效事实时间；非名义 period 边界 */
+  /** 本次报告实际输入并参与计算的有效事实时间范围（参与窗口并集）；非名义 period 边界 */
   dataRange: AnnualReviewDataRange
   /** 四态完整性（统计层结果聚合；UI 不计算） */
   completeness: AnnualReviewCompleteness
@@ -299,31 +300,72 @@ function aggregateWarnings(entries: ReadonlyArray<{ metricKey: string; warnings:
   return out
 }
 
-// ─── dataRange（实际输入事实时间，非名义边界） ───────────────────────────────
+// ─── dataRange（本次报告实际输入并参与计算的有效事实时间范围） ────────────────
 
 /** 事实年份下界：早于此视为秒/毫秒混用或荒谬时间，不进入范围（与可用年份同规则） */
 const MIN_FACT_YEAR = 2000
 
-/** 有效事实时间：有限、区间内（右开 asOf）、毫秒级合理值；秒值/NaN/未来值一律排除 */
-function validFactTimeInRange(raw: unknown, period: AnnualReviewPeriod): number | null {
+/**
+ * 有效事实时间：有限、参与窗口内（hi = asOf 右开；lo 为 null 表示无下界）、毫秒级合理值；
+ * 秒值/NaN/未来值一律排除。窗口取「该事实实际参与的各指标窗口并集」——
+ * 存量类指标（A1 等）无下界，不得因事实早于 periodStart 被机械排除。
+ */
+function validFactTimeInRange(raw: unknown, lo: number | null, hi: number): number | null {
   const t = asFinite(raw)
-  if (t === null || t <= 0 || t >= period.asOf) return null
-  if (period.periodStart !== null && t < period.periodStart) return null
+  if (t === null || t <= 0 || t >= hi) return null
+  if (lo !== null && t < lo) return null
   if (new Date(t).getFullYear() < MIN_FACT_YEAR) return null
   return t
 }
 
-function computeDataRange(period: AnnualReviewPeriod, facts: AnnualReviewFacts, sales: AnnualReviewSalesSegmentsFacts, crm: AnnualReviewCrmSegmentsFacts): AnnualReviewDataRange {
+/**
+ * dataRange = 本次报告实际输入并参与计算的有效事实时间范围（各指标参与窗口的并集）：
+ *   - account.createdAt：< asOf（A1 存量无下界；A2/C2 区间为其子集）
+ *   - contract.signDate：[periodStart, asOf)（A4/A5/A8/C3/C4 口径）
+ *   - allocation 核销计入时间（COALESCE(reconciledAt, confirmedAt)）：[periodStart, asOf)（A6/C1 口径）
+ *   - shippedEvents.createdAt：[periodStart, asOf)（A7 口径）
+ *   - intentEvents.createdAt：< asOf（B1/B7 历史重放无下界；B3 区间为其子集）
+ *   - opportunities.createdAt：< asOf（B2 总体）
+ *   - opportunityEvents.createdAt：< asOf（B2/B7 重放与流失归因）
+ *   - account.lastContactAtSec×1000：[periodStart, asOf)，仅消息主口径不可用且非历史年度时
+ *     实际作为 A3 回退事实参与
+ *   - customerProfile.lastContactAtSec×1000：< asOf，仅 current_year/all_time 实际参与
+ *     B6/C6/C7/C8（历史年度 unavailable，不参与）
+ *   - account.importedAt 仅参与 A2 导入布尔判定（值不入任何时间口径），不进入范围
+ * 无效/脏时间不进入；min/max 确定聚合，与输入顺序无关；无参与事实 → {from:null,to:null}。
+ */
+function computeDataRange(period: AnnualReviewPeriod, facts: AnnualReviewFacts, sales: AnnualReviewSalesSegmentsFacts, crm: AnnualReviewCrmSegmentsFacts, opts: AnnualReviewComputeOptions): AnnualReviewDataRange {
   const times: number[] = []
-  const push = (raw: unknown): void => {
-    const t = validFactTimeInRange(raw, period)
+  const push = (raw: unknown, lo: number | null): void => {
+    const t = validFactTimeInRange(raw, lo, period.asOf)
     if (t !== null) times.push(t)
   }
-  for (const acc of facts.accounts ?? []) push(acc.createdAt)
-  for (const c of annualReviewSignedContractsInRange(period, facts.contracts ?? []).signedInRange) push(c.signDate)
-  for (const row of annualReviewCreditedAllocationsInRange(period, facts.allocations ?? []).rows) push(row.time)
-  for (const ev of sales.intentEvents ?? []) push(ev.createdAt)
-  for (const o of crm.opportunities ?? []) push(o.createdAt)
+  const pushSeconds = (rawSec: unknown, lo: number | null): void => {
+    const sec = asFinite(rawSec)
+    push(sec !== null && sec > 0 ? sec * 1000 : null, lo)
+  }
+  // A1 存量/A2/C2：建档时间（无下界）
+  for (const acc of facts.accounts ?? []) push(acc.createdAt, null)
+  // A4/A5/A8/C3/C4：签约（区间内集合，含 valid signDate）
+  for (const c of annualReviewSignedContractsInRange(period, facts.contracts ?? []).signedInRange) push(c.signDate, period.periodStart)
+  // A6/C1：核销计入时间（区间内集合）
+  for (const row of annualReviewCreditedAllocationsInRange(period, facts.allocations ?? []).rows) push(row.time, period.periodStart)
+  // A7：发货事件
+  for (const ev of facts.shippedEvents ?? []) push(ev.createdAt, period.periodStart)
+  // B1/B3/B7：阶段事件（重放无下界）
+  for (const ev of sales.intentEvents ?? []) push(ev.createdAt, null)
+  // B2/B7：商机与商机事件
+  for (const o of crm.opportunities ?? []) push(o.createdAt, null)
+  for (const ev of crm.opportunityEvents ?? []) push(ev.createdAt, null)
+  // A3 回退：account.last_contact_at（仅主口径不可用且非历史年度）
+  const messageStatsAvailable = (opts.messageStats ?? null)?.ok === true
+  if (!messageStatsAvailable && period.scopeKind !== 'historical_year') {
+    for (const acc of facts.accounts ?? []) pushSeconds(acc.lastContactAtSec, period.periodStart)
+  }
+  // B6/C6/C7/C8：画像最近联系（仅 current_year/all_time）
+  if (period.scopeKind !== 'historical_year') {
+    for (const p of sales.profiles ?? []) pushSeconds(p.lastContactAtSec, null)
+  }
   if (times.length === 0) return { from: null, to: null }
   return { from: Math.min(...times), to: Math.max(...times) }
 }
@@ -375,7 +417,7 @@ interface CustomerIdentityIndexValue {
   name: string | null
 }
 
-/** sessionId → 稳定业务身份：account 绑定优先（facts.accounts），其次 profile.customer_id */
+/** sessionId → 稳定业务身份：account 绑定优先（facts.accounts），其次代表画像的 customer_id */
 function buildCustomerIdentityIndex(
   facts: AnnualReviewFacts,
   sales: AnnualReviewSalesSegmentsFacts
@@ -394,10 +436,11 @@ function buildCustomerIdentityIndex(
       index.set(sid, { accountId: acc.id, customerId: null, name: acc.name })
     }
   }
-  for (const profile of sales.profiles ?? []) {
-    const sid = normSession(profile.sessionId)
-    const cid = profile.customerId ?? null
-    if (!sid || !cid) continue
+  // 同会话多画像：customerId 必须取自与 stage/lastContact 同一代表记录（唯一规则，
+  // 与 S2 统计共用 selectRepresentativeProfiles；调换输入顺序不改变报告）
+  for (const [sid, rep] of selectRepresentativeProfiles(sales.profiles ?? [])) {
+    const cid = rep.customerId ?? null
+    if (!cid) continue
     const existing = index.get(sid)
     if (existing) {
       if (existing.customerId === null) existing.customerId = cid
@@ -543,7 +586,7 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     asOf: period.asOf,
     generatedAt: period.generatedAt,
     timezoneNote: 'local',
-    dataRange: computeDataRange(period, facts, sales, crm),
+    dataRange: computeDataRange(period, facts, sales, crm, opts),
     completeness,
     coverage,
     warnings: aggregateWarnings(warningEntries),
@@ -687,6 +730,14 @@ export type AnnualReviewReportValidation = { ok: true } | { ok: false; reason: s
 
 const METRIC_STATES: readonly MetricState[] = ['complete', 'partial', 'snapshot_only', 'unavailable']
 const BLOCK_IDS: readonly AnnualReviewBlockId[] = ['summary', 'funnel', 'customers', 'monthly', 'communication', 'salesAssignment']
+
+/** V1 顶层 coverage 的固定、唯一 metricKey 全集（缺一拒绝、多一拒绝） */
+const EXPECTED_COVERAGE_KEYS: readonly string[] = [
+  ...SUMMARY_METRIC_KEYS.map((key) => `summary.${key}`),
+  ...FUNNEL_METRIC_KEYS.map((key) => `funnel.${key}`),
+  ...CUSTOMERS_METRIC_KEYS.map((key) => `customers.${key}`),
+  ...NOT_IMPLEMENTED_METRIC_KEYS
+]
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -877,9 +928,33 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   for (const blockId of BLOCK_IDS) {
     if (!isMetricState((completeness.blocks as Record<string, unknown>)[blockId])) return invalid(`completeness.blocks.${blockId} 非法`)
   }
+  // 不相信 Worker 自报：completeness 必须与各指标/区块状态严格一致（complete 不得含
+  // unavailable/partial/snapshot_only；未实现区块恒 unavailable——由推导核对统一保证）
+  const derivedBlocks = {
+    summary: aggregateMetricStates(SUMMARY_METRIC_KEYS.map((key) => (summary[key] as { state: MetricState }).state)),
+    funnel: aggregateMetricStates(FUNNEL_METRIC_KEYS.map((key) => (funnel[key] as { coverage: { status: MetricState } }).coverage.status)),
+    customers: aggregateMetricStates(CUSTOMERS_METRIC_KEYS.map((key) => (customers[key] as { coverage: { status: MetricState } }).coverage.status)),
+    monthly: 'unavailable' as const,
+    communication: 'unavailable' as const,
+    salesAssignment: 'unavailable' as const
+  }
+  if (completeness.overall !== aggregateMetricStates(Object.values(derivedBlocks))) {
+    return invalid('completeness.overall 与指标/区块状态推导不一致')
+  }
+  for (const blockId of BLOCK_IDS) {
+    if ((completeness.blocks as Record<string, unknown>)[blockId] !== derivedBlocks[blockId]) {
+      return invalid(`completeness.blocks.${blockId} 与指标/区块状态推导不一致`)
+    }
+  }
 
   const coverage = report.coverage
-  if (!isPlainObject(coverage) || Object.keys(coverage).length === 0) return invalid('coverage 缺失或为空')
+  if (!isPlainObject(coverage)) return invalid('coverage 缺失')
+  // 固定唯一 metricKey 全集：缺一/多一/未知键一律拒绝（键集合确定 → 报告消费方可穷举渲染）
+  const coverageKeys = Object.keys(coverage).sort()
+  const expectedKeys = [...EXPECTED_COVERAGE_KEYS].sort()
+  if (coverageKeys.length !== expectedKeys.length || coverageKeys.some((key, i) => key !== expectedKeys[i])) {
+    return invalid('coverage metricKey 集合不完整或含未知键')
+  }
   for (const [key, cov] of Object.entries(coverage)) {
     if (!isCoverageShape(cov)) return invalid(`coverage.${key} 非法`)
   }

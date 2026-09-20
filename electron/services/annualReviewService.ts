@@ -403,6 +403,8 @@ export function createThreadRunner(workerFileName = 'annualReviewWorker.js'): An
 interface RunningTask {
   promise: Promise<void>
   control: TaskControl
+  /** 真实终止只请求一次（单任务 cancel / invalidateAll / handleDataChanged / 账号切换共用） */
+  terminateRequested: boolean
 }
 
 interface TaskRecord {
@@ -527,6 +529,7 @@ export class AnnualReviewService {
     const control = new TaskControl()
     const running: RunningTask = {
       control,
+      terminateRequested: false,
       promise: this.runTask({ scopeId, scopeKey, taskId, year, ctx, control, epochAtStart: this.epoch })
         .catch(() => { /* runTask 内部已收敛为 failed；此层只防 unhandled rejection */ })
         .finally(() => {
@@ -709,7 +712,7 @@ export class AnnualReviewService {
 
   /**
    * 取消任务：loading 与 computing 都有效（loading = 收敛并不再启动 Worker；
-   * computing = control 收敛 + runner.cancel 真实 terminate Worker）。
+   * computing = 真实 terminate Worker + control 收敛）。
    * 终态任务幂等成功（终态不可变）；未知 taskId → task_not_found；
    * 多次 cancel 幂等，不抛错、不产生相互冲突的终态。
    */
@@ -717,8 +720,7 @@ export class AnnualReviewService {
     if (!this.validateTaskId(taskId)) return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
     const running = this.runningTasksByTaskId.get(taskId)
     if (running) {
-      running.control.abort('cancelled')
-      this.runner.cancel?.(taskId)
+      this.requestTerminate(taskId, running, 'cancelled')
       return { success: true }
     }
     // 终态任务（completed/failed）：幂等成功，终态不可变
@@ -726,6 +728,22 @@ export class AnnualReviewService {
       if (record.snapshot.taskId === taskId) return { success: true }
     }
     return { success: false, error: { code: 'task_not_found', message: '任务不存在或已过期' } }
+  }
+
+  /**
+   * 统一终止语义（单任务 cancel / invalidateAll / handleDataChanged / 账号切换共用）：
+   * 先请求真实终止（幂等：一个任务最多触发一次 runner.cancel；抛错被稳定吸收，
+   * 不影响收敛、不使缓存重新可用、不崩溃），再 abort control 让任务立即收敛。
+   * 两者在同一同步块内执行，不存在「服务已忘记、Worker 仍运行」的窗口。
+   */
+  private requestTerminate(taskId: string, running: RunningTask, code: 'cancelled' | 'invalidated'): void {
+    if (!running.terminateRequested) {
+      running.terminateRequested = true
+      try {
+        this.runner.cancel?.(taskId)
+      } catch { /* 终止失败：任务仍经 control 收敛为 failed，Worker 退出事件兜底 */ }
+    }
+    running.control.abort(code)
   }
 
   private validateTaskId(taskId: string): boolean {
@@ -785,8 +803,8 @@ export class AnnualReviewService {
   }
 
   private abortRunningTasks(): void {
-    for (const [, running] of this.runningTasksByTaskId) {
-      running.control.abort('invalidated')
+    for (const [taskId, running] of this.runningTasksByTaskId) {
+      this.requestTerminate(taskId, running, 'invalidated')
     }
   }
 }

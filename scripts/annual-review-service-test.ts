@@ -880,7 +880,8 @@ async function main(): Promise<void> {
 
     // dataRange：实际输入事实边界；空数据双 null；脏值不进入
     ok('K4 空数据 dataRange = {from:null,to:null}', emptyReport.dataRange.from === null && emptyReport.dataRange.to === null)
-    ok('K4b 2025 实际范围（建档 2-1 → 核销 4-1；商机 2024 不入）', richReport.dataRange.from === T(2025, 2, 1) && richReport.dataRange.to === T(2025, 4, 1))
+    // 2025 报告参与窗口并集：存量建档 2024-3-1（A1 无下界）→ 商机事件 2025-5-1（B7 重放）
+    ok('K4b 2025 实际范围（存量建档 2024-3-1 → 商机事件 2025-5-1）', richReport.dataRange.from === T(2024, 3, 1) && richReport.dataRange.to === T(2025, 5, 1))
     const dirtyRange = composeAnnualReviewReport({
       period: resolveAnnualReviewPeriod(0, GEN),
       facts: {
@@ -943,6 +944,166 @@ async function main(): Promise<void> {
     ok('Vl scopeKind 与年份不一致拒绝', validateAnnualReviewReport(badScope, 2026).ok === false)
     const sessionIdLeak = { ...good, customers: { ...good.customers, silent: { ...good.customers.silent, value: [{ sessionId: 'wx_a', lastContactAtMs: 1, accountId: null, customerId: null, name: null }] } } }
     ok('Vm 泄漏 sessionId 的报告拒绝', validateAnnualReviewReport(sessionIdLeak, 2026).ok === false)
+  }
+
+  // ══ A 阶段增补：dataRange 参与窗口 / 代表画像身份 / 名单失效 / 统一终止 / validator 完整契约 ══
+  {
+    // ── A1 dataRange 覆盖实际参与计算的事实 ──
+    const shippedOnly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: { accounts: [], contracts: [conF(7, null, null, 400)], allocations: [], shippedEvents: [{ id: 1, contractId: 7, toStatus: 'shipped', createdAt: T(2026, 3, 5) }] },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('A1 仅 shipped 事件参与：shippedCount=1 且 dataRange 覆盖事件时间', shippedOnly.summary.shippedCount.value === 1 &&
+      shippedOnly.dataRange.from === T(2026, 3, 5) && shippedOnly.dataRange.to === T(2026, 3, 5))
+
+    const oppEventsOnly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN), facts: emptyFacts(), sales: emptySales(),
+      crm: { opportunities: [], opportunityEvents: [{ id: 1, opportunityId: 5, eventType: 'lost', stage: null, detail: '价格', createdAt: T(2026, 2, 9) }] }
+    })
+    ok('A1b 仅商机 lost 事件参与：dataRange 覆盖事件时间', oppEventsOnly.dataRange.from === T(2026, 2, 9) && oppEventsOnly.dataRange.to === T(2026, 2, 9))
+
+    const profileOnly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN), facts: emptyFacts(),
+      sales: { profiles: [profF(1, 'wx_p', 'quoted', Math.floor(T(2026, 1, 20) / 1000))], intentEvents: [] }, crm: emptyCrm()
+    })
+    ok('A1c 画像 lastContact 参与（current_year B6/C6-C8）：dataRange 覆盖', profileOnly.dataRange.from === T(2026, 1, 20) && profileOnly.dataRange.to === T(2026, 1, 20))
+    const profileHist = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN), facts: emptyFacts(),
+      sales: { profiles: [profF(1, 'wx_p', 'quoted', Math.floor(T(2025, 6, 1) / 1000))], intentEvents: [] }, crm: emptyCrm()
+    })
+    ok('A1d 历史年度画像 lastContact 不参与 → dataRange 双 null', profileHist.dataRange.from === null && profileHist.dataRange.to === null)
+
+    const a3Facts = { accounts: [accF(1, 'wx_a', { createdAt: T(2026, 1, 2), lastContactAtSec: Math.floor(T(2026, 3, 3) / 1000) })], contracts: [], allocations: [], shippedEvents: [] }
+    const a3Fallback = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN), facts: a3Facts, sales: emptySales(), crm: emptyCrm(),
+      opts: { messageStats: { ok: false, sessions: {} } }
+    })
+    ok('A1e 消息主口径不可用：A3 回退 lastContact 进入范围', a3Fallback.dataRange.from === T(2026, 1, 2) && a3Fallback.dataRange.to === T(2026, 3, 3))
+    const a3Main = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN), facts: a3Facts, sales: emptySales(), crm: emptyCrm(),
+      opts: { messageStats: messageStatsOk({}) }
+    })
+    ok('A1f 主口径可用：回退 lastContact 不进入范围', a3Main.dataRange.from === T(2026, 1, 2) && a3Main.dataRange.to === T(2026, 1, 2))
+
+    const legacyStock = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN),
+      facts: { accounts: [accF(1, null, { createdAt: T(2023, 5, 1) })], contracts: [], allocations: [], shippedEvents: [] },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('A1g periodStart 前存量客户参与 A1 → dataRange 含 2023 建档时间', legacyStock.summary.customerTotal.value === 1 &&
+      legacyStock.dataRange.from === T(2023, 5, 1) && legacyStock.dataRange.to === T(2023, 5, 1))
+
+    // ── A2 同 session 多画像：代表画像规则唯一，身份与投影同源 ──
+    const twoProfiles = (order: 'p1p2' | 'p2p1'): AnnualReviewSalesSegmentsFacts => {
+      const p1 = profF(1, 'wx_s', 'contacted', Math.floor(T(2026, 1, 10) / 1000), '111')
+      const p2 = profF(2, 'wx_s', '决策', Math.floor(T(2026, 6, 1) / 1000), '222')
+      return { profiles: order === 'p1p2' ? [p1, p2] : [p2, p1], intentEvents: [] }
+    }
+    const noFacts = { accounts: [], contracts: [], allocations: [], shippedEvents: [] }
+    const repA = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2026, GEN), facts: noFacts, sales: twoProfiles('p1p2'), crm: emptyCrm() })
+    const repB = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2026, GEN), facts: noFacts, sales: twoProfiles('p2p1'), crm: emptyCrm() })
+    ok('A2 调换多画像输入顺序：完整公开客户结果深相等', JSON.stringify(repA.customers) === JSON.stringify(repB.customers))
+    const repRow = repA.customers.priority.value?.[0]
+    ok('A2b 身份/lastContact 来自代表画像（晚 lastContact 的 222，非首条 111）',
+      repRow !== undefined && repRow.customerId === '222' && repRow.lastContactAtMs === T(2026, 6, 1))
+
+    // ── A3 名单变更失效（服务行为 + main 接线守卫） ──
+    const fakeL = createFakeRunner()
+    const svcL = createService({ runner: fakeL.runner, now })
+    const gL = svcL.service.generate(2026)
+    await tick()
+    fakeL.calls[0].resolve(buildRealReport())
+    await gL
+    ok('A3-1 名单变更前 hit', svcL.service.getReport(2026).cache === 'hit')
+    svcL.service.handleDataChanged()
+    ok('A3-2 名单变更（handleDataChanged）后立即 miss', svcL.service.getReport(2026).cache === 'miss')
+    const gL2 = svcL.service.generate(2026)
+    await tick()
+    svcL.service.handleDataChanged()
+    const rL2 = await gL2
+    fakeL.calls[1].resolve(buildRealReport())
+    await tick(); await tick()
+    ok('A3-3 名单变更取消运行任务且旧结果不写缓存', rL2.success === false && rL2.error?.code === 'invalidated' &&
+      svcL.service.getReport(2026).cache === 'miss')
+    const mainSrcA = readFileSync(join(ROOT, 'electron', 'main.ts'), 'utf8')
+    const cfgStart = mainSrcA.indexOf("ipcMain.handle('config:set'")
+    const cfgSeg = mainSrcA.slice(cfgStart, mainSrcA.indexOf('ipcMain.handle', cfgStart + 5))
+    ok('A3-4 config:set 两名单键写成功后失效（接线守卫；行为级=上方两条）',
+      cfgSeg.includes("key === 'reportExcludedSessions' || key === 'crmInternalList'") &&
+      cfgSeg.includes('annualReviewService.handleDataChanged()'))
+
+    // ── A4 invalidate/handleDataChanged/cancel 统一真实终止（幂等恰一次） ──
+    let cancelCountA = 0
+    const fakeA = createFakeRunner()
+    const svcA = createService({
+      runner: { run: fakeA.runner.run, cancel: () => { cancelCountA++ } }, now
+    })
+    const gA = svcA.service.generate(2026)
+    await tick()
+    svcA.service.invalidateAll()
+    svcA.service.handleDataChanged() // 再失效：不得重复终止
+    svcA.service.cancel(svcA.service.getTaskState(2026)?.taskId ?? '') // 单任务取消：也不得重复
+    const rA = await gA
+    ok('A4 三条路径共用终止语义：runner.cancel 恰一次', cancelCountA === 1)
+    ok('A4b 任务收敛 failed/invalidated 且不缓存', rA.success === false && rA.error?.code === 'invalidated' &&
+      svcA.service.getReport(2026).cache === 'miss')
+    fakeA.calls[0].resolve(buildRealReport())
+    await tick(); await tick()
+    ok('A4c 迟到 Worker 结果不写缓存', svcA.service.getReport(2026).cache === 'miss')
+
+    const throwingRunner: AnnualReviewWorkerRunner = {
+      run: () => new Promise<AnnualReviewReport>(() => { /* 永不收敛 */ }),
+      cancel: () => { throw new Error('terminate exploded') }
+    }
+    const svcT = createService({ runner: throwingRunner, now })
+    const gT = svcT.service.generate(2026)
+    await tick()
+    svcT.service.invalidateAll()
+    const rT = await gT
+    ok('A4d runner.cancel 抛错 → 任务仍收敛、服务不崩溃', rT.success === false && rT.error?.code === 'invalidated')
+
+    let cancelCountB = 0
+    const fakeB = createFakeRunner()
+    const svcB2 = createService({ runner: { run: fakeB.runner.run, cancel: () => { cancelCountB++ } }, now })
+    const gB2 = svcB2.service.generate(2026)
+    await tick()
+    svcB2.service.cancel(svcB2.service.getTaskState(2026)?.taskId ?? '')
+    svcB2.service.cancel(svcB2.service.getTaskState(2026)?.taskId ?? '')
+    await gB2
+    ok('A4e 单任务重复 cancel：真实终止恰一次', cancelCountB === 1)
+
+    // ── A5 validator 完整契约（键全集 / completeness 推导 / 泄漏） ──
+    const goodReport = buildRealReport()
+    const missingKey = JSON.parse(JSON.stringify(goodReport)) as { coverage: Record<string, unknown> }
+    delete missingKey.coverage['summary.customerTotal']
+    ok('A5 缺少必需 coverage key 拒绝', validateAnnualReviewReport(missingKey, 2026).ok === false)
+    const unknownKey = JSON.parse(JSON.stringify(goodReport)) as { coverage: Record<string, unknown> }
+    unknownKey.coverage['summary.unknown'] = { source: 'x', status: 'complete' }
+    ok('A5b 未知 coverage key 拒绝', validateAnnualReviewReport(unknownKey, 2026).ok === false)
+    const forgedOverall = JSON.parse(JSON.stringify(goodReport)) as { completeness: { overall: string } }
+    forgedOverall.completeness.overall = 'complete'
+    ok('A5c completeness.overall 伪造 complete 拒绝', validateAnnualReviewReport(forgedOverall, 2026).ok === false)
+    const forgedBlock = JSON.parse(JSON.stringify(goodReport)) as { completeness: { blocks: Record<string, string> } }
+    forgedBlock.completeness.blocks.monthly = 'complete'
+    ok('A5d 未实现区块 completeness 伪造 complete 拒绝', validateAnnualReviewReport(forgedBlock, 2026).ok === false)
+    const tamperedMetric = JSON.parse(JSON.stringify(goodReport)) as {
+      summary: { avgDealSize: { state: string; value: number | null } }
+    }
+    // 2026 夹具 blocks.summary 本就因 A9 分母 0 而 unavailable；把 A9 伪造成 complete
+    // 会改变推导结果，completeness 仍是旧值 → 必须拒绝
+    tamperedMetric.summary.avgDealSize.state = 'complete'
+    tamperedMetric.summary.avgDealSize.value = 5
+    ok('A5e 指标状态与 completeness 矛盾拒绝', validateAnnualReviewReport(tamperedMetric, 2026).ok === false)
+    const withSessionIdRow = JSON.parse(JSON.stringify(goodReport)) as { customers: { silent: { value: unknown } } }
+    withSessionIdRow.customers.silent.value = [{ sessionId: 'wx_s', lastContactAtMs: 1, accountId: null, customerId: null, name: null }]
+    ok('A5f 公开客户行残留 sessionId 拒绝', validateAnnualReviewReport(withSessionIdRow, 2026).ok === false)
+    const forgedReport = JSON.parse(JSON.stringify(goodReport)) as Record<string, unknown>
+    ;(forgedReport.completeness as { overall: string }).overall = 'complete'
+    const svcForged = createService({ runner: { run: () => Promise.resolve(forgedReport as never) }, now })
+    const rForged = await svcForged.service.generate(2026)
+    ok('A5g 伪造 completeness 的 Worker 结果不缓存、任务 failed', rForged.success === false &&
+      svcForged.service.getReport(2026).cache === 'miss' && svcForged.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
   }
 
   // ══ 15/19 源码一致性守卫（IPC/preload/d.ts/vite/Worker 边界 + 结构化错误） ══

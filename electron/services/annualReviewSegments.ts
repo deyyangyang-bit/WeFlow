@@ -252,11 +252,16 @@ interface ProfileRep {
  * 同 session 多画像去重：代表画像 = 最大有效 last_contact_at（无有效值视为 -∞），并列取最大 profile id。
  * 每个会话确定性地得到唯一代表，输出与输入行序无关。
  */
-function representativeProfilesBySession(
+/**
+ * 代表画像选择（唯一规则，S2 统计与公开报告身份映射共用）：每个会话取
+ * 「最大有效 last_contact_at（秒×1000）」的画像，平局取最大 id。
+ * 输入顺序无关；同一会话的 stage/lastContact/customerId 等投影必须全部来自同一代表记录。
+ */
+export function selectRepresentativeProfiles(
   profiles: AnnualReviewProfileFact[],
-  exclusionSet: Set<string>
-): Map<string, ProfileRep> {
-  const reps = new Map<string, ProfileRep>()
+  exclusionSet: Set<string> = new Set()
+): Map<string, AnnualReviewProfileFact> {
+  const reps = new Map<string, AnnualReviewProfileFact>()
   for (const p of profiles) {
     const sid = normSession(p.sessionId)
     if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid)) continue
@@ -265,14 +270,34 @@ function representativeProfilesBySession(
     const pid = asFinite(p.id) ?? 0
     const prev = reps.get(sid)
     if (!prev) {
-      reps.set(sid, { profileId: pid, stageRaw: p.stage, lastContactAtMs: lcMs })
+      reps.set(sid, p)
       continue
     }
-    const prevKey = prev.lastContactAtMs ?? Number.NEGATIVE_INFINITY
+    const prevSec = asFinite(prev.lastContactAtSec)
+    const prevLc = prevSec !== null && prevSec > 0 ? prevSec * 1000 : null
+    const prevPid = asFinite(prev.id) ?? 0
+    const prevKey = prevLc ?? Number.NEGATIVE_INFINITY
     const key = lcMs ?? Number.NEGATIVE_INFINITY
-    if (key > prevKey || (key === prevKey && pid > prev.profileId)) {
-      reps.set(sid, { profileId: pid, stageRaw: p.stage, lastContactAtMs: lcMs })
+    if (key > prevKey || (key === prevKey && pid > prevPid)) {
+      reps.set(sid, p)
     }
+  }
+  return reps
+}
+
+/** 统计内部视图：代表画像 → (profileId, stageRaw, lastContactAtMs)；规则来自 selectRepresentativeProfiles */
+function representativeProfilesBySession(
+  profiles: AnnualReviewProfileFact[],
+  exclusionSet: Set<string>
+): Map<string, ProfileRep> {
+  const reps = new Map<string, ProfileRep>()
+  for (const [sid, p] of selectRepresentativeProfiles(profiles, exclusionSet)) {
+    const sec = asFinite(p.lastContactAtSec)
+    reps.set(sid, {
+      profileId: asFinite(p.id) ?? 0,
+      stageRaw: p.stage,
+      lastContactAtMs: sec !== null && sec > 0 ? sec * 1000 : null
+    })
   }
   return reps
 }

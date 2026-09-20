@@ -401,9 +401,13 @@ warnings, summary(A1–A9), funnel(B1/B2/B3/B6/B7), customers(C1–C8), monthly,
 salesAssignment, sourceSummary }`。每区块的 value/state/warnings/coverage
 原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly` / `communication`（D 组）/
 `salesAssignment`（E 组）当前版本未实现，为显式 `{ status:'unavailable', reasonCodes:['metric_not_implemented'] }`
-区块，**不是 0/空数组**。补全字段（规格 §7.2）：`dataRange = { from, to }`（本次实际输入
-事实的最早/最晚**有效**时间，毫秒级合理值；空数据没有真实范围 → `{from:null,to:null}`，
-非法/秒/毫秒脏值不进入范围）；`completeness = { overall, blocks }`（四态聚合，优先级
+区块，**不是 0/空数组**。补全字段（规格 §7.2）：`dataRange = { from, to }` = **本次报告实际
+输入并参与计算的有效事实时间范围**（各指标参与窗口的并集：存量类无下界——account.createdAt
+< asOf，A1 等存量事实不因早于 periodStart 被排除；区间类按时间契约——signDate/核销计入时间/
+shipped 事件/A3 回退 last_contact ∈ [periodStart, asOf)；重放类 < asOf——intent 事件、商机、
+商机事件；B6/C6-C8 的画像 last_contact 仅 current/all_time 参与；account.importedAt 仅参与
+导入布尔判定、不作为事实时间进入范围）。毫秒级合理值，非法/秒/毫秒脏值不进入；空数据没有
+真实范围 → `{from:null,to:null}`。`completeness = { overall, blocks }`（四态聚合，优先级
 确定性：unavailable > partial > snapshot_only > complete，由主进程聚合、UI 不计算；
 未实现的 D/E/monthly 恒 unavailable，不得把 A/B/C 数字伪装为 complete）；`coverage` =
 稳定 metricKey（`summary.*` / `funnel.*` / `customers.*` / `monthly` / `communication` /

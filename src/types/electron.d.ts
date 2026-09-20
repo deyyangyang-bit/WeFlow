@@ -2913,7 +2913,7 @@ export interface AnnualReviewReport {
   /** 永远只表示报告实际生成时间，不兼作历史数据时点 */
   generatedAt: number
   timezoneNote: 'local'
-  /** 实际输入事实的最早/最晚有效时间；非名义 period 边界 */
+  /** 本次报告实际输入并参与计算的有效事实时间范围（参与窗口并集）；空数据双 null */
   dataRange: AnnualReviewDataRange
   /** 四态完整性（统计层结果聚合；UI 不计算） */
   completeness: AnnualReviewCompleteness
