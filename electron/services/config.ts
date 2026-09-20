@@ -174,6 +174,14 @@ interface ConfigSchema {
   crmSalesList: string[]
   /** 分配权重（设计稿屏 3 比例权重滑杆；销售名 → 0-100 整数，缺省等权；调整属 C 类操作走审计） */
   crmAssignWeights: Record<string, number>
+  /**
+   * round_robin 跨批次公平游标（2026-09-20）：存「下一位销售姓名」，仅主进程内部读写。
+   * ⛔ 不进 rendererConfigPolicy 任何白名单（渲染层经通用 config:get/set 为未知键，零读写）；
+   *   前端只经只读端点 crm:assignment:roundRobinNext 取最小起始信息。
+   * 名单当前是姓名数组（crmSalesList），游标暂以规范化姓名记录；名单 employeeId 化时此键
+   * 同步迁移为 employeeId（边界见 shared/leadRoundRobin.ts 头注释）。空串 = 从名单第一位开始。
+   */
+  crmRoundRobinCursor: string
   /** SLA1 回收器扫描间隔（分钟，5-1440，默认 30；扫 assignment status=assigned 且 sla1_deadline 过期 → 自动回收） */
   crmSlaRecycleIntervalMin: number
   /** 加好友自动检测扫描间隔（分钟，5-1440，默认 30；PRD 1.4a 自动路：精确匹配 WCDB 联系人 → 停 SLA1 表） */
@@ -404,6 +412,7 @@ export class ConfigService {
       crmLeadSourcePreset: '抖音,视频号,小红书',
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
       crmAssignWeights: {},
+      crmRoundRobinCursor: '',
       crmSlaRecycleIntervalMin: 30,
       crmFriendDetectIntervalMin: 30,
       crmSla2ScanIntervalMin: 30,

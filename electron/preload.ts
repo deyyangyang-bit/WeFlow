@@ -851,6 +851,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts),
     // 批量分配（设计稿屏 3）：按模式从待分配池取 N 条分给名单（weight/round_robin/load），批次审计可追溯
     assignmentAssignBatch: (req: { count: number; mode?: Exclude<AssignmentMode, 'manual'>; weights?: Record<string, number>; actor?: string }) => ipcRenderer.invoke('crm:assignment:assignBatch', req),
+    // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名，空串=名单第一位；无写路径）
+    assignmentRoundRobinNext: () => ipcRenderer.invoke('crm:assignment:roundRobinNext') as Promise<{ ok: boolean; data?: { next: string } }>,
+    // 分配数据失效事件（SLA 回收 / LAN、中央下行 / 其他主进程或窗口写入后广播；载荷只含 action + leadIds，
+    // 不含任何客户敏感字段）。返回清理函数，组件卸载必须调用以免监听器泄漏。
+    onAssignmentInvalidated: (callback: (payload: { action: string; leadIds: number[]; at: number }) => void) => {
+      const listener = (_e: unknown, payload: { action: string; leadIds: number[]; at: number }) => callback(payload)
+      ipcRenderer.on('crm:assignment:invalidated', listener)
+      return () => ipcRenderer.removeListener('crm:assignment:invalidated', listener)
+    },
     // 加好友判定（PRD 1.4a 手动路）：绑定微信 → customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req),
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论写 assignment.sla2_scan_ref + 审计

@@ -27,6 +27,7 @@ export interface LeadOwnerInfo {
 // filterPaymentsForView / filterByOwnerOf（2026-09-19 §2.80 跟单中心收口）：到款 / 推导型 owner（发票）过滤档。
 export { isSalesView, filterByOwner, filterPaymentsForView, filterByOwnerOf, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
 import { isSalesView, filterByOwner, filterPaymentsForView, filterByOwnerOf, isOwnedName, isOwnedLead, type IdentityLike } from '../../shared/ownerFilter'
+import { roundRobinPlan } from '../../shared/leadRoundRobin'
 
 /**
  * 当前归属映射：leadId → 最新有效分配行。
@@ -129,10 +130,14 @@ export type AssignMode = 'weight' | 'round_robin' | 'load'
 
 /**
  * 份额分配预览（屏 3 右卡，纯前端预览；与后端 assignBatchLeads.buildDistribution 同口径——
- * 由 scripts/assignment-full-test.ts H 节断言两实现逐模式一致，防口径漂移）：
- *   weight：最大余数法（缺省等权）；round_robin：轮询均分；load：逐条给「在手+本批已得」最少者。
+ * 由 scripts 测试断言两实现逐模式一致，防口径漂移）：
+ *   weight：最大余数法（缺省等权）；
+ *   round_robin：轮询均分，从 roundRobinStartIdx（跨批次游标起点，与后端同一 shared/leadRoundRobin
+ *     纯函数）起循环——后端本批从哪位销售开始，预览就从哪位开始；
+ *   load：逐条给「在手+本批已得」最少者。
+ * roundRobinStartIdx 只影响 round_robin；weight/load 忽略（行为不变）。
  */
-export function distributePreview(mode: AssignMode, count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>): Record<string, number> {
+export function distributePreview(mode: AssignMode, count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>, roundRobinStartIdx = 0): Record<string, number> {
   const plan: Record<string, number> = {}
   for (const s of sales) plan[s] = 0
   if (count <= 0 || !sales.length) return plan
@@ -151,7 +156,8 @@ export function distributePreview(mode: AssignMode, count: number, sales: string
     while (used < count && remainders.length) { remainders[ri % remainders.length].base++; used++; ri++ }
     for (const r of remainders) plan[r.s] = r.base
   } else if (mode === 'round_robin') {
-    for (let i = 0; i < count; i++) plan[sales[i % sales.length]]++
+    // 委托共享纯函数（唯一轮询实现，与后端 buildDistribution 同源）
+    Object.assign(plan, roundRobinPlan(count, sales, roundRobinStartIdx))
   } else {
     const cur: Record<string, number> = {}
     for (const s of sales) cur[s] = Number(loads[s] || 0)

@@ -11,6 +11,7 @@ import { classifyLead, dedupeRows, maskContact, identityKeysOf, normalizeCnMobil
 import { recordOutboxTx } from './crmOutboxService'
 import { getActorLabel, getIdentity } from './identityService'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { emitAssignmentInvalidated } from './assignmentInvalidationBus'
 
 // ─── 配置注入（registerCrmIpcHandlers 装配）─────────────────────────────────
 export interface LeadConfigRef { get: (key: string) => unknown }
@@ -411,6 +412,7 @@ export function importHistoricalAssignments(fileName: string, rows: HistoricalAs
   let leadsReused = 0
   let assignmentsCreated = 0
   let recycledCount = 0
+  const touchedLeadIds: number[] = []
   if (valid.length) {
     crmDbService.runTx((tx) => {
       for (const v of valid) {
@@ -446,6 +448,7 @@ export function importHistoricalAssignments(fileName: string, rows: HistoricalAs
         assignmentsCreated++
         if (v.recycled) recycledCount++
         else {
+          touchedLeadIds.push(leadId)
           tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
             ['assignment', aid, prevOwner, v.sales, '历史导入', getActorLabel() || '分配员', now])
         }
@@ -456,6 +459,8 @@ export function importHistoricalAssignments(fileName: string, rows: HistoricalAs
         [getActorLabel() || '分配员', 'assignment_history_import', 'lead', null,
          JSON.stringify({ fileName: String(fileName || '粘贴文本'), total: rows.length, valid: valid.length, leadsCreated, leadsReused, assignmentsCreated, recycled: recycledCount, skipped: skipped.length }), now])
     })
+    // 事务已提交才通知：历史导入会新建 claimed 态的**当前有效**归属行（recycled 历史行不改当前归属，不通知）
+    if (touchedLeadIds.length) emitAssignmentInvalidated('assign', touchedLeadIds)
   }
   scanLeadSla()
   return { total: rows.length, leadsCreated, leadsReused, assignmentsCreated, recycled: recycledCount, skipped }

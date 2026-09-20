@@ -302,6 +302,25 @@
 | `crm:customer:mergeProposal` | `{ identityType: 'phone' \| 'wxid', identityValue: string, fromCustomerId, toCustomerId, actor: string }` | `{ proposalId }` | E204 无冲突；E301 | U：合并提案 B/C 档（AI 或人工提案）→ **审批后执行**（改挂 + ownership_history + audit_event 同事务；AI 永不执行合并） |
 | `crm:audit:query` | `{ entityType?: string, entityId?: number, actor?: string, action?: string, beginAt?, endAt?, page?, pageSize? }` | `{ rows, total, labels }` | — | R。audit_event 只读；activity_log / auto_confirm_log 封存只读同口径（宪法 §1.12）。`labels` = 行内实体显示名（key 为 `` `${entity_type}:${entity_id}` ``，仅 `lead`/`account`/`customer` 三类，供渲染层把 `lead #id` 换成人话名；解析不到则该 key 缺席，由渲染层回落原名，**不留空白**）。纯展示层附加字段，只读、无写入路径 |
 | `crm:ownership:history` | `{ entityType: string, entityId: number, page?, pageSize? }` | `{ rows, total }` | — | R。ownership_history 只读 |
+| `crm:assignment:roundRobinNext` | — | `{ next: string }` | — | R（2026-09-20）。round_robin 跨批次公平游标只读查询：返回「下一位销售姓名」（空串 = 名单第一位）。最小只读信息，**无写路径**；游标持久化在主进程内部配置键 `crmRoundRobinCursor`（不进渲染层 config 白名单），批量分配成功后按批末真实指针推进（成功驱动的逐条状态机：失败/跳过不移动销售指针）。名单增删/重排/游标指向不存在成员时由 `shared/leadRoundRobin.roundRobinStartIndex` 安全重置到第一位，脏配置不致分配失败。前端预览与后端 `assignBatchLeads` 共用该起点与 `shared/leadRoundRobin` 同一纯函数：全部成功时屏 3 预览 = 实际执行逐条一致；出现失败/跳过时预览为「假设全部成功」的理想分布，实际 assigned/perSales/skipped 如实反映真实结果 |
+
+**`crm:assignment:invalidated`（主进程 → 渲染层只读事件，非 invoke 端点；2026-09-20 增补）**：
+SLA 定时回收、LAN/中央下行 assign/transfer/recycle、历史导入、纠正迁移等**非本窗口**来源改变
+assignment 归属后，主进程广播给全部存活窗口；页面订阅后自行重拉所需数据。纪律：
+
+- **只在写事务成功提交后通知**；失败/回滚不发。事件由主进程轻量总线
+  （`assignmentInvalidationBus`，零 Electron 依赖）发往 IPC 注册层桥接 BrowserWindow；
+- **最小载荷** `{ action: 'assign' \| 'claim' \| 'recycle' \| 'transfer'（合并多动作时按
+  assign,claim,recycle,transfer 固定顺序逗号连接）, leadIds: number[]（去重升序）, at: number }`，
+  **不含联系方式、聊天内容或任何客户敏感字段**；页面收到后重拉，不回传行内容；
+- **固定窗口合并（有界延迟，2026-09-20 修订）**：总线**首个**事件启动 150ms 窗口；窗口内后续
+  事件只合并 action/leadIds、**不重置计时**；窗口到期必然发出一条合并事件。持续写入（批量分配
+  逐条、连续同步轮巡）下最大通知延迟 = 首个事件起 150ms，不会像尾随 debounce（每次 clearTimeout
+  重计）那样被间隔小于窗口的连续事件无限推迟；preload `onAssignmentInvalidated` 返回清理函数，
+  组件卸载必须调用；
+- 页面自己发起的操作本就主动 fetchAll；页面收到主进程已合并的事件后再经固定窗口合并调度
+  （300ms，`src/utils/coalescedScheduler.ts`，同语义：首事件启动窗口、窗口内合并不重置、到期
+  必然刷新，最大额外延迟 300ms）吸收紧邻事件，不形成循环（fetchAll 为纯读，不产生新事件）。
 
 > 已有端点不重复建：归属回写 `owner_sales` 由专用 `crmOwnershipService` 走直连 SQL（account/opportunity/logistics
 > 三处同口径，宪法术语表），不经 `crm:entity:update`——后者对 opportunity 已限为 `shipped_qty`/`delivery_date`；

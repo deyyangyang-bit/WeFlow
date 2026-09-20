@@ -3,7 +3,7 @@
  * CRM 模块 IPC 注册（service→main 注册约定）。无删除端点（合规）。
  */
 import type { IpcMain } from 'electron'
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
@@ -20,7 +20,8 @@ import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
 import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail, checkLeadDuplicate, createLead, importHistoricalAssignments } from './crmLeadService'
-import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
+import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory, getRoundRobinCursor } from './crmAssignmentService'
+import { onAssignmentInvalidated, type AssignmentInvalidationEvent } from './assignmentInvalidationBus'
 import { bindLeadWxid } from './crmFriendDetectService'
 import { listDupMatches } from './crmDupGroupService'
 import { markSla2ScanResult } from './crmSla2Service'
@@ -40,6 +41,19 @@ import { crmImagesRoot, resolveInsideRoot, isRegularFile, detectImageMime, sanit
 // 微信备注是客户名真相源：存量 account.name / profile.display_name 若为微信号格式（wan923121735、wxid_xxx），
 // 从 WCDB contact 表取真实备注回填。幂等：只处理微信号格式名字；WCDB 未连接 / 无备注则跳过。
 let displayNameBackfillRan = false
+
+// assignment 失效事件 → 存活窗口广播的桥接（总线零 Electron 依赖，桥接只在 IPC 注册层）。
+// registerCrmIpcHandlers 只在 main 启动链路调用一次；模块级守卫防御未来重复注册导致重复广播。
+let invalidationBridgeRegistered = false
+function bridgeAssignmentInvalidation(): void {
+  if (invalidationBridgeRegistered) return
+  invalidationBridgeRegistered = true
+  onAssignmentInvalidated((ev: AssignmentInvalidationEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('crm:assignment:invalidated', ev)
+    }
+  })
+}
 
 async function backfillWxidDisplayNames(): Promise<number> {
   const accounts = crmDbService.customers()
@@ -427,6 +441,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // 同上：mode 不做 `String()` 掩盖；缺省由 service 按「未设置」处理，显式非法值由 service 返回 E101
   ipcMain.handle('crm:assignment:assignBatch', async (_, req: { count?: number; mode?: unknown; weights?: Record<string, number>; actor?: string }) =>
     assignBatchLeads({ count: Number(req?.count) || 0, mode: req?.mode, weights: req?.weights || {}, actor: String(req?.actor || '') }))
+  // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名；无任何写路径，游标键不在渲染层白名单）
+  ipcMain.handle('crm:assignment:roundRobinNext', () => getRoundRobinCursor())
+  // 分配数据失效事件桥接（SLA 回收 / LAN、中央下行 / 其他主进程写入后，打开中的线索页自动重拉；
+  // 页面自己发起的操作本就主动 fetchAll，收到的相邻事件经页面统一去抖合并，不形成循环）
+  bridgeAssignmentInvalidation()
 
   // ── 加好友判定（PRD 1.4a 手动路，API-CONTRACT §1.14 契约端点）──────────────
   // 绑定微信：写 customer_identity(source='manual', confidence=1.0) + 停 SLA1 表 + lead→WX_ADDED + 审计；

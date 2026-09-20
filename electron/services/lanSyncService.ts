@@ -62,6 +62,7 @@ import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
 import { downCommandSpec, validateDownCommand } from '../../shared/centralDownCommand'
 import { findForbiddenDownlinkField } from '../../shared/centralSync'
 import { healLegacyDownPayload } from './crmDownPayloadCompat'
+import { emitAssignmentInvalidated, type AssignmentInvalidationAction } from './assignmentInvalidationBus'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
 export type LanSyncRole = 'hub' | 'terminal'
@@ -656,10 +657,12 @@ function createLeadFromInfoTx(
   )
 }
 
-/** 应用一条下行事件（调用方事务内）；返回 'applied' | 'conflict' | 'nolead' | 'invalid' */
+/** 应用一条下行事件（调用方事务内）；返回 'applied' | 'conflict' | 'nolead' | 'invalid'
+ *  （可选 touched 收集器：由调用方传入，事务提交后据此发失效通知——事务内绝不直接通知） */
 function applyDownEventTx(
   tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
-  ev: SyncEventFile
+  ev: SyncEventFile,
+  touched?: { leadIds: number[] }
 ): 'applied' | 'conflict' | 'nolead' | 'invalid' {
   const p = ev.payload || {}
   const leadInfo = (p.lead && typeof p.lead === 'object' ? p.lead : null) as Record<string, unknown> | null
@@ -692,6 +695,7 @@ function applyDownEventTx(
     )
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'assign', idempotencyKey: ev.idempotencyKey, salesName: String(p.salesName || ''), hubLeadId: Number(p.leadId || 0) }), now])
+    touched?.leadIds.push(leadId)
     return 'applied'
   }
 
@@ -723,6 +727,7 @@ function applyDownEventTx(
     if (ev.type === 'recycle') {
       if (cur) {
         tx.run("UPDATE assignment SET status = 'recycled', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ?", [actor, now, Number(cur.id)])
+        touched?.leadIds.push(leadId)
       }
       tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [LEAD_SLA_UNASSIGNED_SENTINEL, now, leadId])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
@@ -735,6 +740,7 @@ function applyDownEventTx(
     if (ev.deliveryRole === 'remove') {
       if (cur) {
         tx.run("UPDATE assignment SET status = 'transferred', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ?", [actor, now, Number(cur.id)])
+        touched?.leadIds.push(leadId)
       }
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'transfer_remove', idempotencyKey: ev.idempotencyKey, toSales: String(p.toSales || ''), hadActiveRow: !!cur }), now])
@@ -748,6 +754,7 @@ function applyDownEventTx(
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1 || Number(lead.first_contact_deadline || LEAD_SLA_UNASSIGNED_SENTINEL), now, leadId])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'transfer', idempotencyKey: ev.idempotencyKey, toSales: String(p.toSales || '') }), now])
+    touched?.leadIds.push(leadId)
     return 'applied'
   }
   return 'invalid' // 未知类型/通知类型不应用（通知走中枢本机通道，不该到终端队列）
@@ -765,14 +772,20 @@ export function applyDownEventDirect(ev: SyncEventFile): AckOutcome {
   if (crmDbService.getScanState(appliedKey(mkey)) > 0) {
     return knownOutcome === ACK_CODE.conflict ? 'conflict' : knownOutcome === ACK_CODE.invalid ? 'invalid' : 'applied'
   }
+  const touched = { leadIds: [] as number[] }
   const outcome = crmDbService.runTx((tx) => {
-    const next = applyDownEventTx(tx, { ...ev, deliveryRole: role })
+    const next = applyDownEventTx(tx, { ...ev, deliveryRole: role }, touched)
     if (next === 'applied' || next === 'conflict') {
       tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [appliedKey(mkey), Date.now()])
       tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [outcomeKey(mkey), next === 'applied' ? ACK_CODE.applied : ACK_CODE.conflict])
     }
     return next
   })
+  // 事务已提交才通知：只对真正改写 assignment 行的 applied 事件发（conflict/nolead/脏类型不发）
+  const downAction: AssignmentInvalidationAction | null = ev.type === 'assign' ? 'assign' : ev.type === 'transfer' ? 'transfer' : ev.type === 'recycle' ? 'recycle' : null
+  if (outcome === 'applied' && downAction && touched.leadIds.length) {
+    emitAssignmentInvalidated(downAction, touched.leadIds)
+  }
   return outcome
 }
 
@@ -938,8 +951,9 @@ export function consumeDownEvents(root: string): ConsumeResult {
       continue
     }
     try {
+      const touched = { leadIds: [] as number[] }
       const outcome = crmDbService.runTx((tx) => {
-        const o = applyDownEventTx(tx, ev)
+        const o = applyDownEventTx(tx, ev, touched)
         if (o === 'applied' || o === 'conflict') {
           // conflict 也标记已应用：中枢权威指令与本地冲突时不反复重试，留人工（审计可查）
           tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [appliedKey(mkey), Date.now()])
@@ -949,6 +963,9 @@ export function consumeDownEvents(root: string): ConsumeResult {
       })
       if (outcome === 'applied') {
         r.applied++
+        // 事务已提交才通知（SMB 下行与中央 HTTP 共用 applyDownEventTx 状态机，两处提交点各自通知）
+        const downAction: AssignmentInvalidationAction | null = ev.type === 'assign' ? 'assign' : ev.type === 'transfer' ? 'transfer' : ev.type === 'recycle' ? 'recycle' : null
+        if (downAction && touched.leadIds.length) emitAssignmentInvalidated(downAction, touched.leadIds)
         let ackWritten = false
         try { writeAckFile(root, ev, base, 'applied'); ackWritten = true } catch { /* ACK 写失败：文件保留，下轮 dup 路径补 ACK */ }
         if (ackWritten) { try { rmSync(path, { force: true }) } catch { /* ignore */ } }
@@ -1118,7 +1135,8 @@ export function emitUpEvents(root: string): EmitResult {
 /** 应用一条上行事件（调用方事务内）；返回是否已处理（未知类型返回 false 不消费） */
 function applyUpEventTx(
   tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
-  ev: SyncEventFile
+  ev: SyncEventFile,
+  touched?: { leadIds: number[] }
 ): boolean {
   const p = ev.payload || {}
   const now = Date.now()
@@ -1145,6 +1163,7 @@ function applyUpEventTx(
       tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [claimedAt, actor, now, Number(cur.id)])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [actor, 'lead_claim', 'lead', leadId, JSON.stringify({ assignmentId: Number(cur.id), salesName: String(cur.sales_name), claimedAt, via: 'sync:up', terminal: String(ev.from || '') }), now])
+      touched?.leadIds.push(leadId)
     }
     return true
   }
@@ -1216,14 +1235,20 @@ export function consumeUpEvents(root: string): ConsumeResult {
         continue
       }
       try {
+        const touched = { leadIds: [] as number[] }
         const handled = crmDbService.runTx((tx) => {
-          const okApply = applyUpEventTx(tx, ev)
+          const okApply = applyUpEventTx(tx, ev, touched)
           if (okApply) {
             tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [appliedKey(ev.idempotencyKey), Date.now()])
           }
           return okApply
         })
-        if (handled) { r.applied++; try { rmSync(path, { force: true }) } catch { /* ignore */ } }
+        if (handled) {
+          r.applied++
+          // 事务已提交才通知：中枢收到终端认领回执并真正改写归属状态（assigned → claimed）时发
+          if (touched.leadIds.length) emitAssignmentInvalidated('claim', touched.leadIds)
+          try { rmSync(path, { force: true }) } catch { /* ignore */ }
+        }
         else r.failed++
       } catch (e) {
         r.failed++

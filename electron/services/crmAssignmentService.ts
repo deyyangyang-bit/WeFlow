@@ -21,6 +21,12 @@ import { outboxTransportEnabled } from './lanSyncService'
 import { ConfigService } from './config'
 import { ASSIGNMENT_MODES, type AssignmentMode } from '../../shared/centralDownCommand'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { roundRobinPlan, roundRobinStartIndex } from '../../shared/leadRoundRobin'
+import { emitAssignmentInvalidated } from './assignmentInvalidationBus'
+
+// ─── 分配数据失效通知（assignmentInvalidationBus）──────────────────────────
+// 写路径纪律：只在事务成功提交后 emit；失败/回滚路径不调用（总线不感知事务，调用方负责）。
+// 载荷只含 action + leadIds，绝不带联系方式/聊天内容等敏感字段；批量由总线去抖合并。
 
 /** 当前有效分配状态（宪法 §1.3：最新有效行 = 当前归属；recycled/transferred 即失效） */
 const ACTIVE_STATUS_SQL = "status IN ('assigned','claimed')"
@@ -96,6 +102,21 @@ function resolveLocalOwnerEmployeeId(salesName: string): string {
   return ''
 }
 
+// ─── round_robin 跨批次公平游标（config 键 crmRoundRobinCursor）─────────────
+/**
+ * 游标 = 「下一位销售」的规范化姓名（名单 crmSalesList 是姓名数组；employeeId 化边界见
+ * shared/leadRoundRobin.ts 头注释）。最小状态：只存一个名字，不保存轮询队列。
+ * 读写都走 ConfigService（electron-store 同步单线程写，与 sql.js 单线程模型相容，不伪造锁）；
+ * 名单增删/重排/游标指向不存在的成员时由 roundRobinStartIndex 安全重置到名单第一位，
+ * 脏配置绝不会让分配失败。
+ */
+function readRoundRobinCursor(): string {
+  return String(ConfigService.getInstance().get('crmRoundRobinCursor') || '').trim()
+}
+function persistRoundRobinCursor(name: string): void {
+  ConfigService.getInstance().set('crmRoundRobinCursor', String(name || '').trim())
+}
+
 // ─── 分配（crm:assignment:assign）──────────────────────────────────────────
 export interface AssignSkipped { leadId: number; code: 'E201' | 'E301'; reason: string }
 export interface AssignData { assignments: Array<{ leadId: number; assignmentId: number }>; skipped: AssignSkipped[] }
@@ -162,6 +183,10 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
     }
     return { assignments, skipped }
   })
+  // 事务已提交才通知（失败/回滚走异常路径到不了这里）；批量分配逐条调用由总线去抖合并
+  if (data.assignments.length) {
+    emitAssignmentInvalidated('assign', data.assignments.map((a) => a.leadId))
+  }
   return { ok: true, data }
 }
 
@@ -230,6 +255,8 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
     // 中枢回放落 claimed_at——PRD 2.4 首次分类 24h 触发轴跨机一致）
     recordOutboxTx(tx, 'claim', `claim:${Number(row.id)}`, { leadId: id, assignmentId: Number(row.id), salesName: String(row.sales_name), actor: by, claimedAt: now }, now)
   })
+  // 事务已提交才通知（assigned → claimed 改变了页面可见的归属状态）
+  emitAssignmentInvalidated('claim', [id])
   return { ok: true, data: { assignmentId: Number(row.id) } }
 }
 
@@ -291,7 +318,13 @@ export function recycleAssignmentTx(
 export function recycleAssignment(assignmentId: number, reason: string, actor: string): AssignActionResult {
   const id = Number(assignmentId)
   if (!Number.isInteger(id) || id <= 0) return { ok: false, code: 'E101', message: 'assignmentId 必填' }
-  return crmDbService.runTx((tx) => recycleAssignmentTx(tx, id, reason, actor))
+  const res = crmDbService.runTx((tx) => recycleAssignmentTx(tx, id, reason, actor))
+  // 事务已提交才通知（E202 已回收 / E205 converted_skip 等 ok:false 不发）；回收不删行，lead id 事后可读
+  if (res.ok) {
+    const leadId = Number(crmDbService.all('SELECT lead_id FROM assignment WHERE id = ?', [id])[0]?.lead_id || 0)
+    if (leadId > 0) emitAssignmentInvalidated('recycle', [leadId])
+  }
+  return res
 }
 
 // ─── 移交（crm:assignment:transfer，契约 268 行）─────────────────────────────
@@ -341,6 +374,8 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
     recordOutboxTx(tx, 'transfer', `transfer:${nid}`, { leadId: Number(row.lead_id), fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, mode, sla1Deadline: sla1, actor: by }, now)
     return nid
   })
+  // 事务已提交才通知（旧行 transferred + 新行 assigned，归属易主）
+  emitAssignmentInvalidated('transfer', [Number(row.lead_id)])
   return { ok: true, data: { assignmentId: newId } }
 }
 
@@ -415,7 +450,11 @@ export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: 
           }
           return rec
         })
-        if (res.ok) recycled++
+        if (res.ok) {
+          recycled++
+          // 事务已提交才通知：SLA 自动回收改变了归属状态，打开中的线索页需要感知
+          emitAssignmentInvalidated('recycle', [Number(r.lead_id)])
+        }
         else console.warn(`[CRM] SLA1 回收失败 assignment=${id}：${res.code} ${res.message}`)
       } catch (e) {
         console.warn(`[CRM] SLA1 回收+主管通知原子事务失败（已回滚，待下轮重试）assignment=${id}：${e}`)
@@ -517,6 +556,7 @@ export function correctSla1Misrecycle(): CorrectionResult {
   const now = Date.now()
   const sla1 = now + sla1Ms()
   const by = 'system:correction'
+  const correctedLeadIds: number[] = []
   crmDbService.runTx((tx) => {
     for (const row of rows) {
       const leadId = Number(row.lead_id)
@@ -524,6 +564,7 @@ export function correctSla1Misrecycle(): CorrectionResult {
       // 数据级判重：已有当前有效分配（含本函数上一轮补的新行）→ 跳过
       const cur = tx.all(`SELECT id FROM assignment WHERE lead_id = ? AND deleted = 0 AND ${ACTIVE_STATUS_SQL} ORDER BY id DESC LIMIT 1`, [leadId])
       if (cur.length) { r.alreadyAssigned++; continue }
+      correctedLeadIds.push(leadId)
       const newId = tx.run(
         'INSERT INTO assignment (lead_id, sales_name, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
         [leadId, sales, String(row.mode || 'manual'), sla1, '', 'assigned', 'system:correction', by, now, 1, 0]
@@ -542,6 +583,8 @@ export function correctSla1Misrecycle(): CorrectionResult {
       [by, 'sla1_misrecycle_correction', 'migration', null, JSON.stringify({ total: r.total, corrected: r.corrected, alreadyAssigned: r.alreadyAssigned, slaHours: sla1Hours() }), now])
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [MISRECYCLE_MARKER, now])
   })
+  // 事务已提交才通知：纠正性再分配产生了新的有效归属行（一次性迁移块，通常 corrected=0）
+  if (correctedLeadIds.length) emitAssignmentInvalidated('assign', correctedLeadIds)
   return r
 }
 
@@ -785,12 +828,27 @@ export interface AssignBatchResult { ok: boolean; data?: AssignBatchData; code?:
 /**
  * 按模式把 N 条待分配线索分给销售名单：
  *   待分配池 = lead.status='NEW' 且无当前有效分配行（SQL 取，避免逐条 currentAssignment N+1）；
- *   分配方式 = 按模式算出各人份额 → 逐组走现有 assignLeads（同事务写 assignment + ownership_history +
- *   audit_event + outbox + lead.first_contact_deadline 起计时，mode 落 assignment.mode）；
+ *   分配方式：
+ *     round_robin = **成功驱动的逐条轮询状态机**（2026-09-20 二轮修复）：从持久游标对应的销售起，
+ *       逐条 lead 调单条分配；成功才把销售指针移到下一位，失败/E201/E301 跳过指针不动、下一条仍由
+ *       同一销售尝试——真实归属顺序、perSales、游标三者是同一个状态机，不再「先算份额再分组」；
+ *     weight / load = 先按模式算份额 → 按销售分组执行（行为与历史完全一致，不读写轮询游标）。
+ *   两种路径的单条分配同事务写 assignment + ownership_history + audit_event + outbox +
+ *   lead.first_contact_deadline 起计时，mode 落 assignment.mode；
  *   收尾写一行批次审计 action='lead_assign_batch'（detail 含模式/数量/份额/跳过），批次号 = '#A'+审计行号。
  *   权重调整属 C 类操作（宪法 §1.3），调整在前端写 config crmAssignWeights（应用内审计另行记录，本函数只读权重）。
  */
 export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
+  return assignBatchLeadsWith(input, (leadId, salesName, actor, m) => assignLeads([leadId], salesName, actor, m))
+}
+
+/** 单条分配执行器（= assignLeads 的单条形态）。生产路径即 assignLeads；测试经
+ *  assignBatchLeadsWith 注入失败/跳过夹具制造「部分失败」现场（同步单线程下经公共 API 不可达）。
+ *  注入点**只替换单条执行**：轮询指针推进、游标落盘、批次审计与生产完全同一段代码，不存在第二套轮询算法。 */
+type AssignOne = (leadId: number, salesName: string, actor: string, mode: BatchAssignmentMode) => AssignResult
+
+/** assignBatchLeads 的可注入形态（⚠️ 仅测试用途：生产 IPC 固定调 assignBatchLeads，不得换用本入口） */
+export function assignBatchLeadsWith(input: AssignBatchInput, assignOne: AssignOne): AssignBatchResult {
   // 模式校验先于一切查询与业务写：显式非法值一律 E101，**不再静默回退 weight**——
   // 回退等于无声的语义篡改（调用方以为按负载分配，实际落的是 weight），且和「本机成功、
   // 中央拒收」是同一类坏数据。缺省（未传）仍是 weight，见 parseAssignmentMode。
@@ -810,57 +868,87 @@ export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
   ).map((r) => Number(r.id))
   if (!pool.length) return { ok: false, code: 'E301', message: '待分配池为空' }
 
-  // 各人在手条数（当前有效归属）
-  const loads: Record<string, number> = {}
-  for (const s of sales) loads[s] = 0
-  const loadRows = crmDbService.all(
-    `SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted = 0 AND ${ACTIVE_STATUS_SQL} GROUP BY sales_name`
-  )
-  for (const r of loadRows) if (loads[String(r.sales_name)] !== undefined) loads[String(r.sales_name)] = Number(r.c)
-
-  // 份额计算（纯函数 distributePreview 同口径，见 leadAssignmentView.ts / 共享逻辑在 buildDistribution）
-  const plan = buildDistribution(mode, pool.length, sales, weights, loads)
-
-  // 逐组分配：每组一个销售，组内逐条走 assignLeads（单条事务失败不阻塞其余，E201/E301 落 skipped）
   // 计数口径（2026-09-08 修复）：按实际新增 assignments 行数计，跳过/冲突（res.ok 但 assignments 空）
   // 不算入 assigned/perSales，落 skipped 可查
+  const batchActor = String(input?.actor || '').trim() || '分配员'
   const perSales: Record<string, number> = {}
   const skipped: Array<{ leadId: number; code: string; reason: string }> = []
   let assigned = 0
-  let cursor = 0
-  for (const s of sales) {
-    const take = plan[s] || 0
-    if (take <= 0) { perSales[s] = 0; continue }
-    const chunk = pool.slice(cursor, cursor + take)
-    cursor += take
-    let got = 0
-    for (const leadId of chunk) {
-      const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
+  let rrFinalPtr: number | null = null // round_robin 批末真实指针（下一位要尝试的销售下标；非轮询模式为 null）
+
+  if (mode === 'round_robin') {
+    // ── round_robin：成功驱动的逐条轮询状态机（2026-09-20 二轮修复）────────────
+    // ptr = 「当前要尝试的销售」指针，从持久游标（下一位）解析；对每条 lead 依序：
+    //   成功   → perSales/assigned 计入当前销售，指针移到下一位；
+    //   失败/跳过 → 落 skipped，assigned 不增，指针不动（下一条仍由同一销售尝试）。
+    // 真实归属顺序、perSales、批末游标（= ptr 所指销售）出自**同一个状态机**——
+    // 修复前「先算份额再按销售分组」的执行顺序是 甲甲乙乙丙，与理论轮询 甲乙丙甲乙
+    // 在部分失败时分裂（真实归属一套、游标推进另一套）。全部成功时本机顺序与
+    // roundRobinPlan/前端预览逐条一致；失败时预览只是「假设全部成功」的理想分布，
+    // assigned/perSales/skipped 如实反映真实结果，不为匹配预览伪报。
+    for (const s of sales) perSales[s] = 0
+    let ptr = roundRobinStartIndex(sales, readRoundRobinCursor())
+    for (const leadId of pool) {
+      const res = assignOne(leadId, sales[ptr], batchActor, mode)
       const gotN = res.ok && res.data ? res.data.assignments.length : 0
       if (gotN > 0) {
-        got += gotN
+        perSales[sales[ptr]] += gotN
+        assigned += gotN
+        ptr = (ptr + 1) % sales.length
       } else {
         const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
         skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
       }
     }
-    perSales[s] = got
-    assigned += got
-  }
-  // 计划外剩余（上游池被并发取走）：归到负载最轻者——保证「取 N 条」语义，除非池已空
-  while (cursor < pool.length) {
-    const s = [...sales].sort((a, b) => (loads[a] + (perSales[a] || 0)) - (loads[b] + (perSales[b] || 0)))[0]
-    const leadId = pool[cursor++]
-    const res = assignLeads([leadId], s, String(input?.actor || '').trim() || '分配员', mode)
-    const gotN = res.ok && res.data ? res.data.assignments.length : 0
-    if (gotN > 0) { perSales[s] = (perSales[s] || 0) + gotN; assigned += gotN }
-    else {
-      const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
-      skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
+    // 批末真实指针（下一位）持久化推迟到批次审计之后统一做（安全顺序：审计先行）
+    rrFinalPtr = ptr
+  } else {
+    // ── weight / load：份额计算 + 按销售分组执行（行为不变；不读写轮询游标）────
+    // 各人在手条数（当前有效归属；round_robin 状态机不需要，避免多查一次）
+    const loads: Record<string, number> = {}
+    for (const s of sales) loads[s] = 0
+    const loadRows = crmDbService.all(
+      `SELECT sales_name, COUNT(*) AS c FROM assignment WHERE deleted = 0 AND ${ACTIVE_STATUS_SQL} GROUP BY sales_name`
+    )
+    for (const r of loadRows) if (loads[String(r.sales_name)] !== undefined) loads[String(r.sales_name)] = Number(r.c)
+    // 份额计算：weight 最大余数法 / load 逐条给「在手+本批已得」最少者（纯函数，与前端 distributePreview 同口径）
+    const plan = buildDistribution(mode, pool.length, sales, weights, loads)
+    let cursor = 0
+    for (const s of sales) {
+      const take = plan[s] || 0
+      if (take <= 0) { perSales[s] = 0; continue }
+      const chunk = pool.slice(cursor, cursor + take)
+      cursor += take
+      let got = 0
+      for (const leadId of chunk) {
+        const res = assignOne(leadId, s, batchActor, mode)
+        const gotN = res.ok && res.data ? res.data.assignments.length : 0
+        if (gotN > 0) {
+          got += gotN
+        } else {
+          const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
+          skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
+        }
+      }
+      perSales[s] = got
+      assigned += got
+    }
+    // 计划外剩余（上游池被并发取走，防御路径；正常时 plan 总量 = pool.length 不会进入）：
+    // 归到负载最轻者——保证「取 N 条」语义，除非池已空
+    while (cursor < pool.length) {
+      const s = [...sales].sort((a, b) => (loads[a] + (perSales[a] || 0)) - (loads[b] + (perSales[b] || 0)))[0]
+      const leadId = pool[cursor++]
+      const res = assignOne(leadId, s, batchActor, mode)
+      const gotN = res.ok && res.data ? res.data.assignments.length : 0
+      if (gotN > 0) { perSales[s] = (perSales[s] || 0) + gotN; assigned += gotN }
+      else {
+        const s1 = res.ok && res.data && res.data.skipped.length ? res.data.skipped[0] : null
+        skipped.push({ leadId, code: s1?.code || res.code || 'E999', reason: s1?.reason || res.message || '分配失败' })
+      }
     }
   }
-
-  // 批次审计一行（设计稿屏 3「最近分配记录」，批次号 = '#A'+行号，可追溯到操作人）
+  // 批次审计一行（设计稿屏 3「最近分配记录」，批次号 = '#A'+行号，可追溯到操作人）。
+  // 业务事实记录先于任何辅助状态写入：游标写盘失败绝不能让审计缺席。
   let batchNo = ''
   if (assigned > 0) {
     const actor = String(input?.actor || '').trim() || getActorLabel() || '分配员'
@@ -872,16 +960,33 @@ export function assignBatchLeads(input: AssignBatchInput): AssignBatchResult {
     ))
     batchNo = `#A${Number(auditId)}`
   }
+  // 游标落盘（辅助公平状态，**不是** assignment 提交成败的判定依据；2026-09-20 修复）：
+  // 排在批次审计之后、包 try/catch 降级——ConfigService.set 抛错（磁盘满/配置损坏等）只记
+  // warning（不含任何客户数据），本批已提交的分配照常返回 ok:true、assigned/perSales/skipped
+  // 如实上报、审计已落地；游标保持旧值，下一批从旧位继续（≤一批的份额漂移，长期仍自愈均衡）。
+  // 持久化值 = 批末真实指针所指销售（状态机里成功才移动指针）；assigned = 0（全部失败/整批
+  // 跳过）不写游标。仅 round_robin（rrFinalPtr 非 null）；weight/load 不读写游标。
+  if (rrFinalPtr !== null && assigned > 0) {
+    try {
+      persistRoundRobinCursor(sales[rrFinalPtr])
+    } catch (e) {
+      console.warn('[CRM] round_robin 游标写盘失败（辅助状态降级，不影响本批已提交分配）:', e instanceof Error ? e.message : e)
+    }
+  }
   return { ok: true, data: { batchNo, assigned, skipped, perSales, mode } }
 }
 
 /**
  * 份额分配（assignBatchLeads 与前端预览共用口径，屏 3 预览表 = 后端执行的逐条一致）：
- *   weight：按权重占比最大余数法分配（缺省等权；总量 = count）；
- *   round_robin：轮询均分（余数给名单前几位）；
+ *   weight：按权重占比最大余数法分配（缺省等权）；
+ *   round_robin：从 options.roundRobinStartIndex（跨批次游标，缺省 0）起循环均分——
+ *     实现委托 shared/leadRoundRobin.roundRobinPlan（唯一轮询实现，前端 distributePreview 同源，
+ *     防两套算法口径漂移）；
  *   load：负载均衡——逐条给「在手 + 本批已得」最少者。
+ * options 只影响 round_robin；weight/load 忽略（行为不变）。
  */
-export function buildDistribution(mode: 'weight' | 'round_robin' | 'load', count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>): Record<string, number> {
+export interface DistributionOptions { roundRobinStartIndex?: number }
+export function buildDistribution(mode: 'weight' | 'round_robin' | 'load', count: number, sales: string[], weights: Record<string, number>, loads: Record<string, number>, options?: DistributionOptions): Record<string, number> {
   const plan: Record<string, number> = {}
   for (const s of sales) plan[s] = 0
   if (count <= 0 || !sales.length) return plan
@@ -899,7 +1004,8 @@ export function buildDistribution(mode: 'weight' | 'round_robin' | 'load', count
     while (used < count && remainders.length) { remainders[ri % remainders.length].base++; used++; ri++ }
     for (const r of remainders) plan[r.s] = r.base
   } else if (mode === 'round_robin') {
-    for (let i = 0; i < count; i++) plan[sales[i % sales.length]]++
+    // 从游标起点循环计数（shared/leadRoundRobin 唯一实现；起点由调用方按持久化游标解析）
+    Object.assign(plan, roundRobinPlan(count, sales, options?.roundRobinStartIndex ?? 0))
   } else {
     // load：模拟逐条投放给「在手 + 本批已得」最少者
     const cur: Record<string, number> = {}
@@ -911,4 +1017,13 @@ export function buildDistribution(mode: 'weight' | 'round_robin' | 'load', count
     }
   }
   return plan
+}
+
+/**
+ * round_robin 游标只读查询（crm:assignment:roundRobinNext，API-CONTRACT §1.14）：
+ * 最小只读信息 = 「下一位销售姓名」；空串 = 名单第一位。前端据此与本批名单算出预览起点，
+ * 与后端 assignBatchLeads 同一 roundRobinStartIndex 口径。不提供任何写路径。
+ */
+export function getRoundRobinCursor(): { ok: boolean; data: { next: string } } {
+  return { ok: true, data: { next: readRoundRobinCursor() } }
 }

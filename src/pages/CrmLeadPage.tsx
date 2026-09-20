@@ -19,6 +19,8 @@ import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
 import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, identityLikeFromIpc, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { roundRobinStartIndex } from '../../shared/leadRoundRobin'
+import { createCoalescedScheduler } from '../utils/coalescedScheduler'
 import { parseJsonObject, parseJsonArray } from '../../shared/safeJson'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
@@ -39,6 +41,8 @@ const FC_TYPE_LABEL: Record<string, string> = { dealer: '疑似经销商', end_u
 const FC_FIELD_LABEL: Record<string, string> = { company: '公司', industry: '行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间', needs: '需求' }
 const FC_GAP_LABEL: Record<string, string> = { customer_type: '客户类型', company_industry: '公司/行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间' }
 const PAGE_SIZE = 50
+/** 失效事件 → fetchAll 的固定窗口合并时长（主进程总线已合并 150ms 一轮；本页最大额外延迟 = 本值） */
+const INVALIDATION_REFRESH_COALESCE_MS = 300
 /** SLA2「查看依据」出口状态（主进程 crmSla2EvidenceService 已脱敏/裁剪，前端只展示） */
 type Sla2EvidenceResult = Awaited<ReturnType<typeof window.electronAPI.crm.sla2Evidence>>
 
@@ -179,6 +183,8 @@ export default function CrmLeadPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [ownerChip, setOwnerChip] = useState('未分配')
   const [salesList, setSalesList] = useState<string[]>([])
+  // round_robin 跨批次游标（crm:assignment:roundRobinNext 只读）：预览起点与后端同口径
+  const [rrNext, setRrNext] = useState('')
   const [ownerByLead, setOwnerByLead] = useState<Record<number, LeadOwnerInfo>>({})
   const [showAssign, setShowAssign] = useState(false)
   const [assignName, setAssignName] = useState('')
@@ -277,12 +283,14 @@ export default function CrmLeadPage() {
   }
 
   const fetchAll = async () => {
-    const [ls, ov, sales, asg, idt] = await Promise.all([
+    const [ls, ov, sales, asg, idt, rr] = await Promise.all([
       window.electronAPI.crm.leadList({ limit: 10000 }),
       window.electronAPI.crm.leadOverview(),
       getCrmSalesList(),
       window.electronAPI.crm.assignmentList({ pageSize: 100000 }),
-      window.electronAPI.identity.get()
+      window.electronAPI.identity.get(),
+      // round_robin 跨批次游标（只读最小信息）：预览起点与后端 assignBatchLeads 同口径
+      window.electronAPI.crm.assignmentRoundRobinNext().catch(() => null)
     ])
     // 撞客一期：重复组徽标匹配（失败不影响列表装载）
     try { setDupMatches(await window.electronAPI.crm.dupGroupList()) } catch { /* ignore */ }
@@ -290,6 +298,7 @@ export default function CrmLeadPage() {
     setOverview(ov || null)
     setSalesList(sales)
     setIdentity(identityLikeFromIpc(idt))
+    setRrNext(rr?.data?.next || '')
     // 当前归属 = 该 lead 最新一条有效分配行（宪法 §1.3）；含 assignmentId 供调派/回收用
     setOwnerByLead(buildOwnerMap(asg?.data?.rows || []))
     setAsgRows((asg?.data?.rows || []) as unknown as Array<Record<string, unknown>>)
@@ -300,6 +309,21 @@ export default function CrmLeadPage() {
   useEffect(() => { void fetchAll() }, [])
   // 切微信号 = 换库（§2.40）：账号切换后重查
   useWxidRefresh(() => { void fetchAll() })
+  // 分配数据失效事件（SLA 定时回收 / LAN、中央下行 assign/transfer/recycle / 其他主进程或窗口写入）：
+  // 固定窗口 300ms 合并后重拉（2026-09-20：主进程总线已按 150ms 固定窗口合并过一轮；本页再合并
+  // 同语义——首个事件启动窗口、窗口内只合并不重置、到期必然 fetchAll，持续事件流下最大额外延迟
+  // = 300ms，不会像尾随 debounce 那样被连续事件无限推迟。不形成循环：fetchAll 零写入，不产生新事件）。
+  // 组件卸载必须移除监听并 dispose 窗口。
+  const fetchAllRef = useRef(fetchAll)
+  fetchAllRef.current = fetchAll
+  useEffect(() => {
+    const scheduler = createCoalescedScheduler(INVALIDATION_REFRESH_COALESCE_MS, () => { void fetchAllRef.current() })
+    const off = window.electronAPI.crm.onAssignmentInvalidated(() => scheduler.schedule())
+    return () => {
+      off()
+      scheduler.dispose()
+    }
+  }, [])
   // 来源预设与设置页联动
   useEffect(() => {
     void getCrmLeadSourcePreset().then((sources) => {
@@ -434,9 +458,11 @@ export default function CrmLeadPage() {
   const curPage = Math.min(page, totalPages)
   const pageItems = poolFiltered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
 
-  // 屏 3 预览（纯前端，与后端 buildDistribution 同口径）
+  // 屏 3 预览（纯前端，与后端 buildDistribution 同口径；round_robin 起点与后端同一游标 +
+  // 同一 shared/leadRoundRobin 纯函数，批量成功后 fetchAll 刷新 rrNext → 预览自动跟随）
   const poolAvailable = poolCounts.pool
-  const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable])
+  const rrStartIdx = useMemo(() => roundRobinStartIndex(salesList, rrNext), [salesList, rrNext])
+  const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads, rrStartIdx), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable, rrStartIdx])
   // 屏 6 左 待改派列表：最新分配行 recycled 的线索
   const reassignLeads = useMemo(() => leads.filter((l) => String(latestAsg[l.id]?.status || '') === 'recycled'), [leads, latestAsg])
   // 屏 4 销售资源卡三分段（buildMyCards 纯函数）：待跟进/跟进中按当前有效权属，已回收按最新分配行判——

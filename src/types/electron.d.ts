@@ -4,6 +4,17 @@ import type { OpportunityAnalysisResult } from '../../shared/opportunitySignals'
 // 分配模式的唯一来源（与 electron/services/crmAssignmentService.ts 同源）
 import type { AssignmentMode } from '../../shared/centralDownCommand'
 
+/**
+ * CRM 分配数据失效事件载荷（'crm:assignment:invalidated'，主进程 → 渲染层只读广播）。
+ * 最小载荷纪律：只有 action（assign/claim/recycle/transfer，去抖合并多动作用逗号连接）、
+ * 发生归属变化的 leadIds、时刻；绝不携带联系方式、聊天内容或任何客户敏感字段。
+ */
+export interface CrmAssignmentInvalidation {
+  action: string
+  leadIds: number[]
+  at: number
+}
+
 // ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
 export interface HermesEvidenceItem {
   label: string
@@ -2152,6 +2163,11 @@ export interface ElectronAPI {
     // 批量分配（设计稿屏 3 分配控制台）：批次号 = '#A'+批次审计行号
     // 批量分配只接受三种自动模式；显式非法值一律 E101，不再静默回退 weight
     assignmentAssignBatch: (req: { count: number; mode?: Exclude<AssignmentMode, 'manual'>; weights?: Record<string, number>; actor?: string }) => Promise<{ ok: boolean; data?: { batchNo: string; assigned: number; skipped: Array<{ leadId: number; code: string; reason: string }>; perSales: Record<string, number>; mode: string }; code?: string; message?: string }>
+    // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名，空串=名单第一位；无写路径）
+    assignmentRoundRobinNext: () => Promise<{ ok: boolean; data?: { next: string } }>
+    // 分配数据失效事件（SLA 回收 / LAN、中央下行 / 其他主进程或窗口写入后广播；载荷只含 action + leadIds + at，
+    // 不含联系方式/聊天内容等敏感字段）。返回清理函数，组件卸载必须调用以免监听器泄漏。
+    onAssignmentInvalidated: (callback: (payload: CrmAssignmentInvalidation) => void) => () => void
     // 加好友判定（PRD 1.4a 手动路，契约 crm:identity:bind）：写 customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => Promise<{ ok: boolean; data?: { identityId: number; customerId: number | null; alreadyBound: boolean; slaStopped: boolean }; code?: string; message?: string }>
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论统一写入口径（assignment.sla2_scan_ref + 审计）
