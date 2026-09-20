@@ -602,6 +602,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generate: (year: number) => ipcRenderer.invoke('annualReview:generate', { year }),
     getReport: (year: number) => ipcRenderer.invoke('annualReview:getReport', { year }),
     cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', { taskId }),
+    export: (year: number, format: 'markdown' | 'csv') => ipcRenderer.invoke('annualReview:export', { year, format }),
     onProgress: (callback: (payload: {
       taskId: string
       year: number

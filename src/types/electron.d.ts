@@ -1838,6 +1838,13 @@ export interface ElectronAPI {
       success: boolean
       error?: { code: string; message: string }
     }>
+    /** 导出 Markdown/CSV：弹出目录对话框授权后独占写（不覆盖已有文件） */
+    export: (year: number, format: 'markdown' | 'csv') => Promise<{
+      success: boolean
+      dir?: string
+      files?: string[]
+      error?: { code: string; message: string }
+    }>
     onProgress: (callback: (payload: {
       taskId: string
       year: number

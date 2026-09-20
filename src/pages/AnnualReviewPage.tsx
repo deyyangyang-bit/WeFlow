@@ -12,8 +12,8 @@
  *     本组件只做状态 → 视图映射，不含第二套业务逻辑。
  *   - 不接 AI、不实现导出（后续阶段）、不触碰旧年度报告页面。
  */
-import { useEffect, useRef, useSyncExternalStore } from 'react'
-import { AlertCircle, Ban, CalendarClock, RefreshCw, XCircle } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertCircle, Ban, CalendarClock, Download, RefreshCw, XCircle } from 'lucide-react'
 import {
   createAnnualReviewController, createIpcAnnualReviewApi,
   buildSummaryCells, dataRangeLabel, funnelKindLabel, identityLabelSafe, scopeRangeLabel, yearLabel,
@@ -109,6 +109,23 @@ export default function AnnualReviewPage() {
 
   const { years, selectedYear, generation, phase } = state
 
+  // 导出（S6）：经安全 IPC → 主进程弹出目录对话框授权 → 独占写（不覆盖已有文件）
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const onExport = useCallback(async (format: 'markdown' | 'csv') => {
+    if (selectedYear === null) return
+    setExporting(true)
+    setExportError(null)
+    try {
+      const result = await window.electronAPI.annualReview.export(selectedYear, format)
+      if (!result.success) setExportError(result.error?.message ?? '导出失败')
+    } catch {
+      setExportError('导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }, [selectedYear])
+
   const onYearChange = (year: number): void => { controller.selectYear(year) }
 
   return (
@@ -162,8 +179,22 @@ export default function AnnualReviewPage() {
               <RefreshCw size={14} /> {phase === 'failed' || phase === 'cancelled' ? '重新生成' : '生成报告'}
             </button>
           )}
+          {phase === 'done' && state.report && (
+            <>
+              <button className="btn btn--secondary" onClick={() => void onExport('markdown')} disabled={exporting}>
+                <Download size={14} /> 导出 Markdown
+              </button>
+              <button className="btn btn--secondary" onClick={() => void onExport('csv')} disabled={exporting}>
+                <Download size={14} /> 导出 CSV
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {exportError && (
+        <div className="ar-sync-note" role="alert">{exportError}</div>
+      )}
 
       {/* ── 阶段屏 ── */}
       {phase === 'loading' && (

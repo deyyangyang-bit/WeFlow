@@ -76,6 +76,8 @@ import { AnnualReviewService, type AnnualReviewAccountContext } from './services
 import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
 import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
 import { validateAnnualReviewYearInput } from './services/annualReviewReport'
+import { exportTextFile } from './services/safeTextFileExport'
+import { buildAnnualReviewMarkdown, buildAnnualReviewCsv } from './services/annualReviewExportContent'
 import { onAssignmentInvalidated } from './services/assignmentInvalidationBus'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
@@ -4233,6 +4235,52 @@ function registerIpcHandlers() {
       return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
     }
     return annualReviewService.cancel(taskId)
+  })
+
+  // 年度经营复盘导出（S6）：Markdown/CSV 经 safeTextFileExport + exportPathAuthorizer。
+  // 每次导出都弹出原生目录对话框 → 目录即席授权（不持久化）→ assertAllowed 后独占写。
+  ipcMain.handle('annualReview:export', async (_, payload: unknown) => {
+    try {
+      const format = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? (payload as { format?: unknown }).format
+        : undefined
+      const yearRaw = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? (payload as { year?: unknown }).year
+        : undefined
+      if (format !== 'markdown' && format !== 'csv') {
+        return { success: false, error: { code: 'invalid_format', message: '导出格式仅支持 markdown 或 csv' } }
+      }
+      const validation = validateAnnualReviewYearInput(yearRaw, Date.now())
+      if (!validation.ok) {
+        return { success: false, error: { code: validation.code, message: validation.message } }
+      }
+      const lookup = annualReviewService.getReport(validation.year)
+      if (!lookup.success || lookup.cache !== 'hit' || !lookup.report) {
+        return { success: false, error: { code: 'report_not_found', message: '该年度尚无已生成的报告，请先生成' } }
+      }
+      const report = lookup.report
+      const content = format === 'markdown' ? buildAnnualReviewMarkdown(report) : buildAnnualReviewCsv(report)
+      const { dialog } = await import('electron')
+      const picked = await dialog.showOpenDialog({
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: '导出到此目录'
+      })
+      if (picked.canceled || picked.filePaths.length === 0) {
+        return { success: false, error: { code: 'cancelled', message: '已取消导出' } }
+      }
+      const dir = picked.filePaths[0]
+      exportPathAuthorizer.grant(dir, 'dir') // 目录即席授权（本次会话内有效）
+      const ext = format === 'markdown' ? 'md' : 'csv'
+      const fileName = `年度经营复盘-${report.year === 0 ? '历史以来' : report.year}-${new Date(report.generatedAt).toISOString().slice(0, 10)}.${ext}`
+      const result = exportTextFile({ dir, fileName, content })
+      if (!result.ok) {
+        return { success: false, error: { code: result.code, message: result.message } }
+      }
+      return { success: true, dir, files: [result.path] }
+    } catch (e) {
+      const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
+      return { success: false, error: { code, message: e instanceof Error ? e.message : '导出失败' } }
+    }
   })
 
   ipcMain.handle('annualReport:getAvailableYears', async () => {
