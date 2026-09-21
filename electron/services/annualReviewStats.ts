@@ -409,6 +409,147 @@ export function buildExclusionSet(exclusions: AnnualReviewExclusions | undefined
   return set
 }
 
+// ─── 唯一总体/事实选择器（A3/D 组/dataRange 共用；禁止第二套规范化规则） ──────
+
+/**
+ * 有效 CRM 会话总体（唯一选择器）：仅来源 account.session_id——去空、normSession
+ * 规范化、去重，排除群聊/公众号/系统账号（结构性）与手动/内部名单。A3 boundSessions、
+ * D1/D2/D3 消息总体、D7 与 dataRange 必须共用本函数。
+ */
+export function selectCrmBoundSessions(
+  accounts: ReadonlyArray<AnnualReviewAccountFact> | undefined,
+  exclusions?: AnnualReviewExclusions
+): string[] {
+  const exclusionSet = buildExclusionSet(exclusions)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const acc of accounts ?? []) {
+    const sid = normSession(acc.sessionId)
+    if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid) || seen.has(sid)) continue
+    seen.add(sid)
+    out.push(sid)
+  }
+  return out
+}
+
+/**
+ * 每会话最近联系（唯一选择器）：总体内会话取 account.last_contact_at（秒×1000）的
+ * 最大有效值；缺失会话不出现。A3 回退、D7、dataRange 共用。
+ */
+export function selectPerSessionLastContactMs(
+  accounts: ReadonlyArray<AnnualReviewAccountFact> | undefined,
+  exclusions?: AnnualReviewExclusions
+): Map<string, number> {
+  const exclusionSet = buildExclusionSet(exclusions)
+  const bySession = new Map<string, number>()
+  for (const acc of accounts ?? []) {
+    const sid = normSession(acc.sessionId)
+    if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid)) continue
+    const sec = asFinite(acc.lastContactAtSec)
+    if (sec === null || sec <= 0) continue
+    const ms = sec * 1000
+    const prev = bySession.get(sid)
+    if (prev === undefined || ms > prev) bySession.set(sid, ms)
+  }
+  return bySession
+}
+
+export interface AnnualReviewShippedSelection {
+  /** 每合同首次 shipped 事件（合法 contractId + 合法时间；按 (time, eventId) 决胜） */
+  firstShipped: Map<number, { time: number; eventId: number }>
+  contractById: Map<number, AnnualReviewContractFact>
+  /** 无关联合同的 shipped 事件数 */
+  unlinked: number
+  /** 时间缺失的 shipped 事件数 */
+  timeMissing: number
+}
+
+/**
+ * shipped 事实选择器（唯一实现）：A7 首次发货判定与 dataRange 采用事实共用——
+ * 每合同只取全历史第一条 to_status='shipped' 事件（同合同重复事件只有首次可被采用）。
+ */
+export function selectShippedFacts(facts: AnnualReviewFacts): AnnualReviewShippedSelection {
+  const contractById = new Map<number, AnnualReviewContractFact>()
+  for (const c of facts.contracts ?? []) {
+    const id = asFinite(c.id)
+    if (id !== null && id > 0) contractById.set(id, c)
+  }
+  const firstShipped = new Map<number, { time: number; eventId: number }>()
+  let unlinked = 0
+  let timeMissing = 0
+  for (const ev of facts.shippedEvents ?? []) {
+    if (ev.toStatus !== 'shipped') continue
+    const cid = asFinite(ev.contractId)
+    if (cid === null || cid <= 0) {
+      unlinked++
+      continue
+    }
+    const t = asFinite(ev.createdAt)
+    if (t === null) {
+      timeMissing++
+      continue
+    }
+    const eventId = asFinite(ev.id) ?? 0
+    const prev = firstShipped.get(cid)
+    if (!prev || t < prev.time || (t === prev.time && eventId < prev.eventId)) {
+      firstShipped.set(cid, { time: t, eventId })
+    }
+  }
+  return { firstShipped, contractById, unlinked, timeMissing }
+}
+
+/** 事实毫秒时间的合法下界（2000-01-01 本地；排除秒值/纪元脏值，与可用年份 MIN_FACT_YEAR 同源） */
+export const ANNUAL_REVIEW_MIN_FACT_MS = new Date(2000, 0, 1).getTime()
+
+/**
+ * A 组摘要实际采用的事实时间（dataRange 唯一来源，与各指标同一选择函数）：
+ *   - A1 存量：全部现存 account 行的有效 createdAt（< asOf，无下界、无排除）
+ *   - A4/A5/A8：sign_date 签约集合（annualReviewSignedContractsInRange 同一集合）
+ *   - A6：核销计入时间（annualReviewCreditedAllocationsInRange 同一集合，含 legacy 回退后时间）
+ *   - A7：首次 shipped 且合同存在且首条落区间（selectShippedFacts 同一选择）
+ *   - A3 回退（仅消息主口径不可用且非历史年度）：总体内每会话最大 last_contact
+ *     落在区间者（selectPerSessionLastContactMs + inRange，与 A3 判定完全一致）
+ * importedAt 仅参与 A2 导入布尔判定，不产生时间事实。WCDB 消息聚合（A3 主口径）
+ * 无事实时间可用——其覆盖边界由文档声明，不进入 dataRange。
+ */
+export function selectSummaryAdoptedFactTimes(
+  period: AnnualReviewPeriod,
+  facts: AnnualReviewFacts,
+  opts: AnnualReviewComputeOptions = {}
+): number[] {
+  assertValidPeriod(period)
+  const times: number[] = []
+  // 区间内事实（A4/A6/A7/A3 回退）：左闭右开
+  const pushInRange = (raw: unknown): void => {
+    const t = asFinite(raw)
+    if (t === null || t <= 0 || t >= period.asOf || t < ANNUAL_REVIEW_MIN_FACT_MS) return
+    if (period.periodStart !== null && t < period.periodStart) return
+    times.push(t)
+  }
+  // A1 存量事实：无下界（早于 periodStart 的建档仍参与 A1），仅 < asOf
+  const pushStock = (raw: unknown): void => {
+    const t = asFinite(raw)
+    if (t === null || t <= 0 || t >= period.asOf || t < ANNUAL_REVIEW_MIN_FACT_MS) return
+    times.push(t)
+  }
+  for (const acc of facts.accounts ?? []) pushStock(acc.createdAt)
+  for (const c of annualReviewSignedContractsInRange(period, facts.contracts ?? []).signedInRange) pushInRange(c.signDate)
+  for (const row of annualReviewCreditedAllocationsInRange(period, facts.allocations ?? []).rows) pushInRange(row.time)
+  const shipped = selectShippedFacts(facts)
+  for (const [cid, first] of shipped.firstShipped) {
+    if (!inRange(first.time, period.periodStart, period.asOf)) continue
+    if (!shipped.contractById.has(cid)) continue
+    pushInRange(first.time)
+  }
+  const messageStatsAvailable = (opts.messageStats ?? null)?.ok === true
+  if (!messageStatsAvailable && period.scopeKind !== 'historical_year') {
+    for (const ms of selectPerSessionLastContactMs(facts.accounts, opts.exclusions).values()) {
+      if (inRange(ms, period.periodStart, period.asOf)) pushInRange(ms)
+    }
+  }
+  return times
+}
+
 // ─── 口径子计算（S2 segments 复用同一实现，禁止第二套口径） ───────────────────
 
 export interface SignedContractsInRange {
@@ -549,13 +690,8 @@ export function computeAnnualReviewCustomerActiveDetail(
   assertValidPeriod(period)
   const start = period.periodStart
   const end = period.asOf
-  const exclusions = buildExclusionSet(opts.exclusions)
-  const boundSessions = new Set<string>()
-  for (const acc of facts.accounts ?? []) {
-    const sid = normSession(acc.sessionId)
-    if (!sid || isExcluded(exclusions, sid)) continue
-    boundSessions.add(sid)
-  }
+  // 有效 CRM 会话总体 = selectCrmBoundSessions 唯一实现（与 D1/D2/D3/D7/dataRange 同源）
+  const boundSessions = new Set(selectCrmBoundSessions(facts.accounts, opts.exclusions))
   const a3 = new WarningCollector()
   let activeValue: number | null = null
   let activeSessions: string[] | null = null
@@ -591,16 +727,8 @@ export function computeAnnualReviewCustomerActiveDetail(
     // 回退（仅 current_year / all_time）：与主口径同一统计对象——绑定会话去重。
     // 会话最近联系 = 该 session 下各 account.last_contact_at（秒×1000）的最大有效值；
     // 最大值在区间外时，不得因同会话其他 account 较早的区间内值而误计该会话。
-    const lastContactBySession = new Map<string, number>()
-    for (const acc of facts.accounts ?? []) {
-      const sid = normSession(acc.sessionId)
-      if (!sid || isExcluded(exclusions, sid)) continue
-      const sec = asFinite(acc.lastContactAtSec)
-      if (sec === null || sec <= 0) continue
-      const ms = sec * 1000
-      const prev = lastContactBySession.get(sid)
-      if (prev === undefined || ms > prev) lastContactBySession.set(sid, ms)
-    }
+    // 选择逻辑 = selectPerSessionLastContactMs 唯一实现（D7/dataRange 共用）。
+    const lastContactBySession = selectPerSessionLastContactMs(facts.accounts, opts.exclusions)
     if (boundSessions.size === 0) {
       // 没有任何符合条件的绑定会话：0 是真实零，但未经消息主口径验证 → 保守 partial
       a3.add('last_contact_fallback')
@@ -759,38 +887,18 @@ export function computeAnnualReviewSummary(
   // ── A7 shippedCount / shippedAmount ──────────────────────────────────────
   // 事实源 contract_status_history：每合同只取全历史第一条 to_status='shipped' 事件，
   // 再判该首条是否落在区间（范围外首条 + 范围内重复事件仍不计）；count/amount 同一集合。
+  // 选择逻辑 = selectShippedFacts 唯一实现（dataRange 采用事实共用）。
   const a7 = new WarningCollector()
-  const contractById = new Map<number, AnnualReviewContractFact>()
-  for (const c of contracts) {
-    const id = asFinite(c.id)
-    if (id !== null && id > 0) contractById.set(id, c)
-  }
-  const firstShipped = new Map<number, { t: number; eventId: number }>()
-  let shippedUnlinked = 0
-  let shippedTimeMissing = 0
-  for (const ev of shippedEvents) {
-    if (ev.toStatus !== 'shipped') continue
-    const cid = asFinite(ev.contractId)
-    if (cid === null || cid <= 0) {
-      shippedUnlinked++
-      continue
-    }
-    const t = asFinite(ev.createdAt)
-    if (t === null) {
-      shippedTimeMissing++
-      continue
-    }
-    const eventId = asFinite(ev.id) ?? 0
-    const prev = firstShipped.get(cid)
-    if (!prev || t < prev.t || (t === prev.t && eventId < prev.eventId)) {
-      firstShipped.set(cid, { t, eventId })
-    }
-  }
+  const shippedSel = selectShippedFacts(facts)
+  const contractById = shippedSel.contractById
+  const firstShipped = shippedSel.firstShipped
+  let shippedUnlinked = shippedSel.unlinked
+  let shippedTimeMissing = shippedSel.timeMissing
   let shippedCount = 0
   const shippedAmounts: number[] = []
   let shippedAmountInvalid = 0
   for (const [cid, first] of firstShipped) {
-    if (!inRange(first.t, start, end)) continue
+    if (!inRange(first.time, start, end)) continue
     const contract = contractById.get(cid)
     if (!contract) {
       shippedUnlinked++
@@ -822,10 +930,6 @@ export function computeAnnualReviewSummary(
 }
 
 /** 排除判定：结构性（群聊/公众号/系统账号）∪ 名单（手动/内部） */
-function isExcluded(exclusions: Set<string>, sid: string): boolean {
-  return isStructurallyExcluded(sid) || exclusions.has(sid)
-}
-
 /** 消息收发计数清洗：非法（负数/非有限）→ null（按 0 计并告警） */
 function sanitizeCount(v: unknown): number | null {
   const n = asFinite(v)

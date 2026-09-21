@@ -363,12 +363,23 @@ function groupIntentEventsBySession(
 
 // ─── B1 客户阶段分布 ─────────────────────────────────────────────────────────
 
+/** 分组事件 → 实际参与重放的事件时间（升序；dataRange 采用事实，与输入顺序无关） */
+function groupedEventTimes(bySession: Map<string, SortedStageEvent[]>): number[] {
+  const out: number[] = []
+  for (const list of bySession.values()) {
+    for (const ev of list) out.push(ev.t)
+  }
+  return out.sort((a, b) => a - b)
+}
+
 export interface CustomerStageDistributionResult {
   kind: 'current_snapshot' | 'historical_reconstruction'
   /** unavailable（覆盖率不足）时为 null；其余恒 6 桶 */
   distribution: FunnelDistribution | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（历史重放事件；当前快照不用时间事实 → 空） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -410,7 +421,8 @@ export function computeAnnualReviewCustomerStageDistribution(
           source: 'salesdb.intent_tag_log', status: 'partial', rows: 0,
           reasonCodes: reasonCodesOf(w), exactCoverage: false, coverageRatio: null
         },
-        warnings: w
+        warnings: w,
+        adoptedFactTimes: groupedEventTimes(bySession)
       }
     }
     const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
@@ -436,7 +448,8 @@ export function computeAnnualReviewCustomerStageDistribution(
           coverageFrom: earliest ?? undefined, coverageTo: asOf, rows: total,
           reasonCodes: reasonCodesOf(w), exactCoverage: true, coverageRatio: covered / total
         },
-        warnings: w
+        warnings: w,
+        adoptedFactTimes: groupedEventTimes(bySession)
       }
     }
     addSeg(warnings, 'history_not_reconstructable')
@@ -450,7 +463,8 @@ export function computeAnnualReviewCustomerStageDistribution(
         coverageTo: asOf, rows: total,
         reasonCodes: reasonCodesOf(w), exactCoverage: true, coverageRatio: covered / total
       },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: [] // unavailable：结果未产出，事实不进入 dataRange
     }
   }
 
@@ -470,7 +484,8 @@ export function computeAnnualReviewCustomerStageDistribution(
       source: 'salesdb.customer_profile', status: 'snapshot_only',
       rows: populationArr.length, reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: []
   }
 }
 
@@ -481,6 +496,8 @@ export interface OpportunityStageDistributionResult {
   distribution: FunnelDistribution | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（历史重放：分母商机 createdAt + 状态事件；当前快照不用时间事实 → 空） */
+  adoptedFactTimes: number[]
 }
 
 interface SortedOppEvent {
@@ -558,6 +575,17 @@ function groupOpportunityEvents(
   return { byOpp, invalidTime, invalidStage, unlinked, earliest }
 }
 
+/** 分组商机事件 → 实际确定历史状态的事件时间（stateBearing；dataRange 采用事实） */
+function stateBearingEventTimes(byOpp: Map<number, SortedOppEvent[]>): number[] {
+  const out: number[] = []
+  for (const list of byOpp.values()) {
+    for (const ev of list) {
+      if (ev.stateBearing) out.push(ev.t)
+    }
+  }
+  return out.sort((a, b) => a - b)
+}
+
 /**
  * 商机事件重放（截至 asOf 的状态机）：stage_change / created 仅在 stage 可识别时更新阶段
  * （事件 stage 经 shared/salesStage 归一化；不可识别事件不更新状态）；won / lost 进入终态
@@ -614,6 +642,11 @@ export function computeAnnualReviewOpportunityStageDistribution(
       if (created < asOf) denominator.push(o)
     }
     if (createdAtMissing > 0) addSeg(warnings, 'opportunity_created_at_missing', createdAtMissing)
+    const adoptedFactTimes: number[] = []
+    for (const o of denominator) {
+      const created = asFinite(o.createdAt)
+      if (created !== null) adoptedFactTimes.push(created)
+    }
     const oppIds = new Set<number>()
     for (const o of denominator) oppIds.add(o.id)
     const { byOpp, invalidTime, invalidStage, unlinked, earliest } = groupOpportunityEvents(
@@ -633,7 +666,8 @@ export function computeAnnualReviewOpportunityStageDistribution(
           source: 'crmdb.opportunity_event', status: 'partial', rows: 0,
           reasonCodes: reasonCodesOf(w), exactCoverage: false, coverageRatio: null
         },
-        warnings: w
+        warnings: w,
+        adoptedFactTimes: [...adoptedFactTimes, ...stateBearingEventTimes(byOpp)].sort((a, b) => a - b)
       }
     }
     const counts = new Array<number>(FUNNEL_ORDER.length).fill(0)
@@ -665,7 +699,8 @@ export function computeAnnualReviewOpportunityStageDistribution(
           coverageFrom: earliest ?? undefined, coverageTo: asOf, rows: total,
           reasonCodes: reasonCodesOf(w), exactCoverage: true, coverageRatio: covered / total
         },
-        warnings: w
+        warnings: w,
+        adoptedFactTimes: [...adoptedFactTimes, ...stateBearingEventTimes(byOpp)].sort((a, b) => a - b)
       }
     }
     addSeg(warnings, 'history_not_reconstructable')
@@ -679,7 +714,8 @@ export function computeAnnualReviewOpportunityStageDistribution(
         coverageTo: asOf, rows: total,
         reasonCodes: reasonCodesOf(w), exactCoverage: true, coverageRatio: covered / total
       },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: [] // unavailable：结果未产出，事实不进入 dataRange
     }
   }
 
@@ -699,7 +735,8 @@ export function computeAnnualReviewOpportunityStageDistribution(
       source: 'crmdb.opportunity', status: 'snapshot_only',
       rows: opportunities.length, reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: []
   }
 }
 
@@ -710,6 +747,8 @@ export interface StageFlowResult {
   distribution: FunnelDistribution
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（区间内、总体内、stage 可识别的事件） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -754,7 +793,8 @@ export function computeAnnualReviewStageFlow(
       exactCoverage: total > 0 ? true : false,
       coverageRatio: total > 0 ? covered / total : null
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: groupedEventTimes(bySession)
   }
 }
 
@@ -784,6 +824,8 @@ export interface StuckCustomersResult {
   value: number | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（被检画像的 lastContactAtMs） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -804,7 +846,8 @@ export function computeAnnualReviewStuckCustomers(
     return {
       value: null,
       coverage: { source: 'salesdb.customer_profile', status: 'unavailable', reasonCodes: reasonCodesOf(w) },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: []
     }
   }
   const exclusionSet = buildExclusionSet(opts.exclusions)
@@ -812,6 +855,7 @@ export function computeAnnualReviewStuckCustomers(
   let stalled = 0
   let missingLc = 0
   let examined = 0
+  const adoptedFactTimes: number[] = []
   for (const s of reps) {
     if (s.bucket !== '了解' && s.bucket !== '比价' && s.bucket !== '决策') continue
     examined++
@@ -819,6 +863,7 @@ export function computeAnnualReviewStuckCustomers(
       missingLc++
       continue
     }
+    adoptedFactTimes.push(s.lastContactAtMs)
     if (period.asOf - s.lastContactAtMs > 30 * DAY_MS) stalled++
   }
   warnings.add('last_contact_fallback')
@@ -830,7 +875,8 @@ export function computeAnnualReviewStuckCustomers(
       source: 'salesdb.customer_profile', status: 'partial', rows: examined,
       reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: [...adoptedFactTimes].sort((a, b) => a - b)
   }
 }
 
@@ -844,6 +890,8 @@ export interface LostBreakdownResult {
   opportunityReasons: Array<{ reason: string; count: number }> | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（流失重放事件 + 商机 lost 事件时间） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -865,6 +913,18 @@ function lostPreviousStageBucket(evs: SortedStageEvent[] | undefined): FunnelSta
     if (canonical !== 'lost') return funnelBucket(canonical)
   }
   return '未知'
+}
+
+/** 商机流失事件的采用时间（event_type=lost、时间合法且 < asOf；与流失原因统计同一选择） */
+function adoptedLostEventTimes(events: AnnualReviewOpportunityEventFact[], asOf: number): number[] {
+  const out: number[] = []
+  for (const ev of events) {
+    if (ev.eventType !== 'lost') continue
+    const t = asFinite(ev.createdAt)
+    if (t === null || t >= asOf) continue
+    out.push(t)
+  }
+  return out.sort((a, b) => a - b)
 }
 
 /** 商机流失原因：event_type=lost 且 created_at < asOf 的事件 detail；空白 → 「未填写原因」 */
@@ -914,6 +974,7 @@ export function computeAnnualReviewLostBreakdown(
   const populationArr = segmentSessionPopulation(inputs.facts.accounts, exclusionSet)
   const population = new Set(populationArr)
   const opportunityReasons = opportunityLostReasons(inputs.crm.opportunityEvents ?? [], asOf, warnings)
+  const lostEventTimes = adoptedLostEventTimes(inputs.crm.opportunityEvents ?? [], asOf)
 
   if (period.scopeKind === 'historical_year') {
     const { bySession, invalidTime, invalidStage, earliest } = groupIntentEventsBySession(
@@ -944,7 +1005,8 @@ export function computeAnnualReviewLostBreakdown(
           coverageFrom: earliest ?? undefined, coverageTo: asOf, rows: total,
           reasonCodes: reasonCodesOf(w), exactCoverage: true, coverageRatio: bySession.size / total
         },
-        warnings: w
+        warnings: w,
+        adoptedFactTimes: [] // unavailable：结果未产出，事实不进入 dataRange
       }
     }
     addSeg(warnings, 'history_reconstruction_not_complete')
@@ -962,7 +1024,8 @@ export function computeAnnualReviewLostBreakdown(
         exactCoverage: total > 0 ? true : false,
         coverageRatio: total > 0 ? bySession.size / total : null
       },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: [...groupedEventTimes(bySession), ...lostEventTimes]
     }
   }
 
@@ -991,7 +1054,8 @@ export function computeAnnualReviewLostBreakdown(
       source: 'salesdb.customer_profile', status: 'snapshot_only',
       rows: lostSessions, reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: [...groupedEventTimes(bySession), ...lostEventTimes]
   }
 }
 
@@ -1310,6 +1374,8 @@ export interface SilentCustomersResult {
   value: SilentCustomerRow[] | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（被检画像 lastContactAtMs） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -1329,14 +1395,17 @@ export function computeAnnualReviewSilentCustomers(
     return {
       value: null,
       coverage: { source: 'salesdb.customer_profile', status: 'unavailable', reasonCodes: reasonCodesOf(w) },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: []
     }
   }
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const reps = repSessions(representativeProfilesBySession(inputs.sales.profiles, exclusionSet))
   const rows: SilentCustomerRow[] = []
+  const adoptedFactTimes: number[] = []
   for (const s of reps) {
     if (s.lastContactAtMs === null) continue
+    adoptedFactTimes.push(s.lastContactAtMs)
     if (period.asOf - s.lastContactAtMs > 90 * DAY_MS) rows.push({ sessionId: s.sessionId, lastContactAtMs: s.lastContactAtMs })
   }
   rows.sort((a, b) => a.lastContactAtMs - b.lastContactAtMs || cmpString(a.sessionId, b.sessionId))
@@ -1348,7 +1417,8 @@ export function computeAnnualReviewSilentCustomers(
       source: 'salesdb.customer_profile', status: 'partial', rows: rows.length,
       reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: [...adoptedFactTimes].sort((a, b) => a - b)
   }
 }
 
@@ -1363,6 +1433,8 @@ export interface RiskCustomersResult {
   value: RiskCustomerRow[] | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（被检画像 lastContactAtMs） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -1382,13 +1454,15 @@ export function computeAnnualReviewRiskCustomers(
     return {
       value: null,
       coverage: { source: 'salesdb.customer_profile', status: 'unavailable', reasonCodes: reasonCodesOf(w) },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: []
     }
   }
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const reps = representativeProfilesBySession(inputs.sales.profiles, exclusionSet)
   const rows: RiskCustomerRow[] = []
   let missingLc = 0
+  const adoptedFactTimes: number[] = []
   for (const [sessionId, rep] of reps) {
     const bucket = stageToFunnel(rep.stageRaw)
     if (bucket !== '了解' && bucket !== '比价' && bucket !== '决策') continue
@@ -1396,6 +1470,7 @@ export function computeAnnualReviewRiskCustomers(
       missingLc++
       continue
     }
+    adoptedFactTimes.push(rep.lastContactAtMs)
     if (period.asOf - rep.lastContactAtMs > 60 * DAY_MS) {
       rows.push({ sessionId, stage: normalizeStage(rep.stageRaw), lastContactAtMs: rep.lastContactAtMs })
     }
@@ -1410,7 +1485,8 @@ export function computeAnnualReviewRiskCustomers(
       source: 'salesdb.customer_profile', status: 'partial', rows: rows.length,
       reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: [...adoptedFactTimes].sort((a, b) => a - b)
   }
 }
 
@@ -1423,6 +1499,8 @@ export interface PriorityCustomersResult {
   value: PriorityCustomerRow[] | null
   coverage: AnnualReviewCoverage
   warnings: MetricWarning[]
+  /** 本指标实际采用的事实时间（被检画像 lastContactAtMs） */
+  adoptedFactTimes: number[]
 }
 
 /**
@@ -1443,15 +1521,18 @@ export function computeAnnualReviewCurrentPriorityCustomers(
     return {
       value: null,
       coverage: { source: 'salesdb.customer_profile', status: 'unavailable', reasonCodes: reasonCodesOf(w) },
-      warnings: w
+      warnings: w,
+      adoptedFactTimes: []
     }
   }
   const exclusionSet = buildExclusionSet(opts.exclusions)
   const reps = repSessions(representativeProfilesBySession(inputs.sales.profiles, exclusionSet))
   const rows: PriorityCustomerRow[] = []
+  const adoptedFactTimes: number[] = []
   for (const s of reps) {
     if (s.bucket !== '决策') continue
     if (s.lastContactAtMs === null) continue
+    adoptedFactTimes.push(s.lastContactAtMs)
     if (s.lastContactAtMs >= period.asOf - 30 * DAY_MS && s.lastContactAtMs < period.asOf) {
       rows.push({ sessionId: s.sessionId, lastContactAtMs: s.lastContactAtMs })
     }
@@ -1465,7 +1546,8 @@ export function computeAnnualReviewCurrentPriorityCustomers(
       source: 'salesdb.customer_profile', status: 'partial', rows: rows.length,
       reasonCodes: reasonCodesOf(w)
     },
-    warnings: w
+    warnings: w,
+    adoptedFactTimes: [...adoptedFactTimes].sort((a, b) => a - b)
   }
 }
 

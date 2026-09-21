@@ -405,13 +405,15 @@ salesAssignment, sourceSummary }`。每区块的 value/state/warnings/coverage
 月度趋势单序列/D7 长期未联系名单，S5 已实现）与 `salesAssignment`（E 组：E1 分项分配事实
 + sync 缺口检测/E3 有效跟进/E4 合同贡献/E5 核销贡献；E2/E6/E7 移出 V1，初始分配与移交
 **分项展示不相加**；sync 缺口 → partial + exactCoverage=false + coverageRatio=null，禁止
-覆盖率百分比）为真实区块。补全字段（规格 §7.2）：`dataRange = { from, to }` = **本次报告实际
-输入并参与计算的有效事实时间范围**（各指标参与窗口的并集：存量类无下界——account.createdAt
-< asOf，A1 等存量事实不因早于 periodStart 被排除；区间类按时间契约——signDate/核销计入时间/
-shipped 事件/A3 回退 last_contact ∈ [periodStart, asOf)；重放类 < asOf——intent 事件、商机、
-商机事件；B6/C6-C8 的画像 last_contact 仅 current/all_time 参与；account.importedAt 仅参与
-导入布尔判定、不作为事实时间进入范围）。毫秒级合理值，非法/秒/毫秒脏值不进入；空数据没有
-真实范围 → `{from:null,to:null}`。`completeness = { overall, blocks }`（四态聚合，优先级
+覆盖率百分比）为真实区块。补全字段（规格 §7.2）：`dataRange = { from, to }` = **各指标实际采用事实时间的并集**
+（唯一来源：A 组由 stats 的 selectSummaryAdoptedFactTimes 与指标同源选择；B/C 组由各纯统计
+结果返回的 adoptedFactTimes——排除名单/总体/代表画像/事件合法性/首次事件规则均在统计层裁决；
+unavailable 指标结果未产出，其事实不进入范围）。存量类无下界（A1 早于 periodStart 的建档仍参与）；
+区间类 [periodStart, asOf)；重放类 < asOf；仅 current/all_time 参与的画像 last_contact 按
+代表画像计。WCDB 消息聚合（A3 主口径/D1/D5）为 aggregate-only，无真实事件时间可采——不进入
+dataRange、不伪造，其覆盖边界由 coverage 与文档声明。account.importedAt 仅参与导入布尔判定。
+毫秒级合理值（≥2000-01-01），非法/秒/毫秒脏值不进入；空数据 → `{from:null,to:null}`；
+validator 校验 from/to 同 null 或同为有限且 from ≤ to ≤ asOf。`completeness = { overall, blocks }`（四态聚合，优先级
 确定性：unavailable > partial > snapshot_only > complete，由主进程聚合、UI 不计算；
 未实现的 D/E/monthly 恒 unavailable，不得把 A/B/C 数字伪装为 complete）；`coverage` =
 稳定 metricKey（33 键全集：`summary.*`×10 / `funnel.*`×5 / `customers.*`×8 / `monthly` /

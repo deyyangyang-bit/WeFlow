@@ -27,6 +27,7 @@
  */
 import {
   ANNUAL_REVIEW_REPORT_SCHEMA_VERSION,
+  ANNUAL_REVIEW_MIN_FACT_MS,
   assertValidPeriod,
   computeAnnualReviewSummary,
   annualReviewCreditedAllocationsInRange,
@@ -34,6 +35,7 @@ import {
   asFinite,
   normSession,
   resolveAnnualReviewPeriod,
+  selectSummaryAdoptedFactTimes,
   type AnnualReviewComputeOptions,
   type AnnualReviewFacts,
   type AnnualReviewPeriod,
@@ -343,69 +345,25 @@ function aggregateWarnings(entries: ReadonlyArray<{ metricKey: string; warnings:
 
 // ─── dataRange（本次报告实际输入并参与计算的有效事实时间范围） ────────────────
 
-/** 事实年份下界：早于此视为秒/毫秒混用或荒谬时间，不进入范围（与可用年份同规则） */
-const MIN_FACT_YEAR = 2000
-
 /**
- * 有效事实时间：有限、参与窗口内（hi = asOf 右开；lo 为 null 表示无下界）、毫秒级合理值；
- * 秒值/NaN/未来值一律排除。窗口取「该事实实际参与的各指标窗口并集」——
- * 存量类指标（A1 等）无下界，不得因事实早于 periodStart 被机械排除。
+ * dataRange = 各指标**实际采用**事实时间的并集（唯一来源，禁止组装层重新近似过滤）：
+ *   - A 组：selectSummaryAdoptedFactTimes（stats 导出）——A1 存量 createdAt 无下界、
+ *     A4/A6/A7/A3 回退与其判定完全同源（同一选择函数）；
+ *   - B/C 组：各纯统计结果的 adoptedFactTimes 字段（排除名单、总体、代表画像、事件
+ *     合法性、首次事件规则均已在统计层裁决；unavailable 指标结果未产出 → 不采用）；
+ *   - WCDB 消息聚合（A3 主口径/D1/D5）为 aggregate-only，无真实事件时间可采——
+ *     其覆盖边界由 coverage 与文档声明，不进入 dataRange（不伪造）；
+ *   - account.importedAt 仅参与 A2 导入布尔判定，不进入范围。
+ * 统一准入：有限毫秒、[2000-01-01, asOf)；min/max 确定聚合、与输入顺序无关；
+ * 无采用事实 → {from:null,to:null}。
  */
-function validFactTimeInRange(raw: unknown, lo: number | null, hi: number): number | null {
-  const t = asFinite(raw)
-  if (t === null || t <= 0 || t >= hi) return null
-  if (lo !== null && t < lo) return null
-  if (new Date(t).getFullYear() < MIN_FACT_YEAR) return null
-  return t
-}
-
-/**
- * dataRange = 本次报告实际输入并参与计算的有效事实时间范围（各指标参与窗口的并集）：
- *   - account.createdAt：< asOf（A1 存量无下界；A2/C2 区间为其子集）
- *   - contract.signDate：[periodStart, asOf)（A4/A5/A8/C3/C4 口径）
- *   - allocation 核销计入时间（COALESCE(reconciledAt, confirmedAt)）：[periodStart, asOf)（A6/C1 口径）
- *   - shippedEvents.createdAt：[periodStart, asOf)（A7 口径）
- *   - intentEvents.createdAt：< asOf（B1/B7 历史重放无下界；B3 区间为其子集）
- *   - opportunities.createdAt：< asOf（B2 总体）
- *   - opportunityEvents.createdAt：< asOf（B2/B7 重放与流失归因）
- *   - account.lastContactAtSec×1000：[periodStart, asOf)，仅消息主口径不可用且非历史年度时
- *     实际作为 A3 回退事实参与
- *   - customerProfile.lastContactAtSec×1000：< asOf，仅 current_year/all_time 实际参与
- *     B6/C6/C7/C8（历史年度 unavailable，不参与）
- *   - account.importedAt 仅参与 A2 导入布尔判定（值不入任何时间口径），不进入范围
- * 无效/脏时间不进入；min/max 确定聚合，与输入顺序无关；无参与事实 → {from:null,to:null}。
- */
-function computeDataRange(period: AnnualReviewPeriod, facts: AnnualReviewFacts, sales: AnnualReviewSalesSegmentsFacts, crm: AnnualReviewCrmSegmentsFacts, opts: AnnualReviewComputeOptions): AnnualReviewDataRange {
+function computeDataRange(period: AnnualReviewPeriod, adopted: number[][]): AnnualReviewDataRange {
   const times: number[] = []
-  const push = (raw: unknown, lo: number | null): void => {
-    const t = validFactTimeInRange(raw, lo, period.asOf)
-    if (t !== null) times.push(t)
-  }
-  const pushSeconds = (rawSec: unknown, lo: number | null): void => {
-    const sec = asFinite(rawSec)
-    push(sec !== null && sec > 0 ? sec * 1000 : null, lo)
-  }
-  // A1 存量/A2/C2：建档时间（无下界）
-  for (const acc of facts.accounts ?? []) push(acc.createdAt, null)
-  // A4/A5/A8/C3/C4：签约（区间内集合，含 valid signDate）
-  for (const c of annualReviewSignedContractsInRange(period, facts.contracts ?? []).signedInRange) push(c.signDate, period.periodStart)
-  // A6/C1：核销计入时间（区间内集合）
-  for (const row of annualReviewCreditedAllocationsInRange(period, facts.allocations ?? []).rows) push(row.time, period.periodStart)
-  // A7：发货事件
-  for (const ev of facts.shippedEvents ?? []) push(ev.createdAt, period.periodStart)
-  // B1/B3/B7：阶段事件（重放无下界）
-  for (const ev of sales.intentEvents ?? []) push(ev.createdAt, null)
-  // B2/B7：商机与商机事件
-  for (const o of crm.opportunities ?? []) push(o.createdAt, null)
-  for (const ev of crm.opportunityEvents ?? []) push(ev.createdAt, null)
-  // A3 回退：account.last_contact_at（仅主口径不可用且非历史年度）
-  const messageStatsAvailable = (opts.messageStats ?? null)?.ok === true
-  if (!messageStatsAvailable && period.scopeKind !== 'historical_year') {
-    for (const acc of facts.accounts ?? []) pushSeconds(acc.lastContactAtSec, period.periodStart)
-  }
-  // B6/C6/C7/C8：画像最近联系（仅 current_year/all_time）
-  if (period.scopeKind !== 'historical_year') {
-    for (const p of sales.profiles ?? []) pushSeconds(p.lastContactAtSec, null)
+  for (const group of adopted) {
+    for (const t of group) {
+      if (asFinite(t) === null || t <= 0 || t >= period.asOf || t < ANNUAL_REVIEW_MIN_FACT_MS) continue
+      times.push(t)
+    }
   }
   if (times.length === 0) return { from: null, to: null }
   return { from: Math.min(...times), to: Math.max(...times) }
@@ -650,6 +608,20 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
   warningEntries.push({ metricKey: 'salesAssignment.assignedFacts', warnings: salesAssignment.warnings })
   for (const key of SALES_ASSIGNMENT_METRIC_KEYS) warningEntries.push({ metricKey: `salesAssignment.${key}`, warnings: salesAssignment[key].warnings })
 
+  // dataRange：各指标实际采用事实时间的并集（唯一来源 = 摘要选择器 + 各统计结果 adoptedFactTimes）
+  // C1–C5 为 account/消息维度（时间事实已并入摘要选择器），画像时间来自 C6/C7/C8
+  const dataRange = computeDataRange(period, [
+    selectSummaryAdoptedFactTimes(period, inputs.facts, opts),
+    funnel.customerStage.adoptedFactTimes,
+    funnel.opportunityStage.adoptedFactTimes,
+    funnel.stageFlow.adoptedFactTimes,
+    funnel.stuck.adoptedFactTimes,
+    funnel.lostBreakdown.adoptedFactTimes,
+    statsCustomers.silent.adoptedFactTimes,
+    statsCustomers.risk.adoptedFactTimes,
+    statsCustomers.priority.adoptedFactTimes
+  ])
+
   return {
     reportSchemaVersion: ANNUAL_REVIEW_REPORT_SCHEMA_VERSION,
     year: period.year,
@@ -659,7 +631,7 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     asOf: period.asOf,
     generatedAt: period.generatedAt,
     timezoneNote: 'local',
-    dataRange: computeDataRange(period, facts, sales, crm, opts),
+    dataRange,
     completeness,
     coverage,
     warnings: aggregateWarnings(warningEntries),
@@ -708,6 +680,9 @@ export interface ComputeAvailableYearsInput {
   /** 报告生成时刻（ms），用于推导本地当前年与右边界 */
   generatedAt: number
 }
+
+/** 事实年份下界：早于此视为秒/毫秒混用或荒谬时间，不生成候选年份（1970 纪元值等） */
+const MIN_FACT_YEAR = 2000
 
 /**
  * 由真实事实时间戳推导可用年份（全量扫描本地库）：
@@ -848,9 +823,47 @@ function isCoverageShape(v: unknown): boolean {
   if (v.rows !== undefined && (!isFiniteNumber(v.rows) || v.rows < 0 || !Number.isInteger(v.rows))) return false
   if (v.reasonCodes !== undefined && (!Array.isArray(v.reasonCodes) || v.reasonCodes.some((r) => typeof r !== 'string'))) return false
   if (v.exactCoverage !== undefined && typeof v.exactCoverage !== 'boolean') return false
-  if (v.coverageRatio !== undefined && v.coverageRatio !== null && !isFiniteNumber(v.coverageRatio)) return false
+  if (v.coverageRatio !== undefined && v.coverageRatio !== null) {
+    if (!isFiniteNumber(v.coverageRatio) || (v.coverageRatio as number) < 0 || (v.coverageRatio as number) > 1) return false
+  }
+  // exactCoverage=false（如 E1 sync 缺口）→ 分母不可知，coverageRatio 必须 null
+  if (v.exactCoverage === false && v.coverageRatio !== null) return false
   return true
 }
+
+// ─── 公开客户行白名单（字段精确形状；未知字段/内部字段一律拒绝） ──────────────
+
+const numField = (v: unknown): boolean => isFiniteNumber(v)
+const numOrNullField = (v: unknown): boolean => v === null || isFiniteNumber(v)
+const strOrNullField = (v: unknown): boolean => v === null || typeof v === 'string'
+const boolField = (v: unknown): boolean => typeof v === 'boolean'
+
+/** 公开客户行 shape 白名单：键集合精确 + 每字段类型确定 */
+const CUSTOMER_ROW_SHAPES: Record<string, Record<string, (v: unknown) => boolean>> = {
+  highValue: { accountId: numField, name: strOrNullField, creditedAmount: numField, contractAmount: numField },
+  newCustomers: { accountId: numField, name: strOrNullField, createdAt: numField, imported: boolField },
+  dealing: { accountId: numField, name: strOrNullField, contractCount: numField, contractAmount: numField, firstSignDate: numField },
+  repeat: { accountId: numField, name: strOrNullField, contractCount: numField, contractAmount: numField },
+  active: { accountId: numOrNullField, name: strOrNullField },
+  silent: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField },
+  risk: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, stage: (v) => typeof v === 'string', lastContactAtMs: numField },
+  priority: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField }
+}
+
+function isRowShape(row: Record<string, unknown>, shape: Record<string, (v: unknown) => boolean>): boolean {
+  for (const key of Object.keys(row)) {
+    if (!(key in shape)) return false // 未知字段（含 sessionId 等内部字段）拒绝
+  }
+  for (const [key, check] of Object.entries(shape)) {
+    if (!check(row[key])) return false
+  }
+  return true
+}
+
+/** 公开报告禁用内部字段（小写比较；与深度序列化检查合并为单次遍历） */
+const FORBIDDEN_REPORT_KEYS = new Set([
+  'sessionid', 'session_id', 'wxid', 'dbpath', 'databasepath', 'sql', 'token', 'secret', 'decryptkey', 'password'
+])
 
 /**
  * 递归深度检查：拒绝 NaN/±Infinity、function/symbol/bigint 值、循环引用。
@@ -859,24 +872,31 @@ function isCoverageShape(v: unknown): boolean {
  * seen 为 DFS 路径栈（回溯删除）：兄弟子树间的共享引用（如 A3/D2 共用同一计算结果）
  * 不是循环；只有真正出现在自身祖先链上的引用才判循环。
  */
-function deepSerializableCheck(v: unknown, seen: Set<object>): string | null {
+function deepSerializableCheck(v: unknown, seen: Set<object>, path: Set<object>): string | null {
   if (v === null || v === undefined) return null
   const t = typeof v
   if (t === 'number') return Number.isFinite(v) ? null : '非有限数值（NaN/Infinity）'
   if (t === 'string' || t === 'boolean') return null
   if (t === 'function' || t === 'symbol' || t === 'bigint') return '不可序列化的值类型'
+  if (typeof v === 'object') {
+    for (const key of Object.keys(v as Record<string, unknown>)) {
+      if (FORBIDDEN_REPORT_KEYS.has(key.toLowerCase())) return `报告携带内部字段：${key}`
+    }
+  }
   if (t !== 'object') return '非法值类型'
   const obj = v as object
-  if (seen.has(obj)) return '循环引用'
+  if (path.has(obj)) return '循环引用'
+  if (seen.has(obj)) return null // 共享引用：该子图已完整扫描过，跳过（避免指数重走）
   seen.add(obj)
+  path.add(obj)
   for (const item of Object.values(obj)) {
-    const reason = deepSerializableCheck(item, seen)
+    const reason = deepSerializableCheck(item, seen, path)
     if (reason) {
-      seen.delete(obj)
+      path.delete(obj)
       return reason
     }
   }
-  seen.delete(obj)
+  path.delete(obj)
   return null
 }
 
@@ -978,14 +998,12 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
       return invalid(`customers.${key} unavailable 区块不得携带列表`)
     }
     const rows = block.value
-    if (rows !== null && ['active', 'silent', 'risk', 'priority'].includes(key)) {
+    if (rows !== null) {
+      const shape = CUSTOMER_ROW_SHAPES[key]
       for (const row of rows) {
-        if (!isPlainObject(row)) return invalid(`customers.${key} 行形状非法`)
-        if ('sessionId' in row || 'session_id' in row) return invalid(`customers.${key} 行不得携带 sessionId`)
-        if (row.accountId !== null && row.accountId !== undefined && !isFiniteNumber(row.accountId)) return invalid(`customers.${key}.accountId 非法`)
-        if (row.customerId !== null && row.customerId !== undefined && typeof row.customerId !== 'string') return invalid(`customers.${key}.customerId 非法`)
-        if (key !== 'active' && !isFiniteNumber(row.lastContactAtMs)) return invalid(`customers.${key}.lastContactAtMs 非法`)
-        if (key === 'risk' && typeof row.stage !== 'string') return invalid('customers.risk.stage 非法')
+        if (!isPlainObject(row) || !isRowShape(row, shape)) {
+          return invalid(`customers.${key} 行形状非法（未知/内部字段或类型不符）`)
+        }
       }
     }
   }
@@ -1017,8 +1035,8 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   const longSilent = communication.longSilent
   if (!isPlainObject(longSilent) || !isMetricState(longSilent.state) || !isWarningsArray(longSilent.warnings)) return invalid('communication.longSilent 形状非法')
   if (longSilent.value !== null) {
-    if (!Array.isArray(longSilent.value) || longSilent.value.some((row) => !isPlainObject(row) || 'sessionId' in row || 'session_id' in row)) {
-      return invalid('communication.longSilent 行不得携带 sessionId')
+    if (!Array.isArray(longSilent.value) || longSilent.value.some((row) => !isPlainObject(row) || !isRowShape(row, CUSTOMER_ROW_SHAPES.silent))) {
+      return invalid('communication.longSilent 行形状非法（未知/内部字段或类型不符）')
     }
   }
   if ((longSilent.state === 'unavailable') !== (longSilent.value === null)) return invalid('communication.longSilent 的 unavailable 与 value 不一致')
@@ -1032,15 +1050,27 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   }
   const groupsOk = (g: unknown, withMode: boolean): boolean => {
     if (!isPlainObject(g) || !isFiniteNumber(g.total) || (g.total as number) < 0 || !Number.isInteger(g.total) || !Array.isArray(g.groups)) return false
-    return (g.groups as unknown[]).every((row) => {
+    let sum = 0
+    for (const row of g.groups as unknown[]) {
       if (!isPlainObject(row) || !isFiniteNumber(row.count) || (row.count as number) < 0 || !Number.isInteger(row.count)) return false
       if (row.salesName !== null && typeof row.salesName !== 'string') return false
-      if (withMode && row.mode !== null && typeof row.mode !== 'string') return false
-      return true
-    })
+      if (withMode) {
+        if (row.mode !== null && typeof row.mode !== 'string') return false
+        if (!('mode' in row)) return false
+      } else {
+        // 移入/移出分组：不得偷偷携带 mode 等未知字段
+        for (const key of Object.keys(row)) {
+          if (key !== 'salesName' && key !== 'count') return false
+        }
+      }
+      sum += row.count as number
+    }
+    // total 必须等于各 group.count 之和
+    if (sum !== g.total) return false
+    return true
   }
   if (!groupsOk(af.initialAssignments, true) || !groupsOk(af.transfersIn, false) || !groupsOk(af.transfersOut, false)) {
-    return invalid('salesAssignment.assignedFacts 分组形状非法')
+    return invalid('salesAssignment.assignedFacts 分组形状非法（total ≠ Σcount 或携带未知字段）')
   }
   if (!isCoverageShape(salesAssignment.coverage)) return invalid('salesAssignment.coverage 非法')
   if (!isWarningsArray(salesAssignment.warnings)) return invalid('salesAssignment.warnings 非法')
@@ -1070,6 +1100,10 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   const bothNull = dataRange.from === null && dataRange.to === null
   const bothFinite = isFiniteNumber(dataRange.from) && isFiniteNumber(dataRange.to) && (dataRange.from as number) <= (dataRange.to as number)
   if (!bothNull && !bothFinite) return invalid('dataRange 非法（空数据必须 {from:null,to:null}）')
+  if (bothFinite) {
+    if ((dataRange.to as number) > (asOf as number)) return invalid('dataRange.to 不得晚于 asOf')
+    if ((dataRange.from as number) < ANNUAL_REVIEW_MIN_FACT_MS) return invalid('dataRange 含非法毫秒时间（早于 2000）')
+  }
 
   const completeness = report.completeness
   if (!isPlainObject(completeness) || !isMetricState(completeness.overall) || !isPlainObject(completeness.blocks)) {
@@ -1111,16 +1145,41 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   for (const [key, cov] of Object.entries(coverage)) {
     if (!isCoverageShape(cov)) return invalid(`coverage.${key} 非法`)
   }
+  // coverage.status 必须与对应指标/区块真实状态完全一致（建立固定 metricKey → 状态映射；
+  // 不允许 unavailable 指标伪装 complete coverage 等）
+  const expectedCoverageStatus: Record<string, string> = {}
+  for (const key of SUMMARY_METRIC_KEYS) expectedCoverageStatus[`summary.${key}`] = (summary[key] as { state: MetricState }).state
+  for (const key of FUNNEL_METRIC_KEYS) expectedCoverageStatus[`funnel.${key}`] = (funnel[key] as { coverage: { status: MetricState } }).coverage.status
+  for (const key of CUSTOMERS_METRIC_KEYS) expectedCoverageStatus[`customers.${key}`] = (customers[key] as { coverage: { status: MetricState } }).coverage.status
+  for (const key of NOT_IMPLEMENTED_METRIC_KEYS) expectedCoverageStatus[key] = 'unavailable'
+  for (const key of COMMUNICATION_METRIC_KEYS) expectedCoverageStatus[`communication.${key}`] = (communication[key] as { state: MetricState }).state
+  expectedCoverageStatus['salesAssignment.assignedFacts'] = (salesAssignment.coverage as { status: MetricState }).status
+  for (const key of SALES_ASSIGNMENT_METRIC_KEYS) expectedCoverageStatus[`salesAssignment.${key}`] = (salesAssignment[key] as { state: MetricState }).state
+  for (const [key, cov] of Object.entries(coverage)) {
+    const expected = expectedCoverageStatus[key]
+    if (expected !== undefined && (cov as AnnualReviewCoverage).status !== expected) {
+      return invalid(`coverage.${key}.status 与指标/区块实际状态不一致`)
+    }
+  }
 
   const warnings = report.warnings
   if (!Array.isArray(warnings)) return invalid('warnings 缺失')
+  const expectedKeySet = new Set<string>(EXPECTED_COVERAGE_KEYS)
   for (const w of warnings) {
     if (!isPlainObject(w) || typeof w.code !== 'string' || w.code === '' || typeof w.message !== 'string') return invalid('warnings 行形状非法')
     if (!Array.isArray(w.metricKeys) || w.metricKeys.some((k) => typeof k !== 'string')) return invalid('warnings.metricKeys 非法')
+    // metricKeys 只能引用固定 metricKey 集合，且去重（未知键/重复键拒绝）
+    const seenKeys = new Set<string>()
+    for (const k of w.metricKeys as string[]) {
+      if (!expectedKeySet.has(k)) return invalid(`warnings.metricKeys 引用未知 metricKey：${k}`)
+      if (seenKeys.has(k)) return invalid(`warnings.metricKeys 重复引用：${k}`)
+      seenKeys.add(k)
+    }
     if (w.counts !== undefined) {
       if (!isPlainObject(w.counts)) return invalid('warnings.counts 非法')
-      for (const count of Object.values(w.counts)) {
+      for (const [ck, count] of Object.entries(w.counts)) {
         if (!isFiniteNumber(count)) return invalid('warnings.counts 含非法数值')
+        if (!seenKeys.has(ck)) return invalid('warnings.counts 键未在 metricKeys 中声明')
       }
     }
   }
@@ -1136,7 +1195,7 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   }
 
   const seen = new Set<object>()
-  const serializableReason = deepSerializableCheck(report, seen)
+  const serializableReason = deepSerializableCheck(report, seen, new Set<object>())
   if (serializableReason) return invalid(serializableReason)
   try {
     structuredClone(report)

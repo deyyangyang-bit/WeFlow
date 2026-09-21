@@ -273,6 +273,54 @@ async function main(): Promise<void> {
       legacyBlock.creditedContribution.warnings.some((w) => w.code === 'legacy_time_fallback'))
   }
 
+  // ══ D1/D3 有效 CRM 会话总体（反例回归） ═══════════════════════════════════
+  {
+    const facts: AnnualReviewFacts = {
+      accounts: [
+        accF(1, 'wx_a', { createdAt: T(2025, 2, 1) }),
+        accF(2, 'wx_b', { createdAt: T(2025, 3, 1) }),
+        accF(3, 'wx_room@chatroom', { createdAt: T(2025, 4, 1) }),  // 群聊 → 结构性排除
+        accF(4, 'gh_service', { createdAt: T(2025, 5, 1) }),        // 公众号 → 结构性排除
+        accF(5, 'wx_manual', { createdAt: T(2025, 6, 1) }),         // 手动排除
+        accF(6, 'wx_internal', { createdAt: T(2025, 7, 1) })        // 内部名单
+      ],
+      contracts: [], allocations: [], shippedEvents: []
+    }
+    const inputs = { facts, sales: emptySales(), crm: emptyCrm() }
+    const period = resolveAnnualReviewPeriod(2026, GEN)
+    const exclusions = { manualSessions: ['wx_manual'], internalSessions: ['wx_internal'] }
+    const stats = {
+      ok: true,
+      sessions: {
+        wx_a: { sent: 1, received: 1 },
+        wx_b: { sent: 0, received: 0 },
+        unbound: { sent: 100, received: 100 },          // 总体外（native 多返回）→ 忽略
+        'wx_room@chatroom': { sent: 50, received: 50 }, // 群聊 → 忽略
+        gh_service: { sent: 60, received: 60 },          // 公众号 → 忽略
+        wx_manual: { sent: 70, received: 70 },           // 手动排除 → 忽略
+        wx_internal: { sent: 80, received: 80 }          // 内部名单 → 忽略
+      }
+    }
+    const block = computeAnnualReviewCommunication(period, inputs, { messageStats: stats, exclusions })
+    ok('P1 未绑定/排除/结构性会话不得改变 D1（=2）', block.volume.value === 2 && block.volume.state === 'complete')
+    ok('P1b D3 只用总体内分子分母（=0.5）', Math.abs((block.outboundRate.value as number) - 0.5) < 1e-12)
+    ok('P1c 缺失绑定会话条目 = 区间无消息（合法零，不是失败）', block.volume.value === 2)
+
+    // 总体顺序无关：调换 messageStats key 顺序 → 深相等
+    const reversed = { ...stats, sessions: Object.fromEntries(Object.entries(stats.sessions).reverse()) }
+    const blockRev = computeAnnualReviewCommunication(period, inputs, { messageStats: reversed, exclusions })
+    ok('P1d messageStats key 顺序无关（D1/D3 深相等）', JSON.stringify(blockRev.volume) === JSON.stringify(block.volume) &&
+      JSON.stringify(blockRev.outboundRate) === JSON.stringify(block.outboundRate))
+
+    // D1/D2/D3 同一总体：D2=有沟通客户数（wx_a 1 人）；D1=2；D3=1/2
+    ok('P1e D1/D2/D3 同一有效总体（D2=1）', block.contacted.value === 1)
+
+    // 全部总体外 → 真实零（不是 unavailable）
+    const onlyOutside = { ok: true, sessions: { unbound: { sent: 100, received: 100 } } }
+    const blockOut = computeAnnualReviewCommunication(period, inputs, { messageStats: onlyOutside, exclusions })
+    ok('P1f 总体外消息全部忽略 → D1 真实零 0', blockOut.volume.value === 0 && blockOut.volume.state === 'complete')
+  }
+
   // ══ 组装层：D/E 进入完整报告 + validator + 隐私 ════════════════════════════
   {
     const facts: AnnualReviewFacts = {

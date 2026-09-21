@@ -23,9 +23,9 @@
  */
 import {
   computeAnnualReviewCustomerActiveDetail,
-  isStructurallyExcluded,
-  normSession,
   buildExclusionSet,
+  selectCrmBoundSessions,
+  selectPerSessionLastContactMs,
   asFinite,
   type AnnualReviewComputeOptions,
   type AnnualReviewPeriod,
@@ -34,6 +34,7 @@ import {
   type AnnualReviewMessageStats
 } from './annualReviewStats'
 import { selectRepresentativeProfiles, type AnnualReviewSegmentInputs } from './annualReviewSegments'
+import { normalizeStage } from '../../shared/salesStage'
 
 // ─── 稳定文案 ────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ const COMM_WARN = {
   message_stats_invalid: '部分会话消息收发统计非法，已剔除（不计入总量）',
   message_stats_unavailable: '消息库不可用，无法统计沟通指标',
   daily_stats_missing: '按日消息统计缺失，月度趋势不可得',
+  daily_scope_unverified: '按日消息统计的会话范围无法在 native 层核实，月度趋势按部分完整呈现',
   last_contact_fallback: '活跃/沉默按最近联系时间近似统计（回填口径）',
   history_contact_unavailable: '历史年度联系时间无法重建，当前投影不能代替'
 } as const
@@ -84,16 +86,28 @@ export interface AnnualReviewCommunicationBlock {
   longSilent: { sessionIds: Array<{ sessionId: string; lastContactAtMs: number }> | null; state: MetricState; warnings: MetricWarning[] }
 }
 
-/** D1/D3 会话求和：返回 总量/收/发/非法会话数 */
-function sumSessions(messageStats: AnnualReviewMessageStats): { total: number; sent: number; received: number; invalid: number; sessions: number } {
+/**
+ * D1/D3 会话求和（与有效 CRM 会话总体求交集，fail closed）：
+ *   - 只统计总体内会话（selectCrmBoundSessions 唯一选择器）；native 返回的总体外
+ *     会话（未绑定/被排除/群聊公众号系统号）一律忽略，不得进入总量、分子分母与
+ *     非法会话比例；
+ *   - 总体内但 stats 无条目 = 该区间无消息（合法 0，不是查询失败）；
+ *   - 非法比例分母 = 总体内在 stats 中有条目的会话数（有数据才谈得上非法）。
+ */
+function sumSessions(
+  messageStats: AnnualReviewMessageStats,
+  population: string[]
+): { total: number; sent: number; received: number; invalid: number; present: number } {
   let sent = 0
   let received = 0
   let invalid = 0
-  let sessions = 0
-  for (const stat of Object.values(messageStats.sessions ?? {})) {
-    sessions++
-    const s = asFinite(stat?.sent)
-    const r = asFinite(stat?.received)
+  let present = 0
+  for (const sid of population) {
+    const stat = messageStats.sessions?.[sid]
+    if (!stat) continue // 区间无消息：合法真实零
+    present++
+    const s = asFinite(stat.sent)
+    const r = asFinite(stat.received)
     if (s === null || r === null) {
       invalid++
       continue
@@ -101,7 +115,7 @@ function sumSessions(messageStats: AnnualReviewMessageStats): { total: number; s
     sent += s
     received += r
   }
-  return { total: sent + received, sent, received, invalid, sessions }
+  return { total: sent + received, sent, received, invalid, present }
 }
 
 /** D5 本地月聚合：历史 12 个月、当前年截至生成月、all_time 有数据月份 */
@@ -144,21 +158,23 @@ export function computeAnnualReviewCommunication(
 ): AnnualReviewCommunicationBlock {
   const messageStats = opts.messageStats ?? null
   const statsOk = messageStats !== null && messageStats.ok === true
+  // 有效 CRM 会话总体（唯一选择器；D1/D2/D3 同一总体）
+  const population = selectCrmBoundSessions(inputs.facts.accounts, opts.exclusions)
 
-  // ── D1 / D3：会话求和 ──
+  // ── D1 / D3：会话求和（仅总体内会话；native 多返回的一律忽略） ──
   let volume: AnnualReviewCommunicationMetric<number>
   let outboundRate: AnnualReviewCommunicationMetric<number>
   if (!statsOk) {
     volume = { value: null, state: 'unavailable', warnings: [{ code: 'message_stats_unavailable', message: COMM_WARN.message_stats_unavailable }] }
     outboundRate = { value: null, state: 'unavailable', warnings: [{ code: 'message_stats_unavailable', message: COMM_WARN.message_stats_unavailable }] }
   } else {
-    const sums = sumSessions(messageStats)
+    const sums = sumSessions(messageStats, population)
     const w: MetricWarning[] = []
     let state: MetricState = 'complete'
     if (sums.invalid > 0) {
       w.push({ code: 'message_stats_invalid', message: COMM_WARN.message_stats_invalid, count: sums.invalid })
-      // 剔除比例 >20% → partial（规格 §5.4 D3）
-      if (sums.invalid * 5 > sums.sessions) state = 'partial'
+      // 非法会话占「总体内已有条目会话」比例 >20% → partial（规格 §5.4 D3）
+      if (sums.present > 0 && sums.invalid * 5 > sums.present) state = 'partial'
     }
     volume = { value: sumOf([sums.total]), state, warnings: sortedWarnings(w) }
     // D3：分母 0（无有效消息）→ unavailable（不显示 0% 冒充，A9 同款）；非法会话剔除后计算
@@ -184,10 +200,17 @@ export function computeAnnualReviewCommunication(
   } else if (!messageStats.daily || Object.keys(messageStats.daily).length === 0) {
     monthlyTrend = { months: null, state: 'unavailable', warnings: [{ code: 'daily_stats_missing', message: COMM_WARN.daily_stats_missing }] }
   } else {
-    monthlyTrend = { months: aggregateMonthlyMonths(messageStats.daily, period), state: 'complete', warnings: [] }
+    // native daily 的会话范围无法在实现层证明严格等于传入 sessionIds（native 层不可审计）
+    // → 恒 partial（数据存在但覆盖受限），不宣称精确（fail closed）
+    monthlyTrend = {
+      months: aggregateMonthlyMonths(messageStats.daily, period),
+      state: 'partial',
+      warnings: [{ code: 'daily_scope_unverified', message: COMM_WARN.daily_scope_unverified }]
+    }
   }
 
   // ── D7：长期未联系（仅 current_year/all_time；回退口径恒 partial） ──
+  // 总体与每会话最近联系 = selectCrmBoundSessions / selectPerSessionLastContactMs 唯一选择器
   let longSilent: AnnualReviewCommunicationBlock['longSilent']
   if (period.scopeKind === 'historical_year') {
     longSilent = {
@@ -196,36 +219,24 @@ export function computeAnnualReviewCommunication(
       warnings: [{ code: 'history_contact_unavailable', message: COMM_WARN.history_contact_unavailable }]
     }
   } else {
-    const exclusionSet = buildExclusionSet(opts.exclusions)
-    const lastContactBySession = new Map<string, number>()
-    const boundSessions = new Set<string>()
-    for (const acc of inputs.facts.accounts ?? []) {
-      const sid = normSession(acc.sessionId)
-      if (!sid || isStructurallyExcluded(sid) || exclusionSet.has(sid)) continue
-      boundSessions.add(sid)
-      const sec = asFinite(acc.lastContactAtSec)
-      if (sec === null || sec <= 0) continue
-      const ms = sec * 1000
-      const prev = lastContactBySession.get(sid)
-      if (prev === undefined || ms > prev) lastContactBySession.set(sid, ms)
-    }
+    const lastContactBySession = selectPerSessionLastContactMs(inputs.facts.accounts, opts.exclusions)
+    const boundCount = selectCrmBoundSessions(inputs.facts.accounts, opts.exclusions).length
     // 代表画像阶段过滤（唯一规则：selectRepresentativeProfiles）；无画像 = 阶段未知 ≠ won/lost → 计入
-    const reps = selectRepresentativeProfiles(inputs.sales?.profiles ?? [], exclusionSet)
+    const reps = selectRepresentativeProfiles(inputs.sales?.profiles ?? [], buildExclusionSet(opts.exclusions))
     const threshold = period.asOf - 180 * 86_400_000
     const rows: Array<{ sessionId: string; lastContactAtMs: number }> = []
     for (const [sid, ms] of lastContactBySession) {
       if (ms >= threshold) continue
       const rep = reps.get(sid)
-      const stageRaw = rep?.stage ?? null
-      const canonical = stageRaw ? stageRaw.trim().toLowerCase() : ''
+      const canonical = rep?.stage ? normalizeStage(rep.stage) : null
       if (canonical === 'won' || canonical === 'lost') continue
       rows.push({ sessionId: sid, lastContactAtMs: ms })
     }
     rows.sort((a, b) => a.lastContactAtMs - b.lastContactAtMs || (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0))
     longSilent = {
       sessionIds: rows,
-      state: boundSessions.size === 0 ? 'complete' : 'partial',
-      warnings: boundSessions.size === 0 ? [] : [{ code: 'last_contact_fallback', message: COMM_WARN.last_contact_fallback }]
+      state: boundCount === 0 ? 'complete' : 'partial',
+      warnings: boundCount === 0 ? [] : [{ code: 'last_contact_fallback', message: COMM_WARN.last_contact_fallback }]
     }
   }
 

@@ -434,9 +434,9 @@ function main(): void {
     ])
     ok('6b B3 覆盖率 = 2/3（s3 无区间内事件）', r.coverage.coverageRatio === 2 / 3 && r.coverage.rows === 3)
     ok('6c B3 恒 partial + stage_flow_low_coverage', r.coverage.status === 'partial' && hasCode(r.warnings, 'stage_flow_low_coverage'))
-    ok('7 B3 不输出转化率（无 conversion 字段，仅分布+coverage+warnings）',
+    ok('7 B3 不输出转化率（无 conversion 字段，仅分布+coverage+warnings+采用事实时间）',
       !('conversionRates' in r) && !('conversion' in r) && !('rates' in r) &&
-      Object.keys(r).sort().join(',') === 'coverage,distribution,warnings')
+      Object.keys(r).sort().join(',') === 'adoptedFactTimes,coverage,distribution,warnings')
     // 历史年度与当前年度同一逻辑（仅区间不同）
     const rCur = computeAnnualReviewStageFlow(P2026, withInputs({
       facts: { accounts: [accF(1, 's1')] },

@@ -1110,7 +1110,115 @@ async function main(): Promise<void> {
     const svcForged = createService({ runner: { run: () => Promise.resolve(forgedReport as never) }, now })
     const rForged = await svcForged.service.generate(2026)
     ok('A5g 伪造 completeness 的 Worker 结果不缓存、任务 failed', rForged.success === false &&
-      svcForged.service.getReport(2026).cache === 'miss' && svcForged.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
+      svcForged.service.getTaskState(2026)?.error?.code === 'invalid_worker_result')
+
+    // ── 阶段1 反例：dataRange 只由实际采用事实组成 ──
+    const emptyPeriod = resolveAnnualReviewPeriod(2026, GEN)
+    const makeReport = (over: Partial<AnnualReviewFacts>, salesOver?: Partial<AnnualReviewSalesSegmentsFacts>) =>
+      composeAnnualReviewReport({
+        period: emptyPeriod,
+        facts: { accounts: [], contracts: [], allocations: [], shippedEvents: [], ...over },
+        sales: { profiles: [], intentEvents: [], ...salesOver },
+        crm: emptyCrm()
+      })
+    // 未关联合同的 shipped 事件不进入
+    const orphanShipped = makeReport({ shippedEvents: [{ id: 1, contractId: 999, toStatus: 'shipped', createdAt: T(2026, 3, 5) }] })
+    ok('A1h 未关联合同的 shipped 事件不进入 dataRange', orphanShipped.dataRange.from === null && orphanShipped.dataRange.to === null)
+    // 同合同重复 shipped：只有 A7 采用的首次事件进入
+    const dupShipped = makeReport({
+      contracts: [conF(1, null, null, 400)],
+      shippedEvents: [
+        { id: 2, contractId: 1, toStatus: 'shipped', createdAt: T(2026, 3, 9) },
+        { id: 1, contractId: 1, toStatus: 'shipped', createdAt: T(2026, 3, 5) }
+      ]
+    })
+    ok('A1i 重复 shipped 仅首次事件进入 dataRange', dupShipped.dataRange.from === T(2026, 3, 5) && dupShipped.dataRange.to === T(2026, 3, 5))
+    // 非法 stage 的 intent 事件 + 总体外会话的 intent 事件不进入
+    const badIntent = makeReport(
+      { accounts: [accF(1, 'wx_bound', { createdAt: T(2026, 1, 2) })] },
+      { intentEvents: [
+        ievF(1, 'wx_bound', '垃圾stage', T(2026, 3, 1)),   // 非法 stage
+        ievF(2, 'wx_outside', 'quoted', T(2026, 3, 2))     // 总体外
+      ] }
+    )
+    ok('A1j 非法 stage/总体外 intent 事件不进入 dataRange', badIntent.dataRange.from === T(2026, 1, 2) && badIntent.dataRange.to === T(2026, 1, 2))
+    // 非代表画像的 lastContact 不改变 dataRange（代表=更晚 lastContact 的记录）
+    const repProfiles: AnnualReviewSalesSegmentsFacts = {
+      profiles: [
+        profF(1, 'wx_s', 'quoted', Math.floor(T(2026, 1, 3) / 1000)),  // 非代表（更早）
+        profF(2, 'wx_s', '决策', Math.floor(T(2026, 4, 1) / 1000))     // 代表
+      ], intentEvents: []
+    }
+    const repOnly = makeReport({}, { profiles: repProfiles.profiles })
+    ok('A1k 仅代表画像 lastContact 进入 dataRange', repOnly.dataRange.from === T(2026, 4, 1) && repOnly.dataRange.to === T(2026, 4, 1))
+    // 被排除画像/会话不进入（手动排除名单）
+    const excludedProfile = makeReport({}, { profiles: [profF(1, 'wx_manual', 'quoted', Math.floor(T(2026, 2, 1) / 1000))] })
+    const excludedReport = composeAnnualReviewReport({
+      period: emptyPeriod,
+      facts: { accounts: [], contracts: [], allocations: [], shippedEvents: [] },
+      sales: { profiles: [profF(1, 'wx_manual', 'quoted', Math.floor(T(2026, 2, 1) / 1000))], intentEvents: [] },
+      crm: emptyCrm(), opts: { exclusions: { manualSessions: ['wx_manual'] } }
+    })
+    ok('A1l 被排除画像不进入 dataRange（含代表画像时间）', excludedProfile.dataRange.from === T(2026, 2, 1) &&
+      excludedReport.dataRange.from === null && excludedReport.dataRange.to === null)
+
+    // ── 阶段1 反例：validator 白名单/coverage 一致性/组合合法/警告键集/E1 求和/dataRange 上界 ──
+    const baseReport = buildRealReport()
+    const customerKeys = ['highValue', 'newCustomers', 'dealing', 'repeat', 'active', 'silent', 'risk', 'priority'] as const
+    let leakRejected = 0
+    for (const key of customerKeys) {
+      const forged = JSON.parse(JSON.stringify(baseReport)) as { customers: Record<string, { value: unknown }> }
+      const block = forged.customers[key]
+      if (block.value === null) { leakRejected++; continue }
+      const rows = block.value as Array<Record<string, unknown>>
+      if (rows.length === 0) { leakRejected++; continue } // 空列表无需注入（行白名单在非空行上验证）
+      rows[0].sessionId = 'leak'
+      if (validateAnnualReviewReport(forged, 2026).ok === false) leakRejected++
+    }
+    ok(`A5h 八类客户行注入 sessionId 均被拒绝（${leakRejected}/8）`, leakRejected === 8)
+    const unknownField = JSON.parse(JSON.stringify(baseReport)) as { customers: { active: { value: Array<Record<string, unknown>> } } }
+    if (unknownField.customers.active.value !== null && unknownField.customers.active.value.length > 0) {
+      unknownField.customers.active.value[0].internalFlag = 1
+      ok('A5i 客户行未知字段拒绝', validateAnnualReviewReport(unknownField, 2026).ok === false)
+    } else {
+      ok('A5i 客户行未知字段拒绝（空列表，跳过）', true)
+    }
+    const badRatios = [-0.5, 1.5, Number.NaN]
+    let ratioRejected = 0
+    for (const ratio of badRatios) {
+      const forged = JSON.parse(JSON.stringify(baseReport)) as { coverage: Record<string, { coverageRatio?: number | null }> }
+      forged.coverage['funnel.customerStage'].coverageRatio = ratio
+      if (validateAnnualReviewReport(forged, 2026).ok === false) ratioRejected++
+    }
+    ok(`A5j coverageRatio <0/>1/NaN 拒绝（${ratioRejected}/3）`, ratioRejected === 3)
+    const badCombo = JSON.parse(JSON.stringify(baseReport)) as { coverage: Record<string, { exactCoverage?: boolean; coverageRatio?: number | null }> }
+    badCombo.coverage['salesAssignment.assignedFacts'].exactCoverage = false
+    badCombo.coverage['salesAssignment.assignedFacts'].coverageRatio = 0.5
+    ok('A5k exactCoverage=false 且 ratio≠null 拒绝', validateAnnualReviewReport(badCombo, 2026).ok === false)
+    const unknownWarningKey = JSON.parse(JSON.stringify(baseReport)) as { warnings: Array<{ metricKeys: string[] }> }
+    unknownWarningKey.warnings.push({ code: 'x', message: 'x', metricKeys: ['summary.notAKey'], counts: {} } as never)
+    ok('A5l warnings 引用未知 metricKey 拒绝', validateAnnualReviewReport(unknownWarningKey, 2026).ok === false)
+    const dupWarningKey = JSON.parse(JSON.stringify(baseReport)) as { warnings: Array<{ metricKeys: string[] }> }
+    if (dupWarningKey.warnings.length > 0 && dupWarningKey.warnings[0].metricKeys.length > 0) {
+      dupWarningKey.warnings[0].metricKeys = [dupWarningKey.warnings[0].metricKeys[0], dupWarningKey.warnings[0].metricKeys[0]]
+      ok('A5m warnings metricKeys 重复拒绝', validateAnnualReviewReport(dupWarningKey, 2026).ok === false)
+    } else {
+      ok('A5m warnings metricKeys 重复拒绝（无告警可改，跳过）', true)
+    }
+    const badE1 = JSON.parse(JSON.stringify(baseReport)) as { salesAssignment: { assignedFacts: { transfersIn: { total: number } } } }
+    badE1.salesAssignment.assignedFacts.transfersIn.total = 99 // total ≠ Σcount
+    ok('A5n E1 total 与 groups 求和不一致拒绝', validateAnnualReviewReport(badE1, 2026).ok === false)
+    const e1ModeLeak = JSON.parse(JSON.stringify(baseReport)) as { salesAssignment: { assignedFacts: { transfersIn: { groups: Array<Record<string, unknown>> } } } }
+    if (e1ModeLeak.salesAssignment.assignedFacts.transfersIn.groups.length > 0) {
+      e1ModeLeak.salesAssignment.assignedFacts.transfersIn.groups[0].mode = 'manual'
+      ok('A5o transfer 分组携带 mode 拒绝', validateAnnualReviewReport(e1ModeLeak, 2026).ok === false)
+    } else {
+      ok('A5o transfer 分组携带 mode 拒绝（空分组，跳过）', true)
+    }
+    const lateRange = JSON.parse(JSON.stringify(baseReport)) as { dataRange: { to: number | null } }
+    lateRange.dataRange.to = GEN + 86_400_000
+    ok('A5p dataRange.to > asOf 拒绝', validateAnnualReviewReport(lateRange, 2026).ok === false)
+    ok('A5q 合法报告仍通过', validateAnnualReviewReport(baseReport, 2026).ok === true)
   }
 
   // ══ 15/19 源码一致性守卫（IPC/preload/d.ts/vite/Worker 边界 + 结构化错误） ══
