@@ -192,6 +192,8 @@ function createService(opts?: {
   loadFactsFail?: boolean
   messageStatsFail?: boolean
   now?: () => number
+  /** taskId 生成器注入（有界清理的稳定排序用例） */
+  newTaskId?: () => string
   /** 竞态测试注入：覆盖事实加载（deferred/永不收敛等） */
   overrides?: Partial<{
     loadFacts: () => Promise<AnnualReviewFacts>
@@ -231,7 +233,8 @@ function createService(opts?: {
     },
     getAccountContext: (): AnnualReviewAccountContext => ctxBox.current,
     runner: opts?.runner,
-    now: opts?.now
+    now: opts?.now,
+    newTaskId: opts?.newTaskId
   }
   return { service: new AnnualReviewService(deps), ctxBox, getLoadCount: () => loadCount }
 }
@@ -1174,7 +1177,7 @@ async function main(): Promise<void> {
     fakeB.calls[0].resolve(buildRealReport())
     await gB
 
-    // 24i 终态快照保留有界：跨作用域终态记录超上限后被清理，当前作用域记录永不淘汰
+    // 24i 终态快照保留有界：跨作用域终态记录超上限后被清理（全局上限，任何作用域都不豁免）
     {
       const fakeFlood = createFakeRunner()
       const svcFlood = createService({ runner: fakeFlood.runner, now })
@@ -1191,7 +1194,7 @@ async function main(): Promise<void> {
       }
       const currentScope = svcFlood.ctxBox.current
       const lastTask = svcFlood.service.getTaskStatus(floodIds[floodIds.length - 1].taskId)
-      ok('24i 洪泛后当前作用域终态快照仍可查（运行中/当前作用域记录不淘汰）', lastTask.success === true &&
+      ok('24i 洪泛后最新终态快照仍可查（最新记录优先保留）', lastTask.success === true &&
         lastTask.found === true && lastTask.task?.done === true)
       // 切回最早的作用域：其终态记录已被有界清理 → found:false（同作用域也查不到 = 确实淘汰过）
       svcFlood.ctxBox.current = { wxid: floodIds[0].wxid, salesDbName: 'sales-0.db', crmDbName: 'crm-0.db', exclusions: {} }
@@ -1199,7 +1202,157 @@ async function main(): Promise<void> {
       ok('24i2 超出上限的旧作用域终态快照被有界清理（同作用域 found:false）',
         evicted.success === true && evicted.found === false)
       svcFlood.ctxBox.current = currentScope
-      ok('24i3 清理不影响当前作用域继续使用', svcFlood.service.getTaskStatus(floodIds[floodIds.length - 1].taskId).found === true)
+      ok('24i3 清理不影响最新快照继续使用', svcFlood.service.getTaskStatus(floodIds[floodIds.length - 1].taskId).found === true)
+    }
+
+    // ── 24j 终态快照全局有界：同一账号 65+ 个年份也不得突破上限（P1 修复） ──
+    // 旧实现永远跳过当前 accountScopeId，同一账号连续生成 70 个年份即可留下 70 条记录。
+    /** 按 taskId 取本次任务的 runner 调用（cancelled 任务不产生 runner 调用，不能用下标） */
+    const callOf = (fake: ReturnType<typeof createFakeRunner>, taskId: string) =>
+      fake.calls.find((c) => c.payload.taskId === taskId)
+    const floodSameScope = async (
+      count: number,
+      outcome: (i: number) => 'completed' | 'failed' | 'cancelled',
+      nowFn?: (i: number) => number
+    ): Promise<{ svc: Harness; ids: string[] }> => {
+      const fake = createFakeRunner()
+      let clock = GEN
+      const svc = createService({ runner: fake.runner, now: nowFn ? () => clock : now })
+      const ids: string[] = []
+      for (let i = 0; i < count; i++) {
+        const year = 1956 + i // 1956.. 合法历史年份（不与其它用例的 2025/2026 冲突）
+        if (nowFn) clock = nowFn(i)
+        const g = svc.service.generate(year)
+        await tick()
+        const taskId = svc.service.getTaskState(year)?.taskId ?? ''
+        const kind = outcome(i)
+        if (kind === 'completed') callOf(fake, taskId)?.resolve(buildRealReport())
+        else if (kind === 'failed') callOf(fake, taskId)?.reject(Object.assign(new Error('boom'), { code: 'worker_error' }))
+        else svc.service.cancel(taskId) // loading 阶段取消 → failed + error.code='cancelled'
+        await g
+        ids.push(taskId)
+      }
+      return { svc, ids }
+    }
+    {
+      const max = ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+      const { svc, ids } = await floodSameScope(max + 6, () => 'completed', (i) => T(2026, 6, 15, 12, 0, i))
+      const found = ids.filter((id) => svc.service.getTaskStatus(id).found === true)
+      ok(`24j 同一账号 ${max + 6} 个年份 → 终态快照保留数 = ${max}（旧实现 ${max + 6} 条全留，超限）`,
+        found.length === max)
+      ok('24j2 最旧记录被淘汰、最新记录仍可查询', svc.service.getTaskStatus(ids[0]).found === false &&
+        svc.service.getTaskStatus(ids[ids.length - 1]).found === true &&
+        svc.service.getTaskStatus(ids[ids.length - 1]).task?.year === 1956 + ids.length - 1)
+      ok('24j3 保留的恰是最新 64 条（按 updatedAt 淘汰最旧 6 条）',
+        svc.service.getTaskStatus(ids[5]).found === false && svc.service.getTaskStatus(ids[6]).found === true)
+      ok('24j4 账号隔离不回归（当前作用域仍可查、跨作用域仍不可见）',
+        svc.service.getTaskStatus(ids[ids.length - 1]).found === true)
+    }
+    {
+      // completed / failed / cancelled 混合也受同一上限约束
+      const max = ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+      const kinds = ['completed', 'failed', 'cancelled'] as const
+      const { svc, ids } = await floodSameScope(max + 8, (i) => kinds[i % 3], (i) => T(2026, 6, 15, 13, 0, i))
+      const found = ids.filter((id) => svc.service.getTaskStatus(id).found === true)
+      ok(`24k completed/failed/cancelled 混合 ${max + 8} 条 → 保留数 = ${max}`,
+        found.length === max && svc.service.getTaskStatus(ids[0]).found === false &&
+        svc.service.getTaskStatus(ids[ids.length - 1]).found === true)
+    }
+    {
+      // 运行中任务永不淘汰（即使终态记录已达上限）
+      const max = ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+      const fake = createFakeRunner()
+      let clock = T(2026, 6, 15, 14, 0, 0)
+      const svc = createService({ runner: fake.runner, now: () => clock })
+      for (let i = 0; i < max; i++) {
+        clock = T(2026, 6, 15, 14, 1, i)
+        const year = 1956 + i
+        const g = svc.service.generate(year)
+        await tick()
+        const id = svc.service.getTaskState(year)?.taskId ?? ''
+        callOf(fake, id)?.resolve(buildRealReport())
+        await g
+      }
+      clock = T(2026, 6, 15, 14, 2, 0)
+      const gRunning = svc.service.generate(2026) // 长时间运行（不 resolve）
+      await tick()
+      const runningId = svc.service.getTaskState(2026)?.taskId ?? ''
+      for (let i = 0; i < 5; i++) {
+        clock = T(2026, 6, 15, 14, 3, i)
+        const year = 2020 + i
+        const g = svc.service.generate(year)
+        await tick()
+        callOf(fake, svc.service.getTaskState(year)?.taskId ?? '')?.resolve(buildRealReport())
+        await g
+      }
+      const runningStatus = svc.service.getTaskStatus(runningId)
+      ok('24l 运行中任务不被淘汰（终态超上限后仍 found:true / done:false）',
+        runningStatus.success === true && runningStatus.found === true && runningStatus.task?.done === false)
+      // 运行中任务完成后：自身保留（keepTaskId），上限继续成立
+      clock = T(2026, 6, 15, 14, 4, 0)
+      callOf(fake, runningId)?.resolve(buildRealReport())
+      await gRunning
+      ok('24l2 运行中任务完成后自身保留且终态上限仍成立', svc.service.getTaskStatus(runningId).found === true &&
+        svc.service.getTaskStatus(runningId).task?.done === true)
+    }
+    {
+      // 本次刚收敛的任务不会被自己的清理误删：即使它的 updatedAt 最旧
+      const max = ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+      const fake = createFakeRunner()
+      let clock = T(2026, 6, 15, 15, 0, 1)
+      const svc = createService({ runner: fake.runner, now: () => clock })
+      const ids: string[] = []
+      for (let i = 0; i < max; i++) {
+        clock = T(2026, 6, 15, 15, 0, i + 1)
+        const year = 1956 + i
+        const g = svc.service.generate(year)
+        await tick()
+        const taskId = svc.service.getTaskState(year)?.taskId ?? ''
+        callOf(fake, taskId)?.resolve(buildRealReport())
+        await g
+        ids.push(taskId)
+      }
+      // 第 65 个任务：时钟回拨到最旧，完成时触发清理
+      clock = T(2026, 6, 15, 15, 0, 0)
+      const last = svc.service.generate(2025)
+      await tick()
+      const lastId = svc.service.getTaskState(2025)?.taskId ?? ''
+      callOf(fake, lastId)?.resolve(buildRealReport())
+      await last
+      ok('24m 本次刚收敛的任务不被本次清理误删（即使 updatedAt 最旧）',
+        svc.service.getTaskStatus(lastId).found === true &&
+        svc.service.getTaskStatus(lastId).task?.done === true)
+      ok('24m2 淘汰的是更旧记录（最旧 1 条其他记录被删，次旧保留）',
+        svc.service.getTaskStatus(ids[0]).found === false && svc.service.getTaskStatus(ids[1]).found === true)
+    }
+    {
+      // 同一 updatedAt 的稳定次级排序：taskId 字典序决胜，且结果可重复
+      const max = ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+      const run = async (): Promise<{ svc: Harness; ids: string[] }> => {
+        const fake = createFakeRunner()
+        let seq = 0
+        const svc = createService({ runner: fake.runner, now: () => GEN, newTaskId: () => `t${String(seq++).padStart(3, '0')}` })
+        const ids: string[] = []
+        for (let i = 0; i < max + 1; i++) {
+          const year = 1956 + i
+          const g = svc.service.generate(year)
+          await tick()
+          const taskId = svc.service.getTaskState(year)?.taskId ?? ''
+          callOf(fake, taskId)?.resolve(buildRealReport())
+          await g
+          ids.push(taskId)
+        }
+        return { svc, ids }
+      }
+      const first = await run()
+      const second = await run()
+      const evictedFirst = first.ids.filter((id) => first.svc.service.getTaskStatus(id).found === false)
+      const evictedSecond = second.ids.filter((id) => second.svc.service.getTaskStatus(id).found === false)
+      ok('24n 同一 updatedAt：按 taskId 字典序稳定淘汰（t000 被淘汰，keep 保留）',
+        evictedFirst.length === 1 && evictedFirst[0] === 't000' &&
+        first.svc.service.getTaskStatus(first.ids[first.ids.length - 1]).found === true)
+      ok('24n2 同输入重复执行 → 淘汰结果一致（确定性）',
+        evictedFirst.join(',') === evictedSecond.join(','))
     }
   }
 

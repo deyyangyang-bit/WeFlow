@@ -416,9 +416,9 @@ interface TaskRecord {
 
 /**
  * 终态任务快照保留上限（有界清理）。键 = {accountScopeId, year}，每个键只保留**一个**
- * 最新任务快照（同键新任务覆盖旧任务），因此记录数天然受「作用域 × 年份」约束；
- * 本上限只防账号作用域频繁切换导致的长期累积。清理只淘汰「已终态且不属于当前作用域」
- * 的记录——运行中记录与当前作用域记录永不淘汰，保证 getTaskStatus 能恢复丢失的终态。
+ * 最新任务快照（同键新任务覆盖旧任务）。**全局**（跨账号作用域）非运行中记录最多保留
+ * 本数量：当前账号不再豁免，否则同一账号连续生成超过 64 个年份即可突破上限。
+ * 运行中任务永不淘汰；淘汰按 updatedAt 升序（最旧先淘汰，同值用 taskId 稳定次级排序）。
  */
 export const ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS = 64
 
@@ -569,6 +569,10 @@ export class AnnualReviewService {
         .finally(() => {
           record.running = false
           this.runningTasksByTaskId.delete(taskId)
+          // 终态清理必须在此处（running=false 之后）触发：completed/failed/cancelled/
+          // invalidated 等全部路径都经 promise 收敛，统一在这里做有界清理，不会漏掉，
+          // 也不会把刚收敛的任务误当 running 而漏算；keepTaskId 保证它不被自己清掉。
+          this.pruneTerminalTaskRecords(taskId)
         })
     }
     this.runningTasksByTaskId.set(taskId, running)
@@ -692,7 +696,7 @@ export class AnnualReviewService {
       // generate 强制重算：无条件覆盖同键缓存（含未过期条目）
       this.cache.set(scopeId, year, report)
       this.updateTask(scopeKey, taskId, { status: 'completed', progress: 100, statusText: '生成完成' })
-      this.pruneTerminalTaskRecords()
+      // 有界清理统一在 startWithScope 的 settle finally 中执行（覆盖全部终态路径）
     } catch (e) {
       if (control.cancelled) {
         this.failTask(scopeKey, taskId, 'cancelled', CANCELLED_MESSAGE)
@@ -719,7 +723,7 @@ export class AnnualReviewService {
     const record = this.tasks.get(scopeKey)
     if (!record || record.snapshot.taskId !== taskId) return
     this.updateTask(scopeKey, taskId, { status: 'failed', error: { code, message } })
-    this.pruneTerminalTaskRecords()
+    // 有界清理统一在 startWithScope 的 settle finally 中执行（覆盖全部终态路径）
   }
 
   /** A3 消息统计：WCDB 失败/未连接 → ok=false（统计层回退或 unavailable，不伪造） */
@@ -799,17 +803,32 @@ export class AnnualReviewService {
   }
 
   /**
-   * 有界清理（每次任务进入终态后调用）：记录数超过上限时，淘汰「已终态且不属于当前
-   * 作用域」的最旧记录。运行中记录与当前作用域记录永不淘汰——前者保证任务状态机不被
-   * 破坏，后者保证渲染层仍能用 getTaskStatus 恢复被容量淘汰的终态事件。
+   * 有界清理（每个任务 promise 收敛后调用，覆盖 completed / failed / cancelled /
+   * invalidated / internal 等**全部终态路径**——调用点放在 running=false 的 finally 之后，
+   * 避免清理时把刚收敛的任务仍当成 running 而漏算）：
+   *   - 运行中任务（record.running）永不淘汰；
+   *   - 非运行中记录（正常路径下即终态快照）**全局**最多保留
+   *     ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS 条，当前账号不豁免；
+   *   - 淘汰顺序 = updatedAt 升序（最旧先淘汰），同一 updatedAt 用 taskId 字典序稳定决胜；
+   *   - keepTaskId（本次刚收敛的任务）在本次清理中必须保留：即使它最旧也不淘汰，
+   *     优先淘汰更旧的记录（清理由它自己触发，不得把自己删掉）。
    */
-  private pruneTerminalTaskRecords(): void {
-    if (this.tasks.size <= ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS) return
-    const currentScopeId = buildAccountScopeId(this.deps.getAccountContext())
+  private pruneTerminalTaskRecords(keepTaskId?: string): void {
+    const retained: Array<{ key: string; taskId: string; updatedAt: number }> = []
     for (const [key, record] of this.tasks) {
-      if (this.tasks.size <= ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS) break
-      if (record.running || record.scopeId === currentScopeId) continue
-      this.tasks.delete(key)
+      if (record.running) continue // 运行中任务永不淘汰
+      retained.push({ key, taskId: record.snapshot.taskId, updatedAt: record.snapshot.updatedAt })
+    }
+    if (retained.length <= ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS) return
+    retained.sort((a, b) =>
+      a.updatedAt - b.updatedAt || (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0)
+    )
+    let excess = retained.length - ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS
+    for (const row of retained) {
+      if (excess <= 0) break
+      if (row.taskId === keepTaskId) continue // 本次刚收敛的任务保留，继续淘汰更旧的
+      this.tasks.delete(row.key)
+      excess--
     }
   }
 
