@@ -228,3 +228,68 @@
   border-left: 2px solid var(--color-warning); background: var(--color-bg-surface-muted);
   padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);
 }
+
+// ── AI 经营诊断（S7.2） ───────────────────────────────────────────────────────
+.ar-ai-disclaimer {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+  font-size: 11px; color: var(--color-text-tertiary);
+}
+.ar-ai-idle {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  &__t { font-size: 13px; color: var(--color-text-primary); }
+  &__d { font-size: 12px; color: var(--color-text-secondary); line-height: 1.65; }
+}
+.ar-ai-running {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 14px 16px;
+  &__t { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-primary); }
+  &__p { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-secondary); }
+}
+.ar-progress--indeterminate .ar-progress__bar { width: 40%; animation: ar-ai-slide 1.2s ease-in-out infinite; }
+@keyframes ar-ai-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.ar-spin { animation: ar-ai-spin 1s linear infinite; }
+@keyframes ar-ai-spin { to { transform: rotate(360deg); } }
+
+.ar-ai-result { display: flex; flex-direction: column; gap: 12px; }
+.ar-ai-meta {
+  font-family: var(--font-mono); font-size: 11px; color: var(--color-text-tertiary);
+}
+.ar-ai-summary {
+  font-size: 13px; line-height: 1.75; color: var(--color-text-primary);
+  border-left: 2px solid var(--color-accent); padding-left: 12px; white-space: pre-wrap;
+}
+.ar-ai-block {
+  display: flex; flex-direction: column; gap: 8px;
+  &__t { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: .02em; }
+}
+.ar-ai-item {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  &__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  &__title { font-size: 12.5px; font-weight: 500; color: var(--color-text-primary); }
+  &__text { font-size: 12.5px; line-height: 1.7; color: var(--color-text-secondary); white-space: pre-wrap; }
+  &__text--hypo { color: var(--color-text-tertiary); }
+}
+.ar-ai-chip {
+  font-family: var(--font-mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--color-divider); color: var(--color-text-secondary);
+  &--priority { color: var(--color-accent); border-color: var(--color-accent-border); }
+}
+.ar-ai-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+.ar-ai-metric {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px;
+  background: var(--color-bg-surface-muted); border: 1px solid var(--color-divider);
+  font-size: 11px; color: var(--color-text-secondary);
+  &__v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-text-primary); }
+  &--unavailable { color: var(--color-text-tertiary); .ar-ai-metric__v { color: var(--color-text-tertiary); } }
+}
+.ar-ai-rerun { align-self: flex-start; }
+
+// 运行中的操作行（生成按钮禁用 + 取消入口）
+.ar-ai-running__actions { display: flex; gap: 8px; align-items: center; }
+.ar-ai-metric__s { font-size: 10px; color: var(--color-warning); }

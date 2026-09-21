@@ -12,8 +12,18 @@
  *     页面卸载/重新生成不产生监听器泄漏。
  */
 import type { AnnualReviewReport } from '../types/electron'
+import type {
+  AnnualReviewAiAnalysis,
+  AnnualReviewAiAnalysisFailureCode,
+  AnnualReviewAiAnalysisResponse,
+  AnnualReviewAiCancelResponse
+} from '../../shared/annualReviewAi'
+import {
+  ANNUAL_REVIEW_AI_ANALYSIS_FAILURE_CODES
+} from '../../shared/annualReviewAi'
 
 export type { AnnualReviewReport }
+export type { AnnualReviewAiAnalysis, AnnualReviewAiAnalysisFailureCode, AnnualReviewAiAnalysisResponse }
 
 // ─── 页面阶段（任务要求的状态闭环） ──────────────────────────────────────────
 
@@ -55,6 +65,8 @@ export interface AnnualReviewReportResult {
   success: boolean
   cache: 'hit' | 'miss' | 'stale'
   report?: AnnualReviewReport
+  /** 命中时给出产生该报告的生成任务（AI 分析请求只用该 taskId，不上传报告内容） */
+  taskId?: string
   error?: { code: string; message: string }
 }
 
@@ -85,9 +97,55 @@ export interface AnnualReviewPageState {
     cancellable: boolean
   }
   report: AnnualReviewReport | null
+  /**
+   * 当前渲染的报告由哪个生成任务产出（来自 getReport 响应的 taskId）。
+   * AI 分析请求只提交该 taskId；报告身份变化（切年/重新生成/新缓存）时 AI 区块状态一并清空。
+   */
+  reportTaskId: string | null
   /** done 屏的 overall 徽标档位（complete/partial/unavailable） */
   overallBadge: OverallBadge
+  /** AI 分析区块（独立状态机；与确定性报告渲染完全解耦） */
+  ai: AnnualReviewAiState
   error?: { code: string; message: string }
+}
+
+// ─── AI 分析区块状态（S7.2） ─────────────────────────────────────────────────
+
+/**
+ * AI 区块阶段。'cancelled' 是**用户主动取消**的界面状态（不是失败码）：
+ * 主进程对取消的返回是 `call_failed` + 取消文案（规格 §8.3 固定其一），
+ * 页面以「取消意图」区分显示，绝不把取消渲染成模型故障。
+ */
+export type AnnualReviewAiPhase = 'idle' | 'running' | 'done' | 'failed' | 'cancelled'
+
+export interface AnnualReviewAiState {
+  phase: AnnualReviewAiPhase
+  /** 本次分析绑定的报告任务身份（旧分析结果不得覆盖新报告） */
+  taskId: string | null
+  analysis: AnnualReviewAiAnalysis | null
+  /** 可追溯元信息（PRD §23）：模型 / promptVersion / 生成时刻 */
+  model: string | null
+  promptVersion: string | null
+  generatedAt: number | null
+  /** true = 命中主进程内存缓存（未产生新的模型调用） */
+  cached: boolean
+  /** running 起始时刻（用时展示；null = 未在跑） */
+  startedAt: number | null
+  error: { code: string; message: string } | null
+}
+
+export function initialAnnualReviewAiState(): AnnualReviewAiState {
+  return {
+    phase: 'idle',
+    taskId: null,
+    analysis: null,
+    model: null,
+    promptVersion: null,
+    generatedAt: null,
+    cached: false,
+    startedAt: null,
+    error: null
+  }
 }
 
 export function initialAnnualReviewState(): AnnualReviewPageState {
@@ -97,7 +155,9 @@ export function initialAnnualReviewState(): AnnualReviewPageState {
     selectedYear: null,
     generation: { taskId: null, progress: 0, cancellable: false },
     report: null,
-    overallBadge: 'unavailable'
+    reportTaskId: null,
+    overallBadge: 'unavailable',
+    ai: initialAnnualReviewAiState()
   }
 }
 
@@ -188,6 +248,11 @@ export function reduceTerminalEvent(state: AnnualReviewPageState, event: AnnualR
  * 错误年份下。year=0（历史以来）是合法年份值，同样参与比对（0 === 0 通过）。
  * 本校验与 controller 的 reportSeq 代际隔离互补：seq 负责「迟到结果不覆盖新状态」，
  * 年份校验负责「数据本身与请求年份不符」。
+ *
+ * **AI 区块绑定报告身份**：命中报告时记录 `reportTaskId`（产生该报告的生成任务），并在
+ * 报告身份发生变化（新任务产出 / 报告被清空）时把 AI 区块状态一并回到初始——
+ * AI 分析结果永远只跟它当时分析的那份报告绑定，绝不挂到另一份报告上。
+ * 在途 AI 请求的取消不在此处（切年/重新生成由 controller 显式取消，见 resetAi）。
  */
 export function reduceReportResult(state: AnnualReviewPageState, result: AnnualReviewReportResult, year: number | null): AnnualReviewPageState {
   const failed = (error: { code: string; message: string }): AnnualReviewPageState => ({
@@ -195,7 +260,9 @@ export function reduceReportResult(state: AnnualReviewPageState, result: AnnualR
     phase: 'failed',
     error,
     report: null,
+    reportTaskId: null,
     overallBadge: 'unavailable',
+    ai: initialAnnualReviewAiState(),
     generation: { taskId: null, progress: 0, cancellable: false }
   })
   if (year === null || result.success !== true) {
@@ -209,17 +276,28 @@ export function reduceReportResult(state: AnnualReviewPageState, result: AnnualR
       return failed({ code: 'report_year_mismatch', message: '报告年份与请求年份不一致，已拒绝渲染' })
     }
     const overall = result.report.completeness.overall
+    const reportTaskId = typeof result.taskId === 'string' && result.taskId !== '' ? result.taskId : null
     return {
       ...state,
       phase: 'done',
       report: result.report,
+      reportTaskId,
       overallBadge: overall === 'complete' ? 'complete' : overall === 'partial' ? 'partial' : 'unavailable',
       error: undefined,
+      // 报告身份变化 → AI 区块清空（旧结果不得显示在新报告下）
+      ai: reportTaskId === state.reportTaskId ? state.ai : initialAnnualReviewAiState(),
       generation: { taskId: null, progress: 0, cancellable: false }
     }
   }
   // miss/stale → 未生成（可发起生成）；stale 信息在页面上以「缓存已过期」副文案呈现
-  return { ...state, phase: 'idle', report: null, generation: { taskId: null, progress: 0, cancellable: false } }
+  return {
+    ...state,
+    phase: 'idle',
+    report: null,
+    reportTaskId: null,
+    ai: initialAnnualReviewAiState(),
+    generation: { taskId: null, progress: 0, cancellable: false }
+  }
 }
 
 // ─── 文案映射（稳定中文说明；不暴露内部路径/SQL/Token/wxid/sessionId） ────────
@@ -338,6 +416,383 @@ export function buildSummaryCells(report: AnnualReviewReport): MetricCell[] {
   })
 }
 
+// ─── AI 区块：状态转换、文案映射与确定性指标回查（S7.2） ─────────────────────
+
+/** AI 区块纯 reducer：进入运行中（发起分析 / 重试）。startedAt 由调用方注入（纯函数不读时钟） */
+export function reduceAiStart(state: AnnualReviewPageState, startedAt: number): AnnualReviewPageState {
+  const taskId = state.reportTaskId
+  if (taskId === null) return state
+  return {
+    ...state,
+    ai: {
+      ...initialAnnualReviewAiState(),
+      phase: 'running',
+      taskId,
+      startedAt
+    }
+  }
+}
+
+/**
+ * AI 响应 → 状态。成功：analysis + 可追溯元信息；失败：失败码与文案（原样保留主进程给出的
+ * 固定文案，页面只补稳定的标题与可用动作）。
+ */
+export function reduceAiResult(state: AnnualReviewPageState, result: AnnualReviewAiAnalysisResponse): AnnualReviewPageState {
+  if (result.success) {
+    return {
+      ...state,
+      ai: {
+        phase: 'done',
+        taskId: state.ai.taskId,
+        analysis: result.analysis,
+        model: typeof result.model === 'string' ? result.model : null,
+        promptVersion: typeof result.promptVersion === 'string' ? result.promptVersion : null,
+        generatedAt: typeof result.generatedAt === 'number' ? result.generatedAt : null,
+        cached: result.cached === true,
+        startedAt: null,
+        error: null
+      }
+    }
+  }
+  const code = typeof result.error?.code === 'string' ? result.error.code : 'internal'
+  return {
+    ...state,
+    ai: {
+      ...initialAnnualReviewAiState(),
+      taskId: state.ai.taskId,
+      phase: 'failed',
+      error: { code, message: sanitizeAiFailureMessage(result.error?.message, code) }
+    }
+  }
+}
+
+/** 用户主动取消（仅当主进程确认真的中止了在途调用时进入） */
+export function reduceAiCancelled(state: AnnualReviewPageState): AnnualReviewPageState {
+  return {
+    ...state,
+    ai: { ...initialAnnualReviewAiState(), taskId: state.ai.taskId, phase: 'cancelled' }
+  }
+}
+
+/** 稳定标签：优先级 / 把握度 / 时间跨度（不在页面上裸渲染枚举值或数字优先级） */
+export const AI_PRIORITY_LABELS: Record<number, string> = { 1: '高优先级', 2: '中优先级', 3: '低优先级' }
+export const AI_CONFIDENCE_LABELS: Record<string, string> = { high: '把握较大', medium: '把握中等', low: '把握有限' }
+export const AI_HORIZON_LABELS: Record<string, string> = { next_quarter: '下个季度', next_half: '未来半年', next_year: '下一年度' }
+
+export function aiPriorityLabel(priority: number): string {
+  return AI_PRIORITY_LABELS[priority] ?? '优先级未知'
+}
+export function aiConfidenceLabel(confidence: string): string {
+  return AI_CONFIDENCE_LABELS[confidence] ?? '把握未知'
+}
+export function aiHorizonLabel(horizon: string): string {
+  return AI_HORIZON_LABELS[horizon] ?? '未标注时间跨度'
+}
+
+export interface AnnualReviewAiFailureView {
+  /** 稳定标题（按失败码固定，不拼接主进程文案） */
+  title: string
+  /** 可用动作：retry=可重试；settings=去设置 AI；regenerate=需重新生成报告；none=无动作 */
+  action: 'retry' | 'settings' | 'regenerate' | 'none'
+  actionLabel?: string
+  /** 无主进程文案时的兜底说明 */
+  fallbackDetail: string
+}
+
+/**
+ * 失败码 → 页面文案与动作。键集 = shared/annualReviewAi.ts 的失败码全集（类型穷举：
+ * 主进程新增失败码而页面未覆盖时**编译失败**，不会出现「没有解释的错误卡片」）。
+ * 说明一律为「可重试 / 去设置 / 需重新生成」三类可执行信息，不解释内部实现。
+ */
+export const ANNUAL_REVIEW_AI_FAILURE_VIEWS: Record<AnnualReviewAiAnalysisFailureCode, AnnualReviewAiFailureView> = {
+  not_configured: {
+    title: 'AI 未配置',
+    action: 'settings',
+    actionLabel: '前往设置 AI',
+    fallbackDetail: '尚未配置 AI 服务（API 地址或密钥），配置后即可生成 AI 诊断。'
+  },
+  budget_blocked: {
+    title: '今日 AI 调用已达上限',
+    action: 'settings',
+    actionLabel: '前往设置',
+    fallbackDetail: '今日 AI 调用已达上限，本次分析未生成；可在设置中提高每日调用上限后重试。'
+  },
+  call_failed: {
+    title: 'AI 调用失败',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: 'AI 调用未成功（超时 / 取消 / 网络或模型故障），本次分析未生成，可重试。'
+  },
+  empty_output: {
+    title: '模型输出为空',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: '模型没有返回内容，本次分析未生成。'
+  },
+  invalid_json: {
+    title: '模型输出未通过校验',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: '模型返回的不是合法 JSON，本次分析未生成。'
+  },
+  invalid_shape: {
+    title: '模型输出未通过校验',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: '模型返回的结构不符合分析契约，本次分析未生成。'
+  },
+  numeric_claim: {
+    title: '模型输出未通过校验',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: '模型在正文里给出了具体数值（AI 只做定性解释，数字一律以报告为准），本次分析未生成。'
+  },
+  invalid_report: {
+    title: '报告未通过结构校验',
+    action: 'regenerate',
+    actionLabel: '重新生成报告',
+    fallbackDetail: '当前报告未通过结构校验，暂时无法生成 AI 分析；报告仍可查看与导出。'
+  },
+  unsupported_report_contract: {
+    title: '当前报告暂不支持 AI 分析',
+    action: 'none',
+    fallbackDetail: '报告包含 AI 分析不支持的契约取值，本次分析未生成；报告仍可正常查看与导出。'
+  },
+  invalid_task_id: {
+    title: '报告标识无效',
+    action: 'regenerate',
+    actionLabel: '重新生成报告',
+    fallbackDetail: '报告标识无效，请重新生成报告后再试。'
+  },
+  task_not_found: {
+    title: '未找到报告对应的生成任务',
+    action: 'regenerate',
+    actionLabel: '重新生成报告',
+    fallbackDetail: '该报告对应的生成任务已不存在（可能已被新任务取代），请重新生成报告后再试。'
+  },
+  task_not_completed: {
+    title: '报告尚未生成完成',
+    action: 'regenerate',
+    actionLabel: '重新生成报告',
+    fallbackDetail: '该生成任务尚未成功完成，请重新生成报告后再生成 AI 分析。'
+  },
+  report_not_available: {
+    title: '报告已过期',
+    action: 'regenerate',
+    actionLabel: '重新生成报告',
+    fallbackDetail: '报告已过期或已被新的生成结果取代，请重新生成报告后再试。'
+  },
+  analysis_in_progress: {
+    title: '已有 AI 分析正在进行',
+    action: 'none',
+    fallbackDetail: '该报告已有一份 AI 分析正在进行，请稍候查看结果。'
+  },
+  invalidated: {
+    title: '数据已变更，结果已作废',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: '账号或业务库在分析期间发生变化，本次结果已作废，可重试。'
+  },
+  internal: {
+    title: 'AI 分析失败',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: 'AI 分析未成功，可重试；确定性报告不受影响。'
+  }
+}
+
+/** 失败码全集（渲染层守卫用；与主进程词表同源） */
+export const AI_FAILURE_CODES: readonly string[] = ANNUAL_REVIEW_AI_ANALYSIS_FAILURE_CODES
+
+/**
+ * 失败文案安全闸门：主进程的失败文案是编译期常量（已由主进程测试断言不含敏感内容），
+ * 但渲染层是最后一道出口——任何看起来像 URL / Token / 文件路径 / 异常堆栈的文案
+ * 都不显示，退回该失败码的固定文案。宁可少显示一行诊断信息，也不把秘密渲染到界面上。
+ */
+const AI_FAILURE_MESSAGE_UNSAFE_PATTERNS: readonly RegExp[] = [
+  /https?:\/\//i,
+  /\bbearer\b/i,
+  /\bsk-[A-Za-z0-9_-]{8,}/,
+  /[A-Za-z]:\\/,
+  /(?:^|[\s"'(])\/(?:Users|home|var|tmp|opt|Applications)\//,
+  /\.(?:db|sqlite|sqlite3|log)\b/i,
+  /\b(?:ENOENT|EACCES|ECONNREFUSED|ETIMEDOUT|SQLITE_\w+)\b/,
+  /\bat\s+\S+\s+\([^)]*:\d+:\d+\)/,
+  // 序列化载荷（供应商响应正文）：形如 "error": / "message": 的 JSON 片段一律不显示
+  /"[A-Za-z_][A-Za-z0-9_]*"\s*:/
+]
+
+export function sanitizeAiFailureMessage(message: unknown, code: string): string {
+  const fallback = aiFailureView(code).fallbackDetail
+  if (typeof message !== 'string') return fallback
+  const text = message.trim()
+  if (text === '') return fallback
+  if (text.length > 240) return fallback
+  if (AI_FAILURE_MESSAGE_UNSAFE_PATTERNS.some((p) => p.test(text))) return fallback
+  return text
+}
+
+/** 失败码 → 文案视图（未知码回落 to `internal`，永远有可显示的说明） */
+export function aiFailureView(code: string): AnnualReviewAiFailureView {
+  const view = (ANNUAL_REVIEW_AI_FAILURE_VIEWS as Record<string, AnnualReviewAiFailureView | undefined>)[code]
+  return view ?? ANNUAL_REVIEW_AI_FAILURE_VIEWS.internal
+}
+
+// ─── metricKeys → 原报告确定性指标回查（不计算、不推断） ─────────────────────
+
+export interface AnnualReviewAiMetricCell {
+  /** 报告 coverage 键（与 AI 引用的一致） */
+  key: string
+  label: string
+  /** 确定性数值（只从报告读取）；null = 该键在报告里不是标量（或 unavailable） */
+  displayValue: string | null
+  state: string
+  stateLabel: string
+  /** 非标量键提示「数值见报告哪一区块」；标量键为 null */
+  valueHint: string | null
+}
+
+/** 全部 35 个 metricKey 的中文标签（标签恒定，不随数据变化） */
+const AI_METRIC_LABELS: Record<string, string> = {
+  'summary.customerTotal': '客户总数',
+  'summary.customerNew': '年度新增客户',
+  'summary.customerActive': '年度活跃客户',
+  'summary.contractCount': '年度签约合同',
+  'summary.contractAmount': '年度签约金额',
+  'summary.creditedAmount': '已核销回款',
+  'summary.shippedCount': '已发货合同数',
+  'summary.shippedAmount': '已发货金额',
+  'summary.dealingCustomers': '成交客户数',
+  'summary.avgDealSize': '客单价',
+  'funnel.customerStage': '客户阶段分布',
+  'funnel.opportunityStage': '商机阶段分布',
+  'funnel.stageFlow': '年内阶段流转',
+  'funnel.stuck': '停滞客户',
+  'funnel.lostBreakdown': '流失归因',
+  'monthly.contractSign': '月度签约金额',
+  'monthly.credited': '月度核销回款',
+  'monthly.messageVolume': '月度客户消息量',
+  'customers.highValue': '高价值客户',
+  'customers.newCustomers': '新增客户名单',
+  'customers.dealing': '成交客户名单',
+  'customers.repeat': '复购客户名单',
+  'customers.active': '活跃客户名单',
+  'customers.silent': '沉默客户名单',
+  'customers.risk': '流失风险客户',
+  'customers.priority': '当前重点推进客户',
+  'communication.volume': '年度客户消息量',
+  'communication.contacted': '有沟通客户数',
+  'communication.outboundRate': '主动联系率',
+  'communication.monthlyTrend': '月度沟通趋势',
+  'communication.longSilent': '长期未联系客户',
+  'salesAssignment.assignedFacts': '分配事实（初始分配/移交）',
+  'salesAssignment.effectiveFollowup': '有效跟进客户',
+  'salesAssignment.contractContribution': '合同贡献（按销售）',
+  'salesAssignment.creditedContribution': '核销回款贡献（按销售）'
+}
+
+/** 非标量键的确定性数值所在区块（提示语；不做任何计算） */
+const AI_METRIC_HINTS: Record<string, string> = {
+  'funnel.customerStage': '分布见「漏斗与阶段」',
+  'funnel.opportunityStage': '分布见「漏斗与阶段」',
+  'funnel.stageFlow': '分布见「漏斗与阶段」',
+  'funnel.lostBreakdown': '归因见「漏斗与阶段」',
+  'monthly.contractSign': '序列见「月度趋势」',
+  'monthly.credited': '序列见「月度趋势」',
+  'monthly.messageVolume': '序列见「月度趋势」',
+  'communication.monthlyTrend': '序列见「沟通质量」',
+  'communication.longSilent': '名单见「沟通质量」',
+  'customers.highValue': '名单见「客户经营」',
+  'customers.newCustomers': '名单见「客户经营」',
+  'customers.dealing': '名单见「客户经营」',
+  'customers.repeat': '名单见「客户经营」',
+  'customers.active': '名单见「客户经营」',
+  'customers.silent': '名单见「客户经营」',
+  'customers.risk': '名单见「客户经营」',
+  'customers.priority': '名单见「客户经营」',
+  'salesAssignment.assignedFacts': '分项见「销售与分配」',
+  'salesAssignment.contractContribution': '明细见「销售与分配」',
+  'salesAssignment.creditedContribution': '明细见「销售与分配」'
+}
+
+/**
+ * AI 引用的 metricKeys → 报告里的确定性指标展示单元。
+ *
+ * 纪律（规格 §8.2.1 / S7.2）：
+ *   - 数值**只从报告读取**，绝不从 AI 文本提取、不做任何二次计算（金额格式化是展示层格式）；
+ *   - 键集合以**当前报告 coverage** 为准（与主进程解析期同一白名单）：报告里没有的键
+ *     一律不展示（防御未知/伪造键，不显示来路不明的指标）；
+ *   - unavailable 不显示为 0（显示「暂无可靠数据」）；
+ *   - 非标量键（分布/序列/名单）只给状态与所在区块提示，不在 AI 区块重复整块明细；
+ *   - 去掉重复键、保留 AI 给出的顺序，最多 `limit` 条。
+ */
+export function buildAiMetricCells(report: AnnualReviewReport, metricKeys: string[], limit = 6): AnnualReviewAiMetricCell[] {
+  const coverage = report.coverage ?? {}
+  const seen = new Set<string>()
+  const cells: AnnualReviewAiMetricCell[] = []
+  for (const raw of metricKeys) {
+    if (typeof raw !== 'string') continue
+    const key = raw.trim()
+    if (key === '' || seen.has(key)) continue
+    if (!Object.prototype.hasOwnProperty.call(coverage, key)) continue // 只认当前报告的 coverage 键集合
+    seen.add(key)
+    const metric = aiMetricValue(report, key)
+    const state = metric?.state ?? 'unavailable'
+    cells.push({
+      key,
+      label: AI_METRIC_LABELS[key] ?? key,
+      displayValue: metric && metric.displayValue !== null && state !== 'unavailable' ? metric.displayValue : null,
+      state,
+      stateLabel: METRIC_STATE_LABELS[state] ?? state,
+      valueHint: metric && metric.displayValue !== null ? null : (AI_METRIC_HINTS[key] ?? null)
+    })
+    if (cells.length >= limit) break
+  }
+  return cells
+}
+
+/** 报告的确定性取值读取（只读；unavailable → value null，绝不显示 0） */
+function aiMetricValue(report: AnnualReviewReport, key: string): { displayValue: string | null; state: string } | null {
+  const amount = (v: number): string => formatAmount(v)
+  if (key.startsWith('summary.')) {
+    const metricKey = key.slice('summary.'.length) as keyof AnnualReviewReport['summary']
+    const metric = report.summary?.[metricKey]
+    if (!metric) return null
+    const isAmount = metricKey === 'contractAmount' || metricKey === 'creditedAmount' || metricKey === 'shippedAmount' || metricKey === 'avgDealSize'
+    return { displayValue: metric.value === null ? null : isAmount ? amount(metric.value) : String(metric.value), state: metric.state }
+  }
+  switch (key) {
+    case 'funnel.stuck':
+      return { displayValue: report.funnel.stuck.value === null ? null : String(report.funnel.stuck.value), state: report.funnel.stuck.coverage.status }
+    case 'funnel.customerStage': return { displayValue: null, state: report.funnel.customerStage.coverage.status }
+    case 'funnel.opportunityStage': return { displayValue: null, state: report.funnel.opportunityStage.coverage.status }
+    case 'funnel.stageFlow': return { displayValue: null, state: report.funnel.stageFlow.coverage.status }
+    case 'funnel.lostBreakdown': return { displayValue: null, state: report.funnel.lostBreakdown.coverage.status }
+    case 'monthly.contractSign': return { displayValue: null, state: report.monthly.contractSign.state }
+    case 'monthly.credited': return { displayValue: null, state: report.monthly.credited.state }
+    case 'monthly.messageVolume': return { displayValue: null, state: report.monthly.messageVolume.state }
+    case 'communication.volume': return { displayValue: report.communication.volume.value === null ? null : String(report.communication.volume.value), state: report.communication.volume.state }
+    case 'communication.contacted': return { displayValue: report.communication.contacted.value === null ? null : String(report.communication.contacted.value), state: report.communication.contacted.state }
+    case 'communication.outboundRate':
+      return { displayValue: report.communication.outboundRate.value === null ? null : `${Math.round(report.communication.outboundRate.value * 100)}%`, state: report.communication.outboundRate.state }
+    case 'communication.monthlyTrend': return { displayValue: null, state: report.communication.monthlyTrend.state }
+    case 'communication.longSilent': return { displayValue: null, state: report.communication.longSilent.state }
+    case 'salesAssignment.assignedFacts': return { displayValue: null, state: report.salesAssignment.coverage.status }
+    case 'salesAssignment.effectiveFollowup':
+      return { displayValue: report.salesAssignment.effectiveFollowup.value === null ? null : String(report.salesAssignment.effectiveFollowup.value), state: report.salesAssignment.effectiveFollowup.state }
+    case 'salesAssignment.contractContribution': return { displayValue: null, state: report.salesAssignment.contractContribution.state }
+    case 'salesAssignment.creditedContribution': return { displayValue: null, state: report.salesAssignment.creditedContribution.state }
+    default: {
+      if (key.startsWith('customers.')) {
+        const metricKey = key.slice('customers.'.length) as keyof AnnualReviewReport['customers']
+        const block = report.customers?.[metricKey]
+        return block ? { displayValue: null, state: block.coverage.status } : null
+      }
+      return null
+    }
+  }
+}
+
 // ─── Controller（框架无关；React 页面经 useSyncExternalStore 接入） ──────────
 
 /**
@@ -380,6 +835,10 @@ export interface AnnualReviewApi {
    * taskId 对账。**报告缓存（getReport）不是任务状态**，不得用于判断任务是否完成。
    */
   getTaskStatus(taskId: string): Promise<AnnualReviewTaskStatusResult>
+  /** AI 分析：只提交 taskId（报告由主进程在当前账号作用域内定位，不上传报告内容） */
+  aiAnalysis(taskId: string): Promise<AnnualReviewAiAnalysisResponse>
+  /** 取消在途 AI 分析；success=false + analysis_not_found 表示没有在途调用 */
+  aiCancel(taskId: string): Promise<AnnualReviewAiCancelResponse>
   /** 订阅进度广播；返回精确清理函数（只移除本次订阅） */
   subscribeProgress(cb: (event: AnnualReviewProgressEvent) => void): () => void
 }
@@ -394,6 +853,10 @@ export interface AnnualReviewController {
   loadReport(year: number): Promise<void>
   startGenerate(): void
   cancelGeneration(): void
+  /** 发起 AI 分析（针对当前渲染报告的报告身份；运行中重复点击不产生第二次调用） */
+  runAiAnalysis(): void
+  /** 取消在途 AI 分析（仅主进程确认中止时进入「已取消」） */
+  cancelAiAnalysis(): void
   dispose(): void
 }
 
@@ -416,6 +879,8 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
   let yearsSeq = 0
   let reportSeq = 0
   let generateSeq = 0
+  /** AI 分析代际：切年/重新生成/取消/卸载后，旧请求的迟到结果一律丢弃 */
+  let aiSeq = 0
   let disposed = false
   let unsubscribeProgress: (() => void) | null = null
   /** generate 响应到达前按 taskId 合并的暂存事件（taskId 未知，无法提前过滤） */
@@ -437,6 +902,20 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
   const clearPending = (): void => {
     pendingByTask.clear()
     pendingTerminalDropped = false
+  }
+
+  /**
+   * 作废当前 AI 代际并取消在途分析（切年 / 重新生成 / 卸载共用）。
+   * 返回新的 AI 初始状态：AI 结果只属于它分析的那份报告，报告一换立即清空；
+   * 在途请求由主进程中止（取消失败不阻塞主流程，主进程状态机自行收敛）。
+   */
+  const resetAi = (): AnnualReviewAiState => {
+    ++aiSeq
+    const taskId = state.ai.phase === 'running' ? state.ai.taskId : null
+    if (taskId !== null) {
+      void api.aiCancel(taskId).catch(() => { /* 取消失败：主进程按 taskId 收敛，页面状态已清空 */ })
+    }
+    return initialAnnualReviewAiState()
   }
 
   /**
@@ -638,10 +1117,20 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     },
     selectYear(year) {
       // 切换年份：先取消当前运行任务（含「首条 progress 前」——taskId 已由启动响应绑定），
-      // 再作废旧代际挂起结果并拉取新年份缓存
+      // 再作废旧代际挂起结果并拉取新年份缓存；AI 区块同时清空并取消在途分析
+      // （旧年份的分析结果绝不显示在新年份下）
       ++generateSeq
       const runningTaskId = state.phase === 'generating' ? state.generation.taskId : null
-      setState({ ...state, selectedYear: year, report: null, phase: 'loading', error: undefined, generation: { taskId: null, progress: 0, cancellable: false } })
+      setState({
+        ...state,
+        selectedYear: year,
+        report: null,
+        reportTaskId: null,
+        phase: 'loading',
+        error: undefined,
+        ai: resetAi(),
+        generation: { taskId: null, progress: 0, cancellable: false }
+      })
       if (runningTaskId !== null) {
         void api.cancel(runningTaskId).catch(() => { /* 取消失败：任务由主进程状态机收敛 */ })
       }
@@ -671,6 +1160,9 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
         phase: 'generating',
         generation: { taskId: null, progress: 0, statusText: '准备生成', cancellable: true },
         report: null,
+        reportTaskId: null,
+        // 重新生成 = 报告身份必然变化：AI 结果与在途分析一并清空（旧结果绝不挂到新报告上）
+        ai: resetAi(),
         error: undefined
       })
       if (prevTaskId !== null) {
@@ -721,6 +1213,47 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
         await api.cancel(taskId)
       } catch { /* 取消失败：任务仍由主进程状态机收敛 */ }
     },
+    /**
+     * 发起 AI 分析。只提交 `reportTaskId`（报告由主进程定位），并做三重防护：
+     *   ① 运行中重复点击直接返回（不产生第二次模型调用；页面同时禁用按钮）；
+     *   ② 代际 aiSeq：切年/重新生成/取消/卸载后，旧请求的迟到结果一律丢弃；
+     *   ③ 报告身份复核：响应到达时 `reportTaskId` 必须仍是发起时的那一个。
+     * 失败只落在 `state.ai` 上：确定性报告、导出、重新生成都不受影响。
+     */
+    async runAiAnalysis() {
+      const taskId = state.reportTaskId
+      if (taskId === null) return
+      if (state.ai.phase === 'running') return
+      const seq = ++aiSeq
+      setState(reduceAiStart(state, Date.now()))
+      let result: AnnualReviewAiAnalysisResponse
+      try {
+        result = await api.aiAnalysis(taskId)
+      } catch {
+        result = { success: false, error: { code: 'internal', message: 'AI 分析失败，请稍后重试' } }
+      }
+      if (disposed || seq !== aiSeq) return // 卸载 / 已切年 / 已重新生成 / 已取消：丢弃迟到结果
+      if (state.reportTaskId !== taskId) return // 报告身份已变：结果不得覆盖新报告状态
+      setState(reduceAiResult(state, result))
+    },
+    /**
+     * 取消在途 AI 分析。只有主进程确认「确实中止了一次在途调用」（success=true）才切到
+     * 「已取消」：`analysis_not_found` 表示没有在途调用（可能结果已返回），此时保持运行中，
+     * 让真正的响应自然落地——绝不把一次成功的分析显示成「已取消」。
+     */
+    async cancelAiAnalysis() {
+      const taskId = state.ai.taskId
+      if (state.ai.phase !== 'running' || taskId === null) return
+      let confirmed = false
+      try {
+        confirmed = (await api.aiCancel(taskId)).success === true
+      } catch { /* 取消失败：不改变界面状态，等待响应或超时收敛 */ }
+      if (disposed) return
+      if (state.ai.phase !== 'running' || state.ai.taskId !== taskId) return
+      if (!confirmed) return
+      ++aiSeq // 此后该请求的迟到响应作废（不覆盖「已取消」）
+      setState(reduceAiCancelled(state))
+    },
     dispose() {
       if (disposed) return // 幂等
       disposed = true
@@ -732,6 +1265,12 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       if (state.phase === 'generating' && taskId !== null) {
         void api.cancel(taskId).catch(() => { /* 卸载路径：尽力而为 */ })
       }
+      // 卸载同样中止在途 AI 分析（组件已卸载，绝不再设置状态、也不再占用模型额度）
+      const aiTaskId = state.ai.phase === 'running' ? state.ai.taskId : null
+      if (aiTaskId !== null) {
+        void api.aiCancel(aiTaskId).catch(() => { /* 卸载路径：尽力而为 */ })
+      }
+      ++aiSeq // 卸载后到达的 AI 响应一律丢弃
       if (unsubscribeProgress) {
         unsubscribeProgress()
         unsubscribeProgress = null
@@ -755,6 +1294,8 @@ export function createIpcAnnualReviewApi(): AnnualReviewApi {
     generate: (year) => electron.annualReview.generate(year),
     cancel: (taskId) => electron.annualReview.cancel(taskId),
     getTaskStatus: (taskId) => electron.annualReview.getTaskStatus(taskId),
+    aiAnalysis: (taskId) => electron.annualReview.aiAnalysis(taskId),
+    aiCancel: (taskId) => electron.annualReview.aiCancel(taskId),
     subscribeProgress: (cb) => electron.annualReview.onProgress(cb)
   }
 }

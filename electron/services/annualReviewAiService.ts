@@ -22,6 +22,7 @@ import { getAiModelConfig, isAiConfigured, simpleCompletion, type CallOptions } 
 import { isBudgetBlockedError } from './ai/aiBudget'
 import type { ConfigService } from './config'
 import { validateAnnualReviewReport, type AnnualReviewReport } from './annualReviewReport'
+import type { AnnualReviewAiCoreFailureCode } from '../../shared/annualReviewAi'
 import {
   ANNUAL_REVIEW_AI_MAX_TOKENS,
   ANNUAL_REVIEW_AI_PROMPT_VERSION,
@@ -39,13 +40,14 @@ import {
 
 // ─── 结果类型 ────────────────────────────────────────────────────────────────
 
-export type AnnualReviewAiFailureCode =
-  | 'not_configured'
-  | 'budget_blocked'
-  | 'call_failed'
-  | 'invalid_report'
-  | 'unsupported_report_contract'
-  | AnnualReviewAiParseFailureCode
+/**
+ * AI 服务层失败码全集（规格 §8.3）：词表定义在 shared/annualReviewAi.ts——主进程与渲染层
+ * 共用同一份定义，页面文案映射表按该联合类型穷举，漏一个码即类型错误。此处保持既有命名
+ * 与导入路径不变（`invalid_report` / `unsupported_report_contract` / `not_configured` /
+ * `budget_blocked` / `call_failed` / `empty_output` / `invalid_json` / `invalid_shape` /
+ * `numeric_claim` 全部逐字保留）。
+ */
+export type AnnualReviewAiFailureCode = AnnualReviewAiCoreFailureCode
 
 export type AnnualReviewAiRunResult =
   | {

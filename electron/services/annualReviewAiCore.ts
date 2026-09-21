@@ -30,9 +30,41 @@
  */
 import { stripJsonFence } from './ai/promptUtils'
 import { FUNNEL_ORDER } from '../../shared/salesStage'
+import {
+  ANNUAL_REVIEW_AI_CONFIDENCE,
+  ANNUAL_REVIEW_AI_HORIZONS,
+  ANNUAL_REVIEW_AI_PRIORITIES,
+  type AnnualReviewAiAction,
+  type AnnualReviewAiAnalysis,
+  type AnnualReviewAiConfidence,
+  type AnnualReviewAiDiagnosis,
+  type AnnualReviewAiHorizon,
+  type AnnualReviewAiParseFailureCode,
+  type AnnualReviewAiPriority,
+  type AnnualReviewAiRisk
+} from '../../shared/annualReviewAi'
 import type { AnnualReviewCoverage } from './annualReviewSegments'
 import type { AnnualReviewReport } from './annualReviewReport'
 import type { MetricState } from './annualReviewStats'
+
+// 输出枚举与输出结构（含失败码）定义在 shared/annualReviewAi.ts（主进程与渲染层共用同一契约），
+// 此处 re-export 保持既有导入路径不变——调用方无需关心定义的物理位置。
+export {
+  ANNUAL_REVIEW_AI_CONFIDENCE,
+  ANNUAL_REVIEW_AI_HORIZONS,
+  ANNUAL_REVIEW_AI_PRIORITIES,
+  ANNUAL_REVIEW_AI_PARSE_FAILURE_CODES
+} from '../../shared/annualReviewAi'
+export type {
+  AnnualReviewAiAction,
+  AnnualReviewAiAnalysis,
+  AnnualReviewAiConfidence,
+  AnnualReviewAiDiagnosis,
+  AnnualReviewAiHorizon,
+  AnnualReviewAiParseFailureCode,
+  AnnualReviewAiPriority,
+  AnnualReviewAiRisk
+} from '../../shared/annualReviewAi'
 
 // ─── 稳定契约常量 ────────────────────────────────────────────────────────────
 
@@ -46,16 +78,6 @@ export const ANNUAL_REVIEW_AI_TEMPERATURE = 0.2
 export const ANNUAL_REVIEW_AI_MAX_TOKENS = 2400
 /** 超时：年度复盘输入比日常单客户分析大，给足 60s，仍受日上限闸门约束 */
 export const ANNUAL_REVIEW_AI_TIMEOUT_MS = 60_000
-
-/** 输出枚举（稳定值；非法值一律拒绝，不做大小写/同义词归一） */
-export const ANNUAL_REVIEW_AI_CONFIDENCE = ['high', 'medium', 'low'] as const
-export const ANNUAL_REVIEW_AI_PRIORITIES = [1, 2, 3] as const
-/** 行动计划时间跨度；'next_year' 表示贯穿下一年度 */
-export const ANNUAL_REVIEW_AI_HORIZONS = ['next_quarter', 'next_half', 'next_year'] as const
-
-export type AnnualReviewAiConfidence = (typeof ANNUAL_REVIEW_AI_CONFIDENCE)[number]
-export type AnnualReviewAiPriority = (typeof ANNUAL_REVIEW_AI_PRIORITIES)[number]
-export type AnnualReviewAiHorizon = (typeof ANNUAL_REVIEW_AI_HORIZONS)[number]
 
 /** 文本与条目上限（超长/超量 = 非法输出，不截断后放行） */
 export const ANNUAL_REVIEW_AI_LIMITS = {
@@ -240,36 +262,8 @@ export function validateAnnualReviewAiInputContract(report: AnnualReviewReport):
   return { ok: true }
 }
 
-// ─── AI 输出结构（规格 §8 契约） ─────────────────────────────────────────────
-
-export interface AnnualReviewAiDiagnosis {
-  title: string
-  observation: string
-  hypothesis: string
-  metricKeys: string[]
-  confidence: AnnualReviewAiConfidence
-}
-
-export interface AnnualReviewAiAction {
-  /** 1 = 最高优先级 */
-  priority: AnnualReviewAiPriority
-  action: string
-  rationale: string
-  metricKeys: string[]
-  horizon: AnnualReviewAiHorizon
-}
-
-export interface AnnualReviewAiRisk {
-  risk: string
-  metricKeys: string[]
-}
-
-export interface AnnualReviewAiAnalysis {
-  executiveSummary: string
-  diagnoses: AnnualReviewAiDiagnosis[]
-  actions: AnnualReviewAiAction[]
-  risks: AnnualReviewAiRisk[]
-}
+// ─── AI 输出结构（定义见 shared/annualReviewAi.ts，此处 re-export） ───────────
+// 输出契约是主进程与渲染层共用的稳定契约，因此定义放在 shared/，本节只保留说明。
 
 // ─── AI 输入结构（最小投影；每字段都能在报告里找到对应） ─────────────────────
 
@@ -560,7 +554,8 @@ export function buildAnnualReviewAiPrompt(input: AnnualReviewAiInput): AnnualRev
 
 // ─── 输出解析与严格校验 ──────────────────────────────────────────────────────
 
-export type AnnualReviewAiParseFailureCode = 'empty_output' | 'invalid_json' | 'invalid_shape' | 'numeric_claim'
+// 解析失败码（empty_output / invalid_json / invalid_shape / numeric_claim）定义在
+// shared/annualReviewAi.ts，与 AI 服务层失败码同源；此处 re-export 保持导入路径不变。
 
 export type AnnualReviewAiParseResult =
   | { ok: true; analysis: AnnualReviewAiAnalysis }

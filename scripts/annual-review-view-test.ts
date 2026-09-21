@@ -76,9 +76,9 @@ const reportAllTime: AnnualReviewReport = composeAnnualReviewReport({ period: re
 // ── 假 API ──
 interface FakeApi {
   api: AnnualReviewApi
-  calls: { generate: number; cancel: number; subscribe: number; unsubscribe: number; getReport: number; getTaskStatus: number }
+  calls: { generate: number; cancel: number; subscribe: number; unsubscribe: number; getReport: number; getTaskStatus: number; aiAnalysis: number; aiCancel: number }
   gates: Array<Deferred<{ success: boolean; taskId?: string; reused?: boolean; error?: { code: string; message: string } }>>
-  reportResults: Array<{ success: boolean; cache: 'hit' | 'miss' | 'stale'; report?: AnnualReviewReport; error?: { code: string; message: string } }>
+  reportResults: Array<{ success: boolean; cache: 'hit' | 'miss' | 'stale'; report?: AnnualReviewReport; taskId?: string; error?: { code: string; message: string } }>
   setCancelShouldFail(v: boolean): void
   /** 设置 getTaskStatus 的权威返回（对账测试用；默认 found:false） */
   setTaskStatus(result: AnnualReviewTaskStatusResult): void
@@ -89,7 +89,7 @@ interface FakeApi {
   emit: (event: AnnualReviewProgressEvent) => void
 }
 function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>>; manualStart?: boolean }): FakeApi {
-  const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0, getTaskStatus: 0 }
+  const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0, getTaskStatus: 0, aiAnalysis: 0, aiCancel: 0 }
   const gates: FakeApi['gates'] = []
   let gateSeq = 0
   let cancelShouldFail = false
@@ -125,6 +125,16 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
       calls.cancel++
       if (cancelShouldFail) throw new Error('cancel failed')
       return { success: true }
+    },
+    // AI 分析接线（S7.2）：本文件只验证「报告身份 → AI 区块」的页面不变量；
+    // AI 状态机/取消/陈旧防护的完整用例见 scripts/annual-review-ai-ipc-test.ts
+    aiAnalysis: async () => {
+      calls.aiAnalysis++
+      return { success: false, error: { code: 'not_configured', message: 'AI 未配置（缺少 API 地址或密钥）' } }
+    },
+    aiCancel: async () => {
+      calls.aiCancel++
+      return { success: false, error: { code: 'analysis_not_found', message: '没有正在进行的 AI 分析' } }
     },
     setCancelShouldFail: (v: boolean) => { cancelShouldFail = v },
     subscribeProgress: (cb) => {
@@ -848,6 +858,38 @@ async function main(): Promise<void> {
       const s = ctrl.getState()
       ok('15i 切年后迟到的 2021 报告不得展示在 2025 下',
         s.selectedYear === 2025 && s.report === null && s.phase !== 'done')
+      ctrl.dispose()
+    }
+  }
+
+  // ══ 15z 报告身份 → AI 区块不变量（S7.2）：AI 只针对当前报告，身份缺失则不可发起 ══
+  {
+    const loadingState = () => ({ ...initialAnnualReviewState(), phase: 'loading' as const, selectedYear: 2021 })
+
+    const withTask = reduceReportResult(loadingState(), { success: true, cache: 'hit', report: report2021, taskId: 'task-1' }, 2021)
+    ok('15z1 命中报告时记录产生它的 taskId', withTask.reportTaskId === 'task-1')
+    ok('15z2 报告就绪时 AI 区块为初始状态', withTask.ai.phase === 'idle' && withTask.ai.analysis === null)
+
+    const noTask = reduceReportResult(loadingState(), { success: true, cache: 'hit', report: report2021 }, 2021)
+    ok('15z3 报告缺少 taskId 时身份为 null（页面据此提示重新生成）', noTask.reportTaskId === null)
+
+    const miss = reduceReportResult(loadingState(), { success: true, cache: 'miss' }, 2021)
+    ok('15z4 miss 时报告身份与 AI 区块一并清空',
+      miss.reportTaskId === null && miss.ai.phase === 'idle')
+
+    const failed = reduceReportResult(loadingState(), { success: false, cache: 'miss', error: { code: 'internal', message: 'x' } }, 2021)
+    ok('15z5 报告查询失败时 AI 区块清空', failed.ai.phase === 'idle' && failed.reportTaskId === null)
+
+    // controller：无报告身份时发起 AI 分析不产生调用（防御无 taskId 的报告）
+    {
+      const fake = createFakeApi({ reportResults: [{ success: true, cache: 'hit', report: report2021 }] })
+      const ctrl = createAnnualReviewController(fake.api)
+      await ctrl.loadYears()
+      await tick()
+      ok('15z6 getReport 无 taskId → 报告身份为 null', ctrl.getState().reportTaskId === null)
+      ctrl.runAiAnalysis()
+      await tick()
+      ok('15z7 无报告身份时 AI 分析不发请求', fake.calls.aiAnalysis === 0 && ctrl.getState().ai.phase === 'idle')
       ctrl.dispose()
     }
   }

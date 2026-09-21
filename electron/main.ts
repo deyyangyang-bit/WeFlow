@@ -73,6 +73,7 @@ import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbPath'
 import { AnnualReviewService, type AnnualReviewAccountContext } from './services/annualReviewService'
+import { AnnualReviewAiCoordinator, bindAnnualReviewAiSenderAbort } from './services/annualReviewAiCoordinator'
 import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
 import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
 import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
@@ -886,6 +887,19 @@ const annualReviewService = new AnnualReviewService({
     }
   },
   getAccountContext: buildAnnualReviewAccountContext
+})
+
+// AI 分析（S7.2）：报告由 taskId 在当前账号作用域内定位（渲染层不上传报告），模型调用走
+// S7.1 已验收的 generateAnnualReviewAiAnalysis（唯一出口，额度闸门与账本自动生效）。
+// 结果缓存仅在主进程内存（键 = 账号作用域 + taskId + promptVersion，TTL 与报告缓存一致），
+// 账号切换/业务库重开/数据写入失效时与报告缓存一起失效。
+const annualReviewAiCoordinator = new AnnualReviewAiCoordinator({
+  getTaskReport: (taskId) => annualReviewService.getTaskReport(taskId),
+  getConfig: () => {
+    const cfg = configService || new ConfigService()
+    configService = cfg
+    return cfg
+  }
 })
 
 const pruneAnnualReportYearsSnapshotCache = (): void => {
@@ -2081,6 +2095,7 @@ function registerIpcHandlers() {
       await crmDbService.reopenForWxid(userData, wxid)
       await salesDbService.reopenForWxid(userData, wxid)
       annualReviewService.invalidateAll() // 账号切换/业务库重开：清空年度复盘缓存与可用年份
+      annualReviewAiCoordinator.invalidateAll() // AI 结果缓存/在途调用同步失效（不跨账号复用）
       console.log(`[Sales] 业务库已切换到账号 ${wxid || '(未设置)'}`)
     })
   }
@@ -2205,6 +2220,7 @@ function registerIpcHandlers() {
     // 已成功返回之后：写失败抛错时既不失效也不返回成功。
     if (key === 'reportExcludedSessions' || key === 'crmInternalList') {
       annualReviewService.handleDataChanged()
+      annualReviewAiCoordinator.invalidateAll() // 口径已变：AI 结果缓存同步失效
     }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
@@ -3153,6 +3169,7 @@ function registerIpcHandlers() {
         await crmDbService.reopenForWxid(userData, wxid)
         await salesDbService.reopenForWxid(userData, wxid)
         annualReviewService.invalidateAll() // 业务库重开：清空年度复盘缓存
+        annualReviewAiCoordinator.invalidateAll() // AI 结果缓存/在途调用同步失效
         console.log(`[Sales] 业务数据已归档（账号 ${wxid || '(未设置)'}）：${archived.map((a) => a.to).join(', ') || '无库文件'}`)
         return { success: true, archived }
       })
@@ -4181,7 +4198,10 @@ function registerIpcHandlers() {
   })
   // 数据写入失效：assignment 失效总线（含 LAN/中央下行的 assign/transfer）→ coarse 清空
   // 年度复盘缓存；账号切换/业务库重开在 switchBusinessDbsForWxid 与归档逃生舱内单独失效。
-  onAssignmentInvalidated(() => annualReviewService.handleDataChanged())
+  onAssignmentInvalidated(() => {
+    annualReviewService.handleDataChanged()
+    annualReviewAiCoordinator.invalidateAll() // 分配数据变化：AI 结果缓存同步失效
+  })
 
   ipcMain.handle('annualReview:getAvailableYears', async () => {
     try {
@@ -4293,6 +4313,36 @@ function registerIpcHandlers() {
       const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
       return { success: false, error: { code, message: e instanceof Error ? e.message : '导出失败' } }
     }
+  })
+
+  // AI 分析（S7.2）：请求只带 taskId——报告由主进程在当前账号作用域内定位，渲染层不上传
+  // 报告内容（伪造报告/改口径/注入文本无入口）。模型出口唯一（generateAnnualReviewAiAnalysis），
+  // 失败码与固定文案原样返回；窗口销毁 → 中止在途调用，不再向该窗口发送结果。
+  ipcMain.handle('annualReview:aiAnalysis', async (event, payload: unknown) => {
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
+    if (!validateAnnualReviewTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    const guard = bindAnnualReviewAiSenderAbort(event.sender)
+    try {
+      return await annualReviewAiCoordinator.run(taskId, { signal: guard.signal })
+    } finally {
+      guard.dispose()
+    }
+  })
+
+  // 取消 AI 分析：只中止该 taskId 的在途调用。没有在途调用 → analysis_not_found，
+  // 调用方（页面）据此**不**把界面切到「已取消」（避免把已返回的成功结果显示成取消）。
+  ipcMain.handle('annualReview:aiAnalysisCancel', async (_, payload: unknown) => {
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
+    if (!validateAnnualReviewTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    return annualReviewAiCoordinator.cancel(taskId)
   })
 
   ipcMain.handle('annualReport:getAvailableYears', async () => {

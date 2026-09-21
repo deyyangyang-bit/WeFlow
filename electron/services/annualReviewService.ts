@@ -232,10 +232,18 @@ export const ANNUAL_REVIEW_CACHE_TTL_MS = 10 * 60_000
 
 interface AnnualReviewCacheEntry {
   report: AnnualReviewReport
+  /**
+   * 产生该报告的生成任务（**报告身份**的一部分）。用于「按 taskId 定位报告」的调用方
+   * （S7.2 AI 分析）校验「这份报告确实是这个任务产出的」——同 year 被新任务覆盖后，
+   * 旧 taskId 不再能取到报告，避免把另一份报告的结果挂到旧任务身份上。
+   */
+  taskId: string
   cachedAt: number
 }
 
-export type AnnualReviewCacheLookup = { hit: true; report: AnnualReviewReport } | { hit: false; stale: boolean }
+export type AnnualReviewCacheLookup =
+  | { hit: true; report: AnnualReviewReport; taskId: string }
+  | { hit: false; stale: boolean }
 
 /**
  * 账号作用域内存缓存。键 = accountScopeId（完整复合键）\u0001 year \u0001 reportSchemaVersion。
@@ -258,11 +266,11 @@ export class AnnualReviewCache {
     const entry = this.entries.get(AnnualReviewCache.key(scopeId, year))
     if (!entry) return { hit: false, stale: false }
     if (this.now() - entry.cachedAt > this.ttlMs) return { hit: false, stale: true }
-    return { hit: true, report: entry.report }
+    return { hit: true, report: entry.report, taskId: entry.taskId }
   }
 
-  set(scopeId: string, year: number, report: AnnualReviewReport): void {
-    this.entries.set(AnnualReviewCache.key(scopeId, year), { report, cachedAt: this.now() })
+  set(scopeId: string, year: number, report: AnnualReviewReport, taskId: string): void {
+    this.entries.set(AnnualReviewCache.key(scopeId, year), { report, taskId, cachedAt: this.now() })
   }
 
   /** 失效一个账号作用域的全部年份（账号切换 / reopen / 写入失效事件时调用） */
@@ -441,8 +449,34 @@ export interface AnnualReviewGetReportResult {
   /** 'hit' 命中未过期缓存；'miss' 无缓存；'stale' 有缓存但已过期（绝不回退其他账号） */
   cache: 'hit' | 'miss' | 'stale'
   report?: AnnualReviewReport
+  /**
+   * 命中时给出**产生该报告的生成任务**（报告身份）。渲染层据此对同一份报告发起
+   * AI 分析（`annualReview:aiAnalysis({ taskId })`）——请求只带 taskId，不带报告内容。
+   * 非敏感：taskId 本身已由 `annualReview:generate` 返回给渲染层，且仅在当前账号
+   * 作用域内可用（跨作用域查询一律 fail closed）。
+   */
+  taskId?: string
   error?: { code: string; message: string }
 }
+
+/**
+ * 按 taskId 定位「当前账号作用域内、已完成、且报告仍有效」的结果（S7.2 AI 分析入口）。
+ * 判定链（每一步都是 fail closed，返回稳定 code，不泄漏内部标识）：
+ *   ① taskId 非法 → invalid_task_id；
+ *   ② 任务记录中不存在（含被有界清理淘汰的旧 taskId）→ task_not_found；
+ *   ③ 记录属于其他账号作用域 → **按不存在返回**（不泄漏「存在但不可访问」）；
+ *   ④ 任务非 completed（loading/computing/failed，含 cancelled/invalidated）→ task_not_completed；
+ *   ⑤ 报告缓存未命中（过期）或缓存报告不是该任务产出的（同 year 已被新任务覆盖）→
+ *      report_not_available。
+ *
+ * 纯读：不改报告、不改缓存、不改任务状态（AI 分析不得影响确定性报告与其 completed 状态）。
+ * `internalScopeId` 只用于主进程内部的 AI 结果缓存键派生，**绝不返回渲染层、不写日志**。
+ */
+export type AnnualReviewTaskReportResult =
+  | { ok: true; report: AnnualReviewReport; year: number; internalScopeId: string }
+  | { ok: false; code: AnnualReviewTaskReportFailureCode; message: string }
+
+export type AnnualReviewTaskReportFailureCode = 'invalid_task_id' | 'task_not_found' | 'task_not_completed' | 'report_not_available'
 
 /**
  * 只读任务状态查询结果（annualReview:getTaskStatus）。任务状态的**唯一权威来源**是
@@ -693,8 +727,9 @@ export class AnnualReviewService {
         this.failTask(scopeKey, taskId, 'invalid_worker_result', '年度复盘生成结果非法')
         return
       }
-      // generate 强制重算：无条件覆盖同键缓存（含未过期条目）
-      this.cache.set(scopeId, year, report)
+      // generate 强制重算：无条件覆盖同键缓存（含未过期条目）；taskId 一并记入缓存条目，
+      // 使「报告身份」可被按 taskId 定位的调用方（AI 分析）复核
+      this.cache.set(scopeId, year, report, taskId)
       this.updateTask(scopeKey, taskId, { status: 'completed', progress: 100, statusText: '生成完成' })
       // 有界清理统一在 startWithScope 的 settle finally 中执行（覆盖全部终态路径）
     } catch (e) {
@@ -754,8 +789,37 @@ export class AnnualReviewService {
     const ctx = this.deps.getAccountContext()
     const scopeId = buildAccountScopeId(ctx)
     const lookup = this.cache.get(scopeId, validation.year)
-    if (lookup.hit) return { success: true, cache: 'hit', report: lookup.report }
+    if (lookup.hit) return { success: true, cache: 'hit', report: lookup.report, taskId: lookup.taskId }
     return { success: true, cache: lookup.stale ? 'stale' : 'miss' }
+  }
+
+  /**
+   * 按 taskId 定位报告（S7.2 AI 分析入口；判定链见 AnnualReviewTaskReportResult 注释）。
+   * 纯读：不改报告、不改缓存、不改任务状态——AI 层与确定性报告任务完全解耦，
+   * AI 成功/失败都不改变报告的 completed 状态，也不触发重新计算。
+   */
+  getTaskReport(taskId: string): AnnualReviewTaskReportResult {
+    if (!this.validateTaskId(taskId)) {
+      return { ok: false, code: 'invalid_task_id', message: '非法的任务标识' }
+    }
+    const scopeId = buildAccountScopeId(this.deps.getAccountContext())
+    for (const record of this.tasks.values()) {
+      const s = record.snapshot
+      if (s.taskId !== taskId) continue
+      // 账号隔离 fail closed：跨账号任务按「不存在」返回，不泄漏存在性
+      if (record.scopeId !== scopeId) return { ok: false, code: 'task_not_found', message: '任务不存在或已过期' }
+      if (s.status !== 'completed') {
+        return { ok: false, code: 'task_not_completed', message: '该生成任务尚未成功完成，无法用于 AI 分析' }
+      }
+      const lookup = this.cache.get(scopeId, s.year)
+      // 报告必须仍有效（未过 TTL）**且**由该任务产出：同 year 的新任务覆盖缓存后，
+      // 旧 taskId 不再命中（不把另一份报告的结果挂到旧任务身份上）
+      if (!lookup.hit || lookup.taskId !== taskId) {
+        return { ok: false, code: 'report_not_available', message: '报告已过期或已被新的生成结果取代' }
+      }
+      return { ok: true, report: lookup.report, year: s.year, internalScopeId: scopeId }
+    }
+    return { ok: false, code: 'task_not_found', message: '任务不存在或已过期' }
   }
 
   getTaskState(year: number): AnnualReviewTaskSnapshot | null {

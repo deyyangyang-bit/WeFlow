@@ -3,6 +3,13 @@ import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from 
 import type { OpportunityAnalysisResult } from '../../shared/opportunitySignals'
 // 分配模式的唯一来源（与 electron/services/crmAssignmentService.ts 同源）
 import type { AssignmentMode } from '../../shared/centralDownCommand'
+// 年度经营复盘 AI 分析契约（与 electron/services/annualReviewAiCore.ts 的模型输出契约、
+// annualReviewAiCoordinator.ts 的 IPC 信封同源；shared 是主进程与渲染层唯一共用编译单元，
+// 因此不是镜像类型而是**同一份定义**）
+import type {
+  AnnualReviewAiAnalysisResponse,
+  AnnualReviewAiCancelResponse
+} from '../../shared/annualReviewAi'
 
 /**
  * CRM 分配数据失效事件载荷（'crm:assignment:invalidated'，主进程 → 渲染层只读广播）。
@@ -1826,11 +1833,13 @@ export interface ElectronAPI {
       reused?: boolean
       error?: { code: string; message: string }
     }>
-    /** 查询报告：cache='hit' 携带 report；'miss' 无缓存；'stale' 已过期（>10 分钟） */
+    /** 查询报告：cache='hit' 携带 report 与产生该报告的 taskId；'miss' 无缓存；'stale' 已过期（>10 分钟） */
     getReport: (year: number) => Promise<{
       success: boolean
       cache: 'hit' | 'miss' | 'stale'
       report?: AnnualReviewReport
+      /** 命中时给出产生该报告的生成任务（AI 分析请求只需该 taskId，不上传报告内容） */
+      taskId?: string
       error?: { code: string; message: string }
     }>
     /** 取消：loading/computing 都有效；终态幂等成功；未知 taskId → task_not_found */
@@ -1868,6 +1877,15 @@ export interface ElectronAPI {
       files?: string[]
       error?: { code: string; message: string }
     }>
+    /**
+     * AI 分析（S7.2）：只提交 taskId——主进程按 taskId 在当前账号作用域内定位「已完成且
+     * 报告仍有效」的结果，渲染层不上传报告内容。成功返回 analysis + model + promptVersion
+     * + generatedAt；失败返回固定失败码与固定文案（不携带异常/模型原文/URL/路径/Token）。
+     * 返回值类型与主进程共享同一契约（shared/annualReviewAi.ts）。
+     */
+    aiAnalysis: (taskId: string) => Promise<AnnualReviewAiAnalysisResponse>
+    /** 取消在途 AI 分析（只中止该 taskId；无在途调用 → analysis_not_found） */
+    aiCancel: (taskId: string) => Promise<AnnualReviewAiCancelResponse>
     onProgress: (callback: (payload: {
       taskId: string
       year: number

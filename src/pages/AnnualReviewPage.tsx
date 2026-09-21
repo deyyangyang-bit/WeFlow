@@ -1,7 +1,7 @@
 /**
- * AnnualReviewPage.tsx —— 年度经营复盘（S4）
+ * AnnualReviewPage.tsx —— 年度经营复盘（S4；S7.2 增补 AI 分析区块）
  *
- * 规格 docs/设计-年度经营复盘-规格.md §6：
+ * 规格 docs/设计-年度经营复盘-规格.md §6 / §8：
  *   - 页头：年份选择（来自 annualReview:getAvailableYears，UI 不推断）、scopeKind 区间、
  *     generatedAt、dataRange、overall 完整性徽标、生成/取消/重新生成。
  *   - 区块：年度经营摘要（A1–A9）→ 漏斗与阶段（B1/B2/B3/B6/B7）→ 客户经营（C1–C8）；
@@ -10,15 +10,21 @@
  *     当前快照与历史年末重建使用明确不同文案。
  *   - 状态机/订阅/隔离逻辑全部在 src/utils/annualReviewView.ts（纯模块，可单测）；
  *     本组件只做状态 → 视图映射，不含第二套业务逻辑。
- *   - 不接 AI、不实现导出（后续阶段）、不触碰旧年度报告页面。
+ *   - **AI 分析区块（S7.2）**：请求只带报告身份（taskId），报告与模型调用都在主进程；
+ *     页面只渲染结构化结果——AI 文本一律作为纯文本渲染（React 转义，绝不注入 HTML），
+ *     AI 引用的 metricKeys 只用来回查**原报告**的确定性数字，页面不从 AI 文本提取数字、
+ *     不做二次计算。AI 失败只影响本区块，确定性报告的查看/导出/重新生成不受影响。
+ *   - 不触碰旧年度报告页面。
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { AlertCircle, Ban, CalendarClock, Download, RefreshCw, XCircle } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { AlertCircle, Ban, CalendarClock, Download, Loader2, RefreshCw, Settings, ShieldAlert, Sparkles, XCircle } from 'lucide-react'
 import {
   createAnnualReviewController, createIpcAnnualReviewApi,
-  buildSummaryCells, customerDetailHref, dataRangeLabel, funnelKindLabel, identityLabelSafe, scopeRangeLabel, yearLabel,
+  aiConfidenceLabel, aiFailureView, aiHorizonLabel, aiPriorityLabel, buildAiMetricCells, buildSummaryCells,
+  customerDetailHref, dataRangeLabel, funnelKindLabel, identityLabelSafe, scopeRangeLabel, yearLabel,
   METRIC_STATE_LABELS,
+  type AnnualReviewAiAnalysis, type AnnualReviewAiMetricCell, type AnnualReviewAiState,
   type AnnualReviewReport
 } from '../utils/annualReviewView'
 import { salesStageColor } from '../../shared/funnelPalette'
@@ -296,12 +302,256 @@ export default function AnnualReviewPage() {
       )}
 
       {/* ── 报告（done；overall complete/partial/unavailable 均渲染，徽标区分档位） ── */}
-      {phase === 'done' && state.report && <ReportBody report={state.report} />}
+      {phase === 'done' && state.report && (
+        <ReportBody
+          report={state.report}
+          ai={state.ai}
+          aiTaskId={state.reportTaskId}
+          onRunAi={() => controller.runAiAnalysis()}
+          onCancelAi={() => void controller.cancelAiAnalysis()}
+          onRegenerate={() => controller.startGenerate()}
+        />
+      )}
     </div>
   )
 }
 
-function ReportBody({ report }: { report: AnnualReviewReport }) {
+// ─── AI 分析区块（S7.2） ─────────────────────────────────────────────────────
+
+/** 确定性指标小卡组：只展示**原报告**里的值（AI 文本里的数字一律不采信、不解析） */
+function AiMetricChips({ report, metricKeys }: { report: AnnualReviewReport; metricKeys: string[] }) {
+  const cells: AnnualReviewAiMetricCell[] = buildAiMetricCells(report, metricKeys)
+  if (cells.length === 0) return null
+  return (
+    <div className="ar-ai-metrics">
+      {cells.map((cell) => (
+        <span
+          key={cell.key}
+          className={`ar-ai-metric ar-ai-metric--${cell.state}`}
+          title={cell.valueHint ?? undefined}
+        >
+          <span className="ar-ai-metric__l">{cell.label}</span>
+          <span className="ar-ai-metric__v num">{cell.displayValue ?? cell.stateLabel}</span>
+          {cell.displayValue !== null && (cell.state === 'partial' || cell.state === 'snapshot_only') && (
+            <span className="ar-ai-metric__s">{cell.stateLabel}</span>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function AiListItem({ head, children, report, metricKeys }: {
+  head: React.ReactNode
+  children: React.ReactNode
+  report: AnnualReviewReport
+  metricKeys: string[]
+}) {
+  return (
+    <div className="ar-ai-item">
+      <div className="ar-ai-item__head">{head}</div>
+      {children}
+      <AiMetricChips report={report} metricKeys={metricKeys} />
+    </div>
+  )
+}
+
+function AiAnalysisSection({ report, ai, aiTaskId, onRun, onCancel, onRegenerate }: {
+  report: AnnualReviewReport
+  ai: AnnualReviewAiState
+  aiTaskId: string | null
+  onRun: () => void
+  onCancel: () => void
+  /** 报告定位类失败（过期/被取代/未完成）→ 重新生成报告，而不是对同一份报告反复重试 */
+  onRegenerate: () => void
+}) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [tick, setTick] = useState(0)
+
+  // 运行中每秒刷新用时（仅展示用途；不参与任何业务判断）
+  useEffect(() => {
+    if (ai.phase !== 'running' || ai.startedAt === null) return
+    const timer = setInterval(() => setTick(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [ai.phase, ai.startedAt])
+
+  const goSettings = useCallback(() => {
+    navigate('/settings', { state: { backgroundLocation: location } })
+  }, [navigate, location])
+
+  const elapsedSec = ai.phase === 'running' && ai.startedAt !== null
+    ? Math.max(0, Math.round(((tick || Date.now()) - ai.startedAt) / 1000))
+    : 0
+
+  const analysis: AnnualReviewAiAnalysis | null = ai.phase === 'done' ? ai.analysis : null
+  const failure = ai.phase === 'failed' ? aiFailureView(ai.error?.code ?? 'internal') : null
+
+  return (
+    <section className="ar-section ar-ai">
+      <div className="seclabel">
+        <span className="seclabel__t">AI 经营诊断</span>
+        <span className="ar-ai-disclaimer">
+          <ShieldAlert size={12} /> AI 内容为建议，确定性数字以本报告为准
+        </span>
+      </div>
+
+      {aiTaskId === null ? (
+        <div className="ar-state-card">
+          <Sparkles size={18} />
+          <div>
+            <p className="ar-state-card__t">暂不能生成 AI 诊断</p>
+            <p className="ar-state-card__d">当前报告缺少生成任务标识（可能由旧版本生成），请重新生成报告后再试。</p>
+          </div>
+          {/* 报告身份缺失（旧版本产出的缓存）时不给入口：请求必须带 taskId，绝不退化成上传报告 */}
+          <button className="btn btn--secondary" disabled>生成 AI 诊断</button>
+        </div>
+      ) : (
+        <>
+          {ai.phase === 'idle' && (
+            <div className="ar-ai-idle">
+              <p className="ar-ai-idle__t">用 AI 解释这一年的经营结果，并给出下一年度行动计划。</p>
+              <p className="ar-ai-idle__d">
+                AI 只读取本报告的聚合指标（不含客户明细、聊天内容与联系方式），只做定性解释；
+                金额、比例等确定性数字一律来自本报告，AI 不得给出具体数值。未配置 AI 或额度不足时，
+                本报告仍可正常查看与导出。
+              </p>
+              <button className="btn btn--primary" onClick={onRun}>
+                <Sparkles size={14} /> 生成 AI 诊断
+              </button>
+            </div>
+          )}
+
+          {ai.phase === 'running' && (
+            <div className="ar-ai-running" role="status">
+              <p className="ar-ai-running__t"><Loader2 size={14} className="ar-spin" /> 正在生成 AI 诊断…</p>
+              <div className="ar-progress ar-progress--indeterminate"><div className="ar-progress__bar" /></div>
+              <p className="ar-ai-running__p">已用时 {elapsedSec} 秒 · 通常需要十几秒（最长 60 秒）</p>
+              <div className="ar-ai-running__actions">
+                {/* 生成按钮在运行中保持可见但禁用（防止重复点击产生第二次调用） */}
+                <button className="btn btn--primary" disabled>
+                  <Sparkles size={14} /> 生成中…
+                </button>
+                <button className="btn btn--secondary" onClick={onCancel}>
+                  <XCircle size={14} /> 取消
+                </button>
+              </div>
+            </div>
+          )}
+
+          {ai.phase === 'cancelled' && (
+            <div className="ar-state-card">
+              <CalendarClock size={18} />
+              <div>
+                <p className="ar-state-card__t">已取消 AI 诊断</p>
+                <p className="ar-state-card__d">本次分析已取消，未生成本次结果；报告本身不受影响，可随时重新生成。</p>
+              </div>
+              <button className="btn btn--secondary" onClick={onRun}>重新生成 AI 诊断</button>
+            </div>
+          )}
+
+          {ai.phase === 'failed' && failure && (
+            <div className="ar-state-card ar-state-card--error">
+              <AlertCircle size={18} />
+              <div>
+                <p className="ar-state-card__t">{failure.title}</p>
+                <p className="ar-state-card__d">{ai.error?.message ?? failure.fallbackDetail}</p>
+                <p className="ar-state-card__d ar-state-card__d--sub">AI 分析失败不影响本报告的查看与导出。</p>
+              </div>
+              {failure.action === 'retry' && (
+                <button className="btn btn--secondary" onClick={onRun}>{failure.actionLabel ?? '重试'}</button>
+              )}
+              {failure.action === 'settings' && (
+                <button className="btn btn--secondary" onClick={goSettings}>
+                  <Settings size={14} /> {failure.actionLabel ?? '前往设置'}
+                </button>
+              )}
+              {failure.action === 'regenerate' && (
+                <button className="btn btn--secondary" onClick={onRegenerate}>{failure.actionLabel ?? '重新生成报告'}</button>
+              )}
+            </div>
+          )}
+
+          {ai.phase === 'done' && analysis && (
+            <div className="ar-ai-result">
+              <p className="ar-ai-meta">
+                模型 {ai.model ?? '未知'} · promptVersion {ai.promptVersion ?? '未知'}
+                {ai.generatedAt !== null ? ` · 生成于 ${new Date(ai.generatedAt).toLocaleString('zh-CN')}` : ''}
+                {ai.cached ? ' · 本次命中主进程缓存' : ''}
+              </p>
+              {/* 以下全部为纯文本渲染（React 默认转义）：不使用 dangerouslySetInnerHTML */}
+              <p className="ar-ai-summary">{analysis.executiveSummary}</p>
+
+              {analysis.diagnoses.length > 0 && (
+                <div className="ar-ai-block">
+                  <h4 className="ar-ai-block__t">诊断</h4>
+                  {analysis.diagnoses.map((item, i) => (
+                    <AiListItem
+                      key={`d${i}`}
+                      report={report}
+                      metricKeys={item.metricKeys}
+                      head={<>
+                        <span className="ar-ai-item__title">{item.title}</span>
+                        <span className="ar-ai-chip">{aiConfidenceLabel(item.confidence)}</span>
+                      </>}
+                    >
+                      <p className="ar-ai-item__text">{item.observation}</p>
+                      <p className="ar-ai-item__text ar-ai-item__text--hypo">原因假设：{item.hypothesis}</p>
+                    </AiListItem>
+                  ))}
+                </div>
+              )}
+
+              {analysis.actions.length > 0 && (
+                <div className="ar-ai-block">
+                  <h4 className="ar-ai-block__t">下一年度行动计划</h4>
+                  {analysis.actions.map((item, i) => (
+                    <AiListItem
+                      key={`a${i}`}
+                      report={report}
+                      metricKeys={item.metricKeys}
+                      head={<>
+                        <span className="ar-ai-chip ar-ai-chip--priority">{aiPriorityLabel(item.priority)}</span>
+                        <span className="ar-ai-item__title">{item.action}</span>
+                        <span className="ar-ai-chip">{aiHorizonLabel(item.horizon)}</span>
+                      </>}
+                    >
+                      <p className="ar-ai-item__text">{item.rationale}</p>
+                    </AiListItem>
+                  ))}
+                </div>
+              )}
+
+              {analysis.risks.length > 0 && (
+                <div className="ar-ai-block">
+                  <h4 className="ar-ai-block__t">风险与数据缺口</h4>
+                  {analysis.risks.map((item, i) => (
+                    <AiListItem key={`r${i}`} report={report} metricKeys={item.metricKeys} head={null}>
+                      <p className="ar-ai-item__text">{item.risk}</p>
+                    </AiListItem>
+                  ))}
+                </div>
+              )}
+
+              <button className="btn btn--secondary ar-ai-rerun" onClick={onRun}>
+                <RefreshCw size={14} /> 重新生成 AI 诊断
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function ReportBody({ report, ai, aiTaskId, onRunAi, onCancelAi, onRegenerate }: {
+  report: AnnualReviewReport
+  ai: AnnualReviewAiState
+  aiTaskId: string | null
+  onRunAi: () => void
+  onCancelAi: () => void
+  onRegenerate: () => void
+}) {
   const navigate = useNavigate()
   const summaryCells = buildSummaryCells(report)
   const f = report.funnel
@@ -602,6 +852,16 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
         </div>
         <MonthlySeriesPanel title="客户消息量（条/月）" series={report.monthly.messageVolume} format={(v) => String(v)} />
       </section>
+
+      {/* ── AI 经营诊断（S7.2；失败/未配置/额度不足均不影响上方确定性报告） ── */}
+      <AiAnalysisSection
+        report={report}
+        ai={ai}
+        aiTaskId={aiTaskId}
+        onRun={onRunAi}
+        onCancel={onCancelAi}
+        onRegenerate={onRegenerate}
+      />
 
       {/* ── 数据说明：warnings 全文 + 口径声明 + sourceSummary ── */}
       <section className="ar-section">
