@@ -66,6 +66,7 @@ import {
 import { computeAnnualReviewCommunication } from './annualReviewCommunication'
 import { computeAnnualReviewSalesAssignment } from './annualReviewAssignment'
 import { computeAnnualReviewMonthly, type AnnualReviewMonthlyBlock } from './annualReviewMonthly'
+import { isRawWechatAccountId } from '../../shared/wechatId'
 
 // ─── 报告结构 ────────────────────────────────────────────────────────────────
 
@@ -635,6 +636,129 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     communication,
     salesAssignment,
     sourceSummary: buildSourceSummary(facts, sales, crm, opts)
+  }
+}
+
+// ─── 销售身份掩蔽（公开报告进入缓存/IPC 前的数据边界） ──────────────────────
+
+const SALES_IDENTITY_FALLBACK_PREFIX = '销售 '
+
+/**
+ * 收集公开报告中全部销售身份原文（去重、按字典序稳定输出，与行序无关）：
+ * E1 初始分配/移交转入/移交转出分组名、E4 合同贡献归属销售、E5 核销贡献认领销售。
+ * 来源 = 审计 detail 中的销售署名、allocation 表的认领销售列、account 表的归属销售列
+ * 等操作行为写入的自由文本，可能是原始 wxid/群号——统一在此边界内掩蔽，
+ * 页面/导出/AI 不再各自替换。
+ */
+export function collectAnnualReviewSalesIdentityValues(report: AnnualReviewReport): string[] {
+  const sa = report.salesAssignment
+  const af = sa?.assignedFacts
+  const initial = (af?.initialAssignments?.groups ?? []).map(({ salesName }) => salesName)
+  const transferIn = (af?.transfersIn?.groups ?? []).map(({ salesName }) => salesName)
+  const transferOut = (af?.transfersOut?.groups ?? []).map(({ salesName }) => salesName)
+  const owners = (sa?.contractContribution?.value ?? []).map(({ ownerSales }) => ownerSales)
+  const claims = (sa?.creditedContribution?.value ?? []).map(({ salesName }) => salesName)
+  return [...initial, ...transferIn, ...transferOut, ...owners, ...claims]
+    .filter((v): v is string => typeof v === 'string' && v !== '')
+    .filter((v, i, all) => all.indexOf(v) === i)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+}
+
+/**
+ * 销售身份公开展示标签指派（纯函数，同输入同输出）：
+ *   - 非原始微信 ID（真实姓名）→ 原样保留（身份映射）；
+ *   - 原始微信 ID 且解析到显示名（且显示名自身不是原始 ID）→ 用显示名；
+ *   - 无法解析 → 稳定回退标签「销售 N」：按原文排序指派（确定性），并跳过本报告内
+ *     已被其他销售占用的标签（真实销售恰名「销售 1」时从「销售 2」起）——不同销售
+ *     绝不因掩蔽被错误合并（两个 ID 解析到同一显示名 = 同一人的多形态来源，属映射语义）。
+ * 解析失败/未提供解析器时全部 ID 走回退标签：**解析不可用绝不放弃掩蔽**。
+ */
+export function buildAnnualReviewSalesIdentityLabels(
+  values: readonly string[],
+  resolved: ReadonlyMap<string, string | null>
+): Map<string, string> {
+  const labels = new Map<string, string>()
+  const used = new Set<string>()
+  const fallbackRaw: string[] = []
+  for (const raw of values) {
+    if (!isRawWechatAccountId(raw)) {
+      labels.set(raw, raw)
+      used.add(raw)
+      continue
+    }
+    const display = resolved.get(raw) ?? null
+    if (typeof display === 'string' && display !== '' && !isRawWechatAccountId(display)) {
+      labels.set(raw, display)
+      used.add(display)
+      continue
+    }
+    fallbackRaw.push(raw)
+  }
+  let n = 1
+  for (const raw of [...fallbackRaw].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    let candidate = [SALES_IDENTITY_FALLBACK_PREFIX, String(n)].join('')
+    while (used.has(candidate)) {
+      n += 1
+      candidate = [SALES_IDENTITY_FALLBACK_PREFIX, String(n)].join('')
+    }
+    labels.set(raw, candidate)
+    used.add(candidate)
+    n += 1
+  }
+  return labels
+}
+
+/**
+ * 应用销售身份标签（纯函数；返回新报告对象，不修改输入）：按 labels 重写 E 组全部
+ * 销售身份字段，其余区块共享原引用（不触碰计数口径/state/warnings/coverage）。
+ */
+export function applyAnnualReviewSalesIdentityLabels(
+  report: AnnualReviewReport,
+  labels: ReadonlyMap<string, string>
+): AnnualReviewReport {
+  const relabel = (v: string | null): string | null => (v === null ? null : labels.get(v) ?? v)
+  const sa = report.salesAssignment
+  const af = sa.assignedFacts
+  const cc = sa.contractContribution
+  const kc = sa.creditedContribution
+  return {
+    ...report,
+    salesAssignment: {
+      ...sa,
+      assignedFacts: {
+        ...af,
+        initialAssignments: {
+          ...af.initialAssignments,
+          groups: af.initialAssignments.groups.map(
+            ({ salesName, mode, count }) => ({ salesName: relabel(salesName), mode, count })
+          )
+        },
+        transfersIn: {
+          ...af.transfersIn,
+          groups: af.transfersIn.groups.map(
+            ({ salesName, count }) => ({ salesName: relabel(salesName), count })
+          )
+        },
+        transfersOut: {
+          ...af.transfersOut,
+          groups: af.transfersOut.groups.map(
+            ({ salesName, count }) => ({ salesName: relabel(salesName), count })
+          )
+        }
+      },
+      contractContribution: {
+        ...cc,
+        value: cc.value === null ? null : cc.value.map(
+          ({ ownerSales, contractCount, totalAmount }) => ({ ownerSales: relabel(ownerSales), contractCount, totalAmount })
+        )
+      },
+      creditedContribution: {
+        ...kc,
+        value: kc.value === null ? null : kc.value.map(
+          ({ salesName, totalAmount }) => ({ salesName: relabel(salesName), totalAmount })
+        )
+      }
+    }
   }
 }
 
@@ -1212,6 +1336,30 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     }
   }
   if ((credited.state === 'unavailable') !== (credited.value === null)) return invalid('salesAssignment.creditedContribution 的 unavailable 与 value 不一致')
+
+  // 销售身份数据边界（公开报告绝不携带原始 wxid/群号）：掩蔽（applyAnnualReview-
+  // SalesIdentityLabels）在缓存写入前执行，正常流程不会残留；若 E 组身份行的任何字符串
+  // 值仍命中原始微信 ID 形态（掩蔽被绕过、解析注入失控），整份报告拒绝进入缓存/IPC。
+  // 与掩蔽共用 isRawWechatAccountId 同一谓词（校验不宽于掩蔽，掩蔽不漏于校验）。
+  const rawIdentity = (v: unknown): boolean => typeof v === 'string' && isRawWechatAccountId(v)
+  const scanIdentityRows = (rows: unknown): boolean =>
+    Array.isArray(rows) && rows.some((row) => isPlainObject(row) && Object.values(row).some(rawIdentity))
+  const afRec = af as Record<string, unknown>
+  const groupsOf = (key: string): unknown => {
+    const block = afRec[key]
+    return isPlainObject(block) ? (block as Record<string, unknown>).groups : undefined
+  }
+  const contributionValueOf = (block: unknown): unknown =>
+    isPlainObject(block) ? (block as Record<string, unknown>).value : undefined
+  if (
+    scanIdentityRows(groupsOf('initialAssignments')) ||
+    scanIdentityRows(groupsOf('transfersIn')) ||
+    scanIdentityRows(groupsOf('transfersOut')) ||
+    scanIdentityRows(contributionValueOf(salesAssignment.contractContribution)) ||
+    scanIdentityRows(contributionValueOf(salesAssignment.creditedContribution))
+  ) {
+    return invalid('salesAssignment 销售身份字段残留原始微信 ID（必须先掩蔽再入缓存）')
+  }
 
   const dataRange = report.dataRange
   if (!isPlainObject(dataRange)) return invalid('dataRange 缺失')

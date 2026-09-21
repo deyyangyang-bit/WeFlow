@@ -9,7 +9,8 @@
  *   - 旧任务隔离：进度事件按 taskId 过滤（迟到的旧任务事件不覆盖新任务状态）；
  *     generate/getReport 的迟到 Promise 结果按代际序号（seq）丢弃。
  *   - 订阅生命周期：controller 创建时订阅一次进度，dispose() 精确卸载（幂等），
- *     页面卸载/重新生成不产生监听器泄漏。
+ *     activate() 可重复激活（React StrictMode setup→cleanup→setup 复用同一实例时
+ *     恢复订阅与结果接收）；页面卸载/重新生成不产生监听器泄漏。
  */
 import type { AnnualReviewReport } from '../types/electron'
 import type {
@@ -866,6 +867,12 @@ export interface AnnualReviewController {
   runAiAnalysis(options?: { force?: boolean }): void
   /** 取消在途 AI 分析（仅主进程确认中止时进入「已取消」） */
   cancelAiAnalysis(): void
+  /**
+   * 重新激活（React StrictMode setup→cleanup→setup 用）：dispose 后的同一实例再次
+   * 接入时恢复结果接收与进度订阅。幂等：已激活（含首次挂载）时无副作用。
+   */
+  activate(): void
+  /** 永久停用（真实页面卸载）：取消运行中生成/AI、退订进度、丢弃全部迟到结果 */
   dispose(): void
 }
 
@@ -1269,7 +1276,7 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     dispose() {
       if (disposed) return // 幂等
       disposed = true
-      clearPending() // 卸载后不再回放任何暂存事件
+      clearPending() // 停用后不再回放任何暂存事件
       // 页面卸载：清理仍在运行的生成任务（幂等取消；任务已终态则为 no-op）。
       // taskId 在启动响应到达后即绑定——「响应未返回前卸载」由 startGenerate 的
       // 迟到分支兜底取消。
@@ -1288,6 +1295,24 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
         unsubscribeProgress = null
       }
       listeners.clear()
+    },
+    /**
+     * 重新激活（可重复激活生命周期的一半；dispose 是另一半）。React 18 开发版
+     * StrictMode 对每个挂载执行 setup→cleanup→setup（同一组件实例、同一 controller），
+     * cleanup 的 dispose 永久停用实例后，第二次 setup 必须恢复：
+     *   - 重订进度订阅（dispose 已精确退订）；
+     *   - 清除停用标记，使 loadYears/loadReport/generate/AI 的结果重新被接受
+     *     （迟到结果仍由各自 seq 代际丢弃，不依赖 disposed 单向闸门）。
+     * 不重置业务状态、不重放事件：setup 序列随后调用 loadYears 重新拉取权威数据；
+     * 首次挂载（未 dispose 过）为 no-op。真实卸载仍走 dispose 全量清理，语义不变。
+     */
+    activate() {
+      if (!disposed) return // 幂等：已激活（含首次挂载）无副作用
+      disposed = false
+      // 不变量：unsubscribeProgress === null 当且仅当处于停用态
+      if (unsubscribeProgress === null) {
+        unsubscribeProgress = api.subscribeProgress(onProgress)
+      }
     }
   }
 

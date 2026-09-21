@@ -46,6 +46,7 @@ import {
   ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS,
   buildAccountScopeId,
   createThreadRunner,
+  shapeAnnualReviewGetReportResponse,
   type AnnualReviewWorkerPayload,
   type AnnualReviewWorkerRunner,
   type AnnualReviewProgressEvent,
@@ -1354,6 +1355,90 @@ async function main(): Promise<void> {
       ok('24n2 同输入重复执行 → 淘汰结果一致（确定性）',
         evictedFirst.join(',') === evictedSecond.join(','))
     }
+  }
+
+  // ══ 25 getReport taskId 透传（报告身份 → AI 分析入口；IPC/页面契约回归） ════
+  {
+    // 背景（UI 验收 P1）：service 命中缓存时已返回 taskId，但 IPC handler 丢弃了它 →
+    // 页面把每份命中报告判为「缺生成任务标识」，AI 分析永久禁用。
+    const fake = createFakeRunner()
+    const { service } = createService({ runner: fake.runner, now })
+    // miss：没有报告就没有身份 → 绝不伪造 taskId
+    const miss = service.getReport(2026)
+    ok('25 miss 不携带 taskId（不伪造报告身份）',
+      miss.success === true && miss.cache === 'miss' && miss.taskId === undefined)
+    const gen1 = service.generate(2026)
+    await tick()
+    fake.calls[0].resolve(buildRealReport())
+    const r1 = await gen1
+    const hit = service.getReport(2026)
+    ok('25b 新生成报告 cache hit 携带产出任务的 taskId',
+      hit.cache === 'hit' && typeof r1.taskId === 'string' && hit.taskId === r1.taskId)
+    // 新报告身份可进入 AI 分析（getTaskReport 按 taskId 定位成功）
+    const located = service.getTaskReport(r1.taskId as string)
+    ok('25c 新生成报告的 taskId 可定位报告（AI 分析入口可用）',
+      located.ok === true && (located.ok ? located.year === 2026 : false))
+    // stale：缓存过期 → 明确区分且不携带 taskId
+    clock += 11 * 60_000
+    const stale = service.getReport(2026)
+    ok('25d stale 不携带 taskId', stale.cache === 'stale' && stale.taskId === undefined)
+    // 强制重算：新任务覆盖缓存后，hit 返回新 taskId；旧 taskId fail closed
+    const gen2 = service.generate(2026)
+    await tick()
+    fake.calls[1].resolve(buildRealReport())
+    const r2 = await gen2
+    const hit2 = service.getReport(2026)
+    ok('25e 覆盖后 hit 返回新任务 taskId（报告身份随重算演进）',
+      hit2.cache === 'hit' && hit2.taskId === r2.taskId && r2.taskId !== r1.taskId)
+    const oldLocated = service.getTaskReport(r1.taskId as string)
+    // 同键重算会替换任务记录：旧 taskId 按「不存在」拒绝（task_not_found）；若记录
+    // 仍在而缓存已被覆盖/过期则拒绝为 report_not_available——两条路径都 fail closed，
+    // 旧任务身份绝不能再取到报告（不把新报告的结果挂到旧任务身份上）。
+    ok('25f 被新任务覆盖的旧 taskId fail closed（task_not_found / report_not_available）',
+      oldLocated.ok === false && (oldLocated.code === 'task_not_found' || oldLocated.code === 'report_not_available'))
+    // 跨账号任务 fail closed（按不存在返回，不泄漏存在性）
+    const fakeB = createFakeRunner()
+    const svcB = createService({
+      runner: fakeB.runner, now,
+      ctx: { wxid: 'wx_account_b', salesDbName: 'weflow-sales-wx_account_b.db', crmDbName: 'weflow-crm-wx_account_b.db' }
+    })
+    const gb = svcB.service.generate(2026)
+    await tick()
+    fakeB.calls[0].resolve(buildRealReport())
+    await gb
+    svcB.ctxBox.current = {
+      wxid: 'wx_account_c', salesDbName: 'weflow-sales-wx_account_c.db', crmDbName: 'weflow-crm-wx_account_c.db', exclusions: {}
+    }
+    const cross = svcB.service.getTaskReport(r2.taskId as string)
+    ok('25g 跨账号 taskId fail closed（task_not_found）', cross.ok === false && cross.code === 'task_not_found')
+    ok('25h 跨账号 getReport miss 且不携带 taskId（不回退他账号）',
+      svcB.service.getReport(2026).cache === 'miss' && svcB.service.getReport(2026).taskId === undefined)
+
+    // 响应整形纯函数（handler 与测试共用同一代码路径）：
+    ok('25i 整形：hit 透传 report+taskId', (() => {
+      const shaped = shapeAnnualReviewGetReportResponse({ success: true, cache: 'hit', report: realReport, taskId: 't-1' })
+      return shaped.success === true && shaped.cache === 'hit' && shaped.report === realReport && shaped.taskId === 't-1'
+    })())
+    ok('25j 整形：hit 缺 taskId 时原样缺省（页面 fail closed，不伪造身份）', (() => {
+      const shaped = shapeAnnualReviewGetReportResponse({ success: true, cache: 'hit', report: realReport })
+      return shaped.taskId === undefined && shaped.report === realReport
+    })())
+    ok('25k 整形：miss/stale 不携带 taskId', shapeAnnualReviewGetReportResponse({ success: true, cache: 'miss' }).taskId === undefined &&
+      shapeAnnualReviewGetReportResponse({ success: true, cache: 'stale' }).taskId === undefined)
+    ok('25l 整形：失败信封原样保留（稳定 code）', (() => {
+      const shaped = shapeAnnualReviewGetReportResponse({ success: false, cache: 'miss', error: { code: 'invalid_year', message: '非法年份' } })
+      return shaped.success === false && shaped.cache === 'miss' && shaped.error?.code === 'invalid_year'
+    })())
+
+    // main.ts handler 接线守卫：hit 分支透传 taskId（漏传 = AI 入口断链的根因）
+    const mainSrc = readFileSync(join(ROOT, 'electron', 'main.ts'), 'utf8')
+    const hStart = mainSrc.indexOf("ipcMain.handle('annualReview:getReport'")
+    const hEnd = mainSrc.indexOf("ipcMain.handle('annualReview:cancel'", hStart)
+    const handler = mainSrc.slice(hStart, hEnd)
+    ok('25m handler 经 shapeAnnualReviewGetReportResponse 整形（taskId 不再丢弃）',
+      handler.includes('shapeAnnualReviewGetReportResponse(result)'))
+    ok('25n handler 不再内联丢弃 taskId 的返回（旧实现回归守卫）',
+      !handler.includes("cache: 'hit', report: result.report }"))
   }
 
   // ══ 14 progress 单调 + 终态 ═══════════════════════════════════════════════

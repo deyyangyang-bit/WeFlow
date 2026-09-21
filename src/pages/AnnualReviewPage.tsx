@@ -150,8 +150,11 @@ export default function AnnualReviewPage() {
 
   const state = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState)
 
-  // 卸载：dispose（精确卸载进度订阅 + 清理仍在运行的生成任务）；加载年份列表
+  // 挂载/重新激活：activate（可重复激活——React StrictMode 的 setup→cleanup→setup 会
+  // 复用同一 controller 实例，第二次 setup 必须恢复进度订阅并正常加载）→ 加载年份列表；
+  // 真实卸载：dispose（精确退订进度 + 取消运行中的生成任务与 AI + 丢弃迟到结果）
   useEffect(() => {
+    controller.activate()
     void controller.loadYears()
     return () => controller.dispose()
   }, [controller])

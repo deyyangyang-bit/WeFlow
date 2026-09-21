@@ -6,7 +6,8 @@
  * 另以源码守卫覆盖路由/Sidebar 接线。
  *
  * 覆盖：年份列表与默认年份（不本地推断）／进度与取消／连续生成旧任务隔离／
- *       监听器精确卸载与无泄漏／unavailable 不显示 0／partial、snapshot_only 文案／
+ *       监听器精确卸载与无泄漏／StrictMode setup→cleanup→setup 可重复激活／
+ *       unavailable 不显示 0／partial、snapshot_only 文案／
  *       报告缺必需字段拒绝渲染成功态／视图无 sessionId/路径/秘密／路由与 Sidebar 接线
  * 运行：npx tsx scripts/annual-review-view-test.ts
  */
@@ -344,6 +345,62 @@ async function main(): Promise<void> {
     await tick()
     ctrl2.dispose()
     ok('5e 页面卸载时清理运行中任务（cancel 被调用）', fake2.calls.cancel === 1)
+  }
+
+  // ══ SM StrictMode setup→cleanup→setup（同组件实例复用同一 controller） ═════
+  {
+    // React 18 开发版 StrictMode：挂载即 setup → cleanup → setup（同步连发，IPC 结果
+    // 全部迟到）。旧实现 cleanup 调 dispose() 永久停用 controller，第二次 setup 复用
+    // 同一实例 → loadYears 结果被丢弃 → 永久 loading。正确设计 = 可重复激活生命周期：
+    // 第二次 setup 重新订阅进度并正常加载；真实卸载的清理语义（取消生成任务/取消 AI/
+    // 退订进度/丢弃迟到结果）保持不变。activate 在旧实现上不存在（守卫调用以采集失败）。
+    const activate = (): void => {
+      const c = ctrl as unknown as { activate?: () => void }
+      if (typeof c.activate === 'function') c.activate()
+    }
+    const fake = createFakeApi({
+      reportResults: [
+        { success: true, cache: 'hit', report: report2021, taskId: 'task-sm' },
+        { success: true, cache: 'hit', report: report2021, taskId: 'g1' }
+      ]
+    })
+    const ctrl = createAnnualReviewController(fake.api)
+    // setup#1（页面 effect：activate → loadYears）
+    activate()
+    void ctrl.loadYears()
+    // cleanup#1（页面 effect cleanup：dispose）
+    ctrl.dispose()
+    // setup#2（同一 controller 实例）
+    activate()
+    void ctrl.loadYears()
+    await tick(); await tick()
+    const s = ctrl.getState()
+    ok('SM 第二次 setup 正常加载年份（不再永久 loading）',
+      s.phase !== 'loading' && s.years.loading === false && s.years.years.length > 0)
+    ok('SMb 第二次 setup 完成首载报告链路（缓存 hit → done + 报告身份）',
+      s.phase === 'done' && s.report !== null && s.reportTaskId === 'task-sm')
+    // 重新激活后进度订阅已恢复：生成事件可推进状态（旧实现退订后事件永久丢失）
+    ctrl.startGenerate()
+    await tick()
+    ok('SMc 重新激活后 startGenerate 正常进入 generating（taskId 绑定）', ctrl.getState().phase === 'generating')
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+    await tick(); await tick()
+    ok('SMd 重新激活后进度订阅恢复（终态事件收敛 done + 新报告身份）',
+      ctrl.getState().phase === 'done' && ctrl.getState().reportTaskId === 'g1')
+    // 激活态重复 activate 幂等；再次 dispose 仍是全量清理（真实卸载语义保留）
+    activate()
+    ctrl.startGenerate()
+    await tick()
+    ctrl.dispose()
+    ok('SMe 激活态下再次 dispose 仍取消运行中任务并精确退订',
+      fake.calls.cancel === 1 && fake.calls.unsubscribe === 2)
+    fake.emit({ taskId: 'g2', year: 2021, phase: 'computing', progress: 10, done: false })
+    ok('SMf dispose 后事件仍不进入状态机（清理语义不回归）', ctrl.getState().generation.progress === 0)
+    // 页面接线守卫：effect 必须 activate → loadYears → dispose（StrictMode 兼容生命周期）
+    const pageSrc = readFileSync(join(ROOT, 'src', 'pages', 'AnnualReviewPage.tsx'), 'utf8')
+    ok('SMg 页面 effect 先 activate 再 loadYears，cleanup 为 dispose',
+      /controller\.activate\(\)\s*\n\s*void controller\.loadYears\(\)/.test(pageSrc) &&
+      pageSrc.includes('return () => controller.dispose()'))
   }
 
   // ══ 8 报告缺少必需字段时拒绝渲染成功态 ═════════════════════════════════════

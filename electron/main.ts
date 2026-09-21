@@ -14,6 +14,7 @@ import { readRendererConfig, writeRendererConfig } from './services/rendererConf
 import { registerSecretConfigIpc } from './services/secretConfigIpc'
 import { dbPathService } from './services/dbPathService'
 import { wcdbService } from './services/wcdbService'
+import { isSessionIdLike, isRawWechatAccountId } from '../shared/wechatId'
 import { chatService } from './services/chatService'
 import { imageDecryptService } from './services/imageDecryptService'
 import { imagePreloadService } from './services/imagePreloadService'
@@ -70,7 +71,7 @@ import { enrichCustomer } from './services/crmEnrichService'
 import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbPath'
-import { AnnualReviewService, type AnnualReviewAccountContext } from './services/annualReviewService'
+import { AnnualReviewService, shapeAnnualReviewGetReportResponse, type AnnualReviewAccountContext } from './services/annualReviewService'
 import {
   AnnualReviewAiCoordinator,
   bindAnnualReviewAiSenderAbort,
@@ -851,7 +852,27 @@ const annualReviewService = new AnnualReviewService({
       daily
     }
   },
-  getAccountContext: buildAnnualReviewAccountContext
+  getAccountContext: buildAnnualReviewAccountContext,
+  // 销售身份显示名解析（公开报告数据边界）：复用既有 wcdb 备注/昵称映射
+  // （与 crmIpcHandlers 的 resolveMySalesName 同源）；解析不到回 null，
+  // 服务层回退稳定展示标签——不同销售不合并，wxid 原文绝不进入公开报告。
+  resolveSalesDisplayNames: async (rawValues) => {
+    const map = new Map<string, string | null>()
+    for (const raw of rawValues) map.set(raw, null)
+    const ids = rawValues.filter((v) => isRawWechatAccountId(v))
+    if (ids.length === 0) return map
+    try {
+      const dn = await wcdbService.getDisplayNames(ids)
+      if (!dn.success || !dn.map) return map
+      for (const id of ids) {
+        const real = dn.map[id]
+        if (real && !isSessionIdLike(real) && real !== id) map.set(id, real)
+      }
+    } catch {
+      // 查询失败：保持 null → 全部回退稳定标签（掩蔽不可放弃）
+    }
+    return map
+  }
 })
 
 // AI 分析（S7.2）：报告由 taskId 在当前账号作用域内定位（渲染层不上传报告），模型调用走
@@ -4156,12 +4177,10 @@ function registerIpcHandlers() {
       return { success: false, cache: 'miss', error: { code: validation.code, message: validation.message } }
     }
     const result = annualReviewService.getReport(validation.year)
-    if (!result.success) {
-      return { success: false, cache: result.cache, error: result.error ?? { code: 'internal', message: '年度复盘报告查询失败' } }
-    }
-    return result.cache === 'hit'
-      ? { success: true, cache: 'hit', report: result.report }
-      : { success: true, cache: result.cache }
+    // hit 必须携带产生该报告的 taskId（报告身份）：页面据此发起 AI 分析——
+    // 丢弃 taskId 会把命中报告判为「缺生成任务标识」而永久禁用 AI 入口；
+    // miss/stale 绝不伪造 taskId（fail closed）。整形逻辑纯函数化，与测试共用。
+    return shapeAnnualReviewGetReportResponse(result)
   })
 
   ipcMain.handle('annualReview:cancel', async (_, payload: unknown) => {

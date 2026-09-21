@@ -49,6 +49,9 @@ import type {
   AnnualReviewSalesSegmentsFacts
 } from './annualReviewSegments'
 import {
+  applyAnnualReviewSalesIdentityLabels,
+  buildAnnualReviewSalesIdentityLabels,
+  collectAnnualReviewSalesIdentityValues,
   computeAnnualReviewAvailableYears,
   composeAnnualReviewReport,
   validateAnnualReviewReport,
@@ -218,6 +221,14 @@ export interface AnnualReviewServiceDeps {
   loadMessageStats: (sessionIds: string[], beginSec: number, endSec: number) => Promise<AnnualReviewMessageStats>
   /** 当前账号上下文（主进程真实来源：config wxid + 实际业务库身份 + 排除名单） */
   getAccountContext: () => AnnualReviewAccountContext
+  /**
+   * 销售身份显示名解析（S7.2 公开报告数据边界；优先复用既有 wcdb 备注/昵称映射）。
+   * Worker 载荷契约禁止携带 wxid 原文，解析只能在主进程进行：报告 Worker 返回后、
+   * 缓存写入前，把 E 组销售身份中的原始微信 ID 解析为显示名。返回 raw → 显示名，
+   * null = 未解析到（回退稳定展示标签）。解析失败可 reject：服务按全量回退标签继续
+   * 掩蔽——**解析不可用绝不放弃掩蔽**。缺省（未注入）= 不解析，全部回退稳定标签。
+   */
+  resolveSalesDisplayNames?: (rawValues: string[]) => Promise<Map<string, string | null>>
   /** Worker runner；缺省 = 真实线程 runner（annualReviewWorker.js） */
   runner?: AnnualReviewWorkerRunner
   /** 时钟（测试注入）；缺省 Date.now */
@@ -457,6 +468,33 @@ export interface AnnualReviewGetReportResult {
    */
   taskId?: string
   error?: { code: string; message: string }
+}
+
+/**
+ * `annualReview:getReport` IPC 响应整形（纯函数，handler 与测试共用同一代码路径）：
+ *   - hit → 原样透传 report 与**产生该报告的 taskId**（报告身份）。漏掉 taskId 会让
+ *     页面把报告判为「缺生成任务标识」而禁用 AI 分析入口（S7.2 契约断链）；
+ *   - miss/stale → 绝不伪造 taskId（报告不存在时没有可声明的身份）；
+ *   - 失败 → 结构化错误信封原样保留（稳定 code，不回堆栈/路径）。
+ */
+export function shapeAnnualReviewGetReportResponse(result: AnnualReviewGetReportResult): {
+  success: boolean
+  cache: 'hit' | 'miss' | 'stale'
+  report?: AnnualReviewReport
+  taskId?: string
+  error?: { code: string; message: string }
+} {
+  if (!result.success) {
+    return {
+      success: false,
+      cache: result.cache,
+      error: result.error ?? { code: 'internal', message: '年度复盘报告查询失败' }
+    }
+  }
+  if (result.cache === 'hit') {
+    return { success: true, cache: 'hit', report: result.report, taskId: result.taskId }
+  }
+  return { success: true, cache: result.cache }
 }
 
 /**
@@ -719,17 +757,35 @@ export class AnnualReviewService {
         this.updateTask(scopeKey, taskId, { progress: Math.max(40, Math.min(95, p.progress)), statusText: p.statusText })
       }))
 
+      // Worker 返回后、缓存写入前：销售身份掩蔽（公开数据边界——原始 wxid 绝不进缓存/
+      // IPC/导出/AI）。掩蔽必须先于 validateAnnualReviewReport：运行时校验用同一谓词
+      // 拒绝残留原文（掩蔽被绕过时 fail closed，而不是带病入缓存）。
+      let maskedReport = report
+      const identityValues = collectAnnualReviewSalesIdentityValues(report)
+      if (identityValues.length > 0) {
+        let resolved = new Map<string, string | null>()
+        if (this.deps.resolveSalesDisplayNames) {
+          try {
+            resolved = await control.race(this.deps.resolveSalesDisplayNames(identityValues))
+          } catch (e) {
+            if (control.aborted) throw e // 取消/失效走统一收敛路径，不当作解析失败
+            resolved = new Map() // 解析失败 → 全部回退稳定标签（绝不放弃掩蔽）
+          }
+        }
+        maskedReport = applyAnnualReviewSalesIdentityLabels(report, buildAnnualReviewSalesIdentityLabels(identityValues, resolved))
+      }
+
       // Worker 返回后、缓存写入前：终检（取消/失效的迟到收敛一律丢弃结果）
       this.assertCurrent(scopeId, epochAtStart)
       control.check()
-      const validation = validateAnnualReviewReport(report, year)
+      const validation = validateAnnualReviewReport(maskedReport, year)
       if (!validation.ok) {
         this.failTask(scopeKey, taskId, 'invalid_worker_result', '年度复盘生成结果非法')
         return
       }
       // generate 强制重算：无条件覆盖同键缓存（含未过期条目）；taskId 一并记入缓存条目，
       // 使「报告身份」可被按 taskId 定位的调用方（AI 分析）复核
-      this.cache.set(scopeId, year, report, taskId)
+      this.cache.set(scopeId, year, maskedReport, taskId)
       this.updateTask(scopeKey, taskId, { status: 'completed', progress: 100, statusText: '生成完成' })
       // 有界清理统一在 startWithScope 的 settle finally 中执行（覆盖全部终态路径）
     } catch (e) {
