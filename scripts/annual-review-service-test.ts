@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       period, facts, sales, crm,
       opts: { messageStats: messageStatsOk({ wx_a: { sent: 2, received: 1 } }) }
     })
-    ok('1 reportSchemaVersion/year/scopeKind/时区', report.reportSchemaVersion === 1 &&
+    ok('1 reportSchemaVersion/year/scopeKind/时区', report.reportSchemaVersion === 2 &&
       report.year === 2026 && report.scopeKind === 'current_year' && report.timezoneNote === 'local')
     ok('1b 时间契约（periodStart/asOf/generatedAt）', report.periodStart === T(2026, 1, 1) && report.asOf === GEN && report.generatedAt === GEN)
     ok('1c summary A1（存量=2）/A4（2026 无签约 → 真实零）', report.summary.customerTotal.value === 2 && report.summary.contractCount.value === 0)
@@ -313,13 +313,14 @@ async function main(): Promise<void> {
     })())
   }
 
-  // ══ 5 区块实现状态：monthly 仍显式 unavailable；D/E 已实现（S5） ═════════════
+  // ══ 5 区块实现状态：monthly 三序列（消息序列随 stats 不可用而 unavailable）；D/E 已实现 ══
   {
     const report = composeAnnualReviewReport({
       period: resolveAnnualReviewPeriod(2026, GEN), facts, sales, crm, opts: { messageStats: { ok: false, sessions: {} } }
     })
-    ok('5 monthly unavailable + metric_not_implemented', report.monthly.status === 'unavailable' && report.monthly.reasonCodes.length === 1 && report.monthly.reasonCodes[0] === 'metric_not_implemented')
-    ok('5b coverage.monthly unavailable', report.coverage['monthly'].status === 'unavailable')
+    ok('5 monthly 金额序列可用（结构化区块）', report.monthly.contractSign.months !== null && report.monthly.credited.months !== null)
+    ok('5b monthly.messageVolume unavailable（stats 不可用，不伪装 0）', report.monthly.messageVolume.months === null &&
+      report.monthly.messageVolume.state === 'unavailable')
     // D 组：消息主口径不可用 → D1/D3 unavailable（不伪造 0）；D7 历史年度 unavailable
     ok('5c communication.volume unavailable（消息库不可用）', report.communication.volume.value === null && report.communication.volume.state === 'unavailable')
     ok('5d communication.outboundRate unavailable', report.communication.outboundRate.value === null)
@@ -328,7 +329,7 @@ async function main(): Promise<void> {
       report.salesAssignment.coverage.reasonCodes?.includes('facts_missing') === true)
     ok('5f salesAssignment.effectiveFollowup unavailable', report.salesAssignment.effectiveFollowup.value === null &&
       report.salesAssignment.effectiveFollowup.state === 'unavailable')
-    ok('5g completeness.blocks 同步推导', report.completeness.blocks.monthly === 'unavailable' &&
+    ok('5g completeness.blocks 同步推导（monthly 随 messageVolume 不可用）', report.completeness.blocks.monthly === 'unavailable' &&
       report.completeness.blocks.communication === 'unavailable' && report.completeness.blocks.salesAssignment === 'unavailable' &&
       report.completeness.overall === 'unavailable')
   }
@@ -424,7 +425,7 @@ async function main(): Promise<void> {
     await tick()
     const call1 = fake.calls[0]
     ok('8b Worker 载荷：taskId/版本/不含账号原文', call1.payload.taskId.length > 0 &&
-      call1.payload.reportSchemaVersion === 1 && !JSON.stringify(call1.payload).includes('wx_account'))
+      call1.payload.reportSchemaVersion === 2 && !JSON.stringify(call1.payload).includes('wx_account'))
     call1.onProgress({ progress: 60, statusText: '计算中' })
     call1.resolve(realReport)
     const r1 = await gen1
@@ -769,6 +770,85 @@ async function main(): Promise<void> {
     ok('I4d 失效后新请求正常重新生成', r5b.success === true && svc5.service.getReport(2026).cache === 'hit')
   }
 
+  // ══ 22 月度趋势（三序列：边界/轴/legacy/顺序无关/completeness） ════════════
+  {
+    const rich2025 = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm,
+      opts: { messageStats: { ok: true, sessions: { wx_a: { sent: 3, received: 1 } }, daily: { '2025-03-05': 4 } } }
+    })
+    const m = rich2025.monthly
+    // 历史年度完整 12 个月轴
+    ok('22 历史年度 12 个月轴', m.contractSign.months?.length === 12 && m.credited.months?.length === 12 &&
+      m.contractSign.months?.[0].month === '2025-01' && m.contractSign.months?.[11].month === '2025-12')
+    // 签约金额按本地自然月聚合（A4/A5 同一集合：2025-03=1200；2024-06 的签约不在 2025 轴内）
+    eq('22b 签约月度序列', m.contractSign.months?.filter((p) => p.amount > 0), [
+      { month: '2025-03', amount: 1200 }
+    ])
+    ok('22c 缺月为真实零 0', m.contractSign.months?.find((p) => p.month === '2025-01')?.amount === 0)
+    // 核销回款：计入时间 2025-04 → 800.5
+    ok('22d 核销月度序列（A6 同一计入时间）', m.credited.months?.find((p) => p.month === '2025-04')?.amount === 800.5)
+    // 消息量复用 D5 单一结果
+    ok('22e 消息月度 = D5 结果（复用，2025-03=4）', m.messageVolume.months?.find((p) => p.month === '2025-03')?.count === 4)
+    // 月份边界：月末最后毫秒归当月、次月零点归次月
+    const boundaryReport = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: { accounts: [], contracts: [
+        conF(1, null, T(2026, 2, 28, 23, 59, 59, 999), 100),
+        conF(2, null, T(2026, 3, 1, 0, 0, 0, 0), 200)
+      ], allocations: [], shippedEvents: [] },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    const bm = boundaryReport.monthly.contractSign.months ?? []
+    ok('22f 月末最后毫秒归当月、次月零点归次月', bm.find((p) => p.month === '2026-02')?.amount === 100 &&
+      bm.find((p) => p.month === '2026-03')?.amount === 200)
+    // 缺失 sign_date 不进入月度（禁止回退 created_at）
+    const missingSign = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: { accounts: [], contracts: [
+        conF(1, null, null, 100, 'signed'),   // signed 但 sign_date 缺失
+        conF(2, null, T(2026, 2, 1), 300)
+      ], allocations: [], shippedEvents: [] },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('22g 缺失 sign_date 不进入月度', (missingSign.monthly.contractSign.months ?? []).find((p) => p.month === '2026-02')?.amount === 300 &&
+      (missingSign.monthly.contractSign.months ?? []).every((p) => p.amount !== 100))
+    // legacy_confirmed 回退：按 confirmed_at 计入月份 + partial
+    const legacyMonthly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: { accounts: [], contracts: [], allocations: [
+        { id: 1, accountId: null, creditedAmount: 77, reconciledAt: null, status: 'confirmed', reconciliationStatus: 'legacy_confirmed', confirmedAt: T(2026, 5, 1), contractId: null, salesName: null }
+      ], shippedEvents: [] },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('22h legacy_confirmed 按 confirmed_at 归月 + partial', legacyMonthly.monthly.credited.months?.find((p) => p.month === '2026-05')?.amount === 77 &&
+      legacyMonthly.monthly.credited.state === 'partial')
+    // all_time：只输出有数据月份（升序）
+    const allTimeMonthly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(0, GEN),
+      facts: { accounts: [], contracts: [conF(1, null, T(2024, 7, 1), 100)], allocations: [
+        { id: 1, accountId: null, creditedAmount: 50, reconciledAt: T(2025, 1, 1), status: 'confirmed', reconciliationStatus: 'allocated', confirmedAt: null, contractId: null, salesName: null }
+      ], shippedEvents: [] },
+      sales: emptySales(), crm: emptyCrm(),
+      opts: { messageStats: { ok: true, sessions: {}, daily: { '2024-08-01': 9 } } }
+    })
+    eq('22i all_time 数据月并集升序', allTimeMonthly.monthly.contractSign.months?.map((p) => p.month), ['2024-07', '2024-08', '2025-01'])
+    ok('22j all_time 轴内金额序列同轴', allTimeMonthly.monthly.credited.months?.length === allTimeMonthly.monthly.contractSign.months?.length)
+    // 顺序无关
+    const reversedMonthly = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2025, GEN),
+      facts: { accounts: [...facts.accounts].reverse(), contracts: [...facts.contracts].reverse(), allocations: [...facts.allocations].reverse(), shippedEvents: [] },
+      sales: { profiles: [...sales.profiles].reverse(), intentEvents: [...sales.intentEvents].reverse() },
+      crm: { opportunities: [...crm.opportunities].reverse(), opportunityEvents: [...crm.opportunityEvents].reverse() },
+      opts: { messageStats: { ok: true, sessions: { wx_a: { sent: 3, received: 1 } }, daily: { '2025-03-05': 4 } } }
+    })
+    ok('22k 三序列与输入顺序无关', JSON.stringify(reversedMonthly.monthly) === JSON.stringify(rich2025.monthly))
+    // completeness：monthly 不再被硬编码 unavailable（2025 有数据 → partial/complete）
+    ok('22l completeness.blocks.monthly 随真实序列推导（非硬编码 unavailable）', rich2025.completeness.blocks.monthly !== 'unavailable' &&
+      rich2025.completeness.blocks.monthly === aggregateMetricStates([rich2025.monthly.contractSign.state, rich2025.monthly.credited.state, rich2025.monthly.messageVolume.state]))
+    ok('22m monthly coverage 键与状态一致', rich2025.coverage['monthly.contractSign'].status === rich2025.monthly.contractSign.state &&
+      rich2025.coverage['monthly.messageVolume'].status === rich2025.monthly.messageVolume.state)
+  }
+
   // ══ 14 progress 单调 + 终态 ═══════════════════════════════════════════════
   {
     const fakeF = createFakeRunner()
@@ -861,11 +941,11 @@ async function main(): Promise<void> {
       'summary.creditedAmount', 'summary.shippedCount', 'summary.shippedAmount', 'summary.dealingCustomers', 'summary.avgDealSize',
       'funnel.customerStage', 'funnel.opportunityStage', 'funnel.stageFlow', 'funnel.stuck', 'funnel.lostBreakdown',
       'customers.highValue', 'customers.newCustomers', 'customers.dealing', 'customers.repeat', 'customers.active', 'customers.silent', 'customers.risk', 'customers.priority',
-      'monthly',
+      'monthly.contractSign', 'monthly.credited', 'monthly.messageVolume',
       'communication.volume', 'communication.contacted', 'communication.outboundRate', 'communication.monthlyTrend', 'communication.longSilent',
       'salesAssignment.assignedFacts', 'salesAssignment.effectiveFollowup', 'salesAssignment.contractContribution', 'salesAssignment.creditedContribution'
     ]
-    eq('K2 coverage metricKey 完整且稳定（33 键）', Object.keys(richReport.coverage).sort(), [...expectedCoverageKeys].sort())
+    eq('K2 coverage metricKey 完整且稳定（35 键）', Object.keys(richReport.coverage).sort(), [...expectedCoverageKeys].sort())
     ok('K2b B/C 组原样复用统计层 coverage', JSON.stringify(richReport.coverage['funnel.customerStage']) === JSON.stringify(richReport.funnel.customerStage.coverage) &&
       JSON.stringify(richReport.coverage['customers.highValue']) === JSON.stringify(richReport.customers.highValue.coverage))
     ok('K2c A 组 status=metric.state、A3 主口径 source=wcdb.messages', richReport.coverage['summary.customerTotal'].status === richReport.summary.customerTotal.state &&
@@ -922,7 +1002,7 @@ async function main(): Promise<void> {
     ok('Vb {} 拒绝', validateAnnualReviewReport({}, 2026).ok === false)
     ok('Vc 数组拒绝', validateAnnualReviewReport([], 2026).ok === false)
     ok('Vd 错误年份拒绝', validateAnnualReviewReport(good, 2025).ok === false)
-    ok('Ve 错误 schemaVersion 拒绝', validateAnnualReviewReport({ ...good, reportSchemaVersion: 2 }, 2026).ok === false)
+    ok('Ve 错误 schemaVersion 拒绝', validateAnnualReviewReport({ ...good, reportSchemaVersion: 1 }, 2026).ok === false)
     ok('Vf 缺核心区块拒绝', validateAnnualReviewReport({ ...good, funnel: undefined }, 2026).ok === false &&
       validateAnnualReviewReport({ ...good, summary: undefined }, 2026).ok === false &&
       validateAnnualReviewReport({ ...good, completeness: undefined }, 2026).ok === false)
@@ -1314,7 +1394,7 @@ async function main(): Promise<void> {
   }
 
   // ══ 20 reportSchemaVersion 与 S1 单一来源 ═════════════════════════════════
-  ok('20 reportSchemaVersion 单一来源（S1 常量）', buildRealReport().reportSchemaVersion === 1)
+  ok('20 reportSchemaVersion 单一来源（S1 常量，V2=monthly 结构化）', buildRealReport().reportSchemaVersion === 2)
 
   // ══ 21 真实 Worker 文件端到端（worker_threads + tsx loader；零数据库、纯统计） ═══
   {
@@ -1324,7 +1404,7 @@ async function main(): Promise<void> {
       'summary', 'funnel', 'customers', 'monthly', 'communication', 'salesAssignment', 'sourceSummary']
     const payload: AnnualReviewWorkerPayload = {
       taskId: 'real-worker-1',
-      reportSchemaVersion: 1,
+      reportSchemaVersion: 2,
       period: resolveAnnualReviewPeriod(2026, GEN),
       facts: {
         accounts: [accF(1, 'wx_a', { createdAt: T(2025, 2, 1) }), accF(2, 'wx_b', { createdAt: T(2024, 3, 1) })],

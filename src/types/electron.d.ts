@@ -2901,6 +2901,16 @@ export interface AnnualReviewAggregatedWarning {
   counts?: Record<string, number>
 }
 
+/** 月度趋势区块（S5/阶段2：三序列量纲独立；轴内缺月为真实零） */
+export interface AnnualReviewMonthlyBlock {
+  /** 签约金额（元，本地自然月；与 A4/A5 同一 sign_date 集合） */
+  contractSign: { months: Array<{ month: string; amount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** 已核销回款（元，按计入时间；与 A6 同一集合） */
+  credited: { months: Array<{ month: string; amount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** 客户消息量（条；复用 D5 单一结果） */
+  messageVolume: { months: Array<{ month: string; count: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
 export interface AnnualReviewSourceSummaryRow {
   source: string
   tables: string[]
@@ -2963,7 +2973,8 @@ export interface AnnualReviewReport {
   summary: AnnualReviewSummaryMetrics
   funnel: AnnualReviewFunnelBlock
   customers: AnnualReviewCustomersBlock
-  monthly: AnnualReviewUnavailableBlock
+  /** 月度趋势（三序列） */
+  monthly: AnnualReviewMonthlyBlock
   /** D 组沟通质量（S5） */
   communication: AnnualReviewCommunicationBlock
   /** E 组销售与分配（S5） */

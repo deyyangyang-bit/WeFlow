@@ -64,20 +64,9 @@ import {
 } from './annualReviewSegments'
 import { computeAnnualReviewCommunication } from './annualReviewCommunication'
 import { computeAnnualReviewSalesAssignment } from './annualReviewAssignment'
+import { computeAnnualReviewMonthly, type AnnualReviewMonthlyBlock } from './annualReviewMonthly'
 
 // ─── 报告结构 ────────────────────────────────────────────────────────────────
-
-/** 尚未实现区块的显式占位：UI 按 unavailable 渲染（折叠/「暂无可靠数据」），绝不显示为 0 */
-export interface AnnualReviewUnavailableBlock {
-  status: 'unavailable'
-  /** 稳定 code：metric_not_implemented = 该指标组在当前版本尚未实现（非数据缺失） */
-  reasonCodes: string[]
-}
-
-const NOT_IMPLEMENTED_BLOCK: AnnualReviewUnavailableBlock = Object.freeze({
-  status: 'unavailable',
-  reasonCodes: Object.freeze(['metric_not_implemented'])
-}) as AnnualReviewUnavailableBlock
 
 /** 漏斗与阶段区块（S2 已验收统计的原样装配） */
 export interface AnnualReviewFunnelBlock {
@@ -218,8 +207,8 @@ export interface AnnualReviewReport {
   summary: AnnualReviewSummary
   funnel: AnnualReviewFunnelBlock
   customers: AnnualReviewCustomersBlock
-  /** 月度趋势（合同金额/核销回款/消息量按月序列）——当前版本未实现，显式 unavailable */
-  monthly: AnnualReviewUnavailableBlock
+  /** 月度趋势（S5：签约金额/核销回款/客户消息量三序列，量纲独立） */
+  monthly: AnnualReviewMonthlyBlock
   /** D 组沟通质量（S5：D1/D2/D3/D5/D7） */
   communication: AnnualReviewCommunicationBlock
   /** E 组销售与分配（S5：E1/E3/E4/E5；E2/E6/E7 移出 V1） */
@@ -281,10 +270,9 @@ const SUMMARY_METRIC_KEYS = [
 ] as const
 
 /** 顶层 coverage 的稳定 metricKey 全集（B/C 组 = 区块字段名，A 组 = summary.<metric>） */
+const MONTHLY_METRIC_KEYS = ['contractSign', 'credited', 'messageVolume'] as const
 const FUNNEL_METRIC_KEYS = ['customerStage', 'opportunityStage', 'stageFlow', 'stuck', 'lostBreakdown'] as const
 const CUSTOMERS_METRIC_KEYS = ['highValue', 'newCustomers', 'dealing', 'repeat', 'active', 'silent', 'risk', 'priority'] as const
-/** V1 仍未实现的区块（显式 unavailable 占位） */
-const NOT_IMPLEMENTED_METRIC_KEYS = ['monthly'] as const
 const COMMUNICATION_METRIC_KEYS = ['volume', 'contacted', 'outboundRate', 'monthlyTrend', 'longSilent'] as const
 /** E 组指标式子项（assignedFacts 用区块 coverage，单独处理） */
 const SALES_ASSIGNMENT_METRIC_KEYS = ['effectiveFollowup', 'contractContribution', 'creditedContribution'] as const
@@ -555,6 +543,8 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     }
   }
   const salesAssignment = computeAnnualReviewSalesAssignment(period, inputs)
+  // 月度趋势：消息序列复用 D5 单一结果（不复制聚合）；金额序列与 A4/A6 同源
+  const monthly = computeAnnualReviewMonthly(period, inputs, communication.monthlyTrend)
 
   // completeness：统计层结果聚合（UI 不计算）；月度趋势未实现恒 unavailable
   const summaryStates = SUMMARY_METRIC_KEYS.map((key) => summary[key].state)
@@ -568,7 +558,7 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
       summary: aggregateMetricStates(summaryStates),
       funnel: aggregateMetricStates(funnelStates),
       customers: aggregateMetricStates(customersStates),
-      monthly: 'unavailable',
+      monthly: aggregateMetricStates(MONTHLY_METRIC_KEYS.map((key) => monthly[key].state)),
       communication: aggregateMetricStates(communicationStates),
       salesAssignment: aggregateMetricStates(salesAssignmentStates)
     }
@@ -588,7 +578,9 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
   }
   for (const key of FUNNEL_METRIC_KEYS) coverage[`funnel.${key}`] = cloneCoverage(funnel[key].coverage)
   for (const key of CUSTOMERS_METRIC_KEYS) coverage[`customers.${key}`] = cloneCoverage(customers[key].coverage)
-  coverage['monthly'] = { source: 'not_implemented', status: 'unavailable', reasonCodes: ['metric_not_implemented'] }
+  coverage['monthly.contractSign'] = toMetricCoverage('crmdb.contract', monthly.contractSign)
+  coverage['monthly.credited'] = toMetricCoverage('crmdb.allocation', monthly.credited)
+  coverage['monthly.messageVolume'] = toMetricCoverage('wcdb.messages', monthly.messageVolume)
   coverage['communication.volume'] = toMetricCoverage('wcdb.messages', communication.volume)
   coverage['communication.contacted'] = toMetricCoverage(messageStatsAvailable ? 'wcdb.messages' : 'crmdb.account', communication.contacted)
   coverage['communication.outboundRate'] = toMetricCoverage('wcdb.messages', communication.outboundRate)
@@ -638,7 +630,7 @@ export function composeAnnualReviewReport(input: ComposeAnnualReviewReportInput)
     summary,
     funnel,
     customers,
-    monthly: { ...NOT_IMPLEMENTED_BLOCK, reasonCodes: ['metric_not_implemented'] },
+    monthly,
     communication,
     salesAssignment,
     sourceSummary: buildSourceSummary(facts, sales, crm, opts)
@@ -784,7 +776,7 @@ const EXPECTED_COVERAGE_KEYS: readonly string[] = [
   ...SUMMARY_METRIC_KEYS.map((key) => `summary.${key}`),
   ...FUNNEL_METRIC_KEYS.map((key) => `funnel.${key}`),
   ...CUSTOMERS_METRIC_KEYS.map((key) => `customers.${key}`),
-  ...NOT_IMPLEMENTED_METRIC_KEYS,
+  ...MONTHLY_METRIC_KEYS.map((key) => `monthly.${key}`),
   ...COMMUNICATION_METRIC_KEYS.map((key) => `communication.${key}`),
   ...SALES_ASSIGNMENT_METRIC_KEYS.map((key) => `salesAssignment.${key}`),
   'salesAssignment.assignedFacts'
@@ -1008,10 +1000,25 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     }
   }
 
-  for (const key of NOT_IMPLEMENTED_METRIC_KEYS) {
-    const block = report[key]
-    if (!isPlainObject(block) || block.status !== 'unavailable' || !Array.isArray(block.reasonCodes)) {
-      return invalid(`${key} 必须为显式 unavailable 区块`)
+  // 月度趋势（S5）：三序列形状（金额/消息计数；unavailable ↔ null 双向一致）
+  const monthlyBlock = report.monthly
+  if (!isPlainObject(monthlyBlock)) return invalid('monthly 缺失')
+  for (const key of MONTHLY_METRIC_KEYS) {
+    const series = monthlyBlock[key]
+    if (!isPlainObject(series) || !isMetricState(series.state) || !isWarningsArray(series.warnings)) {
+      return invalid(`monthly.${key} 形状非法`)
+    }
+    if (series.months !== null) {
+      const valueKey = key === 'messageVolume' ? 'count' : 'amount'
+      const pointOk = (m: unknown): boolean =>
+        isPlainObject(m) && typeof m.month === 'string' && /^\d{4}-\d{2}$/.test(m.month) &&
+        isFiniteNumber((m as Record<string, unknown>)[valueKey]) && ((m as Record<string, unknown>)[valueKey] as number) >= 0
+      if (!Array.isArray(series.months) || !series.months.every(pointOk)) {
+        return invalid(`monthly.${key}.months 形状非法`)
+      }
+    }
+    if ((series.state === 'unavailable') !== (series.months === null)) {
+      return invalid(`monthly.${key} 的 unavailable 与 months 不一致`)
     }
   }
 
@@ -1118,7 +1125,7 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     summary: aggregateMetricStates(SUMMARY_METRIC_KEYS.map((key) => (summary[key] as { state: MetricState }).state)),
     funnel: aggregateMetricStates(FUNNEL_METRIC_KEYS.map((key) => (funnel[key] as { coverage: { status: MetricState } }).coverage.status)),
     customers: aggregateMetricStates(CUSTOMERS_METRIC_KEYS.map((key) => (customers[key] as { coverage: { status: MetricState } }).coverage.status)),
-    monthly: 'unavailable' as const,
+    monthly: aggregateMetricStates(MONTHLY_METRIC_KEYS.map((key) => (monthlyBlock[key] as { state: MetricState }).state)),
     communication: aggregateMetricStates(COMMUNICATION_METRIC_KEYS.map((key) => (communication[key] as { state: MetricState }).state)),
     salesAssignment: aggregateMetricStates([
       (salesAssignment.coverage as { status: MetricState }).status,
@@ -1151,7 +1158,7 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   for (const key of SUMMARY_METRIC_KEYS) expectedCoverageStatus[`summary.${key}`] = (summary[key] as { state: MetricState }).state
   for (const key of FUNNEL_METRIC_KEYS) expectedCoverageStatus[`funnel.${key}`] = (funnel[key] as { coverage: { status: MetricState } }).coverage.status
   for (const key of CUSTOMERS_METRIC_KEYS) expectedCoverageStatus[`customers.${key}`] = (customers[key] as { coverage: { status: MetricState } }).coverage.status
-  for (const key of NOT_IMPLEMENTED_METRIC_KEYS) expectedCoverageStatus[key] = 'unavailable'
+  for (const key of MONTHLY_METRIC_KEYS) expectedCoverageStatus[`monthly.${key}`] = (monthlyBlock[key] as { state: MetricState }).state
   for (const key of COMMUNICATION_METRIC_KEYS) expectedCoverageStatus[`communication.${key}`] = (communication[key] as { state: MetricState }).state
   expectedCoverageStatus['salesAssignment.assignedFacts'] = (salesAssignment.coverage as { status: MetricState }).status
   for (const key of SALES_ASSIGNMENT_METRIC_KEYS) expectedCoverageStatus[`salesAssignment.${key}`] = (salesAssignment[key] as { state: MetricState }).state

@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url'
 import {
   createAnnualReviewController,
   buildSummaryCells,
+  customerDetailHref,
   funnelKindLabel,
   identityLabelSafe,
   initialAnnualReviewState,
@@ -299,6 +300,27 @@ async function main(): Promise<void> {
     ok('10b 无 taskId 时首个同年事件完成绑定', stepped.generation.taskId === 'ta' && stepped.generation.progress === 20)
     const otherYear = reduceProgressEvent(stepped, { taskId: 'tb', year: 2024, phase: 'computing', progress: 90, done: false })
     ok('10c 其他年份事件被忽略（旧任务隔离）', otherYear.generation.progress === 20 && otherYear.generation.taskId === 'ta')
+  }
+
+  // ══ 12 阶段2：月度趋势区块 / E8 三句 / 客户详情跳转 ════════════════════════
+  {
+    const pageSrc = readFileSync(join(ROOT, 'src', 'pages', 'AnnualReviewPage.tsx'), 'utf8')
+    ok('12 独立月度趋势区块（三序列面板，无“暂不支持”占位）', pageSrc.includes('签约金额（元/月）') &&
+      pageSrc.includes('已核销回款（元/月）') && pageSrc.includes('客户消息量（条/月）') &&
+      !pageSrc.includes('当前版本暂不支持'))
+    ok('12b unavailable 面板不显示 0（走 UnavailableCard 原因卡）', (() => {
+      const panel = pageSrc.slice(pageSrc.indexOf('function MonthlySeriesPanel'), pageSrc.indexOf('export default function AnnualReviewPage'))
+      return panel.includes('UnavailableCard') && !panel.includes('format(0)')
+    })())
+    ok('12c E8 三句固定说明存在（非公平性结论）', pageSrc.includes('全部失败批次不留批次审计（assigned=0 不落行）') &&
+      pageSrc.includes('部分失败批次的 skipped 只存在于幸存批次的 audit detail') &&
+      pageSrc.includes('round_robin 游标写盘失败属于辅助降级，可能造成不超过一批的份额漂移并长期自愈；weight/load 不读写游标') &&
+      pageSrc.includes('非公平性结论'))
+    ok('12d 有 accountId → 复用 /customers?id= 既有详情入口；无 accountId → 不可点击',
+      customerDetailHref({ accountId: 7 }) === '/customers?id=7' && customerDetailHref({ accountId: null }) === null &&
+      customerDetailHref({ accountId: undefined }) === null && customerDetailHref({}) === null)
+    ok('12e 页面接线 customerDetailHref（行级跳转守卫）', pageSrc.includes('customerDetailHref(r)') &&
+      pageSrc.includes('useNavigate'))
   }
 
   // ══ 11 路由和 Sidebar 接线（源码守卫） ═════════════════════════════════════

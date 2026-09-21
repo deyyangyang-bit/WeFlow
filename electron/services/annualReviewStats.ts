@@ -30,7 +30,8 @@ import type { Database as SqlJsDatabase } from 'sql.js'
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
 /** 报告 schema 版本（§7.2 缓存键 reportSchemaVersion 用；指标口径变化时递增） */
-export const ANNUAL_REVIEW_REPORT_SCHEMA_VERSION = 1
+/** V2：monthly 由 unavailable 占位升级为结构化三序列区块，coverage 键集变化（1.x 缓存不可命中） */
+export const ANNUAL_REVIEW_REPORT_SCHEMA_VERSION = 2
 
 /**
  * WCDB 系统账号集合（与 salesReportService.generate 内 SYSTEM_ACCOUNTS 同一语义）。

@@ -356,7 +356,7 @@ async function main(): Promise<void> {
       report.salesAssignment.coverage.status === 'partial' && report.salesAssignment.effectiveFollowup.value === 1 &&
       report.salesAssignment.creditedContribution.value?.[0].totalAmount === 800.5)
     ok('C4 报告过运行时校验', validateAnnualReviewReport(report, 2026).ok === true)
-    ok('C5 coverage 33 键', Object.keys(report.coverage).length === 33)
+    ok('C5 coverage 35 键', Object.keys(report.coverage).length === 35)
     ok('C6 completeness 推导（communication/salesAssignment real blocks）', report.completeness.blocks.communication === 'partial' &&
       report.completeness.blocks.salesAssignment === 'partial')
     // 隐私：报告无 wxid/sessionId/路径/SQL

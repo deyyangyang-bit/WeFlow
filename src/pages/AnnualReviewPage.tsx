@@ -13,10 +13,11 @@
  *   - 不接 AI、不实现导出（后续阶段）、不触碰旧年度报告页面。
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AlertCircle, Ban, CalendarClock, Download, RefreshCw, XCircle } from 'lucide-react'
 import {
   createAnnualReviewController, createIpcAnnualReviewApi,
-  buildSummaryCells, dataRangeLabel, funnelKindLabel, identityLabelSafe, scopeRangeLabel, yearLabel,
+  buildSummaryCells, customerDetailHref, dataRangeLabel, funnelKindLabel, identityLabelSafe, scopeRangeLabel, yearLabel,
   METRIC_STATE_LABELS,
   type AnnualReviewReport
 } from '../utils/annualReviewView'
@@ -88,6 +89,48 @@ function MetricValueCell({ label, metric, format }: {
       {(metric.state === 'partial' || metric.state === 'snapshot_only') && (
         <div className="ar-metric__note">{METRIC_STATE_LABELS[metric.state]}</div>
       )}
+    </div>
+  )
+}
+
+/** 月度序列面板：单序列单量纲（不同量纲绝不共用坐标轴）；unavailable 显示原因 */
+function MonthlySeriesPanel({ title, series, format }: {
+  title: string
+  series: { months: Array<{ month: string; count?: number; amount?: number }> | null; state: string; warnings: Array<{ code: string; message: string; count?: number }> }
+  format: (v: number) => string
+}) {
+  if (series.state === 'unavailable' || series.months === null) {
+    return (
+      <div className="ar-panel">
+        <div className="ar-panel__h">
+          <span>{title}</span>
+          <span className="ar-chip ar-chip--unavailable">{METRIC_STATE_LABELS.unavailable}</span>
+        </div>
+        <UnavailableCard label={title} reasonCodes={series.warnings.map((w) => w.message)} />
+      </div>
+    )
+  }
+  const max = Math.max(1, ...series.months.map((m) => (m.amount ?? m.count ?? 0)))
+  return (
+    <div className={`ar-panel${series.months.length > 12 ? ' ar-panel--wide' : ''}`}>
+      <div className="ar-panel__h">
+        <span>{title}</span>
+        <span className={`ar-chip ar-chip--${series.state}`}>{METRIC_STATE_LABELS[series.state]}</span>
+      </div>
+      <div className="ar-dist">
+        {series.months.map((m) => {
+          const value = m.amount ?? m.count ?? 0
+          return (
+            <div key={m.month} className="ar-dist__row">
+              <span className="ar-dist__label ar-dist__label--month">{m.month}</span>
+              <div className="ar-dist__track">
+                <div className="ar-dist__bar" style={{ width: `${(value / max) * 100}%`, background: 'var(--color-accent)' }} />
+              </div>
+              <span className="ar-dist__count num">{format(value)}</span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -259,6 +302,7 @@ export default function AnnualReviewPage() {
 }
 
 function ReportBody({ report }: { report: AnnualReviewReport }) {
+  const navigate = useNavigate()
   const summaryCells = buildSummaryCells(report)
   const f = report.funnel
   const c = report.customers
@@ -364,49 +408,49 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
             <UnavailableCard label="高价值客户" reasonCodes={c.highValue.coverage.reasonCodes} />
           ) : (
             <CustomerList title="高价值客户" chip={c.highValue.coverage.status}
-              rows={c.highValue.value.map((r) => ({ id: `hv${r.accountId}`, main: identityLabelSafe(r), sub: `核销 ${r.creditedAmount.toLocaleString('zh-CN')} 元 · 签约 ${r.contractAmount.toLocaleString('zh-CN')} 元` }))} />
+              rows={c.highValue.value.map((r) => ({ id: `hv${r.accountId}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `核销 ${r.creditedAmount.toLocaleString('zh-CN')} 元 · 签约 ${r.contractAmount.toLocaleString('zh-CN')} 元` }))} />
           )}
           {c.newCustomers.coverage.status === 'unavailable' || c.newCustomers.value === null ? (
             <UnavailableCard label="新增客户" reasonCodes={c.newCustomers.coverage.reasonCodes} />
           ) : (
             <CustomerList title="新增客户" chip={c.newCustomers.coverage.status}
-              rows={c.newCustomers.value.map((r) => ({ id: `nw${r.accountId}`, main: identityLabelSafe(r), sub: `${fmtDate(r.createdAt)}${r.imported ? ' · 导入建档' : ''}` }))} />
+              rows={c.newCustomers.value.map((r) => ({ id: `nw${r.accountId}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `${fmtDate(r.createdAt)}${r.imported ? ' · 导入建档' : ''}` }))} />
           )}
           {c.dealing.coverage.status === 'unavailable' || c.dealing.value === null ? (
             <UnavailableCard label="成交客户" reasonCodes={c.dealing.coverage.reasonCodes} />
           ) : (
             <CustomerList title="成交客户" chip={c.dealing.coverage.status}
-              rows={c.dealing.value.map((r) => ({ id: `dl${r.accountId}`, main: identityLabelSafe(r), sub: `${r.contractCount} 份合同 · ${r.contractAmount.toLocaleString('zh-CN')} 元 · 首签 ${fmtDate(r.firstSignDate)}` }))} />
+              rows={c.dealing.value.map((r) => ({ id: `dl${r.accountId}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `${r.contractCount} 份合同 · ${r.contractAmount.toLocaleString('zh-CN')} 元 · 首签 ${fmtDate(r.firstSignDate)}` }))} />
           )}
           {c.repeat.coverage.status === 'unavailable' || c.repeat.value === null ? (
             <UnavailableCard label="复购客户" reasonCodes={c.repeat.coverage.reasonCodes} />
           ) : (
             <CustomerList title="复购客户" chip={c.repeat.coverage.status}
-              rows={c.repeat.value.map((r) => ({ id: `rp${r.accountId}`, main: identityLabelSafe(r), sub: `${r.contractCount} 份合同 · ${r.contractAmount.toLocaleString('zh-CN')} 元` }))} />
+              rows={c.repeat.value.map((r) => ({ id: `rp${r.accountId}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `${r.contractCount} 份合同 · ${r.contractAmount.toLocaleString('zh-CN')} 元` }))} />
           )}
           {c.active.coverage.status === 'unavailable' || c.active.value === null ? (
             <UnavailableCard label="活跃客户" reasonCodes={c.active.coverage.reasonCodes} />
           ) : (
             <CustomerList title="活跃客户" chip={c.active.coverage.status}
-              rows={c.active.value.map((r, i) => ({ id: `ac${r.accountId ?? i}`, main: identityLabelSafe(r) }))} />
+              rows={c.active.value.map((r, i) => ({ id: `ac${r.accountId ?? i}`, href: customerDetailHref(r), main: identityLabelSafe(r) }))} />
           )}
           {c.silent.coverage.status === 'unavailable' || c.silent.value === null ? (
             <UnavailableCard label="沉默客户" reasonCodes={c.silent.coverage.reasonCodes} />
           ) : (
             <CustomerList title="沉默客户" chip={c.silent.coverage.status}
-              rows={c.silent.value.map((r, i) => ({ id: `si${r.accountId ?? r.customerId ?? i}`, main: identityLabelSafe(r), sub: `最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
+              rows={c.silent.value.map((r, i) => ({ id: `si${r.accountId ?? r.customerId ?? i}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
           )}
           {c.risk.coverage.status === 'unavailable' || c.risk.value === null ? (
             <UnavailableCard label="流失风险客户" reasonCodes={c.risk.coverage.reasonCodes} />
           ) : (
             <CustomerList title="流失风险客户" chip={c.risk.coverage.status}
-              rows={c.risk.value.map((r, i) => ({ id: `rk${r.accountId ?? r.customerId ?? i}`, main: identityLabelSafe(r), sub: `${r.stage} · 最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
+              rows={c.risk.value.map((r, i) => ({ id: `rk${r.accountId ?? r.customerId ?? i}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `${r.stage} · 最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
           )}
           {c.priority.coverage.status === 'unavailable' || c.priority.value === null ? (
             <UnavailableCard label="当前重点推进客户" reasonCodes={c.priority.coverage.reasonCodes} />
           ) : (
             <CustomerList title="当前重点推进客户" chip={c.priority.coverage.status}
-              rows={c.priority.value.map((r, i) => ({ id: `pr${r.accountId ?? r.customerId ?? i}`, main: identityLabelSafe(r), sub: `最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
+              rows={c.priority.value.map((r, i) => ({ id: `pr${r.accountId ?? r.customerId ?? i}`, href: customerDetailHref(r), main: identityLabelSafe(r), sub: `最近联系 ${fmtDate(r.lastContactAtMs)}` }))} />
           )}
         </div>
       </section>
@@ -444,7 +488,11 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
               <ul className="ar-customer-list">
                 {report.communication.longSilent.value.map((r, i) => (
                   <li key={`ls${r.accountId ?? r.customerId ?? i}`}>
-                    <span className="ar-customer-list__main">{identityLabelSafe(r)}</span>
+                    {customerDetailHref(r) ? (
+                      <button type="button" className="ar-customer-link" onClick={() => navigate(customerDetailHref(r) as string)} title="打开客户详情">{identityLabelSafe(r)}</button>
+                    ) : (
+                      <span className="ar-customer-list__main">{identityLabelSafe(r)}</span>
+                    )}
                     <span className="ar-customer-list__sub">最近联系 {fmtDate(r.lastContactAtMs)}</span>
                   </li>
                 ))}
@@ -545,12 +593,14 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
         </div>
       </section>
 
-      {/* ── 未实现区块：显式 unavailable，不伪造 0/空数组 ── */}
+      {/* ── 月度趋势（三序列独立量纲） ── */}
       <section className="ar-section">
-        <div className="seclabel"><span className="seclabel__t">更多维度</span></div>
+        <div className="seclabel"><span className="seclabel__t">月度趋势</span></div>
         <div className="ar-two-col">
-          <UnavailableCard label="月度趋势——合同/核销/消息按月（当前版本暂不支持）" reasonCodes={report.monthly.reasonCodes} />
+          <MonthlySeriesPanel title="签约金额（元/月）" series={report.monthly.contractSign} format={(v) => v.toLocaleString('zh-CN')} />
+          <MonthlySeriesPanel title="已核销回款（元/月）" series={report.monthly.credited} format={(v) => v.toLocaleString('zh-CN')} />
         </div>
+        <MonthlySeriesPanel title="客户消息量（条/月）" series={report.monthly.messageVolume} format={(v) => String(v)} />
       </section>
 
       {/* ── 数据说明：warnings 全文 + 口径声明 + sourceSummary ── */}
@@ -570,6 +620,10 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
           <p className="ar-notes__item">本报告为本机数据视角；「当前快照」为截至生成时间的投影，「历史年末重建」为事件流重放结果。</p>
           <p className="ar-notes__item">「暂无可靠数据」表示当前数据无法可靠统计（不显示为 0）；「部分完整」附有降级原因。</p>
           <p className="ar-notes__item">统计口径：本地时区；金额单位为元；历史年度联系时间类指标不可重建。</p>
+          <p className="ar-notes__item">分配统计说明（固定口径，非公平性结论）：</p>
+          <p className="ar-notes__item">① 全部失败批次不留批次审计（assigned=0 不落行）。</p>
+          <p className="ar-notes__item">② 部分失败批次的 skipped 只存在于幸存批次的 audit detail 中。</p>
+          <p className="ar-notes__item">③ round_robin 游标写盘失败属于辅助降级，可能造成不超过一批的份额漂移并长期自愈；weight/load 不读写游标。</p>
           <div className="ar-sources">
             {report.sourceSummary.map((s) => (
               <div key={`${s.source}-${s.tables.join(',')}`} className="ar-sources__row">
@@ -588,8 +642,9 @@ function ReportBody({ report }: { report: AnnualReviewReport }) {
 function CustomerList({ title, rows, chip }: {
   title: string
   chip: string
-  rows: Array<{ id: string; main: string; sub?: string }>
+  rows: Array<{ id: string; main: string; sub?: string; href?: string | null }>
 }) {
+  const navigate = useNavigate()
   return (
     <div className="ar-panel">
       <div className="ar-panel__h">
@@ -602,7 +657,16 @@ function CustomerList({ title, rows, chip }: {
         <ul className="ar-customer-list">
           {rows.map((r) => (
             <li key={r.id}>
-              <span className="ar-customer-list__main">{r.main}</span>
+              {r.href ? (
+                <button
+                  type="button"
+                  className="ar-customer-link"
+                  onClick={() => navigate(r.href as string)}
+                  title="打开客户详情"
+                >{r.main}</button>
+              ) : (
+                <span className="ar-customer-list__main">{r.main}</span>
+              )}
               {r.sub && <span className="ar-customer-list__sub">{r.sub}</span>}
             </li>
           ))}

@@ -239,6 +239,14 @@ export function formatAmount(value: number): string {
 }
 
 /**
+ * 客户详情跳转（复用既有 /customers?id= 工作台路由，不发明新路由）；
+ * 仅 accountId 可用时返回链接，否则 null（行保持不可点击）。
+ */
+export function customerDetailHref(row: { accountId?: number | null }): string | null {
+  return typeof row.accountId === 'number' && Number.isFinite(row.accountId) ? `/customers?id=${row.accountId}` : null
+}
+
+/**
  * 客户名单行身份显示：只引用业务身份（name / account.id / customer_id），
  * 绝不回落到 sessionId/会话原文（规格 §7.2「客户身份只引用 account.id/customer_id」）。
  */

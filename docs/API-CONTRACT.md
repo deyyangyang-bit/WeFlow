@@ -399,9 +399,11 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 periodEndExclusive, asOf, generatedAt, timezoneNote: 'local', dataRange, completeness, coverage,
 warnings, summary(A1–A9), funnel(B1/B2/B3/B6/B7), customers(C1–C8), monthly, communication,
 salesAssignment, sourceSummary }`。每区块的 value/state/warnings/coverage
-原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly`（月度趋势：合同/核销/
-消息按月序列）当前版本未实现，为显式 `{ status:'unavailable', reasonCodes:['metric_not_implemented'] }`
-区块，**不是 0/空数组**；`communication`（D 组：D1 消息量/D2 有沟通客户/D3 主动联系率/D5
+原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly`（V2 结构化三序列：
+`contractSign` 签约金额——与 A4/A5 同一 sign_date 集合、`credited` 核销回款——与 A6 同一
+计入时间、`messageVolume` 客户消息量——**复用 D5 单一结果**；月份轴 historical=完整 12 个月、
+current=1 月至生成月、all_time=三序列数据月并集升序；轴内缺月为真实零 0；金额不做中间舍入；
+unavailable（消息序列）不伪装空数组/0）为正式区块；`communication`（D 组：D1 消息量/D2 有沟通客户/D3 主动联系率/D5
 月度趋势单序列/D7 长期未联系名单，S5 已实现）与 `salesAssignment`（E 组：E1 分项分配事实
 + sync 缺口检测/E3 有效跟进/E4 合同贡献/E5 核销贡献；E2/E6/E7 移出 V1，初始分配与移交
 **分项展示不相加**；sync 缺口 → partial + exactCoverage=false + coverageRatio=null，禁止
@@ -416,7 +418,8 @@ dataRange、不伪造，其覆盖边界由 coverage 与文档声明。account.im
 validator 校验 from/to 同 null 或同为有限且 from ≤ to ≤ asOf。`completeness = { overall, blocks }`（四态聚合，优先级
 确定性：unavailable > partial > snapshot_only > complete，由主进程聚合、UI 不计算；
 未实现的 D/E/monthly 恒 unavailable，不得把 A/B/C 数字伪装为 complete）；`coverage` =
-稳定 metricKey（33 键全集：`summary.*`×10 / `funnel.*`×5 / `customers.*`×8 / `monthly` /
+稳定 metricKey（35 键全集：`summary.*`×10 / `funnel.*`×5 / `customers.*`×8 /
+`monthly.contractSign|credited|messageVolume` /
 `communication.volume|contacted|outboundRate|monthlyTrend|longSilent` /
 `salesAssignment.assignedFacts|effectiveFollowup|contractContribution|creditedContribution`）
 → `Coverage` 映射（键集合固定，缺一/多一/未知键被运行时校验拒绝；B/C 组原样复用统计层
@@ -435,7 +438,7 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 | 通道 | 幂等 | 请求 → 响应 | 说明 |
 |---|---|---|---|
 | `annualReview:getAvailableYears` | R | `()` → `{ success, data?: { years: Array<{ year, coverage: { source, status:'complete', coverageFrom?, coverageTo?, rows, reasonCodes } }>, currentYear, supportsAllTime, defaultYear, generatedAt }, error?: { code, message } }` | 主进程全量扫描本地事实（account.created_at / contract.sign_date（sign_date 有效值）/ A6 核销计入时间 / intent_tag_log.created_at / opportunity.created_at，全部右开 generatedAt）推导年份；**自然年份升序排列，特殊项 year=0（历史以来）固定放在最后**；含 0=历史以来（有数据时）；2000 年前与未来年份的秒/毫秒混存脏值不生成候选；`coverage.rows` 仅陈述「该年度存在 N 条事实」，**不代表该年度各指标完整性**（完整性以 `getReport` 各区块 coverage 为准）。空库 → `years: []`、`supportsAllTime: false`。按 accountScopeId 隔离缓存（TTL 10 分钟）；加载期间发生失效（`invalidateAll`/`handleDataChanged`/账号切换）→ 旧结果不缓存不返回，收敛 `error.code='invalidated'`，新请求重新加载事实。 |
-| `annualReview:generate` | N | `{ year: number }` → `{ success, taskId?, reused?, error?: { code, message } }` | year 只接受合法整数年份或 `0`（运行时校验，拒绝未来/小数/字符串/NaN）；阻塞至任务完成（进度经 `annualReview:progress` 并行推送）；同一 {accountScopeId, year} 已有运行中任务 → 合并等待同一任务（`reused: true`，不重复启动 Worker）；不同账号作用域独立运行。generate 无条件重算并覆盖同键缓存。失败返回 `{ success: false, error: { code, message } }`（code ∈ worker_error/worker_exit/invalid_worker_result/fact_load_failed/cancelled/invalidated/invalid_year/future_year/internal；非敏感 message）。 |
+| `annualReview:generate` | N | `{ year: number }` → `{ success, taskId?, reused?, error?: { code, message } }` | year 只接受合法整数年份或 `0`（运行时校验，拒绝未来/小数/字符串/NaN）；阻塞至任务完成（进度经 `annualReview:progress` 并行推送）；同一 {accountScopeId, year} 已有运行中任务 → 合并等待同一任务（`reused: true`，不重复启动 Worker）；不同账号作用域独立运行。generate 无条件重算并覆盖同键缓存。失败返回 `{ success: false, error: { code, message } }`（code ∈ worker_error/worker_exit/invalid_worker_result/fact_load_failed/cancelled/invalidated/invalid_year/future_year/internal；非敏感 message）。**schemaVersion V2**：monthly 升级为结构化区块后 `reportSchemaVersion=2`，缓存键随版本隔离，V1 报告不可命中。 |
 | `annualReview:getReport` | R | `{ year: number }` → `{ success, cache: 'hit'\|'miss'\|'stale', report?, error?: { code, message } }` | 只读当前账号作用域内存缓存；`hit` 携带 report（TTL 10 分钟内）；`miss` 无缓存；`stale` 有缓存但已过期（**明确区分，绝不回退其他账号/其他作用域缓存**）。历史年度同样受 TTL 约束——迟到同步/补录/迁移/删除都可能改变结果。 |
 | `annualReview:cancel` | N | `{ taskId: string }` → `{ success, error?: { code, message } }` | 终止运行中任务，**对 loading 与 computing 都有效**：loading 阶段取消后不再启动 Worker；computing 阶段真实 terminate Worker。任务收敛为 failed，`error.code='cancelled'`，done=true；被取消任务不写报告/年份缓存。已完成/已失败任务幂等成功（终态不可变，重复 cancel 不抛错、不产生冲突终态）；未知 taskId → `{ success: false, error: { code:'task_not_found', message } }`；非法载荷 → `invalid_task_id`。 |
 | `annualReview:progress`（广播） | — | 主进程 → 渲染层：`{ taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } }` | 单调不回退；completed/failed 为终态（done=true）且进度锁定；taskId 标记使旧任务迟到消息不覆盖新任务。preload `annualReview.onProgress(cb)` 返回清理函数（`removeListener` 只移除本次订阅的 wrapper——多订阅者独立清理，互不影响）。 |
