@@ -1818,11 +1818,11 @@ export interface ElectronAPI {
       }
       error?: { code: string; message: string }
     }>
-    /** 触发生成并等待完成（进度经 onProgress 并行推送）；同一账号同年份已有任务时合并等待 */
+    /** 非阻塞启动生成：立即返回 taskId；完成/失败经 onProgress 终态事件（done=true）推送 */
     generate: (year: number) => Promise<{
       success: boolean
       taskId?: string
-      /** true = 合并等待了同键已有任务（未重复启动 Worker） */
+      /** true = 合并到同键已运行任务（未重复启动 Worker） */
       reused?: boolean
       error?: { code: string; message: string }
     }>

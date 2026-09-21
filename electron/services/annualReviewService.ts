@@ -412,6 +412,12 @@ interface TaskRecord {
   running: boolean
 }
 
+export interface AnnualReviewStartResult {
+  taskId: string
+  /** true = 合并到已运行的同一 {scopeId, year} 任务 */
+  reused: boolean
+}
+
 export interface AnnualReviewGenerateResult {
   success: boolean
   taskId?: string
@@ -495,30 +501,22 @@ export class AnnualReviewService {
 
   // ── 生成 ──
   /**
-   * 发起生成并等待完成（与旧 annualReport:generateReport 同款阻塞信封；进度经事件并行推送）。
-   * 同一 {scopeId, year} 已有运行中任务 → 合并等待同一任务（reused=true，不重复启动 Worker）。
-   * 返回值携带最终状态：completed → success:true；failed（含 cancelled/invalidated）→
-   * success:false + 结构化错误。
+   * 非阻塞启动（「启动」与「等待」分离；页面/IPC 用）：立即返回 taskId 与 reused。
+   * 同一 {scopeId, year} 已有运行中任务 → 合并该任务（reused=true，不重复启动 Worker）。
+   * 完成与失败经 progress 事件（done=true）推送；cancel(taskId) 对 loading/computing 有效。
    */
-  async generate(year: number): Promise<AnnualReviewGenerateResult> {
+  start(year: number): AnnualReviewStartResult {
     const ctx = this.deps.getAccountContext()
     const scopeId = buildAccountScopeId(ctx)
-    const scopeKey = this.keyOf(scopeId, year)
+    return this.startWithScope(scopeId, this.keyOf(scopeId, year), year)
+  }
+
+  private startWithScope(scopeId: string, scopeKey: string, year: number): AnnualReviewStartResult {
+    const ctx = this.deps.getAccountContext()
     const existing = this.tasks.get(scopeKey)
     if (existing && existing.running) {
-      const reusedTaskId = existing.snapshot.taskId
-      const running = this.runningTasksByTaskId.get(reusedTaskId)
-      if (running) await running.promise
-      const snapshot = this.tasks.get(scopeKey)?.snapshot
-      if (snapshot?.status === 'completed') return { success: true, taskId: reusedTaskId, reused: true }
-      return {
-        success: false,
-        taskId: reusedTaskId,
-        reused: true,
-        error: snapshot?.error ?? { code: 'internal', message: '年度复盘生成失败' }
-      }
+      return { taskId: existing.snapshot.taskId, reused: true }
     }
-
     const taskId = this.newTaskId()
     const startedAt = this.now()
     const snapshot: AnnualReviewTaskSnapshot = {
@@ -538,15 +536,30 @@ export class AnnualReviewService {
         })
     }
     this.runningTasksByTaskId.set(taskId, running)
-    await running.promise
+    return { taskId, reused: false }
+  }
 
+  /**
+   * 发起生成并等待完成（阻塞信封 = start + await；进度经事件并行推送）。
+   * 同一 {scopeId, year} 已有运行中任务 → 合并等待同一任务（reused=true）。
+   * 返回值携带最终状态：completed → success:true；failed（含 cancelled/invalidated）→
+   * success:false + 结构化错误。
+   */
+  async generate(year: number): Promise<AnnualReviewGenerateResult> {
+    const ctx = this.deps.getAccountContext()
+    const scopeId = buildAccountScopeId(ctx)
+    const scopeKey = this.keyOf(scopeId, year)
+    const started = this.startWithScope(scopeId, scopeKey, year)
+    const running = this.runningTasksByTaskId.get(started.taskId)
+    if (running) await running.promise
     const finalSnapshot = this.tasks.get(scopeKey)?.snapshot
-    if (finalSnapshot?.status === 'completed' && finalSnapshot.taskId === taskId) {
-      return { success: true, taskId }
+    if (finalSnapshot?.status === 'completed' && finalSnapshot.taskId === started.taskId) {
+      return { success: true, taskId: started.taskId, reused: started.reused }
     }
     return {
       success: false,
-      taskId,
+      taskId: started.taskId,
+      reused: started.reused,
       error: finalSnapshot?.error ?? { code: 'internal', message: '年度复盘生成失败' }
     }
   }

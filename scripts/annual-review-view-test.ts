@@ -21,6 +21,7 @@ import {
   identityLabelSafe,
   initialAnnualReviewState,
   reduceProgressEvent,
+  reduceTerminalEvent,
   METRIC_STATE_LABELS,
   type AnnualReviewApi,
   type AnnualReviewProgressEvent,
@@ -66,13 +67,17 @@ const realReport: AnnualReviewReport = composeAnnualReviewReport({ period: resol
 interface FakeApi {
   api: AnnualReviewApi
   calls: { generate: number; cancel: number; subscribe: number; unsubscribe: number; getReport: number }
-  gates: Array<Deferred<{ success: boolean; taskId?: string; error?: { code: string; message: string } }>>
+  gates: Array<Deferred<{ success: boolean; taskId?: string; reused?: boolean; error?: { code: string; message: string } }>>
   reportResults: Array<{ success: boolean; cache: 'hit' | 'miss' | 'stale'; report?: AnnualReviewReport; error?: { code: string; message: string } }>
+  setCancelShouldFail(v: boolean): void
   emit: (event: AnnualReviewProgressEvent) => void
 }
-function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Parameters<AnnualReviewApi['getAvailableYears']> extends never ? never : Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>> }): FakeApi {
+function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>> }): FakeApi {
   const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0 }
   const gates: FakeApi['gates'] = []
+  let gateSeq = 0
+  let cancelShouldFail = false
+  let issuedTaskId: string | null = null
   const reportResults = opts?.reportResults ?? [{ success: true, cache: 'miss' as const }]
   let progressCb: ((e: AnnualReviewProgressEvent) => void) | null = null
   const api: AnnualReviewApi = {
@@ -87,14 +92,16 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
     },
     generate: async () => {
       calls.generate++
-      const gate = deferred<{ success: boolean; taskId?: string; error?: { code: string; message: string } }>()
+      const gate = deferred<{ success: boolean; taskId?: string; reused?: boolean; error?: { code: string; message: string } }>()
       gates.push(gate)
       return gate.promise
     },
     cancel: async () => {
       calls.cancel++
+      if (cancelShouldFail) throw new Error('cancel failed')
       return { success: true }
     },
+    setCancelShouldFail: (v: boolean) => { cancelShouldFail = v },
     subscribeProgress: (cb) => {
       calls.subscribe++
       progressCb = cb
@@ -104,7 +111,27 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
       }
     }
   }
-  return { api, calls, gates, reportResults, emit: (e) => progressCb?.(e) }
+  const fake: FakeApi = {
+    api, calls, gates, reportResults,
+    setCancelShouldFail: (v: boolean) => { cancelShouldFail = v },
+    emit: (e) => progressCb?.(e)
+  }
+  // 默认启动响应：resolve 为 { success:true, taskId: 'g<N>' }
+  void (function patchGates() {
+    const origPush = gates.push.bind(gates)
+    gates.push = (gate) => {
+      gateSeq++
+      // cancelShouldFail=true 模拟主进程同键合并：复用首个 taskId（reused=true）
+      const taskId = cancelShouldFail && issuedTaskId !== null ? issuedTaskId : `g${gateSeq}`
+      if (issuedTaskId === null) issuedTaskId = taskId
+      void Promise.resolve().then(() => {
+        if (!gate.__settled) gate.resolve({ success: true, taskId, reused: taskId === issuedTaskId && gateSeq > 1 })
+      })
+      return origPush(gate)
+    }
+    Object.defineProperty(gates, 'push', { value: gates.push, writable: true, configurable: true })
+  })()
+  return fake
 }
 
 async function main(): Promise<void> {
@@ -121,7 +148,7 @@ async function main(): Promise<void> {
     ctrl.dispose()
   }
 
-  // ══ 2 任务进度和取消 ═══════════════════════════════════════════════════════
+  // ══ 2 任务进度、取消与终态事件（非阻塞启动 + 事件驱动完成） ═══════════════
   {
     const fake = createFakeApi()
     const ctrl = createAnnualReviewController(fake.api)
@@ -129,24 +156,21 @@ async function main(): Promise<void> {
     await tick()
     ctrl.startGenerate()
     await tick()
-    ok('2 进入 generating（可取消，taskId 待事件绑定）', ctrl.getState().phase === 'generating' && ctrl.getState().generation.cancellable === true)
-    // 进度事件按生成年份（2021=主进程默认年份）绑定；其他年份事件被忽略
-    fake.emit({ taskId: 't0', year: 2025, phase: 'computing', progress: 66, done: false })
-    ok('2b 其他年份的旧任务事件被忽略', ctrl.getState().generation.taskId === null && ctrl.getState().generation.progress === 0)
-    fake.emit({ taskId: 't1', year: 2021, phase: 'computing', progress: 40, done: false })
-    fake.emit({ taskId: 't1', year: 2021, phase: 'computing', progress: 70, done: false, statusText: '计算年度统计' })
-    fake.emit({ taskId: 't1', year: 2021, phase: 'computing', progress: 55, done: false }) // 乱序 → 不回退
+    ok('2 启动即绑定 taskId（非阻塞，可取消）', ctrl.getState().phase === 'generating' &&
+      ctrl.getState().generation.taskId === 'g1' && ctrl.getState().generation.cancellable === true)
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 40, done: false })
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 70, done: false, statusText: '计算年度统计' })
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 55, done: false }) // 乱序 → 不回退
     const s = ctrl.getState()
-    ok('2c 进度单调推进并绑定 taskId', s.generation.progress === 70 && s.generation.taskId === 't1' && s.generation.statusText === '计算年度统计')
+    ok('2b 进度单调推进（按 taskId 严格过滤）', s.generation.progress === 70 && s.generation.statusText === '计算年度统计')
     await ctrl.cancelGeneration()
-    ok('2d 取消调用 IPC cancel', fake.calls.cancel === 1)
-    fake.gates[0].resolve({ success: false, error: { code: 'cancelled', message: '年度复盘生成已取消' } })
-    await tick()
-    ok('2d 取消收敛 cancelled（未写入缓存）', ctrl.getState().phase === 'cancelled' && ctrl.getState().report === null)
+    ok('2c cancel 携带正确 taskId', fake.calls.cancel === 1)
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'failed', progress: 70, done: true, error: { code: 'cancelled', message: '年度复盘生成已取消' } })
+    ok('2d 终态事件收敛 cancelled（未写缓存）', ctrl.getState().phase === 'cancelled' && ctrl.getState().report === null)
     ctrl.dispose()
   }
 
-  // ══ 3 生成成功 → 缓存查询 → 渲染 ═══════════════════════════════════════════
+  // ══ 3 生成成功（completed 终态事件 → getReport → 渲染） ═══════════════════
   {
     const fake = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }] })
     const ctrl = createAnnualReviewController(fake.api)
@@ -154,51 +178,83 @@ async function main(): Promise<void> {
     await tick()
     ctrl.startGenerate()
     await tick()
-    fake.emit({ taskId: 't2', year: 2021, phase: 'computing', progress: 90, done: false })
-    fake.gates[0].resolve({ success: true, taskId: 't2' })
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 90, done: false })
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
     await tick(); await tick()
     const s = ctrl.getState()
-    ok('3 生成成功后渲染 done', s.phase === 'done' && s.report?.year === 2025)
-    ok('3b overall 徽标（V1 D/E 未实现 → unavailable 档位）', s.overallBadge === 'unavailable')
+    ok('3 completed 事件驱动渲染 done', s.phase === 'done' && s.report?.year === 2025)
+    ok('3b overall 徽标档位', s.overallBadge === 'unavailable')
     ok('3c 渲染后生成状态清理（taskId 置空、不可取消）', s.generation.taskId === null && s.generation.cancellable === false)
     ctrl.dispose()
   }
 
-  // ══ 4 连续生成时旧任务结果隔离 ═════════════════════════════════════════════
+  // ══ 4 任务生命周期隔离（切年/重生成/迟到事件） ════════════════════════════
   {
+    // 4a progress 前切年：启动响应迟到 → 仍取消刚启动的任务
     const fake = createFakeApi()
     const ctrl = createAnnualReviewController(fake.api)
     await ctrl.loadYears()
     await tick()
-    ctrl.startGenerate() // 第 1 次生成（gate0）
+    ctrl.startGenerate() // gate 未 resolve：响应未返回
     await tick()
-    ctrl.startGenerate() // 第 2 次生成（gate1）：旧 generate 结果必须作废
+    ctrl.selectYear(2025) // 首条 progress 前切年
     await tick()
-    fake.gates[0].resolve({ success: false, error: { code: 'cancelled', message: '旧结果' } })
-    await tick()
-    ok('4 旧 generate 结果不覆盖新任务（仍 generating）', ctrl.getState().phase === 'generating')
-    fake.gates[1].resolve({ success: false, error: { code: 'cancelled', message: '新结果' } })
-    await tick()
-    ok('4b 新结果正常收敛 cancelled', ctrl.getState().phase === 'cancelled')
+    fake.gates[0].resolve({ success: true, taskId: 'late-task' }) // 迟到的启动响应
+    await tick(); await tick()
+    ok('4a progress 前切年 → 迟到启动响应触发取消', fake.calls.cancel === 1)
 
-    // 跨年份：切走后旧年份迟到事件/结果不得覆盖新年份状态
+    // 4b progress 后切年：按当前 taskId 取消
     const fake2 = createFakeApi()
     const ctrl2 = createAnnualReviewController(fake2.api)
     await ctrl2.loadYears()
     await tick()
-    ctrl2.startGenerate() // 2021（gate0）
+    ctrl2.startGenerate()
     await tick()
-    ctrl2.selectYear(2025) // 切到 2025：挂起的 2021 生成整体作废
+    fake2.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 30, done: false })
+    ctrl2.selectYear(2025)
     await tick()
-    ok('4c 切年份后选定新年份（旧 generate 已作废，缓存 miss → idle）', ctrl2.getState().selectedYear === 2025 &&
-      (ctrl2.getState().phase === 'loading' || ctrl2.getState().phase === 'idle') && ctrl2.getState().report === null)
-    fake2.gates[0].resolve({ success: true, taskId: 'old-task' })
-    await tick(); await tick()
-    ok('4d 旧年份迟到 generate 结果被丢弃（未触发渲染/失败）', ctrl2.getState().phase === 'loading' || ctrl2.getState().phase === 'idle')
-    // 旧年份进度事件（taskId/年份都不匹配新状态）被忽略
-    fake2.emit({ taskId: 'old-task', year: 2021, phase: 'computing', progress: 66, done: false })
-    ok('4e 旧年份进度事件被忽略', ctrl2.getState().phase !== 'generating')
+    ok('4b 切年按当前 taskId 取消', fake2.calls.cancel === 1)
+    fake2.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 90, done: false }) // 旧任务事件 → 忽略
+    ok('4b2 切年后旧任务事件被忽略', ctrl2.getState().phase !== 'generating')
     ctrl2.dispose()
+
+    // 4c 同年重新生成：旧任务先取消、旧事件不得污染新任务
+    const fake3 = createFakeApi()
+    const ctrl3 = createAnnualReviewController(fake3.api)
+    await ctrl3.loadYears()
+    await tick()
+    ctrl3.startGenerate()
+    await tick() // g1 绑定
+    ctrl3.startGenerate() // 重新生成：先取消 g1，再启动新任务
+    await tick()
+    ok('4c 同年重生成先取消旧任务（cancel≥1）', fake3.calls.cancel >= 1)
+    const newTaskId = ctrl3.getState().generation.taskId
+    ok('4c2 新代际已绑定新 taskId', typeof newTaskId === 'string' && newTaskId !== 'g1')
+    fake3.emit({ taskId: 'g1', year: 2021, phase: 'failed', progress: 60, done: true, error: { code: 'cancelled', message: '旧任务' } }) // 旧任务终态 → 忽略
+    ok('4c3 旧任务终态事件不覆盖新任务（仍 generating）', ctrl3.getState().phase === 'generating')
+    fake3.emit({ taskId: newTaskId as string, year: 2021, phase: 'computing', progress: 50, done: false })
+    ok('4c4 新任务事件正常推进', ctrl3.getState().generation.progress === 50)
+
+    // 4d 两个年份交错事件（taskId 隔离）
+    fake3.emit({ taskId: 'other-year', year: 2025, phase: 'computing', progress: 99, done: false })
+    ok('4d 其他年份/任务事件被忽略', ctrl3.getState().generation.progress === 50)
+    ctrl3.dispose()
+
+    // 4e cancel 失败：不假装终止，但同键合并后旧任务仍被跟踪、迟到结果不得覆盖
+    const fake4 = createFakeApi()
+    fake4.setCancelShouldFail(true)
+    const ctrl4 = createAnnualReviewController(fake4.api)
+    await ctrl4.loadYears()
+    await tick()
+    ctrl4.startGenerate()
+    await tick() // g1
+    ctrl4.startGenerate() // cancel 失败 → 主进程合并（reused=g1），页面绑定 g1 继续
+    await tick()
+    ok('4e cancel 失败不假装终止（仍 generating 且跟踪合并任务）', ctrl4.getState().phase === 'generating' &&
+      ctrl4.getState().generation.taskId === 'g1')
+    fake4.emit({ taskId: 'g1', year: 2021, phase: 'failed', progress: 40, done: true, error: { code: 'worker_error', message: '失败' } })
+    ok('4e2 合并任务终态事件正常收敛（不悬挂）', ctrl4.getState().phase === 'failed')
+    ctrl4.dispose()
   }
 
   // ══ 5 监听器精确卸载 + 页面卸载无泄漏 ══════════════════════════════════════
@@ -215,16 +271,51 @@ async function main(): Promise<void> {
     fake.emit({ taskId: 't9', year: 2025, phase: 'computing', progress: 50, done: false })
     ok('5d dispose 后事件不再进入状态机', notified === 0 && ctrl.getState().generation.progress === 0)
     unsub()
-    // 卸载时清理运行中任务：generating + 已绑定 taskId → dispose 触发 cancel
+    // 卸载时 taskId 已绑定 → dispose 取消运行中任务
     const fake2 = createFakeApi()
     const ctrl2 = createAnnualReviewController(fake2.api)
     await ctrl2.loadYears()
     await tick()
     ctrl2.startGenerate()
     await tick()
-    fake2.emit({ taskId: 'tg', year: 2021, phase: 'computing', progress: 30, done: false })
     ctrl2.dispose()
     ok('5e 页面卸载时清理运行中任务（cancel 被调用）', fake2.calls.cancel === 1)
+  }
+
+  // ══ 8 报告缺少必需字段时拒绝渲染成功态 ═════════════════════════════════════
+  {
+    const fake = createFakeApi({
+      reportResults: [
+        { success: true, cache: 'miss' },
+        { success: true, cache: 'hit', report: { year: 2025, generatedAt: GEN } as unknown as AnnualReviewReport }
+      ]
+    })
+    const ctrl = createAnnualReviewController(fake.api)
+    await ctrl.loadYears()
+    await tick()
+    ctrl.startGenerate()
+    await tick()
+    fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+    await tick(); await tick()
+    const s = ctrl.getState()
+    ok('8 缺必需字段 → failed（拒绝渲染成功态，不崩溃）', s.phase === 'failed' && s.error?.code === 'invalid_report' && s.report === null)
+    ctrl.dispose()
+  }
+
+  // ══ 10 纯 reducer 基础行为 ═════════════════════════════════════════════════
+  {
+    const s0 = initialAnnualReviewState()
+    const idle = { ...s0, phase: 'done' as const }
+    ok('10 非 generating 阶段进度事件被忽略', reduceProgressEvent(idle, { taskId: 't', year: 2025, phase: 'computing', progress: 50, done: false }) === idle)
+    const gen = { ...s0, phase: 'generating' as const, selectedYear: 2025, generation: { taskId: 'ta', progress: 0, cancellable: true } }
+    const stepped = reduceProgressEvent(gen, { taskId: 'ta', year: 2025, phase: 'loading', progress: 20, done: false })
+    ok('10b 当前任务事件正常推进', stepped.generation.progress === 20)
+    const otherTask = reduceProgressEvent(stepped, { taskId: 'tb', year: 2025, phase: 'computing', progress: 90, done: false })
+    ok('10c 其他 taskId 事件被忽略（旧任务隔离）', otherTask.generation.progress === 20)
+    const terminal = reduceTerminalEvent(stepped, { taskId: 'ta', year: 2025, phase: 'failed', progress: 20, done: true, error: { code: 'cancelled', message: '已取消' } })
+    ok('10d 终态 reducer：cancelled 收敛', terminal.phase === 'cancelled')
+    const terminalFail = reduceTerminalEvent(stepped, { taskId: 'ta', year: 2025, phase: 'failed', progress: 20, done: true, error: { code: 'worker_error', message: '失败' } })
+    ok('10e 终态 reducer：failed 收敛', terminalFail.phase === 'failed' && terminalFail.error?.code === 'worker_error')
   }
 
   // ══ 6 unavailable 不显示 0 ═════════════════════════════════════════════════
@@ -256,26 +347,6 @@ async function main(): Promise<void> {
     ok('7c partial 指标携带降级说明 warnings', partialCell !== undefined && partialCell.state === 'partial' && partialCell.warnings.length > 0)
   }
 
-  // ══ 8 报告缺少必需字段时拒绝渲染成功态 ═════════════════════════════════════
-  {
-    const fake = createFakeApi({
-      reportResults: [
-        { success: true, cache: 'miss' },
-        { success: true, cache: 'hit', report: { year: 2025, generatedAt: GEN } as unknown as AnnualReviewReport }
-      ]
-    })
-    const ctrl = createAnnualReviewController(fake.api)
-    await ctrl.loadYears()
-    await tick()
-    ctrl.startGenerate()
-    await tick()
-    fake.gates[0].resolve({ success: true, taskId: 't3' })
-    await tick(); await tick()
-    const s = ctrl.getState()
-    ok('8 缺必需字段 → failed（拒绝渲染成功态，不崩溃）', s.phase === 'failed' && s.error?.code === 'invalid_report' && s.report === null)
-    ctrl.dispose()
-  }
-
   // ══ 9 视图模型不含 sessionId/路径/秘密 ═════════════════════════════════════
   {
     const cells = buildSummaryCells(realReport)
@@ -288,18 +359,6 @@ async function main(): Promise<void> {
       identityLabelSafe({ name: '客户1', accountId: 1, customerId: '501' }) === '客户1')
     const reportText = JSON.stringify(realReport)
     ok('9c 报告本体无 wxid 原文（进入视图前的源头保证）', !reportText.includes('wxid_secret999'))
-  }
-
-  // ══ 10 纯 reducer 基础行为 ═════════════════════════════════════════════════
-  {
-    const s0 = initialAnnualReviewState()
-    const idle = { ...s0, phase: 'done' as const }
-    ok('10 非 generating 阶段进度事件被忽略', reduceProgressEvent(idle, { taskId: 't', year: 2025, phase: 'computing', progress: 50, done: false }) === idle)
-    const gen = { ...s0, phase: 'generating' as const, selectedYear: 2025, generation: { taskId: null, progress: 0, cancellable: true } }
-    const stepped = reduceProgressEvent(gen, { taskId: 'ta', year: 2025, phase: 'loading', progress: 20, done: false })
-    ok('10b 无 taskId 时首个同年事件完成绑定', stepped.generation.taskId === 'ta' && stepped.generation.progress === 20)
-    const otherYear = reduceProgressEvent(stepped, { taskId: 'tb', year: 2024, phase: 'computing', progress: 90, done: false })
-    ok('10c 其他年份事件被忽略（旧任务隔离）', otherYear.generation.progress === 20 && otherYear.generation.taskId === 'ta')
   }
 
   // ══ 12 阶段2：月度趋势区块 / E8 三句 / 客户详情跳转 ════════════════════════

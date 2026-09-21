@@ -126,40 +126,56 @@ export function assertRenderableReport(report: unknown): report is AnnualReviewR
 // ─── 纯 reducer ──────────────────────────────────────────────────────────────
 
 /**
- * 进度事件过滤与合并：非 generating 阶段或年份不匹配（旧任务/其他年份）一律忽略。
- * 按 year 绑定（而非 taskId）的原因：generate 是阻塞信封，taskId 要到任务结束才返回；
- * 主进程对同 {scope, year} 任务合并等待，同年不可能并存两个任务，迟到事件只可能
- * 来自其他年份的旧任务。首次命中事件同时绑定 taskId 供取消按钮使用。
+ * 进度事件过滤与合并（非终态）：非 generating 阶段或 taskId 不匹配（旧任务迟到事件）
+ * 一律忽略。generate 已改为非阻塞启动——taskId 在启动响应时即绑定，主进程对同
+ * {scope, year} 任务合并（reused），页面与主进程以同一 taskId 跟踪；年份作为次级
+ * 防线同时校验。
  */
 export function reduceProgressEvent(state: AnnualReviewPageState, event: AnnualReviewProgressEvent): AnnualReviewPageState {
   if (state.phase !== 'generating') return state
-  if (state.selectedYear === null || event.year !== state.selectedYear) return state
+  if (state.generation.taskId === null || event.taskId !== state.generation.taskId) return state
+  if (state.selectedYear !== null && event.year !== state.selectedYear) return state
   const progress = Math.min(100, Math.max(state.generation.progress, Number.isFinite(event.progress) ? event.progress : 0))
   return {
     ...state,
     generation: {
       ...state.generation,
-      taskId: state.generation.taskId ?? event.taskId,
       progress,
       statusText: typeof event.statusText === 'string' ? event.statusText : state.generation.statusText
     }
   }
 }
 
-export type GenerateOutcome =
-  | { kind: 'ok'; taskId: string | null }
-  | { kind: 'cancelled' }
+export type GenerateStartOutcome =
+  | { kind: 'started'; taskId: string; reused: boolean }
   | { kind: 'failed'; error: { code: string; message: string } }
 
-/** generate() 返回值 → 状态：成功转缓存查询；取消/失败收敛终态（旧代际由 controller seq 拦截） */
-export function reduceGenerateOutcome(state: AnnualReviewPageState, outcome: GenerateOutcome): AnnualReviewPageState {
-  if (outcome.kind === 'ok') {
-    return { ...state, phase: 'loading', generation: { taskId: outcome.taskId, progress: 100, statusText: '生成完成', cancellable: false } }
-  }
-  if (outcome.kind === 'cancelled') {
-    return { ...state, phase: 'cancelled', generation: { taskId: null, progress: 0, cancellable: false } }
+/** generate 启动响应（非阻塞）：绑定 taskId 进入 generating；启动失败 → failed */
+export function reduceGenerateStart(state: AnnualReviewPageState, outcome: GenerateStartOutcome): AnnualReviewPageState {
+  if (outcome.kind === 'started') {
+    return { ...state, generation: { taskId: outcome.taskId, progress: 0, statusText: state.generation.statusText, cancellable: true } }
   }
   return { ...state, phase: 'failed', error: outcome.error, generation: { taskId: null, progress: 0, cancellable: false } }
+}
+
+/**
+ * 终态进度事件（done=true）→ 状态（纯函数）：
+ *   completed → awaitingReport（controller 随后 getReport）；
+ *   failed + error.code=cancelled → cancelled；其余 → failed。
+ */
+export function reduceTerminalEvent(state: AnnualReviewPageState, event: AnnualReviewProgressEvent): AnnualReviewPageState {
+  if (event.phase === 'completed') {
+    return { ...state, generation: { ...state.generation, progress: 100, statusText: '生成完成' } }
+  }
+  if (event.phase === 'failed' && event.error?.code === 'cancelled') {
+    return { ...state, phase: 'cancelled', generation: { taskId: null, progress: 0, cancellable: false } }
+  }
+  return {
+    ...state,
+    phase: 'failed',
+    error: event.error ?? { code: 'internal', message: '年度复盘生成失败' },
+    generation: { taskId: null, progress: 0, cancellable: false }
+  }
 }
 
 /** getReport 结果 → 状态：hit+门禁通过 → done；miss/stale → idle；非法报告 → failed（拒绝渲染成功态） */
@@ -349,6 +365,19 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
   }
 
   const onProgress = (event: AnnualReviewProgressEvent): void => {
+    if (state.phase !== 'generating') return
+    if (state.generation.taskId === null || event.taskId !== state.generation.taskId) return // 迟到/其他任务事件
+    if (event.done) {
+      // 终态：completed → 拉取缓存渲染；failed(+cancelled) → cancelled；其余 → failed。
+      // 终态事件以「当前代际仍在等待」为准（generation.taskId 存在即未收敛）。
+      const next = reduceTerminalEvent(state, event)
+      setState(next)
+      if (event.phase === 'completed' && state.selectedYear !== null) {
+        const year = state.selectedYear
+        void controller.loadReport(year)
+      }
+      return
+    }
     const next = reduceProgressEvent(state, event)
     if (next !== state) setState(next)
   }
@@ -386,8 +415,14 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       if (firstLoad && nextSelected !== null) void controller.loadReport(nextSelected)
     },
     selectYear(year) {
-      ++generateSeq // 切换年份：挂起的旧年份 generate 结果整体作废（迟到结果不得覆盖新状态）
+      // 切换年份：先取消当前运行任务（含「首条 progress 前」——taskId 已由启动响应绑定），
+      // 再作废旧代际挂起结果并拉取新年份缓存
+      ++generateSeq
+      const runningTaskId = state.phase === 'generating' ? state.generation.taskId : null
       setState({ ...state, selectedYear: year, report: null, phase: 'loading', error: undefined, generation: { taskId: null, progress: 0, cancellable: false } })
+      if (runningTaskId !== null) {
+        void api.cancel(runningTaskId).catch(() => { /* 取消失败：任务由主进程状态机收敛 */ })
+      }
       void controller.loadReport(year)
     },
     async loadReport(year) {
@@ -404,6 +439,9 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     async startGenerate() {
       const year = state.selectedYear
       if (year === null) return
+      // 同年重新生成：旧任务先取消（cancel 与 generate IPC 按序到达主进程）；
+      // cancel 失败时主进程按同键合并，旧任务继续但页面状态仍随事件推进
+      const prevTaskId = state.phase === 'generating' ? state.generation.taskId : null
       const seq = ++generateSeq
       setState({
         ...state,
@@ -412,26 +450,31 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
         report: null,
         error: undefined
       })
-      let outcome: GenerateOutcome
+      if (prevTaskId !== null) {
+        void api.cancel(prevTaskId).catch(() => { /* 取消失败不阻塞新启动 */ })
+      }
+      let outcome: GenerateStartOutcome
       try {
         const result = await api.generate(year)
         if (result.success && result.taskId) {
-          outcome = { kind: 'ok', taskId: result.taskId }
-        } else if (result.error?.code === 'cancelled') {
-          outcome = { kind: 'cancelled' }
+          outcome = { kind: 'started', taskId: result.taskId, reused: result.reused === true }
         } else {
           outcome = { kind: 'failed', error: result.error ?? { code: 'internal', message: '年度复盘生成失败' } }
         }
       } catch {
         outcome = { kind: 'failed', error: { code: 'internal', message: '年度复盘生成失败' } }
       }
-      if (disposed || seq !== generateSeq || state.selectedYear !== year) return // 迟到的生成结果：丢弃
-      if (outcome.kind === 'ok') {
-        setState(reduceGenerateOutcome(state, outcome))
-        void controller.loadReport(year) // 生成完成 → 拉取缓存
+      if (disposed) {
+        // 页面已卸载而启动响应才到达：取消刚启动的任务（不留下无人管理的后台任务）
+        if (outcome.kind === 'started') void api.cancel(outcome.taskId).catch(() => {})
         return
       }
-      setState(reduceGenerateOutcome(state, outcome))
+      if (seq !== generateSeq || state.selectedYear !== year) {
+        // 用户已切年/重新生成：本次启动作废并取消
+        if (outcome.kind === 'started') void api.cancel(outcome.taskId).catch(() => {})
+        return
+      }
+      setState(reduceGenerateStart(state, outcome))
     },
     async cancelGeneration() {
       const taskId = state.generation.taskId
@@ -443,7 +486,9 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     dispose() {
       if (disposed) return // 幂等
       disposed = true
-      // 页面卸载：清理仍在运行的生成任务（幂等取消；任务已终态则为 no-op）
+      // 页面卸载：清理仍在运行的生成任务（幂等取消；任务已终态则为 no-op）。
+      // taskId 在启动响应到达后即绑定——「响应未返回前卸载」由 startGenerate 的
+      // 迟到分支兜底取消。
       const taskId = state.generation.taskId
       if (state.phase === 'generating' && taskId !== null) {
         void api.cancel(taskId).catch(() => { /* 卸载路径：尽力而为 */ })

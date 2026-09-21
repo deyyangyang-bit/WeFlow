@@ -4202,11 +4202,10 @@ function registerIpcHandlers() {
     if (!validation.ok) {
       return { success: false, error: { code: validation.code, message: validation.message } }
     }
-    const result = await annualReviewService.generate(validation.year)
-    if (result.success) {
-      return { success: true, taskId: result.taskId, reused: result.reused === true }
-    }
-    return { success: false, taskId: result.taskId, reused: result.reused === true, error: result.error ?? { code: 'internal', message: '年度复盘生成失败' } }
+    // 非阻塞启动：立即返回 taskId/reused；完成与失败经 annualReview:progress（done=true）
+    // 推送，渲染层收到 completed 后再 getReport（任务生命周期可取消的前提）。
+    const started = annualReviewService.start(validation.year)
+    return { success: true, taskId: started.taskId, reused: started.reused }
   })
 
   ipcMain.handle('annualReview:getReport', async (_, payload: unknown) => {
