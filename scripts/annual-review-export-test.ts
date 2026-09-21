@@ -348,16 +348,25 @@ async function main(): Promise<void> {
     const executorSrc = readFileSync(join(ROOT, 'electron', 'services', 'safeTextFileExport.ts'), 'utf8')
 
     ok("4 main 注册 annualReview:export", mainSrc.includes("'annualReview:export'"))
-    ok('4b main 导出走唯一执行器 + 授权单例', mainSrc.includes('exportTextFile({ dir, fileName, content })') &&
-      mainSrc.includes('exportPathAuthorizer.grant(dir') && !/annualReportImageExport|annualReportExportPolicy/.test(
-        mainSrc.slice(mainSrc.indexOf('annualReview:export'), mainSrc.indexOf('annualReport:getAvailableYears'))))
+    // 4b 只在 annualReview:export 这一个 handler 范围内检查：导出必须走唯一执行器 + 授权单例，
+    // 且该范围内不得出现第二套写盘/PNG 校验实现（边界不依赖其它 handler 的存在——S8 下线旧链路后
+    // 原先用作右界的旧 IPC 名已不存在，改为按 handler 自身定位）。
+    const exportHandlerStart = mainSrc.indexOf("ipcMain.handle('annualReview:export'")
+    const exportHandlerEnd = mainSrc.indexOf('ipcMain.handle(', exportHandlerStart + 10)
+    const exportHandlerSrc = (exportHandlerStart >= 0 && exportHandlerEnd > exportHandlerStart)
+      ? mainSrc.slice(exportHandlerStart, exportHandlerEnd)
+      : ''
+    ok('4b main 导出走唯一执行器 + 授权单例', exportHandlerSrc.length > 0 &&
+      exportHandlerSrc.includes('exportTextFile({ dir, fileName, content })') &&
+      exportHandlerSrc.includes('exportPathAuthorizer.grant(dir') &&
+      !/exportAnnualReportImages|validateAnnualReportExportPayload/.test(exportHandlerSrc))
     ok('4c preload/d.ts 暴露 export', preloadSrc.includes("invoke('annualReview:export', { year, format })") &&
       dtsSrc.includes("export: (year: number, format: 'markdown' | 'csv')"))
     ok('4d 页面经安全 IPC 触发导出（目录授权在主进程对话框）', pageSrc.includes("annualReview.export(selectedYear, format)") &&
       !pageSrc.includes('exportTextFile') && !pageSrc.includes('dialog'))
     ok('4e 执行器独占创建 wx + 0600 + 拒绝覆盖', executorSrc.includes("openSync(targetPath, 'wx', 0o600)") &&
       executorSrc.includes("unlinkSync(targetPath)"))
-    ok('4f 导出内容不经 PNG 校验器', !executorSrc.includes('annualReportImageExport') && !executorSrc.includes('signature'))
+    ok('4f 导出内容不经 PNG 校验器', !executorSrc.includes('validateAnnualReportExportPayload') && !executorSrc.includes('signature') && !executorSrc.includes('data:image/png'))
   }
 }
 

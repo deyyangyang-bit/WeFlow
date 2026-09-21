@@ -188,25 +188,6 @@ export default defineConfig({
         }
       },
       {
-        entry: 'electron/annualReportWorker.ts',
-        onstart: handleElectronOnStart,
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: [
-                'koffi',
-                'fsevents'
-              ],
-              output: {
-                entryFileNames: 'annualReportWorker.js',
-                codeSplitting: false
-              }
-            }
-          }
-        }
-      },
-      {
         entry: 'electron/annualReviewWorker.ts',
         onstart: handleElectronOnStart,
         vite: {
@@ -219,25 +200,6 @@ export default defineConfig({
               ],
               output: {
                 entryFileNames: 'annualReviewWorker.js',
-                codeSplitting: false
-              }
-            }
-          }
-        }
-      },
-      {
-        entry: 'electron/dualReportWorker.ts',
-        onstart: handleElectronOnStart,
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: [
-                'koffi',
-                'fsevents'
-              ],
-              output: {
-                entryFileNames: 'dualReportWorker.js',
                 codeSplitting: false
               }
             }

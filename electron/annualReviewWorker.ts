@@ -1,10 +1,10 @@
 /**
  * annualReviewWorker.ts —— 年度经营复盘 Worker（S3）
  *
- * 与 annualReportWorker/dualReportWorker 相同的构建与解析约定（vite.config.ts 独立 entry，
- * 产物 dist-electron/annualReviewWorker.js，__dirname 同级解析）。
+ * 构建与解析约定见 vite.config.ts 独立 entry（产物 dist-electron/annualReviewWorker.js，
+ * __dirname 同级解析）。
  *
- * 边界（与旧年度报告 Worker 的本质差异）：
+ * 边界：
  *   - **不打开任何数据库**：主进程已加载窄事实并经 workerData 注入；本文件零 wcdb/salesDb/
  *     crmDb 导入、零密钥/路径。
  *   - 只调用 S1/S2 已验收的纯统计（annualReviewReport.composeAnnualReviewReport）。

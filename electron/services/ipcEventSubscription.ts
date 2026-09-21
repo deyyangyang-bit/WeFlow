@@ -4,7 +4,7 @@
  * 背景：`removeAllListeners(channel)` 会在一个订阅者清理时删掉同频道的其他订阅者。
  * 本模块按「注册时保存当前订阅对应的 wrapper，清理时 removeListener(channel, wrapper)」
  * 的方式包装订阅：多个订阅者互相独立，清理幂等（重复调用 no-op）。
- * annualReview:progress 订阅使用本辅助；旧 annualReport/dualReport 通道不在本模块范围。
+ * annualReview:progress 订阅使用本辅助。
  */
 
 /** ipcRenderer 的窄结构面（测试用假实现注入） */

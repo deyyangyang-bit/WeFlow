@@ -1842,7 +1842,7 @@ async function main(): Promise<void> {
       dtsSrc.includes('getTaskStatus: (taskId: string)'))
     ok('15e2 d.ts 结构化错误信封（annualReview 区段 error?: { code, message }）', (() => {
       const nsStart = dtsSrc.indexOf('annualReview: {')
-      const nsEnd = dtsSrc.indexOf('dualReport: {', nsStart)
+      const nsEnd = dtsSrc.indexOf('export: {', nsStart)
       if (nsStart < 0 || nsEnd < 0) return false
       const ns = dtsSrc.slice(nsStart, nsEnd)
       return (ns.match(/error\?: \{ code: string; message: string \}/g) ?? []).length >= 4
@@ -1875,8 +1875,10 @@ async function main(): Promise<void> {
       return seg.includes('record.scopeId !== currentScopeId') && seg.includes('found: false') &&
         seg.includes('s.taskId !== taskId')
     })())
+    // 15g 段右界：annualReview:* 全部 handler 注册完到「密钥获取」之间的区段。S8 下线旧链路后
+    // 原先用作右界的旧 IPC 名已不存在，故改用其后继 handler 定位（不依赖已删代码）。
     const arIpcStart = mainSrc.indexOf("'annualReview:getAvailableYears'")
-    const arIpcEnd = mainSrc.indexOf("'annualReport:getAvailableYears'")
+    const arIpcEnd = mainSrc.indexOf("ipcMain.handle('key:autoGetDbKey'", arIpcStart)
     const arIpc = mainSrc.slice(arIpcStart, arIpcEnd)
     ok('15g IPC 失败返回结构化错误（4 处 error: { code … }，不丢 code）',
       (arIpc.match(/error: \{ code/g) ?? []).length >= 4 &&

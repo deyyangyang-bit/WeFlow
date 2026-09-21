@@ -4,7 +4,7 @@
 
 // 编辑体（衬线）全局定义一次：--font-editorial 只用于「主张句」与说明标题。
 // 不引在线字体，离线可用。2026-09-19：改用 GB2312+常用符号子集 woff2（2.6MB，原可变 TTF 24MB），
-// wght 200-900 可变轴与常用字形覆盖不变；年报窗口仍用全量 TTF（AnnualReportWindow.scss 同名定义保持不动）。
+// wght 200-900 可变轴与常用字形覆盖不变。
 @font-face {
   font-family: 'NotoSerifSCLocal';
   src: url('../../resources/fonts/editorial/NotoSerifSC-Subset.woff2') format('woff2');

@@ -185,12 +185,6 @@ export function handleWcdbWorkerMessage(core: WcdbCore, msg: WcdbWorkerMessage, 
                 case 'getAnnualReportStats':
                     result = await core.getAnnualReportStats(payload.sessionIds, payload.beginTimestamp, payload.endTimestamp)
                     break
-                case 'getAnnualReportExtras':
-                    result = await core.getAnnualReportExtras(payload.sessionIds, payload.beginTimestamp, payload.endTimestamp, payload.peakDayBegin, payload.peakDayEnd)
-                    break
-                case 'getDualReportStats':
-                    result = await core.getDualReportStats(payload.sessionId, payload.beginTimestamp, payload.endTimestamp)
-                    break
                 case 'getGroupStats':
                     result = await core.getGroupStats(payload.chatroomId, payload.beginTimestamp, payload.endTimestamp)
                     break

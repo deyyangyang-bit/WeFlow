@@ -487,24 +487,10 @@ export class WcdbService {
   }
 
   /**
-   * 获取年度报告统计
+   * 获取年度报告统计（命名沿用原生导出；消费者：annualReviewStats、salesReportService）
    */
   async getAnnualReportStats(sessionIds: string[], beginTimestamp: number = 0, endTimestamp: number = 0): Promise<{ success: boolean; data?: any; error?: string }> {
     return this.callWorker('getAnnualReportStats', { sessionIds, beginTimestamp, endTimestamp })
-  }
-
-  /**
-   * 获取年度报告扩展数据
-   */
-  async getAnnualReportExtras(sessionIds: string[], beginTimestamp: number, endTimestamp: number, peakDayBegin: number, peakDayEnd: number): Promise<{ success: boolean; data?: any; error?: string }> {
-    return this.callWorker('getAnnualReportExtras', { sessionIds, beginTimestamp, endTimestamp, peakDayBegin, peakDayEnd })
-  }
-
-  /**
-   * 获取双人报告统计数据
-   */
-  async getDualReportStats(sessionId: string, beginTimestamp: number, endTimestamp: number): Promise<{ success: boolean; data?: any; error?: string }> {
-    return this.callWorker('getDualReportStats', { sessionId, beginTimestamp, endTimestamp })
   }
 
   /**

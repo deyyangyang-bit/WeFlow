@@ -104,8 +104,6 @@ export class WcdbCore {
   private wcdbGetAggregateStats: any = null
   private wcdbGetAvailableYears: any = null
   private wcdbGetAnnualReportStats: any = null
-  private wcdbGetAnnualReportExtras: any = null
-  private wcdbGetDualReportStats: any = null
   private wcdbGetGroupStats: any = null
   private wcdbGetMyFootprintStats: any = null
   private wcdbGetMessageDates: any = null
@@ -1028,20 +1026,6 @@ export class WcdbCore {
         this.wcdbGetAnnualReportStats = this.lib.func('int32 wcdb_get_annual_report_stats(int64 handle, const char* sessionIdsJson, int32 begin, int32 end, _Out_ void** outJson)')
       } catch {
         this.wcdbGetAnnualReportStats = null
-      }
-
-      // wcdb_status wcdb_get_annual_report_extras(wcdb_handle handle, const char* session_ids_json, int32_t begin_timestamp, int32_t end_timestamp, int32_t peak_day_begin, int32_t peak_day_end, char** out_json)
-      try {
-        this.wcdbGetAnnualReportExtras = this.lib.func('int32 wcdb_get_annual_report_extras(int64 handle, const char* sessionIdsJson, int32 begin, int32 end, int32 peakBegin, int32 peakEnd, _Out_ void** outJson)')
-      } catch {
-        this.wcdbGetAnnualReportExtras = null
-      }
-
-      // wcdb_status wcdb_get_dual_report_stats(wcdb_handle handle, const char* session_id, int32_t begin_timestamp, int32_t end_timestamp, char** out_json)
-      try {
-        this.wcdbGetDualReportStats = this.lib.func('int32 wcdb_get_dual_report_stats(int64 handle, const char* sessionId, int32 begin, int32 end, _Out_ void** outJson)')
-      } catch {
-        this.wcdbGetDualReportStats = null
       }
 
       // wcdb_status wcdb_get_logs(char** out_json)
@@ -3874,44 +3858,6 @@ export class WcdbCore {
     }
   }
 
-  async getAnnualReportExtras(
-    sessionIds: string[],
-    beginTimestamp: number = 0,
-    endTimestamp: number = 0,
-    peakDayBegin: number = 0,
-    peakDayEnd: number = 0
-  ): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!this.ensureReady()) {
-      return { success: false, error: 'WCDB 未连接' }
-    }
-    if (!this.wcdbGetAnnualReportExtras) {
-      return { success: false, error: '未支持年度扩展统计' }
-    }
-    if (sessionIds.length === 0) return { success: true, data: {} }
-    try {
-      const { begin, end } = this.normalizeRange(beginTimestamp, endTimestamp)
-      const outPtr = [null as any]
-      const result = this.wcdbGetAnnualReportExtras(
-        this.handle,
-        JSON.stringify(sessionIds),
-        begin,
-        end,
-        this.normalizeTimestamp(peakDayBegin),
-        this.normalizeTimestamp(peakDayEnd),
-        outPtr
-      )
-      if (result !== 0 || !outPtr[0]) {
-        return { success: false, error: `获取年度扩展统计失败: ${result}` }
-      }
-      const jsonStr = this.decodeJsonPtr(outPtr[0])
-      if (!jsonStr) return { success: false, error: '解析年度扩展统计失败' }
-      const data = JSON.parse(jsonStr)
-      return { success: true, data }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  }
-
   async getGroupStats(chatroomId: string, beginTimestamp: number = 0, endTimestamp: number = 0): Promise<{ success: boolean; data?: any; error?: string }> {
     if (!this.ensureReady()) {
       return { success: false, error: 'WCDB 未连接' }
@@ -5039,28 +4985,6 @@ export class WcdbCore {
     }
   }
 
-  async getDualReportStats(sessionId: string, beginTimestamp: number = 0, endTimestamp: number = 0): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!this.ensureReady()) {
-      return { success: false, error: 'WCDB 未连接' }
-    }
-    if (!this.wcdbGetDualReportStats) {
-      return { success: false, error: '未支持双人报告统计' }
-    }
-    try {
-      const { begin, end } = this.normalizeRange(beginTimestamp, endTimestamp)
-      const outPtr = [null as any]
-      const result = this.wcdbGetDualReportStats(this.handle, sessionId, begin, end, outPtr)
-      if (result !== 0 || !outPtr[0]) {
-        return { success: false, error: `获取双人报告统计失败: ${result}` }
-      }
-      const jsonStr = this.decodeJsonPtr(outPtr[0])
-      if (!jsonStr) return { success: false, error: '解析双人报告统计失败' }
-      const data = JSON.parse(jsonStr)
-      return { success: true, data }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  }
   /**
    * 修改消息内容
    */

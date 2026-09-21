@@ -393,8 +393,10 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 ### 1.15 年度经营复盘（S3 · 2026-09-20；AI 分析接线 S7.2；实现 = electron/services/annualReviewService.ts + annualReviewWorker.ts + annualReviewAiCoordinator.ts）
 
 > 确定性统计报告（规格 docs/设计-年度经营复盘-规格.md §7.2）；AI 诊断与下一年度行动计划
-> （规格 §8，S7.1 纯模块/服务层 + S7.2 接线）。独立 `annualReview:*` 命名空间；
-> 旧 `annualReport:*` / `dualReport:*` 通道保持原样、互不混用。preload 命名空间 `annualReview`。
+> （规格 §8，S7.1 纯模块/服务层 + S7.2 接线）。独立 `annualReview:*` 命名空间——**旧社交年度报告
+> 通道（`annualReport:*` / `dualReport:*`）及其页面、Worker、图片导出已于 S8（2026-09-21）随
+> 「年度报告/双人报告」产品链路一并下线，本域不存在并存的第二套报告 IPC**。preload 命名空间
+> `annualReview`。
 > 通道命名与本域其余 `域:动作` 二段式略异（三段式对齐规格草案），以本节为准。
 
 **报告结构**（`AnnualReviewReport`，完整类型见 `src/types/electron.d.ts`）：

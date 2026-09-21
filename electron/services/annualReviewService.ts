@@ -305,9 +305,9 @@ export function buildAccountScopeId(ctx: { wxid: string; salesDbName: string; cr
 // ─── 默认线程 runner（生产） ─────────────────────────────────────────────────
 
 /**
- * 真实 Worker runner（生产）：加载 dist-electron/annualReviewWorker.js——与既有
- * annualReportWorker/dualReportWorker 相同的构建与解析约定（vite 构建接线见 vite.config.ts，
- * dev 与打包均为 __dirname 同级产物，scripts/verify-electron-bundle.cjs 扩展守卫覆盖）。
+ * 真实 Worker runner（生产）：加载 dist-electron/annualReviewWorker.js（vite 构建接线见
+ * vite.config.ts，dev 与打包均为 __dirname 同级产物，
+ * scripts/verify-electron-bundle.cjs 扩展守卫覆盖）。
  * 消息契约：{type:'annualReview:progress'|'annualReview:result'|'annualReview:error', taskId, …}；
  * 非法消息 / taskId 不匹配 / exit 无结果 一律 reject，不留下永久 loading。
  * cancel(taskId) 真实 terminate Worker（computing 阶段取消的落地动作）。
