@@ -63,7 +63,7 @@ import { downCommandSpec, validateDownCommand } from '../../shared/centralDownCo
 import { findForbiddenDownlinkField } from '../../shared/centralSync'
 import { healLegacyDownPayload } from './crmDownPayloadCompat'
 import { emitAssignmentInvalidated, type AssignmentInvalidationAction } from './assignmentInvalidationBus'
-import { announceAnnualReviewAuditAction } from './annualReviewInvalidation'
+import { announceAnnualReviewAuditAction, type AnnualReviewInvalidationReason } from './annualReviewInvalidation'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
 export type LanSyncRole = 'hub' | 'terminal'
@@ -659,9 +659,18 @@ function createLeadFromInfoTx(
 }
 
 /** 应用一条下行事件（调用方事务内）；返回 'applied' | 'conflict' | 'nolead' | 'invalid'
- *  （可选 touched 收集器：由调用方传入，事务提交后据此发失效通知——事务内绝不直接通知） */
+ *  （可选 touched 收集器：由调用方传入，事务提交后据此发失效通知——事务内绝不直接通知）
+ *
+ * 年度复盘失效 = **本事务内的 changed 标记**（不再依赖 assignment 总线桥接）：
+ * 只标记真正改写了白名单数据源的分支（lead / assignment / audit_event 的 sync_apply 且
+ * detail.type ∈ assign|transfer）；nolead / conflict / 只写 noop 审计（recycle_noop、
+ * transfer_remove_noop）的分支零标记——它们不改变年度复盘读到的任何事实。 */
 function applyDownEventTx(
-  tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+  tx: {
+    run: (sql: string, params?: unknown[]) => number
+    all: (sql: string, params?: unknown[]) => CrmRow[]
+    markAnnualReviewChanged: (reason: AnnualReviewInvalidationReason) => void
+  },
   ev: SyncEventFile,
   touched?: { leadIds: number[] }
 ): 'applied' | 'conflict' | 'nolead' | 'invalid' {
@@ -696,6 +705,11 @@ function applyDownEventTx(
     )
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'assign', idempotencyKey: ev.idempotencyKey, salesName: String(p.salesName || ''), hubLeadId: Number(p.leadId || 0) }), now])
+    // 三张白名单数据源本事务内都被真实改写：lead（资料/首触期限）+ assignment（新增有效归属行）
+    // + audit_event(sync_apply, detail.type='assign')。一次事务一次批量派发，不逐条上报。
+    tx.markAnnualReviewChanged('crm:lead')
+    tx.markAnnualReviewChanged('crm:assignment')
+    tx.markAnnualReviewChanged('crm:audit_event:sync_apply')
     touched?.leadIds.push(leadId)
     return 'applied'
   }
@@ -710,11 +724,14 @@ function applyDownEventTx(
     }
     if (!lead) {
       if (ev.type === 'transfer' && ev.deliveryRole === 'remove') {
+        // 只写一条 noop 审计（detail.type='transfer_remove_noop'）：年度复盘 E1 缺口检测
+        // 只读 assign/transfer，本行不影响任何指标 → 不标记
         tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
           ['system:sync', 'sync_apply', 'lead', null, JSON.stringify({ type: 'transfer_remove_noop', idempotencyKey: ev.idempotencyKey, leadUnknown: true, toSales: String(p.toSales || '') }), now])
         return 'applied'
       }
       if (ev.type === 'recycle') {
+        // 同上：noop 审计（detail.type='recycle_noop'）不改变年度复盘事实 → 不标记
         tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
           ['system:sync', 'sync_apply', 'lead', null, JSON.stringify({ type: 'recycle_noop', idempotencyKey: ev.idempotencyKey, leadUnknown: true }), now])
         return 'applied'
@@ -728,9 +745,13 @@ function applyDownEventTx(
     if (ev.type === 'recycle') {
       if (cur) {
         tx.run("UPDATE assignment SET status = 'recycled', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ?", [actor, now, Number(cur.id)])
+        // 真回收：assignment 状态 + lead 首触期限回哨兵都被改写 → 标记（audit 的
+        // detail.type='recycle' 不在 E1 缺口检测口径内，故不标记 audit_event）
+        tx.markAnnualReviewChanged('crm:assignment')
         touched?.leadIds.push(leadId)
       }
       tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [LEAD_SLA_UNASSIGNED_SENTINEL, now, leadId])
+      tx.markAnnualReviewChanged('crm:lead')
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'recycle', idempotencyKey: ev.idempotencyKey, reason: String(p.reason || '') }), now])
       return 'applied'
@@ -741,6 +762,9 @@ function applyDownEventTx(
     if (ev.deliveryRole === 'remove') {
       if (cur) {
         tx.run("UPDATE assignment SET status = 'transferred', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ?", [actor, now, Number(cur.id)])
+        // 真移除原销售权属：assignment 行被改写 → 标记（lead 行本分支不动；
+        // audit 的 detail.type='transfer_remove' 不在 E1 缺口检测口径内，故不标记 audit_event）
+        tx.markAnnualReviewChanged('crm:assignment')
         touched?.leadIds.push(leadId)
       }
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
@@ -755,6 +779,10 @@ function applyDownEventTx(
     tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1 || Number(lead.first_contact_deadline || LEAD_SLA_UNASSIGNED_SENTINEL), now, leadId])
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:sync', 'sync_apply', 'lead', leadId, JSON.stringify({ type: 'transfer', idempotencyKey: ev.idempotencyKey, toSales: String(p.toSales || '') }), now])
+    // 同上（assign 分支）：lead + assignment + audit_event(sync_apply, detail.type='transfer') 三源改写
+    tx.markAnnualReviewChanged('crm:lead')
+    tx.markAnnualReviewChanged('crm:assignment')
+    tx.markAnnualReviewChanged('crm:audit_event:sync_apply')
     touched?.leadIds.push(leadId)
     return 'applied'
   }
@@ -782,7 +810,8 @@ export function applyDownEventDirect(ev: SyncEventFile): AckOutcome {
     }
     return next
   })
-  // 事务已提交才通知：只对真正改写 assignment 行的 applied 事件发（conflict/nolead/脏类型不发）
+  // 事务已提交才通知：只对真正改写 assignment 行的 applied 事件发（conflict/nolead/脏类型不发）。
+  // 该总线只服务线索页/UI 刷新；年度复盘失效已由 applyDownEventTx 的事务内 changed 标记派发。
   const downAction: AssignmentInvalidationAction | null = ev.type === 'assign' ? 'assign' : ev.type === 'transfer' ? 'transfer' : ev.type === 'recycle' ? 'recycle' : null
   if (outcome === 'applied' && downAction && touched.leadIds.length) {
     emitAssignmentInvalidated(downAction, touched.leadIds)
@@ -964,7 +993,8 @@ export function consumeDownEvents(root: string): ConsumeResult {
       })
       if (outcome === 'applied') {
         r.applied++
-        // 事务已提交才通知（SMB 下行与中央 HTTP 共用 applyDownEventTx 状态机，两处提交点各自通知）
+        // 事务已提交才通知（SMB 下行与中央 HTTP 共用 applyDownEventTx 状态机，两处提交点各自通知）；
+        // assignment 总线只服务 UI 刷新，年度复盘失效已由 applyDownEventTx 的事务内标记派发
         const downAction: AssignmentInvalidationAction | null = ev.type === 'assign' ? 'assign' : ev.type === 'transfer' ? 'transfer' : ev.type === 'recycle' ? 'recycle' : null
         if (downAction && touched.leadIds.length) emitAssignmentInvalidated(downAction, touched.leadIds)
         let ackWritten = false
@@ -1133,9 +1163,19 @@ export function emitUpEvents(root: string): EmitResult {
 }
 
 // ─── 上行消费（中枢）：up/*/ → 应用 → 幂等标记 → 删文件（跳过自己的目录）─────
-/** 应用一条上行事件（调用方事务内）；返回是否已处理（未知类型返回 false 不消费） */
+/** 应用一条上行事件（调用方事务内）；返回是否已处理（未知类型返回 false 不消费）
+ *
+ * 年度复盘失效 = **本事务内的 changed 标记**（不再依赖 assignment 总线桥接）：
+ * claim / bind_wx / first_touch 只在自己真正改行时标记对应白名单源；未命中（cur 不是
+ * assigned、lead 非 NEW、无可停表行）零标记。audit 透传事件仍由调用方按**实际落库的
+ * action** 走白名单声明（announceAnnualReviewAuditAction）——那是同一订阅点的另一入口，
+ * 不构成第二条链路。 */
 function applyUpEventTx(
-  tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+  tx: {
+    run: (sql: string, params?: unknown[]) => number
+    all: (sql: string, params?: unknown[]) => CrmRow[]
+    markAnnualReviewChanged: (reason: AnnualReviewInvalidationReason) => void
+  },
   ev: SyncEventFile,
   touched?: { leadIds: number[]; auditActions: string[] }
 ): boolean {
@@ -1167,6 +1207,9 @@ function applyUpEventTx(
       tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [claimedAt, actor, now, Number(cur.id)])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [actor, 'lead_claim', 'lead', leadId, JSON.stringify({ assignmentId: Number(cur.id), salesName: String(cur.sales_name), claimedAt, via: 'sync:up', terminal: String(ev.from || '') }), now])
+      // 真认领：assignment 状态 assigned→claimed（E3 的 claimed_at 事实源）→ 标记。
+      // audit 的 action='lead_claim' 不在年度复盘白名单内 → 不标记
+      tx.markAnnualReviewChanged('crm:assignment')
       touched?.auditActions.push('lead_claim')
       touched?.leadIds.push(leadId)
     }
@@ -1182,12 +1225,17 @@ function applyUpEventTx(
     for (const row of unstopped) {
       tx.run('UPDATE assignment SET sla1_met_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND sla1_met_at IS NULL', [now, actor, now, Number(row.id)])
     }
+    // 真停表（每行 UPDATE 带 sla1_met_at IS NULL 条件，SELECT 同口径 → 命中的每行必改 1 行）
+    if (unstopped.length) tx.markAnnualReviewChanged('crm:assignment')
     if (String(lead.status) === 'NEW' || String(lead.status) === 'CONTACTED') {
       tx.run("UPDATE lead SET status = 'WX_ADDED', wechat = CASE WHEN wechat = '' OR wechat IS NULL THEN ? ELSE wechat END, updated_at = ? WHERE id = ?", [wxid, now, leadId])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [leadId, 'WX_ADDED', `终端回执：已绑定微信 ${wxid}`, now])
+      tx.markAnnualReviewChanged('crm:lead')
     } else if (wxid && !String(lead.wechat || '').trim()) {
       tx.run('UPDATE lead SET wechat = ?, updated_at = ? WHERE id = ?', [wxid, now, leadId])
+      tx.markAnnualReviewChanged('crm:lead')
     }
+    // audit action='identity_bind' 不在年度复盘白名单内 → 不标记
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [actor, 'identity_bind', 'lead', leadId, JSON.stringify({ wxid, via: 'sync:up', terminal: String(ev.from || ''), slaStopped: unstopped.length > 0 }), now])
     touched?.auditActions.push('identity_bind')
@@ -1202,6 +1250,8 @@ function applyUpEventTx(
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [leadId, 'CONTACTED', `终端回执：完成首触${channel ? `（渠道 ${channel}）` : ''}`, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [actor, 'lead_first_touch', 'lead', leadId, JSON.stringify({ channel, via: 'sync:up', terminal: String(ev.from || '') }), now])
+      // 真首触：lead.first_contacted_at 是 E3 的事实源 → 标记（action='lead_first_touch' 非白名单）
+      tx.markAnnualReviewChanged('crm:lead')
       touched?.auditActions.push('lead_first_touch')
     }
     return true
@@ -1254,12 +1304,12 @@ export function consumeUpEvents(root: string): ConsumeResult {
           r.applied++
           // 事务已提交才通知（事务内只收集，绝不派发）：
           if (touched.leadIds.length) {
-            // 归属状态被真正改写（assigned → claimed）→ assignment 总线（经桥汇入年度复盘失效）
+            // 归属状态被真正改写（assigned → claimed）→ assignment 总线**只服务线索页/UI 刷新**；
+            // 年度复盘已由事务内 changed 标记派发（applyUpEventTx），不经总线桥接二次失效
             emitAssignmentInvalidated('claim', touched.leadIds)
           } else {
             // 远端 audit 回传：按**实际落库的 action** 走年度复盘白名单
-            // （只有 lead_assign / lead_transfer / sync_apply 触发，其余 action 为 no-op）；
-            // 已由归属通知覆盖的事件不再重复声明，避免同一事实两次失效。
+            // （只有 lead_assign / lead_transfer / sync_apply 触发，其余 action 为 no-op）
             for (const action of touched.auditActions) announceAnnualReviewAuditAction(action)
           }
           try { rmSync(path, { force: true }) } catch { /* ignore */ }

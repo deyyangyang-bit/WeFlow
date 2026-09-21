@@ -25,26 +25,39 @@
  * `match_proposal`、`ownership_history`、`customer` / `customer_identity`、
  * `payment_record` / `payment_promise` / `logistics` / `invoice`、`quotation` 版本链等。
  *
- * ## 声明方式（显式、可审查）
+ * ## 声明方式（显式、可审查）—— 以及唯一权威链路
  *
- *   - 表名**来自调用点的类型化参数**（如 `create('contract', …)` 的 entity、
- *     `runTx(fn, { affectsAnnualReview: 'crm:contract' })` 的选项），**不做 SQL 字符串匹配**；
+ * 年度复盘的失效**只有一条链路**：调用点在写事务内**显式标记** changed，`runTx` 在
+ * COMMIT + persist 成功后派发：
+ *
  *   - `crmDbService.create/update` 按 entity 自动声明（entity 已是类型化入参）；
- *   - 原始 SQL 事务必须显式声明 `affectsAnnualReview`（默认**不**影响年度复盘）；
+ *   - 原始 SQL 写入走 `tx.markAnnualReviewChanged(reason)`（确实改写）/
+ *     `tx.markAnnualReviewChangedIfWrote(reason)`（可能 no-op，看 `SELECT changes()`）；
+ *   - 标记由调用点的类型化 reason 表达（如 `'crm:assignment'`），**不做 SQL 字符串匹配**；
  *   - 辅助函数 `announceAnnualReviewCrmWrite` / `announceAnnualReviewSalesWrite` /
  *     `announceAnnualReviewAuditAction` 对白名单外的表/action 直接 no-op。
+ *
+ * **assignment 失效总线（assignmentInvalidationBus）不参与年度复盘**：它是给线索页/UI 刷新的
+ * 轻量领域事件（含 150ms 固定窗口合并），LAN/中央下行的归属变化也经它通知页面。曾经存在的
+ * 「Assignment 总线 → 年度复盘」桥接已删除——同一次分配既走事务标记又走总线桥接会让年度复盘
+ * 收到两次失效（第二次还晚 150ms，可能取消刚启动的新任务）。归属类写入点必须在**自己的事务内**
+ * 标记年度复盘变化，见 crmAssignmentService / crmLeadService / lanSyncService。
  *
  * ## 通知时机
  *
  * **只在写入成功后**：事务在 COMMIT 返回后、单语句写在其执行与 persist 均未抛错后才调用
  * （失败与 ROLLBACK 路径绝不通知）；纯读路径不经过这些声明点。
  *
- * ## 窗口语义：leading-edge（首条立即）
+ * ## 窗口语义：leading-edge（首条立即）+ 事务内批量原子派发
  *
  *   - 窗口空闲时，**第一条**相关事件**立即派发**——报告缓存与 AI 缓存马上失效、运行中任务
  *     马上收敛，不存在「首次失效还要等 150ms」；
- *   - 其后 150ms 内的重复事件被抑制（去重计数），窗口结束时若确有被抑制的事件，**补一次**
- *     合并派发（每个窗口最多一次）：覆盖「窗口内又有写入、而期间缓存可能已重建」的窄窗口；
+ *   - **一次提交 = 一次上报**：`announceAnnualReviewDataChangedMany` 把**同一次事务**内标记的
+ *     全部 reason 去重、稳定排序后作为**一条事件**派发（计数恒为 1）。因此多 reason 事务不会
+ *     「首条立即派发 + 第二条进窗口 → 150ms 后再补一次」地在同一事务上产生两次失效；
+ *   - 其后 150ms 内的**独立**提交被抑制（计数累加、原因取并集），窗口结束时若确有被抑制的
+ *     提交，**补一次**合并派发（每个窗口最多一次）：覆盖「窗口内又有写入、而期间缓存可能已
+ *     重建」的窄窗口——真正独立的连续提交因此不会因去重而丢失第二次数据变化；
  *   - 窗口**从首条事件起算固定长度**，不随新事件顺延，因此持续写入不会形成无限延迟；
  *   - 关键失效（账号切换 / 名单变化）用 `announceAnnualReviewDataChangedNow` 立即派发，
  *     即使正处在窗口内也不等待。
@@ -81,8 +94,6 @@ export type AnnualReviewInvalidationReason =
   | `crm:${AnnualReviewCrmSourceTable}`
   | `crm:audit_event:${AnnualReviewAuditAction}`
   | `sales:${AnnualReviewSalesSourceTable}`
-  /** assignment 归属变化的总线信号（LAN/中央下行应用成功后的显式通知） */
-  | 'assignment'
   /** WCDB 连接建立成功（切号 / 重连的稳定成功点） */
   | 'wcdb_connected'
   /** 账号切换 / 业务库 reopen / 归档（立即失效） */
@@ -174,25 +185,43 @@ export function onAnnualReviewInvalidation(listener: AnnualReviewInvalidationLis
 }
 
 /**
- * 上报一次「年度复盘读取的数据已变更」。**调用方必须保证写已成功提交**。
- * 窗口空闲时立即派发（leading edge）；窗口打开时只计数抑制，窗口结束时补一次。
- * 上报本身永不抛错（失效通知不得影响写入路径）。
+ * 上报一批「年度复盘读取的数据已变更」。**调用方必须保证这批写已成功提交**（同一事务的多个
+ * 变更原因必须**一次**传入本函数，而不是逐条调用）。
+ *
+ * 语义 = 「一次提交 = 一次上报」：
+ *   - reasons **去重 + 稳定排序**后作为**一条事件**派发；一次调用最多贡献 `count = 1`，
+ *     因此**不会**在窗口结束时为同一次提交再补发第二次失效；
+ *   - 空数组为 no-op；窗口空闲时立即派发（leading edge），窗口打开时只并入窗口（有界合并）；
+ *   - 上报本身永不抛错（失效通知不得影响写入路径）。
  */
-export function announceAnnualReviewDataChanged(reason: AnnualReviewInvalidationReason): void {
+export function announceAnnualReviewDataChangedMany(reasons: readonly AnnualReviewInvalidationReason[]): void {
   try {
+    const unique = Array.from(new Set(reasons)).sort()
+    if (!unique.length) return
     if (window) {
-      window.reasons.add(reason)
+      for (const reason of unique) window.reasons.add(reason)
+      // 本批是**一次**提交：计数 +1（不是 +unique.length），否则窗口结束会把这次提交又补发一遍
       window.count++
       return
     }
-    const opened: PendingWindow = { reasons: new Set([reason]), count: 1, firstAt: clock(), timer: null }
+    const opened: PendingWindow = { reasons: new Set(unique), count: 1, firstAt: clock(), timer: null }
     window = opened
     opened.timer = setTimeout(() => { closeWindow() }, ANNUAL_REVIEW_INVALIDATION_FLUSH_MS)
-    // leading edge：首条相关事件立即失效，不等窗口结束
-    dispatch({ reasons: [reason], count: 1, firstAt: opened.firstAt, at: clock(), coalesced: false })
+    // leading edge：这一次相关提交立即失效，不等窗口结束；count=1 = 本批尚未被抑制
+    dispatch({ reasons: unique, count: 1, firstAt: opened.firstAt, at: clock(), coalesced: false })
   } catch {
     // 忽略：失效是尽力而为的通知，不能反向影响已成功的写入
   }
+}
+
+/**
+ * 上报一次「年度复盘读取的数据已变更」。**调用方必须保证写已成功提交**。
+ * 单原因形态，等价于 `announceAnnualReviewDataChangedMany([reason])`：
+ * 窗口空闲时立即派发（leading edge）；窗口打开时只计数抑制，窗口结束时补一次。
+ * 同一次提交有多个原因时**必须**改用批量入口，否则同一次事务会产生两次失效。
+ */
+export function announceAnnualReviewDataChanged(reason: AnnualReviewInvalidationReason): void {
+  announceAnnualReviewDataChangedMany([reason])
 }
 
 /**
@@ -269,21 +298,6 @@ export function installAnnualReviewInvalidation(target: AnnualReviewInvalidation
   return onAnnualReviewInvalidation(() => {
     target.handleDataChanged()
     target.invalidateAll()
-  })
-}
-
-/**
- * Assignment 失效总线 → 年度复盘失效总线（LAN/中央下行的归属变化）。
- *
- * 为什么保留这条桥：assignment 总线是「事务已提交且**确实改写了归属行**」的显式信号
- * （LAN/中央下行 `applied` 才发，conflict/nolead/脏类型不发），比在同步事务里静态声明更精确；
- * 与写声明共用同一订阅点，因此不会产生第二套失效语义。
- */
-export function bridgeAssignmentInvalidationToAnnualReview(
-  subscribeAssignment: (listener: (event: { action: string }) => void) => () => void
-): () => void {
-  return subscribeAssignment(() => {
-    announceAnnualReviewDataChanged('assignment')
   })
 }
 

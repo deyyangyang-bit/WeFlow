@@ -19,7 +19,7 @@ import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLife
 import {
   announceAnnualReviewAuditAction,
   announceAnnualReviewCrmWrite,
-  announceAnnualReviewDataChanged,
+  announceAnnualReviewDataChangedMany,
   assertAnnualReviewWriteReason,
   type AnnualReviewInvalidationReason
 } from './annualReviewInvalidation'
@@ -790,7 +790,9 @@ class CrmDbService {
    *     （`SELECT changes()`）时标记——用于条件 UPDATE、幂等迁移等「可能 no-op」的写点；
    *   - 默认无标记 = 不影响年度复盘：空事务、0 行命中、只写 scan_state / outbox / migration 表
    *     一律不失效；
-   *   - 标记在 **COMMIT + persist 成功后**统一派发；ROLLBACK 与抛错路径不派发；
+   *   - 标记在 **COMMIT + persist 成功后**统一派发，且**同一次事务的全部标记走一次批量入口**
+   *     （`announceAnnualReviewDataChangedMany`）：多 reason 事务是一次事件，绝不产生
+   *     「首条立即 + 150ms 后补发第二条」的二次失效；ROLLBACK 与抛错路径不派发；
    *   - reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配。
    */
   runTx<T>(fn: (tx: CrmWriteTx) => T): T {
@@ -833,8 +835,10 @@ class CrmDbService {
       const out = fn(tx)
       this.db.run('COMMIT')
       this.persist()
-      // 事务已提交：只派发事务内**确实标记过**的失效原因（无标记 = 无失效）
-      for (const reason of marked) announceAnnualReviewDataChanged(reason)
+      // 事务已提交：**只派发一次**批量失效（事务内确实标记过的原因，去重稳定排序）。
+      // 逐条派发会让第一个 reason 立即失效、第二个 reason 进窗口并在 150ms 后再补一次——
+      // 同一次提交产生两次失效，正是本入口被批量化的原因。
+      announceAnnualReviewDataChangedMany([...marked])
       return out
     } catch (e) {
       try { this.db.run('ROLLBACK') } catch { /* ignore */ }

@@ -1,9 +1,12 @@
 /**
- * annual-review-invalidation-test.ts —— 年度经营复盘数据失效总线护栏（范围收窄轮 + leading-edge）
+ * annual-review-invalidation-test.ts —— 年度经营复盘数据失效总线护栏（范围收窄轮 + leading-edge + 原子批量轮）
  *
  * 覆盖（对应用户验收要求）：
  *   A  总线语义：**首条事件立即派发**（不等窗口、不依赖 flush）、窗口内抑制并有界合并、
  *      持续事件不无限延迟、立即失效可穿窗、订阅者异常隔离、事件不含业务数据
+ *   A5 **同一事务多 reason 原子派发**：一次提交 = 一次事件（去重稳定排序、计数恒为 1）、
+ *      等待超过窗口**不补发**第二次失效、新启动的报告不被延迟取消、
+ *      真正独立的连续两次提交仍覆盖第二次数据变化（真实计时器）
  *   B  **无关写入不失效**：scan_state / processed_msg / migration_report / migration_dismissal /
  *      无关 audit action / activity_log / auto_confirm_log / knowledge_base / report_snapshot /
  *      eval case / follow_up_task / 未声明的无关事务
@@ -14,7 +17,12 @@
  *   E  无关写入不打断运行中的报告/AI 任务、不清缓存
  *   F  账号隔离不受破坏（失效是 coarse 的，但绝不跨账号回读）
  *   G  读操作不接入失效
- *   H  LAN/中央下行应用（真实 applyDownEventDirect）+ assignment 总线桥
+ *   H  **归属类操作的单条权威链路**（assign / claim / recycle / transfer / 历史导入 /
+ *      SLA 回收 / SLA 纠正 / 好友绑定 / LAN-Central 下行与上行回执）：年度复盘立即失效
+ *      **恰好一次**、Assignment UI 事件照发、等过两个 150ms 窗口后不再有第二次失效、
+ *      新启动的报告不被延迟取消；冲突 / 无 lead / 重复 / noop 审计不失效（真实计时器）
+ *   J  LAN 上行 audit：白名单 action 提交后立即失效；**重复投递（同一 idempotencyKey
+ *      重建事件文件）走幂等路径零业务写、零失效、审计不重复**；失败事务不失效
  *
  * 测试纪律：数据库用真实 crmDbService/salesDbService + 临时目录（sql.js），报告与 AI 结果用
  * 已验收服务层 + 注入的假 Worker runner/假模型出口（**不发真实请求、不碰真实用户数据**）。
@@ -38,9 +46,9 @@ import {
   announceAnnualReviewAuditAction,
   announceAnnualReviewCrmWrite,
   announceAnnualReviewDataChanged,
+  announceAnnualReviewDataChangedMany,
   announceAnnualReviewDataChangedNow,
   announceAnnualReviewSalesWrite,
-  bridgeAssignmentInvalidationToAnnualReview,
   flushAnnualReviewInvalidationForTest,
   hasPendingAnnualReviewInvalidation,
   installAnnualReviewInvalidation,
@@ -183,6 +191,97 @@ async function expectNoInvalidation(label: string, h: ReturnType<typeof createHa
     h.service.getTaskState(YEAR)?.status === 'completed' && h.service.getTaskState(YEAR)?.taskId === reportTaskId)
 }
 
+/** 两条总线各自的有界合并窗口（真实计时器断言用；取值来自各自模块，不写死数字） */
+const AR_FLUSH = ANNUAL_REVIEW_INVALIDATION_FLUSH_MS
+/** assignment 总线在 main() 里动态 import，故延迟读取（模块加载期它还是 undefined） */
+const assignFlush = (): number => assignmentBus.ASSIGN_INVALIDATION_FLUSH_MS
+
+/**
+ * 归属类操作的**单条权威链路**护栏（真实计时器，不用 flush）：
+ *   ① 操作后年度复盘**立即恰好一次**失效（报告缓存与 AI 缓存马上作废，未等 150ms）；
+ *   ② 提交后立刻启动新报告（模拟用户紧接着重新生成）；
+ *   ③ 等过**两条总线各自的** 150ms 窗口 → 年度复盘**仍只有那一次**失效。若还存在
+ *      「Assignment 总线 → 年度复盘」的第二条链路，这里会收到第二次失效，②的新报告也会被它取消；
+ *   ④ Assignment UI 事件照常发出（页面刷新能力未被删除；expectUi=null = 该操作本就不发 UI 事件）。
+ *
+ * expectUi.leadIds 用谓词而不是固定 id：历史导入等操作在函数内部才建 lead，id 事先不可知。
+ */
+async function expectAssignmentChain(
+  label: string,
+  h: ReturnType<typeof createHarness>,
+  run: () => void,
+  expectUi: { action: string; leadIds: (ids: number[]) => boolean } | null
+): Promise<void> {
+  settleWindow()
+  assignmentBus.resetAssignmentInvalidationForTest() // 清掉夹具阶段遗留的待发窗口与监听
+  const ui: Array<{ action: string; leadIds: number[] }> = []
+  const offUi = assignmentBus.onAssignmentInvalidated((e) => ui.push({ action: String(e.action), leadIds: e.leadIds }))
+  const ar: AnnualReviewInvalidationEvent[] = []
+  const offAr = onAnnualReviewInvalidation((e) => ar.push(e))
+  await warmCaches(h)
+  const hotReport = h.service.getReport(YEAR).cache
+  const hotAi = h.coordinator.cacheSize()
+
+  run() // ① 无 flush、无 sleep、无 await —— 立即断言
+
+  ok(`${label}：前置两类缓存均热（报告=${hotReport} / AI=${hotAi}）`, hotReport === 'hit' && hotAi >= 1)
+  ok(`${label}：年度复盘**立即恰好一次**失效（未等窗口）`, ar.length === 1 && ar[0].coalesced === false)
+  ok(`${label}：报告缓存与 AI 缓存立即作废`,
+    h.service.getReport(YEAR).cache !== 'hit' && h.coordinator.cacheSize() === 0)
+
+  const started = h.service.start(YEAR) // ② 提交后立刻启动新报告
+  await sleep(assignFlush() + AR_FLUSH + 150) // ③ 等过两条总线各自的窗口（真实计时器）
+
+  ok(`${label}：等过两个 150ms 窗口后年度复盘**仍只有一次**失效（无第二条链路）`, ar.length === 1)
+  ok(`${label}：Assignment UI 事件照常发出（期望 action=${expectUi ? expectUi.action : '不发'}）`,
+    expectUi === null
+      ? ui.length === 0
+      : (ui.length === 1 && ui[0].action === expectUi.action && expectUi.leadIds(ui[0].leadIds)))
+  const st = h.service.getTaskState(YEAR)
+  ok(`${label}：新启动的报告不被延迟事件取消（同一 taskId 且未失败）`,
+    st?.taskId === started.taskId && st?.status !== 'failed')
+
+  // 收尾：让任务正常收敛，避免残留运行中任务影响后续用例
+  h.runnerCalls.find((c) => c.payload.taskId === started.taskId)?.resolve(
+    composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(YEAR, GEN), facts, sales, crm, opts: { messageStats } })
+  )
+  await wait(3)
+  offUi(); offAr()
+  assignmentBus.resetAssignmentInvalidationForTest()
+}
+
+/**
+ * 归属类操作里**不应**失效的分支（conflict / nolead / 重复投递 / 只写 noop 审计）：
+ * 零年度复盘派发、零 Assignment UI 事件、缓存与已完成任务均不受影响（真实计时器）。
+ */
+async function expectNoAssignmentChain(
+  label: string,
+  h: ReturnType<typeof createHarness>,
+  run: () => void
+): Promise<void> {
+  settleWindow()
+  assignmentBus.resetAssignmentInvalidationForTest()
+  const ui: Array<{ action: string }> = []
+  const offUi = assignmentBus.onAssignmentInvalidated((e) => ui.push({ action: String(e.action) }))
+  const ar: AnnualReviewInvalidationEvent[] = []
+  const offAr = onAnnualReviewInvalidation((e) => ar.push(e))
+  await warmCaches(h)
+  const reportTaskId = h.service.getTaskState(YEAR)?.taskId ?? null
+  const beforeAi = h.coordinator.cacheSize()
+
+  run()
+  await sleep(assignFlush() + AR_FLUSH + 150)
+
+  ok(`${label}：不产生任何年度复盘失效`, ar.length === 0)
+  ok(`${label}：不产生 Assignment UI 事件`, ui.length === 0)
+  ok(`${label}：报告缓存仍命中、AI 缓存仍在`,
+    h.service.getReport(YEAR).cache === 'hit' && h.coordinator.cacheSize() === beforeAi)
+  ok(`${label}：已完成任务未被取消/失效`,
+    h.service.getTaskState(YEAR)?.status === 'completed' && h.service.getTaskState(YEAR)?.taskId === reportTaskId)
+  offUi(); offAr()
+  assignmentBus.resetAssignmentInvalidationForTest()
+}
+
 async function main(): Promise<void> {
   crmDbService = (await import('../electron/services/crmDbService')).crmDbService
   salesDbService = (await import('../electron/services/salesDbService')).salesDbService
@@ -285,6 +384,96 @@ async function main(): Promise<void> {
     )
     await wait(3)
     ok('A20 新任务正常收敛为 completed', h.service.getTaskState(YEAR)?.status === 'completed')
+    h.unsubscribe()
+    resetAnnualReviewInvalidationForTest()
+  }
+
+  // ══ A5. 同一事务多 reason：一次提交 = 一次事件，绝不补发第二次（真实计时器） ═════
+  {
+    const h = createHarness()
+    const events: AnnualReviewInvalidationEvent[] = []
+    const off = onAnnualReviewInvalidation((e) => events.push(e))
+    settleWindow()
+
+    // ── 入口级：去重 + 稳定排序 + 计数恒为 1 ──
+    announceAnnualReviewDataChangedMany(['crm:lead', 'crm:assignment', 'crm:lead'])
+    ok('A21 批量入口去重并稳定排序为**一条**事件（count=1）',
+      events.length === 1 && events[0].coalesced === false && events[0].count === 1 &&
+      JSON.stringify(events[0].reasons) === JSON.stringify(['crm:assignment', 'crm:lead']))
+    await sleep(AR_FLUSH + 120)
+    ok('A22 批量入口首条事件之后不再补发（一次提交只有一次失效）', events.length === 1)
+    ok('A23 空批量是 no-op（不开窗、不派发）', (() => {
+      const before = events.length
+      announceAnnualReviewDataChangedMany([])
+      return events.length === before && !hasPendingAnnualReviewInvalidation()
+    })())
+    ok('A24 单原因入口等价于批量入口（委托同一实现）', (() => {
+      settleWindow()
+      const before = events.length
+      announceAnnualReviewDataChanged('crm:contract')
+      return events.length === before + 1 && events[events.length - 1].count === 1 &&
+        JSON.stringify(events[events.length - 1].reasons) === JSON.stringify(['crm:contract'])
+    })())
+
+    // ── 事务级：同一次 runTx 标记 crm:lead + crm:assignment ──
+    const leadId = Number(crmDbService.create('lead', {
+      contact_type: 'phone', contact_normalized: `131${String(Date.now()).slice(-8)}`, contact_raw: 'A5线索',
+      status: 'NEW', first_contact_deadline: 0, created_at: Date.now(), updated_at: Date.now()
+    }))
+    const asgId = Number(crmDbService.create('assignment', {
+      lead_id: leadId, sales_name: '测试销售甲', mode: 'manual', status: 'assigned', source: 'test',
+      updated_by: 'tester', updated_at: Date.now(), version: 1, deleted: 0
+    }))
+    ok('A25 事务夹具就绪（真实 lead + assignment 行）', leadId > 0 && asgId > 0)
+    settleWindow() // 夹具本身会失效：先排掉，只观察被测事务
+    await warmCaches(h)
+    events.length = 0
+
+    crmDbService.runTx((tx) => {
+      tx.run('UPDATE lead SET updated_at = ? WHERE id = ?', [Date.now(), leadId])
+      tx.markAnnualReviewChanged('crm:lead')
+      tx.run("UPDATE assignment SET updated_at = ? WHERE id = ?", [Date.now(), asgId])
+      tx.markAnnualReviewChanged('crm:assignment')
+    })
+    ok('A26 同一事务两个 reason → 提交后**立即只有一次**失效',
+      events.length === 1 && events[0].coalesced === false && events[0].count === 1)
+    ok('A27 该次失效原因 = 本次事务的全部原因（去重稳定排序）',
+      JSON.stringify(events[0].reasons) === JSON.stringify(['crm:assignment', 'crm:lead']))
+    ok('A28 两类缓存立即失效（未等 150ms 窗口）',
+      h.service.getReport(YEAR).cache !== 'hit' && h.coordinator.cacheSize() === 0)
+
+    const started = h.service.start(YEAR) // 提交后立刻启动新报告
+    await sleep(AR_FLUSH + 120)
+    ok('A29 等待超过 150ms 后仍只有一次失效（**不补发**同一事务的第二次）', events.length === 1)
+    ok('A30 窗口结束无积压（无残留计时器）', !hasPendingAnnualReviewInvalidation())
+    const st = h.service.getTaskState(YEAR)
+    ok('A31 新启动的报告不被延迟事件取消（同一 taskId 且未失败）',
+      st?.taskId === started.taskId && st?.status !== 'failed')
+    h.runnerCalls.find((c) => c.payload.taskId === started.taskId)?.resolve(
+      composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(YEAR, GEN), facts, sales, crm, opts: { messageStats } })
+    )
+    await wait(3)
+    ok('A32 收尾任务正常收敛为 completed', h.service.getTaskState(YEAR)?.status === 'completed')
+
+    // ── 两个**真正独立**的提交：第二次数据变化不得因去重丢失 ──
+    settleWindow()
+    events.length = 0
+    crmDbService.runTx((tx) => {
+      tx.run('UPDATE lead SET updated_at = ? WHERE id = ?', [Date.now(), leadId])
+      tx.markAnnualReviewChanged('crm:lead')
+    })
+    ok('A33 第一个提交立即派发（开窗）', events.length === 1 && events[0].coalesced === false)
+    crmDbService.runTx((tx) => {
+      tx.run('UPDATE assignment SET updated_at = ? WHERE id = ?', [Date.now(), asgId])
+      tx.markAnnualReviewChanged('crm:assignment')
+    })
+    ok('A34 窗口内第二个独立提交被有界合并（不立即派发、不丢失）', events.length === 1)
+    await sleep(AR_FLUSH + 120)
+    ok('A35 窗口结束补一次合并派发，第二次提交的数据变化被覆盖（count=2、原因取并集）',
+      events.length === 2 && events[1].coalesced === true && events[1].count === 2 &&
+      JSON.stringify(events[1].reasons) === JSON.stringify(['crm:assignment', 'crm:lead']))
+
+    off()
     h.unsubscribe()
     resetAnnualReviewInvalidationForTest()
   }
@@ -477,11 +666,14 @@ async function main(): Promise<void> {
     await warmCaches(h)
     let threw = false
     try {
-      crmDbService.runTx(() => { throw new Error('模拟写入失败') }, { affectsAnnualReview: 'crm:contract' })
+      crmDbService.runTx((tx) => {
+        tx.markAnnualReviewChanged('crm:contract') // 已标记但随后抛错 → ROLLBACK → 绝不派发
+        throw new Error('模拟写入失败')
+      })
     } catch { threw = true }
     ok('D1 事务回滚：写入抛错', threw)
-    ok('D2 失败事务即使已声明也不失效（报告缓存仍命中）', h.service.getReport(YEAR).cache === 'hit')
-    ok('D3 失败事务即使已声明也不失效（AI 缓存仍在）', h.coordinator.cacheSize() === 1)
+    ok('D2 失败事务即使已标记也不失效（报告缓存仍命中）', h.service.getReport(YEAR).cache === 'hit')
+    ok('D3 失败事务即使已标记也不失效（AI 缓存仍在）', h.coordinator.cacheSize() === 1)
     ok('D4 失败事务不派发任何事件', (() => {
       const seen: AnnualReviewInvalidationEvent[] = []
       const off = onAnnualReviewInvalidation((e) => seen.push(e))
@@ -679,8 +871,9 @@ async function main(): Promise<void> {
     const upDir = join(shared, 'up', remoteTid)
     mkdirSync(upDir, { recursive: true })
     let seq = 0
-    const writeAuditUpEvent = (action: string, extra: Record<string, unknown> = {}): string => {
-      const key = `${remoteTid}/audit:${++seq}`
+    /** 写一条上行 audit 事件文件；reuseKey 用于**重放**同一个逻辑事件（幂等键相同、文件名不同） */
+    const writeAuditUpEvent = (action: string, extra: Record<string, unknown> = {}, reuseKey?: string): string => {
+      const key = reuseKey ?? `${remoteTid}/audit:${++seq}`
       const ev = {
         eventSeq: seq,
         idempotencyKey: key,
@@ -693,6 +886,9 @@ async function main(): Promise<void> {
       writeFileSync(file, JSON.stringify(ev), 'utf-8')
       return key
     }
+    const leadAssignAuditRows = (): number => Number(crmDbService.all(
+      "SELECT COUNT(*) AS c FROM audit_event WHERE action = 'lead_assign' AND actor = 'remote-sales'"
+    )[0]?.c || 0)
 
     // J1 lead_assign 上行 audit → 消费成功且**立即**失效（不 flush、不等待）
     settleWindow()
@@ -727,19 +923,35 @@ async function main(): Promise<void> {
       lanSync.consumeUpEvents(shared)
     })
 
-    // J9 重复/已应用事件不再次失效（幂等标记命中）
+    // J9 重复投递：保存首次事件的幂等键，**重建同一个 key 的事件文件**再消费 —— 真重放，
+    // 不是消费空目录。幂等命中必须零业务写（audit_event 不重复）、零失效、不影响运行中任务。
     {
       settleWindow()
       await warmCaches(h)
-      writeAuditUpEvent('lead_assign')
-      lanSync.consumeUpEvents(shared)
+      const dupKey = writeAuditUpEvent('lead_assign') // 首次事件（保存幂等键）
+      const rowsBeforeFirst = leadAssignAuditRows()
+      const first = lanSync.consumeUpEvents(shared)
+      ok('J9 首次消费成功并落一条审计（真重放的对照）',
+        first.applied === 1 && leadAssignAuditRows() === rowsBeforeFirst + 1)
       settleWindow()
       await warmCaches(h)
-      const before = h.coordinator.cacheSize()
-      const dup = lanSync.consumeUpEvents(shared) // 目录已空 → 无事件可消费
-      ok('J9 重复消费不产生新事件', dup.applied === 0)
-      ok('J10 重复消费不失效（缓存保持命中）',
-        h.service.getReport(YEAR).cache === 'hit' && h.coordinator.cacheSize() === before)
+      const before = {
+        report: h.service.getReport(YEAR).cache,
+        ai: h.coordinator.cacheSize(),
+        task: h.service.getTaskState(YEAR)?.taskId ?? null,
+        auditRows: leadAssignAuditRows()
+      }
+      ok('J9a 重放前两类缓存均热（便于观察是否被失效）', before.report === 'hit' && before.ai >= 1)
+      // 真重放：同一个 idempotencyKey 的事件文件重新出现（首次已被消费删除）
+      writeAuditUpEvent('lead_assign', {}, dupKey)
+      const dup = lanSync.consumeUpEvents(shared)
+      ok('J9b 重放命中幂等路径（skippedDup=1、applied=0）', dup.skippedDup === 1 && dup.applied === 0)
+      ok('J9c 重放零业务写：audit_event 没有重复行', leadAssignAuditRows() === before.auditRows)
+      ok('J9d 重放不失效：报告缓存仍命中、AI 缓存仍在',
+        h.service.getReport(YEAR).cache === 'hit' && h.coordinator.cacheSize() === before.ai)
+      ok('J9e 重放不影响已完成的报告任务（同一 taskId、未被取消）',
+        h.service.getTaskState(YEAR)?.status === 'completed' && h.service.getTaskState(YEAR)?.taskId === before.task)
+      for (const f of readdirSync(upDir)) { try { rmSync(join(upDir, f), { force: true }) } catch { /* ignore */ } }
     }
 
     // J11 事务失败（SQLite 触发器 RAISE ABORT 注入）→ 不失效
@@ -816,30 +1028,257 @@ async function main(): Promise<void> {
     settleWindow()
   }
 
-  // ══ H. LAN/中央下行应用 + assignment 总线桥 ════════════════════════════════
+  // ══ H. 归属类操作：年度复盘只有一条权威链路（事务内 changed 标记）═══════════════
+  // Assignment 总线只负责线索页/UI 刷新。每个逻辑操作都验证：年度复盘**立即恰好一次**失效 +
+  // UI 事件照发 + 等过两条总线各自的 150ms 窗口后**无第二次失效** + 新启动的报告不被延迟取消
+  // （真实计时器，见 expectAssignmentChain）；冲突 / 无 lead / 重复投递 / noop 审计零失效。
   {
     const h = createHarness()
+    const {
+      assignLeads, claimLead, recycleAssignment, transferAssignment, runSla1Recycle, correctSla1Misrecycle
+    } = await import('../electron/services/crmAssignmentService')
+    const { importHistoricalAssignments } = await import('../electron/services/crmLeadService')
+    const S_A = '测试销售甲'
+    const S_B = '测试销售乙'
+    cfg.set('crmSalesList', [S_A, S_B])
+    setIdentity(S_A, '销售')
     const now = Date.now()
-    crmDbService.runTx((tx) => tx.run(
-      'INSERT INTO lead (contact_type, contact_normalized, contact_raw, wechat, source, name, status, first_contact_deadline, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      ['phone', '13900009999', 'H线索', '', '测试', 'H线索', 'NEW', 0, now, now]
-    ), { affectsAnnualReview: 'crm:lead' })
-    const offBridge = bridgeAssignmentInvalidationToAnnualReview(assignmentBus.onAssignmentInvalidated)
+    let seqPhone = 0
+    const nextPhone = (): string => `1390000${String(++seqPhone).padStart(4, '0')}`
+    /** 真实 lead 行（唯一 139 段手机号）；create 本身会失效，调用方负责先 settleWindow() */
+    const seedLead = (tag: string, source = '测试'): { leadId: number; phone: string } => {
+      const phone = nextPhone()
+      const leadId = Number(crmDbService.create('lead', {
+        contact_type: 'phone', contact_normalized: phone, contact_raw: tag, source,
+        status: 'NEW', first_contact_deadline: 0, created_at: now, updated_at: now
+      }))
+      return { leadId, phone }
+    }
+    const activeAsgId = (leadId: number): number => Number(crmDbService.all(
+      `SELECT id FROM assignment WHERE lead_id = ? AND deleted = 0 AND status IN ('assigned','claimed') ORDER BY id DESC LIMIT 1`,
+      [leadId]
+    )[0]?.id || 0)
+
+    // ── H1 分配 ──────────────────────────────────────────────────────────────
+    const { leadId: leadAssign } = seedLead('H1-分配')
     settleWindow()
-    await warmCaches(h)
-    const outcome = lanSync.applyDownEventDirect({
-      idempotencyKey: `inv-down-${now}`,
-      type: 'assign',
-      to: '测试销售甲',
-      sourceDeviceId: 'hub-1',
-      deliveryRole: 'apply',
-      payload: { leadId: 888001, salesName: '测试销售甲', mode: 'manual', actor: 'system:test', lead: { name: 'H线索', contact: '13900009999' } }
-    } as never)
-    assignmentBus.flushAssignmentInvalidationForTest() // assignment 总线自身也有合并窗口
-    ok('H1 LAN/中央下行应用成功（applied）', outcome === 'applied')
-    ok('H2 下行应用后**立即**报告缓存失效', h.service.getReport(YEAR).cache !== 'hit')
-    ok('H3 下行应用后**立即** AI 结果缓存失效', h.coordinator.cacheSize() === 0)
-    offBridge()
+    await expectAssignmentChain('H1 分配（assignLeads）', h, () => {
+      const r = assignLeads([leadAssign], S_A, 'tester')
+      if (!r.ok || !r.data?.assignments.length) throw new Error(`分配失败：${JSON.stringify(r)}`)
+    }, { action: 'assign', leadIds: (ids) => ids.includes(leadAssign) })
+
+    // ── H2 认领（assigned → claimed）─────────────────────────────────────────
+    await expectAssignmentChain('H2 认领（claimLead）', h, () => {
+      const r = claimLead(leadAssign, S_A)
+      if (!r.ok) throw new Error(`认领失败：${r.code} ${r.message}`)
+    }, { action: 'claim', leadIds: (ids) => ids.includes(leadAssign) })
+
+    // ── H3 回收 ──────────────────────────────────────────────────────────────
+    const asgRecycle = activeAsgId(leadAssign)
+    await expectAssignmentChain('H3 回收（recycleAssignment）', h, () => {
+      const r = recycleAssignment(asgRecycle, '测试回收', 'tester')
+      if (!r.ok) throw new Error(`回收失败：${r.code} ${r.message}`)
+    }, { action: 'recycle', leadIds: (ids) => ids.includes(leadAssign) })
+
+    // ── H4 移交（归属易主，新行重起 SLA1）────────────────────────────────────
+    const { leadId: leadTransfer } = seedLead('H4-移交')
+    settleWindow()
+    assignLeads([leadTransfer], S_A, 'tester')
+    settleWindow()
+    const asgTransfer = activeAsgId(leadTransfer)
+    await expectAssignmentChain('H4 移交（transferAssignment）', h, () => {
+      const r = transferAssignment(asgTransfer, S_B, '测试移交', 'tester')
+      if (!r.ok) throw new Error(`移交失败：${r.code} ${r.message}`)
+    }, { action: 'transfer', leadIds: (ids) => ids.includes(leadTransfer) })
+
+    // ── H5 历史分配导入（新建 lead + claimed 态当前有效行）───────────────────
+    const histPhone = nextPhone()
+    await expectAssignmentChain('H5 历史分配导入（importHistoricalAssignments）', h, () => {
+      const r = importHistoricalAssignments('测试历史分配.csv', [
+        { contactType: 'phone', contactValue: histPhone, sales: S_A, assignedAt: now }
+      ])
+      if (r.assignmentsCreated < 1) throw new Error(`历史导入未产生分配行：${JSON.stringify(r)}`)
+    }, { action: 'assign', leadIds: (ids) => ids.length === 1 })
+
+    // ── H6 SLA 误扫纠正（补偿性再分配）──────────────────────────────────────
+    const { leadId: leadCorrect } = seedLead('H6-纠正')
+    settleWindow()
+    crmDbService.create('assignment', {
+      lead_id: leadCorrect, sales_name: S_A, mode: 'manual', status: 'recycled', source: 'test',
+      updated_by: 'system:sla', updated_at: now, version: 1, deleted: 0
+    })
+    crmDbService.setScanState('migration:sla1-misrecycle-correction', 0) // 清一次性标记，允许本轮扫描
+    settleWindow()
+    await expectAssignmentChain('H6 SLA 误扫纠正（correctSla1Misrecycle）', h, () => {
+      const r = correctSla1Misrecycle()
+      if (r.corrected !== 1) throw new Error(`预期恰好纠正 1 条，实际 ${JSON.stringify(r)}`)
+    }, { action: 'assign', leadIds: (ids) => ids.includes(leadCorrect) })
+
+    // ── H7 SLA 三次超时回收（回收 + 主管通知同一事务）────────────────────────
+    const { leadId: leadSla } = seedLead('H7-SLA回收')
+    settleWindow()
+    assignLeads([leadSla], S_A, 'tester')
+    settleWindow()
+    const asgSla = activeAsgId(leadSla)
+    // 造「已提醒两次 + 已过期」现场：本轮扫描直接走满第 3 次的回收分支
+    crmDbService.runTx((tx) => {
+      tx.run('UPDATE assignment SET sla1_deadline = ?, sla1_remind_count = 2 WHERE id = ?', [now - 3600_000, asgSla])
+    })
+    settleWindow()
+    await expectAssignmentChain('H7 SLA 三次超时回收（runSla1Recycle）', h, () => {
+      const r = runSla1Recycle(now)
+      if (r.recycled !== 1 || r.reminded !== 0) throw new Error(`预期恰好回收 1 条且无提醒，实际 ${JSON.stringify(r)}`)
+    }, { action: 'recycle', leadIds: (ids) => ids.includes(leadSla) })
+
+    // ── H8 好友绑定回执（LAN 上行 bind_wx：停表 + lead 状态推进）──────────────
+    // 本操作从设计上就不发 assignment UI 事件（总线只承载归属四动作）→ 期望零 UI 事件
+    const { leadId: leadBind } = seedLead('H8-好友绑定')
+    settleWindow()
+    assignLeads([leadBind], S_A, 'tester')
+    settleWindow()
+    const bindRoot = mkdtempSync(join(tmpdir(), 'ar-invalidation-bind-'))
+    const bindUp = join(bindRoot, 'up', 'probe-bind-terminal')
+    mkdirSync(bindUp, { recursive: true })
+    writeFileSync(join(bindUp, '00000001-bind_wx.json'), JSON.stringify({
+      eventSeq: 1, idempotencyKey: 'probe-bind-terminal/bind:1', type: 'bind_wx',
+      payload: { leadId: leadBind, salesName: S_A, wxid: 'wx_inv_probe_bind', actor: 'remote-sales' },
+      emittedAt: now, from: 'probe-bind-terminal'
+    }), 'utf-8')
+    await expectAssignmentChain('H8 好友绑定回执（LAN 上行 bind_wx）', h, () => {
+      const res = lanSync.consumeUpEvents(bindRoot)
+      if (res.applied !== 1) throw new Error(`bind_wx 未应用：${JSON.stringify(res)}`)
+    }, null)
+    try { rmSync(bindRoot, { recursive: true, force: true }) } catch { /* ignore */ }
+
+    // ── H9 中央 HTTP 下行 assign（applyDownEventDirect）──────────────────────
+    const centralContact = nextPhone()
+    await expectAssignmentChain('H9 中央下行 assign（applyDownEventDirect）', h, () => {
+      const outcome = lanSync.applyDownEventDirect({
+        idempotencyKey: `inv-down-central-${now}`, type: 'assign', to: S_A,
+        sourceDeviceId: 'hub-1', deliveryRole: 'apply', emittedAt: now,
+        payload: {
+          type: 'assign', leadId: 888001, assignmentId: 888001, salesName: S_A, mode: 'manual',
+          sla1Deadline: now + 86400000,
+          lead: {
+            leadId: 888001, name: 'H9中央线索', contactType: 'phone', contactNormalized: centralContact,
+            contactRaw: centralContact, wechat: '', source: '同步', note: ''
+          }
+        }
+      } as never)
+      if (outcome !== 'applied') throw new Error(`中央下行未应用（${outcome}）`)
+    }, { action: 'assign', leadIds: (ids) => ids.length === 1 })
+
+    // ── H10 LAN SMB 下行 assign（真实事件文件 + 本体校验 + consumeDownEvents）─
+    const smbRoot = mkdtempSync(join(tmpdir(), 'ar-invalidation-smb-'))
+    const ownKey = lanSync.deliveryKey(lanSync.getTerminalId())
+    const smbDir = join(smbRoot, 'down', ownKey)
+    mkdirSync(smbDir, { recursive: true })
+    const smbContact = nextPhone()
+    const smbKey = `assign:inv-smb-${now}`
+    writeFileSync(join(smbDir, lanSync.deliveryFileName(900, smbKey, 'apply')), JSON.stringify({
+      eventSeq: 900, idempotencyKey: smbKey, type: 'assign', deliveryRole: 'apply', to: ownKey,
+      emittedAt: now,
+      payload: {
+        type: 'assign', leadId: 888002, assignmentId: 888002, salesName: S_A, mode: 'manual',
+        sla1Deadline: now + 86400000,
+        lead: {
+          leadId: 888002, name: 'H10SMB线索', contactType: 'phone', contactNormalized: smbContact,
+          contactRaw: smbContact, wechat: '', source: '同步', note: ''
+        }
+      }
+    }), 'utf-8')
+    await expectAssignmentChain('H10 LAN SMB 下行 assign（consumeDownEvents）', h, () => {
+      const r = lanSync.consumeDownEvents(smbRoot)
+      if (r.applied !== 1) throw new Error(`SMB 下行未应用：${JSON.stringify(r)}`)
+    }, { action: 'assign', leadIds: (ids) => ids.length === 1 })
+    try { rmSync(smbRoot, { recursive: true, force: true }) } catch { /* ignore */ }
+
+    // ── H11 LAN 上行 claim 回执 ──────────────────────────────────────────────
+    const { leadId: leadClaimUp } = seedLead('H11-上行认领')
+    settleWindow()
+    assignLeads([leadClaimUp], S_A, 'tester')
+    settleWindow()
+    const claimRoot = mkdtempSync(join(tmpdir(), 'ar-invalidation-claim-'))
+    const claimUp = join(claimRoot, 'up', 'probe-claim-terminal')
+    mkdirSync(claimUp, { recursive: true })
+    writeFileSync(join(claimUp, '00000002-claim.json'), JSON.stringify({
+      eventSeq: 2, idempotencyKey: 'probe-claim-terminal/claim:1', type: 'claim',
+      payload: { leadId: leadClaimUp, salesName: S_A, actor: 'remote-sales', claimedAt: now },
+      emittedAt: now, from: 'probe-claim-terminal'
+    }), 'utf-8')
+    await expectAssignmentChain('H11 LAN 上行 claim 回执（consumeUpEvents）', h, () => {
+      const res = lanSync.consumeUpEvents(claimRoot)
+      if (res.applied !== 1) throw new Error(`上行 claim 未应用：${JSON.stringify(res)}`)
+    }, { action: 'claim', leadIds: (ids) => ids.includes(leadClaimUp) })
+    try { rmSync(claimRoot, { recursive: true, force: true }) } catch { /* ignore */ }
+
+    // ── H12~H16 不应失效的分支：冲突 / 无 lead / 重复投递 / noop 审计 ─────────
+    // H12 下行 conflict：本地已有有效归属，中枢指令不覆盖
+    const { leadId: leadConflict, phone: conflictContact } = seedLead('H12-冲突')
+    settleWindow()
+    assignLeads([leadConflict], S_A, 'tester')
+    settleWindow()
+    await expectNoAssignmentChain('H12 下行 assign 冲突（conflict）', h, () => {
+      const outcome = lanSync.applyDownEventDirect({
+        idempotencyKey: `inv-down-conflict-${now}`, type: 'assign', to: S_A,
+        sourceDeviceId: 'hub-1', deliveryRole: 'apply', emittedAt: now,
+        payload: {
+          type: 'assign', leadId: 888003, assignmentId: 888003, salesName: S_A, mode: 'manual',
+          sla1Deadline: now + 86400000,
+          lead: {
+            leadId: 888003, name: 'H12冲突线索', contactType: 'phone', contactNormalized: conflictContact,
+            contactRaw: conflictContact, wechat: '', source: '同步', note: ''
+          }
+        }
+      } as never)
+      if (outcome !== 'conflict') throw new Error(`预期 conflict，实际 ${outcome}`)
+    })
+
+    // H13 下行 nolead：中央通道无映射、载荷无 lead 锚点
+    await expectNoAssignmentChain('H13 下行 transfer 无对应 lead（nolead）', h, () => {
+      const outcome = lanSync.applyDownEventDirect({
+        idempotencyKey: `inv-down-nolead-${now}`, type: 'transfer', to: S_A,
+        sourceDeviceId: 'hub-1', deliveryRole: 'apply', emittedAt: now,
+        payload: {
+          type: 'transfer', leadId: 777001, assignmentId: 777001, salesName: S_A, toSales: S_A,
+          mode: 'manual', sla1Deadline: now + 86400000
+        }
+      } as never)
+      if (outcome !== 'nolead') throw new Error(`预期 nolead，实际 ${outcome}`)
+    })
+
+    // H14 下行 recycle 命中未知 lead：只落一条 noop 审计（E1 缺口检测只读 assign/transfer）
+    await expectNoAssignmentChain('H14 下行 recycle 未知 lead（noop 审计）', h, () => {
+      const outcome = lanSync.applyDownEventDirect({
+        idempotencyKey: `inv-down-recycle-noop-${now}`, type: 'recycle', to: S_A,
+        sourceDeviceId: 'hub-1', deliveryRole: 'apply', emittedAt: now,
+        payload: { type: 'recycle', leadId: 777002, assignmentId: 777002, salesName: S_A, reason: '测试' }
+      } as never)
+      if (outcome !== 'applied') throw new Error(`预期 applied（noop 审计），实际 ${outcome}`)
+    })
+
+    // H15 重复投递：同一幂等键重放（首次已应用）→ 零业务写、零失效、零 UI 事件
+    const dupContact = nextPhone()
+    const dupEvent = {
+      idempotencyKey: `inv-down-dup-${now}`, type: 'assign', to: S_A,
+      sourceDeviceId: 'hub-1', deliveryRole: 'apply', emittedAt: now,
+      payload: {
+        type: 'assign', leadId: 888004, assignmentId: 888004, salesName: S_A, mode: 'manual',
+        sla1Deadline: now + 86400000,
+        lead: {
+          leadId: 888004, name: 'H15重复线索', contactType: 'phone', contactNormalized: dupContact,
+          contactRaw: dupContact, wechat: '', source: '同步', note: ''
+        }
+      }
+    }
+    const dupFirst = lanSync.applyDownEventDirect(dupEvent as never)
+    ok('H15 首次中央下行 assign 应用成功（重复投递的对照）', dupFirst === 'applied')
+    settleWindow()
+    await expectNoAssignmentChain('H16 重复投递同一幂等键（重放）', h, () => {
+      const again = lanSync.applyDownEventDirect(dupEvent as never)
+      if (again !== 'applied') throw new Error(`重放应命中已应用标记，实际 ${again}`)
+    })
+
     h.unsubscribe()
     resetAnnualReviewInvalidationForTest()
   }

@@ -80,7 +80,6 @@ import {
 } from './services/annualReviewAiCoordinator'
 import {
   announceAnnualReviewDataChangedNow,
-  bridgeAssignmentInvalidationToAnnualReview,
   installAnnualReviewInvalidation
 } from './services/annualReviewInvalidation'
 import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
@@ -88,7 +87,6 @@ import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './se
 import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
 import { exportTextFile } from './services/safeTextFileExport'
 import { buildAnnualReviewMarkdown, buildAnnualReviewCsv } from './services/annualReviewExportContent'
-import { onAssignmentInvalidated } from './services/assignmentInvalidationBus'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFirstClassifyScheduler } from './services/crmFirstClassifyService'
@@ -912,9 +910,9 @@ const annualReviewAiCoordinator = new AnnualReviewAiCoordinator({
 })
 
 // 年度经营复盘的**唯一失效订阅点**：确定性报告缓存与 AI 结果缓存订阅同一条失效事实
-// （annualReviewInvalidation）。写入侧（crmDb/salesDb 写漏斗、WCDB 连接成功、Assignment
-// 总线、名单变化、账号切换）只负责在**成功后**上报，绝不各自直接调用这两个失效方法——
-// 否则两处会各自遗漏不同的领域。10 分钟 TTL 仅作兜底，不替代明确成功点的通知。
+// （annualReviewInvalidation）。写入侧（crmDb/salesDb 写漏斗、WCDB 连接成功、名单变化、
+// 账号切换）只负责在**成功后**上报，绝不各自直接调用这两个失效方法——否则两处会各自遗漏
+// 不同的领域。10 分钟 TTL 仅作兜底，不替代明确成功点的通知。
 installAnnualReviewInvalidation({
   handleDataChanged: () => annualReviewService.handleDataChanged(),
   invalidateAll: () => annualReviewAiCoordinator.invalidateAll()
@@ -4215,9 +4213,9 @@ function registerIpcHandlers() {
       }
     }
   })
-  // 数据写入失效：assignment 失效总线（含 LAN/中央下行的 assign/transfer）→ 经同一失效事实
-  // 上报（合并窗口）。crmDb/salesDb 写漏斗与 WCDB 连接成功各自上报，全部经统一订阅点收敛。
-  bridgeAssignmentInvalidationToAnnualReview(onAssignmentInvalidated)
+  // 数据写入失效：**唯一权威链路 = 写事务内的 changed 标记**（crmDb/salesDb 写漏斗、LAN/中央
+  // 下行与上行回执的同步事务各自标记）。assignment 失效总线只服务线索页/UI 刷新（见
+  // crmIpcHandlers 的广播桥接），不参与年度复盘——否则同一次分配会经两条链路各失效一次。
 
   ipcMain.handle('annualReview:getAvailableYears', async () => {
     try {
