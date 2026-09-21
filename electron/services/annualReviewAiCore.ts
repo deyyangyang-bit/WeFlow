@@ -297,8 +297,9 @@ export interface AnnualReviewAiDistribution {
   kind: string | null
   state: MetricState
   /**
-   * null = 分布未产出（unavailable）或全部桶名未通过白名单（无法确认，不冒充空分布）；
-   * 绝不用空数组冒充「全为零」。
+   * null = **原报告本身没有产出分布**（unavailable），绝不用空数组冒充「全为零」。
+   * 桶名不合法不会降级为 null —— 那是 AI 输入契约违规，整份报告会被
+   * validateAnnualReviewAiInputContract 拒绝（见该函数与规格 §8.1.1）。
    */
   buckets: Array<{ bucket: string; count: number }> | null
 }
@@ -413,9 +414,13 @@ export function annualReviewAiMetricKeys(report: AnnualReviewReport): string[] {
  * 把报告投影为最小 AI 输入。白名单式逐字段取数：
  *   - 只取 meta / 标量指标 / 阶段分布 / 月度序列 / coverage / warnings；
  *   - 客户明细行、客户姓名、会话标识、E 组 per-sales 明细、sourceSummary 全部不取；
- *   - 自由文本字段（warnings.message、未确认的 source/reasonCodes/code/bucket/kind）
- *     一律不发（见 ANNUAL_REVIEW_AI_ALLOWED_* 白名单）——报告 validator 只保证这些
- *     字段「是非空字符串」，不能据此相信其内容；
+ *   - 自由文本字段 `warnings.message` 从不进入输入；
+ *   - coverage.source / coverage.reasonCodes / warnings.code / 分布 bucket / 分布 kind
+ *     必须命中 AI 白名单（见 ANNUAL_REVIEW_AI_ALLOWED_*），否则**本函数直接返回失败**
+ *     （failure = validateAnnualReviewAiInputContract 的违规字段与位置），
+ *     由调用方转成 unsupported_report_contract；
+ *   - **本函数不静默过滤、不美化报告**：不删行、不剔值、不降级、不置空，只按契约搬运。
+ *     上一版会对未知取值静默省略/丢弃后继续调用模型，那会把数据质量缺口藏起来；
  *   - 所有数组/对象都是新分配（不与报告共享引用），报告只读。
  */
 export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualReviewAiInputResult {
@@ -516,7 +521,7 @@ export const ANNUAL_REVIEW_AI_SYSTEM_PROMPT = [
   '铁律（违反即视为无效输出）：',
   '1. 只能用输入数据说话：不得引入行业常识、经验值、外部事实或任何输入中不存在的信息。',
   '2. 不得自行计算、推算、换算或改写金额、比例、排名、增长率、同比环比；也不要复述输入中的具体数值。',
-  `3. **正文里不得出现具体数值**。一律禁止：阿拉伯数字与全角数字（含百分比、金额、年份）；中文序数（第几）；中文比例或倍数（成 / 折 / 倍）；中文数量、金额与时间（几万元、几个客户、几个月、几年、二零二六年这类连续数字字符）。需要表达多少时用定性词：多数 / 大部分 / 部分 / 少数 / 若干 / 明显 / 略低 / 偏高。普通词汇里的数字字符不受限制（统一口径、保持一致、两类风险、十分谨慎、万一发生、一方面、两端协同均可用）。确定性数字由页面按 metricKeys 从原报告直接展示，你只做定性解释。唯一允许出现数字的位置是 JSON 字段 priority 的取值（如 1 表示最高优先级）。`,
+  `3. **正文里不得出现具体数值**。一律禁止：阿拉伯数字与全角数字（含百分比、金额、年份）；中文序数（第几）与排名（前几）；中文分数（百分之几 / 千分之几 / 万分之几）；中文比例或倍数（成 / 折 / 倍）；中文数量、金额、时间与等级（几万元、几个客户、几个月、几千万、几级客户、二零二六年这类连续数字字符）。需要表达多少时用定性词：多数 / 大部分 / 部分 / 少数 / 若干 / 明显 / 略低 / 偏高。普通词汇里的数字字符不受限制（统一口径、保持一致、两类风险、十分谨慎、万一发生、一方面、两端协同、一一核实、一成不变均可；「千万」作副词时也可用，如千万不要 / 千万不能，但不得用来表示金额或量级）。确定性数字由页面按 metricKeys 从原报告直接展示，你只做定性解释。唯一允许出现数字的位置是 JSON 字段 priority 的取值（如 1 表示最高优先级）。`,
   '4. 每条 diagnoses / actions / risks 的 metricKeys 必须至少一个，且只能取输入 coverage 中出现的键；不得发明键名。',
   '5. state 为 unavailable 的指标表示数据不可得，不是 0，也不是「很低」；不得据此下结论，若影响判断须在 risks 或 observation 中明确指出数据缺口。',
   '6. state 为 partial / snapshot_only 的指标含义受限，结论须相应降低 confidence。warnings 只给稳定 code（不含文案），code 表示相应指标存在数据缺口，遇到缺口须降低 confidence 并在 risks 中说明。',
@@ -570,37 +575,48 @@ export type AnnualReviewAiParseResult =
  *
  * ## 规则边界（明确数值表达 vs 普通词汇）
  *
- * 判据不是「出现数字字符」——中文里 `统一`/`一致`/`两类`/`十分`/`万一`/`一方面` 的
- * 数字字符不表示数量。识别按下列**可解释规则**逐条匹配（见 ANNUAL_REVIEW_AI_NUMERIC_RULES），
+ * 判据不是「出现数字字符」——中文里 `统一`/`一致`/`两类`/`十分`/`一方面` 的数字字符
+ * 不表示数量。识别按下列**可解释规则**逐条匹配（见 ANNUAL_REVIEW_AI_NUMERIC_RULES），
  * 命中任一即视为声明了数值：
  *
  *   1. decimal_digit     任意 Unicode 十进制数字（`83%`、全角 `８３％`）
  *   2. cn_ordinal        `第` + 数字字符（`第一名`、`第二阶段`、`第三季度`）
- *   3. cn_ratio          数字字符 + `成`/`折`/`倍`（`八成`、`三成以上`）
- *   4. cn_quantity       数字字符 + 量词/单位（`三万元`、`十二个客户`、`三个月`、`二零二六年`）
- *   5. cn_numeral_run    连续 ≥2 个数字字符（`二零二六`、`十二个`）
+ *   3. cn_ranking        `前` + 数字字符（`前五`、`前十`、`排名前三`、`位列前五`）
+ *   4. cn_fraction       `百分之`/`千分之`/`万分之` + 数字（`百分之五`、`千分之五`、`万分之三`）
+ *   5. cn_ratio          数字字符 + `成`/`折`/`倍`（`八成`、`三倍`、`三成以上`）
+ *   6. cn_quantity       数字字符 + 量词（`三万元`、`十二个客户`、`三个月`、`一千万`、`三级客户`）
+ *   7. cn_numeral_run    连续 ≥2 个数字字符（`二零二六`、`十二个`）
  *
- * 单个数字字符后既不接单位、也不构成连续串时**不算**数值声明，因此上面那批普通词汇全部放行。
+ * 单个数字字符后既不接量词、也不构成连续串时**不算**数值声明，因此上面那批普通词汇全部放行。
  *
- * ## 已知歧义（不做自然语言语义识别，本规则是机械匹配）
+ * ## 豁免：只对「非数值语境」放行，不做全局字符串遮盖
  *
- * - 固定短语白名单（ANNUAL_REVIEW_AI_NUMERIC_IDIOMS：万一、千万、一一、万万、一成不变）
- *   在扫描前整体屏蔽，用于救回会被规则 4/5 误伤的虚词与成语；测试会断言表内每条都确实
- *   被某条规则命中（不留死条目）；
- * - 量词表刻意**不含** `分`、`类`、`级`、`档`：含 `分` 会误杀「十分」、含 `类` 会误杀「两类」，
- *   `级`/`档` 又会误杀「两级分化」「三档」这类非数量表达。代价是 `一分钱`、`三级客户`
- *   这类表述不会被识别（已知漏检，宁漏不误杀）；
- * - `一处`/`一方面` 这类「一 + 非量词」的模糊表述按普通词汇放行；
- * - 无法穷尽自然语言：这是模式匹配，不是语义理解，新增误杀/漏检都应改本表与对应测试。
+ * 上一版把所有 `千万` 无条件从文本里抹掉再扫描，导致「合同金额千万」「回款千万」这类
+ * 真实金额绕过了检测。现在改为**带上下文的豁免**（ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS），
+ * 每条豁免都有 id / 类型 / 理由，并且只在**匹配到的位置上**放行（等长占位替换），
+ * 不是「先把某串字全局替换掉」：
+ *
+ *   - `qianwan_adverb`（类型 adverb，上下文锚定）：只有 `千万` **后接副词后缀**
+ *     （要 / 不能 / 别 / 避免 / 务必 / 不可 / 注意 / 记得 / 不要 / 谨记 / 谨防 / 防止 / 保持 / 把握）
+ *     才豁免。裸 `千万`（金额千万、达到千万、千万级规模）照旧被 cn_quantity / cn_numeral_run 拒绝。
+ *   - 其余四条（类型 non_quantity_form）按**整串**豁免，但每条的语义使其不可能表示数量，
+ *     理由写在表内：`万一`（中文数量写作「一万」）、`一一`（逐个）、`万万`（副词/古旧量词）、
+ *     `一成不变`（成语；单独出现的 `一成`＝10% 仍被 cn_ratio 拒绝）。
+ *     测试断言每条豁免都确实「救回」了某条规则会命中的串（不留死条目），并且遮盖不会
+ *     把真实数量藏起来（掩码后剩余上下文仍会命中 cn_quantity / cn_numeral_run）。
+ *
+ * ## 已知歧义（机械匹配，不是自然语言语义理解）
+ *
+ * - `分` / `角` 只在后接 `钱` 时算量词（`一分钱` 拒绝；`十分谨慎` 放行）；
+ * - 量词表**不含** `类`（会误杀「两类风险」）。数字 + `级`/`档` 判为数值（`三级客户`），
+ *   代价是「两级分化」这类含数字语素的成语也会被拒绝——保守方向选择「宁可拒绝」；
+ * - `一处`/`一方面`/`一类` 这类「数字字符 + 非量词」的模糊表述按普通词汇放行；
+ * - `前年`/`前期` 等不以数字字符结尾的「前 X」不受 cn_ranking 影响（`前三年` 会被拒绝）；
+ * - 无法穷尽自然语言：新增误杀/漏检都应改规则表 / 豁免表与对应测试，并同步规格 §8.2.1。
  */
 const CN_NUMERALS = '〇零一二三四五六七八九十百千万亿兆两廿卅壹贰叁肆伍陆柒捌玖拾佰仟萬億兩'
-/** 量词/单位（金额、数量、时间、比例单位）：紧跟数字字符即视为具体数值 */
-const CN_UNITS = '个人家位名次条份件台套张笔项元万亿千百月年天日周季岁'
-
-/** 非数值语义的固定短语：扫描前整体屏蔽（白名单式，不做语义推断） */
-export const ANNUAL_REVIEW_AI_NUMERIC_IDIOMS: readonly string[] = [
-  '万一', '千万', '一一', '万万', '一成不变'
-]
+/** 量词/单位（金额、数量、时间、等级）：紧跟数字字符即视为具体数值 */
+const CN_UNITS = '个人家位名次条份件台套张笔项元亿级档月年天日周季岁'
 
 export interface AnnualReviewAiNumericRule {
   /** 稳定 id：进失败文案，便于定位是哪条规则命中 */
@@ -610,21 +626,84 @@ export interface AnnualReviewAiNumericRule {
   pattern: RegExp
 }
 
+/**
+ * 规则表（每条都是「明确数值表达」的形状，不依赖词义推断）。
+ * 注意 `分`/`角` 用后接 `钱` 的前瞻：它们是量词，但裸用会误杀「十分」「一角（角落）」。
+ */
 export const ANNUAL_REVIEW_AI_NUMERIC_RULES: readonly AnnualReviewAiNumericRule[] = [
   { id: 'decimal_digit', description: '任意 Unicode 十进制数字（含全角）', pattern: /\p{Nd}/u },
   { id: 'cn_ordinal', description: '中文序数：第 + 数字字符', pattern: new RegExp(`第[${CN_NUMERALS}]`, 'u') },
+  { id: 'cn_ranking', description: '中文排名：前 + 数字字符（前五 / 前十 / 前三名）', pattern: new RegExp(`前[${CN_NUMERALS}]`, 'u') },
+  { id: 'cn_fraction', description: '中文分数：百分之/千分之/万分之 + 数字', pattern: new RegExp(`(?:百分之|千分之|万分之)[${CN_NUMERALS}\\p{Nd}]`, 'u') },
   { id: 'cn_ratio', description: '中文比例/倍数：数字字符 + 成/折/倍', pattern: new RegExp(`[${CN_NUMERALS}][成折倍]`, 'u') },
-  { id: 'cn_quantity', description: '中文数量/金额/时间：数字字符 + 量词', pattern: new RegExp(`[${CN_NUMERALS}][${CN_UNITS}]`, 'u') },
+  { id: 'cn_quantity', description: '中文数量/金额/时间/等级：数字字符 + 量词（分/角需后接「钱」）', pattern: new RegExp(`[${CN_NUMERALS}](?:[${CN_UNITS}]|[分角](?=钱))`, 'u') },
   { id: 'cn_numeral_run', description: '连续两个及以上数字字符', pattern: new RegExp(`[${CN_NUMERALS}]{2,}`, 'u') }
+]
+
+export type AnnualReviewAiNumericExemptionKind = 'adverb' | 'non_quantity_form'
+
+export interface AnnualReviewAiNumericExemption {
+  /** 稳定 id：测试据此断言每条豁免都在起作用 */
+  id: string
+  /**
+   * adverb = 该串在此语境下是副词（必须带上下文后缀才豁免）；
+   * non_quantity_form = 该串在中文里不构成数量表达（按整串豁免，理由见 description）。
+   */
+  kind: AnnualReviewAiNumericExemptionKind
+  /** 豁免理由（写清「为什么它不可能是数量」） */
+  description: string
+  /** 全局正则（gu），只替换匹配到的片段 */
+  pattern: RegExp
+}
+
+/**
+ * 豁免表。除 `qianwan_adverb` 外均为「不可能是数量」的整串豁免；
+ * `千万` 只能靠上下文豁免——裸 `千万` 是真实金额（一千万），不得放行。
+ */
+export const ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS: readonly AnnualReviewAiNumericExemption[] = [
+  {
+    id: 'qianwan_adverb',
+    kind: 'adverb',
+    description: '「千万」后接副词后缀时是「务必」义（千万不要/千万不能/千万别/千万避免/千万务必/千万不可/千万注意…），此时不表示一千万',
+    pattern: /千万(?:要|不能|别|避免|务必|不可|注意|记得|不要|谨记|谨防|防止|保持|把握)/gu
+  },
+  {
+    id: 'wanyi_conjunction',
+    kind: 'non_quantity_form',
+    description: '「万一」是连词（万一发生…）；中文数量写作「一万」，「万一」不是数量形式',
+    pattern: /万一/gu
+  },
+  {
+    id: 'yiyi_sequential',
+    kind: 'non_quantity_form',
+    description: '「一一」表示逐个（一一核实）；中文数量写作「一万一千」这类，「一一」不是数量形式',
+    pattern: /一一/gu
+  },
+  {
+    id: 'wanwan_archaic',
+    kind: 'non_quantity_form',
+    description: '「万万」是副词或古旧量词（万万不可）；现代中文数量写作「亿」',
+    pattern: /万万/gu
+  },
+  {
+    id: 'yicheng_idiom',
+    kind: 'non_quantity_form',
+    description: '「一成不变」是成语；单独出现的「一成」（10%）仍由 cn_ratio 拒绝',
+    pattern: /一成不变/gu
+  }
 ]
 
 export type AnnualReviewAiNumericVerdict = { claimed: false } | { claimed: true; ruleIds: string[] }
 
-/** 屏蔽固定短语（等长替换，保持偏移）：只放行本表列出的短语，不做语义判断 */
-function maskNumericIdioms(text: string): string {
+/**
+ * 在**匹配到的位置**上屏蔽豁免片段（等长占位，保持偏移）。
+ * 与上一版「全局替换某串字」的区别：`千万` 只在其后接副词后缀时被屏蔽，
+ * 裸 `千万` 原样留给规则表判定。
+ */
+function maskNumericExemptions(text: string): string {
   let out = text
-  for (const idiom of ANNUAL_REVIEW_AI_NUMERIC_IDIOMS) {
-    if (out.includes(idiom)) out = out.split(idiom).join('\u25c7'.repeat(idiom.length))
+  for (const exemption of ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS) {
+    out = out.replace(exemption.pattern, (matched) => '\u25c7'.repeat(matched.length))
   }
   return out
 }
@@ -634,7 +713,7 @@ function maskNumericIdioms(text: string): string {
  * 返回命中的规则 id 列表：调用方据此给出可解释的失败文案，测试据此锁定规则边界。
  */
 export function detectNumericClaim(text: string): AnnualReviewAiNumericVerdict {
-  const scanned = maskNumericIdioms(text)
+  const scanned = maskNumericExemptions(text)
   const ruleIds = ANNUAL_REVIEW_AI_NUMERIC_RULES.filter((rule) => rule.pattern.test(scanned)).map((rule) => rule.id)
   return ruleIds.length === 0 ? { claimed: false } : { claimed: true, ruleIds }
 }

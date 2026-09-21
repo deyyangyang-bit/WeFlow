@@ -36,7 +36,7 @@ import {
   ANNUAL_REVIEW_AI_CONFIDENCE,
   ANNUAL_REVIEW_AI_HORIZONS,
   ANNUAL_REVIEW_AI_LIMITS,
-  ANNUAL_REVIEW_AI_NUMERIC_IDIOMS,
+  ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS,
   ANNUAL_REVIEW_AI_NUMERIC_RULES,
   ANNUAL_REVIEW_AI_PRIORITIES,
   ANNUAL_REVIEW_AI_PROMPT_VERSION,
@@ -558,24 +558,40 @@ async function main(): Promise<void> {
       ok(`${name} → numeric_claim`, !r.ok && r.code === 'numeric_claim')
     }
 
-    // N25 官方要求逐字覆盖的拒绝清单（放在所有文本字段上都必须失败）
-    const MUST_REJECT = ['增长83%', '增长８３％', '增长八成', '排名第一', '回款三万元', '新增十二个客户', '二零二六年', '第三季度', '三个月内完成']
+    // N25 拒绝清单（放在所有文本字段上都必须失败；含金额/比例/排名三类新补规则）
+    const MUST_REJECT = [
+      // 阿拉伯/全角数字
+      '增长83%', '增长８３％',
+      // 中文比例与分数
+      '增长八成', '三倍', '百分之五', '百分之十五', '增长百分之五', '千分之五', '下降千分之五', '万分之三', '风险为万分之三',
+      // 排名与序数
+      '排名第一', '前五', '前十', '前三名', '排名前三', '进入前十', '进入行业前五', '位列前五',
+      // 量级与数量（「千万」作数值，不得被副词豁免吞掉）
+      '合同金额千万', '回款千万', '签约额达到千万级', '千万级规模', '达到千万', '超过千万', '一千万',
+      // 数量与时间
+      '回款三万元', '新增十二个客户', '二零二六年', '第三季度', '三个月内完成'
+    ]
     for (const text of MUST_REJECT) {
       const r = parseAnnualReviewAiOutput(allTextFields(text), KEYS)
       ok(`N25 全字段拒绝：${text}`, !r.ok && r.code === 'numeric_claim')
     }
 
-    // N26 普通词汇必须放行（上一轮把「任何中文数字字符」一律拒绝，这里逐词锁死边界）
-    const MUST_ALLOW = ['统一口径', '保持一致', '两类风险', '十分谨慎', '万一发生', '一方面需要关注', '两端协同不足']
+    // N26 普通词汇必须放行（含「千万」副词用法与「前 X」非数值词，逐词锁死误杀边界）
+    const MUST_ALLOW = [
+      '统一口径', '保持一致', '两类风险', '十分谨慎', '万一发生', '一方面需要关注', '两端协同不足',
+      '一一核实', '一成不变', '千万不要忽略风险', '千万不能放松跟进', '前期跟进', '前置条件', '提前准备'
+    ]
     for (const phrase of MUST_ALLOW) {
       const r = parseAnnualReviewAiOutput(allTextFields(phrase), KEYS)
       ok(`N26 全字段放行普通词汇：${phrase}`, r.ok)
     }
     // 同一句话里混合多个普通词汇 + 逐字段逐一验证，确认不是靠某一个字段漏判
-    const mixed = '统一口径与保持一致很重要；两类风险需要关注，十分谨慎对待；万一发生问题，一方面要两端协同不足。'
+    const mixed = '统一口径与保持一致很重要；两类风险需要关注，十分谨慎对待；万一发生问题，一方面要两端协同不足；一一核实后，千万不要忽略风险，此前一成不变的做法需要调整，前期跟进与前置条件也要提前准备。'
+    // title 字段上限 60 字，混合句需要短版本（否则测的是长度校验而不是数字规则）
+    const mixedShort = '统一口径与保持一致；两类风险需关注，十分谨慎；一一核实后千万不要忽略风险，一成不变要改。'
     const fieldByField: Array<[string, Record<string, unknown>]> = [
       ['executiveSummary', { executiveSummary: mixed }],
-      ['diagnoses.title', { diagnoses: [{ ...validAnalysis.diagnoses[0], title: mixed }] }],
+      ['diagnoses.title', { diagnoses: [{ ...validAnalysis.diagnoses[0], title: mixedShort }] }],
       ['diagnoses.observation', { diagnoses: [{ ...validAnalysis.diagnoses[0], observation: mixed }] }],
       ['diagnoses.hypothesis', { diagnoses: [{ ...validAnalysis.diagnoses[0], hypothesis: mixed }] }],
       ['actions.action', { actions: [{ ...validAnalysis.actions[0], action: mixed }] }],
@@ -587,20 +603,38 @@ async function main(): Promise<void> {
       ok(`N27 逐字段放行普通词汇：${field}`, r.ok)
     }
 
-    // N28 规则级单元测试：直接锁死 detectNumericClaim 的边界（可解释规则表 + 固定短语白名单）
-    const allowedProbe = ['统一口径', '保持一致', '两类风险', '十分谨慎', '万一发生', '一方面需要关注', '两端协同不足', '回款节奏需要关注']
+    // N28 规则级单元测试：直接锁死 detectNumericClaim 的边界（可解释规则表 + 上下文豁免）
+    const allowedProbe = [
+      '统一口径', '保持一致', '两类风险', '十分谨慎', '万一发生', '一方面需要关注', '两端协同不足',
+      '一一核实', '一成不变', '回款节奏需要关注', '前期跟进', '前置条件', '提前准备',
+      // 注释与规格里声明的「数字字符 + 非量词」模糊表述：按普通词汇放行，此处锁死行为
+      '存在一处数据缺口', '一类客户需要关注', '当前阶段一般', '前年同期对比'
+    ]
     for (const text of allowedProbe) ok(`N28 规则判定无声明：${text}`, !detectNumericClaim(text).claimed)
     const ruleCases: Array<[string, string, string]> = [
       ['增长83%', 'decimal_digit', '阿拉伯数字'],
       ['增长８３％', 'decimal_digit', '全角数字'],
       ['排名第一', 'cn_ordinal', '中文序数'],
       ['第二阶段', 'cn_ordinal', '中文序数'],
+      ['前五', 'cn_ranking', '中文排名'],
+      ['前十', 'cn_ranking', '中文排名'],
+      ['排名前三', 'cn_ranking', '中文排名'],
+      ['位列前五', 'cn_ranking', '中文排名'],
+      ['百分之五', 'cn_fraction', '中文分数（百分之）'],
+      ['百分之十五', 'cn_fraction', '中文分数（百分之）'],
+      ['千分之五', 'cn_fraction', '中文分数（千分之）'],
+      ['万分之三', 'cn_fraction', '中文分数（万分之）'],
       ['增长八成', 'cn_ratio', '中文比例'],
+      ['三倍', 'cn_ratio', '中文倍数'],
       ['回款三万元', 'cn_quantity', '中文金额'],
       ['新增十二个客户', 'cn_quantity', '中文数量'],
       ['二零二六年', 'cn_quantity', '中文年份'],
       ['三个月内完成', 'cn_quantity', '中文时间'],
-      ['十二个', 'cn_numeral_run', '连续数字字符']
+      ['三级客户', 'cn_quantity', '中文等级'],
+      ['一分钱', 'cn_quantity', '中文最小金额'],
+      ['十二个', 'cn_numeral_run', '连续数字字符'],
+      ['合同金额千万', 'cn_numeral_run', '裸「千万」是数值'],
+      ['回款千万', 'cn_numeral_run', '裸「千万」是数值']
     ]
     for (const [text, ruleId, label] of ruleCases) {
       const verdict = detectNumericClaim(text)
@@ -614,12 +648,61 @@ async function main(): Promise<void> {
         const v = detectNumericClaim(text)
         return v.claimed && v.ruleIds.every((id) => declaredRuleIds.includes(id))
       }))
-    // 短语白名单非空且都确实含数字字符（否则白名单是死代码）
-    ok('N28e 短语白名单每条都含数字字符且当前会被规则命中',
-      ANNUAL_REVIEW_AI_NUMERIC_IDIOMS.every((idiom) => {
-        const unmasked = ANNUAL_REVIEW_AI_NUMERIC_RULES.some((r) => r.pattern.test(idiom))
-        return unmasked && !detectNumericClaim(idiom).claimed
-      }))
+    // 新规则必须都在规则表里（防止写了规则却漏挂）
+    for (const required of ['decimal_digit', 'cn_ordinal', 'cn_ranking', 'cn_fraction', 'cn_ratio', 'cn_quantity', 'cn_numeral_run']) {
+      ok(`N28f 规则表含 ${required}`, declaredRuleIds.includes(required))
+    }
+
+    // N28g 豁免是「按匹配位置」而非「全局替换某串字」——同一句里副词豁免不得吞掉真实数值
+    const spanCases: Array<[string, boolean, string]> = [
+      ['千万不要忽略风险', false, '副词「千万」放行'],
+      ['千万不能放松跟进', false, '副词「千万」放行'],
+      ['千万别拖延', false, '副词「千万」放行'],
+      ['千万避免误判', false, '副词「千万」放行'],
+      ['千万务必核对', false, '副词「千万」放行'],
+      ['千万不可放松', false, '副词「千万」放行'],
+      ['合同金额千万', true, '裸「千万」＝数值'],
+      ['回款千万', true, '裸「千万」＝数值'],
+      ['千万级规模', true, '「千万级」＝数值'],
+      ['达到千万', true, '裸「千万」＝数值'],
+      ['超过千万', true, '裸「千万」＝数值'],
+      // 同一句同时含副词用法与真实数值：整体必须仍然拒绝
+      ['千万不要忽略回款千万的风险', true, '同句内副词豁免不得吞掉数值'],
+      ['千万不能达到千万级规模', true, '同句内副词豁免不得吞掉数值'],
+      // 成语豁免同样只覆盖匹配到的片段
+      ['一成不变的做法需要调整', false, '成语放行'],
+      ['增长一成', true, '单独「一成」＝10% 仍是数值']
+    ]
+    for (const [text, shouldClaim, label] of spanCases) {
+      const verdict = detectNumericClaim(text)
+      ok(`N28g ${label}：${text}`, verdict.claimed === shouldClaim)
+      const r = parseAnnualReviewAiOutput(allTextFields(text), KEYS)
+      ok(`N28h 解析器同口径（${label}）：${text}`, shouldClaim ? (!r.ok && r.code === 'numeric_claim') : r.ok)
+    }
+
+    // N28i 豁免表：每条都必须真的在起作用（否则就是可以删掉的死条目），且理由齐备
+    ok('N28i 豁免表 id 唯一', new Set(ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS.map((e) => e.id)).size === ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS.length)
+    for (const exemption of ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS) {
+      ok(`N28j 豁免 ${exemption.id} 有理由说明`, exemption.description.length > 10)
+      // 该豁免命中的片段：去掉豁免后必须会被某条规则判为数值（证明它确实在“救回”误杀）
+      const sample = exemption.pattern.source.includes('千万') ? '千万不要'
+        : exemption.pattern.source.includes('万一') ? '万一'
+        : exemption.pattern.source.includes('一一') ? '一一'
+        : exemption.pattern.source.includes('万万') ? '万万'
+        : exemption.pattern.source.includes('一成不变') ? '一成不变'
+        : null
+      ok(`N28k 豁免 ${exemption.id} 可取样`, sample !== null)
+      if (sample !== null) {
+        const withoutExemption = ANNUAL_REVIEW_AI_NUMERIC_RULES.some((r) => r.pattern.test(sample))
+        ok(`N28l 豁免 ${exemption.id} 确实在救回误杀`, withoutExemption && !detectNumericClaim(sample).claimed)
+      }
+      // 豁免必须带 g 标志（否则只会替换第一处），且不得匹配空串
+      ok(`N28m 豁免 ${exemption.id} 声明为全局正则且不匹配空串`, exemption.pattern.global && !exemption.pattern.test(''))
+    }
+    // 只有「千万」允许上下文锚定豁免；裸「千万」必须仍是数值（禁止全局遮盖的回潮守卫）
+    const qianwan = ANNUAL_REVIEW_AI_NUMERIC_EXEMPTIONS.filter((e) => e.pattern.source.includes('千万'))
+    ok('N28n 「千万」只允许上下文锚定豁免（正则必须含副词后缀）',
+      qianwan.length === 1 && qianwan[0].kind === 'adverb' && /千万\(\?:/.test(qianwan[0].pattern.source))
 
     // N29 数字禁令只作用于文本字段：priority 枚举与 metricKeys 不受影响
     ok('N29 priority 数字枚举不受文本禁令影响', parseAnnualReviewAiOutput(allTextFields('回款节奏需要关注'), KEYS).ok)
@@ -634,6 +717,30 @@ async function main(): Promise<void> {
       actions: [], risks: []
     })
     ok('N29c metricKeys 不走数字禁令', parseAnnualReviewAiOutput(keyed, KEYS).ok)
+
+    // N31 不修改入参：检测是纯函数，解析结果每次都是新对象且互不共享
+    {
+      const probeText = '统一口径与保持一致，千万不要忽略风险'
+      const before = probeText
+      detectNumericClaim(probeText)
+      ok('N31 检测不修改文本入参', probeText === before)
+      // 同一段合法 JSON 解析两次：结果深等且互不共享（改一个不影响另一个/不影响原始文本）
+      const rawJson = validJson()
+      const rawBefore = rawJson
+      const first = parseAnnualReviewAiOutput(rawJson, KEYS)
+      const second = parseAnnualReviewAiOutput(rawJson, KEYS)
+      ok('N31b 同一输出两次解析结果深等', first.ok && second.ok && snapshot(first) === snapshot(second))
+      ok('N31c 解析不修改模型原始输出', rawJson === rawBefore)
+      if (first.ok && second.ok) {
+        first.analysis.executiveSummary = 'MUTATED'
+        first.analysis.diagnoses[0].metricKeys.push('MUTATED')
+        ok('N31d 两次解析结果不共享引用', second.analysis.executiveSummary !== 'MUTATED' && !second.analysis.diagnoses[0].metricKeys.includes('MUTATED'))
+      }
+      // 数字检测命中时同样不改文本
+      const claimedText = '合同金额千万'
+      const claimedBefore = claimedText
+      ok('N31e 检测命中也不修改入参', detectNumericClaim(claimedText).claimed && claimedText === claimedBefore)
+    }
 
     // N30 失败文案只报字段路径与命中规则，不回显编造内容
     const echoed = parseAnnualReviewAiOutput(validJson({ executiveSummary: '回款约 83%。' }), KEYS)
