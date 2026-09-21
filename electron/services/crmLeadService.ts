@@ -190,7 +190,7 @@ export function importLeads(source: string, fileName: string, rows: RawLeadRow[]
       [getIdentity()?.name || '分配员', 'lead_import_dedupe', 'import_batch', Number(batchId),
        JSON.stringify({ batchId: Number(batchId), rows: detailRows }), now])
     return batchId
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
 
   scanLeadSla()
   const duplicate = dupSameBatch + dupExistingLead + dupExistingCustomer + conflicts
@@ -347,7 +347,7 @@ export function createLead(input: CreateLeadInput): CreateLeadResult {
         [getActorLabel() || '分配员', 'lead_create', 'lead', id,
          JSON.stringify({ source: src, contactMasked: maskContact({ contactType, contactNormalized }), hasQr: Boolean(qrPath) }), now])
       return id
-    })
+    }, { affectsAnnualReview: 'crm:lead' })
     scanLeadSla()
     return { ok: true, data: { leadId } }
   } catch {
@@ -458,7 +458,7 @@ export function importHistoricalAssignments(fileName: string, rows: HistoricalAs
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [getActorLabel() || '分配员', 'assignment_history_import', 'lead', null,
          JSON.stringify({ fileName: String(fileName || '粘贴文本'), total: rows.length, valid: valid.length, leadsCreated, leadsReused, assignmentsCreated, recycled: recycledCount, skipped: skipped.length }), now])
-    })
+    }, { affectsAnnualReview: 'crm:assignment' })
     // 事务已提交才通知：历史导入会新建 claimed 态的**当前有效**归属行（recycled 历史行不改当前归属，不通知）
     if (touchedLeadIds.length) emitAssignmentInvalidated('assign', touchedLeadIds)
   }
@@ -573,7 +573,7 @@ export function updateLeadStatus(leadId: number, action: keyof typeof ACTION_ACT
       tx.run("UPDATE lead SET status = 'NEW', dead_reason = '', updated_at = ? WHERE id = ?", [now, id])
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'REOPEN', String(opts.note || '恢复跟进'), now])
     }
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
   return { ok: true }
 }
 
@@ -593,7 +593,7 @@ export function updateLeadProfile(leadId: number, fields: { name?: string; wecha
   crmDbService.runTx((tx) => {
     tx.run('UPDATE lead SET name = ?, wechat = ?, updated_at = ? WHERE id = ?', [name, wechat, now, id])
     tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'EDIT', changed.join('；'), now])
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
   return { ok: true }
 }
 
@@ -635,7 +635,7 @@ export function toAccount(leadId: number): ToAccountResult {
     tx.run('UPDATE lead SET status = ?, account_id = ?, updated_at = ? WHERE id = ?', ['ACCOUNT', accountId, now, id])
     tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'TO_ACCOUNT', existed ? `关联已有客户 #${accountId}` : `新建客户 #${accountId}`, now])
     return { accountId, existed }
-  })
+  }, { affectsAnnualReview: 'crm:account' })
 
   return { ok: true, accountId: result.accountId, existed: result.existed }
 }
@@ -699,7 +699,7 @@ export function completeLeadFirstContact(taskId: number): boolean {
         contactType: String(rows[0].contact_type || ''), contactNormalized: String(rows[0].contact_normalized || '')
       }, now)
     }
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
   salesDbService.todoUpdate(Number(taskId), { status: 'done' })
   return true
 }
@@ -733,7 +733,7 @@ export function resetLegacyGroupScanSla(): { leads: number; cards: number } {
     if (!rows.length) return [] as number[]
     tx.run(`UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ? ${NO_ACTIVE_ASSIGNMENT}`, [LEAD_SLA_UNASSIGNED_SENTINEL, now, LEAD_SLA_UNASSIGNED_SENTINEL])
     return rows.map((r) => Number(r.id))
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
 
   // 卡关单不随 resetIds 空而短路：孤儿卡（source_id 指向已不存在的 lead）每次启动都要扫
   const idSet = new Set(resetIds)
@@ -795,7 +795,7 @@ export function cleanupLegacyGroupScanTags(): { cleared: number; noted: number }
       }
     }
     return { cleared, noted }
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
   if (!result.cleared) return result
   try {
     crmDbService.create('audit_event', {

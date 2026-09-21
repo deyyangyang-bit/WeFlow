@@ -116,7 +116,7 @@ export function markSla2ScanResult(leadId: number, input: Sla2MarkInput): Sla2Ma
         assignmentId: Number(row.id), verdict, confidence, scanRef, source,
         prevVerdict: existing?.verdict || '', overridden: !!existing
       }), now])
-  })
+  }, { affectsAnnualReview: 'crm:assignment' })
   return { ok: true, data: { assignmentId: Number(row.id), alreadyMarked: false } }
 }
 

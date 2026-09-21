@@ -152,7 +152,7 @@ export function bindLeadWxid(
     recordOutboxTx(tx, 'bind_wx', `bind_wx:${id}:${value}`, {
       leadId: id, wxid: value, identityId: finalIdentityId, customerId, source, slaStopped, actor: by
     }, now)
-  })
+  }, { affectsAnnualReview: 'crm:lead' })
   return { ok: true, data: { identityId: finalIdentityId, customerId, alreadyBound: false, slaStopped } }
 }
 

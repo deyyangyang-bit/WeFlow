@@ -16,7 +16,12 @@ import { archivedDbName, businessDbPath } from './businessDbPath'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
 import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLifecycleHooks'
-import { announceAnnualReviewDataChanged } from './annualReviewInvalidation'
+import {
+  announceAnnualReviewAuditAction,
+  announceAnnualReviewCrmWrite,
+  announceAnnualReviewDataChanged,
+  type AnnualReviewInvalidationReason
+} from './annualReviewInvalidation'
 import { nextAutoStage, type AutoStageDecision } from './salesStagePolicy'
 import { normalizeStage } from '../../shared/salesStage'
 
@@ -759,8 +764,18 @@ class CrmDbService {
     this.persist()
   }
 
-  /** 事务执行一组写操作（sql.js 单库事务）：成功 COMMIT+persist，失败 ROLLBACK 后抛错。tx.run 返回 last_insert_rowid。 */
-  runTx<T>(fn: (tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] }) => T): T {
+  /**
+   * 事务执行一组写操作（sql.js 单库事务）：成功 COMMIT+persist，失败 ROLLBACK 后抛错。tx.run 返回 last_insert_rowid。
+   *
+   * `opts.affectsAnnualReview` 是**显式失效声明**（默认不声明 = 不影响年度复盘）：原始 SQL 无法
+   * 类型化地表达写了哪张表，因此写年度复盘数据源表的事务必须在调用点声明，例如
+   * `runTx(fn, { affectsAnnualReview: 'crm:contract' })`。声明只在 COMMIT 成功后生效；
+   * ROLLBACK / 抛错路径不通知。`create/update` 走 entity 参数自动声明，无需在此重复声明。
+   */
+  runTx<T>(
+    fn: (tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] }) => T,
+    opts?: { affectsAnnualReview?: AnnualReviewInvalidationReason }
+  ): T {
     if (!this.db) throw new Error('CrmDb 未初始化')
     this.db.run('BEGIN')
     try {
@@ -786,9 +801,8 @@ class CrmDbService {
       const out = fn(tx)
       this.db.run('COMMIT')
       this.persist()
-      // 事务已提交（COMMIT 未抛错）→ 年度复盘数据失效（客户/合同/核销/出货/阶段/商机/同步应用
-      // 等全部 crmDb 业务写都经此漏斗）。ROLLBACK / 抛错路径不通知。
-      announceAnnualReviewDataChanged('crm_write')
+      // 事务已提交 + 调用点已显式声明该事务写到了年度复盘数据源表 → 通知失效
+      if (opts?.affectsAnnualReview) announceAnnualReviewDataChanged(opts.affectsAnnualReview)
       return out
     } catch (e) {
       try { this.db.run('ROLLBACK') } catch { /* ignore */ }
@@ -875,16 +889,16 @@ class CrmDbService {
   }
 
   /**
-   * 单条写语句（私有；所有 create/update 及业务写方法都经此）。
-   * 语句执行与 persist 均未抛错即视为「写成功」→ 上报年度复盘数据失效；
-   * 读操作走 all()/get()，不经过这里（失效绝不接在读路径上）。
+   * 单条写语句（私有；create/update 及部分业务写方法经此）。
+   * 本方法**不**声明年度复盘失效（原始 SQL 不做表名匹配）：失效由调用点显式声明——
+   * 白名单表经 `create`/`update` 的 entity 参数自动声明，其余原始 SQL 写点各自调用
+   * `announceAnnualReviewCrmWrite` / `announceAnnualReviewAuditAction`。读操作走 all()/get()。
    */
   private run(sql: string, params: unknown[] = []): number {
     if (!this.db) return 0
     this.db.run(sql, params as any[])
     const r = this.all('SELECT last_insert_rowid() AS id')
     this.persist()
-    announceAnnualReviewDataChanged('crm_write')
     return r.length ? Number(r[0].id) : 0
   }
 
@@ -953,7 +967,7 @@ class CrmDbService {
       const id = tx.run('INSERT INTO contract (account_id, name, amount, status, custom_fields, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', [accountId, `${name}-合同`, input.amount, 'pending_sign', JSON.stringify({ ...header, creation_request_id: input.requestId }), now, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)', [currentActor(), 'contract_entry_create', 'contract', id, JSON.stringify({ account_id: accountId, creation_request_id: input.requestId }), now])
       return id
-    })
+    }, { affectsAnnualReview: 'crm:contract' }) // 同事务写 account + contract → 年度复盘失效
     this.persistNowStrict()
     return this.getById('contract', contractId)!
   }
@@ -965,7 +979,12 @@ class CrmDbService {
     if (entity === 'quotation') throw new Error('报价单禁止散写：请走 createQuotation 版本链（宪法 §1.6 append-only）')
     const keys = Object.keys(data)
     const sql = `INSERT INTO ${entity} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`
-    return this.run(sql, keys.map((k) => data[k]))
+    const id = this.run(sql, keys.map((k) => data[k]))
+    // 年度复盘失效声明（类型化 entity，不做 SQL 匹配）：白名单表才通知；
+    // audit_event 只看 action 是否属于年报复盘读取的动作。
+    announceAnnualReviewCrmWrite(entity)
+    if (entity === 'audit_event') announceAnnualReviewAuditAction(String(data?.action ?? ''))
+    return id
   }
 
   /** 报价版本现行态允许回写的字段（文件/存证哈希/备注/有效期）；价格与行项变更必须新建版本 */
@@ -999,9 +1018,12 @@ class CrmDbService {
         throw new Error(`报价单字段不可直改（${illegal.join(',')}）：价格/行项变更请新建报价版本（宪法 §1.6）`)
       }
       this.run(`UPDATE quotation SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
+      announceAnnualReviewCrmWrite(entity)
       return
     }
     this.run(`UPDATE ${entity} SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
+    // 年度复盘失效声明（类型化 entity）：只有年度复盘读取的数据源表才通知
+    announceAnnualReviewCrmWrite(entity)
   }
 
   // ─── 幂等 ─────────────────────────────────────────────────────────────────
@@ -1308,6 +1330,8 @@ class CrmDbService {
     if (!oppId) return
     this.run('INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
       [oppId, eventType, stage, detail.slice(0, 200), Date.now()])
+    // opportunity_event 是 B7 流失归因与商机时间线的事实源 → 显式声明失效
+    announceAnnualReviewCrmWrite('opportunity_event')
   }
   /** 商机漏斗统计：active 商机按阶段分布 + 总金额 */
   opportunityStats(): { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number } {
@@ -1472,7 +1496,7 @@ class CrmDbService {
             }), now]
         )
         return true
-      })
+      }, { affectsAnnualReview: 'crm:opportunity' }) // 同事务写 opportunity + opportunity_event
       // 生命周期钩子（PRD 2.4 反问卡「数量/型号」缺口自动关闭等派生消费；事务外尽力而为）
       try {
         const acc = this.getById('opportunity', id)
@@ -1784,6 +1808,9 @@ class CrmDbService {
       'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [actor, action, entityType, entityId, typeof detail === 'string' ? detail : JSON.stringify(detail), Date.now()]
     )
+    // 年度复盘只读取 lead_assign / lead_transfer / sync_apply 三类审计（E1 分配事实与
+    // sync 缺口检测）；其余 action（业务留痕为主，写入频繁）不触发失效。
+    announceAnnualReviewAuditAction(action)
   }
   contractStatusHistory(contractId: number): CrmRow[] {
     return this.all('SELECT * FROM contract_status_history WHERE contract_id = ? ORDER BY id', [contractId])
@@ -1912,7 +1939,7 @@ class CrmDbService {
     if (!c || !this.db) return { ok: false, reason: '合同不存在' }
     this.backupDb()
     let removed = 0
-    this.runTx((tx) => { removed = this.deleteContractCascadeTx(tx, id) })
+    this.runTx((tx) => { removed = this.deleteContractCascadeTx(tx, id) }, { affectsAnnualReview: 'crm:contract' }) // 合同链级联删除
     this.logActivity('contract', id, 'deleted', `删除合同「${String(c.name ?? '')}」（含 ${removed} 条子资源）`)
     this.persistNow()
     return { ok: true, removed }
@@ -2006,7 +2033,7 @@ class CrmDbService {
       // 7. 客户活动日志 + 客户本体
       removed += del('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['account', id])
       del('DELETE FROM account WHERE id = ?', [id])
-    })
+    }, { affectsAnnualReview: 'crm:account' }) // 客户及其合同/核销等链被级联删除
     // 墓碑日志在事务外写（activity_log 可见时间线），文案与实际删除范围一致。
     // 墓碑写入失败不推翻已提交的删除（删除事务已成功即删除成功），只记告警——
     // 避免「主事务已提交、墓碑写失败却返回失败」的语义不一致。
@@ -2455,7 +2482,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
-    announceAnnualReviewDataChanged('crm_write') // 客户被删除：客户数与相关指标口径已变
+    announceAnnualReviewCrmWrite('account') // 客户被删除：A/C 组客户数与相关指标口径已变
     return ids.length
   }
 
@@ -2474,7 +2501,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
-    announceAnnualReviewDataChanged('crm_write') // 客户被删除：客户数与相关指标口径已变
+    announceAnnualReviewCrmWrite('account') // 客户被删除：A/C 组客户数与相关指标口径已变
     return ids.length
   }
 

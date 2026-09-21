@@ -459,29 +459,46 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 
 **失效总线（annualReviewInvalidation，零 Electron 依赖的纯模块）**：确定性报告缓存与 AI 结果
 缓存**订阅同一条失效事实**，主进程只有**一个**订阅点（`installAnnualReviewInvalidation`，见
-`electron/main.ts`），不在每个 handler 里并列复制两行失效调用。上报侧只在**写成功之后**调用
-（事务 COMMIT 完成 / 写语句与 persist 均未抛错 / 连接建立成功），失败与回滚路径一律不上报：
+`electron/main.ts`），不在每个 handler 里并列复制两行失效调用。
 
-| 覆盖领域 | 上报点 | 说明 |
+**失效范围 = 显式白名单（默认不影响年度复盘）**。只有年报复盘**真实读取**的数据源才触发失效；
+其余写入（含高频后台写）不触发。白名单是唯一事实源（`ANNUAL_REVIEW_*_SOURCE_TABLES` /
+`ANNUAL_REVIEW_AUDIT_ACTIONS`），声明方式为**类型化调用点声明**（`create/update` 的 entity 参数、
+`runTx(fn, { affectsAnnualReview })` 选项、`announceAnnualReview*Write` 辅助函数），**不做 SQL
+字符串匹配**：
+
+| 数据源 | 触发方式 | 说明 |
 |---|---|---|
-| CRM 业务写入（客户新增/修改/删除/导入、合同新增/签约/改单/删除、核销与撤销、出货与合同状态历史、商机阶段/成交/流失、assignment 表等） | `crmDbService.run()`（单语句写漏斗）与 `runTx()`（事务提交后）；`removeInternalAccounts` / `cleanupOrphanAccounts` 两处直写 | 读操作走 `all()/get()`，不经过写漏斗——**失效不接在读路径上** |
-| salesDb 业务写入（customer_profile 阶段、intent_tag_log 意向事件、customer_event、follow_up_task 等） | `salesDbService.run()`（该库唯一写漏斗） | 该库无事务；「写成功」= 语句与 persist 均未抛错 |
-| LAN / 中央同步成功应用业务事件 | 同上（下行/上行应用均在 `crmDbService.runTx` 内提交）；另叠加 assignment 总线的显式信号 | assignment 总线经 `bridgeAssignmentInvalidationToAnnualReview` 汇入同一事实 |
-| Assignment 归属变化（含 SLA 回收/移交/认领） | `assignmentInvalidationBus`（提交后 emit） | 与上一条共用同一订阅点，不产生第二套失效语义 |
-| 手动排除名单 / 内部人员名单 | `main.ts` 的 `config:set` 写成功后 **立即**上报（`config_exclusions`） | 无合并窗口 |
-| 账号切换 / salesDb·crmDb reopen / 归档逃生舱 | 上述三处 **立即**上报（`account_switch`） | 无合并窗口，同时终止运行中任务 |
+| crmDb `account` / `contract` / `allocation` / `contract_status_history` / `assignment` / `lead` / `opportunity` / `opportunity_event` | `create()` / `update()` 按 entity 自动声明；原始 SQL 事务在调用点显式声明 `affectsAnnualReview` | A/C 组客户与合同指标、B1/B2 漏斗、B7 归因、E 组分配事实 |
+| crmDb `audit_event` 仅 `lead_assign` / `lead_transfer` / `sync_apply` | `auditAppend()` / `create('audit_event')` 按 **action** 条件声明 | E1 分配事实与 sync 缺口检测 |
+| salesDb `customer_profile` / `intent_tag_log` | `customerUpsert` / `setCustomerProfileCustomerId` / `updateStageChangeTime` / `intentCreate` 显式声明 | B1/B3 阶段分布与流转 |
+| Assignment 归属变化（含 LAN/中央下行应用成功） | `assignmentInvalidationBus`（提交后 emit，`applied` 才发）经 `bridgeAssignmentInvalidationToAnnualReview` 汇入同一事实 | 比静态声明更精确：conflict/nolead/脏类型不发 |
 | WCDB 切号 / 重连 | `wcdbService.open()` 返回 true 的**稳定成功点** | 只覆盖「连接建立成功」 |
+| 手动排除名单 / 内部人员名单 | `main.ts` 的 `config:set` 写成功后**立即**上报（`config_exclusions`） | 无合并窗口 |
+| 账号切换 / salesDb·crmDb reopen / 归档逃生舱 | 三处**立即**上报（`account_switch`） | 无合并窗口，同时终止运行中任务 |
+
+**明确不触发失效的写入**（写入频繁但与年报复盘无关）：`scan_state`、`processed_msg`、
+`migration_report`、`migration_dismissal`、`activity_log`、`auto_confirm_log`、无关 `audit_event`
+action、`knowledge_base`、`report_snapshot`、`opportunity_eval_case`、`alert_eval_case`、
+`follow_up_task`、`outbox_event`、`notify_inbox`、`dup_group`、`ownership_history`、
+`customer` / `customer_identity`、`payment_record` / `payment_promise` / `logistics` / `invoice`、
+`quotation` 版本链等。**通知时机**：只在写成功后（事务 COMMIT 返回后 / 单语句执行与 persist 均未
+抛错 / 连接建立成功）；失败、ROLLBACK 与纯读路径一律不通知（读走 `all()/get()`，不经过声明点）。
+
+**窗口语义 = leading-edge（首条立即）**：窗口空闲时的**第一条**相关事件**立即派发**——报告缓存与
+AI 缓存马上失效、运行中的报告生成任务与在途 AI 分析马上进入失效/取消路径，**不存在「首次失效
+还要等 150 ms」**，也不依赖测试专用 flush。其后 150 ms 内的重复事件被**抑制**（去重计数），窗口
+结束时若确有被抑制的事件则**补一次**合并派发（每窗口至多一次，覆盖「窗口内又有写入、而期间缓存
+可能已重建」的窄窗口，因此窗口内的第二批写入最多延迟一个窗口，≤150 ms）。窗口**从首条事件起算
+固定长度、不随新事件顺延**，持续写入不会造成无限延迟。关键失效（账号切换 / 名单变化）走
+`announceAnnualReviewDataChangedNow`，即使正处于窗口内也立即派发。派发只携带**原因与计数**（含
+`coalesced` 标记），不含任何业务数据。
 
 **仍未实时覆盖（如实列出，勿宣称已全覆盖）**：① 微信库（WCDB）在**连接保持期间**的增量新增/
 变更消息不触发失效——消息类指标每次生成都实时读取，但已缓存的报告不会因此立即作废，仍由
-10 分钟 TTL 兜底；② 仅写审计/日志表（如 `crmDbService.logAutoConfirm` 只写 `auto_confirm_log`）
-的写入不上报，因为年报复盘不读这些表；③ 数据库文件被外部进程直接改写（绕过本进程服务层）
-无法感知，同样只有 TTL 兜底。**10 分钟 TTL 只是兜底**，不替代上述明确成功点的通知。
-
-**合并窗口与延迟有界**：同一批同步/批量写（如解析管线连写几十行）在 150 ms 固定窗口内合并为
-一次派发（`ANNUAL_REVIEW_INVALIDATION_FLUSH_MS`），窗口不随事件顺延，因此延迟有界（≤150 ms）；
-「立即上报」路径会先派发窗口内积压再派发自身，避免顺序倒挂。上报只携带**原因与计数**，不含
-任何业务数据（客户、金额、会话、路径都不进总线）。
+10 分钟 TTL 兜底；② 数据库文件被外部进程直接改写（绕过本进程服务层）无法感知，同样只有 TTL
+兜底；③ 归属/合同等领域的任何**未声明**的原始 SQL 事务不会触发失效（默认不影响），新增此类写入
+时必须显式声明。**10 分钟 TTL 只是兜底**，不替代白名单内的明确成功点通知。
 
 **在途任务**：报告生成任务与 AI 分析在开始时捕获失效纪元，任一 await 完成后、Worker 启动前、
 缓存写入前复核——纪元或账号上下文已变化的旧任务收敛 `failed` + `error.code='invalidated'`，

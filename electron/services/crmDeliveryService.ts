@@ -148,7 +148,7 @@ export function registerDelivery(oppId: number, payload: DeliveryRegisterPayload
           operator: by, source: 'delivery_aftersales'
         }), now]
     )
-  })
+  }, { affectsAnnualReview: 'crm:opportunity' })
   // 派生：数量差异任务同步（补齐自动关闭 / 新差异出卡 / 差异量变化原地更新）
   const diff = syncDiffTask(id, by)
   return {

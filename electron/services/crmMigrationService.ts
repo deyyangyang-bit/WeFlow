@@ -262,7 +262,7 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
     // scan_state 只记录最后扫描时间戳（不永久跳过候选扫描）
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
       [M02_MARKER, now])
-  })
+  }, { affectsAnnualReview: 'crm:account' })
 
   saveReport(r, now)
   return r
