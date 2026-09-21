@@ -443,8 +443,8 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 | `annualReview:getReport` | R | `{ year: number }` → `{ success, cache: 'hit'\|'miss'\|'stale', report?, taskId?, error?: { code, message } }` | 只读当前账号作用域内存缓存；`hit` 携带 report（TTL 10 分钟内）与**产生该报告的 `taskId`**（报告身份，供 `annualReview:aiAnalysis` 使用）；`miss` 无缓存；`stale` 有缓存但已过期（**明确区分，绝不回退其他账号/其他作用域缓存**）。历史年度同样受 TTL 约束——迟到同步/补录/迁移/删除都可能改变结果。 |
 | `annualReview:cancel` | N | `{ taskId: string }` → `{ success, error?: { code, message } }` | 终止运行中任务，**对 loading 与 computing 都有效**：loading 阶段取消后不再启动 Worker；computing 阶段真实 terminate Worker。任务收敛为 failed，`error.code='cancelled'`，done=true；被取消任务不写报告/年份缓存。已完成/已失败任务幂等成功（终态不可变，重复 cancel 不抛错、不产生冲突终态）；未知 taskId → `{ success: false, error: { code:'task_not_found', message } }`（终态快照被有界清理淘汰的旧 taskId 同样按未找到返回，见 `getTaskStatus` 保留策略）；非法载荷 → `invalid_task_id`。 |
 | `annualReview:getTaskStatus` | R | `{ taskId: string }` → `{ success: true, found: true, task: { taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } } }` \| `{ success: true, found: false }` \| `{ success: false, error: { code, message } }` | **只读任务状态查询 = 任务状态的权威来源**（`getReport` 只是报告缓存，绝不用它代替任务状态）。按 taskId 在服务内部任务记录中查找（不按 year、不按缓存、不猜终态）；running（loading/computing）→ `done:false`，completed/failed → `done:true`（cancelled 仍是 failed + `error.code='cancelled'`，渲染层映射为 cancelled）；未找到 → `found:false`；非法/空/超长 taskId → `invalid_task_id`。**账号隔离 fail closed**：记录属于其他账号作用域时按 `found:false` 返回（不泄漏任务存在性）。返回快照副本（内部可变引用不外泄），不含报告正文/scopeId/wxid/数据库路径/Token/SQL/堆栈；查询不创建、取消、重启或修改任务。用途：渲染层在「generate 响应前终态事件因暂存容量被淘汰」时按 taskId 对账恢复真实终态。终态快照按 {accountScopeId, year} 保留（同键新任务覆盖旧任务），**全局**（跨账号作用域）非运行中快照最多保留 64 条——当前账号不豁免（否则同一账号连续生成 65 个以上年份即可突破上限）；超限时按 `updatedAt` 升序淘汰最旧快照（同值以 taskId 字典序稳定决胜），本次刚收敛的任务在本次清理中保留；运行中任务永不淘汰。被淘汰的旧 taskId 查询返回 `found:false`（`cancel` 亦返回 `task_not_found`），渲染层按可恢复错误处理。 |
-| `annualReview:aiAnalysis` | N | `{ taskId: string }` → `{ success: true, analysis: { executiveSummary, diagnoses[], actions[], risks[] }, model, promptVersion, generatedAt, cached: boolean }` \| `{ success: false, error: { code, message } }` | **年度经营复盘 AI 分析（S7.2）。请求只带 `taskId`**——渲染层不上传报告、prompt、模型参数或任何报告内容，因此伪造报告 / 改口径 / 注入自由文本都没有入口。主进程按 taskId 在**当前账号作用域**内定位「已完成、且报告仍有效」的结果（`AnnualReviewService.getTaskReport`：任务存在 → 属于当前作用域 → `completed` → 报告未过 TTL 且由该任务产出），再调 `generateAnnualReviewAiAnalysis`（S7.1 唯一模型出口；不复制第二套 prompt/校验/客户端，日调用上限闸门与用量账本自动生效，`purpose='annual_review_ai'`、`promptVersion='annual_review_ai_v1'`）。**失败码**（全部保留，逐字）：`invalid_report` / `unsupported_report_contract` / `not_configured` / `budget_blocked` / `call_failed`（含超时与取消，文案区分）/ `empty_output` / `invalid_json` / `invalid_shape` / `numeric_claim`；另有定位/并发/失效层稳定码：`invalid_task_id` / `task_not_found`（不存在、被有界清理淘汰，或属于其他账号作用域——按不存在返回，不泄漏存在性）/ `task_not_completed`（loading/computing/failed，含 cancelled/invalidated）/ `report_not_available`（报告过期或被新报告取代）/ `analysis_in_progress`（同一 {作用域, taskId, promptVersion} 已有分析在跑，不重复计费）/ `invalidated`（分析期间账号或业务库变更，结果作废）/ `internal`。失败文案全部是编译期常量（只做分类判断，不透传异常正文、模型原文、URL、路径、Token）。**取消**：`annualReview:aiAnalysisCancel({ taskId })` 中止该 taskId 的在途调用（HTTP 层真实 abort），无在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`（调用方据此不把界面切到「已取消」）；请求来源窗口销毁 → 主进程自动中止在途调用，不再向该窗口发送结果。**结果缓存**：仅主进程内存，键 = `accountScopeId + taskId + promptVersion`，TTL 与报告缓存一致（10 分钟）；不跨账号、不跨报告身份、不跨 promptVersion 复用；账号切换 / 业务库 reopen / 数据写入失效 / 名单变化 → 与报告缓存同时失效（在途结果既不返回也不缓存）。**不持久化**（未新建数据库表；prompt、模型原始输出、客户明细与密钥一律不入缓存）。**AI 失败不影响确定性报告**：该接口只读报告，不写报告缓存、不改任务状态、不触发重新统计。 |
-| `annualReview:aiAnalysisCancel` | N | `{ taskId: string }` → `{ success: boolean, error?: { code, message } }` | 取消在途 AI 分析（`annualReview:aiAnalysisCancel`，与 `annualReview:aiAnalysis` 同一命名空间）。只中止该 taskId **正在运行**的调用；没有在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`；非法 taskId → `invalid_task_id`。取消是否成功不影响确定性报告、任务状态与导出。 |
+| `annualReview:aiAnalysis` | N | `{ taskId: string, force?: boolean }` → `{ success: true, analysis: { executiveSummary, diagnoses[], actions[], risks[] }, model, promptVersion, generatedAt, cached: boolean }` \| `{ success: false, error: { code, message } }` | **年度经营复盘 AI 分析（S7.2）。载荷是严格对象，只允许 `{ taskId, force? }`**——多出任何字段（例如报告正文、prompt、模型参数）或非对象载荷一律 `invalid_request`；`force` 只接受 boolean（`'yes'`/`1`/`null`/`{}` 都不做 truthy 转换，直接拒绝）。渲染层不上传报告内容，因此伪造报告/改口径/注入文本都没有入口。主进程按 taskId 在**当前账号作用域**内定位「已完成、且报告仍有效」的结果（`AnnualReviewService.getTaskReport`：任务存在 → 属于当前作用域 → `completed` → 报告未过 TTL 且由该任务产出），再调 `generateAnnualReviewAiAnalysis`（S7.1 唯一模型出口；不复制第二套 prompt/校验/客户端，日调用上限闸门与用量账本自动生效，`purpose='annual_review_ai'`、`promptVersion='annual_review_ai_v1'`）。**`force` 语义**：默认 `false`（首次生成、失败重试、页面重新打开均允许命中结果缓存）；`true` 用于页面成功态「重新生成 AI 诊断」——跳过「结果缓存命中」这一步并**真实调用模型**，成功后覆盖同键缓存；失败时**保留旧缓存条目**。force 不绕过任何校验：报告定位/账号归属、同键 single-flight（在途 force 同样返回 `analysis_in_progress`）、日调用额度、输入与输出契约、取消与失效防护全部照旧。**失败码**（全部保留，逐字）：`invalid_report` / `unsupported_report_contract` / `not_configured` / `budget_blocked` / `call_failed`（含超时与取消，文案区分）/ `empty_output` / `invalid_json` / `invalid_shape` / `numeric_claim`；另有定位/并发/失效层稳定码：`invalid_task_id` / `invalid_request` / `task_not_found`（不存在、被有界清理淘汰，或属于其他账号作用域——按不存在返回，不泄漏存在性）/ `task_not_completed`（loading/computing/failed，含 cancelled/invalidated）/ `report_not_available`（报告过期或被新报告取代）/ `analysis_in_progress`（同一 {作用域, taskId, promptVersion} 已有分析在跑，不重复计费）/ `invalidated`（分析期间账号或业务库变更，结果作废）/ `internal`。失败文案全部是编译期常量（只做分类判断，不透传异常正文、模型原文、URL、路径、Token）。**取消是权威终态**：`annualReview:aiAnalysisCancel({ taskId })` 中止该 taskId 的在途调用（HTTP 层真实 abort），无在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`（调用方据此不把界面切到「已取消」）；请求来源窗口销毁 → 主进程自动中止在途调用。**不假设底层模型遵守 AbortSignal**：`await` 返回后与写缓存前重新复核——期间发生数据/账号失效优先返回 `invalidated`，用户取消或窗口销毁则一律按取消收敛（`call_failed` + 取消固定文案），**绝不返回成功、绝不写缓存**。**结果缓存**：仅主进程内存，键 = `accountScopeId + taskId + promptVersion`，TTL 与报告缓存一致（10 分钟）；不跨账号、不跨报告身份、不跨 promptVersion 复用；任何已接入的确定性数据写入（见下）都会与报告缓存**同时**失效。**不持久化**（未新建数据库表；prompt、模型原始输出、客户明细与密钥一律不入缓存）。**AI 失败不影响确定性报告**：该接口只读报告，不写报告缓存、不改任务状态、不触发重新统计。 |
+| `annualReview:aiAnalysisCancel` | N | `{ taskId: string }` → `{ success: boolean, error?: { code, message } }` | 取消在途 AI 分析（与 `annualReview:aiAnalysis` 同一命名空间，载荷同样要求严格对象）。只中止该 taskId **正在运行**的调用；没有在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`；非法 taskId → `invalid_task_id`；非对象/多字段载荷 → `invalid_request`。**取消是权威终态**：被取消的调用即使底层模型忽略 AbortSignal 并正常返回，也不会返回成功、不会写 AI 结果缓存（`cacheSize` 不增加）；取消是否成功不影响确定性报告、任务状态与导出。 |
 | `annualReview:progress`（广播） | — | 主进程 → 渲染层：`{ taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } }` | 单调不回退；completed/failed 为终态（done=true）且进度锁定；taskId 标记使旧任务迟到消息不覆盖新任务。preload `annualReview.onProgress(cb)` 返回清理函数（`removeListener` 只移除本次订阅的 wrapper——多订阅者独立清理，互不影响）。 |
 
 **缓存与失效**：键 `{accountScopeId, year, reportSchemaVersion}`；`accountScopeId` = 主进程内部
@@ -455,14 +455,38 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 渲染层、不进 Worker 载荷**；路径只参与内部键派生。仅主进程内存缓存，TTL 10 分钟，不持久化、
 不写 config。**报告缓存条目同时记录产出它的 `taskId`（报告身份）**：`getReport` 命中时把它
 一并返回，`annualReview:aiAnalysis` 据此复核「这份报告确实是该任务产出的」（同 year 被新任务
-覆盖后旧 taskId 不再命中）。失效：① 账号切换/业务库 reopen（`switchBusinessDbsForWxid` / 归档
-逃生舱）→ 全量失效（失效纪元 +1）并终止全部运行中任务；② assignment 失效总线（含 LAN/中央
-下行 assign/transfer）→ 全量失效（纪元 +1）并终止全部运行中任务；③ WCDB 重连与部分同步写入
-暂无统一事件 → TTL + generate 强制重算兜底。任务与 `getAvailableYears` 开始时捕获失效纪元与
-账号作用域，任一 await 完成后、Worker 启动前、缓存写入前复核——纪元或账号上下文已变化的旧
-任务收敛 `failed` + `error.code='invalidated'`，**其结果一律丢弃，绝不写回任何账号的报告/年份
-缓存**；失效后新请求重新加载事实。**不保证实时一致**。AI 分析结果缓存（S7.2）使用独立键
-`{accountScopeId, taskId, promptVersion}`、同一 TTL，并在上述**同一批失效点**清空且中止在途调用。
+覆盖后旧 taskId 不再命中）。
+
+**失效总线（annualReviewInvalidation，零 Electron 依赖的纯模块）**：确定性报告缓存与 AI 结果
+缓存**订阅同一条失效事实**，主进程只有**一个**订阅点（`installAnnualReviewInvalidation`，见
+`electron/main.ts`），不在每个 handler 里并列复制两行失效调用。上报侧只在**写成功之后**调用
+（事务 COMMIT 完成 / 写语句与 persist 均未抛错 / 连接建立成功），失败与回滚路径一律不上报：
+
+| 覆盖领域 | 上报点 | 说明 |
+|---|---|---|
+| CRM 业务写入（客户新增/修改/删除/导入、合同新增/签约/改单/删除、核销与撤销、出货与合同状态历史、商机阶段/成交/流失、assignment 表等） | `crmDbService.run()`（单语句写漏斗）与 `runTx()`（事务提交后）；`removeInternalAccounts` / `cleanupOrphanAccounts` 两处直写 | 读操作走 `all()/get()`，不经过写漏斗——**失效不接在读路径上** |
+| salesDb 业务写入（customer_profile 阶段、intent_tag_log 意向事件、customer_event、follow_up_task 等） | `salesDbService.run()`（该库唯一写漏斗） | 该库无事务；「写成功」= 语句与 persist 均未抛错 |
+| LAN / 中央同步成功应用业务事件 | 同上（下行/上行应用均在 `crmDbService.runTx` 内提交）；另叠加 assignment 总线的显式信号 | assignment 总线经 `bridgeAssignmentInvalidationToAnnualReview` 汇入同一事实 |
+| Assignment 归属变化（含 SLA 回收/移交/认领） | `assignmentInvalidationBus`（提交后 emit） | 与上一条共用同一订阅点，不产生第二套失效语义 |
+| 手动排除名单 / 内部人员名单 | `main.ts` 的 `config:set` 写成功后 **立即**上报（`config_exclusions`） | 无合并窗口 |
+| 账号切换 / salesDb·crmDb reopen / 归档逃生舱 | 上述三处 **立即**上报（`account_switch`） | 无合并窗口，同时终止运行中任务 |
+| WCDB 切号 / 重连 | `wcdbService.open()` 返回 true 的**稳定成功点** | 只覆盖「连接建立成功」 |
+
+**仍未实时覆盖（如实列出，勿宣称已全覆盖）**：① 微信库（WCDB）在**连接保持期间**的增量新增/
+变更消息不触发失效——消息类指标每次生成都实时读取，但已缓存的报告不会因此立即作废，仍由
+10 分钟 TTL 兜底；② 仅写审计/日志表（如 `crmDbService.logAutoConfirm` 只写 `auto_confirm_log`）
+的写入不上报，因为年报复盘不读这些表；③ 数据库文件被外部进程直接改写（绕过本进程服务层）
+无法感知，同样只有 TTL 兜底。**10 分钟 TTL 只是兜底**，不替代上述明确成功点的通知。
+
+**合并窗口与延迟有界**：同一批同步/批量写（如解析管线连写几十行）在 150 ms 固定窗口内合并为
+一次派发（`ANNUAL_REVIEW_INVALIDATION_FLUSH_MS`），窗口不随事件顺延，因此延迟有界（≤150 ms）；
+「立即上报」路径会先派发窗口内积压再派发自身，避免顺序倒挂。上报只携带**原因与计数**，不含
+任何业务数据（客户、金额、会话、路径都不进总线）。
+
+**在途任务**：报告生成任务与 AI 分析在开始时捕获失效纪元，任一 await 完成后、Worker 启动前、
+缓存写入前复核——纪元或账号上下文已变化的旧任务收敛 `failed` + `error.code='invalidated'`，
+在途 AI 调用收敛 `invalidated` 且**既不返回也不缓存**；失效后新请求重新加载事实。**不保证
+实时一致**（合并窗口内仍可能读到旧结果，且上表未覆盖的领域只有 TTL 兜底）。
 
 **Worker 边界**：Worker（`dist-electron/annualReviewWorker.js`，vite 独立 entry）只接收可序列化
 `{ taskId, reportSchemaVersion, period, facts, sales, crm, messageStats, exclusions }`——不打开任何数据库、

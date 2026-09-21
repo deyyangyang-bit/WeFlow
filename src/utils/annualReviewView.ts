@@ -564,6 +564,12 @@ export const ANNUAL_REVIEW_AI_FAILURE_VIEWS: Record<AnnualReviewAiAnalysisFailur
     actionLabel: '重新生成报告',
     fallbackDetail: '报告标识无效，请重新生成报告后再试。'
   },
+  invalid_request: {
+    title: '请求参数无效',
+    action: 'retry',
+    actionLabel: '重试',
+    fallbackDetail: 'AI 分析请求参数无效，本次未发起调用，可重试。'
+  },
   task_not_found: {
     title: '未找到报告对应的生成任务',
     action: 'regenerate',
@@ -835,8 +841,11 @@ export interface AnnualReviewApi {
    * taskId 对账。**报告缓存（getReport）不是任务状态**，不得用于判断任务是否完成。
    */
   getTaskStatus(taskId: string): Promise<AnnualReviewTaskStatusResult>
-  /** AI 分析：只提交 taskId（报告由主进程在当前账号作用域内定位，不上传报告内容） */
-  aiAnalysis(taskId: string): Promise<AnnualReviewAiAnalysisResponse>
+  /**
+   * AI 分析：只提交 taskId（报告由主进程在当前账号作用域内定位，不上传报告内容）。
+   * `force=true` 仅用于「重新生成 AI 诊断」——跳过结果缓存并真实调用模型。
+   */
+  aiAnalysis(taskId: string, options?: { force?: boolean }): Promise<AnnualReviewAiAnalysisResponse>
   /** 取消在途 AI 分析；success=false + analysis_not_found 表示没有在途调用 */
   aiCancel(taskId: string): Promise<AnnualReviewAiCancelResponse>
   /** 订阅进度广播；返回精确清理函数（只移除本次订阅） */
@@ -854,7 +863,7 @@ export interface AnnualReviewController {
   startGenerate(): void
   cancelGeneration(): void
   /** 发起 AI 分析（针对当前渲染报告的报告身份；运行中重复点击不产生第二次调用） */
-  runAiAnalysis(): void
+  runAiAnalysis(options?: { force?: boolean }): void
   /** 取消在途 AI 分析（仅主进程确认中止时进入「已取消」） */
   cancelAiAnalysis(): void
   dispose(): void
@@ -1219,16 +1228,19 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
      *   ② 代际 aiSeq：切年/重新生成/取消/卸载后，旧请求的迟到结果一律丢弃；
      *   ③ 报告身份复核：响应到达时 `reportTaskId` 必须仍是发起时的那一个。
      * 失败只落在 `state.ai` 上：确定性报告、导出、重新生成都不受影响。
+     * `options.force`（仅成功态「重新生成 AI 诊断」）跳过主进程结果缓存并真实调用模型；
+     * 首次生成、失败重试、页面重新打开一律不带 force（允许命中缓存）。
      */
-    async runAiAnalysis() {
+    async runAiAnalysis(options?: { force?: boolean }) {
       const taskId = state.reportTaskId
       if (taskId === null) return
       if (state.ai.phase === 'running') return
+      const force = options?.force === true
       const seq = ++aiSeq
       setState(reduceAiStart(state, Date.now()))
       let result: AnnualReviewAiAnalysisResponse
       try {
-        result = await api.aiAnalysis(taskId)
+        result = await api.aiAnalysis(taskId, { force })
       } catch {
         result = { success: false, error: { code: 'internal', message: 'AI 分析失败，请稍后重试' } }
       }
@@ -1294,7 +1306,7 @@ export function createIpcAnnualReviewApi(): AnnualReviewApi {
     generate: (year) => electron.annualReview.generate(year),
     cancel: (taskId) => electron.annualReview.cancel(taskId),
     getTaskStatus: (taskId) => electron.annualReview.getTaskStatus(taskId),
-    aiAnalysis: (taskId) => electron.annualReview.aiAnalysis(taskId),
+    aiAnalysis: (taskId, options) => electron.annualReview.aiAnalysis(taskId, options?.force === true),
     aiCancel: (taskId) => electron.annualReview.aiCancel(taskId),
     subscribeProgress: (cb) => electron.annualReview.onProgress(cb)
   }

@@ -1878,12 +1878,14 @@ export interface ElectronAPI {
       error?: { code: string; message: string }
     }>
     /**
-     * AI 分析（S7.2）：只提交 taskId——主进程按 taskId 在当前账号作用域内定位「已完成且
-     * 报告仍有效」的结果，渲染层不上传报告内容。成功返回 analysis + model + promptVersion
-     * + generatedAt；失败返回固定失败码与固定文案（不携带异常/模型原文/URL/路径/Token）。
+     * AI 分析（S7.2）：只提交 `{ taskId, force? }`——主进程按 taskId 在当前账号作用域内定位
+     * 「已完成且报告仍有效」的结果，渲染层不上传报告内容。成功返回 analysis + model +
+     * promptVersion + generatedAt；失败返回固定失败码与固定文案（不携带异常/模型原文/URL/
+     * 路径/Token）。`force=true` 仅用于「重新生成 AI 诊断」：跳过结果缓存并真实调用模型
+     * （不绕过 taskId/账号/报告身份校验、single-flight、额度闸门与契约校验）。
      * 返回值类型与主进程共享同一契约（shared/annualReviewAi.ts）。
      */
-    aiAnalysis: (taskId: string) => Promise<AnnualReviewAiAnalysisResponse>
+    aiAnalysis: (taskId: string, force?: boolean) => Promise<AnnualReviewAiAnalysisResponse>
     /** 取消在途 AI 分析（只中止该 taskId；无在途调用 → analysis_not_found） */
     aiCancel: (taskId: string) => Promise<AnnualReviewAiCancelResponse>
     onProgress: (callback: (payload: {

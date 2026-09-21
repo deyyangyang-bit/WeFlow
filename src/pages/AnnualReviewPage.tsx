@@ -308,6 +308,7 @@ export default function AnnualReviewPage() {
           ai={state.ai}
           aiTaskId={state.reportTaskId}
           onRunAi={() => controller.runAiAnalysis()}
+          onRunAiForce={() => controller.runAiAnalysis({ force: true })}
           onCancelAi={() => void controller.cancelAiAnalysis()}
           onRegenerate={() => controller.startGenerate()}
         />
@@ -356,14 +357,17 @@ function AiListItem({ head, children, report, metricKeys }: {
   )
 }
 
-function AiAnalysisSection({ report, ai, aiTaskId, onRun, onCancel, onRegenerate }: {
+function AiAnalysisSection({ report, ai, aiTaskId, onRun, onRunForce, onRegenerate, onCancel }: {
   report: AnnualReviewReport
   ai: AnnualReviewAiState
   aiTaskId: string | null
+  /** 首次生成 / 失败重试 / 取消后重来：允许命中主进程结果缓存 */
   onRun: () => void
-  onCancel: () => void
+  /** 成功态「重新生成 AI 诊断」：force=true，跳过结果缓存并真实调用模型 */
+  onRunForce: () => void
   /** 报告定位类失败（过期/被取代/未完成）→ 重新生成报告，而不是对同一份报告反复重试 */
   onRegenerate: () => void
+  onCancel: () => void
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -533,7 +537,8 @@ function AiAnalysisSection({ report, ai, aiTaskId, onRun, onCancel, onRegenerate
                 </div>
               )}
 
-              <button className="btn btn--secondary ar-ai-rerun" onClick={onRun}>
+              {/* 成功态「重新生成」= force：跳过主进程结果缓存并真实调用模型（不是缓存回放） */}
+              <button className="btn btn--secondary ar-ai-rerun" onClick={onRunForce}>
                 <RefreshCw size={14} /> 重新生成 AI 诊断
               </button>
             </div>
@@ -544,11 +549,12 @@ function AiAnalysisSection({ report, ai, aiTaskId, onRun, onCancel, onRegenerate
   )
 }
 
-function ReportBody({ report, ai, aiTaskId, onRunAi, onCancelAi, onRegenerate }: {
+function ReportBody({ report, ai, aiTaskId, onRunAi, onRunAiForce, onCancelAi, onRegenerate }: {
   report: AnnualReviewReport
   ai: AnnualReviewAiState
   aiTaskId: string | null
   onRunAi: () => void
+  onRunAiForce: () => void
   onCancelAi: () => void
   onRegenerate: () => void
 }) {
@@ -859,6 +865,7 @@ function ReportBody({ report, ai, aiTaskId, onRunAi, onCancelAi, onRegenerate }:
         ai={ai}
         aiTaskId={aiTaskId}
         onRun={onRunAi}
+        onRunForce={onRunAiForce}
         onCancel={onCancelAi}
         onRegenerate={onRegenerate}
       />

@@ -73,7 +73,16 @@ import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
 import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbPath'
 import { AnnualReviewService, type AnnualReviewAccountContext } from './services/annualReviewService'
-import { AnnualReviewAiCoordinator, bindAnnualReviewAiSenderAbort } from './services/annualReviewAiCoordinator'
+import {
+  AnnualReviewAiCoordinator,
+  bindAnnualReviewAiSenderAbort,
+  parseAnnualReviewAiAnalysisRequest
+} from './services/annualReviewAiCoordinator'
+import {
+  announceAnnualReviewDataChangedNow,
+  bridgeAssignmentInvalidationToAnnualReview,
+  installAnnualReviewInvalidation
+} from './services/annualReviewInvalidation'
 import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
 import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
 import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
@@ -900,6 +909,15 @@ const annualReviewAiCoordinator = new AnnualReviewAiCoordinator({
     configService = cfg
     return cfg
   }
+})
+
+// 年度经营复盘的**唯一失效订阅点**：确定性报告缓存与 AI 结果缓存订阅同一条失效事实
+// （annualReviewInvalidation）。写入侧（crmDb/salesDb 写漏斗、WCDB 连接成功、Assignment
+// 总线、名单变化、账号切换）只负责在**成功后**上报，绝不各自直接调用这两个失效方法——
+// 否则两处会各自遗漏不同的领域。10 分钟 TTL 仅作兜底，不替代明确成功点的通知。
+installAnnualReviewInvalidation({
+  handleDataChanged: () => annualReviewService.handleDataChanged(),
+  invalidateAll: () => annualReviewAiCoordinator.invalidateAll()
 })
 
 const pruneAnnualReportYearsSnapshotCache = (): void => {
@@ -2094,8 +2112,9 @@ function registerIpcHandlers() {
       }
       await crmDbService.reopenForWxid(userData, wxid)
       await salesDbService.reopenForWxid(userData, wxid)
-      annualReviewService.invalidateAll() // 账号切换/业务库重开：清空年度复盘缓存与可用年份
-      annualReviewAiCoordinator.invalidateAll() // AI 结果缓存/在途调用同步失效（不跨账号复用）
+      // 账号切换/业务库重开：立即失效（无合并窗口）——确定性报告缓存、可用年份与 AI 结果
+      // 缓存由统一订阅点一并失效，并终止运行中任务
+      announceAnnualReviewDataChangedNow('account_switch')
       console.log(`[Sales] 业务库已切换到账号 ${wxid || '(未设置)'}`)
     })
   }
@@ -2219,8 +2238,8 @@ function registerIpcHandlers() {
     // 缓存并终止运行中任务（旧名单结果不得落缓存）。置于此处 = writeRendererConfig
     // 已成功返回之后：写失败抛错时既不失效也不返回成功。
     if (key === 'reportExcludedSessions' || key === 'crmInternalList') {
-      annualReviewService.handleDataChanged()
-      annualReviewAiCoordinator.invalidateAll() // 口径已变：AI 结果缓存同步失效
+      // 口径已变：立即失效（无合并窗口）；两类缓存由统一订阅点一并清空
+      announceAnnualReviewDataChangedNow('config_exclusions')
     }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
@@ -3168,8 +3187,8 @@ function registerIpcHandlers() {
         }
         await crmDbService.reopenForWxid(userData, wxid)
         await salesDbService.reopenForWxid(userData, wxid)
-        annualReviewService.invalidateAll() // 业务库重开：清空年度复盘缓存
-        annualReviewAiCoordinator.invalidateAll() // AI 结果缓存/在途调用同步失效
+        // 业务库重开：立即失效（无合并窗口）
+        announceAnnualReviewDataChangedNow('account_switch')
         console.log(`[Sales] 业务数据已归档（账号 ${wxid || '(未设置)'}）：${archived.map((a) => a.to).join(', ') || '无库文件'}`)
         return { success: true, archived }
       })
@@ -4196,12 +4215,9 @@ function registerIpcHandlers() {
       }
     }
   })
-  // 数据写入失效：assignment 失效总线（含 LAN/中央下行的 assign/transfer）→ coarse 清空
-  // 年度复盘缓存；账号切换/业务库重开在 switchBusinessDbsForWxid 与归档逃生舱内单独失效。
-  onAssignmentInvalidated(() => {
-    annualReviewService.handleDataChanged()
-    annualReviewAiCoordinator.invalidateAll() // 分配数据变化：AI 结果缓存同步失效
-  })
+  // 数据写入失效：assignment 失效总线（含 LAN/中央下行的 assign/transfer）→ 经同一失效事实
+  // 上报（合并窗口）。crmDb/salesDb 写漏斗与 WCDB 连接成功各自上报，全部经统一订阅点收敛。
+  bridgeAssignmentInvalidationToAnnualReview(onAssignmentInvalidated)
 
   ipcMain.handle('annualReview:getAvailableYears', async () => {
     try {
@@ -4315,19 +4331,19 @@ function registerIpcHandlers() {
     }
   })
 
-  // AI 分析（S7.2）：请求只带 taskId——报告由主进程在当前账号作用域内定位，渲染层不上传
-  // 报告内容（伪造报告/改口径/注入文本无入口）。模型出口唯一（generateAnnualReviewAiAnalysis），
-  // 失败码与固定文案原样返回；窗口销毁 → 中止在途调用，不再向该窗口发送结果。
+  // AI 分析（S7.2）：请求只带 { taskId, force? }——报告由主进程在当前账号作用域内定位，
+  // 渲染层不上传报告内容（伪造报告/改口径/注入文本无入口）。force 只接受 boolean（不做
+  // truthy 转换），用于页面「重新生成 AI 诊断」跳过结果缓存并真实调用模型。
+  // 模型出口唯一（generateAnnualReviewAiAnalysis），失败码与固定文案原样返回；
+  // 窗口销毁 → 中止在途调用，不再向该窗口发送结果。
   ipcMain.handle('annualReview:aiAnalysis', async (event, payload: unknown) => {
-    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
-      ? (payload as { taskId?: unknown }).taskId
-      : payload
-    if (!validateAnnualReviewTaskId(taskId)) {
-      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    const parsed = parseAnnualReviewAiAnalysisRequest(payload)
+    if (!parsed.ok) {
+      return { success: false, error: { code: parsed.code, message: parsed.message } }
     }
     const guard = bindAnnualReviewAiSenderAbort(event.sender)
     try {
-      return await annualReviewAiCoordinator.run(taskId, { signal: guard.signal })
+      return await annualReviewAiCoordinator.run(parsed.taskId, { signal: guard.signal, force: parsed.force })
     } finally {
       guard.dispose()
     }
@@ -4336,13 +4352,11 @@ function registerIpcHandlers() {
   // 取消 AI 分析：只中止该 taskId 的在途调用。没有在途调用 → analysis_not_found，
   // 调用方（页面）据此**不**把界面切到「已取消」（避免把已返回的成功结果显示成取消）。
   ipcMain.handle('annualReview:aiAnalysisCancel', async (_, payload: unknown) => {
-    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
-      ? (payload as { taskId?: unknown }).taskId
-      : payload
-    if (!validateAnnualReviewTaskId(taskId)) {
-      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    const parsed = parseAnnualReviewAiAnalysisRequest(payload)
+    if (!parsed.ok) {
+      return { success: false, error: { code: parsed.code, message: parsed.message } }
     }
-    return annualReviewAiCoordinator.cancel(taskId)
+    return annualReviewAiCoordinator.cancel(parsed.taskId)
   })
 
   ipcMain.handle('annualReport:getAvailableYears', async () => {

@@ -44,6 +44,7 @@ import {
   ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES,
   annualReviewAiCacheKey,
   bindAnnualReviewAiSenderAbort,
+  parseAnnualReviewAiAnalysisRequest,
   type AnnualReviewAiSenderLike
 } from '../electron/services/annualReviewAiCoordinator'
 import { ANNUAL_REVIEW_AI_FAILURE_MESSAGES } from '../electron/services/annualReviewAiService'
@@ -210,6 +211,7 @@ function makeGenerate() {
   let behavior: 'ok' | 'fail' | 'throw' | 'hang' = 'ok'
   let failCode = 'call_failed'
   let failMessage: string = ANNUAL_REVIEW_AI_FAILURE_MESSAGES.call_failed
+  let analysis: AnnualReviewAiAnalysis = ANALYSIS
   let gate: { promise: Promise<unknown>; resolve: (v: unknown) => void } | null = null
   const generate = async (report: AnnualReviewReport, options: { signal?: AbortSignal }): Promise<unknown> => {
     calls.push({ report, signal: options.signal })
@@ -219,13 +221,14 @@ function makeGenerate() {
       return gate.promise
     }
     if (behavior === 'fail') return { ok: false, code: failCode, message: failMessage }
-    return { ok: true, analysis: ANALYSIS, model: 'fake-model', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN }
+    return { ok: true, analysis, model: 'fake-model', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN }
   }
   return {
     calls,
     generate: generate as never,
     setBehavior: (b: 'ok' | 'fail' | 'throw' | 'hang') => { behavior = b },
     setFailure: (code: string, message: string) => { failCode = code; failMessage = message },
+    setAnalysis: (next: AnnualReviewAiAnalysis) => { analysis = next },
     resolveHang: (value: unknown) => { gate?.resolve(value) }
   }
 }
@@ -588,7 +591,7 @@ async function main(): Promise<void> {
     const report = buildReport(2025)
     const report2024 = buildReport(2024)
     const createFakeApi = () => {
-      const aiCalls: string[] = []
+      const aiCalls: Array<{ taskId: string; force: boolean }> = []
       const aiGates: Array<ReturnType<typeof deferred<Awaited<ReturnType<AnnualReviewApi['aiAnalysis']>>>>> = []
       const cancelCalls: string[] = []
       let aiCancelResult: { success: boolean } = { success: true }
@@ -606,8 +609,8 @@ async function main(): Promise<void> {
         generate: async () => ({ success: true, taskId: 'gen-1' }),
         cancel: async () => ({ success: true }),
         getTaskStatus: async (): Promise<AnnualReviewTaskStatusResult> => ({ success: true, found: false }),
-        aiAnalysis: async (taskId: string) => {
-          aiCalls.push(taskId)
+        aiAnalysis: async (taskId: string, options?: { force?: boolean }) => {
+          aiCalls.push({ taskId, force: options?.force === true })
           const gate = deferred<Awaited<ReturnType<AnnualReviewApi['aiAnalysis']>>>()
           aiGates.push(gate)
           return gate.promise
@@ -639,6 +642,7 @@ async function main(): Promise<void> {
       controller.runAiAnalysis() // 运行中重复点击
       await tick()
       ok('7b 运行中重复点击只产生一次调用', fake.aiCalls.length === 1)
+      ok('7b2 首次生成不带 force（允许命中缓存）', fake.aiCalls[0].force === false)
       ok('7c 运行中界面为 running（按钮可禁用）', controller.getState().ai.phase === 'running' && controller.getState().ai.taskId === 'task-1')
       fake.aiGates[0].resolve(okAi())
       await wait()
@@ -708,6 +712,27 @@ async function main(): Promise<void> {
       ok('7n 报告身份变化 → AI 结果清空（不挂到新报告上）',
         controller.getState().reportTaskId === 'task-NEW' && controller.getState().ai.phase === 'idle' &&
         controller.getState().ai.analysis === null)
+      controller.dispose()
+    }
+
+    // 7o–7q 成功态「重新生成」必须走 force（真实重新调用，不是缓存回放）
+    {
+      const fake = createFakeApi()
+      const controller = createAnnualReviewController(fake.api)
+      await controller.loadYears()
+      await wait()
+      controller.runAiAnalysis()
+      await tick()
+      fake.aiGates[0].resolve(okAi())
+      await wait()
+      ok('7o 首次分析完成（成功态）', controller.getState().ai.phase === 'done')
+      controller.runAiAnalysis({ force: true }) // 成功态「重新生成 AI 诊断」
+      await tick()
+      ok('7p 成功态重新生成带 force=true', fake.aiCalls.length === 2 && fake.aiCalls[1].force === true)
+      fake.aiGates[1].resolve(okAi())
+      await wait()
+      ok('7q force 结果正常落地（AI 区块更新）',
+        controller.getState().ai.phase === 'done' && controller.getState().ai.analysis?.executiveSummary === ANALYSIS.executiveSummary)
       controller.dispose()
     }
 
@@ -960,6 +985,230 @@ async function main(): Promise<void> {
       otherRes.success === true && otherRes.cached === false && fake.calls.length === 3)
   }
 
+  // ══ 6b. 取消是权威终态（底层忽略 AbortSignal 也不得返回成功） ══
+  {
+    const h = createService({ now: () => GEN })
+    const taskId = await completeGenerate(h)
+    const calls: Array<{ signal?: AbortSignal }> = []
+    const gates: Array<ReturnType<typeof deferred<unknown>>> = []
+    const coordinator = new AnnualReviewAiCoordinator({
+      getTaskReport: (id) => h.service.getTaskReport(id),
+      getConfig: () => fakeConfig,
+      // 关键反例：完全忽略 AbortSignal，并在取消之后返回「成功」
+      generate: (async (_report: AnnualReviewReport, options: { signal?: AbortSignal }) => {
+        calls.push({ signal: options.signal })
+        const gate = deferred<unknown>()
+        gates.push(gate)
+        return gate.promise
+      }) as never,
+      now: () => GEN
+    })
+
+    const pending = coordinator.run(taskId)
+    await tick()
+    ok('6g cancel(taskId) 确认中止了在途调用', coordinator.cancel(taskId).success === true)
+    ok('6h 出口信号已中止（尽力而为，不作为唯一依据）', calls[0]?.signal?.aborted === true)
+    gates[0].resolve({ ok: true, analysis: ANALYSIS, model: 'm', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN })
+    const afterCancel = await pending
+    ok('6i 取消后底层返回成功 → 响应仍必须非 success',
+      afterCancel.success === false)
+    ok('6j 取消后沿用安全失败契约（call_failed + 固定取消文案）',
+      afterCancel.success === false && afterCancel.error.code === 'call_failed' &&
+      afterCancel.error.message === ANNUAL_REVIEW_AI_FAILURE_MESSAGES.cancelled)
+    ok('6k 取消后不写缓存（cacheSize 为 0）', coordinator.cacheSize() === 0)
+    ok('6l 取消后 inFlight 正常清理', coordinator.inFlightCount() === 0)
+    const again = coordinator.run(taskId)
+    await tick()
+    ok('6m 取消后再次请求重新调用模型（不是缓存回放）', calls.length === 2)
+    coordinator.cancel(taskId)
+    gates[1].resolve({ ok: true, analysis: ANALYSIS, model: 'm', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN })
+    const second = await again
+    ok('6n 第二次同样不返回成功', second.success === false && coordinator.cacheSize() === 0)
+
+    // 取消后底层直接抛错（真实链路行为）：同样收敛为取消文案，不落 internal/异常正文
+    const throwing = new AnnualReviewAiCoordinator({
+      getTaskReport: (id) => h.service.getTaskReport(id),
+      getConfig: () => fakeConfig,
+      generate: (async (_r: AnnualReviewReport, options: { signal?: AbortSignal }) => {
+        return new Promise((_res, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('请求已取消: https://api.example.com sk-live-abcdefghijkl')),
+            { once: true })
+        })
+      }) as never,
+      now: () => GEN
+    })
+    const p2 = throwing.run(taskId)
+    await tick()
+    throwing.cancel(taskId)
+    const cancelledThrow = await p2
+    ok('6o 取消后出口抛错 → call_failed + 取消文案（不透传异常）',
+      cancelledThrow.success === false && cancelledThrow.error.code === 'call_failed' &&
+      cancelledThrow.error.message === ANNUAL_REVIEW_AI_FAILURE_MESSAGES.cancelled &&
+      !JSON.stringify(cancelledThrow).includes('api.example.com'))
+    ok('6p 取消后的抛错路径同样不写缓存', throwing.cacheSize() === 0)
+
+    // 窗口销毁路径（external signal）与用户取消同语义
+    let destroyed: (() => void) | null = null
+    const sender: AnnualReviewAiSenderLike = {
+      isDestroyed: () => false,
+      once: (_e, listener) => { destroyed = listener },
+      removeListener: () => {}
+    }
+    const guard = bindAnnualReviewAiSenderAbort(sender)
+    const calls2: Array<{ signal?: AbortSignal }> = []
+    const gates2: Array<ReturnType<typeof deferred<unknown>>> = []
+    const winCoordinator = new AnnualReviewAiCoordinator({
+      getTaskReport: (id) => h.service.getTaskReport(id),
+      getConfig: () => fakeConfig,
+      generate: (async (_r: AnnualReviewReport, options: { signal?: AbortSignal }) => {
+        calls2.push({ signal: options.signal })
+        const gate = deferred<unknown>()
+        gates2.push(gate)
+        return gate.promise
+      }) as never,
+      now: () => GEN
+    })
+    const winPending = winCoordinator.run(taskId, { signal: guard.signal })
+    await tick()
+    destroyed?.()
+    await tick()
+    ok('6q 窗口销毁 → 出口信号中止', calls2[0]?.signal?.aborted === true)
+    gates2[0].resolve({ ok: true, analysis: ANALYSIS, model: 'm', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN })
+    const afterDestroy = await winPending
+    ok('6r 窗口销毁后底层成功 → 响应非 success 且不写缓存',
+      afterDestroy.success === false && afterDestroy.error.code === 'call_failed' && winCoordinator.cacheSize() === 0)
+    guard.dispose()
+
+    // 失效与取消竞态：数据/账号失效优先返回 invalidated
+    const raceCoordinator = new AnnualReviewAiCoordinator({
+      getTaskReport: (id) => h.service.getTaskReport(id),
+      getConfig: () => fakeConfig,
+      generate: (async (_r: AnnualReviewReport, options: { signal?: AbortSignal }) => {
+        calls.push({ signal: options.signal })
+        const gate = deferred<unknown>()
+        gates.push(gate)
+        return gate.promise
+      }) as never,
+      now: () => GEN
+    })
+    const racePending = raceCoordinator.run(taskId)
+    await tick()
+    raceCoordinator.cancel(taskId) // 用户取消
+    raceCoordinator.invalidateAll() // 同时发生账号/库失效
+    gates[gates.length - 1].resolve({ ok: true, analysis: ANALYSIS, model: 'm', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN })
+    const raced = await racePending
+    ok('6s 取消与失效竞态 → 优先 invalidated', raced.success === false && raced.error.code === 'invalidated')
+    ok('6t 竞态后不写缓存', raceCoordinator.cacheSize() === 0)
+  }
+
+  // ══ 6c. force：成功态「重新生成」真实调用模型（不绕过校验，不删除旧缓存） ══
+  {
+    const h = createService({ now: () => GEN })
+    const taskId = await completeGenerate(h)
+    const fake = makeGenerate()
+    const coordinator = new AnnualReviewAiCoordinator({
+      getTaskReport: (id) => h.service.getTaskReport(id),
+      getConfig: () => fakeConfig,
+      generate: fake.generate as never,
+      now: () => GEN
+    })
+
+    const first = await coordinator.run(taskId)
+    ok('6u 首次生成成功（cached=false）', first.success === true && first.cached === false && fake.calls.length === 1)
+    const repeat = await coordinator.run(taskId)
+    ok('6v 普通重复请求命中缓存（不增加模型调用）',
+      repeat.success === true && repeat.cached === true && fake.calls.length === 1)
+
+    fake.setAnalysis({ ...ANALYSIS, executiveSummary: '第二次分析结论（force 覆盖）。' })
+    const forced = await coordinator.run(taskId, { force: true })
+    ok('6w force 真实调用模型（cached=false、调用数 +1）',
+      forced.success === true && forced.cached === false && fake.calls.length === 2)
+    ok('6x force 返回的是新结果', forced.success === true && forced.analysis.executiveSummary.includes('force 覆盖'))
+    const afterForce = await coordinator.run(taskId)
+    ok('6y force 成功覆盖同键缓存（普通请求读到新结果）',
+      afterForce.success === true && afterForce.cached === true &&
+      afterForce.analysis.executiveSummary.includes('force 覆盖') && fake.calls.length === 2)
+
+    // force 失败保留旧缓存
+    fake.setBehavior('fail')
+    fake.setFailure('call_failed', ANNUAL_REVIEW_AI_FAILURE_MESSAGES.timeout)
+    const forcedFail = await coordinator.run(taskId, { force: true })
+    ok('6z force 失败返回结构化失败码', forcedFail.success === false && forcedFail.error.code === 'call_failed')
+    const afterFail = await coordinator.run(taskId)
+    ok('6z2 force 失败保留旧缓存（普通请求仍读到上一次成功结果）',
+      afterFail.success === true && afterFail.cached === true &&
+      afterFail.analysis.executiveSummary.includes('force 覆盖') && fake.calls.length === 3)
+
+    // force 遇到在途分析仍拒绝重复调用
+    fake.setBehavior('hang')
+    const hanging = coordinator.run(taskId, { force: true })
+    await tick()
+    const concurrent = await coordinator.run(taskId, { force: true })
+    ok('6z3 force 不绕过 single-flight（在途 → analysis_in_progress）',
+      concurrent.success === false && concurrent.error.code === 'analysis_in_progress')
+    ok('6z4 在途期间只发起一次模型调用', fake.calls.length === 4)
+    fake.resolveHang({ ok: true, analysis: ANALYSIS, model: 'm', promptVersion: ANNUAL_REVIEW_AI_PROMPT_VERSION, generatedAt: GEN })
+    ok('6z5 在途 force 正常收敛', (await hanging).success === true)
+
+    // force 不绕过报告定位校验
+    const missing = await coordinator.run('no-such-task', { force: true })
+    ok('6z6 force 不绕过报告定位（不存在 taskId 仍 task_not_found）',
+      missing.success === false && missing.error.code === 'task_not_found')
+
+    // 非 boolean force → invalid_request，且零模型调用
+    const before = fake.calls.length
+    for (const bad of ['yes', 1, 0, {}, [], null] as unknown[]) {
+      const res = await coordinator.run(taskId, { force: bad } as never)
+      ok(`6z7 非 boolean force 被拒绝（${JSON.stringify(bad)}）`,
+        res.success === false && res.error.code === 'invalid_request')
+    }
+    ok('6z8 非 boolean force 不产生任何模型调用', fake.calls.length === before)
+    ok('6z9 invalid_request 文案属固定集合',
+      ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request.includes('taskId') &&
+      aiFailureView('invalid_request').action === 'retry')
+  }
+
+  // ══ 6d. IPC 载荷解析：严格对象 { taskId, force? }（不做 truthy 转换） ══
+  {
+    const valid = parseAnnualReviewAiAnalysisRequest({ taskId: 't-1' })
+    ok('6z10 { taskId } 合法且 force 默认 false',
+      valid.ok === true && valid.taskId === 't-1' && valid.force === false)
+    const withForce = parseAnnualReviewAiAnalysisRequest({ taskId: 't-1', force: true })
+    ok('6z11 { taskId, force:true } 合法', withForce.ok === true && withForce.force === true)
+    const missingForce = parseAnnualReviewAiAnalysisRequest({ taskId: 't-1', force: undefined })
+    ok('6z12 force 缺省（undefined）合法', missingForce.ok === true && missingForce.force === false)
+
+    const bads: Array<[string, unknown]> = [
+      ['多出字段（夹带报告）', { taskId: 't-1', report: { year: 1999 } }],
+      ['多出字段（夹带 prompt）', { taskId: 't-1', prompt: 'x' }],
+      ['非对象（字符串）', 't-1'],
+      ['非对象（数组）', ['t-1']],
+      ['非对象（null）', null],
+      ['taskId 缺失', { force: true }],
+      ['taskId 非字符串', { taskId: 42 }],
+      ['taskId 空串', { taskId: '' }],
+      ['taskId 含 NUL', { taskId: 'a\u0000b' }],
+      ['force 字符串', { taskId: 't-1', force: 'yes' }],
+      ['force 数字', { taskId: 't-1', force: 1 }],
+      ['force 对象', { taskId: 't-1', force: {} }],
+      ['force null', { taskId: 't-1', force: null }]
+    ]
+    const expectedInvalidRequest = new Set([
+      '多出字段（夹带报告）', '多出字段（夹带 prompt）', '非对象（字符串）', '非对象（数组）', '非对象（null）',
+      'force 字符串', 'force 数字', 'force 对象', 'force null'
+    ])
+    for (const [label, payload] of bads) {
+      const parsed = parseAnnualReviewAiAnalysisRequest(payload)
+      const expectCode = expectedInvalidRequest.has(label) ? 'invalid_request' : 'invalid_task_id'
+      ok(`6z13 非法载荷被拒绝：${label}`, parsed.ok === false && parsed.code === expectCode)
+    }
+    ok('6z14 拒绝文案都是固定常量（不回显载荷内容）', (() => {
+      const parsed = parseAnnualReviewAiAnalysisRequest({ taskId: 't-1', report: 'CANARY_REPORT_CONTENT' })
+      return parsed.ok === false && !parsed.message.includes('CANARY_REPORT_CONTENT') &&
+        parsed.message === ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request
+    })())
+  }
+
   // ══ 13. 通道与签名一致（源码守卫，作为行为测试的补充） ══
   {
     const mainSrc = readFileSync(join(ROOT, 'electron', 'main.ts'), 'utf8')
@@ -969,19 +1218,20 @@ async function main(): Promise<void> {
       ok(`13a main.ts 注册 ${channel}`, mainSrc.includes(`'${channel}'`))
       ok(`13b preload 对接 ${channel}`, preloadSrc.includes(`'${channel}'`))
     }
-    ok('13c preload 只传 { taskId }（不上传报告）',
-      preloadSrc.includes("invoke('annualReview:aiAnalysis', { taskId })") &&
+    ok('13c preload 只传 { taskId, force }（不上传报告）',
+      preloadSrc.includes("invoke('annualReview:aiAnalysis', { taskId, force: force === true })") &&
       preloadSrc.includes("invoke('annualReview:aiAnalysisCancel', { taskId })"))
-    ok('13d main.ts 校验 taskId 并只把它交给协调器', (() => {
+    ok('13d main.ts 用严格载荷解析并只把 taskId/force 交给协调器', (() => {
       const start = mainSrc.indexOf("ipcMain.handle('annualReview:aiAnalysis'")
       const end = mainSrc.indexOf("ipcMain.handle('annualReview:aiAnalysisCancel'", start)
       const seg = mainSrc.slice(start, end)
-      return seg.includes('validateAnnualReviewTaskId(taskId)') && seg.includes('annualReviewAiCoordinator.run(taskId') &&
-        !seg.includes('report')
+      return seg.includes('parseAnnualReviewAiAnalysisRequest(payload)') &&
+        seg.includes('annualReviewAiCoordinator.run(parsed.taskId') &&
+        seg.includes('force: parsed.force') && !seg.includes('payload as { taskId')
     })())
     ok('13e main.ts 绑定窗口销毁中止', mainSrc.includes('bindAnnualReviewAiSenderAbort(event.sender)'))
     ok('13f electron.d.ts 声明 aiAnalysis/aiCancel',
-      dtsSrc.includes('aiAnalysis: (taskId: string)') && dtsSrc.includes('aiCancel: (taskId: string)'))
+      dtsSrc.includes('aiAnalysis: (taskId: string, force?: boolean)') && dtsSrc.includes('aiCancel: (taskId: string)'))
     ok('13g d.ts 使用 shared 契约（非镜像副本）',
       dtsSrc.includes("from '../../shared/annualReviewAi'") && dtsSrc.includes('AnnualReviewAiAnalysisResponse'))
     ok('13h 主进程不复制第二套模型出口（只用已验收服务层）', (() => {

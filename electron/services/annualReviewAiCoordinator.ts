@@ -32,7 +32,9 @@ import {
 import {
   ANNUAL_REVIEW_AI_PROMPT_VERSION
 } from './annualReviewAiCore'
+import { validateAnnualReviewTaskId } from './annualReviewReport'
 import {
+  ANNUAL_REVIEW_AI_FAILURE_MESSAGES,
   generateAnnualReviewAiAnalysis,
   type AnnualReviewAiCompletion,
   type AnnualReviewAiRunOptions
@@ -53,12 +55,49 @@ import type {
  */
 export const ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES: Record<AnnualReviewAiIpcFailureCode, string> = {
   invalid_task_id: '非法的任务标识',
+  invalid_request: '非法的请求载荷（只允许 { taskId, force? }）',
   task_not_found: '未找到该报告对应的生成任务（可能已被新任务取代），请重新生成报告后再试',
   task_not_completed: '该生成任务尚未成功完成，暂时无法生成 AI 分析',
   report_not_available: '报告已过期或已被新的生成结果取代，请重新生成后再试',
   analysis_in_progress: '该报告已有 AI 分析正在进行，请稍候',
   invalidated: '账号或业务库已变更，本次 AI 分析结果已作废，请重试',
   internal: 'AI 分析失败，请稍后重试'
+}
+
+// ─── 请求载荷解析（严格对象；不依赖 truthy 转换） ────────────────────────────
+
+export type AnnualReviewAiRequestParseResult =
+  | { ok: true; taskId: string; force: boolean }
+  | { ok: false; code: 'invalid_request' | 'invalid_task_id'; message: string }
+
+/**
+ * 解析 `annualReview:aiAnalysis` / `annualReview:aiAnalysisCancel` 载荷。
+ *
+ * **只允许严格对象 `{ taskId, force? }`**：
+ *   - 非对象（字符串/数组/null）或多出任何字段 → `invalid_request`（渲染层无法夹带报告、
+ *     prompt、模型参数等额外内容，也无法用额外字段绕过语义）；
+ *   - `taskId` 必须通过统一的任务标识校验（空/超长/含 NUL）→ `invalid_task_id`；
+ *   - `force` 只接受 boolean 或省略；数字/字符串/对象等一律 `invalid_request`——
+ *     **不做 truthy 转换**（`force: 'yes'`、`force: 1` 都不是「强制」）。
+ */
+export function parseAnnualReviewAiAnalysisRequest(payload: unknown): AnnualReviewAiRequestParseResult {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, code: 'invalid_request', message: ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request }
+  }
+  const record = payload as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key !== 'taskId' && key !== 'force') {
+      return { ok: false, code: 'invalid_request', message: ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request }
+    }
+  }
+  if (!validateAnnualReviewTaskId(record.taskId)) {
+    return { ok: false, code: 'invalid_task_id', message: ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_task_id }
+  }
+  const force = record.force
+  if (force !== undefined && typeof force !== 'boolean') {
+    return { ok: false, code: 'invalid_request', message: ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request }
+  }
+  return { ok: true, taskId: record.taskId, force: force === true }
 }
 
 // ─── 依赖注入 ────────────────────────────────────────────────────────────────
@@ -86,6 +125,13 @@ export interface AnnualReviewAiCoordinatorDeps {
 export interface AnnualReviewAiRunRequestOptions {
   /** 请求来源（窗口）的中止信号：窗口销毁 → 中止在途调用，不再向该窗口发送结果 */
   signal?: AbortSignal
+  /**
+   * true = 跳过结果缓存并**真实调用模型**（页面成功态「重新生成 AI 诊断」）。
+   * 只跳过「结果缓存命中」这一步，不绕过任何校验：taskId/账号/报告身份定位、同键 single-flight、
+   * 日调用额度、输入与输出契约、取消与失效防护全部照旧生效；成功后覆盖同键缓存，
+   * 失败时保留旧缓存条目。
+   */
+  force?: boolean
 }
 
 export interface AnnualReviewAiCancelResult {
@@ -173,13 +219,22 @@ export class AnnualReviewAiCoordinator {
   /**
    * 生成本次报告的 AI 分析。**只读报告**（不写报告缓存、不改任务状态）。
    *
-   * 判定顺序：taskId 载荷校验 → 报告定位（任务归属/完成度/报告有效性）→ 命中内存缓存则
-   * 直接返回 → 同键在途则拒绝重复调用（不重复计费）→ 调用 S7.1 服务层 → 成功结果写缓存。
-   * 在途调用完成后复核失效纪元：期间账号/业务库变更的结果**既不返回也不缓存**。
+   * 判定顺序：taskId/force 载荷校验 → 报告定位（任务归属/完成度/报告有效性）→ 非 force
+   * 时命中内存缓存则直接返回 → 同键在途则拒绝重复调用（不重复计费）→ 调用 S7.1 服务层 →
+   * **失效/取消复核** → 成功结果写缓存。
+   *
+   * 取消与失效是**权威终态**：底层模型可能忽略 AbortSignal，因此 `await` 返回后必须重新
+   * 检查一次——期间发生账号/业务库失效（epoch 变化）优先返回 `invalidated`；用户取消或
+   * 窗口销毁则一律按取消返回（不返回成功、不写缓存、缓存条目数不增加）。
    */
   async run(taskId: unknown, options: AnnualReviewAiRunRequestOptions = {}): Promise<AnnualReviewAiAnalysisResponse> {
     if (typeof taskId !== 'string' || taskId.length === 0) {
       return this.fail('invalid_task_id', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_task_id)
+    }
+    // force 只接受 boolean（不做 truthy 转换）：'yes' / 1 / {} 一律视为非法载荷
+    const force = options.force
+    if (force !== undefined && typeof force !== 'boolean') {
+      return this.fail('invalid_request', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalid_request)
     }
 
     let lookup: AnnualReviewTaskReportResult
@@ -195,9 +250,12 @@ export class AnnualReviewAiCoordinator {
     }
 
     const key = this.key(lookup.internalScopeId, taskId)
-    const cached = this.cache.get(key)
-    if (cached && this.now() - cached.cachedAt <= this.ttlMs) {
-      return { success: true, ...cached.result, cached: true }
+    // force 绕过的是「结果缓存命中」，不是 single-flight：在途判断在缓存读取之外独立生效
+    if (force !== true) {
+      const cached = this.cache.get(key)
+      if (cached && this.now() - cached.cachedAt <= this.ttlMs) {
+        return { success: true, ...cached.result, cached: true }
+      }
     }
     if (this.inFlight.has(key)) {
       return this.fail('analysis_in_progress', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.analysis_in_progress)
@@ -213,6 +271,8 @@ export class AnnualReviewAiCoordinator {
       if (external.aborted) controller.abort()
       else external.addEventListener('abort', forwardAbort, { once: true })
     }
+    /** 取消/窗口销毁是否已发生（权威判定：只看 controller，不假设底层模型遵守信号） */
+    const aborted = (): boolean => controller.signal.aborted
 
     try {
       const runOptions: AnnualReviewAiRunOptions = {
@@ -224,9 +284,14 @@ export class AnnualReviewAiCoordinator {
       }
       const result = await this.generate(lookup.report, runOptions)
 
-      // 失效复核：账号切换/业务库 reopen/数据写入失效后，结果作废（不返回、不缓存）
+      // ① 失效复核（优先）：账号切换/业务库 reopen/数据写入失效后，结果作废（不返回、不缓存）
       if (this.epoch !== epochAtStart) {
         return this.fail('invalidated', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalidated)
+      }
+      // ② 取消复核：取消/窗口销毁后即使底层忽略 AbortSignal 并「成功」返回，也不得当作成功
+      //    ——不返回成功、不写缓存；失败结果同样按取消语义收敛（沿用固定文案，不透传异常）
+      if (aborted()) {
+        return this.fail('call_failed', ANNUAL_REVIEW_AI_FAILURE_MESSAGES.cancelled)
       }
       if (!result.ok) {
         // S7.1 失败码与固定文案原样透传（含 numeric_claim/invalid_shape 等解析类失败）
@@ -238,10 +303,17 @@ export class AnnualReviewAiCoordinator {
         promptVersion: result.promptVersion,
         generatedAt: result.generatedAt
       }
-      // 成功结果只在失效复核通过后写入；缓存里不含 prompt、模型原始输出、客户明细或密钥
+      // 成功结果只在失效与取消复核均通过后写入；force 时覆盖同键旧条目（失败路径从不删除旧缓存）
       this.cache.set(key, { result: payload, cachedAt: this.now() })
       return { success: true, ...payload, cached: false }
     } catch {
+      // 出口抛错（含被中止的真实链路）：失效优先，其次取消，其余归为内部错误
+      if (this.epoch !== epochAtStart) {
+        return this.fail('invalidated', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.invalidated)
+      }
+      if (aborted()) {
+        return this.fail('call_failed', ANNUAL_REVIEW_AI_FAILURE_MESSAGES.cancelled)
+      }
       return this.fail('internal', ANNUAL_REVIEW_AI_IPC_FAILURE_MESSAGES.internal)
     } finally {
       if (external) external.removeEventListener('abort', forwardAbort)

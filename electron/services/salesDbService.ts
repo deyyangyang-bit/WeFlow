@@ -18,6 +18,7 @@ import { isProposalEventType, isProposalEventStage, type ProposalEventRecord, ty
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { salesLog } from './salesLogger'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
+import { announceAnnualReviewDataChanged } from './annualReviewInvalidation'
 
 /**
  * sql.js「列已存在」错误识别（迁移 ALTER 幂等忽略的唯一依据）。
@@ -690,12 +691,16 @@ class SalesDbService {
   }
 
   /**
-   * 执行写操作
+   * 执行写操作（salesDb 唯一写漏斗：customer_profile / intent_tag_log / customer_event /
+   * opportunity_eval_case / alert_eval_case / follow_up_task / knowledge_base 等）。
+   * 语句执行与 persist 均未抛错即视为「写成功」→ 上报年度复盘数据失效（客户阶段、意向事件
+   * 等口径已变）；读操作走 all()/get()，不经过这里。
    */
   private run(sql: string, params: unknown[] = []): void {
     const db = this.getDb()
     db.run(sql, params as any[])
     this.persist()
+    announceAnnualReviewDataChanged('sales_write')
   }
 
   /**

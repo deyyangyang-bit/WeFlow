@@ -16,6 +16,7 @@ import { archivedDbName, businessDbPath } from './businessDbPath'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
 import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLifecycleHooks'
+import { announceAnnualReviewDataChanged } from './annualReviewInvalidation'
 import { nextAutoStage, type AutoStageDecision } from './salesStagePolicy'
 import { normalizeStage } from '../../shared/salesStage'
 
@@ -785,6 +786,9 @@ class CrmDbService {
       const out = fn(tx)
       this.db.run('COMMIT')
       this.persist()
+      // 事务已提交（COMMIT 未抛错）→ 年度复盘数据失效（客户/合同/核销/出货/阶段/商机/同步应用
+      // 等全部 crmDb 业务写都经此漏斗）。ROLLBACK / 抛错路径不通知。
+      announceAnnualReviewDataChanged('crm_write')
       return out
     } catch (e) {
       try { this.db.run('ROLLBACK') } catch { /* ignore */ }
@@ -870,11 +874,17 @@ class CrmDbService {
     } finally { stmt.free() }
   }
 
+  /**
+   * 单条写语句（私有；所有 create/update 及业务写方法都经此）。
+   * 语句执行与 persist 均未抛错即视为「写成功」→ 上报年度复盘数据失效；
+   * 读操作走 all()/get()，不经过这里（失效绝不接在读路径上）。
+   */
   private run(sql: string, params: unknown[] = []): number {
     if (!this.db) return 0
     this.db.run(sql, params as any[])
     const r = this.all('SELECT last_insert_rowid() AS id')
     this.persist()
+    announceAnnualReviewDataChanged('crm_write')
     return r.length ? Number(r[0].id) : 0
   }
 
@@ -2375,6 +2385,8 @@ class CrmDbService {
   /** 写一条结构化自动确认日志（auto_confirm_log，供前端回看/撤销） */
   logAutoConfirm(entity: string, entityId: number, decision: string, confidence: number, reason: string, action: string): void {
     if (!this.db) return
+    // 只写审计日志表（annual review 不读它）：这里**不**上报年度复盘失效，
+    // 真正的业务影响由同一调用方随后的 allocation/payment 写入（经 run()/runTx()）触发。
     this.db.run(
       'INSERT INTO auto_confirm_log (entity, entity_id, decision, confidence, reason, action, created_at) VALUES (?,?,?,?,?,?,?)',
       [entity, entityId, decision, confidence, reason, action, Date.now()]
@@ -2443,6 +2455,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
+    announceAnnualReviewDataChanged('crm_write') // 客户被删除：客户数与相关指标口径已变
     return ids.length
   }
 
@@ -2461,6 +2474,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
+    announceAnnualReviewDataChanged('crm_write') // 客户被删除：客户数与相关指标口径已变
     return ids.length
   }
 

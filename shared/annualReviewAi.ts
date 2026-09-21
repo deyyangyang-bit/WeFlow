@@ -85,6 +85,8 @@ export type AnnualReviewAiCoreFailureCode = (typeof ANNUAL_REVIEW_AI_CORE_FAILUR
 /**
  * S7.2 IPC 层失败码：与模型调用无关，全部在**调用之前**或**结果返回之前**判定。
  *   - invalid_task_id        载荷 taskId 非法（空/超长/含 NUL）
+ *   - invalid_request        载荷不是严格对象 `{ taskId, force? }`（多字段/非对象）或 force
+ *                            不是 boolean（**不做 truthy 转换**）
  *   - task_not_found         任务不存在、已被有界清理淘汰，或属于其他账号作用域（fail closed，
  *                            不泄漏「存在但不可访问」）
  *   - task_not_completed     任务仍在运行，或已 failed（含 cancelled/invalidated）
@@ -95,6 +97,7 @@ export type AnnualReviewAiCoreFailureCode = (typeof ANNUAL_REVIEW_AI_CORE_FAILUR
  */
 export const ANNUAL_REVIEW_AI_IPC_FAILURE_CODES = [
   'invalid_task_id',
+  'invalid_request',
   'task_not_found',
   'task_not_completed',
   'report_not_available',

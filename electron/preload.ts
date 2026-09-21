@@ -606,11 +606,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTaskStatus: (taskId: string) => ipcRenderer.invoke('annualReview:getTaskStatus', { taskId }),
     export: (year: number, format: 'markdown' | 'csv') => ipcRenderer.invoke('annualReview:export', { year, format }),
     /**
-     * AI 分析（S7.2）：只提交 taskId——报告由主进程在当前账号作用域内定位，
-     * 渲染层不上传报告内容/prompt/模型参数。返回严格结构化结果（成功=analysis+model+
-     * promptVersion+generatedAt；失败=固定 code+固定文案）。
+     * AI 分析（S7.2）：只提交 { taskId, force? }——报告由主进程在当前账号作用域内定位，
+     * 渲染层不上传报告内容/prompt/模型参数。force=true 仅用于「重新生成 AI 诊断」
+     * （跳过结果缓存、真实调用模型；不绕过任何校验）。
+     * 返回严格结构化结果（成功=analysis+model+promptVersion+generatedAt；失败=固定 code+固定文案）。
      */
-    aiAnalysis: (taskId: string) => ipcRenderer.invoke('annualReview:aiAnalysis', { taskId }),
+    aiAnalysis: (taskId: string, force?: boolean) =>
+      ipcRenderer.invoke('annualReview:aiAnalysis', { taskId, force: force === true }),
     /** 取消在途 AI 分析（只中止该 taskId；无在途调用 → analysis_not_found） */
     aiCancel: (taskId: string) => ipcRenderer.invoke('annualReview:aiAnalysisCancel', { taskId }),
     onProgress: (callback: (payload: {

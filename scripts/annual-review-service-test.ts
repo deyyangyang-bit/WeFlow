@@ -1623,9 +1623,14 @@ async function main(): Promise<void> {
     const mainSrcA = readFileSync(join(ROOT, 'electron', 'main.ts'), 'utf8')
     const cfgStart = mainSrcA.indexOf("ipcMain.handle('config:set'")
     const cfgSeg = mainSrcA.slice(cfgStart, mainSrcA.indexOf('ipcMain.handle', cfgStart + 5))
-    ok('A3-4 config:set 两名单键写成功后失效（接线守卫；行为级=上方两条）',
+    ok('A3-4 config:set 两名单键写成功后失效（经统一失效总线；行为级=上方两条）',
       cfgSeg.includes("key === 'reportExcludedSessions' || key === 'crmInternalList'") &&
-      cfgSeg.includes('annualReviewService.handleDataChanged()'))
+      cfgSeg.includes("announceAnnualReviewDataChangedNow('config_exclusions')"))
+    ok('A3-5 main.ts 只有一处订阅同时失效两类缓存（不再逐 handler 手工复制两行）',
+      mainSrcA.includes('installAnnualReviewInvalidation({') &&
+      mainSrcA.includes('handleDataChanged: () => annualReviewService.handleDataChanged()') &&
+      mainSrcA.includes('invalidateAll: () => annualReviewAiCoordinator.invalidateAll()') &&
+      !mainSrcA.includes('annualReviewService.handleDataChanged()\n      annualReviewAiCoordinator.invalidateAll()'))
 
     // ── A4 invalidate/handleDataChanged/cancel 统一真实终止（幂等恰一次） ──
     let cancelCountA = 0
