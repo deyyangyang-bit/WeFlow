@@ -12,7 +12,7 @@ import { tmpdir } from 'os'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { exportTextFile, sanitizeLeafName } from '../electron/services/safeTextFileExport'
-import { buildAnnualReviewCsv, buildAnnualReviewMarkdown, escapeCsvCell, escapeMarkdownText, CSV_BOM } from '../electron/services/annualReviewExportContent'
+import { buildAnnualReviewCsv, buildAnnualReviewMarkdown, escapeCsvCell, escapeMarkdownText, E8_NOTES, CSV_BOM } from '../electron/services/annualReviewExportContent'
 import { composeAnnualReviewReport, validateAnnualReviewReport } from '../electron/services/annualReviewReport'
 import { resolveAnnualReviewPeriod, type AnnualReviewFacts } from '../electron/services/annualReviewStats'
 import type { AnnualReviewSalesSegmentsFacts, AnnualReviewCrmSegmentsFacts } from '../electron/services/annualReviewSegments'
@@ -54,7 +54,15 @@ function buildReport(): ReturnType<typeof composeAnnualReviewReport> {
     assignments: [{ id: 1, leadId: 1, salesName: '张三', mode: 'manual', claimedAt: T(2025, 3, 2) }],
     leads: [{ id: 1, accountId: 1, firstContactedAt: T(2025, 3, 3) }]
   }
-  const sales: AnnualReviewSalesSegmentsFacts = { profiles: [{ id: 1, sessionId: 'wx_a', stage: 'quoted', lastContactAtSec: Math.floor(T(2025, 1, 5) / 1000), customerId: '501' }], intentEvents: [] }
+  const sales: AnnualReviewSalesSegmentsFacts = {
+    profiles: [{ id: 1, sessionId: 'wx_a', stage: 'quoted', lastContactAtSec: Math.floor(T(2025, 1, 5) / 1000), customerId: '501' }],
+    intentEvents: [
+      { id: 1, sessionId: 'wx_a', stage: 'quoted', createdAt: T(2025, 3, 1) },
+      { id: 2, sessionId: 'wx_a', stage: 'lost', createdAt: T(2025, 8, 1) },
+      { id: 3, sessionId: 'wx_b', stage: 'contacted', createdAt: T(2025, 4, 1) },
+      { id: 4, sessionId: 'wx_b', stage: 'won', createdAt: T(2025, 9, 1) }
+    ]
+  }
   const crm: AnnualReviewCrmSegmentsFacts = { opportunities: [], opportunityEvents: [] }
   const report = composeAnnualReviewReport({
     period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm,
@@ -76,7 +84,7 @@ async function main(): Promise<void> {
     ok(`1b 非法叶子名全拒绝（${rejected}/${bads.length}）`, rejected === bads.length)
   }
 
-  // ══ 2 独占写/已存在/未授权/大小上限/清理 ═══════════════════════════════════
+  // ══ 2 独占写/已存在/未授权/大小上限/清理/完整写循环 ════════════════════════
   {
     const dir = makeWorkdir()
     const r1 = exportTextFile({ dir, fileName: 'report.md', content: '# 内容\n第一版' }, { assertAllowed: allowAll })
@@ -107,12 +115,10 @@ async function main(): Promise<void> {
       ok('2e symlink 目标拒绝（平台不支持 symlink，跳过）', true)
     }
 
-    // 路径穿越形态：文件名内含分隔/相对段全部拒绝（不落盘）
     const traversal = exportTextFile({ dir, fileName: '../escape.md', content: 'x' }, { assertAllowed: allowAll })
     ok('2f 路径穿越文件名拒绝', traversal.ok === false && (traversal as { code: string }).code === 'invalid_leaf_name' &&
       !existsSync(join(dir, '..', 'escape.md')))
 
-    // 写失败清理（目录内目标被占、伪造不可写场景用只读目录模拟）
     const roDir = makeWorkdir()
     writeFileSync(join(roDir, 'keep.txt'), 'keep')
     let cleaned = true
@@ -123,42 +129,156 @@ async function main(): Promise<void> {
       cleaned = false
     }
     ok('2g 目录不存在 → write_failed（不抛错、不残留）', cleaned)
+
+    // 2h 完整写循环：注入「每次只写 1 字节」的 write（模拟部分写）→ 循环写满全部字节
+    const partialDir = makeWorkdir()
+    const content = 'x'.repeat(50)
+    const contentBuf = Buffer.from(content, 'utf8')
+    const simBuf = Buffer.alloc(contentBuf.length)
+    let simPos = 0
+    const r7 = exportTextFile(
+      { dir: partialDir, fileName: 'partial.bin', content },
+      {
+        assertAllowed: allowAll,
+        write: (fd, buf, offset, length) => {
+          if (simPos >= simBuf.length) return 0
+          simBuf[offset] = buf[offset] // 每次只落地 1 字节（部分写）
+          simPos++
+          void fd; void length
+          return 1
+        },
+        fstat: () => ({ size: simPos })
+      }
+    )
+    ok('2h 部分写循环写满全部字节', r7.ok === true && (r7 as { bytes: number }).bytes === contentBuf.length &&
+      simBuf.equals(contentBuf))
+
+    // 2i 写后字节数核验：fstat 返回错误 size → 失败并清理（不残留半文件）
+    const mismatchDir = makeWorkdir()
+    const r8 = exportTextFile(
+      { dir: mismatchDir, fileName: 'mismatch.bin', content: 'hello' },
+      { assertAllowed: allowAll, fstat: () => ({ size: 3 }) }
+    )
+    ok('2i 落盘字节数≠预期 → 失败并清理', r8.ok === false && (r8 as { code: string }).code === 'write_failed' &&
+      !existsSync(join(mismatchDir, 'mismatch.bin')))
+
     rmSync(dir, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
     rmSync(roDir, { recursive: true, force: true })
+    rmSync(partialDir, { recursive: true, force: true })
+    rmSync(mismatchDir, { recursive: true, force: true })
   }
 
-  // ══ 3 Markdown/CSV 内容 ════════════════════════════════════════════════════
+  // ══ 3 Markdown/CSV 完整契约（解析实际输出） ═══════════════════════════════
   {
     const report = buildReport()
     const md = buildAnnualReviewMarkdown(report)
     const csv = buildAnnualReviewCsv(report)
 
-    ok('3 Markdown 元数据齐全（范围/生成时间/整体完整性）', md.includes('历史年度（') && md.includes('数据范围（实际输入事实）') &&
-      md.includes('生成时间：') && md.includes('整体完整性：'))
-    ok('3b Markdown unavailable 不写成 0（客单价/异常区块）', md.includes('不可用') &&
-      !md.includes('| 客单价 | ¥0') && !md.includes('| 客单价 | 0'))
-    ok('3c Markdown HTML 字段转义', md.includes('客户&lt;script&gt;') && !md.includes('<script>'))
-    ok('3d Markdown 数值指标真实值（历史年度 A1 为 partial）', md.includes('| 客户总数 | 2 | 部分完整 |') && md.includes('| 年度签约合同数 | 2 | 完整 |'))
-    ok('3e Markdown 含 warnings 全文与来源摘要', md.includes('## 数据说明') && md.includes('检测到中枢下发的分配/移交记录') &&
-      md.includes('| crmdb | account / contract'))
+    // CSV 结构解析
+    const lines = csv.replace(CSV_BOM, '').split('\r\n').filter((l) => l !== '')
+    const header = lines[0]
+    ok('3 CSV BOM + 12 列表头', csv.startsWith(CSV_BOM) &&
+      header === 'rowType,key,label,value,state,source,reasonCodes,coverageRatio,exactCoverage,metricKeys,count,note')
+    const parsed = lines.slice(1).map((line) => {
+      // 简易 CSV 行解析（支持引号包裹与 "" 转义）
+      const cells: string[] = []
+      let cur = ''
+      let inQuotes = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (inQuotes) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++ }
+          else if (ch === '"') inQuotes = false
+          else cur += ch
+        } else if (ch === '"') {
+          inQuotes = true
+        } else if (ch === ',') {
+          cells.push(cur); cur = ''
+        } else cur += ch
+      }
+      cells.push(cur)
+      return cells
+    })
+    const byType = (t: string): string[][] => parsed.filter((r) => r[0] === t)
+    const findRow = (type: string, key: string): string[] | undefined => byType(type).find((r) => r[1] === key)
 
-    ok('3f CSV BOM + 表头', csv.startsWith(CSV_BOM + '指标,区块,值,状态'))
-    // CSV 注入防护是结构性的：用户文本只出现在带固定前缀的标签列（无法领跑单元格），
-    // 值列全部来自格式化器；escapeCsvCell 作为纵深防御单测覆盖
-    ok('3g CSV 单元格不以公式字符开头', csv.split('\r\n').slice(1).every((line) =>
-      line === '' || line.split(',').every((cell) => cell === '' || cell.startsWith('"') || !/^[=+@\t]/.test(cell))))
-    ok('3h CSV 转义函数单元（逗号/引号包裹）', escapeCsvCell('含,逗号') === '"含,逗号"' &&
-      escapeCsvCell('带"引号') === '"带""引号"')
-    ok('3i CSV unavailable 行为「不可用」（沉默客户/长期未联系——历史年度）', csv.split('\r\n').some((line) => line.includes('沉默客户·人数,客户经营,不可用')) &&
-      csv.split('\r\n').some((line) => line.includes('长期未联系客户·人数,沟通质量,不可用')))
-    ok('3j CSV 无敏感字段', !csv.includes('wx_a') && !csv.includes('wx_b') && !csv.includes('sessionId') &&
-      !csv.includes('.db') && !csv.includes('SELECT'))
-    ok('3k Markdown 无敏感字段', !md.includes('wx_a') && !md.includes('sessionId') && !md.includes('/Users/') && !md.includes('.db'))
-    ok('3l CSV 逃逸函数单元（制表符前缀）', escapeCsvCell('=1+1') === "'=1+1" && escapeCsvCell('@x') === "'@x" &&
-      escapeCsvCell('-1') === "'-1" && escapeCsvCell('+1') === "'+1" && escapeCsvCell('普通') === '普通' &&
-      escapeCsvCell('含,逗号') === '"含,逗号"')
-    ok('3m Markdown 转义函数单元', escapeMarkdownText('<b>&') === '&lt;b&gt;&amp;')
+    // metadata
+    ok('3a CSV 元数据行齐全且正确', findRow('metadata', 'reportSchemaVersion')?.[3] === '2' &&
+      findRow('metadata', 'year')?.[3] === '2025' && findRow('metadata', 'scopeKind')?.[3] === 'historical_year' &&
+      findRow('metadata', 'asOf')?.[3] === String(report.asOf) && findRow('metadata', 'generatedAt')?.[3] === String(report.generatedAt) &&
+      findRow('metadata', 'dataRangeFrom') !== undefined && findRow('metadata', 'dataRangeTo') !== undefined)
+
+    // completeness
+    ok('3b CSV completeness（overall + 6 区块）', byType('completeness').length === 7 &&
+      findRow('completeness', 'overall')?.[3] === '不可用')
+
+    // coverage：固定 metricKey 全集
+    const csvCoverageKeys = byType('coverage').map((r) => r[1]).sort()
+    const expectedCoverageKeys = Object.keys(report.coverage).sort()
+    ok('3c CSV coverage 行 = 固定 metricKey 全集（35）', csvCoverageKeys.length === 35 &&
+      JSON.stringify(csvCoverageKeys) === JSON.stringify(expectedCoverageKeys))
+    ok('3d coverage 行携带状态与 source', byType('coverage').every((r) => r[4] !== '' && r[5] !== ''))
+    const assignedCoverageRow = findRow('coverage', 'salesAssignment.assignedFacts')
+    ok('3e E1 sync 缺口 coverage：partial + exactCoverage=false + ratio=null', assignedCoverageRow?.[4] === 'partial' &&
+      assignedCoverageRow?.[8] === 'false' && assignedCoverageRow?.[7] === 'null')
+
+    // metric：unavailable 不为 0
+    const metricRows = byType('metric')
+    ok('3f 全部 metric 行值不为伪装 0（unavailable → 不可用）', metricRows.every((r) => !(r[4] === 'unavailable' && r[3] === '0')))
+    ok('3g A 组指标值正确', findRow('metric', 'summary.customerTotal')?.[3] === '2')
+
+    // detail：漏斗分布/流失归因/三个月度序列/E1 分组
+    ok('3h 流失归因 detail 存在', byType('detail').some((r) => r[2].startsWith('流失前档位·')))
+    ok('3i 三个月度序列 detail 存在', byType('detail').some((r) => r[2].startsWith('签约金额·')) &&
+      byType('detail').some((r) => r[2].startsWith('核销回款·')) && byType('detail').some((r) => r[2].startsWith('客户消息量·')))
+    ok('3j E1 分组 detail 存在（初始分配·张三/manual）', byType('detail').some((r) => r[2] === '初始分配·张三/manual'))
+
+    // warning：code/message/metricKeys/count
+    const warningRows = byType('warning')
+    ok('3k warning 行携带 metricKeys', warningRows.every((r) => r[9] !== ''))
+
+    // source
+    ok('3l source 行 4 组', byType('source').length === 4)
+
+    // note：E8 三句
+    const notes = byType('note').map((r) => r[3])
+    ok('3m E8 三句固定说明存在', E8_NOTES.every((sentence) => notes.some((n) => n === sentence)))
+
+    // 注入防护：全部单元格不以公式字符开头（允许 ' 前缀转义与引号包裹）
+    ok('3n CSV 单元格无未转义公式前导', parsed.every((cells) => cells.every((c) => c === '' || c.startsWith("'") || !/^[=+@\t]/.test(c))))
+
+    // Markdown：元数据/完整性/coverage 附表/E8/月度/流失归因
+    ok('3o Markdown 元数据（schemaVersion/asOf/dataRange/整体完整性）', md.includes('reportSchemaVersion：2') &&
+      md.includes('asOf：') && md.includes('dataRange：') && md.includes('整体完整性：'))
+    ok('3p Markdown coverage 附表 = 固定 metricKey 全集', (() => {
+      const table = md.slice(md.indexOf('## 指标覆盖（coverage）'))
+      const keys = Object.keys(report.coverage)
+      return keys.every((k) => table.includes(`| ${k} |`))
+    })())
+    ok('3q Markdown E8 三句 + 月度趋势 + 流失归因', E8_NOTES.every((s) => md.includes(s)) &&
+      md.includes('## 月度趋势') && md.includes('流失归因'))
+    ok('3r Markdown unavailable 不写 0', md.includes('不可用') && !md.includes('| 客单价 | ¥0') && !md.includes('| 客单价 | 0'))
+
+    // 敏感字段
+    ok('3s CSV/Markdown 无 sessionId/wxid/路径/SQL/Token', !csv.includes('wx_a') && !csv.includes('sessionId') &&
+      !csv.includes('.db') && !csv.includes('SELECT') && !md.includes('wx_a') && !md.includes('sessionId') &&
+      !md.includes('/Users/') && !md.includes('.db'))
+
+    // Markdown 与 CSV 的 metricKey 集合一致
+    const mdCoverageKeys = (() => {
+      const table = md.slice(md.indexOf('## 指标覆盖（coverage）'))
+      return Object.keys(report.coverage).filter((k) => table.includes(`| ${k} |`)).sort()
+    })()
+    ok('3t Markdown 与 CSV metricKey 集合一致', JSON.stringify(mdCoverageKeys) === JSON.stringify(csvCoverageKeys))
+
+    // 转义函数单元：前导空白 + tab/CR + 引号换行
+    ok('3u escapeCsvCell 单元（前导空白公式/tab/引号/换行）', escapeCsvCell(' =x') === "' =x" &&
+      escapeCsvCell('\t=x') === "'\t=x" && escapeCsvCell('a\nb') === '"a\nb"' &&
+      escapeCsvCell('a"b') === '"a""b"' && escapeCsvCell('普通') === '普通')
+
+    // Markdown 转义
+    ok('3v escapeMarkdownText 单元', escapeMarkdownText('<b>&') === '&lt;b&gt;&amp;')
   }
 
   // ══ 4 接线守卫（IPC/preload/types/页面） ═══════════════════════════════════

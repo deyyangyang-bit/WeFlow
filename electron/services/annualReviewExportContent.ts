@@ -1,14 +1,22 @@
 /**
- * annualReviewExportContent.ts —— 年度经营复盘 · Markdown/CSV 内容渲染（S6，纯模块）
+ * annualReviewExportContent.ts —— 年度经营复盘 · Markdown/CSV 内容渲染（S6/阶段4，纯模块）
  *
  * 职责（规格 §6.3）：把最终 AnnualReviewReport 渲染为 Markdown 报告与 CSV 明细。
- *   - 内容 = 元数据（scopeKind/统计区间/generatedAt/dataRange）+ 完整性/warnings 全文
- *     + 全部 V1 确定性指标 + 数据说明；**不导出聊天正文**。
- *   - unavailable 一律导出「不可用（原因/口径）」，绝不写成 0。
- *   - 注入防护：CSV 单元格以 `=`/`+`/`-`/`@`/制表符开头 → 前置 `'`（Excel 公式注入）；
- *     Markdown 中用户可控字符串（名称/原因/detail）转义 `<`/`>`/`&`，避免被解释为 HTML。
- *   - 零 Electron/零 fs 依赖、零数据库访问；同输入同输出（与报告字段序无关）；
- *     输入报告本身已保证不含 sessionId/wxid/路径/SQL/Token（组装层契约）。
+ * 两种格式都必须包含（与 API-CONTRACT §1.15 导出契约一致）：
+ *   - 元数据：reportSchemaVersion / year / scopeKind / periodStart / periodEndExclusive /
+ *     asOf / generatedAt / dataRange；
+ *   - completeness：overall + 各 block；
+ *   - **固定 metricKey 全集的 coverage 行**：状态 / source / reasonCodes /
+ *     coverageRatio / exactCoverage（存在时）；
+ *   - 聚合 warnings：code / message / metricKeys / count；
+ *   - sourceSummary；
+ *   - 全部 V1 确定性指标：A1–A9、B1/B2/B3/B6/B7、C1–C8、D1/D2/D3/D5/D7、
+ *     E1/E3/E4/E5、三个月度趋势序列、E8 三句固定说明。
+ * unavailable 一律输出「不可用（原因）」，绝不写成 0；E1 sync 缺口不输出百分比。
+ *
+ * 注入防护：CSV 单元格前导（可选空白后）`=`/`+`/`-`/`@`/Tab/CR → 前置 `'`；
+ * 含逗号/引号/换行 → RFC 引号包裹。Markdown 用户可控字符串转义 `&`/`<`/`>`。
+ * 输入报告本身已保证不含 sessionId/wxid/路径/SQL/Token（组装层契约 + validator）。
  */
 import type { AnnualReviewReport } from './annualReviewReport'
 import type { MetricWarning as AnnualReviewMetricWarning } from './annualReviewStats'
@@ -23,10 +31,14 @@ export function escapeMarkdownText(v: unknown): string {
     .replace(/>/g, '&gt;')
 }
 
-/** CSV 单元格转义：公式注入前缀（= + - @ \t）前置单引号；含逗号/引号/换行 → 引号包裹 */
+/**
+ * CSV 单元格转义（公式注入防护）：
+ *   - 前导（允许空白后）以 `=`/`+`/`-`/`@`/Tab 开头 → 前置 `'`（防 Excel 公式解释）；
+ *   - 含逗号/引号/换行 → RFC 风格引号包裹（内部引号翻倍）。
+ */
 export function escapeCsvCell(v: unknown): string {
   let s = v === null || v === undefined ? '' : String(v)
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  if (/^\s*[=+\-@\t\r]/.test(s)) s = `'${s}`
   if (/[",\n\r]/.test(s)) s = `"${s.replace(/"/g, '""')}"`
   return s
 }
@@ -36,8 +48,6 @@ export const CSV_BOM = '\uFEFF'
 
 // ─── 值格式化（四态确定） ─────────────────────────────────────────────────────
 
-interface MetricLike { value: number | string | null; state: string; warnings?: AnnualReviewMetricWarning[] }
-
 const STATE_LABELS: Record<string, string> = {
   complete: '完整',
   partial: '部分完整',
@@ -46,7 +56,7 @@ const STATE_LABELS: Record<string, string> = {
 }
 
 /** unavailable/null → 「不可用」；绝不把不可用渲染成 0 */
-function metricText(m: MetricLike | null | undefined, format: (v: number) => string): string {
+function metricText(m: { value: number | string | null; state: string } | null | undefined, format: (v: number) => string): string {
   if (!m || m.state === 'unavailable' || m.value === null || m.value === undefined) return '不可用'
   return typeof m.value === 'number' ? format(m.value) : escapeMarkdownText(m.value)
 }
@@ -61,8 +71,17 @@ function fmtDate(ts: number): string {
   const d = new Date(ts)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
+function fmtDateTime(ts: number): string {
+  return new Date(ts).toLocaleString('zh-CN')
+}
 
-function scopeRangeText(report: AnnualReviewReport): string {
+const SCOPE_LABELS: Record<string, string> = {
+  current_year: '当前年度',
+  historical_year: '历史年度',
+  all_time: '历史以来'
+}
+
+export function scopeRangeText(report: AnnualReviewReport): string {
   if (report.scopeKind === 'all_time') return '全部本地数据（截至生成时间）'
   if (report.periodStart !== null && report.periodEndExclusive !== null) {
     return `${fmtDate(report.periodStart)} 至 ${fmtDate(report.periodEndExclusive)}`
@@ -70,15 +89,33 @@ function scopeRangeText(report: AnnualReviewReport): string {
   return '以主进程返回为准'
 }
 
-function dataRangeText(report: AnnualReviewReport): string {
+export function dataRangeText(report: AnnualReviewReport): string {
   if (report.dataRange.from === null || report.dataRange.to === null) return '无有效数据范围'
   return `${fmtDate(report.dataRange.from)} 至 ${fmtDate(report.dataRange.to)}`
 }
 
-const SCOPE_LABELS: Record<string, string> = {
-  current_year: '当前年度',
-  historical_year: '历史年度',
-  all_time: '历史以来'
+const BLOCK_LABELS: Record<string, string> = {
+  summary: '年度经营摘要',
+  funnel: '漏斗与阶段',
+  customers: '客户经营',
+  monthly: '月度趋势',
+  communication: '沟通质量',
+  salesAssignment: '销售与分配'
+}
+
+/** E8 三句固定说明（数据说明区固定文案；不得写成公平性结论） */
+export const E8_NOTES: readonly string[] = [
+  '全部失败批次不留批次审计（assigned=0 不落行）。',
+  '部分失败批次的 skipped 只存在于幸存批次的 audit detail 中。',
+  'round_robin 游标写盘失败属于辅助降级，可能造成不超过一批的份额漂移并长期自愈；weight/load 不读写游标。'
+]
+
+/** 顾客名显示（name → 客户 #accountId → 客户资料 #customerId → 客户） */
+function customerName(row: { name?: string | null; accountId?: number | null; customerId?: string | null }): string {
+  if (row.name) return row.name
+  if (typeof row.accountId === 'number') return `客户 #${row.accountId}`
+  if (row.customerId) return `客户资料 #${row.customerId}`
+  return '客户'
 }
 
 // ─── Markdown ────────────────────────────────────────────────────────────────
@@ -89,22 +126,29 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   const yearText = report.year === 0 ? '历史以来' : `${report.year} 年`
   L.push(`# 年度经营复盘 · ${escapeMarkdownText(yearText)}`)
   L.push('')
-  L.push(`- 统计范围：${escapeMarkdownText(SCOPE_LABELS[report.scopeKind] ?? report.scopeKind)}（${escapeMarkdownText(scopeRangeText(report))}）`)
-  L.push(`- 数据范围（实际输入事实）：${escapeMarkdownText(dataRangeText(report))}`)
-  L.push(`- 生成时间：${escapeMarkdownText(new Date(report.generatedAt).toLocaleString('zh-CN'))}`)
+  L.push('## 报告元数据')
+  L.push('')
+  L.push(`- reportSchemaVersion：${report.reportSchemaVersion}`)
+  L.push(`- year：${report.year}（${escapeMarkdownText(SCOPE_LABELS[report.scopeKind] ?? report.scopeKind)}）`)
+  L.push(`- scopeKind：${escapeMarkdownText(report.scopeKind)}`)
+  L.push(`- 统计区间：${escapeMarkdownText(scopeRangeText(report))}`)
+  L.push(`- periodStart：${report.periodStart === null ? 'null' : report.periodStart}`)
+  L.push(`- periodEndExclusive：${report.periodEndExclusive === null ? 'null' : report.periodEndExclusive}`)
+  L.push(`- asOf：${report.asOf}`)
+  L.push(`- generatedAt：${report.generatedAt}（${escapeMarkdownText(fmtDateTime(report.generatedAt))}）`)
+  L.push(`- dataRange：${escapeMarkdownText(dataRangeText(report))}（from=${report.dataRange.from === null ? 'null' : report.dataRange.from}，to=${report.dataRange.to === null ? 'null' : report.dataRange.to}）`)
   L.push(`- 整体完整性：${escapeMarkdownText(STATE_LABELS[report.completeness.overall] ?? report.completeness.overall)}`)
-  const blockText = Object.entries(report.completeness.blocks)
-    .map(([id, s]) => `${id}=${escapeMarkdownText(STATE_LABELS[s] ?? s)}`)
-    .join('，')
-  L.push(`- 区块完整性：${blockText}`)
+  for (const [blockId, state] of Object.entries(report.completeness.blocks)) {
+    L.push(`  - ${escapeMarkdownText(BLOCK_LABELS[blockId] ?? blockId)}：${escapeMarkdownText(STATE_LABELS[state] ?? state)}`)
+  }
   L.push('')
 
-  // ── 年度经营摘要 ──
+  // ── 年度经营摘要（A1–A9）──
   L.push('## 年度经营摘要')
   L.push('')
   L.push('| 指标 | 值 | 状态 |')
   L.push('| --- | --- | --- |')
-  const summaryRows: Array<[string, MetricLike, (v: number) => string]> = [
+  const summaryRows: Array<[string, { value: number | null; state: string }, (v: number) => string]> = [
     ['客户总数', report.summary.customerTotal, fmtInt],
     ['年度新增客户', report.summary.customerNew, fmtInt],
     ['年度活跃客户', report.summary.customerActive, fmtInt],
@@ -121,7 +165,7 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   }
   L.push('')
 
-  // ── 漏斗与阶段 ──
+  // ── 漏斗与阶段（B1/B2/B3/B6/B7）──
   L.push('## 漏斗与阶段')
   L.push('')
   const distTable = (title: string, kind: string | undefined, rows: Array<{ bucket: string; count: number }> | null, coverageRatio: number | null | undefined, state: string): void => {
@@ -147,11 +191,11 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   distTable('客户阶段分布', report.funnel.customerStage.kind, report.funnel.customerStage.distribution, report.funnel.customerStage.coverage.coverageRatio, report.funnel.customerStage.coverage.status)
   distTable('商机阶段分布', report.funnel.opportunityStage.kind, report.funnel.opportunityStage.distribution, report.funnel.opportunityStage.coverage.coverageRatio, report.funnel.opportunityStage.coverage.status)
   distTable('年内阶段流转', undefined, report.funnel.stageFlow.distribution, report.funnel.stageFlow.coverage.coverageRatio, report.funnel.stageFlow.coverage.status)
-  L.push(`### 停滞客户`)
+  L.push('### 停滞客户')
   L.push('')
   L.push(report.funnel.stuck.value === null || report.funnel.stuck.coverage.status === 'unavailable' ? '不可用' : `停滞客户数：${fmtInt(report.funnel.stuck.value)}`)
   L.push('')
-  L.push(`### 流失归因`)
+  L.push('### 流失归因')
   L.push('')
   if (report.funnel.lostBreakdown.coverage.status === 'unavailable' || report.funnel.lostBreakdown.customerPreviousStage === null) {
     L.push('不可用')
@@ -167,10 +211,10 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
     L.push('')
   }
 
-  // ── 客户经营 ──
+  // ── 客户经营（C1–C8）──
   L.push('## 客户经营')
   L.push('')
-  const listSection = (title: string, block: { value: unknown[] | null; coverage: { status: string }; warnings?: AnnualReviewMetricWarning[] }, rowText: (row: never) => string): void => {
+  const listSection = (title: string, block: { value: unknown[] | null; coverage: { status: string } }, rowText: (row: never) => string): void => {
     L.push(`### ${escapeMarkdownText(title)}`)
     L.push('')
     if (block.coverage.status === 'unavailable' || block.value === null) {
@@ -187,23 +231,43 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
     L.push('')
   }
   listSection('高价值客户（按年度核销回款）', report.customers.highValue, (r: { name: string | null; accountId: number; creditedAmount: number; contractAmount: number }) =>
-    `${escapeMarkdownText(r.name ?? `客户 #${r.accountId}`)}：核销 ${fmtAmount(r.creditedAmount)} · 签约 ${fmtAmount(r.contractAmount)}`)
+    `${escapeMarkdownText(customerName(r))}：核销 ${fmtAmount(r.creditedAmount)} · 签约 ${fmtAmount(r.contractAmount)}`)
   listSection('新增客户', report.customers.newCustomers, (r: { name: string | null; accountId: number; createdAt: number; imported: boolean }) =>
-    `${escapeMarkdownText(r.name ?? `客户 #${r.accountId}`)}：建档 ${fmtDate(r.createdAt)}${r.imported ? '（导入建档）' : ''}`)
+    `${escapeMarkdownText(customerName(r))}：建档 ${fmtDate(r.createdAt)}${r.imported ? '（导入建档）' : ''}`)
   listSection('成交客户', report.customers.dealing, (r: { name: string | null; accountId: number; contractCount: number; contractAmount: number }) =>
-    `${escapeMarkdownText(r.name ?? `客户 #${r.accountId}`)}：${fmtInt(r.contractCount)} 份 · ${fmtAmount(r.contractAmount)}`)
+    `${escapeMarkdownText(customerName(r))}：${fmtInt(r.contractCount)} 份 · ${fmtAmount(r.contractAmount)}`)
   listSection('复购客户', report.customers.repeat, (r: { name: string | null; accountId: number; contractCount: number }) =>
-    `${escapeMarkdownText(r.name ?? `客户 #${r.accountId}`)}：${fmtInt(r.contractCount)} 份`)
+    `${escapeMarkdownText(customerName(r))}：${fmtInt(r.contractCount)} 份`)
   listSection('活跃客户', report.customers.active, (r: { name: string | null; accountId: number | null }) =>
-    escapeMarkdownText(r.name ?? (r.accountId !== null ? `客户 #${r.accountId}` : '客户')))
+    escapeMarkdownText(customerName(r)))
   listSection('沉默客户（>90 天未沟通）', report.customers.silent, (r: { name: string | null; accountId: number | null; lastContactAtMs: number }) =>
-    `${escapeMarkdownText(r.name ?? (r.accountId !== null ? `客户 #${r.accountId}` : '客户'))}：最近联系 ${fmtDate(r.lastContactAtMs)}`)
+    `${escapeMarkdownText(customerName(r))}：最近联系 ${fmtDate(r.lastContactAtMs)}`)
   listSection('流失风险客户（>60 天未沟通）', report.customers.risk, (r: { name: string | null; accountId: number | null; stage: string; lastContactAtMs: number }) =>
-    `${escapeMarkdownText(r.name ?? (r.accountId !== null ? `客户 #${r.accountId}` : '客户'))}：${escapeMarkdownText(r.stage)} · 最近联系 ${fmtDate(r.lastContactAtMs)}`)
+    `${escapeMarkdownText(customerName(r))}：${escapeMarkdownText(r.stage)} · 最近联系 ${fmtDate(r.lastContactAtMs)}`)
   listSection('当前重点推进客户', report.customers.priority, (r: { name: string | null; accountId: number | null; lastContactAtMs: number }) =>
-    `${escapeMarkdownText(r.name ?? (r.accountId !== null ? `客户 #${r.accountId}` : '客户'))}：最近联系 ${fmtDate(r.lastContactAtMs)}`)
+    `${escapeMarkdownText(customerName(r))}：最近联系 ${fmtDate(r.lastContactAtMs)}`)
 
-  // ── 沟通质量 ──
+  // ── 月度趋势（三序列）──
+  L.push('## 月度趋势')
+  L.push('')
+  const monthlySeries = (title: string, months: Array<{ month: string; amount?: number; count?: number }> | null, state: string, format: (v: number) => string): void => {
+    L.push(`### ${escapeMarkdownText(title)}`)
+    L.push('')
+    if (state === 'unavailable' || months === null) {
+      L.push('不可用')
+      L.push('')
+      return
+    }
+    L.push('| 月份 | 值 |')
+    L.push('| --- | --- |')
+    for (const p of months) L.push(`| ${escapeMarkdownText(p.month)} | ${format(p.amount ?? p.count ?? 0)} |`)
+    L.push('')
+  }
+  monthlySeries('签约金额（元/月）', report.monthly.contractSign.months, report.monthly.contractSign.state, fmtAmount)
+  monthlySeries('已核销回款（元/月）', report.monthly.credited.months, report.monthly.credited.state, fmtAmount)
+  monthlySeries('客户消息量（条/月）', report.monthly.messageVolume.months, report.monthly.messageVolume.state, fmtInt)
+
+  // ── 沟通质量（D1/D2/D3/D5/D7）──
   L.push('## 沟通质量')
   L.push('')
   L.push(`- 年度客户消息量：${metricText(report.communication.volume, fmtInt)}`)
@@ -223,12 +287,12 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   } else {
     L.push('- 长期未联系客户：')
     for (const row of longSilent) {
-      L.push(`  - ${escapeMarkdownText(row.name ?? (row.accountId !== null ? `客户 #${row.accountId}` : '客户'))}：最近联系 ${fmtDate(row.lastContactAtMs)}`)
+      L.push(`  - ${escapeMarkdownText(customerName(row))}：最近联系 ${fmtDate(row.lastContactAtMs)}`)
     }
   }
   L.push('')
 
-  // ── 销售与分配 ──
+  // ── 销售与分配（E1/E3/E4/E5）──
   L.push('## 销售与分配（本机记录视角）')
   L.push('')
   const af = report.salesAssignment.assignedFacts
@@ -247,19 +311,18 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   }
   L.push('')
 
-  // ── 数据说明 ──
+  // ── 数据说明（warnings + E8 + sourceSummary）──
   L.push('## 数据说明')
   L.push('')
   if (report.warnings.length === 0) {
     L.push('- 本报告无降级告警。')
   } else {
     for (const w of report.warnings) {
-      const counts = w.counts && Object.values(w.counts).some((n) => n > 0)
-        ? `（涉及 ${Math.max(...Object.values(w.counts))} 条）`
-        : ''
-      L.push(`- ${escapeMarkdownText(w.message)}${escapeMarkdownText(counts)}`)
+      const count = w.counts && Object.values(w.counts).some((n) => n > 0) ? Math.max(...Object.values(w.counts)) : null
+      L.push(`- ${escapeMarkdownText(w.message)}${count !== null ? `（涉及 ${fmtInt(count)} 条）` : ''}（${escapeMarkdownText(w.metricKeys.join('、'))}）`)
     }
   }
+  for (const sentence of E8_NOTES) L.push(`- ${escapeMarkdownText(sentence)}`)
   L.push('- 本报告为本机数据视角；「当前快照」为截至生成时间的投影，「历史年末重建」为事件流重放结果。')
   L.push('- 「不可用」表示当前数据无法可靠统计（不显示为 0）；「部分完整」附有降级原因。')
   L.push('- 统计口径：本地时区；金额单位为元；历史年度联系时间类指标不可重建。')
@@ -269,72 +332,188 @@ export function buildAnnualReviewMarkdown(report: AnnualReviewReport): string {
   for (const s of report.sourceSummary) {
     L.push(`| ${escapeMarkdownText(s.source)} | ${escapeMarkdownText(s.tables.join(' / '))} | ${fmtInt(s.rows)} |`)
   }
+  L.push('')
+
+  // ── coverage 附表（固定 metricKey 全集；与 CSV coverage 行集合一致）──
+  L.push('## 指标覆盖（coverage）')
+  L.push('')
+  L.push('| metricKey | 状态 | 来源 | reasonCodes | coverageRatio | exactCoverage |')
+  L.push('| --- | --- | --- | --- | --- | --- |')
+  for (const [key, cov] of Object.entries(report.coverage)) {
+    L.push(`| ${escapeMarkdownText(key)} | ${escapeMarkdownText(STATE_LABELS[cov.status] ?? cov.status)} | ${escapeMarkdownText(cov.source)} | ${escapeMarkdownText((cov.reasonCodes ?? []).join('、'))} | ${cov.coverageRatio === undefined ? '' : cov.coverageRatio === null ? 'null' : String(cov.coverageRatio)} | ${cov.exactCoverage === undefined ? '' : String(cov.exactCoverage)} |`)
+  }
   return L.join('\n')
 }
 
-// ─── CSV ─────────────────────────────────────────────────────────────────────
+// ─── CSV（多 rowType 完整契约） ──────────────────────────────────────────────
 
-interface CsvRow { metric: string; scope: string; value: string; state: string }
-
-/** 渲染 CSV 明细（BOM + 公式注入转义；unavailable → 「不可用」） */
+/**
+ * CSV 结构（rowType 列区分；表头固定 12 列）：
+ *   rowType,key,label,value,state,source,reasonCodes,coverageRatio,exactCoverage,metricKeys,count,note
+ *   - metadata    报告元数据（reportSchemaVersion / year / scopeKind / period 边界 / asOf / generatedAt / dataRange）
+ *   - completeness 完整性（overall + 各 block，value=四态）
+ *   - coverage    固定 metricKey 全集（value=状态，source/reasonCodes/ratio/exactCoverage）
+ *   - metric      V1 指标值（unavailable → 「不可用」）
+ *   - detail      指标明细（分布桶/客户条目/月度点/贡献行/流失归因）
+ *   - warning     聚合告警（code/message/metricKeys/count）
+ *   - source      数据源摘要（source/tables/rows）
+ *   - note        固定说明（E8 三句、口径声明）
+ */
 export function buildAnnualReviewCsv(report: AnnualReviewReport): string {
-  const rows: CsvRow[] = []
-  const push = (metric: string, scope: string, m: MetricLike | { value: number | string | null; state: string }, format?: (v: number) => string): void => {
-    rows.push({
-      metric,
-      scope,
-      value: metricText(m as MetricLike, format ?? fmtInt),
-      state: STATE_LABELS[(m as MetricLike).state] ?? (m as MetricLike).state
-    })
+  const HEADER = 'rowType,key,label,value,state,source,reasonCodes,coverageRatio,exactCoverage,metricKeys,count,note'
+  const rows: string[] = []
+  const push = (cells: Array<string | number | null | undefined>): void => {
+    rows.push(cells.map((c) => escapeCsvCell(c)).join(','))
   }
 
-  for (const [key, metric] of Object.entries(report.summary)) {
-    const label: Record<string, string> = {
-      customerTotal: '客户总数', customerNew: '年度新增客户', customerActive: '年度活跃客户',
-      contractCount: '年度签约合同数', contractAmount: '年度签约合同金额', creditedAmount: '年度已核销回款',
-      shippedCount: '年度已发货合同数', shippedAmount: '年度已发货金额', dealingCustomers: '成交客户数', avgDealSize: '客单价'
+  // metadata
+  push(['metadata', 'reportSchemaVersion', '报告结构版本', report.reportSchemaVersion, '', '', '', '', '', '', '', ''])
+  push(['metadata', 'year', '年份', report.year, '', '', '', '', '', '', '', SCOPE_LABELS[report.scopeKind] ?? report.scopeKind])
+  push(['metadata', 'scopeKind', '统计范围', report.scopeKind, '', '', '', '', '', '', '', ''])
+  push(['metadata', 'periodStart', '区间起', report.periodStart === null ? 'null' : report.periodStart, '', '', '', '', '', '', '', '左闭'])
+  push(['metadata', 'periodEndExclusive', '区间止', report.periodEndExclusive === null ? 'null' : report.periodEndExclusive, '', '', '', '', '', '', '', '右开'])
+  push(['metadata', 'asOf', '统计时点', report.asOf, '', '', '', '', '', '', '', ''])
+  push(['metadata', 'generatedAt', '生成时间', report.generatedAt, '', '', '', '', '', '', '', fmtDateTime(report.generatedAt)])
+  push(['metadata', 'dataRangeFrom', '数据范围起', report.dataRange.from === null ? 'null' : report.dataRange.from, '', '', '', '', '', '', '', ''])
+  push(['metadata', 'dataRangeTo', '数据范围止', report.dataRange.to === null ? 'null' : report.dataRange.to, '', '', '', '', '', '', '', ''])
+
+  // completeness
+  push(['completeness', 'overall', '整体完整性', STATE_LABELS[report.completeness.overall] ?? report.completeness.overall, report.completeness.overall, '', '', '', '', '', '', ''])
+  for (const [blockId, state] of Object.entries(report.completeness.blocks)) {
+    push(['completeness', blockId, BLOCK_LABELS[blockId] ?? blockId, STATE_LABELS[state] ?? state, state, '', '', '', '', '', '', ''])
+  }
+
+  // coverage：固定 metricKey 全集
+  for (const [key, cov] of Object.entries(report.coverage)) {
+    push([
+      'coverage', key, '', STATE_LABELS[cov.status] ?? cov.status, cov.status, cov.source,
+      (cov.reasonCodes ?? []).join('|'),
+      cov.coverageRatio === undefined ? '' : cov.coverageRatio === null ? 'null' : String(cov.coverageRatio),
+      cov.exactCoverage === undefined ? '' : String(cov.exactCoverage),
+      '', '', ''
+    ])
+  }
+
+  // metric + detail：A 组
+  const summaryDefs: Array<[string, string, { value: number | null; state: string }, (v: number) => string]> = [
+    ['summary.customerTotal', '客户总数', report.summary.customerTotal, fmtInt],
+    ['summary.customerNew', '年度新增客户', report.summary.customerNew, fmtInt],
+    ['summary.customerActive', '年度活跃客户', report.summary.customerActive, fmtInt],
+    ['summary.contractCount', '年度签约合同数', report.summary.contractCount, fmtInt],
+    ['summary.contractAmount', '年度签约合同金额', report.summary.contractAmount, fmtAmount],
+    ['summary.creditedAmount', '年度已核销回款金额', report.summary.creditedAmount, fmtAmount],
+    ['summary.shippedCount', '年度已发货合同数', report.summary.shippedCount, fmtInt],
+    ['summary.shippedAmount', '年度已发货合同金额', report.summary.shippedAmount, fmtAmount],
+    ['summary.dealingCustomers', '成交客户数', report.summary.dealingCustomers, fmtInt],
+    ['summary.avgDealSize', '客单价', report.summary.avgDealSize, fmtAmount]
+  ]
+  for (const [key, label, metric, fmt] of summaryDefs) {
+    push(['metric', key, label, metricText(metric, fmt), metric.state, '', '', '', '', '', '', ''])
+  }
+
+  // B 组：状态行 + 分布明细
+  const funnelDefs: Array<[string, string, { distribution: Array<{ bucket: string; count: number }> | null; coverage: { status: string; source: string; reasonCodes?: string[] } }]> = [
+    ['funnel.customerStage', '客户阶段分布', report.funnel.customerStage],
+    ['funnel.opportunityStage', '商机阶段分布', report.funnel.opportunityStage]
+  ]
+  for (const [key, label, block] of funnelDefs) {
+    push(['metric', key, label, block.coverage.status === 'unavailable' || block.distribution === null ? '不可用' : '见 detail', block.coverage.status, block.coverage.source, (block.coverage.reasonCodes ?? []).join('|'), '', '', '', '', ''])
+    if (block.distribution !== null && block.coverage.status !== 'unavailable') {
+      for (const row of block.distribution) push(['detail', key, `${label}·${row.bucket}`, fmtInt(row.count), '', '', '', '', '', '', '', ''])
     }
-    const isAmount = key === 'contractAmount' || key === 'creditedAmount' || key === 'shippedAmount' || key === 'avgDealSize'
-    push(label[key] ?? key, '年度经营摘要', metric, isAmount ? fmtAmount : fmtInt)
   }
-  for (const [title, block] of [['客户阶段分布', report.funnel.customerStage], ['商机阶段分布', report.funnel.opportunityStage]] as const) {
-    for (const row of block.distribution ?? []) push(`${title}·${row.bucket}`, '漏斗与阶段', { value: row.count, state: block.coverage.status })
+  push(['metric', 'funnel.stageFlow', '年内阶段流转', '见 detail', report.funnel.stageFlow.coverage.status, report.funnel.stageFlow.coverage.source, (report.funnel.stageFlow.coverage.reasonCodes ?? []).join('|'), '', '', '', '', ''])
+  for (const row of report.funnel.stageFlow.distribution) {
+    push(['detail', 'funnel.stageFlow', `阶段流转·${row.bucket}`, fmtInt(row.count), '', '', '', '', '', '', '', ''])
   }
-  for (const row of report.funnel.stageFlow.distribution) push(`阶段流转·${row.bucket}`, '漏斗与阶段', { value: row.count, state: report.funnel.stageFlow.coverage.status })
-  push('停滞客户', '漏斗与阶段', { value: report.funnel.stuck.value, state: report.funnel.stuck.coverage.status })
-
-  // 客户列表统一为计数行（明细条目在 Markdown；CSV 不导出可回溯身份的组合列）
-  for (const [label, block] of [
-    ['高价值客户', report.customers.highValue], ['新增客户', report.customers.newCustomers],
-    ['成交客户', report.customers.dealing], ['复购客户', report.customers.repeat],
-    ['活跃客户', report.customers.active], ['沉默客户', report.customers.silent],
-    ['流失风险客户', report.customers.risk], ['当前重点推进客户', report.customers.priority]
-  ] as const) {
-    push(`${label}·人数`, '客户经营', { value: block.value === null ? null : block.value.length, state: block.coverage.status })
+  push(['metric', 'funnel.stuck', '停滞客户', metricText({ value: report.funnel.stuck.value, state: report.funnel.stuck.coverage.status }, fmtInt), report.funnel.stuck.coverage.status, report.funnel.stuck.coverage.source, (report.funnel.stuck.coverage.reasonCodes ?? []).join('|'), '', '', '', '', ''])
+  push(['metric', 'funnel.lostBreakdown', '流失归因', report.funnel.lostBreakdown.coverage.status === 'unavailable' || report.funnel.lostBreakdown.customerPreviousStage === null ? '不可用' : '见 detail', report.funnel.lostBreakdown.coverage.status, report.funnel.lostBreakdown.coverage.source, (report.funnel.lostBreakdown.coverage.reasonCodes ?? []).join('|'), '', '', '', '', ''])
+  if (report.funnel.lostBreakdown.customerPreviousStage !== null && report.funnel.lostBreakdown.coverage.status !== 'unavailable') {
+    for (const row of report.funnel.lostBreakdown.customerPreviousStage) {
+      push(['detail', 'funnel.lostBreakdown', `流失前档位·${row.bucket}`, fmtInt(row.count), '', '', '', '', '', '', '', ''])
+    }
+    for (const row of report.funnel.lostBreakdown.opportunityReasons ?? []) {
+      push(['detail', 'funnel.lostBreakdown', `商机流失原因·${row.reason}`, fmtInt(row.count), '', '', '', '', '', '', '', ''])
+    }
   }
 
-  push('年度客户消息量', '沟通质量', report.communication.volume)
-  push('有沟通客户数', '沟通质量', report.communication.contacted)
-  push('主动联系率', '沟通质量', report.communication.outboundRate, (v) => `${Math.round(v * 100)}%`)
-  for (const m of report.communication.monthlyTrend.months ?? []) {
-    push(`月度趋势·${m.month}`, '沟通质量', { value: m.count, state: report.communication.monthlyTrend.state })
+  // C 组：计数 + 明细
+  const customerDefs: Array<[string, string, { value: unknown[] | null; coverage: { status: string; source: string; reasonCodes?: string[] } }]> = [
+    ['customers.highValue', '高价值客户', report.customers.highValue],
+    ['customers.newCustomers', '新增客户', report.customers.newCustomers],
+    ['customers.dealing', '成交客户', report.customers.dealing],
+    ['customers.repeat', '复购客户', report.customers.repeat],
+    ['customers.active', '活跃客户', report.customers.active],
+    ['customers.silent', '沉默客户', report.customers.silent],
+    ['customers.risk', '流失风险客户', report.customers.risk],
+    ['customers.priority', '当前重点推进客户', report.customers.priority]
+  ]
+  for (const [key, label, block] of customerDefs) {
+    push(['metric', key, label, block.coverage.status === 'unavailable' || block.value === null ? '不可用' : fmtInt(block.value.length), block.coverage.status, block.coverage.source, (block.coverage.reasonCodes ?? []).join('|'), '', '', '', '', ''])
   }
-  push('长期未联系客户·人数', '沟通质量', { value: report.communication.longSilent.value === null ? null : report.communication.longSilent.value.length, state: report.communication.longSilent.state })
 
-  push('初始分配', '销售与分配', { value: report.salesAssignment.assignedFacts.initialAssignments.total, state: report.salesAssignment.coverage.status })
-  push('移交转入', '销售与分配', { value: report.salesAssignment.assignedFacts.transfersIn.total, state: report.salesAssignment.coverage.status })
-  push('移交转出', '销售与分配', { value: report.salesAssignment.assignedFacts.transfersOut.total, state: report.salesAssignment.coverage.status })
-  push('有效跟进客户', '销售与分配', report.salesAssignment.effectiveFollowup)
+  // D 组
+  push(['metric', 'communication.volume', '年度客户消息量', metricText(report.communication.volume, fmtInt), report.communication.volume.state, 'wcdb.messages', (report.communication.volume.warnings.map((w) => w.code)).join('|'), '', '', '', '', ''])
+  push(['metric', 'communication.contacted', '有沟通客户数', metricText(report.communication.contacted, fmtInt), report.communication.contacted.state, '', '', '', '', '', '', ''])
+  push(['metric', 'communication.outboundRate', '主动联系率', metricText(report.communication.outboundRate, (v) => `${Math.round(v * 100)}%`), report.communication.outboundRate.state, '', '', '', '', '', '', ''])
+  if (report.communication.monthlyTrend.months !== null) {
+    for (const p of report.communication.monthlyTrend.months) {
+      push(['detail', 'communication.monthlyTrend', `月度沟通·${p.month}`, fmtInt(p.count), '', '', '', '', '', '', '', ''])
+    }
+  }
+  push(['metric', 'communication.longSilent', '长期未联系客户', report.communication.longSilent.value === null ? '不可用' : fmtInt(report.communication.longSilent.value.length), report.communication.longSilent.state, '', '', '', '', '', '', ''])
+
+  // 月度趋势（三序列 detail）
+  for (const p of report.monthly.contractSign.months ?? []) {
+    push(['detail', 'monthly.contractSign', `签约金额·${p.month}`, fmtAmount(p.amount), report.monthly.contractSign.state, '', '', '', '', '', '', ''])
+  }
+  for (const p of report.monthly.credited.months ?? []) {
+    push(['detail', 'monthly.credited', `核销回款·${p.month}`, fmtAmount(p.amount), report.monthly.credited.state, '', '', '', '', '', '', ''])
+  }
+  for (const p of report.monthly.messageVolume.months ?? []) {
+    push(['detail', 'monthly.messageVolume', `客户消息量·${p.month}`, fmtInt(p.count), report.monthly.messageVolume.state, '', '', '', '', '', '', ''])
+  }
+
+  // E 组
+  const e1State = report.salesAssignment.coverage.status
+  push(['metric', 'salesAssignment.assignedFacts', '初始分配', fmtInt(report.salesAssignment.assignedFacts.initialAssignments.total), e1State, report.salesAssignment.coverage.source, (report.salesAssignment.coverage.reasonCodes ?? []).join('|'), report.salesAssignment.coverage.coverageRatio === undefined ? '' : report.salesAssignment.coverage.coverageRatio === null ? 'null' : String(report.salesAssignment.coverage.coverageRatio), report.salesAssignment.coverage.exactCoverage === undefined ? '' : String(report.salesAssignment.coverage.exactCoverage), '', '', ''])
+  for (const g of report.salesAssignment.assignedFacts.initialAssignments.groups) {
+    push(['detail', 'salesAssignment.assignedFacts', `初始分配·${g.salesName ?? '未署名'}${g.mode ? `/${g.mode}` : ''}`, fmtInt(g.count), '', '', '', '', '', '', '', ''])
+  }
+  push(['metric', 'salesAssignment.transfersIn', '移交转入', fmtInt(report.salesAssignment.assignedFacts.transfersIn.total), e1State, '', '', '', '', '', '', ''])
+  for (const g of report.salesAssignment.assignedFacts.transfersIn.groups) {
+    push(['detail', 'salesAssignment.transfersIn', `移交转入·${g.salesName ?? '未署名'}`, fmtInt(g.count), '', '', '', '', '', '', '', ''])
+  }
+  push(['metric', 'salesAssignment.transfersOut', '移交转出', fmtInt(report.salesAssignment.assignedFacts.transfersOut.total), e1State, '', '', '', '', '', '', ''])
+  push(['metric', 'salesAssignment.effectiveFollowup', '有效跟进客户', metricText(report.salesAssignment.effectiveFollowup, fmtInt), report.salesAssignment.effectiveFollowup.state, '', '', '', '', '', '', ''])
   for (const row of report.salesAssignment.contractContribution.value ?? []) {
-    push(`合同贡献·${row.ownerSales ?? '未归属'}`, '销售与分配', { value: row.totalAmount, state: report.salesAssignment.contractContribution.state }, fmtAmount)
+    push(['detail', 'salesAssignment.contractContribution', `合同贡献·${row.ownerSales ?? '未归属'}`, fmtAmount(row.totalAmount), report.salesAssignment.contractContribution.state, '', '', '', '', '', '', `${row.contractCount} 份`])
   }
   for (const row of report.salesAssignment.creditedContribution.value ?? []) {
-    push(`核销回款贡献·${row.salesName ?? '未认领'}`, '销售与分配', { value: row.totalAmount, state: report.salesAssignment.creditedContribution.state }, fmtAmount)
+    push(['detail', 'salesAssignment.creditedContribution', `核销回款贡献·${row.salesName ?? '未认领'}`, fmtAmount(row.totalAmount), report.salesAssignment.creditedContribution.state, '', '', '', '', '', '', ''])
+  }
+  if (report.salesAssignment.coverage.status === 'partial') {
+    push(['note', 'salesAssignment.syncGap', 'sync 缺口', '检测到中枢下发的分配/移交记录；当前统计只覆盖本机审计事件，实际总量可能更高（不显示覆盖率）', '', '', '', '', '', '', '', ''])
   }
 
-  const lines: string[] = ['指标,区块,值,状态']
-  for (const row of rows) {
-    lines.push([escapeCsvCell(row.metric), escapeCsvCell(row.scope), escapeCsvCell(row.value), escapeCsvCell(row.state)].join(','))
+  // warning
+  for (const w of report.warnings) {
+    const count = w.counts && Object.values(w.counts).some((n) => n > 0) ? Math.max(...Object.values(w.counts)) : ''
+    push(['warning', w.code, w.message, '', '', '', '', '', '', w.metricKeys.join('|'), count, ''])
   }
-  return CSV_BOM + lines.join('\r\n') + '\r\n'
+
+  // source
+  for (const s of report.sourceSummary) {
+    push(['source', s.source, s.tables.join(' / '), fmtInt(s.rows), '', '', '', '', '', '', '', s.note ?? ''])
+  }
+
+  // note：E8 三句 + 口径声明
+  for (const sentence of E8_NOTES) {
+    push(['note', 'e8', '分配统计说明', sentence, '', '', '', '', '', '', '', ''])
+  }
+  push(['note', 'perspective', '视角声明', '本报告为本机数据视角；「当前快照」为截至生成时间的投影，「历史年末重建」为事件流重放结果。', '', '', '', '', '', '', '', ''])
+  push(['note', 'unavailable', '不可用语义', '「不可用」表示当前数据无法可靠统计（不显示为 0）；「部分完整」附有降级原因。', '', '', '', '', '', '', '', ''])
+  push(['note', 'timezone', '统计口径', '本地时区；金额单位为元；历史年度联系时间类指标不可重建。', '', '', '', '', '', '', '', ''])
+
+  return CSV_BOM + HEADER + '\r\n' + rows.join('\r\n') + '\r\n'
 }

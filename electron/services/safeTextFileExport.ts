@@ -25,6 +25,10 @@ const MAX_LEAF_LENGTH = 200
 export interface SafeTextExportDeps {
   /** 授权钩子（缺省 = 进程级 exportPathAuthorizer.assertAllowed）；抛错 = 拒绝导出 */
   assertAllowed?: (targetPath: string, expect: GrantKind) => void
+  /** 写入窄接口（可注入：测试部分写/失败路径）；语义 = fs.writeSync(fd, buffer, offset, length) */
+  write?: (fd: number, buffer: Buffer, offset: number, length: number) => number
+  /** 字节核验窄接口（可注入）；语义 = fs.fstatSync(fd).size */
+  fstat?: (fd: number) => { size: number }
 }
 
 export interface SafeTextFileRequest {
@@ -93,11 +97,21 @@ export function exportTextFile(req: SafeTextFileRequest, deps: SafeTextExportDep
   } catch { /* 尚不存在：正常路径 */ }
   let fd: number | null = null
   let created = false
+  const buffer = Buffer.from(req.content, 'utf8')
+  const writeFn = deps.write ?? writeSync
+  const fstatFn = deps.fstat ?? fstatSync
   try {
     fd = openSync(targetPath, 'wx', 0o600) // 独占创建：已存在（含链接）→ EEXIST
     created = true
-    writeSync(fd, Buffer.from(req.content, 'utf8'))
-    const size = fstatSync(fd).size
+    // 完整写循环：writeSync 单次可能部分写入——循环写满全部字节，绝不把部分写当成功
+    let written = 0
+    while (written < buffer.length) {
+      const n = writeFn(fd, buffer, written, buffer.length - written)
+      if (!Number.isFinite(n) || n <= 0) throw new Error('写入停滞')
+      written += n
+    }
+    const size = fstatFn(fd).size
+    if (size !== bytes) throw new Error('写入字节数与预期不一致') // 落盘字节数必须等于 UTF-8 字节数
     closeSync(fd)
     fd = null
     return { ok: true, path: targetPath, bytes: size }
