@@ -309,7 +309,9 @@ SLA 定时回收、LAN/中央下行 assign/transfer/recycle、历史导入、纠
 assignment 归属后，主进程广播给全部存活窗口；页面订阅后自行重拉所需数据。纪律：
 
 - **只在写事务成功提交后通知**；失败/回滚不发。事件由主进程轻量总线
-  （`assignmentInvalidationBus`，零 Electron 依赖）发往 IPC 注册层桥接 BrowserWindow；
+  （`assignmentInvalidationBus`，零 Electron 依赖）发往 IPC 注册层桥接 BrowserWindow。本总线
+  **只服务 Assignment 页面/UI 刷新，不参与年度复盘失效链路**（年度复盘失效的唯一入口是写事务内的
+  changed 标记，见下文年度经营复盘一节）；
 - **最小载荷** `{ action: 'assign' \| 'claim' \| 'recycle' \| 'transfer'（合并多动作时按
   assign,claim,recycle,transfer 固定顺序逗号连接）, leadIds: number[]（去重升序）, at: number }`，
   **不含联系方式、聊天内容或任何客户敏感字段**；页面收到后重拉，不回传行内容；
@@ -464,15 +466,15 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 **失效范围 = 显式白名单（默认不影响年度复盘）**。只有年报复盘**真实读取**的数据源才触发失效；
 其余写入（含高频后台写）不触发。白名单是唯一事实源（`ANNUAL_REVIEW_*_SOURCE_TABLES` /
 `ANNUAL_REVIEW_AUDIT_ACTIONS`），声明方式为**类型化调用点声明**（`create/update` 的 entity 参数、
-`runTx(fn, { affectsAnnualReview })` 选项、`announceAnnualReview*Write` 辅助函数），**不做 SQL
-字符串匹配**：
+事务内 `tx.markAnnualReviewChanged(reason)` / `tx.markAnnualReviewChangedIfWrote(reason)` 标记、
+`announceAnnualReview*Write` 辅助函数），**不做 SQL 字符串匹配**：
 
 | 数据源 | 触发方式 | 说明 |
 |---|---|---|
-| crmDb `account` / `contract` / `allocation` / `contract_status_history` / `assignment` / `lead` / `opportunity` / `opportunity_event` | `create()` / `update()` 按 entity 自动声明；原始 SQL 事务在调用点显式声明 `affectsAnnualReview` | A/C 组客户与合同指标、B1/B2 漏斗、B7 归因、E 组分配事实 |
+| crmDb `account` / `contract` / `allocation` / `contract_status_history` / `assignment` / `lead` / `opportunity` / `opportunity_event` | `create()` / `update()` 按 entity 自动声明；原始 SQL 事务在事务内显式标记 `markAnnualReviewChanged` / `markAnnualReviewChangedIfWrote` | A/C 组客户与合同指标、B1/B2 漏斗、B7 归因、E 组分配事实 |
 | crmDb `audit_event` 仅 `lead_assign` / `lead_transfer` / `sync_apply` | `auditAppend()` / `create('audit_event')` 按 **action** 条件声明 | E1 分配事实与 sync 缺口检测 |
 | salesDb `customer_profile` / `intent_tag_log` | `customerUpsert` / `setCustomerProfileCustomerId` / `updateStageChangeTime` / `intentCreate` 显式声明 | B1/B3 阶段分布与流转 |
-| Assignment 归属变化（含 LAN/中央下行应用成功） | `assignmentInvalidationBus`（提交后 emit，`applied` 才发）经 `bridgeAssignmentInvalidationToAnnualReview` 汇入同一事实 | 比静态声明更精确：conflict/nolead/脏类型不发 |
+| Assignment / CRM / LAN·Central sync 归属变化写路径 | 在**各自真实写事务内**显式标记对应 reason（如 `crm:assignment`、`crm:lead`、`crm:audit_event:sync_apply`）；conflict / nolead / 脏类型分支零标记 | `assignmentInvalidationBus` 只负责 Assignment UI 刷新，**不再桥接**年度复盘失效总线 |
 | WCDB 切号 / 重连 | `wcdbService.open()` 返回 true 的**稳定成功点** | 只覆盖「连接建立成功」 |
 | 手动排除名单 / 内部人员名单 | `main.ts` 的 `config:set` 写成功后**立即**上报（`config_exclusions`） | 无合并窗口 |
 | 账号切换 / salesDb·crmDb reopen / 归档逃生舱 | 三处**立即**上报（`account_switch`） | 无合并窗口，同时终止运行中任务 |
@@ -499,6 +501,9 @@ crmDbService.runTx((tx) => {
 - **默认无标记 = 不影响年度复盘**：空事务、条件 UPDATE 命中 0 行、只写 `scan_state` / `outbox_event` /
   `migration_report` / `migration_dismissal` 的事务一律不失效；
 - 标记只在 **COMMIT + persist 成功后**统一派发；ROLLBACK 与抛错路径不派发；
+- **一次事务 = 一次批量广播**：同一事务标记的多个不同 reason 先**去重并稳定排序**，提交后由批量发布函数
+  `announceAnnualReviewDataChangedMany` 作为**一条事件**一次性派发（计数恒为 1）；**禁止**按 reason
+  逐条派发，也**不依赖** 150ms 窗口碰巧合并同一次提交；
 - reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配；
 - `markAnnualReviewChangedIfWrote` 读的是「最近一条 INSERT/UPDATE/DELETE 的影响行数」，必须**紧跟在目标
   写语句之后**（读语句不影响该计数）；
