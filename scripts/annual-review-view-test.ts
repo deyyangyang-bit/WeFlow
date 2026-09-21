@@ -21,6 +21,7 @@ import {
   identityLabelSafe,
   initialAnnualReviewState,
   reduceProgressEvent,
+  reduceReportResult,
   reduceTerminalEvent,
   METRIC_STATE_LABELS,
   type AnnualReviewApi,
@@ -62,6 +63,14 @@ const sales: AnnualReviewSalesSegmentsFacts = { profiles: [{ id: 1, sessionId: '
 const crm: AnnualReviewCrmSegmentsFacts = { opportunities: [], opportunityEvents: [] }
 const messageStats: AnnualReviewMessageStats = { ok: true, sessions: { wxid_secret999: { sent: 2, received: 1 } } }
 const realReport: AnnualReviewReport = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2025, GEN), facts, sales, crm, opts: { messageStats } })
+/**
+ * controller 测试的默认年份来自假 API 的 defaultYear=2021（证明 UI 不本地推断当前年），
+ * 因此 getReport 必须返回 **2021 的报告**：请求年份与报告年份不一致会被 fail-closed 拒绝
+ * （report_year_mismatch），不能再拿 2025 的报告冒充成功。
+ */
+const report2021: AnnualReviewReport = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2021, GEN), facts, sales, crm, opts: { messageStats } })
+/** 历史以来（year=0）的合法报告：0 是合法年份值，参与同一套年份一致性比对 */
+const reportAllTime: AnnualReviewReport = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(0, GEN), facts, sales, crm, opts: { messageStats } })
 
 // ── 假 API ──
 interface FakeApi {
@@ -137,6 +146,29 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
   return fake
 }
 
+/**
+ * 手动控制 generate 启动响应时序的 controller 夹具：loadYears 后发起生成，但**不**自动
+ * resolve 启动响应，由用例在「响应前/响应后」精确投放进度事件。
+ */
+async function startManual(reportResults: FakeApi['reportResults']): Promise<{ fake: FakeApi; ctrl: ReturnType<typeof createAnnualReviewController> }> {
+  const fake = createFakeApi({ reportResults, manualStart: true })
+  const ctrl = createAnnualReviewController(fake.api)
+  await ctrl.loadYears()
+  await tick()
+  ctrl.startGenerate()
+  await tick()
+  return { fake, ctrl }
+}
+
+/** 生成 N 条普通进度事件（taskId 由回调决定：同 taskId = 合并场景，不同 taskId = 洪泛场景） */
+function progressEvents(count: number, taskId: (i: number) => string = () => 'g1', year = 2021): AnnualReviewProgressEvent[] {
+  const out: AnnualReviewProgressEvent[] = []
+  for (let i = 0; i < count; i++) {
+    out.push({ taskId: taskId(i), year, phase: 'computing', progress: (i % 90) + 1, done: false })
+  }
+  return out
+}
+
 async function main(): Promise<void> {
   // ══ 1 年份列表与默认年份（来自主进程，UI 不本地推断） ═══════════════════════
   {
@@ -175,7 +207,7 @@ async function main(): Promise<void> {
 
   // ══ 3 生成成功（completed 终态事件 → getReport → 渲染） ═══════════════════
   {
-    const fake = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }] })
+    const fake = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }] })
     const ctrl = createAnnualReviewController(fake.api)
     await ctrl.loadYears()
     await tick()
@@ -185,7 +217,7 @@ async function main(): Promise<void> {
     fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
     await tick(); await tick()
     const s = ctrl.getState()
-    ok('3 completed 事件驱动渲染 done', s.phase === 'done' && s.report?.year === 2025)
+    ok('3 completed 事件驱动渲染 done（请求 2021 → 报告 year=2021）', s.phase === 'done' && s.report?.year === 2021)
     ok('3b overall 徽标档位', s.overallBadge === 'unavailable')
     ok('3c 渲染后生成状态清理（taskId 置空、不可取消）', s.generation.taskId === null && s.generation.cancellable === false)
     ctrl.dispose()
@@ -407,20 +439,9 @@ async function main(): Promise<void> {
   // 主进程 start() 在 IPC 返回 taskId 之前就已启动任务（快速任务可能先发出 completed/
   // failed/cancelled）。手动控制启动响应时序，逐条复现「事件先行」。
   {
-    const startManual = async (reportResults: FakeApi['reportResults']): Promise<{ fake: FakeApi; ctrl: ReturnType<typeof createAnnualReviewController> }> => {
-      const fake = createFakeApi({ reportResults, manualStart: true })
-      const ctrl = createAnnualReviewController(fake.api)
-      await ctrl.loadYears()
-      await tick()
-      ok('13 setup pending idle', ctrl.getState().phase === 'idle')
-      ctrl.startGenerate()
-      await tick()
-      return { fake, ctrl }
-    }
-
     // 13a completed 在 generate 响应前到达 → 不丢失，最终渲染报告（不停在 generating）
     {
-      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }])
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
       ok('13a0 响应未到：taskId 仍为空但已进入 generating（可暂存）',
         ctrl.getState().phase === 'generating' && ctrl.getState().generation.taskId === null)
       fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 60, done: false })
@@ -428,7 +449,7 @@ async function main(): Promise<void> {
       fake.gates[0].resolve({ success: true, taskId: 'g1' })
       await tick(); await tick(); await tick()
       const s = ctrl.getState()
-      ok('13a 响应前 completed 不丢失 → done + 报告可用', s.phase === 'done' && s.report?.year === 2025 &&
+      ok('13a 响应前 completed 不丢失 → done + 报告可用', s.phase === 'done' && s.report?.year === 2021 &&
         s.generation.taskId === null)
       ctrl.dispose()
     }
@@ -494,7 +515,7 @@ async function main(): Promise<void> {
 
     // 13f 正常路径不回归：响应后 progress → completed → done；响应前 loading 进度也被回放
     {
-      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }])
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
       fake.emit({ taskId: 'g1', year: 2021, phase: 'loading', progress: 5, done: false, statusText: '加载本地业务数据' })
       fake.gates[0].resolve({ success: true, taskId: 'g1' })
       await tick()
@@ -517,6 +538,233 @@ async function main(): Promise<void> {
       const s = ctrl.getState()
       ok('13g 快速 completed + 缓存 miss → idle（可重新生成，不停在 generating）',
         s.phase === 'idle' && s.phase !== 'generating' && s.generation.taskId === null)
+      ctrl.dispose()
+    }
+  }
+
+  // ══ 14 有界暂存：终态不因容量上限丢失（P1 回归） ═════════════════════════════
+  // 暂存结构按 taskId 合并（每 taskId ≤1 条最新普通进度 + ≤1 条终态，终态优先），
+  // taskId 数量上限 64；容量满时优先淘汰「无终态」的最旧条目。
+  {
+    // 14a–14c：64 条普通进度（占满容量）后，第 65 条为当前任务终态
+    for (const terminal of [
+      { label: 'completed', event: { phase: 'completed' as const, error: undefined } },
+      { label: 'failed', event: { phase: 'failed' as const, error: { code: 'worker_error', message: '失败' } } },
+      { label: 'cancelled', event: { phase: 'failed' as const, error: { code: 'cancelled', message: '年度复盘生成已取消' } } }
+    ]) {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      for (const e of progressEvents(64, (i) => `flood-${i}`)) fake.emit(e) // 64 个无关 taskId 占满容量
+      fake.emit({ taskId: 'g1', year: 2021, phase: terminal.event.phase, progress: 100, done: true, error: terminal.event.error })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      const expected = terminal.label === 'completed' ? 'done' : terminal.label === 'cancelled' ? 'cancelled' : 'failed'
+      ok(`14 64 条普通进度占满后第 65 条 ${terminal.label} 不丢失 → ${expected}`, s.phase === expected &&
+        s.phase !== 'generating' && s.generation.taskId === null)
+      ctrl.dispose()
+    }
+
+    // 14d：同 taskId 超过 64 条普通进度 → 合并为一条（缓存有界）且进度不回退
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      for (const e of progressEvents(200, () => 'g1')) fake.emit(e) // 200 条同 taskId 进度（progress 1..90 循环）
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 90, done: false, statusText: '最后一条' })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('14d 同 taskId 200 条进度合并为一条：保留最高进度（不回退）+ 最新文案',
+        ctrl.getState().phase === 'generating' && ctrl.getState().generation.progress === 90 &&
+        ctrl.getState().generation.statusText === '最后一条')
+      ctrl.dispose()
+    }
+
+    // 14e：同 taskId 进度不回退（后到的低进度不覆盖高进度，但文案取最新——与实时路径同语义）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 80, done: false, statusText: '计算年度统计' })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 20, done: false, statusText: '重新计算' })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('14e 回放进度不回退（保留最高进度）+ 文案取最新',
+        ctrl.getState().generation.progress === 80 && ctrl.getState().generation.statusText === '重新计算')
+      ctrl.dispose()
+    }
+
+    // 14f：多 taskId 洪泛（500 个）仍有界且当前任务终态收敛
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      for (const e of progressEvents(500, (i) => `flood-${i}`)) fake.emit(e)
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('14f 500 个 taskId 洪泛后当前任务 completed 仍收敛 done', ctrl.getState().phase === 'done' &&
+        ctrl.getState().report?.year === 2021)
+      ctrl.dispose()
+    }
+
+    // 14g：64 条终态占满容量后，当前任务终态仍不被丢弃（淘汰最旧终态 → 新终态入区）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      for (let i = 0; i < 64; i++) {
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true })
+      }
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('14g 64 条终态占满后当前任务终态仍被保留 → done', ctrl.getState().phase === 'done')
+      ctrl.dispose()
+    }
+
+    // 14h：当前任务终态先入区后被终态洪泛挤出 → 绑定后走权威缓存对账收敛（绝不永久 generating）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true }) // 先入区（最旧）
+      for (let i = 0; i < 64; i++) {
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true }) // 全部带终态 → 挤出 g1
+      }
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('14h 终态被容量淘汰时绑定后对账收敛（缓存命中 → done，不停 generating）',
+        s.phase === 'done' && s.report?.year === 2021)
+      ctrl.dispose()
+    }
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      for (let i = 0; i < 64; i++) {
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true })
+      }
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('14h2 终态被淘汰且缓存无报告 → idle（可重新生成，绝不停 generating）',
+        s.phase === 'idle' && s.phase !== 'generating' && s.report === null)
+      ctrl.dispose()
+    }
+
+    // 14i：无关 taskId 事件不污染当前任务（回放只接受绑定的 taskId）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'other', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.emit({ taskId: 'other-year', year: 2025, phase: 'computing', progress: 99, done: false })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 30, done: false })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('14i 无关 taskId/其他年份事件不污染（仍 generating，仅当前进度）',
+        ctrl.getState().phase === 'generating' && ctrl.getState().generation.progress === 30)
+      ctrl.dispose()
+    }
+
+    // 14j：启动失败 / 切年 / 重新生成 / dispose 后暂存正确清理
+    {
+      // 启动失败：暂存事件不得驱动状态，也不得留给下一次生成
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: false, error: { code: 'invalid_year', message: '非法年份' } })
+      await tick(); await tick()
+      ok('14j 启动失败 → failed 且暂存清理', ctrl.getState().phase === 'failed' && ctrl.getState().report === null)
+      ctrl.dispose()
+
+      // 切年：迟到的启动响应走 stale 分支并清理暂存
+      const f2 = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }], manualStart: true })
+      const c2 = createAnnualReviewController(f2.api)
+      await c2.loadYears()
+      await tick()
+      c2.startGenerate()
+      await tick()
+      f2.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      c2.selectYear(2025)
+      f2.gates[0].resolve({ success: true, taskId: 'g1' }) // 迟到的启动响应
+      await tick(); await tick()
+      ok('14j2 切年后迟到启动响应不展示暂存终态（phase ≠ done）',
+        c2.getState().phase !== 'done' && c2.getState().report === null && f2.calls.cancel >= 1)
+      c2.dispose()
+
+      // 重新生成：新代际清空旧暂存
+      const f3 = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }], manualStart: true })
+      const c3 = createAnnualReviewController(f3.api)
+      await c3.loadYears()
+      await tick()
+      c3.startGenerate()
+      await tick()
+      f3.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      c3.startGenerate() // 重新生成：清空暂存
+      await tick()
+      f3.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick()
+      ok('14j3 重新生成清空旧暂存（旧终态不收敛新代际）',
+        c3.getState().phase === 'generating' && c3.getState().report === null)
+      c3.dispose()
+
+      // dispose：卸载后不再回放
+      const f4 = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }], manualStart: true })
+      const c4 = createAnnualReviewController(f4.api)
+      await c4.loadYears()
+      await tick()
+      c4.startGenerate()
+      await tick()
+      f4.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      c4.dispose()
+      f4.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick()
+      ok('14j4 dispose 后暂存不再回放（状态不因迟到终态改变）',
+        c4.getState().phase !== 'done' && c4.getState().report === null)
+    }
+  }
+
+  // ══ 15 报告年份一致性（P2 回归）：请求年份 ≠ 报告年份一律 fail-closed ════════
+  {
+    const loadingState = (over: Partial<ReturnType<typeof initialAnnualReviewState>> = {}) => ({
+      ...initialAnnualReviewState(), phase: 'loading' as const, selectedYear: 2021, ...over
+    })
+    const hit = (report: AnnualReviewReport) => ({ success: true as const, cache: 'hit' as const, report })
+
+    ok('15 请求 2021 → 报告 2021 → done',
+      reduceReportResult(loadingState(), hit(report2021), 2021).phase === 'done')
+    const mismatch = reduceReportResult(loadingState(), hit(realReport), 2021) // 报告是 2025
+    ok('15b 请求 2021 → 报告 2025 → failed/report_year_mismatch（拒绝渲染）',
+      mismatch.phase === 'failed' && mismatch.error?.code === 'report_year_mismatch' && mismatch.report === null)
+    const withPrev = reduceReportResult(
+      { ...loadingState(), report: report2021, overallBadge: 'partial' as const },
+      hit(realReport), 2021
+    )
+    ok('15c 拒绝时不保留上一份报告与徽标', withPrev.report === null && withPrev.overallBadge === 'unavailable')
+    const switched = reduceReportResult({ ...loadingState(), selectedYear: 2025 }, hit(report2021), 2021)
+    ok('15d state.selectedYear 已切到其他年份 → 迟到结果拒绝展示',
+      switched.phase === 'failed' && switched.error?.code === 'report_year_mismatch' && switched.report === null)
+    ok('15e 请求 0（历史以来）→ 报告 0 → done',
+      reduceReportResult({ ...loadingState(), selectedYear: 0 }, hit(reportAllTime), 0).phase === 'done')
+    ok('15f 请求 0 → 自然年份报告 → 拒绝',
+      reduceReportResult({ ...loadingState(), selectedYear: 0 }, hit(realReport), 0).phase === 'failed')
+    ok('15g 请求 2025 → 报告 2025 → done（自然年份正向路径）',
+      reduceReportResult({ ...loadingState(), selectedYear: 2025 }, hit(realReport), 2025).phase === 'done')
+
+    // 15h：快速 completed 后 loadReport 返回错误年份 → failed（不得 done）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('15h 快速 completed + 错误年份报告 → failed（不得 done）',
+        s.phase === 'failed' && s.error?.code === 'report_year_mismatch' && s.report === null &&
+        s.overallBadge === 'unavailable')
+      ctrl.dispose()
+    }
+
+    // 15i：切年后迟到的 getReport 结果不展示（seq 隔离 + 年份校验，二者都在）
+    {
+      const fake = createFakeApi({ reportResults: [{ success: true, cache: 'miss' }, hit(report2021), { success: true, cache: 'miss' }] })
+      const ctrl = createAnnualReviewController(fake.api)
+      await ctrl.loadYears()
+      await tick()
+      const late = ctrl.loadReport(2021) // 消耗 hit(report2021)
+      ctrl.selectYear(2025)              // 切年：reportSeq 递增 + 新年份查询（miss）
+      await late
+      await tick()
+      const s = ctrl.getState()
+      ok('15i 切年后迟到的 2021 报告不得展示在 2025 下',
+        s.selectedYear === 2025 && s.report === null && s.phase !== 'done')
       ctrl.dispose()
     }
   }

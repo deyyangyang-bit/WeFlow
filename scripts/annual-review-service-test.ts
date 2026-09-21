@@ -853,7 +853,9 @@ async function main(): Promise<void> {
   {
     const emptySales = (): AnnualReviewSalesSegmentsFacts => ({ profiles: [], intentEvents: [] })
     const emptyCrm = (): AnnualReviewCrmSegmentsFacts => ({ opportunities: [], opportunityEvents: [] })
-    const con = (id: number, signDate: number | null, amount: number | null, status = 'signed', accountId = id): AnnualReviewFacts['contracts'][number] =>
+    // accountId 缺省 = 1（同一客户多合同 → 真实覆盖 C3/C4 复购行；上一轮为绕开
+    // validator 白名单缺陷曾刻意用不同 accountId，已修正）
+    const con = (id: number, signDate: number | null, amount: number | null, status = 'signed', accountId = 1): AnnualReviewFacts['contracts'][number] =>
       ({ id, accountId, amount, status, signDate })
     const alloc = (id: number, creditedAmount: number | null, reconciledAt: number | null, reconciliationStatus = 'allocated', confirmedAt: number | null = null): AnnualReviewFacts['allocations'][number] =>
       ({ id, accountId: 1, creditedAmount, reconciledAt, status: 'confirmed', reconciliationStatus, confirmedAt, contractId: 1 })
@@ -1019,6 +1021,50 @@ async function main(): Promise<void> {
       const good = clone(monthlyReport) as AnnualReviewReport
       if (good.customers.highValue.value !== null) good.customers.highValue.value = [{ accountId: 1, name: '甲', creditedAmount: 0, contractAmount: 0 }]
       return validateAnnualReviewReport(good, 2026).ok === true
+    })())
+
+    // ── 23f C4 复购行端到端：同一客户区间内 2 份合同 → repeat 行存在且 validator 通过 ──
+    const repeatReport = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: {
+        accounts: [{ id: 1, name: '复购客户', createdAt: T(2024, 1, 1), importedAt: null, sessionId: null, lastContactAtSec: null }],
+        contracts: [con(1, T(2026, 2, 1), 100), con(2, T(2026, 4, 1), 200)],
+        allocations: [], shippedEvents: []
+      },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    const repeatRows = repeatReport.customers.repeat.value ?? []
+    ok('23f 同一客户年内 2 份合同 → repeat 行 1 条且保留最早 firstSignDate',
+      repeatRows.length === 1 && repeatRows[0].accountId === 1 && repeatRows[0].contractCount === 2 &&
+      repeatRows[0].contractAmount === 300 && repeatRows[0].firstSignDate === T(2026, 2, 1))
+    ok('23f2 复购行报告通过 validator（不再被行形状拒绝）', validateAnnualReviewReport(repeatReport, 2026).ok === true)
+    ok('23f3 C4 排序/口径未变（与 C3 同一集合：dealing 同客户 contractCount=2）',
+      (repeatReport.customers.dealing.value ?? []).length === 1 &&
+      (repeatReport.customers.dealing.value ?? [])[0].contractCount === 2)
+
+    // ── 23g repeat 行 firstSignDate 反向校验（缺失/null/NaN/Infinity/0/负数/小数/未知字段） ──
+    const repeatRow = { accountId: 1, name: '甲', contractCount: 2, contractAmount: 300, firstSignDate: T(2026, 2, 1) }
+    const withRepeatRow = (row: Record<string, unknown>): boolean => {
+      const forged = clone(repeatReport) as AnnualReviewReport
+      forged.customers.repeat.value = [row as never]
+      return validateAnnualReviewReport(forged, 2026).ok === true
+    }
+    ok('23g 合法 repeat 行通过', withRepeatRow(repeatRow) === true)
+    ok('23g2 缺失 firstSignDate → 拒绝', withRepeatRow({ accountId: 1, name: '甲', contractCount: 2, contractAmount: 300 }) === false)
+    ok('23g3 firstSignDate=null → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: null }) === false)
+    ok('23g4 firstSignDate=NaN → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: Number.NaN }) === false)
+    ok('23g5 firstSignDate=Infinity → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: Number.POSITIVE_INFINITY }) === false)
+    ok('23g6 firstSignDate=0 → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: 0 }) === false)
+    ok('23g7 firstSignDate=负数 → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: -1 }) === false)
+    ok('23g8 firstSignDate=小数 → 拒绝', withRepeatRow({ ...repeatRow, firstSignDate: T(2026, 2, 1) + 0.5 }) === false)
+    ok('23g9 未知额外字段 → 拒绝', withRepeatRow({ ...repeatRow, extra: 1 }) === false)
+    ok('23g10 同一时间戳规则适用于 dealing 行', (() => {
+      const forged = clone(repeatReport) as AnnualReviewReport
+      if (forged.customers.dealing.value !== null && forged.customers.dealing.value.length > 0) {
+        forged.customers.dealing.value[0].firstSignDate = 0
+        return validateAnnualReviewReport(forged, 2026).ok === false
+      }
+      return false
     })())
   }
 

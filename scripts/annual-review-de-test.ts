@@ -2,7 +2,7 @@
  * annual-review-de-test.ts —— 年度经营复盘 S5 护栏（D 组沟通 / E 组销售与分配）
  *
  * 覆盖（规格 §5.4/§5.5 V1 必做项）：
- *   D1/D2/D3 正常路径与非法会话剔除（>20% → partial、分母 0 → unavailable）
+ *   D1/D2/D3 正常路径与非法会话剔除（任一非法即 partial、分母 0 → unavailable）
  *   D2 与 A3 同一结果（禁止第二套）
  *   D5 本地月聚合（历史 12 月 / 当前年截至生成月 / all_time 有数据月；缺月真实零）
  *   D7 180 天边界、won/lost 排除、排除名单、历史年度 unavailable
@@ -77,12 +77,12 @@ async function main(): Promise<void> {
     // D2 与 A3 同一结果（A3 主口径：wx_a 30>0、wx_b 40>0、wx_c 0 → 2 人）
     ok('D2 = A3 同一计算结果（2 人）', block.contacted.value === 2)
 
-    // 非法会话剔除（2/4 = 50% > 20% → partial；总量只计有效会话）
+    // 非法会话剔除（任一非法会话即 partial，无比例阈值；总量只计有效会话）
     const invalidStats = { ok: true, sessions: { wx_a: { sent: 10, received: 5 }, wx_b: { sent: Number.NaN, received: 1 }, wx_c: { sent: 2, received: undefined as unknown as number }, wx_d: { sent: 1, received: 1 } } }
     const block2 = computeAnnualReviewCommunication(period, inputs, { messageStats: invalidStats })
     ok('D1b 非法会话剔除并计数告警（2 条）', block2.volume.value === 17 && block2.volume.state === 'partial' &&
       block2.volume.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 2))
-    ok('D3b 非法比例 >20% → partial 且分子分母只含有效会话', Math.abs((block2.outboundRate.value as number) - 11 / 17) < 1e-12 && block2.outboundRate.state === 'partial')
+    ok('D3b 任一非法即 partial 且分子分母只含有效会话', Math.abs((block2.outboundRate.value as number) - 11 / 17) < 1e-12 && block2.outboundRate.state === 'partial')
 
     // 分母 0（有会话无消息）→ unavailable，不显示 0%
     const zeroStats = { ok: true, sessions: { wx_a: { sent: 0, received: 0 } } }
@@ -153,6 +153,64 @@ async function main(): Promise<void> {
     ok('D6h 计数型输出恒为非负整数（volume/contacted/月度计数）',
       Number.isInteger(mixed.volume.value) && Number.isInteger(mixed.contacted.value as number) &&
       (mixed.monthlyTrend.months ?? []).every((m) => Number.isInteger(m.count) && m.count >= 0))
+
+    // ── 任一非法计数即 partial（无比例阈值；旧口径「>20% 才 partial」已删除） ──
+    const manyAccounts = (n: number): AnnualReviewFacts['accounts'] =>
+      Array.from({ length: n }, (_, i) => accF(i + 1, `wx_${i}`))
+    const commN = (accounts: AnnualReviewFacts['accounts'], sessions: Record<string, { sent: number; received: number }>) =>
+      computeAnnualReviewCommunication(period, { facts: { accounts, contracts: [], allocations: [], shippedEvents: [] }, sales: emptySales(), crm: emptyCrm() },
+        { messageStats: { ok: true, sessions } })
+
+    // 5 个有数据会话，仅 1 个非法（20%）
+    {
+      const sessions = { wx_0: { sent: 5, received: 5 }, wx_1: { sent: 4, received: 4 }, wx_2: { sent: 3, received: 3 }, wx_3: { sent: 2, received: 2 }, wx_4: { sent: -1, received: 1 } }
+      const b = commN(manyAccounts(5), sessions)
+      ok('D6m 5 个会话仅 1 个非法（20%）→ volume/outboundRate 均 partial', b.volume.state === 'partial' &&
+        b.outboundRate.state === 'partial' && b.volume.value === 28 &&
+        b.volume.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 1) &&
+        b.outboundRate.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 1))
+    }
+    // 100 个会话，仅 1 个非法（1%）
+    {
+      const sessions: Record<string, { sent: number; received: number }> = {}
+      for (let i = 0; i < 99; i++) sessions[`wx_${i}`] = { sent: 1, received: 1 }
+      sessions.wx_99 = { sent: Number.NaN, received: 1 }
+      const b = commN(manyAccounts(100), sessions)
+      ok('D6n 100 个会话仅 1 个非法（1%）→ 仍 partial（无阈值）', b.volume.state === 'partial' &&
+        b.outboundRate.state === 'partial' && b.volume.value === 198 &&
+        b.volume.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 1))
+    }
+    // 全部有效 → complete（阈值删除不放大 partial）
+    {
+      const b = commN(manyAccounts(5), { wx_0: { sent: 1, received: 2 }, wx_1: { sent: 3, received: 4 }, wx_2: { sent: 0, received: 0 }, wx_3: { sent: 5, received: 5 }, wx_4: { sent: 1, received: 1 } })
+      ok('D6o 全部有效 → volume/outboundRate complete 且无告警', b.volume.state === 'complete' &&
+        b.outboundRate.state === 'complete' && b.volume.warnings.length === 0 && b.outboundRate.warnings.length === 0)
+    }
+    // 总体外会话非法 → 静默忽略，不降级、不告警
+    {
+      const b = commN(manyAccounts(2), { wx_0: { sent: 2, received: 2 }, wx_1: { sent: 1, received: 1 }, unbound: { sent: -5, received: Number.NaN } })
+      ok('D6p 总体外会话非法数据静默忽略（不污染状态/告警）', b.volume.value === 6 && b.volume.state === 'complete' &&
+        b.volume.warnings.length === 0 && b.outboundRate.state === 'complete')
+    }
+    // 无 stats 条目的总体内会话 = 合法零（不算非法）
+    {
+      const b = commN(manyAccounts(3), { wx_0: { sent: 2, received: 2 } })
+      ok('D6q 无 stats 条目的总体内会话 = 合法零（不降级）', b.volume.value === 4 && b.volume.state === 'complete' &&
+        b.volume.warnings.length === 0)
+    }
+    // 剔除非法会话后分母为 0 → outboundRate unavailable 但仍带告警（不冒充 0%）
+    {
+      const b = commN(manyAccounts(2), { wx_0: { sent: -1, received: 0 }, wx_1: { sent: 0, received: Number.NaN } })
+      ok('D6r 剔除后分母 0 → outboundRate unavailable 且仍带 message_stats_invalid', b.volume.value === 0 &&
+        b.volume.state === 'partial' && b.outboundRate.value === null && b.outboundRate.state === 'unavailable' &&
+        b.outboundRate.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 2))
+    }
+    // 同一会话 sent/received 都非法 → 只计一次非法
+    {
+      const b = commN(manyAccounts(1), { wx_0: { sent: Number.NaN, received: -3 } })
+      ok('D6s 同一会话 sent/received 均非法只计一次', b.volume.warnings.filter((w) => w.code === 'message_stats_invalid').length === 1 &&
+        b.volume.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 1))
+    }
 
     // ── daily 非法日期键：不进入月份轴、不产生伪月份、稳定告警 ──
     const badDatesDaily: Record<string, number> = {

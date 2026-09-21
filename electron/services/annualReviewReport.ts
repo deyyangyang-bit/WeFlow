@@ -835,8 +835,9 @@ function isCoverageShape(v: unknown): boolean {
   if (!isPlainObject(v)) return false
   if (typeof v.source !== 'string' || v.source === '') return false
   if (!isMetricState(v.status)) return false
-  if (v.coverageFrom !== undefined && !isFiniteNumber(v.coverageFrom)) return false
-  if (v.coverageTo !== undefined && !isFiniteNumber(v.coverageTo)) return false
+  // 覆盖边界是事实时间戳（毫秒）：与客户行时间戳同一规则（有限整数 > 0）
+  if (v.coverageFrom !== undefined && !timestampField(v.coverageFrom)) return false
+  if (v.coverageTo !== undefined && !timestampField(v.coverageTo)) return false
   if (v.rows !== undefined && (!isFiniteNumber(v.rows) || v.rows < 0 || !Number.isInteger(v.rows))) return false
   if (v.reasonCodes !== undefined && (!Array.isArray(v.reasonCodes) || v.reasonCodes.some((r) => typeof r !== 'string'))) return false
   if (v.exactCoverage !== undefined && typeof v.exactCoverage !== 'boolean') return false
@@ -856,22 +857,32 @@ const boolField = (v: unknown): boolean => typeof v === 'boolean'
 /** 非负整数（计数类字段：消息量/客户数/合同数；小数、负数、NaN/±Infinity 一律拒绝） */
 const countField = (v: unknown): boolean => isFiniteNumber(v) && Number.isInteger(v) && v >= 0
 /**
+ * 有效毫秒时间戳（时间戳字段专用，比 numField 更严）：有限、整数、> 0。
+ * 0/负数/小数/NaN/±Infinity 一律拒绝——时间戳为 0 是纪元脏值、小数说明不是毫秒整数。
+ */
+const timestampField = (v: unknown): v is number => isFiniteNumber(v) && Number.isInteger(v) && v > 0
+/**
  * 客户业务身份 accountId：只接受**正整数**（crmDb account.id 语义）；
  * 0 / 负数 / 小数 / NaN / ±Infinity 一律拒绝（0 不是合法主键，负 id 会污染跳转与展示）。
  */
 const accountIdField = (v: unknown): boolean => isFiniteNumber(v) && Number.isInteger(v) && v > 0
 const accountIdOrNullField = (v: unknown): boolean => v === null || accountIdField(v)
 
-/** 公开客户行 shape 白名单：键集合精确 + 每字段类型确定 */
+/**
+ * 公开客户行 shape 白名单：键集合精确 + 每字段类型确定。
+ * 时间戳字段（createdAt / firstSignDate / lastContactAtMs）统一走 timestampField——
+ * 行形状必须与统计层实际产出的字段一一对应（C4 复购行 = DealingCustomerRow，
+ * 含 firstSignDate，白名单缺它会让所有复购客户报告被判非法）。
+ */
 const CUSTOMER_ROW_SHAPES: Record<string, Record<string, (v: unknown) => boolean>> = {
   highValue: { accountId: accountIdField, name: strOrNullField, creditedAmount: numField, contractAmount: numField },
-  newCustomers: { accountId: accountIdField, name: strOrNullField, createdAt: numField, imported: boolField },
-  dealing: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField, firstSignDate: numField },
-  repeat: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField },
+  newCustomers: { accountId: accountIdField, name: strOrNullField, createdAt: timestampField, imported: boolField },
+  dealing: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField, firstSignDate: timestampField },
+  repeat: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField, firstSignDate: timestampField },
   active: { accountId: accountIdOrNullField, name: strOrNullField },
-  silent: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField },
-  risk: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, stage: (v) => typeof v === 'string', lastContactAtMs: numField },
-  priority: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField }
+  silent: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: timestampField },
+  risk: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, stage: (v) => typeof v === 'string', lastContactAtMs: timestampField },
+  priority: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: timestampField }
 }
 
 function isRowShape(row: Record<string, unknown>, shape: Record<string, (v: unknown) => boolean>): boolean {
@@ -950,11 +961,12 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   if (year === 0) {
     if (periodStart !== null || periodEndExclusive !== null) return invalid('all_time 的 period 边界必须为 null')
   } else {
-    if (!isFiniteNumber(periodStart) || !isFiniteNumber(periodEndExclusive) || periodEndExclusive <= periodStart) {
+    // 年份区间边界 = 本地自然年边界毫秒（时间戳同一规则：有限整数 > 0）
+    if (!timestampField(periodStart) || !timestampField(periodEndExclusive) || periodEndExclusive <= periodStart) {
       return invalid('年度 period 边界非法')
     }
   }
-  if (!isFiniteNumber(asOf) || asOf <= 0 || !isFiniteNumber(generatedAt) || generatedAt <= 0) return invalid('asOf/generatedAt 非法')
+  if (!timestampField(asOf) || !timestampField(generatedAt)) return invalid('asOf/generatedAt 非法')
   if (asOf > generatedAt) return invalid('asOf 晚于 generatedAt')
   if (scopeKind === 'historical_year' && asOf !== periodEndExclusive) return invalid('历史年度 asOf 必须 = periodEndExclusive')
   if (scopeKind !== 'historical_year' && asOf !== generatedAt) return invalid('当前年度/全期 asOf 必须 = generatedAt')
@@ -1204,7 +1216,8 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   const dataRange = report.dataRange
   if (!isPlainObject(dataRange)) return invalid('dataRange 缺失')
   const bothNull = dataRange.from === null && dataRange.to === null
-  const bothFinite = isFiniteNumber(dataRange.from) && isFiniteNumber(dataRange.to) && (dataRange.from as number) <= (dataRange.to as number)
+  // 采用事实时间戳：有限整数 > 0（与客户行时间戳同一 timestampField 规则）
+  const bothFinite = timestampField(dataRange.from) && timestampField(dataRange.to) && dataRange.from <= dataRange.to
   if (!bothNull && !bothFinite) return invalid('dataRange 非法（空数据必须 {from:null,to:null}）')
   if (bothFinite) {
     if ((dataRange.to as number) > (asOf as number)) return invalid('dataRange.to 不得晚于 asOf')

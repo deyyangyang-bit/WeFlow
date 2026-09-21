@@ -9,8 +9,9 @@
  *     （computeAnnualReviewCustomerActiveDetail 单一实现，禁止第二套）。
  *   - D3 outbound_rate：Σsent / (Σsent+Σreceived)，会话求和后计算；收发计数非法
  *     （null/NaN/±Infinity/负数/小数，sanitizeCount 单一实现）的会话剔除并告警，
- *     剔除比例 >20% → partial；剔除后分母 0（无有效消息）→ unavailable（A9 同款，
- *     不显示 0% 冒充）。比例恒为 [0,1] 内有限数（分子分母同为非负整数，绝不出现 >1 或负数）。
+ *     **任一非法会话即 partial**（无阈值）；剔除后分母 0（无有效消息）→ unavailable
+ *     （A9 同款，不显示 0% 冒充），但仍携带 message_stats_invalid。
+ *     比例恒为 [0,1] 内有限数（分子分母同为非负整数，绝不出现 >1 或负数）。
  *   - D5 monthly_communication_trend：native daily（本地日期 → 量）按本地月聚合；
  *     日期键经 parseStrictLocalDateKey 严格校验（非法日期不进入月份轴并告警），
  *     计数经 sanitizeCount（非负整数，非法值排除并告警）；历史年度完整 12 个月、
@@ -95,25 +96,23 @@ export interface AnnualReviewCommunicationBlock {
 /**
  * D1/D3 会话求和（与有效 CRM 会话总体求交集，fail closed）：
  *   - 只统计总体内会话（selectCrmBoundSessions 唯一选择器）；native 返回的总体外
- *     会话（未绑定/被排除/群聊公众号系统号）一律忽略，不得进入总量、分子分母与
- *     非法会话比例；
- *   - 总体内但 stats 无条目 = 该区间无消息（合法 0，不是查询失败）；
+ *     会话（未绑定/被排除/群聊公众号系统号）一律忽略——其非法数据同样静默忽略，
+ *     不进入总量、分子分母，也不产生告警或状态降级；
+ *   - 总体内但 stats 无条目 = 该区间无消息（合法 0，不是查询失败，不算非法）；
  *   - 计数合法性 = sanitizeCount 唯一实现（非负整数）：null/NaN/±Infinity/负数/小数
  *     一律剔除并计数（绝不夹成 0）——总量与比例恒为非负数，rate ∈ [0,1]；
- *   - 非法比例分母 = 总体内在 stats 中有条目的会话数（有数据才谈得上非法）。
+ *   - 同一会话 sent/received 任一非法即整个会话剔除，且该会话只计一次非法。
  */
 function sumSessions(
   messageStats: AnnualReviewMessageStats,
   population: string[]
-): { total: number; sent: number; received: number; invalid: number; present: number } {
+): { total: number; sent: number; received: number; invalid: number } {
   let sent = 0
   let received = 0
   let invalid = 0
-  let present = 0
   for (const sid of population) {
     const stat = messageStats.sessions?.[sid]
     if (!stat) continue // 区间无消息：合法真实零
-    present++
     const s = sanitizeCount(stat.sent)
     const r = sanitizeCount(stat.received)
     if (s === null || r === null) {
@@ -123,7 +122,7 @@ function sumSessions(
     sent += s
     received += r
   }
-  return { total: sent + received, sent, received, invalid, present }
+  return { total: sent + received, sent, received, invalid }
 }
 
 interface MonthlyMessageAggregation {
@@ -207,12 +206,14 @@ export function computeAnnualReviewCommunication(
     const w: MetricWarning[] = []
     let state: MetricState = 'complete'
     if (sums.invalid > 0) {
+      // 任一总体内、实际返回了 stats 条目的会话计数非法 → 剔除该会话并使指标 partial
+      // （无阈值：1/100 非法同样是 partial；不把数据质量事故显示成可信 complete）
       w.push({ code: 'message_stats_invalid', message: COMM_WARN.message_stats_invalid, count: sums.invalid })
-      // 非法会话占「总体内已有条目会话」比例 >20% → partial（规格 §5.4 D3）
-      if (sums.present > 0 && sums.invalid * 5 > sums.present) state = 'partial'
+      state = 'partial'
     }
     volume = { value: sumOf([sums.total]), state, warnings: sortedWarnings(w) }
-    // D3：分母 0（无有效消息）→ unavailable（不显示 0% 冒充，A9 同款）；非法会话剔除后计算
+    // D3：剔除非法会话后没有有效消息 → 分母 0 → unavailable（不显示 0% 冒充，A9 同款）；
+    // 该分支仍携带 message_stats_invalid（数据质量问题不被 unavailable 掩盖）
     if (sums.sent + sums.received === 0) {
       outboundRate = { value: null, state: 'unavailable', warnings: sortedWarnings(w) }
     } else {
