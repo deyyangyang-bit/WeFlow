@@ -390,7 +390,7 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 > 已有符号链接、最近存在祖先 realpath 逃出授权真径一律抛错。授权保存在进程内存（24h TTL，上限 200，
 > 重启即清空），不做全局永久白名单。HTTP API（独立鉴权信任面）不套用本闸门。
 
-### 1.15 年度经营复盘（S3 · 2026-09-20；AI 分析接线 S7.2；实现 = electron/services/annualReviewService.ts + annualReviewWorker.ts + annualReviewAiCoordinator.ts）
+### 1.17 年度经营复盘（S3 · 2026-09-20；AI 分析接线 S7.2；实现 = electron/services/annualReviewService.ts + annualReviewWorker.ts + annualReviewAiCoordinator.ts；2026-09-21 重编号：原误编为 §1.15，与交付售后重复）
 
 > 确定性统计报告（规格 docs/设计-年度经营复盘-规格.md §7.2）；AI 诊断与下一年度行动计划
 > （规格 §8，S7.1 纯模块/服务层 + S7.2 接线）。独立 `annualReview:*` 命名空间——**旧社交年度报告
