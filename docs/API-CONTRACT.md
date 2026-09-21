@@ -310,8 +310,8 @@ assignment 归属后，主进程广播给全部存活窗口；页面订阅后自
 
 - **只在写事务成功提交后通知**；失败/回滚不发。事件由主进程轻量总线
   （`assignmentInvalidationBus`，零 Electron 依赖）发往 IPC 注册层桥接 BrowserWindow。本总线
-  **只服务 Assignment 页面/UI 刷新，不参与年度复盘失效链路**（年度复盘失效的唯一入口是写事务内的
-  changed 标记，见下文年度经营复盘一节）；
+  **只服务 Assignment 页面/UI 刷新，不参与年度复盘失效链路**（Assignment 归属类事务的年度复盘失效
+  在各自写事务内经 changed 标记声明，不得再经本总线桥接，见下文年度经营复盘一节）；
 - **最小载荷** `{ action: 'assign' \| 'claim' \| 'recycle' \| 'transfer'（合并多动作时按
   assign,claim,recycle,transfer 固定顺序逗号连接）, leadIds: number[]（去重升序）, at: number }`，
   **不含联系方式、聊天内容或任何客户敏感字段**；页面收到后重拉，不回传行内容；
@@ -484,11 +484,15 @@ null，计数口径不变）、不含数据库路径、SQL、Token、原始聊�
 action、`knowledge_base`、`report_snapshot`、`opportunity_eval_case`、`alert_eval_case`、
 `follow_up_task`、`outbox_event`、`notify_inbox`、`dup_group`、`ownership_history`、
 `customer` / `customer_identity`、`payment_record` / `payment_promise` / `logistics` / `invoice`、
-`quotation` 版本链等。**通知时机**：只在写成功后（事务 COMMIT 返回后 / 单语句执行与 persist 均未
-抛错 / 连接建立成功）；失败、ROLLBACK 与纯读路径一律不通知（读走 `all()/get()`，不经过声明点）。
+`quotation` 版本链等。**通知时机**：只在内存写成功后（事务内存 COMMIT 返回后 / 单语句执行未抛错 /
+连接建立成功）；失败、ROLLBACK 与纯读路径一律不通知（读走 `all()/get()`，不经过声明点）。
+**持久化语义**：crmDb/salesDb 的文件落盘是**延迟、尽力而为**的（`persist()` 只排约 500ms 的防抖
+落盘任务，`atomicWriteFileSync` 的错误在定时回调中捕获并记录、不向写入路径抛出），失效通知
+**不等待磁盘落盘成功**——进程在延迟落盘前崩溃或落盘失败时，可能出现「内存事实已变更并已通知，
+但重启后磁盘事实未保存」的窗口。
 
-**事务 changed 标记（唯一的事务失效入口，已删除静态 `affectsAnnualReview` 参数）**：事务成功 ≠ 数据改变，
-因此 `runTx` 回调拿到的是带标记能力的事务对象：
+**事务 changed 标记（`runTx` 管理的多语句 CRM 事务内部唯一的年度复盘失效声明方式；已删除静态
+`affectsAnnualReview` 参数）**：事务成功 ≠ 数据改变，因此 `runTx` 回调拿到的是带标记能力的事务对象：
 
 ```ts
 crmDbService.runTx((tx) => {
@@ -500,15 +504,24 @@ crmDbService.runTx((tx) => {
 
 - **默认无标记 = 不影响年度复盘**：空事务、条件 UPDATE 命中 0 行、只写 `scan_state` / `outbox_event` /
   `migration_report` / `migration_dismissal` 的事务一律不失效；
-- 标记只在 **COMMIT + persist 成功后**统一派发；ROLLBACK 与抛错路径不派发；
-- **一次事务 = 一次批量广播**：同一事务标记的多个不同 reason 先**去重并稳定排序**，提交后由批量发布函数
-  `announceAnnualReviewDataChangedMany` 作为**一条事件**一次性派发（计数恒为 1）；**禁止**按 reason
-  逐条派发，也**不依赖** 150ms 窗口碰巧合并同一次提交；
+- 标记只在**内存事务成功 COMMIT 后**统一派发；ROLLBACK 与事务回调抛错不派发。失效通知**不等待
+  磁盘落盘成功**（`persist()` 的延迟落盘语义见上「通知时机」）；
+- **一次事务 = 一次批量上报**：同一事务内无论标记多少个不同 reason，都只调用一次批量发布函数
+  `announceAnnualReviewDataChangedMany`；reasons 在该调用内**去重并稳定排序**。每一次调用代表一次
+  已提交变更，对当前窗口的 `count` **只贡献 1**（不按 reason 数量累加）——目标是防止「同一事务
+  多个 reason 被误算成多个提交」，而非保证所有事件的 `count` 都不超过 1：窗口空闲时该提交立即派发一条
+  `count=1` 的 leading-edge 事件；已有 150ms 窗口打开时该提交并入窗口、不立即单独派发，窗口结束时
+  的 coalesced 事件 `count` 为窗口内累计的独立提交次数（可大于 1）。**禁止**按 reason 逐条派发，
+  也**不依赖** 150ms 窗口碰巧合并同一次提交；
 - reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配；
 - `markAnnualReviewChangedIfWrote` 读的是「最近一条 INSERT/UPDATE/DELETE 的影响行数」，必须**紧跟在目标
   写语句之后**（读语句不影响该计数）；
 - 单语句路径（`create()` / `update()` / `auditAppend()` / `opportunityEventAdd()`）同样按**实际影响行数**
-  声明：0 行命中的条件 UPDATE 与重复写入不触发失效。
+  声明：0 行命中的条件 UPDATE 与重复写入不触发失效；
+- **入口范围**：changed 标记只约束 `runTx` 事务内部的声明；非 `runTx` 写入与上下文变化继续经各自的
+  类型化入口上报——单语句辅助入口、salesDb 写入辅助入口（`announceAnnualReviewSalesWrite`）、WCDB
+  成功重连/切号（`wcdb_connected`）、账号切换与业务库 reopen（`account_switch`）、手动排除名单 /
+  内部人员名单变化（`config_exclusions`，走 `announceAnnualReviewDataChangedNow` 立即失效）。
 
 **窗口语义 = leading-edge（首条立即）**：窗口空闲时的**第一条**相关事件**立即派发**——报告缓存与
 AI 缓存马上失效、运行中的报告生成任务与在途 AI 分析马上进入失效/取消路径，**不存在「首次失效
