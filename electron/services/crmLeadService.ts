@@ -5,7 +5,7 @@
  *         follow_up_task（SLA 卡）在 salesDb（weflow-sales.db）。
  * 跨库铁律：先 crmDb 后 salesDb + 扫描自愈（两库独立 sql.js 连接，无法单事务）。
  */
-import { crmDbService, type CrmRow } from './crmDbService'
+import { crmDbService, type CrmRow , type CrmWriteTx } from './crmDbService'
 import { salesDbService } from './salesDbService'
 import { classifyLead, dedupeRows, maskContact, identityKeysOf, normalizeCnMobile, normalizeWechat, type ParsedLead, type RawLeadRow } from './crmLeadImportCore'
 import { recordOutboxTx } from './crmOutboxService'
@@ -189,8 +189,10 @@ export function importLeads(source: string, fileName: string, rows: RawLeadRow[]
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [getIdentity()?.name || '分配员', 'lead_import_dedupe', 'import_batch', Number(batchId),
        JSON.stringify({ batchId: Number(batchId), rows: detailRows }), now])
+    // 只有真正插入了线索行才标记（整批重复/冲突 = 无数据变化 = 不失效）
+    if (valid > 0) tx.markAnnualReviewChanged('crm:lead')
     return batchId
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
 
   scanLeadSla()
   const duplicate = dupSameBatch + dupExistingLead + dupExistingCustomer + conflicts
@@ -341,13 +343,14 @@ export function createLead(input: CreateLeadInput): CreateLeadResult {
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [contactType, contactNormalized, contactRaw, leadWechat, src, '', note, 'NEW', LEAD_SLA_UNASSIGNED_SENTINEL, nick, qrPath, now, now]
       )
+      tx.markAnnualReviewChanged('crm:lead') // 新建 lead 行成功（本路径必然插入）
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)',
         [id, 'CREATED', `单条录入：渠道 ${src}${qrPath ? '，含微信二维码' : ''}`, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [getActorLabel() || '分配员', 'lead_create', 'lead', id,
          JSON.stringify({ source: src, contactMasked: maskContact({ contactType, contactNormalized }), hasQr: Boolean(qrPath) }), now])
       return id
-    }, { affectsAnnualReview: 'crm:lead' })
+    })
     scanLeadSla()
     return { ok: true, data: { leadId } }
   } catch {
@@ -455,10 +458,13 @@ export function importHistoricalAssignments(fileName: string, rows: HistoricalAs
         tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)',
           [leadId, 'ASSIGN_HISTORY', `历史分配：${v.sales}（${new Date(v.assignedAt).toISOString().slice(0, 10)}）${v.recycled ? '，已回收' : ''}`, now])
       }
+      // 只有真正新建了 lead / assignment 行才标记（全部 skipped = 无数据变化 = 不失效）
+      if (leadsCreated > 0) tx.markAnnualReviewChanged('crm:lead')
+      if (assignmentsCreated > 0) tx.markAnnualReviewChanged('crm:assignment')
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [getActorLabel() || '分配员', 'assignment_history_import', 'lead', null,
          JSON.stringify({ fileName: String(fileName || '粘贴文本'), total: rows.length, valid: valid.length, leadsCreated, leadsReused, assignmentsCreated, recycled: recycledCount, skipped: skipped.length }), now])
-    }, { affectsAnnualReview: 'crm:assignment' })
+    })
     // 事务已提交才通知：历史导入会新建 claimed 态的**当前有效**归属行（recycled 历史行不改当前归属，不通知）
     if (touchedLeadIds.length) emitAssignmentInvalidated('assign', touchedLeadIds)
   }
@@ -560,20 +566,24 @@ export function updateLeadStatus(leadId: number, action: keyof typeof ACTION_ACT
       const wechat = String(opts.wechat || '').trim()
       if (wechat) {
         tx.run("UPDATE lead SET status = 'WX_ADDED', wechat = ?, updated_at = ? WHERE id = ?", [wechat, now, id])
+        tx.markAnnualReviewChangedIfWrote('crm:lead')
         tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'WX_ADDED', `已添加微信：${wechat}`, now])
       } else {
         tx.run("UPDATE lead SET status = 'WX_ADDED', updated_at = ? WHERE id = ?", [now, id])
+        tx.markAnnualReviewChangedIfWrote('crm:lead')
         tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'WX_ADDED', String(opts.note || '已添加微信'), now])
       }
     } else if (action === 'dead') {
       const reason = String(opts.reason || '').trim()
       tx.run('UPDATE lead SET status = ?, dead_reason = ?, updated_at = ? WHERE id = ?', ['DEAD', reason, now, id])
+      tx.markAnnualReviewChangedIfWrote('crm:lead')
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'DEAD', `死因：${reason}`, now])
     } else if (action === 'reopen') {
       tx.run("UPDATE lead SET status = 'NEW', dead_reason = '', updated_at = ? WHERE id = ?", [now, id])
+      tx.markAnnualReviewChangedIfWrote('crm:lead')
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'REOPEN', String(opts.note || '恢复跟进'), now])
     }
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
   return { ok: true }
 }
 
@@ -592,8 +602,9 @@ export function updateLeadProfile(leadId: number, fields: { name?: string; wecha
   const now = Date.now()
   crmDbService.runTx((tx) => {
     tx.run('UPDATE lead SET name = ?, wechat = ?, updated_at = ? WHERE id = ?', [name, wechat, now, id])
+    tx.markAnnualReviewChangedIfWrote('crm:lead')
     tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'EDIT', changed.join('；'), now])
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
   return { ok: true }
 }
 
@@ -631,11 +642,13 @@ export function toAccount(leadId: number): ToAccountResult {
         'INSERT INTO account (name, phone, custom_fields, created_at, updated_at) VALUES (?,?,?,?,?)',
         [name, isPhone ? String(lead.contact_normalized) : '', JSON.stringify(cf), now, now]
       )
+      tx.markAnnualReviewChanged('crm:account') // 新建正式客户 → A/C 组客户结构变化
     }
     tx.run('UPDATE lead SET status = ?, account_id = ?, updated_at = ? WHERE id = ?', ['ACCOUNT', accountId, now, id])
+    tx.markAnnualReviewChangedIfWrote('crm:lead')
     tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [id, 'TO_ACCOUNT', existed ? `关联已有客户 #${accountId}` : `新建客户 #${accountId}`, now])
     return { accountId, existed }
-  }, { affectsAnnualReview: 'crm:account' })
+  })
 
   return { ok: true, accountId: result.accountId, existed: result.existed }
 }
@@ -692,6 +705,7 @@ export function completeLeadFirstContact(taskId: number): boolean {
     if (!rows.length) return
     if (rows[0].status === 'NEW') {
       tx.run('UPDATE lead SET status = ?, first_contacted_at = ?, updated_at = ? WHERE id = ?', ['CONTACTED', now, now, leadId])
+      tx.markAnnualReviewChangedIfWrote('crm:lead')
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [leadId, 'CONTACTED', '今日行动完成首触', now])
       // outbox 登记（上行 first_touch；与 updateLeadStatus 同 key，先登记者生效、后到者幂等吞掉）
       recordOutboxTx(tx, 'first_touch', `first_touch:${leadId}`, {
@@ -699,7 +713,7 @@ export function completeLeadFirstContact(taskId: number): boolean {
         contactType: String(rows[0].contact_type || ''), contactNormalized: String(rows[0].contact_normalized || '')
       }, now)
     }
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
   salesDbService.todoUpdate(Number(taskId), { status: 'done' })
   return true
 }
@@ -732,8 +746,9 @@ export function resetLegacyGroupScanSla(): { leads: number; cards: number } {
     const rows = tx.all(`SELECT id FROM lead WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ? ${NO_ACTIVE_ASSIGNMENT}`, [LEAD_SLA_UNASSIGNED_SENTINEL])
     if (!rows.length) return [] as number[]
     tx.run(`UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE source = '群资源扫描' AND status = 'NEW' AND first_contact_deadline <> ? ${NO_ACTIVE_ASSIGNMENT}`, [LEAD_SLA_UNASSIGNED_SENTINEL, now, LEAD_SLA_UNASSIGNED_SENTINEL])
+    tx.markAnnualReviewChangedIfWrote('crm:lead') // 命中 0 行（已全部对齐）时不标记
     return rows.map((r) => Number(r.id))
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
 
   // 卡关单不随 resetIds 空而短路：孤儿卡（source_id 指向已不存在的 lead）每次启动都要扫
   const idSet = new Set(resetIds)
@@ -794,8 +809,10 @@ export function cleanupLegacyGroupScanTags(): { cleared: number; noted: number }
         cleared++; noted++
       }
     }
+    // 只有确实清了 tag/note 的行才标记（命中 0 行 = 无数据变化 = 不失效）
+    if (cleared > 0) tx.markAnnualReviewChanged('crm:lead')
     return { cleared, noted }
-  }, { affectsAnnualReview: 'crm:lead' })
+  })
   if (!result.cleared) return result
   try {
     crmDbService.create('audit_event', {

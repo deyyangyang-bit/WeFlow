@@ -485,13 +485,36 @@ action、`knowledge_base`、`report_snapshot`、`opportunity_eval_case`、`alert
 `quotation` 版本链等。**通知时机**：只在写成功后（事务 COMMIT 返回后 / 单语句执行与 persist 均未
 抛错 / 连接建立成功）；失败、ROLLBACK 与纯读路径一律不通知（读走 `all()/get()`，不经过声明点）。
 
+**事务 changed 标记（唯一的事务失效入口，已删除静态 `affectsAnnualReview` 参数）**：事务成功 ≠ 数据改变，
+因此 `runTx` 回调拿到的是带标记能力的事务对象：
+
+```ts
+crmDbService.runTx((tx) => {
+  tx.run("UPDATE assignment SET status='claimed' WHERE id = ? AND status='assigned'", [id])
+  tx.markAnnualReviewChangedIfWrote('crm:assignment')  // 仅当上一条写语句影响 ≥1 行才标记（SELECT changes()）
+  // 或：tx.markAnnualReviewChanged('crm:contract')     // 调用点已确认确实改写了白名单数据源
+})
+```
+
+- **默认无标记 = 不影响年度复盘**：空事务、条件 UPDATE 命中 0 行、只写 `scan_state` / `outbox_event` /
+  `migration_report` / `migration_dismissal` 的事务一律不失效；
+- 标记只在 **COMMIT + persist 成功后**统一派发；ROLLBACK 与抛错路径不派发；
+- reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配；
+- `markAnnualReviewChangedIfWrote` 读的是「最近一条 INSERT/UPDATE/DELETE 的影响行数」，必须**紧跟在目标
+  写语句之后**（读语句不影响该计数）；
+- 单语句路径（`create()` / `update()` / `auditAppend()` / `opportunityEventAdd()`）同样按**实际影响行数**
+  声明：0 行命中的条件 UPDATE 与重复写入不触发失效。
+
 **窗口语义 = leading-edge（首条立即）**：窗口空闲时的**第一条**相关事件**立即派发**——报告缓存与
 AI 缓存马上失效、运行中的报告生成任务与在途 AI 分析马上进入失效/取消路径，**不存在「首次失效
 还要等 150 ms」**，也不依赖测试专用 flush。其后 150 ms 内的重复事件被**抑制**（去重计数），窗口
 结束时若确有被抑制的事件则**补一次**合并派发（每窗口至多一次，覆盖「窗口内又有写入、而期间缓存
 可能已重建」的窄窗口，因此窗口内的第二批写入最多延迟一个窗口，≤150 ms）。窗口**从首条事件起算
 固定长度、不随新事件顺延**，持续写入不会造成无限延迟。关键失效（账号切换 / 名单变化）走
-`announceAnnualReviewDataChangedNow`，即使正处于窗口内也立即派发。派发只携带**原因与计数**（含
+`announceAnnualReviewDataChangedNow`：它**先吸收（丢弃并清掉计时器）此前打开的窗口，再立即派发**——Now 自身已对两类缓存
+做过全量失效，因此旧窗口不必也不能在 150 ms 后再补派发一次（否则会取消账号切换后刚启动的新任务，即「幽灵失效」）；
+丢弃窗口不丢真实变化（窗口内被抑制的写入所影响的缓存已被本次全量失效覆盖）。Now 之后的新普通写入从空窗口重新开始，
+仍是新窗口首条、立即派发。派发只携带**原因与计数**（含
 `coalesced` 标记），不含任何业务数据。
 
 **仍未实时覆盖（如实列出，勿宣称已全覆盖）**：① 微信库（WCDB）在**连接保持期间**的增量新增/

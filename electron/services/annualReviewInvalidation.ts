@@ -160,6 +160,13 @@ function closeWindow(): void {
   })
 }
 
+/** 丢弃当前窗口（连计时器一起清掉，**不派发**）：立即失效路径用它避免窗口结束时的补派发 */
+function discardWindow(): void {
+  const w = window
+  window = null
+  clearWindowTimer(w)
+}
+
 /** 订阅失效事件；返回取消订阅函数（幂等） */
 export function onAnnualReviewInvalidation(listener: AnnualReviewInvalidationListener): () => void {
   listeners.add(listener)
@@ -190,14 +197,20 @@ export function announceAnnualReviewDataChanged(reason: AnnualReviewInvalidation
 
 /**
  * 立即失效（即使正处于合并窗口内也**立刻**派发）：账号切换 / 业务库重开 / 名单变化这类
- * 「必须马上作废」的动作。与合并路径共用同一批订阅者——仍是同一条失效事实。
+ * 「必须马上作废」的动作。
+ *
+ * **吸收旧窗口**：Now 自身已经执行了对**两个缓存的全量失效**（订阅点同时清空报告缓存与 AI
+ * 结果缓存并终止运行中任务），因此没有必要在旧窗口结束时再补派发一次——那会产生「幽灵失效」：
+ * 账号切换后刚启动的新任务可能被 150ms 后的补派发再次取消。所以这里：
+ *   ① 先丢弃（并清掉计时器）此前打开的窗口，不派发它的合并事件；
+ *   ② 立即派发本次 Now 事件；
+ *   ③ 之后的普通写入从**空窗口**重新开始，仍是新窗口的首条（leading edge 立即派发）。
+ * 丢弃窗口不会丢失真实变化：窗口内被抑制的那些写入所影响的缓存，已在本次 Now 的全量失效中
+ * 一并作废。
  */
 export function announceAnnualReviewDataChangedNow(reason: AnnualReviewInvalidationReason): void {
   try {
-    if (window) {
-      window.reasons.add(reason)
-      window.count++
-    }
+    discardWindow()
     dispatch({ reasons: [reason], count: 1, firstAt: clock(), at: clock(), coalesced: false })
   } catch {
     // 同上：绝不向调用方抛出
@@ -223,6 +236,20 @@ export function announceAnnualReviewAuditAction(action: string): boolean {
   if (!AUDIT_ACTION_SET.has(action)) return false
   announceAnnualReviewDataChanged(`crm:audit_event:${action as AnnualReviewAuditAction}`)
   return true
+}
+
+const CRM_REASON_SET: ReadonlySet<string> = new Set(ANNUAL_REVIEW_CRM_SOURCE_TABLES.map((t) => `crm:${t}`))
+const AUDIT_REASON_SET: ReadonlySet<string> = new Set(ANNUAL_REVIEW_AUDIT_ACTIONS.map((a) => `crm:audit_event:${a}`))
+const SALES_REASON_SET: ReadonlySet<string> = new Set(ANNUAL_REVIEW_SALES_SOURCE_TABLES.map((t) => `sales:${t}`))
+
+/**
+ * 事务内标记用的 reason 白名单校验（`crm:` 表 / `crm:audit_event:` 三动作 / `sales:` 两表；
+ * 不含账号切换、名单、WCDB 等非事务原因）。类型已限定取值，这里是运行时兜底：
+ * 拼错或越界一律**响亮失败**（抛错 → 事务回滚），绝不静默不失效。
+ */
+export function assertAnnualReviewWriteReason(reason: AnnualReviewInvalidationReason): void {
+  if (CRM_REASON_SET.has(reason) || AUDIT_REASON_SET.has(reason) || SALES_REASON_SET.has(reason)) return
+  throw new Error(`非年度复盘数据源写入声明的失效原因：${String(reason)}`)
 }
 
 /** 年度复盘侧的两个失效目标（确定性报告缓存 / AI 结果缓存） */

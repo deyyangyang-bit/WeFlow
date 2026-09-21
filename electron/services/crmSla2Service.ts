@@ -111,12 +111,13 @@ export function markSla2ScanResult(leadId: number, input: Sla2MarkInput): Sla2Ma
   crmDbService.runTx((tx) => {
     tx.run('UPDATE assignment SET sla2_scan_ref = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ?',
       [payload, by, now, Number(row.id)])
+    tx.markAnnualReviewChangedIfWrote('crm:assignment') // 条件 UPDATE：确实改行才标记
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'sla2_scan_result', 'lead', id, JSON.stringify({
         assignmentId: Number(row.id), verdict, confidence, scanRef, source,
         prevVerdict: existing?.verdict || '', overridden: !!existing
       }), now])
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   return { ok: true, data: { assignmentId: Number(row.id), alreadyMarked: false } }
 }
 

@@ -63,6 +63,7 @@ import { downCommandSpec, validateDownCommand } from '../../shared/centralDownCo
 import { findForbiddenDownlinkField } from '../../shared/centralSync'
 import { healLegacyDownPayload } from './crmDownPayloadCompat'
 import { emitAssignmentInvalidated, type AssignmentInvalidationAction } from './assignmentInvalidationBus'
+import { announceAnnualReviewAuditAction } from './annualReviewInvalidation'
 
 // ─── 配置与身份 ──────────────────────────────────────────────────────────────
 export type LanSyncRole = 'hub' | 'terminal'
@@ -1136,7 +1137,7 @@ export function emitUpEvents(root: string): EmitResult {
 function applyUpEventTx(
   tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
   ev: SyncEventFile,
-  touched?: { leadIds: number[] }
+  touched?: { leadIds: number[]; auditActions: string[] }
 ): boolean {
   const p = ev.payload || {}
   const now = Date.now()
@@ -1145,8 +1146,11 @@ function applyUpEventTx(
 
   if (ev.type === 'audit') {
     // Q4 裁剪口径：五字段原样入库（entity_id 是终端本机 id，Phase 1 接受；detail 发出端已脱敏）
+    const action = String(p.action || '')
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
-      [actor, String(p.action || ''), String(p.entity_type || ''), Number(p.entity_id || 0), String(p.detail || ''), now])
+      [actor, action, String(p.entity_type || ''), Number(p.entity_id || 0), String(p.detail || ''), now])
+    // 事务内只**收集**实际落库的 action；是否失效（白名单过滤）与派发时机都在提交之后
+    touched?.auditActions.push(action)
     return true
   }
 
@@ -1163,6 +1167,7 @@ function applyUpEventTx(
       tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [claimedAt, actor, now, Number(cur.id)])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [actor, 'lead_claim', 'lead', leadId, JSON.stringify({ assignmentId: Number(cur.id), salesName: String(cur.sales_name), claimedAt, via: 'sync:up', terminal: String(ev.from || '') }), now])
+      touched?.auditActions.push('lead_claim')
       touched?.leadIds.push(leadId)
     }
     return true
@@ -1185,6 +1190,7 @@ function applyUpEventTx(
     }
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [actor, 'identity_bind', 'lead', leadId, JSON.stringify({ wxid, via: 'sync:up', terminal: String(ev.from || ''), slaStopped: unstopped.length > 0 }), now])
+    touched?.auditActions.push('identity_bind')
     return true
   }
 
@@ -1196,6 +1202,7 @@ function applyUpEventTx(
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)', [leadId, 'CONTACTED', `终端回执：完成首触${channel ? `（渠道 ${channel}）` : ''}`, now])
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
         [actor, 'lead_first_touch', 'lead', leadId, JSON.stringify({ channel, via: 'sync:up', terminal: String(ev.from || '') }), now])
+      touched?.auditActions.push('lead_first_touch')
     }
     return true
   }
@@ -1235,7 +1242,7 @@ export function consumeUpEvents(root: string): ConsumeResult {
         continue
       }
       try {
-        const touched = { leadIds: [] as number[] }
+        const touched = { leadIds: [] as number[], auditActions: [] as string[] }
         const handled = crmDbService.runTx((tx) => {
           const okApply = applyUpEventTx(tx, ev, touched)
           if (okApply) {
@@ -1245,8 +1252,16 @@ export function consumeUpEvents(root: string): ConsumeResult {
         })
         if (handled) {
           r.applied++
-          // 事务已提交才通知：中枢收到终端认领回执并真正改写归属状态（assigned → claimed）时发
-          if (touched.leadIds.length) emitAssignmentInvalidated('claim', touched.leadIds)
+          // 事务已提交才通知（事务内只收集，绝不派发）：
+          if (touched.leadIds.length) {
+            // 归属状态被真正改写（assigned → claimed）→ assignment 总线（经桥汇入年度复盘失效）
+            emitAssignmentInvalidated('claim', touched.leadIds)
+          } else {
+            // 远端 audit 回传：按**实际落库的 action** 走年度复盘白名单
+            // （只有 lead_assign / lead_transfer / sync_apply 触发，其余 action 为 no-op）；
+            // 已由归属通知覆盖的事件不再重复声明，避免同一事实两次失效。
+            for (const action of touched.auditActions) announceAnnualReviewAuditAction(action)
+          }
           try { rmSync(path, { force: true }) } catch { /* ignore */ }
         }
         else r.failed++

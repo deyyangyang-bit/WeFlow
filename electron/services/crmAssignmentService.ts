@@ -12,7 +12,7 @@
  *   且未停表 → 第 1/2 次只提醒（sla1_remind_count+1+审计），满第 3 次才自动回收 + 主管通知事件；
  *   A 档引擎动作（规则驱动非 LLM，宪法 §1.3），审计照写（actor='system:sla'）。
  */
-import { crmDbService, type CrmRow } from './crmDbService'
+import { crmDbService, type CrmRow, type CrmWriteTx } from './crmDbService'
 import { getIdentity, getActorLabel, getBoundEmployeeId, getOwnershipAliases } from './identityService'
 import { isOwnedLead } from '../../shared/ownerFilter'
 import { recordOutboxTx } from './crmOutboxService'
@@ -181,8 +181,10 @@ export function assignLeads(leadIds: number[], salesName: string, actor: string,
       recordOutboxTx(tx, 'assign', `assign:${assignmentId}`, { leadId, salesName: name, mode: m, assignmentId, sla1Deadline: sla1, actor: by }, now)
       assignments.push({ leadId, assignmentId })
     }
+    // 只有真正创建了分配行才标记（全部 skipped = 无数据变化 = 不失效）
+    if (assignments.length > 0) tx.markAnnualReviewChanged('crm:assignment')
     return { assignments, skipped }
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   // 事务已提交才通知（失败/回滚走异常路径到不了这里）；批量分配逐条调用由总线去抖合并
   if (data.assignments.length) {
     emitAssignmentInvalidated('assign', data.assignments.map((a) => a.leadId))
@@ -249,12 +251,13 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
   const now = Date.now()
   crmDbService.runTx((tx) => {
     tx.run("UPDATE assignment SET status = 'claimed', claimed_at = ?, updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'assigned'", [now, by, now, row.id])
+    tx.markAnnualReviewChangedIfWrote('crm:assignment') // 条件 UPDATE：确实改行才标记
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'lead_claim', 'lead', id, JSON.stringify({ assignmentId: Number(row.id), salesName: String(row.sales_name) }), now])
     // outbox 登记（上行 claim 认领回执，同步设计 §3；claimedAt 与本地 assignment.claimed_at 同一 now，
     // 中枢回放落 claimed_at——PRD 2.4 首次分类 24h 触发轴跨机一致）
     recordOutboxTx(tx, 'claim', `claim:${Number(row.id)}`, { leadId: id, assignmentId: Number(row.id), salesName: String(row.sales_name), actor: by, claimedAt: now }, now)
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   // 事务已提交才通知（assigned → claimed 改变了页面可见的归属状态）
   emitAssignmentInvalidated('claim', [id])
   return { ok: true, data: { assignmentId: Number(row.id) } }
@@ -274,7 +277,7 @@ export function claimLead(leadId: number, actor: string): AssignActionResult {
  * 都复用本核心，避免复制规则导致口径漂移（2026-09-09 原子化提取）。
  */
 export function recycleAssignmentTx(
-  tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] },
+  tx: CrmWriteTx,
   assignmentId: number,
   reason: string,
   actor: string
@@ -304,6 +307,8 @@ export function recycleAssignmentTx(
   const why = String(reason || '').trim() || '回收'
   const now = Date.now()
   tx.run("UPDATE assignment SET status = 'recycled', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
+  // 回收确实改写了 assignment 行（上面已排除 recycled/transferred/converted_skip）→ 标记失效
+  tx.markAnnualReviewChanged('crm:assignment')
   tx.run('INSERT INTO ownership_history (entity_type, entity_id, old_owner, new_owner, reason, actor, created_at) VALUES (?,?,?,?,?,?,?)',
     ['lead', Number(row.lead_id), String(row.sales_name), '', why, by, now])
   tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
@@ -318,7 +323,7 @@ export function recycleAssignmentTx(
 export function recycleAssignment(assignmentId: number, reason: string, actor: string): AssignActionResult {
   const id = Number(assignmentId)
   if (!Number.isInteger(id) || id <= 0) return { ok: false, code: 'E101', message: 'assignmentId 必填' }
-  const res = crmDbService.runTx((tx) => recycleAssignmentTx(tx, id, reason, actor), { affectsAnnualReview: 'crm:assignment' })
+  const res = crmDbService.runTx((tx) => recycleAssignmentTx(tx, id, reason, actor))
   // 事务已提交才通知（E202 已回收 / E205 converted_skip 等 ok:false 不发）；回收不删行，lead id 事后可读
   if (res.ok) {
     const leadId = Number(crmDbService.all('SELECT lead_id FROM assignment WHERE id = ?', [id])[0]?.lead_id || 0)
@@ -359,6 +364,7 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
   const targetEmployeeId = resolveLocalOwnerEmployeeId(target)
   const newId = crmDbService.runTx((tx) => {
     tx.run("UPDATE assignment SET status = 'transferred', updated_by = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed')", [by, now, id])
+    tx.markAnnualReviewChangedIfWrote('crm:assignment')
     const nid = tx.run(
       'INSERT INTO assignment (lead_id, sales_name, owner_employee_id, mode, sla1_deadline, sla2_scan_ref, status, source, updated_by, updated_at, version, deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       [Number(row.lead_id), target, targetEmployeeId, mode, sla1, '', 'assigned', 'transfer', by, now, 1, 0]
@@ -373,7 +379,7 @@ export function transferAssignment(assignmentId: number, toSales: string, reason
     // 绝不按接收端当前配置/时钟重算（2026-09-15 修复：此前缺这两个字段，接收端 sla1_deadline 落 NULL）。
     recordOutboxTx(tx, 'transfer', `transfer:${nid}`, { leadId: Number(row.lead_id), fromSales: String(row.sales_name), toSales: target, reason: why, oldAssignmentId: id, assignmentId: nid, mode, sla1Deadline: sla1, actor: by }, now)
     return nid
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   // 事务已提交才通知（旧行 transferred + 新行 assigned，归属易主）
   emitAssignmentInvalidated('transfer', [Number(row.lead_id)])
   return { ok: true, data: { assignmentId: newId } }
@@ -414,10 +420,11 @@ export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: 
         crmDbService.runTx((tx) => {
           // 条件带 status IN (assigned,claimed) AND sla1_met_at IS NULL：与扫描口径一致，防并发窗口误写
           tx.run("UPDATE assignment SET sla1_remind_count = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('assigned','claimed') AND sla1_met_at IS NULL", [remindNo, now, id])
+          tx.markAnnualReviewChangedIfWrote('crm:assignment') // 条件 UPDATE：确实改行才标记
           tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
             ['system:sla', 'sla1_remind', 'lead', Number(r.lead_id),
              JSON.stringify({ assignmentId: id, salesName: String(r.sales_name), remindNo, total: 3, deadline: Number(r.sla1_deadline) }), now])
-        }, { affectsAnnualReview: 'crm:assignment' })
+        })
         reminded++
       } catch (e) {
         console.warn(`[CRM] SLA1 提醒失败 assignment=${id}：${e}`)
@@ -449,7 +456,7 @@ export function runSla1Recycle(now = Date.now()): { recycled: number; reminded: 
             recordSupervisorNotificationTx(tx, notification, 'local:sla')
           }
           return rec
-        }, { affectsAnnualReview: 'crm:assignment' })
+        })
         if (res.ok) {
           recycled++
           // 事务已提交才通知：SLA 自动回收改变了归属状态，打开中的线索页需要感知
@@ -512,10 +519,11 @@ export function backfillAssignmentSla1(): number {
   crmDbService.runTx((tx) => {
     for (const r of rows) {
       tx.run('UPDATE assignment SET sla1_deadline = ? WHERE id = ? AND sla1_deadline IS NULL', [sla1, Number(r.id)])
+      tx.markAnnualReviewChangedIfWrote('crm:assignment') // 只在确实补写了期限时标记
     }
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       ['system:migration', 'assignment_sla1_backfill', 'assignment', null, JSON.stringify({ count: rows.length, slaHours: sla1Hours(), base: 'now' }), now])
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   return rows.length
 }
 
@@ -578,11 +586,13 @@ export function correctSla1Misrecycle(): CorrectionResult {
       tx.run('UPDATE lead SET first_contact_deadline = ?, updated_at = ? WHERE id = ?', [sla1, now, leadId])
       r.corrected++
     }
+    // 只有真正补建了纠正分配行才标记（全部 alreadyAssigned = 无数据变化 = 不失效）
+    if (r.corrected > 0) tx.markAnnualReviewChanged('crm:assignment')
     // 汇总审计 + 一次性标记，与数据同事务
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [by, 'sla1_misrecycle_correction', 'migration', null, JSON.stringify({ total: r.total, corrected: r.corrected, alreadyAssigned: r.alreadyAssigned, slaHours: sla1Hours() }), now])
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan', [MISRECYCLE_MARKER, now])
-  }, { affectsAnnualReview: 'crm:assignment' })
+  })
   // 事务已提交才通知：纠正性再分配产生了新的有效归属行（一次性迁移块，通常 corrected=0）
   if (correctedLeadIds.length) emitAssignmentInvalidated('assign', correctedLeadIds)
   return r
@@ -620,7 +630,8 @@ export function syncLeadDeadlineFromAssignment(): number {
            AND a.sla1_deadline <> lead.first_contact_deadline
        )`,
       [now])
-  }, { affectsAnnualReview: 'crm:lead' })
+    tx.markAnnualReviewChangedIfWrote('crm:lead') // 只在确实对齐了 lead 期限时标记
+  })
   const after = Number(crmDbService.all(`SELECT COUNT(*) AS c ${MISMATCH_SQL}`)[0]?.c ?? 0)
   const aligned = before - after
   if (aligned > 0) console.log(`[CRM] lead 首触期限对齐当前分配：${aligned} 条`)

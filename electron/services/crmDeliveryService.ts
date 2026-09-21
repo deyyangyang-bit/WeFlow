@@ -138,6 +138,7 @@ export function registerDelivery(oppId: number, payload: DeliveryRegisterPayload
       'UPDATE opportunity SET shipped_qty = ?, delivery_date = ?, over_ship_reason = ?, updated_at = ? WHERE id = ?',
       [shippedQty, deliveryDate, shippedQty > orderQty ? overShipReason : '', now, id]
     )
+    tx.markAnnualReviewChangedIfWrote('crm:opportunity') // 条件 UPDATE：确实改行才标记
     // 审计（宪法 §1.12 append-only，与写操作同事务）：记旧值/新值/操作者/来源
     tx.run(
       'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
@@ -148,7 +149,7 @@ export function registerDelivery(oppId: number, payload: DeliveryRegisterPayload
           operator: by, source: 'delivery_aftersales'
         }), now]
     )
-  }, { affectsAnnualReview: 'crm:opportunity' })
+  })
   // 派生：数量差异任务同步（补齐自动关闭 / 新差异出卡 / 差异量变化原地更新）
   const diff = syncDiffTask(id, by)
   return {

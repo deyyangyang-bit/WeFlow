@@ -246,6 +246,8 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
       for (const m of g.members) {
         tx.run('UPDATE account SET customer_id = ?, updated_at = ? WHERE id = ? AND customer_id IS NULL',
           [customerId, now, m.id])
+        // 条件 UPDATE：只有确实挂接了 account 行才标记（幂等重跑 0 行 = 不失效）
+        tx.markAnnualReviewChangedIfWrote('crm:account')
         r.applied++
       }
     }
@@ -262,7 +264,7 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
     // scan_state 只记录最后扫描时间戳（不永久跳过候选扫描）
     tx.run('INSERT INTO scan_state (key, last_scan) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET last_scan = excluded.last_scan',
       [M02_MARKER, now])
-  }, { affectsAnnualReview: 'crm:account' })
+  })
 
   saveReport(r, now)
   return r

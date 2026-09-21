@@ -21,7 +21,7 @@
  * 环境隔离与 lan-sync-test 同构：三行 env 在动态 import 业务模块前生效，绝不读写持久配置。
  * 运行：npx tsx scripts/annual-review-invalidation-test.ts
  */
-import { mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -245,6 +245,50 @@ async function main(): Promise<void> {
     settleWindow()
   }
 
+  // ══ A3. announceNow 的幽灵失效（真实计时器，不用 flush） ═════════════════════
+  {
+    const events: AnnualReviewInvalidationEvent[] = []
+    const off = onAnnualReviewInvalidation((e) => events.push(e))
+    // ① 普通事件开窗（首条立即派发）→ ② Now（立即派发并吸收旧窗口）→ ③ 等待超过 150ms
+    announceAnnualReviewDataChanged('crm:contract')
+    announceAnnualReviewDataChanged('crm:lead') // 被抑制
+    announceAnnualReviewDataChangedNow('account_switch')
+    ok('A14 Now 立即派发（普通首条 + Now 共两次）', events.length === 2 && events[1].reasons.join(',') === 'account_switch')
+    await sleep(ANNUAL_REVIEW_INVALIDATION_FLUSH_MS + 120) // 真实计时器：旧窗口若未被吸收会在此时补派发
+    ok('A15 等待超过一个窗口后不再出现第三条幽灵事件', events.length === 2)
+    ok('A16 Now 之后无待派发积压（旧窗口已被吸收，不残留计时器）', !hasPendingAnnualReviewInvalidation())
+    // ④ Now 之后的新普通写入仍是新窗口首条 → 立即派发
+    announceAnnualReviewDataChanged('crm:assignment')
+    ok('A17 Now 之后的新普通写入仍立即派发（新窗口 leading edge）', events.length === 3 && events[2].coalesced === false)
+    await sleep(ANNUAL_REVIEW_INVALIDATION_FLUSH_MS + 50)
+    ok('A18 该新窗口结束不产生额外派发（单条事件）', events.length === 3)
+    off()
+    settleWindow()
+  }
+
+  // ══ A4. Now 后的新任务不被旧窗口的补派发取消（真实计时器 + 真实 service） ═══
+  {
+    const h = createHarness()
+    settleWindow()
+    await warmCaches(h) // 有报告与 AI 缓存，便于观察 Now 的清空
+    announceAnnualReviewDataChanged('crm:contract') // 普通事件开窗（harness 订阅点已生效）
+    announceAnnualReviewDataChangedNow('account_switch') // Now：立即失效
+    // Now 之后立即启动新报告任务（模拟账号切换后用户马上重新生成）
+    const started = h.service.start(YEAR)
+    await sleep(ANNUAL_REVIEW_INVALIDATION_FLUSH_MS + 120) // 旧窗口若未吸收会在此时补派发
+    const st = h.service.getTaskState(YEAR)
+    ok('A19 Now 后的新报告任务不被旧窗口补派发取消',
+      st?.taskId === started.taskId && st?.status !== 'failed')
+    // 收尾：让任务正常跑完，避免残留运行中任务
+    h.runnerCalls.find((c) => c.payload.taskId === started.taskId)?.resolve(
+      composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(YEAR, GEN), facts, sales, crm, opts: { messageStats } })
+    )
+    await wait(3)
+    ok('A20 新任务正常收敛为 completed', h.service.getTaskState(YEAR)?.status === 'completed')
+    h.unsubscribe()
+    resetAnnualReviewInvalidationForTest()
+  }
+
   // ══ A2. 持续事件：有界合并、不无限延迟 ═══════════════════════════════════════
   {
     const events: AnnualReviewInvalidationEvent[] = []
@@ -361,10 +405,11 @@ async function main(): Promise<void> {
     await expectImmediateInvalidation('C6 assignment 写入（create: assignment）', h, () => {
       crmDbService.create('assignment', { lead_id: 1, sales_name: '测试销售甲', mode: 'manual', status: 'assigned', source: 'test', updated_by: 'test', updated_at: now, version: 1, deleted: 0 })
     })
-    await expectImmediateInvalidation('C7 显式声明的事务（runTx: crm:assignment）', h, () => {
+    await expectImmediateInvalidation('C7 事务内 changed 标记（markAnnualReviewChangedIfWrote）', h, () => {
       crmDbService.runTx((tx) => {
         tx.run("UPDATE assignment SET status = 'claimed', updated_at = ? WHERE lead_id = ?", [now, 1])
-      }, { affectsAnnualReview: 'crm:assignment' })
+        tx.markAnnualReviewChangedIfWrote('crm:assignment')
+      })
     })
     await expectImmediateInvalidation('C8 lead 写入（create: lead）', h, () => {
       crmDbService.create('lead', { contact_type: 'phone', contact_normalized: `139${String(now).slice(-8)}`, contact_raw: 'C8', status: 'NEW', first_contact_deadline: 0, created_at: now, updated_at: now })
@@ -541,6 +586,197 @@ async function main(): Promise<void> {
     ok('E11 失效期间在途 AI 结果 → invalidated（不返回成功）', res.success === false && res.error.code === 'invalidated')
     ok('E12 失效期间在途 AI 结果不写缓存', hangCoordinator.cacheSize() === 0)
     offHang()
+    h.unsubscribe()
+    resetAnnualReviewInvalidationForTest()
+  }
+
+  // ══ I. no-op 事务反例：只有真正改变数据才失效（changed 标记） ═══════════════
+  {
+    const h = createHarness()
+    const { assignLeads, correctSla1Misrecycle } = await import('../electron/services/crmAssignmentService')
+    const { resetLegacyGroupScanSla } = await import('../electron/services/crmLeadService')
+    const { migrate02AccountToCustomer } = await import('../electron/services/crmMigrationService')
+    const now = Date.now()
+
+    // I1 条件 UPDATE 命中 0 行（不存在的客户 id）→ 不失效
+    await expectNoInvalidation('I1 条件 UPDATE 命中 0 行（update account 不存在）', h, () => {
+      crmDbService.update('account', 987654, { name: '不存在', updated_at: now })
+    })
+    await expectNoInvalidation('I2 条件 UPDATE 命中 0 行（update contract 不存在）', h, () => {
+      crmDbService.update('contract', 987654, { amount: 1, updated_at: now })
+    })
+
+    // I3 批量分配全部 skipped（线索不存在）→ 不失效
+    await expectNoInvalidation('I3 批量分配全部 skipped（线索不存在）', h, () => {
+      const res = assignLeads([987654], '测试销售甲', 'tester')
+      if (!res.ok || res.data?.assignments.length) throw new Error('预期全部跳过')
+    })
+    // I4 批量分配全部 skipped（已有有效归属）→ 不失效
+    {
+      const leadId = Number(crmDbService.create('lead', { contact_type: 'phone', contact_normalized: `137${String(now).slice(-8)}`, contact_raw: 'I4', status: 'NEW', first_contact_deadline: 0, created_at: now, updated_at: now }))
+      assignLeads([leadId], '测试销售甲', 'tester') // 首次分配（会失效）
+      await expectNoInvalidation('I4 批量分配全部 skipped（已有有效归属）', h, () => {
+        const res = assignLeads([leadId], '测试销售甲', 'tester')
+        if (res.ok && res.data?.assignments.length) throw new Error('预期被跳过')
+      })
+    }
+
+    // I5 resetLegacyGroupScanSla：首次命中 → 失效；重跑命中 0 行 → 不失效
+    {
+      const leadId = Number(crmDbService.create('lead', { contact_type: 'phone', contact_normalized: `136${String(now).slice(-8)}`, contact_raw: 'I5', source: '群资源扫描', status: 'NEW', first_contact_deadline: now + 86400000, created_at: now, updated_at: now }))
+      await expectImmediateInvalidation('I5 resetLegacyGroupScanSla 命中行 → 失效', h, () => {
+        resetLegacyGroupScanSla()
+      })
+      await expectNoInvalidation('I6 resetLegacyGroupScanSla 重跑命中 0 行 → 不失效', h, () => {
+        resetLegacyGroupScanSla()
+      })
+      void leadId
+    }
+
+    // I7 correctSla1Misrecycle：全部 alreadyAssigned（无新增行）→ 不失效；确有纠正 → 失效
+    {
+      // 构造「已是 recycled 且 updated_by=system:sla」的行，且该 lead 已有有效归属 → alreadyAssigned 分支
+      const leadId = Number(crmDbService.create('lead', { contact_type: 'phone', contact_normalized: `135${String(now).slice(-8)}`, contact_raw: 'I7', status: 'NEW', first_contact_deadline: 0, created_at: now, updated_at: now }))
+      crmDbService.create('assignment', { lead_id: leadId, sales_name: '测试销售甲', mode: 'manual', status: 'assigned', source: 'test', updated_by: 'tester', updated_at: now, version: 1, deleted: 0 })
+      crmDbService.create('assignment', { lead_id: leadId, sales_name: '测试销售甲', mode: 'manual', status: 'recycled', source: 'test', updated_by: 'system:sla', updated_at: now, version: 1, deleted: 0 })
+      crmDbService.setScanState('migration:sla1-misrecycle-correction', 0) // 清一次性标记，允许本轮扫描
+      await expectNoInvalidation('I7 correctSla1Misrecycle 全部 alreadyAssigned → 不失效', h, () => {
+        const r = correctSla1Misrecycle()
+        if (r.corrected !== 0 || r.alreadyAssigned < 1) throw new Error(`预期全部跳过，实际 corrected=${r.corrected} alreadyAssigned=${r.alreadyAssigned}`)
+      })
+      // 真有需要纠正的行（lead 无有效归属）→ 必须失效
+      const leadId2 = Number(crmDbService.create('lead', { contact_type: 'phone', contact_normalized: `134${String(now).slice(-8)}`, contact_raw: 'I8', status: 'NEW', first_contact_deadline: 0, created_at: now, updated_at: now }))
+      crmDbService.create('assignment', { lead_id: leadId2, sales_name: '测试销售甲', mode: 'manual', status: 'recycled', source: 'test', updated_by: 'system:sla', updated_at: now, version: 1, deleted: 0 })
+      crmDbService.setScanState('migration:sla1-misrecycle-correction', 0)
+      await expectImmediateInvalidation('I8 correctSla1Misrecycle 确有纠正行 → 失效', h, () => {
+        const r = correctSla1Misrecycle()
+        if (r.corrected < 1) throw new Error(`预期有纠正，实际 corrected=${r.corrected}`)
+      })
+    }
+
+    // I9 migrate02AccountToCustomer：无 account 变化（已全部挂接）→ 不失效；确有挂接 → 失效
+    {
+      const accountId = Number(crmDbService.create('account', { name: '迁移客户', phone: '13800001111', created_at: now, updated_at: now }))
+      await expectImmediateInvalidation('I9 migrate02 确有 account 挂接 → 失效', h, () => {
+        const r = migrate02AccountToCustomer()
+        if (r.applied < 1) throw new Error(`预期有挂接，实际 applied=${r.applied}`)
+      })
+      await expectNoInvalidation('I10 migrate02 重跑无 account 变化（只写 scan_state/report）→ 不失效', h, () => {
+        migrate02AccountToCustomer()
+      })
+      void accountId
+    }
+
+    h.unsubscribe()
+    resetAnnualReviewInvalidationForTest()
+  }
+
+  // ══ J. LAN 上行 audit 事件：白名单 action 提交后立即失效（真实文件消费） ═══════
+  {
+    const h = createHarness()
+    const shared = mkdtempSync(join(tmpdir(), 'ar-invalidation-up-'))
+    const remoteTid = 'probe-remote-terminal'
+    const upDir = join(shared, 'up', remoteTid)
+    mkdirSync(upDir, { recursive: true })
+    let seq = 0
+    const writeAuditUpEvent = (action: string, extra: Record<string, unknown> = {}): string => {
+      const key = `${remoteTid}/audit:${++seq}`
+      const ev = {
+        eventSeq: seq,
+        idempotencyKey: key,
+        type: 'audit',
+        payload: { action, actor: 'remote-sales', entity_type: 'lead', entity_id: 1, detail: '{}', ...extra },
+        emittedAt: Date.now(),
+        from: remoteTid
+      }
+      const file = join(upDir, `${String(seq).padStart(8, '0')}-audit.json`)
+      writeFileSync(file, JSON.stringify(ev), 'utf-8')
+      return key
+    }
+
+    // J1 lead_assign 上行 audit → 消费成功且**立即**失效（不 flush、不等待）
+    settleWindow()
+    await warmCaches(h)
+    writeAuditUpEvent('lead_assign')
+    const c1 = lanSync.consumeUpEvents(shared)
+    ok('J1 lead_assign 上行 audit 消费成功', c1.applied === 1)
+    ok('J2 lead_assign 后报告缓存立即失效（未等 150ms）', h.service.getReport(YEAR).cache !== 'hit')
+    ok('J3 lead_assign 后 AI 缓存立即清空', h.coordinator.cacheSize() === 0)
+
+    // J4 lead_transfer 上行 audit → 立即失效
+    settleWindow()
+    await warmCaches(h)
+    writeAuditUpEvent('lead_transfer')
+    const c2 = lanSync.consumeUpEvents(shared)
+    ok('J4 lead_transfer 上行 audit 消费成功', c2.applied === 1)
+    ok('J5 lead_transfer 后两类缓存立即失效',
+      h.service.getReport(YEAR).cache !== 'hit' && h.coordinator.cacheSize() === 0)
+
+    // J6 sync_apply 上行 audit → 立即失效（白名单第三项）
+    settleWindow()
+    await warmCaches(h)
+    writeAuditUpEvent('sync_apply')
+    const c3 = lanSync.consumeUpEvents(shared)
+    ok('J6 sync_apply 上行 audit 消费成功', c3.applied === 1)
+    ok('J7 sync_apply 后两类缓存立即失效',
+      h.service.getReport(YEAR).cache !== 'hit' && h.coordinator.cacheSize() === 0)
+
+    // J8 无关 action（lead_note）→ 不失效
+    await expectNoInvalidation('J8 上行 audit lead_note（非白名单）不失效', h, () => {
+      writeAuditUpEvent('lead_note')
+      lanSync.consumeUpEvents(shared)
+    })
+
+    // J9 重复/已应用事件不再次失效（幂等标记命中）
+    {
+      settleWindow()
+      await warmCaches(h)
+      writeAuditUpEvent('lead_assign')
+      lanSync.consumeUpEvents(shared)
+      settleWindow()
+      await warmCaches(h)
+      const before = h.coordinator.cacheSize()
+      const dup = lanSync.consumeUpEvents(shared) // 目录已空 → 无事件可消费
+      ok('J9 重复消费不产生新事件', dup.applied === 0)
+      ok('J10 重复消费不失效（缓存保持命中）',
+        h.service.getReport(YEAR).cache === 'hit' && h.coordinator.cacheSize() === before)
+    }
+
+    // J11 事务失败（SQLite 触发器 RAISE ABORT 注入）→ 不失效
+    {
+      settleWindow()
+      await warmCaches(h)
+      crmDbService.runTx((tx) => {
+        tx.run("CREATE TRIGGER probe_up_audit_fail BEFORE INSERT ON audit_event WHEN NEW.action = 'lead_transfer' BEGIN SELECT RAISE(ABORT, 'probe fail'); END")
+      })
+      // 触发器本身不失效（scan_state 类 DDL 未标记）——先排掉窗口
+      settleWindow()
+      await warmCaches(h)
+      const before = { report: h.service.getReport(YEAR).cache, ai: h.coordinator.cacheSize() }
+      writeAuditUpEvent('lead_transfer')
+      const failed = lanSync.consumeUpEvents(shared)
+      crmDbService.runTx((tx) => { tx.run('DROP TRIGGER probe_up_audit_fail') })
+      ok('J11 事务失败被捕获（failed 计数）', failed.failed === 1 && failed.applied === 0)
+      ok('J12 事务失败不失效（报告缓存仍命中）', h.service.getReport(YEAR).cache === before.report)
+      ok('J13 事务失败不失效（AI 缓存仍在）', h.coordinator.cacheSize() === before.ai)
+      // 生产语义：失败事件文件留待下轮重试；本用例显式清理，避免污染后续断言
+      for (const f of readdirSync(upDir)) { try { rmSync(join(upDir, f), { force: true }) } catch { /* ignore */ } }
+      settleWindow()
+    }
+
+    // J14 无效事件（找不到 lead 的 claim）不失效
+    await expectNoInvalidation('J14 无效事件（claim 目标 lead 不存在）不失效', h, () => {
+      const key = `${remoteTid}/claim:${++seq}`
+      writeFileSync(join(upDir, `${String(seq).padStart(8, '0')}-claim.json`), JSON.stringify({
+        eventSeq: seq, idempotencyKey: key, type: 'claim',
+        payload: { leadId: 987654, salesName: '测试销售甲', actor: 'remote-sales' },
+        emittedAt: Date.now(), from: remoteTid
+      }), 'utf-8')
+      const res = lanSync.consumeUpEvents(shared)
+      if (res.applied !== 0) throw new Error(`预期不应用，实际 applied=${res.applied}`)
+    })
+
+    try { rmSync(shared, { recursive: true, force: true }) } catch { /* ignore */ }
     h.unsubscribe()
     resetAnnualReviewInvalidationForTest()
   }
