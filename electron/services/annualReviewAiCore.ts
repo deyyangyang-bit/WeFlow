@@ -26,6 +26,7 @@
  * 数组字段逐一复制，不与报告共享引用）；输出可 structuredClone / JSON 序列化。
  */
 import { stripJsonFence } from './ai/promptUtils'
+import { FUNNEL_ORDER } from '../../shared/salesStage'
 import type { AnnualReviewCoverage } from './annualReviewSegments'
 import type { AnnualReviewReport } from './annualReviewReport'
 import type { MetricState } from './annualReviewStats'
@@ -67,6 +68,106 @@ export const ANNUAL_REVIEW_AI_LIMITS = {
   risks: 5,
   metricKeysPerItem: 6
 } as const
+
+// ─── 字符串白名单（AI 输入不含任何自由文本） ─────────────────────────────────
+//
+// 报告 validator 对下列字段只校验「非空字符串」，不校验取值：coverage.source、
+// coverage.reasonCodes[]、warnings[].code、漏斗分布 bucket / kind。这些字段一旦来自
+// 被污染的报告，就能把客户姓名、sessionId、数据库路径、SQL、Token、聊天正文或提示注入
+// 文本直接送进 prompt。因此 AI 投影层对它们一律走固定枚举白名单：**未确认的值拒绝或省略**，
+// 绝不原样转发。
+//
+// 其余字符串字段（summary/metric 的 state、coverage.status、monthly 月份键、metricKey）
+// 在报告 contract 里已是封闭枚举或严格格式，并已由 validateAnnualReviewReport 强制校验，
+// 不作为自由文本处理。
+
+/**
+ * `coverage.source` 白名单 = 年度复盘报告 pipeline 实际产出的 source 全集
+ * （annualReviewStats / Segments / Communication / Assignment / Report 的 coverage 构造点）。
+ * 未知 source → 整个字段省略（不用占位符冒充）；新增数据源时同步本表。
+ */
+export const ANNUAL_REVIEW_AI_ALLOWED_SOURCES: readonly string[] = [
+  'crmdb.account',
+  'crmdb.allocation',
+  'crmdb.assignment',
+  'crmdb.audit_event',
+  'crmdb.contract',
+  'crmdb.contract_status_history',
+  'crmdb.opportunity',
+  'crmdb.opportunity_event',
+  'salesdb.customer_profile',
+  'salesdb.intent_tag_log',
+  'wcdb.messages',
+  'derived:contract_amount/dealing_customers',
+  // 可用年份摘要的 source（同一报告族的固定值，当前不出现在顶层 coverage）
+  'local_facts'
+]
+
+/**
+ * 稳定 code 白名单（`coverage.reasonCodes` 与 `warnings[].code` 共用）
+ * = 统计层全部 warning / reason code 字面量。未知 code → 该条整体丢弃。
+ */
+export const ANNUAL_REVIEW_AI_ALLOWED_CODES: readonly string[] = [
+  'account_created_at_missing',
+  'allocated_reconciled_at_missing',
+  'audit_detail_invalid',
+  'audit_time_missing',
+  'bulk_import_dominant',
+  'contract_account_missing',
+  'contract_amount_invalid',
+  'contribution_account_missing',
+  'credited_account_missing',
+  'credited_amount_invalid',
+  'current_snapshot_projection',
+  'customer_active_unavailable',
+  'daily_date_invalid',
+  'daily_scope_unverified',
+  'daily_stats_missing',
+  'effective_followup_lead_missing',
+  'facts_missing',
+  'historical_contact_unavailable',
+  'history_contact_unavailable',
+  'history_coverage_below_full',
+  'history_coverage_below_threshold',
+  'history_not_reconstructable',
+  'history_population_empty',
+  'history_reconstruction_not_complete',
+  'intent_event_stage_invalid',
+  'intent_event_time_invalid',
+  'last_contact_fallback',
+  'last_contact_missing',
+  'legacy_time_fallback',
+  'legacy_time_missing',
+  'message_stats_invalid',
+  'message_stats_unavailable',
+  'opportunity_created_at_missing',
+  'opportunity_event_stage_invalid',
+  'opportunity_event_time_invalid',
+  'opportunity_event_unlinked',
+  'opportunity_tombstone_gap',
+  'owner_current_value',
+  'shipped_contract_unlinked',
+  'shipped_time_missing',
+  'sign_date_missing',
+  'stage_flow_low_coverage',
+  'sync_import_not_audited',
+  'tombstone_gap',
+  'unsupported_scope'
+]
+
+/** 漏斗桶名 = shared/salesStage FUNNEL_ORDER（阶段口径唯一源，不复制副本） */
+export const ANNUAL_REVIEW_AI_ALLOWED_BUCKETS: readonly string[] = [...FUNNEL_ORDER]
+
+/** 阶段分布取数形态（报告契约的两个字面量联合） */
+export const ANNUAL_REVIEW_AI_ALLOWED_KINDS: ReadonlyArray<AnnualReviewReport['funnel']['customerStage']['kind']> = [
+  'current_snapshot',
+  'historical_reconstruction'
+]
+
+/** 白名单成员判定：非字符串 / 未收录 → undefined（调用方据此省略或丢弃） */
+function whitelisted(value: unknown, allowed: readonly string[]): string | undefined {
+  return typeof value === 'string' && allowed.includes(value) ? value : undefined
+}
 
 // ─── AI 输出结构（规格 §8 契约） ─────────────────────────────────────────────
 
@@ -124,7 +225,10 @@ export interface AnnualReviewAiDistribution {
   /** 取数形态（current_snapshot / historical_reconstruction）；stageFlow 无 kind → null */
   kind: string | null
   state: MetricState
-  /** null = 分布未产出（unavailable），绝不用空数组冒充「全为零」 */
+  /**
+   * null = 分布未产出（unavailable）或全部桶名未通过白名单（无法确认，不冒充空分布）；
+   * 绝不用空数组冒充「全为零」。
+   */
   buckets: Array<{ bucket: string; count: number }> | null
 }
 
@@ -137,32 +241,39 @@ export interface AnnualReviewAiSeries {
 export interface AnnualReviewAiCoverageEntry {
   key: string
   status: MetricState
-  source: string
+  /** 未通过 source 白名单时整个字段省略（报告只保证它是非空字符串） */
+  source?: string
   rows?: number
   exactCoverage?: boolean
   /** null = 分母不可知（exactCoverage=false），语义与缺省不同，必须保留 */
   coverageRatio?: number | null
+  /** 仅保留白名单内的稳定 code；无有效项时省略 */
   reasonCodes?: string[]
 }
 
+/**
+ * 警告行：只有稳定 code 与结构化计数。
+ * **不再携带 `message`**——文案是自由文本，正是客户姓名/路径/注入文本的潜在载体，
+ * AI 只需知道「哪个指标有哪类缺口」，不需要文案；含义由 code 决定（规格 §8.1）。
+ */
 export interface AnnualReviewAiWarning {
   code: string
-  message: string
   metricKeys: string[]
   counts?: Record<string, number>
 }
 
+/** AI 输入的顶层六键契约（任何字段都必须能在报告里找到对应；无自由文本） */
 export interface AnnualReviewAiInput {
   meta: AnnualReviewAiMeta
   /** A/D/E 组标量聚合指标（值 + 四态；unavailable 时 value=null） */
   metrics: AnnualReviewAiMetric[]
-  /** 阶段分布（funnel 四指标；桶名来自 FUNNEL_ORDER 封闭枚举） */
+  /** 阶段分布（funnel 四指标；桶名经 FUNNEL_ORDER 白名单） */
   distributions: AnnualReviewAiDistribution[]
   /** 月度趋势（三条独立序列，量纲独立，不合并） */
   series: AnnualReviewAiSeries[]
-  /** 全指标覆盖结构（含 rows/exactCoverage/coverageRatio/reasonCodes） */
+  /** 全指标覆盖结构（source/reasonCodes 经白名单） */
   coverage: AnnualReviewAiCoverageEntry[]
-  /** 全指标警告聚合（AI 必须据此降低置信度，不得忽略） */
+  /** 全指标警告聚合（只有稳定 code，无文案） */
   warnings: AnnualReviewAiWarning[]
 }
 
@@ -198,14 +309,28 @@ function localDateKey(ms: number): string {
   return `${d.getFullYear()}-${month}-${day}`
 }
 
-/** 覆盖结构 → AI 输入条目（只保留有语义的字段；coverageRatio=null 必须保留） */
-function toCoverageEntry(key: string, coverage: AnnualReviewCoverage): AnnualReviewAiCoverageEntry {
-  const entry: AnnualReviewAiCoverageEntry = { key, status: coverage.status, source: coverage.source }
+/** 覆盖结构 → AI 输入条目：source/reasonCodes 走白名单，未确认的值省略而非转发 */
+function toCoverageEntry(key: string, coverage: AnnualReviewCoverage, allowedCodes: ReadonlySet<string>): AnnualReviewAiCoverageEntry {
+  const entry: AnnualReviewAiCoverageEntry = { key, status: coverage.status }
+  const source = whitelisted(coverage.source, ANNUAL_REVIEW_AI_ALLOWED_SOURCES)
+  if (source !== undefined) entry.source = source
   if (typeof coverage.rows === 'number') entry.rows = coverage.rows
   if (typeof coverage.exactCoverage === 'boolean') entry.exactCoverage = coverage.exactCoverage
   if (coverage.coverageRatio !== undefined) entry.coverageRatio = coverage.coverageRatio
-  if (Array.isArray(coverage.reasonCodes)) entry.reasonCodes = [...coverage.reasonCodes]
+  const codes = Array.isArray(coverage.reasonCodes)
+    ? [...new Set(coverage.reasonCodes.filter((code) => allowedCodes.has(code)))]
+    : []
+  if (codes.length > 0) entry.reasonCodes = codes
   return entry
+}
+
+/** 分布桶：桶名必须命中 FUNNEL_ORDER；全部未命中 → null（无法确认，不冒充空分布） */
+function toBuckets(list: ReadonlyArray<{ bucket: string; count: number }> | null): Array<{ bucket: string; count: number }> | null {
+  if (list === null) return null
+  const buckets = list
+    .filter((d) => ANNUAL_REVIEW_AI_ALLOWED_BUCKETS.includes(d.bucket))
+    .map((d) => ({ bucket: d.bucket, count: d.count }))
+  return buckets.length > 0 ? buckets : null
 }
 
 // ─── 输入构造（纯投影，不修改报告） ───────────────────────────────────────────
@@ -222,6 +347,9 @@ export function annualReviewAiMetricKeys(report: AnnualReviewReport): string[] {
  * 把报告投影为最小 AI 输入。白名单式逐字段取数：
  *   - 只取 meta / 标量指标 / 阶段分布 / 月度序列 / coverage / warnings；
  *   - 客户明细行、客户姓名、会话标识、E 组 per-sales 明细、sourceSummary 全部不取；
+ *   - 自由文本字段（warnings.message、未确认的 source/reasonCodes/code/bucket/kind）
+ *     一律不发（见 ANNUAL_REVIEW_AI_ALLOWED_* 白名单）——报告 validator 只保证这些
+ *     字段「是非空字符串」，不能据此相信其内容；
  *   - 所有数组/对象都是新分配（不与报告共享引用），报告只读。
  */
 export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualReviewAiInput {
@@ -249,27 +377,27 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
   const distributions: AnnualReviewAiDistribution[] = [
     {
       key: 'funnel.customerStage',
-      kind: report.funnel.customerStage.kind,
+      kind: whitelisted(report.funnel.customerStage.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
       state: report.funnel.customerStage.coverage.status,
-      buckets: report.funnel.customerStage.distribution === null ? null : report.funnel.customerStage.distribution.map((d) => ({ bucket: d.bucket, count: d.count }))
+      buckets: toBuckets(report.funnel.customerStage.distribution)
     },
     {
       key: 'funnel.opportunityStage',
-      kind: report.funnel.opportunityStage.kind,
+      kind: whitelisted(report.funnel.opportunityStage.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
       state: report.funnel.opportunityStage.coverage.status,
-      buckets: report.funnel.opportunityStage.distribution === null ? null : report.funnel.opportunityStage.distribution.map((d) => ({ bucket: d.bucket, count: d.count }))
+      buckets: toBuckets(report.funnel.opportunityStage.distribution)
     },
     {
       key: 'funnel.stageFlow',
       kind: null,
       state: report.funnel.stageFlow.coverage.status,
-      buckets: report.funnel.stageFlow.distribution.map((d) => ({ bucket: d.bucket, count: d.count }))
+      buckets: toBuckets(report.funnel.stageFlow.distribution)
     },
     {
       key: 'funnel.lostBreakdown',
-      kind: report.funnel.lostBreakdown.kind,
+      kind: whitelisted(report.funnel.lostBreakdown.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
       state: report.funnel.lostBreakdown.coverage.status,
-      buckets: report.funnel.lostBreakdown.customerPreviousStage === null ? null : report.funnel.lostBreakdown.customerPreviousStage.map((d) => ({ bucket: d.bucket, count: d.count }))
+      buckets: toBuckets(report.funnel.lostBreakdown.customerPreviousStage)
     }
   ]
 
@@ -293,14 +421,30 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
     }
   ]
 
-  const coverage: AnnualReviewAiCoverageEntry[] = annualReviewAiMetricKeys(report)
-    .map((key) => toCoverageEntry(key, report.coverage[key]))
+  const allowedCodes = new Set(ANNUAL_REVIEW_AI_ALLOWED_CODES)
+  const allowedKeys = new Set(annualReviewAiMetricKeys(report))
+  const coverage: AnnualReviewAiCoverageEntry[] = [...allowedKeys]
+    .sort()
+    .map((key) => toCoverageEntry(key, report.coverage[key], allowedCodes))
 
-  const warnings: AnnualReviewAiWarning[] = report.warnings.map((w) => {
-    const row: AnnualReviewAiWarning = { code: w.code, message: w.message, metricKeys: [...w.metricKeys] }
-    if (w.counts !== undefined) row.counts = { ...w.counts }
-    return row
-  })
+  // 警告：未知 code（可能携带任意文本）连行一起丢；metricKey 同样只认报告 coverage 键集合；
+  // 不转发 message（自由文本，见 AnnualReviewAiWarning 注释）
+  const warnings: AnnualReviewAiWarning[] = []
+  for (const w of report.warnings) {
+    if (!allowedCodes.has(w.code)) continue
+    const metricKeys = [...new Set(w.metricKeys.filter((key) => allowedKeys.has(key)))]
+    if (metricKeys.length === 0) continue
+    const row: AnnualReviewAiWarning = { code: w.code, metricKeys }
+    if (w.counts !== undefined) {
+      const counts: Record<string, number> = {}
+      for (const key of metricKeys) {
+        const count = w.counts[key]
+        if (typeof count === 'number') counts[key] = count
+      }
+      if (Object.keys(counts).length > 0) row.counts = counts
+    }
+    warnings.push(row)
+  }
 
   return { meta, metrics, distributions, series, coverage, warnings }
 }
@@ -308,30 +452,32 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
 // ─── Prompt ──────────────────────────────────────────────────────────────────
 
 /**
- * 固定 system prompt。三点必须在提示词里说清，因为它们是本模块的验收口径：
- * 数字只能来自输入、unavailable 不是 0、每条判断必须引用真实 metricKeys。
+ * 固定 system prompt。四条必须在提示词里说清，因为它们是本模块的验收口径：
+ * 数字只能来自输入、**文本里一个数字都不许写**（见 ANNUAL_REVIEW_AI_NUMERIC_CLAIM）、
+ * unavailable 不是 0、每条判断必须引用真实 metricKeys。
  */
 export const ANNUAL_REVIEW_AI_SYSTEM_PROMPT = [
   '你是 B2B 销售年度经营复盘分析助手（工业品 / 叉车仓储设备行业）。你的输入是一份已经算好的年度经营数据，你只负责解释与建议。',
   '',
   '铁律（违反即视为无效输出）：',
-  '1. 只能用输入数据说话：不得引入行业常识、经验值、外部事实或任何输入中不存在的数字。',
-  '2. 不得自行计算、推算、换算或改写金额、比例、排名、增长率、同比环比；需要数字时原样引用输入中的值。',
-  '3. 每条 diagnoses / actions / risks 的 metricKeys 必须至少一个，且只能取输入 coverage 中出现的键；不得发明键名。',
-  '4. state 为 unavailable 的指标表示数据不可得，不是 0，也不是「很低」；不得据此下结论，若影响判断须在 risks 或 observation 中明确指出数据缺口。',
-  '5. state 为 partial / snapshot_only 的指标含义受限，结论须相应降低 confidence。',
-  '6. 不要给出客户名单、联系人、客户姓名、会话标识或任何个体识别信息；只做经营层面的判断。',
-  '7. 只输出一个 JSON 对象：不要代码围栏、不要解释文字、不要多余字段。',
+  '1. 只能用输入数据说话：不得引入行业常识、经验值、外部事实或任何输入中不存在的信息。',
+  '2. 不得自行计算、推算、换算或改写金额、比例、排名、增长率、同比环比；也不要复述输入中的具体数值。',
+  `3. **正文里不得出现任何数字**：阿拉伯数字、全角数字、中文数字（〇零一二三四五六七八九十百千万亿两 等）都不允许。不要写百分比、金额、数量、排名（如「排名第几」）、年份、季度序号、月份序号。需要表达多少时只用定性词：多数 / 大部分 / 部分 / 少数 / 若干 / 明显 / 略低 / 偏高。确定性数字由页面按 metricKeys 从原报告直接展示，你只做定性解释。唯一允许出现数字的位置是 JSON 字段 priority 的取值（如 1 表示最高优先级）。`,
+  '4. 每条 diagnoses / actions / risks 的 metricKeys 必须至少一个，且只能取输入 coverage 中出现的键；不得发明键名。',
+  '5. state 为 unavailable 的指标表示数据不可得，不是 0，也不是「很低」；不得据此下结论，若影响判断须在 risks 或 observation 中明确指出数据缺口。',
+  '6. state 为 partial / snapshot_only 的指标含义受限，结论须相应降低 confidence。warnings 只给稳定 code（不含文案），code 表示相应指标存在数据缺口，遇到缺口须降低 confidence 并在 risks 中说明。',
+  '7. 不要给出客户名单、联系人、客户姓名、会话标识或任何个体识别信息；只做经营层面的判断。',
+  '8. 只输出一个 JSON 对象：不要代码围栏、不要解释文字、不要多余字段。',
   '',
   '输出 JSON 结构（字段不可增删）：',
   '{',
-  '  "executiveSummary": "年度经营总评，2-4 句",',
-  '  "diagnoses": [{ "title": "结论标题", "observation": "数据观察到的事实", "hypothesis": "原因假设（明确是假设）", "metricKeys": ["summary.contractAmount"], "confidence": "high|medium|low" }],',
-  '  "actions": [{ "priority": 1, "action": "下一年度要做什么", "rationale": "为什么（可引用数据）", "metricKeys": ["summary.creditedAmount"], "horizon": "next_quarter|next_half|next_year" }],',
+  '  "executiveSummary": "年度经营总评，几句定性判断",',
+  '  "diagnoses": [{ "title": "结论标题", "observation": "数据观察到的事实（定性）", "hypothesis": "原因假设（明确是假设）", "metricKeys": ["summary.contractAmount"], "confidence": "high|medium|low" }],',
+  '  "actions": [{ "priority": 1, "action": "下一年度要做什么", "rationale": "为什么（定性）", "metricKeys": ["summary.creditedAmount"], "horizon": "next_quarter|next_half|next_year" }],',
   '  "risks": [{ "risk": "风险或数据缺口", "metricKeys": ["communication.volume"] }]',
   '}',
   '',
-  `枚举取值：confidence ∈ high|medium|low；priority ∈ 1|2|3（1 最高）；horizon ∈ next_quarter|next_half|next_year。`,
+  `枚举取值：confidence ∈ high|medium|low；priority ∈ 1|2|3（1 最高，这是唯一允许出现数字的字段）；horizon ∈ next_quarter|next_half|next_year。`,
   `长度上限：executiveSummary ≤ ${ANNUAL_REVIEW_AI_LIMITS.executiveSummary} 字；title ≤ ${ANNUAL_REVIEW_AI_LIMITS.diagnosisTitle} 字；其余文本字段 ≤ ${ANNUAL_REVIEW_AI_LIMITS.diagnosisObservation} 字；条目上限 diagnoses ≤ ${ANNUAL_REVIEW_AI_LIMITS.diagnoses}、actions ≤ ${ANNUAL_REVIEW_AI_LIMITS.actions}、risks ≤ ${ANNUAL_REVIEW_AI_LIMITS.risks}。`,
   '没有把握的内容宁可不写：diagnoses / actions / risks 允许为空数组。'
 ].join('\n')
@@ -355,11 +501,29 @@ export function buildAnnualReviewAiPrompt(input: AnnualReviewAiInput): AnnualRev
 
 // ─── 输出解析与严格校验 ──────────────────────────────────────────────────────
 
-export type AnnualReviewAiParseFailureCode = 'empty_output' | 'invalid_json' | 'invalid_shape'
+export type AnnualReviewAiParseFailureCode = 'empty_output' | 'invalid_json' | 'invalid_shape' | 'numeric_claim'
 
 export type AnnualReviewAiParseResult =
   | { ok: true; analysis: AnnualReviewAiAnalysis }
   | { ok: false; code: AnnualReviewAiParseFailureCode; message: string }
+
+/**
+ * 数字字面量检测（V1 最保守规则）。
+ *
+ * 只校验 metricKeys 并不能阻止模型在正文里编造数字——「回款比签约高 83%」「损失 100 万元」
+ * 「排名第一」都可以挂着合法 metricKey 出现，而报告里根本没有这些数。V1 的做法是彻底
+ * 不在 AI 文本里接受数字：确定性数字由页面依据 metricKeys 从原报告渲染，AI 只输出定性解释。
+ *
+ * 覆盖：任意 Unicode 十进制数字（含全角），以及中文数字字符（小写、大写、两/萬/億 等变体）。
+ * 这是「宁可更严」的取舍：正文里「统一」「一致」「十分」这类词也会被拒绝，
+ * 提示词已明确要求改用定性词表达程度。
+ */
+const NUMERIC_CLAIM = /[\p{Nd}]|[〇零一二三四五六七八九十百千万亿兆两廿卅壹贰叁肆伍陆柒捌玖拾佰仟萬億兩]/u
+
+/** 数字禁令的单一实现（readQualitativeText 使用；行为经 parseAnnualReviewAiOutput 断言） */
+function hasNumericClaim(text: string): boolean {
+  return NUMERIC_CLAIM.test(text)
+}
 
 const DIAGNOSIS_KEYS = ['title', 'observation', 'hypothesis', 'metricKeys', 'confidence'] as const
 const ACTION_KEYS = ['priority', 'action', 'rationale', 'metricKeys', 'horizon'] as const
@@ -390,7 +554,7 @@ function exactKeys(obj: Record<string, unknown>, allowed: readonly string[]): bo
 
 /**
  * metricKeys 校验：非空数组、长度受限、逐项非空字符串、必须存在于 allowed 集合、不得重复。
- * 返回错误原因（null = 合法）。
+ * 返回错误原因（null = 合法）。回显的键名按单行、限长处理（模型输出，不整段转发）。
  */
 function metricKeysError(v: unknown, allowed: ReadonlySet<string>): string | null {
   if (!Array.isArray(v)) return 'metricKeys 不是数组'
@@ -400,11 +564,30 @@ function metricKeysError(v: unknown, allowed: ReadonlySet<string>): string | nul
   for (const item of v) {
     if (typeof item !== 'string' || item.trim() === '') return 'metricKeys 含非字符串或空值'
     const key = item.trim()
-    if (!allowed.has(key)) return `metricKeys 引用未知指标：${key.slice(0, 64)}`
-    if (seen.has(key)) return `metricKeys 重复引用：${key.slice(0, 64)}`
+    if (!allowed.has(key)) return `metricKeys 引用未知指标：${compactEcho(key)}`
+    if (seen.has(key)) return `metricKeys 重复引用：${compactEcho(key)}`
     seen.add(key)
   }
   return null
+}
+
+/** 单行限长回显（错误文案里只出现我们自己与模型产出的短片段，不整段转发） */
+function compactEcho(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 64)
+}
+
+/** 定性文本字段校验结果：数字表达单独给码，便于调用方区分「格式错」与「编造数字」 */
+type QualitativeText = { ok: true; text: string } | { ok: false; code: AnnualReviewAiParseFailureCode; message: string }
+
+/**
+ * 读取一个 AI 文本字段：trim 后必须非空、不超长，且不得含数字表达。
+ * V1 不接受数字——见 NUMERIC_CLAIM 注释。
+ */
+function readQualitativeText(v: unknown, at: string, max: number): QualitativeText {
+  const text = readText(v, max)
+  if (text === null) return { ok: false, code: 'invalid_shape', message: `${at} 为空或超长` }
+  if (hasNumericClaim(text)) return { ok: false, code: 'numeric_claim', message: `${at} 含数字表达（V1 禁止 AI 文本出现数字）` }
+  return { ok: true, text }
 }
 
 function readMetricKeys(v: unknown): string[] {
@@ -413,6 +596,7 @@ function readMetricKeys(v: unknown): string[] {
 
 /**
  * 解析并严格校验模型输出。任何一处不合法 → 整体失败（不部分采信、不补默认值）。
+ * 文本字段额外执行数字禁令（违规返回 code=`numeric_claim`）。
  * message 只描述「第几条、哪个字段、怎么不合格」，不回显模型原文（避免把未校验文本
  * 传播到日志/UI）。
  */
@@ -430,8 +614,9 @@ export function parseAnnualReviewAiOutput(raw: unknown, allowedMetricKeys: reado
   if (!isPlainObject(parsed)) return { ok: false, code: 'invalid_shape', message: '模型输出不是 JSON 对象' }
   if (!exactKeys(parsed, TOP_KEYS)) return { ok: false, code: 'invalid_shape', message: '顶层字段集合与契约不一致（缺失或存在额外字段）' }
 
-  const executiveSummary = readText(parsed.executiveSummary, ANNUAL_REVIEW_AI_LIMITS.executiveSummary)
-  if (executiveSummary === null) return { ok: false, code: 'invalid_shape', message: 'executiveSummary 为空或超长' }
+  const summaryText = readQualitativeText(parsed.executiveSummary, 'executiveSummary', ANNUAL_REVIEW_AI_LIMITS.executiveSummary)
+  if (!summaryText.ok) return summaryText
+  const executiveSummary = summaryText.text
 
   const allowed = new Set(allowedMetricKeys)
   const diagnosesRaw = parsed.diagnoses
@@ -454,21 +639,21 @@ export function parseAnnualReviewAiOutput(raw: unknown, allowedMetricKeys: reado
     if (!isPlainObject(item) || !exactKeys(item, DIAGNOSIS_KEYS)) {
       return { ok: false, code: 'invalid_shape', message: `${at} 字段集合与契约不一致` }
     }
-    const title = readText(item.title, ANNUAL_REVIEW_AI_LIMITS.diagnosisTitle)
-    if (title === null) return { ok: false, code: 'invalid_shape', message: `${at}.title 为空或超长` }
-    const observation = readText(item.observation, ANNUAL_REVIEW_AI_LIMITS.diagnosisObservation)
-    if (observation === null) return { ok: false, code: 'invalid_shape', message: `${at}.observation 为空或超长` }
-    const hypothesis = readText(item.hypothesis, ANNUAL_REVIEW_AI_LIMITS.diagnosisHypothesis)
-    if (hypothesis === null) return { ok: false, code: 'invalid_shape', message: `${at}.hypothesis 为空或超长` }
+    const title = readQualitativeText(item.title, `${at}.title`, ANNUAL_REVIEW_AI_LIMITS.diagnosisTitle)
+    if (!title.ok) return title
+    const observation = readQualitativeText(item.observation, `${at}.observation`, ANNUAL_REVIEW_AI_LIMITS.diagnosisObservation)
+    if (!observation.ok) return observation
+    const hypothesis = readQualitativeText(item.hypothesis, `${at}.hypothesis`, ANNUAL_REVIEW_AI_LIMITS.diagnosisHypothesis)
+    if (!hypothesis.ok) return hypothesis
     const keysError = metricKeysError(item.metricKeys, allowed)
     if (keysError) return { ok: false, code: 'invalid_shape', message: `${at}.${keysError}` }
     if (!(ANNUAL_REVIEW_AI_CONFIDENCE as readonly unknown[]).includes(item.confidence)) {
       return { ok: false, code: 'invalid_shape', message: `${at}.confidence 非法枚举` }
     }
     diagnoses.push({
-      title,
-      observation,
-      hypothesis,
+      title: title.text,
+      observation: observation.text,
+      hypothesis: hypothesis.text,
       metricKeys: readMetricKeys(item.metricKeys),
       confidence: item.confidence as AnnualReviewAiConfidence
     })
@@ -484,10 +669,10 @@ export function parseAnnualReviewAiOutput(raw: unknown, allowedMetricKeys: reado
     if (!(ANNUAL_REVIEW_AI_PRIORITIES as readonly unknown[]).includes(item.priority)) {
       return { ok: false, code: 'invalid_shape', message: `${at}.priority 非法枚举` }
     }
-    const action = readText(item.action, ANNUAL_REVIEW_AI_LIMITS.actionAction)
-    if (action === null) return { ok: false, code: 'invalid_shape', message: `${at}.action 为空或超长` }
-    const rationale = readText(item.rationale, ANNUAL_REVIEW_AI_LIMITS.actionRationale)
-    if (rationale === null) return { ok: false, code: 'invalid_shape', message: `${at}.rationale 为空或超长` }
+    const action = readQualitativeText(item.action, `${at}.action`, ANNUAL_REVIEW_AI_LIMITS.actionAction)
+    if (!action.ok) return action
+    const rationale = readQualitativeText(item.rationale, `${at}.rationale`, ANNUAL_REVIEW_AI_LIMITS.actionRationale)
+    if (!rationale.ok) return rationale
     const keysError = metricKeysError(item.metricKeys, allowed)
     if (keysError) return { ok: false, code: 'invalid_shape', message: `${at}.${keysError}` }
     if (!(ANNUAL_REVIEW_AI_HORIZONS as readonly unknown[]).includes(item.horizon)) {
@@ -495,8 +680,8 @@ export function parseAnnualReviewAiOutput(raw: unknown, allowedMetricKeys: reado
     }
     actions.push({
       priority: item.priority as AnnualReviewAiPriority,
-      action,
-      rationale,
+      action: action.text,
+      rationale: rationale.text,
       metricKeys: readMetricKeys(item.metricKeys),
       horizon: item.horizon as AnnualReviewAiHorizon
     })
@@ -509,11 +694,11 @@ export function parseAnnualReviewAiOutput(raw: unknown, allowedMetricKeys: reado
     if (!isPlainObject(item) || !exactKeys(item, RISK_KEYS)) {
       return { ok: false, code: 'invalid_shape', message: `${at} 字段集合与契约不一致` }
     }
-    const risk = readText(item.risk, ANNUAL_REVIEW_AI_LIMITS.riskRisk)
-    if (risk === null) return { ok: false, code: 'invalid_shape', message: `${at}.risk 为空或超长` }
+    const risk = readQualitativeText(item.risk, `${at}.risk`, ANNUAL_REVIEW_AI_LIMITS.riskRisk)
+    if (!risk.ok) return risk
     const keysError = metricKeysError(item.metricKeys, allowed)
     if (keysError) return { ok: false, code: 'invalid_shape', message: `${at}.${keysError}` }
-    risks.push({ risk, metricKeys: readMetricKeys(item.metricKeys) })
+    risks.push({ risk: risk.text, metricKeys: readMetricKeys(item.metricKeys) })
   }
 
   return { ok: true, analysis: { executiveSummary, diagnoses, actions, risks } }

@@ -109,17 +109,42 @@ export function buildAnnualReviewAiCallOptions(signal?: AbortSignal): CallOption
   }
 }
 
+// ─── 失败文案（全部为编译期常量，绝不拼接原始异常） ──────────────────────────
+
+/**
+ * 固定安全文案。调用方（未来的 IPC/UI）拿到的是**常量**，不是异常的投影：
+ * 底层 error.message 常带 API URL、Bearer Token、供应商响应正文、数据库路径或堆栈，
+ * 一旦透传就会随错误提示、日志、崩溃报告扩散出去。因此这里逐类映射固定文案，
+ * 原始错误既不返回也不记录（本轮不新增日志）。
+ */
+export const ANNUAL_REVIEW_AI_FAILURE_MESSAGES = {
+  not_configured: 'AI 未配置（缺少 API 地址或密钥）',
+  budget_blocked: '今日 AI 调用已达上限，本次分析未生成；可在设置中提高 AI 每日调用上限后重试',
+  timeout: 'AI 调用超时，本次分析未生成',
+  cancelled: 'AI 调用已取消，本次分析未生成',
+  call_failed: 'AI 调用失败，本次分析未生成',
+  invalid_report: '报告未通过结构校验，拒绝生成 AI 分析'
+} as const
+
 /** 默认出口：走 simpleCompletion（→ callChatCompletion，额度闸门与账本在此生效） */
 function defaultCompletion(config: ConfigService): AnnualReviewAiCompletion {
   return (request, signal) => simpleCompletion(config, request.systemPrompt, request.userPrompt, buildAnnualReviewAiCallOptions(signal))
 }
 
-// ─── 错误信息脱敏 ────────────────────────────────────────────────────────────
+/** 调用期失败归类（只会是这四个之一；配置/报告类失败在调用之前就已返回） */
+type AnnualReviewAiCallFailure = 'budget_blocked' | 'cancelled' | 'timeout' | 'call_failed'
 
-/** 错误文案只保留单行、限长：不把响应体/堆栈/路径整段带到日志与 UI */
-function safeErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error)
-  return raw.replace(/\s+/g, ' ').trim().slice(0, 160) || '未知错误'
+/**
+ * 失败归类：只产出「哪一类失败」，不产出任何原始错误内容。
+ * - 额度阻断：结构化判定（isBudgetBlockedError），与模型/网络故障区分；
+ * - 取消：AbortSignal 状态，结构化且可靠；
+ * - 超时：无结构化标记可用，只能对异常文案做**分类判断**（该文案本身绝不外泄）。
+ */
+function classifyCallFailure(error: unknown, signal?: AbortSignal): AnnualReviewAiCallFailure {
+  if (isBudgetBlockedError(error)) return 'budget_blocked'
+  if (signal?.aborted) return 'cancelled'
+  const raw = error instanceof Error ? error.message : ''
+  return /超时|timeout|timed out/i.test(raw) ? 'timeout' : 'call_failed'
 }
 
 // ─── 主链路 ──────────────────────────────────────────────────────────────────
@@ -136,16 +161,22 @@ export async function generateAnnualReviewAiAnalysis(
   options: AnnualReviewAiRunOptions
 ): Promise<AnnualReviewAiRunResult> {
   // 1) 报告必须是已验收契约的报告：未通过校验的一律不进入 prompt（不把脏数据送给第三方模型）
+  //    校验原因可能嵌带报告内的键名，不属于「AI 调用错误」范畴，但同样不外传：
+  //    调用方若需定位问题可直接调用 validateAnnualReviewReport。
   const year = (report as { year?: unknown } | null | undefined)?.year
   if (typeof year !== 'number' || !Number.isInteger(year) || year < 0) {
-    return { ok: false, code: 'invalid_report', message: '报告缺少合法的 year，拒绝生成 AI 分析' }
+    return { ok: false, code: 'invalid_report', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.invalid_report }
   }
   const validation = validateAnnualReviewReport(report, year)
-  if (!validation.ok) return { ok: false, code: 'invalid_report', message: `报告结构校验未通过：${validation.reason}` }
+  if (!validation.ok) {
+    return { ok: false, code: 'invalid_report', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.invalid_report }
+  }
 
   // 2) AI 配置：未配置 → 明确失败，绝不降级成模板文案（§8：AI 层整体可选，但不伪造诊断）
   const configured = options.configured ?? isAiConfigured(options.config)
-  if (!configured) return { ok: false, code: 'not_configured', message: 'AI 未配置（缺少 API 地址或密钥）' }
+  if (!configured) {
+    return { ok: false, code: 'not_configured', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.not_configured }
+  }
 
   // 注入出口时不去读真实配置（测试用的假 config 无需实现 get），返回自描述的占位模型名
   const model = options.completion
@@ -163,11 +194,10 @@ export async function generateAnnualReviewAiAnalysis(
       options.signal
     )
   } catch (error) {
-    // 额度阻断必须与模型故障区分：前者调高上限即可，后者要看模型/网络
-    if (isBudgetBlockedError(error)) {
-      return { ok: false, code: 'budget_blocked', message: safeErrorMessage(error) }
-    }
-    return { ok: false, code: 'call_failed', message: safeErrorMessage(error) }
+    const kind = classifyCallFailure(error, options.signal)
+    // 额度阻断有自己的 code；超时/取消/其余统一 call_failed，仅文案不同
+    const code: AnnualReviewAiFailureCode = kind === 'budget_blocked' ? 'budget_blocked' : 'call_failed'
+    return { ok: false, code, message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES[kind] }
   }
 
   // 4) 严格解析：任何不合约之处整体失败，不做部分采信
