@@ -1355,6 +1355,6 @@ export function validateAnnualReviewYearInput(year: unknown, generatedAt: number
 }
 
 /** taskId 运行时校验：非空可打印字符串，限长 128（防注入超长值） */
-export function validateAnnualReviewTaskId(taskId: unknown): boolean {
+export function validateAnnualReviewTaskId(taskId: unknown): taskId is string {
   return typeof taskId === 'string' && taskId.length > 0 && taskId.length <= 128 && !/\u0000/.test(taskId)
 }

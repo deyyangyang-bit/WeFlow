@@ -355,11 +355,31 @@ interface PendingTaskEntry {
   order: number
 }
 
+export interface AnnualReviewTaskStatusResult {
+  success: boolean
+  found?: boolean
+  task?: {
+    taskId: string
+    year: number
+    phase: 'loading' | 'computing' | 'completed' | 'failed'
+    progress: number
+    statusText?: string
+    done: boolean
+    error?: { code: string; message: string }
+  }
+  error?: { code: string; message: string }
+}
+
 export interface AnnualReviewApi {
   getAvailableYears(): Promise<AnnualReviewYearsResult>
   getReport(year: number): Promise<AnnualReviewReportResult>
   generate(year: number): Promise<AnnualReviewGenerateResult>
   cancel(taskId: string): Promise<{ success: boolean; error?: { code: string; message: string } }>
+  /**
+   * 只读任务状态查询（权威来源）：渲染层仅在「响应前终态事件被暂存容量淘汰」时按
+   * taskId 对账。**报告缓存（getReport）不是任务状态**，不得用于判断任务是否完成。
+   */
+  getTaskStatus(taskId: string): Promise<AnnualReviewTaskStatusResult>
   /** 订阅进度广播；返回精确清理函数（只移除本次订阅） */
   subscribeProgress(cb: (event: AnnualReviewProgressEvent) => void): () => void
 }
@@ -387,7 +407,8 @@ export interface AnnualReviewController {
  *     尚无 taskId 可比对。事件按 taskId 合并暂存（有界：每 taskId ≤1 条最新普通进度 +
  *     ≤1 条终态，终态优先），绑定 taskId 后回放该 taskId 的条目（先进度、后终态）：
  *     终态事件不会仅因容量被丢弃，暂存也不依赖任何定时器/延时。若确实发生了终态淘汰
- *     （需 >MAX_PENDING_TASKS 个不同 taskId 同时产生终态），绑定后以权威缓存对账收敛。
+ *     （需 >MAX_PENDING_TASKS 个不同 taskId 同时产生终态），则按当前 taskId 查询**权威
+ *     任务状态**对账（getTaskStatus）——报告缓存不是任务状态，绝不用于推断任务是否完成。
  */
 export function createAnnualReviewController(api: AnnualReviewApi): AnnualReviewController {
   let state = initialAnnualReviewState()
@@ -493,7 +514,8 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
   /**
    * 回放响应前暂存的事件（只回放绑定后的当前 taskId）：先普通进度（不回退），再终态
    * （终态优先，必然收敛到 completed/failed/cancelled）。回放后清空暂存区。
-   * droppedTerminal 表示「暂存期间曾有终态因容量被淘汰」——此时暂存区不可信，调用方需对账。
+   * droppedTerminal 表示「暂存期间曾有终态因容量被淘汰」——它只表示**需要按当前 taskId
+   * 查询权威任务状态**，绝不表示当前任务已经完成（被淘汰的可能是无关 taskId 的终态）。
    */
   const replayPendingEvents = (taskId: string): { replayedTerminal: boolean; droppedTerminal: boolean } => {
     const entry = pendingByTask.get(taskId) ?? null
@@ -509,6 +531,77 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       return { replayedTerminal: true, droppedTerminal }
     }
     return { replayedTerminal: false, droppedTerminal }
+  }
+
+  /** 终态收敛为失败（对账路径用）：错误 code 稳定、文案安全（不含路径/账号/SQL/堆栈） */
+  const failFromReconcile = (code: string, message: string): void => {
+    setState({
+      ...state,
+      phase: 'failed',
+      error: { code, message },
+      generation: { taskId: null, progress: 0, cancellable: false }
+    })
+  }
+
+  /**
+   * 对账（仅在「响应前终态被容量淘汰」时触发）：按当前 taskId 查询**权威任务状态**，
+   * 绝不用报告缓存推断任务是否完成（缓存里有旧报告 ≠ 当前任务已完成；缓存 miss ≠ 当前任务失败）。
+   * 三重校验：generation seq + selectedYear + 绑定的 taskId，迟到的对账结果一律丢弃。
+   *   - loading/computing → 保持 generating（进度取 UI 与快照的最大值、文案取快照最新值），继续等事件；
+   *   - completed → 先收敛终态，再走 loadReport（仍受年份一致性门禁约束）；
+   *   - failed + cancelled → cancelled；其他 failed → failed（结构化安全错误）；
+   *   - found:false → task_status_unknown（可恢复错误，report 保持 null，不展示旧缓存）；
+   *   - 查询失败 → task_status_unavailable（不使用旧缓存猜测任务状态）。
+   */
+  const reconcileTaskStatus = async (taskId: string, year: number, seq: number): Promise<void> => {
+    let result: AnnualReviewTaskStatusResult
+    try {
+      result = await api.getTaskStatus(taskId)
+    } catch {
+      result = { success: false, error: { code: 'task_status_unavailable', message: '任务状态查询失败' } }
+    }
+    // 迟到结果丢弃：切年/重新生成/卸载/绑定 taskId 变化
+    if (disposed || seq !== generateSeq || state.selectedYear !== year) return
+    if (state.generation.taskId !== taskId || state.phase !== 'generating') return
+    if (!result.success) {
+      // 查询失败（IPC 异常/结构化失败信封）→ 稳定可恢复错误码；不用旧缓存猜测任务状态
+      failFromReconcile('task_status_unavailable', '任务状态查询失败，请稍后重试')
+      return
+    }
+    if (!result.found || !result.task) {
+      failFromReconcile('task_status_unknown', '任务状态不可查（可能已被新任务取代），请重新生成')
+      return
+    }
+    const task = result.task
+    if (task.taskId !== taskId || task.year !== year) {
+      // 权威快照与本次请求不一致：拒绝（不猜测、不展示旧缓存）
+      failFromReconcile('task_status_mismatch', '任务状态与请求不一致，已拒绝渲染')
+      return
+    }
+    if (!task.done) {
+      // 任务仍在运行：保持 generating，进度不回退，文案取快照的最新合法值
+      const progress = Math.min(100, Math.max(state.generation.progress, Number.isFinite(task.progress) ? task.progress : 0))
+      setState({
+        ...state,
+        generation: {
+          ...state.generation,
+          progress,
+          statusText: typeof task.statusText === 'string' ? task.statusText : state.generation.statusText,
+          cancellable: true
+        }
+      })
+      return
+    }
+    // 权威终态：与实时终态事件走同一收敛路径（completed 会再走 getReport + 年份门禁）
+    applyTerminalEvent({
+      taskId,
+      year,
+      phase: task.phase,
+      progress: task.progress,
+      statusText: task.statusText,
+      done: true,
+      error: task.error
+    })
   }
 
   const controller: AnnualReviewController = {
@@ -609,13 +702,13 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       setState(reduceGenerateStart(state, outcome))
       if (outcome.kind === 'started') {
         // 回放响应前暂存的该 taskId 条目（先进度后终态）：快速任务的 completed/failed/
-        // cancelled 在这一步收敛，不会因「事件先于响应」或容量上限而永久停在 generating
+        // cancelled 在这一步收敛，不会因「事件先于响应」而永久停在 generating
         const replay = replayPendingEvents(outcome.taskId)
         if (!replay.replayedTerminal && replay.droppedTerminal) {
-          // 暂存期间确有终态因容量被淘汰（需 >MAX_PENDING_TASKS 个 taskId 同时终态）：
-          // 暂存区不可信 → 以权威缓存对账收敛（hit → done；miss/stale → idle），
-          // 绝不永久停在 generating。正常路径（无淘汰）不做额外查询。
-          void controller.loadReport(year)
+          // 暂存期间确有终态被容量淘汰（需 >MAX_PENDING_TASKS 个 taskId 同时终态）：
+          // 被淘汰的可能是**无关 taskId** 的终态，因此绝不能据此推断当前任务已完成——
+          // 必须按当前 taskId 查询权威任务状态对账（getReport 只是报告缓存，不是任务状态）。
+          void reconcileTaskStatus(outcome.taskId, year, seq)
         }
       } else {
         clearPending() // 启动失败：暂存事件与任务状态一起清理（不污染后续生成）
@@ -661,6 +754,7 @@ export function createIpcAnnualReviewApi(): AnnualReviewApi {
     getReport: (year) => electron.annualReview.getReport(year),
     generate: (year) => electron.annualReview.generate(year),
     cancel: (taskId) => electron.annualReview.cancel(taskId),
+    getTaskStatus: (taskId) => electron.annualReview.getTaskStatus(taskId),
     subscribeProgress: (cb) => electron.annualReview.onProgress(cb)
   }
 }

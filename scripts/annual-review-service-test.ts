@@ -43,6 +43,7 @@ import {
 } from '../electron/services/annualReviewReport'
 import {
   AnnualReviewService,
+  ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS,
   buildAccountScopeId,
   createThreadRunner,
   type AnnualReviewWorkerPayload,
@@ -1068,6 +1069,140 @@ async function main(): Promise<void> {
     })())
   }
 
+  // ══ 24 只读任务状态查询（P1 回归：任务状态 ≠ 报告缓存） ═════════════════════
+  {
+    // 24a running：loading/computing → done:false，字段与内部快照一致
+    const fakeR = createFakeRunner()
+    const svcR = createService({ runner: fakeR.runner, now })
+    const gR = svcR.service.generate(2026)
+    await tick()
+    const runningId = svcR.service.getTaskState(2026)?.taskId ?? ''
+    const running = svcR.service.getTaskStatus(runningId)
+    ok('24a running 任务：found:true / done:false / taskId+year 一致',
+      running.success === true && running.found === true && running.task?.taskId === runningId &&
+      running.task.year === 2026 && running.task.done === false &&
+      (running.task.phase === 'loading' || running.task.phase === 'computing') &&
+      Number.isFinite(running.task.progress))
+    ok('24a2 running 查询不修改任务（内部快照不变）', (() => {
+      const before = JSON.stringify(svcR.service.getTaskState(2026))
+      svcR.service.getTaskStatus(runningId)
+      return JSON.stringify(svcR.service.getTaskState(2026)) === before
+    })())
+    fakeR.calls[0].onProgress({ progress: 70, statusText: '计算年度统计' })
+    const running2 = svcR.service.getTaskStatus(runningId)
+    ok('24a3 查询后任务继续正常推进（事件不被查询打断）', running2.task?.progress === 70 &&
+      running2.task?.statusText === '计算年度统计')
+    fakeR.calls[0].resolve(buildRealReport())
+    const doneR = await gR
+    ok('24a4 查询不改变任务终态', doneR.success === true)
+
+    // 24b completed：done:true
+    const completed = svcR.service.getTaskStatus(runningId)
+    ok('24b completed 任务：done:true / phase=completed / progress=100', completed.success === true &&
+      completed.found === true && completed.task?.done === true && completed.task?.phase === 'completed' &&
+      completed.task?.progress === 100)
+
+    // 24c failed：done:true + 结构化错误
+    const fakeF = createFakeRunner()
+    const svcF = createService({ runner: fakeF.runner, now })
+    const gF = svcF.service.generate(2026)
+    await tick()
+    const failId = svcF.service.getTaskState(2026)?.taskId ?? ''
+    fakeF.calls[0].reject(Object.assign(new Error('worker exploded'), { code: 'worker_error' }))
+    await gF
+    const failed = svcF.service.getTaskStatus(failId)
+    ok('24c failed 任务：done:true / error.code 保留 / 不含堆栈路径', failed.success === true &&
+      failed.found === true && failed.task?.done === true && failed.task?.phase === 'failed' &&
+      failed.task?.error?.code === 'worker_error' && !/\/|\\|SELECT|\.db/.test(JSON.stringify(failed)))
+
+    // 24d cancelled：内部仍是 failed + error.code='cancelled'（渲染层映射 cancelled）
+    const fakeC = createFakeRunner()
+    const svcC = createService({ runner: fakeC.runner, now })
+    const gC = svcC.service.generate(2026)
+    await tick()
+    const cancelId = svcC.service.getTaskState(2026)?.taskId ?? ''
+    svcC.service.cancel(cancelId)
+    await gC
+    const cancelled = svcC.service.getTaskStatus(cancelId)
+    ok('24d cancelled：failed + error.code=cancelled + done:true', cancelled.success === true &&
+      cancelled.found === true && cancelled.task?.done === true && cancelled.task?.phase === 'failed' &&
+      cancelled.task?.error?.code === 'cancelled')
+
+    // 24e 未知 taskId → found:false（不抛错、不泄漏）
+    const unknown = svcR.service.getTaskStatus('ar-does-not-exist')
+    ok('24e 未知 taskId → success:true / found:false', unknown.success === true && unknown.found === false &&
+      !('task' in unknown))
+
+    // 24f 非法/空/超长/NUL taskId → invalid_task_id
+    for (const [label, value] of [['空串', ''], ['超长', 'x'.repeat(129)], ['NUL', 'ar\u0000x']] as const) {
+      const bad = svcR.service.getTaskStatus(value)
+      ok(`24f 非法 taskId（${label}）→ invalid_task_id`, bad.success === false &&
+        bad.error?.code === 'invalid_task_id')
+    }
+
+    // 24g 返回副本：修改返回值不影响内部快照
+    const beforeSnap = JSON.stringify(svcR.service.getTaskState(2026))
+    const copy = svcR.service.getTaskStatus(runningId)
+    if (copy.success && copy.found && copy.task) {
+      copy.task.progress = -999
+      copy.task.phase = 'failed'
+      copy.task.taskId = 'hacked'
+      if (copy.task.error) copy.task.error.code = 'hacked'
+    }
+    const afterCopy = svcR.service.getTaskStatus(runningId)
+    ok('24g 返回值是副本（改动不回写内部快照）', JSON.stringify(svcR.service.getTaskState(2026)) === beforeSnap &&
+      afterCopy.task?.progress === 100 && afterCopy.task?.phase === 'completed' && afterCopy.task?.taskId === runningId)
+
+    // 24h 跨账号隔离 fail closed：其他作用域的任务按未找到处理（不泄漏存在性）
+    const foreign = svcR.service.getTaskStatus(runningId)
+    svcR.ctxBox.current = {
+      wxid: 'wx_account_b',
+      salesDbName: 'weflow-sales-wx_account_b.db',
+      crmDbName: 'weflow-crm-wx_account_b.db',
+      exclusions: {}
+    }
+    const cross = svcR.service.getTaskStatus(runningId)
+    ok('24h 跨账号查询 → found:false（不泄漏其他作用域任务）', foreign.found === true &&
+      cross.success === true && cross.found === false && !('task' in cross))
+    const fakeB = createFakeRunner()
+    const svcB = createService({ ctx: { wxid: 'wx_account_b', salesDbName: 'weflow-sales-wx_account_b.db', crmDbName: 'weflow-crm-wx_account_b.db' }, runner: fakeB.runner, now })
+    const gB = svcB.service.generate(2026)
+    await tick()
+    const bId = svcB.service.getTaskState(2026)?.taskId ?? ''
+    ok('24h2 本作用域任务仍可查（隔离不误伤）', svcB.service.getTaskStatus(bId).found === true &&
+      svcB.service.getTaskStatus(runningId).found === false)
+    fakeB.calls[0].resolve(buildRealReport())
+    await gB
+
+    // 24i 终态快照保留有界：跨作用域终态记录超上限后被清理，当前作用域记录永不淘汰
+    {
+      const fakeFlood = createFakeRunner()
+      const svcFlood = createService({ runner: fakeFlood.runner, now })
+      const floodIds: Array<{ wxid: string; taskId: string }> = []
+      for (let i = 0; i < ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS + 20; i++) {
+        const wxid = `wx_flood_${i}`
+        svcFlood.ctxBox.current = { wxid, salesDbName: `sales-${i}.db`, crmDbName: `crm-${i}.db`, exclusions: {} }
+        const g = svcFlood.service.generate(2026)
+        await tick()
+        const taskId = svcFlood.service.getTaskState(2026)?.taskId ?? ''
+        fakeFlood.calls[i].resolve(buildRealReport())
+        await g
+        floodIds.push({ wxid, taskId })
+      }
+      const currentScope = svcFlood.ctxBox.current
+      const lastTask = svcFlood.service.getTaskStatus(floodIds[floodIds.length - 1].taskId)
+      ok('24i 洪泛后当前作用域终态快照仍可查（运行中/当前作用域记录不淘汰）', lastTask.success === true &&
+        lastTask.found === true && lastTask.task?.done === true)
+      // 切回最早的作用域：其终态记录已被有界清理 → found:false（同作用域也查不到 = 确实淘汰过）
+      svcFlood.ctxBox.current = { wxid: floodIds[0].wxid, salesDbName: 'sales-0.db', crmDbName: 'crm-0.db', exclusions: {} }
+      const evicted = svcFlood.service.getTaskStatus(floodIds[0].taskId)
+      ok('24i2 超出上限的旧作用域终态快照被有界清理（同作用域 found:false）',
+        evicted.success === true && evicted.found === false)
+      svcFlood.ctxBox.current = currentScope
+      ok('24i3 清理不影响当前作用域继续使用', svcFlood.service.getTaskStatus(floodIds[floodIds.length - 1].taskId).found === true)
+    }
+  }
+
   // ══ 14 progress 单调 + 终态 ═══════════════════════════════════════════════
   {
     const fakeF = createFakeRunner()
@@ -1529,23 +1664,24 @@ async function main(): Promise<void> {
     const workerSrc = readFileSync(join(ROOT, 'electron', 'annualReviewWorker.ts'), 'utf8')
     const serviceSrc = readFileSync(join(ROOT, 'electron', 'services', 'annualReviewService.ts'), 'utf8')
 
-    for (const channel of ['annualReview:getAvailableYears', 'annualReview:generate', 'annualReview:getReport', 'annualReview:cancel']) {
+    for (const channel of ['annualReview:getAvailableYears', 'annualReview:generate', 'annualReview:getReport', 'annualReview:cancel', 'annualReview:getTaskStatus']) {
       ok(`15 main.ts 注册 ${channel}`, mainSrc.includes(`'${channel}'`))
       ok(`15b preload 对接 ${channel}`, preloadSrc.includes(`'${channel}'`))
     }
     ok('15c preload 进度订阅：wrapper+removeListener（无 removeAllListeners 固化）',
       preloadSrc.includes("subscribeIpcEvent(ipcRenderer, 'annualReview:progress'") &&
       !preloadSrc.includes("removeAllListeners('annualReview:progress')"))
-    ok('15d preload 暴露最小 API（5 方法均在 annualReview 命名空间）', (() => {
+    ok('15d preload 暴露最小 API（6 方法均在 annualReview 命名空间）', (() => {
       const nsStart = preloadSrc.indexOf('annualReview: {')
       const nsEnd = preloadSrc.indexOf('\n  },', nsStart)
       if (nsStart < 0 || nsEnd < 0) return false
       const ns = preloadSrc.slice(nsStart, nsEnd)
-      return ['getAvailableYears', 'generate', 'getReport', 'cancel', 'onProgress'].every((m) => ns.includes(`${m}: (`))
+      return ['getAvailableYears', 'generate', 'getReport', 'cancel', 'getTaskStatus', 'onProgress'].every((m) => ns.includes(`${m}: (`))
     })())
     ok('15e electron.d.ts annualReview 签名与报告类型', dtsSrc.includes('annualReview: {') &&
       dtsSrc.includes('interface AnnualReviewReport') && dtsSrc.includes('generate: (year: number)') &&
-      dtsSrc.includes("cache: 'hit' | 'miss' | 'stale'"))
+      dtsSrc.includes("cache: 'hit' | 'miss' | 'stale'") &&
+      dtsSrc.includes('getTaskStatus: (taskId: string)'))
     ok('15e2 d.ts 结构化错误信封（annualReview 区段 error?: { code, message }）', (() => {
       const nsStart = dtsSrc.indexOf('annualReview: {')
       const nsEnd = dtsSrc.indexOf('dualReport: {', nsStart)
@@ -1555,6 +1691,32 @@ async function main(): Promise<void> {
     })())
     ok('15f cancel 请求对象 {taskId}（preload + main 双侧）', preloadSrc.includes("invoke('annualReview:cancel', { taskId })") &&
       mainSrc.includes('(payload as { taskId?: unknown }).taskId'))
+    // 15f2 只读任务状态端点接线：通道一致 + 输入校验 + 最小载荷 + 服务层纯读
+    ok('15f2 getTaskStatus 请求对象 {taskId}（preload + main 双侧）',
+      preloadSrc.includes("invoke('annualReview:getTaskStatus', { taskId })") &&
+      mainSrc.includes("ipcMain.handle('annualReview:getTaskStatus'"))
+    ok('15f3 getTaskStatus IPC 输入校验（validateAnnualReviewTaskId + invalid_task_id）', (() => {
+      const start = mainSrc.indexOf("ipcMain.handle('annualReview:getTaskStatus'")
+      const end = mainSrc.indexOf('ipcMain.handle', start + 5)
+      const seg = mainSrc.slice(start, end)
+      return seg.includes('validateAnnualReviewTaskId(taskId)') && seg.includes('invalid_task_id') &&
+        seg.includes('annualReviewService.getTaskStatus(taskId)')
+    })())
+    ok('15f4 服务层 getTaskStatus 纯读（不触缓存/不取消/不失效/不启动任务）', (() => {
+      const start = serviceSrc.indexOf('getTaskStatus(taskId: string)')
+      const end = serviceSrc.indexOf('private pruneTerminalTaskRecords', start)
+      if (start < 0 || end < 0) return false
+      const seg = serviceSrc.slice(start, end)
+      return !/this\.cache|invalidateAll|handleDataChanged|requestTerminate|\.start\(/.test(seg) &&
+        !/console\./.test(seg)
+    })())
+    ok('15f5 服务层 getTaskStatus 按 taskId 查找 + 作用域 fail closed', (() => {
+      const start = serviceSrc.indexOf('getTaskStatus(taskId: string)')
+      const end = serviceSrc.indexOf('private pruneTerminalTaskRecords', start)
+      const seg = serviceSrc.slice(start, end)
+      return seg.includes('record.scopeId !== currentScopeId') && seg.includes('found: false') &&
+        seg.includes('s.taskId !== taskId')
+    })())
     const arIpcStart = mainSrc.indexOf("'annualReview:getAvailableYears'")
     const arIpcEnd = mainSrc.indexOf("'annualReport:getAvailableYears'")
     const arIpc = mainSrc.slice(arIpcStart, arIpcEnd)

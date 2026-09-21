@@ -1838,6 +1838,29 @@ export interface ElectronAPI {
       success: boolean
       error?: { code: string; message: string }
     }>
+    /**
+     * 只读任务状态查询（任务状态的权威来源，**不用报告缓存代替任务状态**）：
+     * 按 taskId 在服务内部任务记录中查找；跨账号作用域 fail closed 为 found:false；
+     * running（loading/computing）→ done:false，completed/failed → done:true
+     * （cancelled 仍为 failed + error.code='cancelled'，渲染层映射为 cancelled）；
+     * 未找到 → found:false；非法 taskId → success:false + invalid_task_id。
+     * 不返回报告正文/scopeId/账号标识/路径/堆栈；查询不创建、取消或修改任务。
+     */
+    getTaskStatus: (taskId: string) => Promise<{
+      success: boolean
+      found?: boolean
+      task?: {
+        taskId: string
+        year: number
+        phase: 'loading' | 'computing' | 'completed' | 'failed'
+        /** 0–100，单调不回退 */
+        progress: number
+        statusText?: string
+        done: boolean
+        error?: { code: string; message: string }
+      }
+      error?: { code: string; message: string }
+    }>
     /** 导出 Markdown/CSV：弹出目录对话框授权后独占写（不覆盖已有文件） */
     export: (year: number, format: 'markdown' | 'csv') => Promise<{
       success: boolean

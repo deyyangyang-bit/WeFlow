@@ -26,7 +26,8 @@ import {
   METRIC_STATE_LABELS,
   type AnnualReviewApi,
   type AnnualReviewProgressEvent,
-  type AnnualReviewReport
+  type AnnualReviewReport,
+  type AnnualReviewTaskStatusResult
 } from '../src/utils/annualReviewView'
 import { composeAnnualReviewReport } from '../electron/services/annualReviewReport'
 import { resolveAnnualReviewPeriod, type AnnualReviewFacts, type AnnualReviewMessageStats } from '../electron/services/annualReviewStats'
@@ -75,18 +76,27 @@ const reportAllTime: AnnualReviewReport = composeAnnualReviewReport({ period: re
 // ── 假 API ──
 interface FakeApi {
   api: AnnualReviewApi
-  calls: { generate: number; cancel: number; subscribe: number; unsubscribe: number; getReport: number }
+  calls: { generate: number; cancel: number; subscribe: number; unsubscribe: number; getReport: number; getTaskStatus: number }
   gates: Array<Deferred<{ success: boolean; taskId?: string; reused?: boolean; error?: { code: string; message: string } }>>
   reportResults: Array<{ success: boolean; cache: 'hit' | 'miss' | 'stale'; report?: AnnualReviewReport; error?: { code: string; message: string } }>
   setCancelShouldFail(v: boolean): void
+  /** 设置 getTaskStatus 的权威返回（对账测试用；默认 found:false） */
+  setTaskStatus(result: AnnualReviewTaskStatusResult): void
+  /** 让下一次 getTaskStatus 挂起在 gate 上（测迟到结果丢弃） */
+  setTaskStatusGate(gate: Deferred<AnnualReviewTaskStatusResult>): void
+  /** 让 getTaskStatus 抛错（模拟 IPC 失败） */
+  setTaskStatusShouldThrow(v: boolean): void
   emit: (event: AnnualReviewProgressEvent) => void
 }
 function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>>; manualStart?: boolean }): FakeApi {
-  const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0 }
+  const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0, getTaskStatus: 0 }
   const gates: FakeApi['gates'] = []
   let gateSeq = 0
   let cancelShouldFail = false
   let issuedTaskId: string | null = null
+  let taskStatusResult: AnnualReviewTaskStatusResult = { success: true, found: false }
+  let taskStatusGate: Deferred<AnnualReviewTaskStatusResult> | null = null
+  let taskStatusShouldThrow = false
   const reportResults = opts?.reportResults ?? [{ success: true, cache: 'miss' as const }]
   let progressCb: ((e: AnnualReviewProgressEvent) => void) | null = null
   const api: AnnualReviewApi = {
@@ -98,6 +108,12 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
       calls.getReport++
       const next = reportResults.shift()
       return next ?? { success: true, cache: 'miss' }
+    },
+    getTaskStatus: async () => {
+      calls.getTaskStatus++
+      if (taskStatusShouldThrow) throw new Error('ipc getTaskStatus failed')
+      if (taskStatusGate) return taskStatusGate.promise
+      return taskStatusResult
     },
     generate: async () => {
       calls.generate++
@@ -123,6 +139,9 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
   const fake: FakeApi = {
     api, calls, gates, reportResults,
     setCancelShouldFail: (v: boolean) => { cancelShouldFail = v },
+    setTaskStatus: (result) => { taskStatusResult = result },
+    setTaskStatusGate: (gate) => { taskStatusGate = gate },
+    setTaskStatusShouldThrow: (v) => { taskStatusShouldThrow = v },
     emit: (e) => progressCb?.(e)
   }
   // 默认启动响应：resolve 为 { success:true, taskId: 'g<N>' }；
@@ -614,31 +633,95 @@ async function main(): Promise<void> {
       ctrl.dispose()
     }
 
-    // 14h：当前任务终态先入区后被终态洪泛挤出 → 绑定后走权威缓存对账收敛（绝不永久 generating）
+    // ══ 反例 A：无关终态被淘汰 + 当前任务仍在运行 + 缓存 miss ═════════════════
+    // 旧实现用全局 dropped 标志 + getReport(year) 对账 → 缓存 miss 被误判成「任务已结束」→ idle。
+    // 正确：终态淘汰只表示「需要按当前 taskId 查权威状态」，不表示当前任务已完成。
     {
-      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
-      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true }) // 先入区（最旧）
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
       for (let i = 0; i < 64; i++) {
-        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true }) // 全部带终态 → 挤出 g1
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true }) // 64 个无关终态占满
       }
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 35, done: false }) // 淘汰最旧无关终态 → dropped
+      fake.setTaskStatus({
+        success: true, found: true,
+        task: { taskId: 'g1', year: 2021, phase: 'computing', progress: 40, statusText: '计算年度统计', done: false }
+      })
       fake.gates[0].resolve({ success: true, taskId: 'g1' })
       await tick(); await tick(); await tick()
       const s = ctrl.getState()
-      ok('14h 终态被容量淘汰时绑定后对账收敛（缓存命中 → done，不停 generating）',
-        s.phase === 'done' && s.report?.year === 2021)
+      ok('A 无关终态淘汰 + 当前 running：保持 generating（旧实现误入 idle）', s.phase === 'generating' &&
+        s.generation.taskId === 'g1' && s.generation.cancellable === true && s.report === null)
+      ok('A2 对账用权威任务状态：进度取 UI/snapshot 最大值、文案取 snapshot', s.generation.progress === 40 &&
+        s.generation.statusText === '计算年度统计' && fake.calls.getTaskStatus === 1)
+      ok('A3 running 时不读取报告缓存（getReport 仅首载一次）', fake.calls.getReport === 1)
+      // 后续真实 completed 正常收敛，报告来自本次生成后的缓存
+      const fake2Report = report2021
+      fake.reportResults.push({ success: true, cache: 'hit', report: fake2Report })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      await tick(); await tick()
+      ok('A4 后续真实 completed 正常进入 done（报告来自本次生成后缓存）', ctrl.getState().phase === 'done' &&
+        ctrl.getState().report?.year === 2021)
       ctrl.dispose()
     }
+
+    // ══ 反例 B：同样场景但缓存里有上一轮旧报告（旧实现会提前 done 并展示旧报告） ══
     {
-      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
-      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      // 旧报告（首载命中）+ 生成完成后的新报告（同一年份，generatedAt 不同以便区分来源）
+      const oldReport = report2021
+      const freshReport: AnnualReviewReport = { ...report2021, generatedAt: report2021.generatedAt + 1000 }
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'hit', report: oldReport }, { success: true, cache: 'hit', report: freshReport }])
       for (let i = 0; i < 64; i++) {
         fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true })
       }
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 20, done: false })
+      fake.setTaskStatus({
+        success: true, found: true,
+        task: { taskId: 'g1', year: 2021, phase: 'loading', progress: 10, done: false }
+      })
       fake.gates[0].resolve({ success: true, taskId: 'g1' })
       await tick(); await tick(); await tick()
       const s = ctrl.getState()
-      ok('14h2 终态被淘汰且缓存无报告 → idle（可重新生成，绝不停 generating）',
-        s.phase === 'idle' && s.phase !== 'generating' && s.report === null)
+      ok('B 存在旧缓存时 running 不得展示旧报告（保持 generating，report=null）', s.phase === 'generating' &&
+        s.report === null && s.generation.taskId === 'g1' && s.generation.progress === 20)
+      ok('B2 权威状态为 running 时不读取报告缓存（getReport 仍为 1 = 仅首载）', fake.calls.getReport === 1)
+      // 只有权威状态 completed 后才允许读取报告
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      await tick(); await tick()
+      ok('B3 权威 completed 后才读报告并进入 done，展示的是生成完成后的缓存（非旧报告）',
+        ctrl.getState().phase === 'done' && ctrl.getState().report?.generatedAt === freshReport.generatedAt &&
+        fake.calls.getReport === 2)
+      ctrl.dispose()
+    }
+
+    // ══ 反例 C：当前任务终态确实被淘汰 → 必须用 taskId 权威快照恢复真实终态 ════
+    for (const c of [
+      { label: 'completed', task: { phase: 'completed' as const, progress: 100, done: true, error: undefined }, expect: 'done', reports: [{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }] },
+      { label: 'failed', task: { phase: 'failed' as const, progress: 60, done: true, error: { code: 'worker_error', message: '端到端失败' } }, expect: 'failed', reports: [{ success: true, cache: 'miss' }] },
+      { label: 'cancelled', task: { phase: 'failed' as const, progress: 30, done: true, error: { code: 'cancelled', message: '年度复盘生成已取消' } }, expect: 'cancelled', reports: [{ success: true, cache: 'miss' }] }
+    ] as const) {
+      const { fake, ctrl } = await startManual(c.reports.map((r) => ({ ...r })))
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 50, done: false })
+      fake.emit({ taskId: 'g1', year: 2021, phase: c.task.phase, progress: c.task.progress, done: true, error: c.task.error })
+      for (let i = 0; i < 64; i++) {
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true }) // 挤出 g1 的终态
+      }
+      fake.setTaskStatus({ success: true, found: true, task: { taskId: 'g1', year: 2021, ...c.task } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok(`C 当前 ${c.label} 终态被淘汰 → 按 taskId 权威状态恢复为 ${c.expect}`,
+        s.phase === c.expect && s.phase !== 'generating' && s.generation.taskId === null &&
+        fake.calls.getTaskStatus === 1)
+      if (c.label === 'completed') {
+        ok('C2 恢复 completed 后读取报告并进入 done（年份门禁仍生效）', s.report?.year === 2021)
+      } else if (c.label === 'failed') {
+        ok('C2 恢复 failed 不读取报告（report=null + 结构化安全错误）', s.report === null &&
+          s.error?.code === 'worker_error')
+      } else {
+        // cancelled 是用户主动终止：收敛为 cancelled（不携带 error 字段，与实时终态事件一致）
+        ok('C2 恢复 cancelled 不读取报告（report=null，phase=cancelled）', s.report === null &&
+          s.phase === 'cancelled')
+      }
       ctrl.dispose()
     }
 
@@ -765,6 +848,153 @@ async function main(): Promise<void> {
       const s = ctrl.getState()
       ok('15i 切年后迟到的 2021 报告不得展示在 2025 下',
         s.selectedYear === 2025 && s.report === null && s.phase !== 'done')
+      ctrl.dispose()
+    }
+  }
+
+  // ══ 16 对账边界（P1 回归）：未找到/查询失败/迟到结果/不必要查询 ════════════
+  {
+    /** 构造「终态被淘汰」场景：64 个无关终态 + 当前 progress（触发 dropped 标志） */
+    const droppedScenario = async (reports: FakeApi['reportResults']) => {
+      const { fake, ctrl } = await startManual(reports)
+      for (let i = 0; i < 64; i++) {
+        fake.emit({ taskId: `old-${i}`, year: 2021, phase: 'completed', progress: 100, done: true })
+      }
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 25, done: false })
+      return { fake, ctrl }
+    }
+
+    // 16a found:false → 明确可恢复错误，不展示旧缓存
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'hit', report: report2021 }])
+      fake.setTaskStatus({ success: true, found: false })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('16a found:false → failed/task_status_unknown（不展示旧缓存、不假装完成）',
+        s.phase === 'failed' && s.error?.code === 'task_status_unknown' && s.report === null &&
+        s.generation.taskId === null && fake.calls.getReport === 1)
+      ctrl.dispose()
+    }
+
+    // 16b 查询失败（IPC 抛错）→ failed/task_status_unavailable
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'hit', report: report2021 }])
+      fake.setTaskStatusShouldThrow(true)
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('16b 查询失败 → failed/task_status_unavailable（不用缓存猜状态）',
+        s.phase === 'failed' && s.error?.code === 'task_status_unavailable' && s.report === null &&
+        fake.calls.getReport === 1)
+      ctrl.dispose()
+    }
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'miss' }])
+      fake.setTaskStatus({ success: false, error: { code: 'internal', message: '状态查询失败' } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('16b2 success:false 信封 → failed/task_status_unavailable（不用缓存猜状态）',
+        ctrl.getState().phase === 'failed' && ctrl.getState().error?.code === 'task_status_unavailable' &&
+        ctrl.getState().report === null)
+      ctrl.dispose()
+    }
+
+    // 16c 权威快照与请求不一致（taskId/year 不匹配）→ 拒绝
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'hit', report: report2021 }])
+      fake.setTaskStatus({ success: true, found: true, task: { taskId: 'g1', year: 2025, phase: 'completed', progress: 100, done: true } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('16c snapshot year 与请求不一致 → failed/task_status_mismatch（拒绝渲染）',
+        ctrl.getState().phase === 'failed' && ctrl.getState().error?.code === 'task_status_mismatch' &&
+        ctrl.getState().report === null)
+      ctrl.dispose()
+    }
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'hit', report: report2021 }])
+      fake.setTaskStatus({ success: true, found: true, task: { taskId: 'other-task', year: 2021, phase: 'completed', progress: 100, done: true } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('16c2 snapshot taskId 与请求不一致 → failed/task_status_mismatch',
+        ctrl.getState().phase === 'failed' && ctrl.getState().error?.code === 'task_status_mismatch')
+      ctrl.dispose()
+    }
+
+    // 16d 对账期间切年：迟到结果必须丢弃（seq + selectedYear + taskId 三重校验）
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'miss' }, { success: true, cache: 'miss' }])
+      const gate = deferred<AnnualReviewTaskStatusResult>()
+      fake.setTaskStatusGate(gate)
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('16d0 对账已发起（挂起中）', fake.calls.getTaskStatus === 1)
+      ctrl.selectYear(2025) // 切年：新代际 + 新年份
+      await tick()
+      gate.resolve({ success: true, found: true, task: { taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true } })
+      await tick(); await tick()
+      const s = ctrl.getState()
+      ok('16d 切年后迟到的对账结果被丢弃（不得覆盖新年份状态）',
+        s.selectedYear === 2025 && s.phase !== 'done' && s.report === null)
+      ctrl.dispose()
+    }
+
+    // 16e 对账期间重新生成：迟到结果不得覆盖新任务
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'miss' }])
+      const gate = deferred<AnnualReviewTaskStatusResult>()
+      fake.setTaskStatusGate(gate)
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ctrl.startGenerate() // 新代际（旧任务取消）
+      await tick()
+      gate.resolve({ success: true, found: true, task: { taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true } })
+      await tick(); await tick()
+      const s = ctrl.getState()
+      ok('16e 重新生成后迟到的对账结果不得收敛新任务（仍 generating）',
+        s.phase === 'generating' && s.report === null)
+      ctrl.dispose()
+    }
+
+    // 16f 对账期间 dispose：不更新状态、不泄漏订阅
+    {
+      const { fake, ctrl } = await droppedScenario([{ success: true, cache: 'miss' }])
+      const gate = deferred<AnnualReviewTaskStatusResult>()
+      fake.setTaskStatusGate(gate)
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ctrl.dispose()
+      const before = ctrl.getState().phase
+      gate.resolve({ success: true, found: true, task: { taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true } })
+      await tick(); await tick()
+      ok('16f dispose 后迟到对账结果不更新状态（订阅已精确卸载）', ctrl.getState().phase === before &&
+        fake.calls.unsubscribe === 1 && fake.calls.getTaskStatus === 1)
+    }
+
+    // 16g 没有终态淘汰风险时不做任何额外查询（正常路径不回归）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 40, done: false })
+      fake.setTaskStatus({ success: true, found: true, task: { taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('16g 无淘汰风险 → 不调用 getTaskStatus（正常路径零额外查询）', fake.calls.getTaskStatus === 0 &&
+        ctrl.getState().phase === 'generating' && ctrl.getState().generation.progress === 40)
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      await tick(); await tick()
+      ok('16g2 正常事件路径仍收敛 done', ctrl.getState().phase === 'done' && fake.calls.getTaskStatus === 0)
+      ctrl.dispose()
+    }
+
+    // 16h 已回放到当前终态时不查询权威状态（回放优先）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: report2021 }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.setTaskStatus({ success: true, found: false }) // 若被调用会误判 unknown
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      ok('16h 已回放终态 → 不调用 getTaskStatus 且正常 done', fake.calls.getTaskStatus === 0 &&
+        ctrl.getState().phase === 'done')
       ctrl.dispose()
     }
   }

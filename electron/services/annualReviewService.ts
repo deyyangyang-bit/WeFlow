@@ -410,7 +410,17 @@ interface RunningTask {
 interface TaskRecord {
   snapshot: AnnualReviewTaskSnapshot
   running: boolean
+  /** 任务所属账号作用域（仅主进程内部；跨账号查询一律 fail closed 为未找到） */
+  scopeId: string
 }
+
+/**
+ * 终态任务快照保留上限（有界清理）。键 = {accountScopeId, year}，每个键只保留**一个**
+ * 最新任务快照（同键新任务覆盖旧任务），因此记录数天然受「作用域 × 年份」约束；
+ * 本上限只防账号作用域频繁切换导致的长期累积。清理只淘汰「已终态且不属于当前作用域」
+ * 的记录——运行中记录与当前作用域记录永不淘汰，保证 getTaskStatus 能恢复丢失的终态。
+ */
+export const ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS = 64
 
 export interface AnnualReviewStartResult {
   taskId: string
@@ -433,6 +443,32 @@ export interface AnnualReviewGetReportResult {
   report?: AnnualReviewReport
   error?: { code: string; message: string }
 }
+
+/**
+ * 只读任务状态查询结果（annualReview:getTaskStatus）。任务状态的**唯一权威来源**是
+ * AnnualReviewService 内部任务记录——绝不用报告缓存（getReport）代替任务状态：
+ * 缓存里有旧报告 ≠ 当前任务已完成，缓存 miss ≠ 当前任务已失败。
+ * task 为不可变快照的副本；不含 scopeId/wxid/数据库路径/Token/报告正文/SQL/堆栈。
+ */
+export type AnnualReviewTaskStatusResult =
+  | {
+      success: true
+      found: true
+      task: {
+        taskId: string
+        year: number
+        /** 与 annualReview:progress 事件同语义（failed 含 error.code='cancelled'） */
+        phase: AnnualReviewTaskStatus
+        /** 0–100，单调不回退 */
+        progress: number
+        statusText?: string
+        /** loading/computing → false；completed/failed → true */
+        done: boolean
+        error?: { code: string; message: string }
+      }
+    }
+  | { success: true; found: false }
+  | { success: false; error: { code: string; message: string } }
 
 /** 失效收敛错误（assertCurrent 抛出；runTask 捕获后映射为 failed/invalidated） */
 function invalidationError(message: string): Error {
@@ -522,7 +558,7 @@ export class AnnualReviewService {
     const snapshot: AnnualReviewTaskSnapshot = {
       taskId, year, status: 'loading', progress: 0, startedAt, updatedAt: startedAt
     }
-    const record: TaskRecord = { snapshot, running: true }
+    const record: TaskRecord = { snapshot, running: true, scopeId }
     this.tasks.set(scopeKey, record)
     const control = new TaskControl()
     const running: RunningTask = {
@@ -656,6 +692,7 @@ export class AnnualReviewService {
       // generate 强制重算：无条件覆盖同键缓存（含未过期条目）
       this.cache.set(scopeId, year, report)
       this.updateTask(scopeKey, taskId, { status: 'completed', progress: 100, statusText: '生成完成' })
+      this.pruneTerminalTaskRecords()
     } catch (e) {
       if (control.cancelled) {
         this.failTask(scopeKey, taskId, 'cancelled', CANCELLED_MESSAGE)
@@ -682,6 +719,7 @@ export class AnnualReviewService {
     const record = this.tasks.get(scopeKey)
     if (!record || record.snapshot.taskId !== taskId) return
     this.updateTask(scopeKey, taskId, { status: 'failed', error: { code, message } })
+    this.pruneTerminalTaskRecords()
   }
 
   /** A3 消息统计：WCDB 失败/未连接 → ok=false（统计层回退或 unavailable，不伪造） */
@@ -724,6 +762,58 @@ export class AnnualReviewService {
   }
 
   /**
+   * 只读任务状态查询（按 taskId 的权威来源；**不用报告缓存代替任务状态**）：
+   *   - 只接受非空、限长 taskId（非法 → success:false + invalid_task_id）；
+   *   - 只按 taskId 在内部任务记录中查找（不按 year、不按缓存、不猜终态）；
+   *   - 账号隔离 fail closed：记录属于其他作用域时按 `found:false` 返回（不泄漏存在性）；
+   *   - running（loading/computing）→ done:false；completed/failed → done:true
+   *     （cancelled 仍是 failed + error.code='cancelled'，由渲染层映射为 cancelled）；
+   *   - 未找到 → found:false，不抛内部异常；
+   *   - 返回快照副本（不暴露内部可变引用）；不含 scopeId/wxid/路径/Token/报告正文/SQL/堆栈；
+   *   - 纯读：不创建、不取消、不重启、不修改任何任务，也不触碰缓存。
+   */
+  getTaskStatus(taskId: string): AnnualReviewTaskStatusResult {
+    if (!this.validateTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    const currentScopeId = buildAccountScopeId(this.deps.getAccountContext())
+    for (const record of this.tasks.values()) {
+      const s = record.snapshot
+      if (s.taskId !== taskId) continue
+      if (record.scopeId !== currentScopeId) return { success: true, found: false } // 跨账号：不泄漏
+      return {
+        success: true,
+        found: true,
+        task: {
+          taskId: s.taskId,
+          year: s.year,
+          phase: s.status,
+          progress: s.progress,
+          ...(typeof s.statusText === 'string' ? { statusText: s.statusText } : {}),
+          done: s.status === 'completed' || s.status === 'failed',
+          ...(s.error ? { error: { code: s.error.code, message: s.error.message } } : {})
+        }
+      }
+    }
+    return { success: true, found: false }
+  }
+
+  /**
+   * 有界清理（每次任务进入终态后调用）：记录数超过上限时，淘汰「已终态且不属于当前
+   * 作用域」的最旧记录。运行中记录与当前作用域记录永不淘汰——前者保证任务状态机不被
+   * 破坏，后者保证渲染层仍能用 getTaskStatus 恢复被容量淘汰的终态事件。
+   */
+  private pruneTerminalTaskRecords(): void {
+    if (this.tasks.size <= ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS) return
+    const currentScopeId = buildAccountScopeId(this.deps.getAccountContext())
+    for (const [key, record] of this.tasks) {
+      if (this.tasks.size <= ANNUAL_REVIEW_MAX_RETAINED_TASK_RECORDS) break
+      if (record.running || record.scopeId === currentScopeId) continue
+      this.tasks.delete(key)
+    }
+  }
+
+  /**
    * 取消任务：loading 与 computing 都有效（loading = 收敛并不再启动 Worker；
    * computing = 真实 terminate Worker + control 收敛）。
    * 终态任务幂等成功（终态不可变）；未知 taskId → task_not_found；
@@ -760,7 +850,9 @@ export class AnnualReviewService {
   }
 
   private validateTaskId(taskId: string): boolean {
-    return typeof taskId === 'string' && taskId.length > 0 && taskId.length <= 128
+    // 与 annualReviewReport.validateAnnualReviewTaskId 同一运行时规则：
+    // 非空、限长 128、不含 NUL（IPC 入口与 service 内部一致，避免两套 taskId 校验）
+    return typeof taskId === 'string' && taskId.length > 0 && taskId.length <= 128 && !taskId.includes('\u0000')
   }
 
   // ── 可用年份 ──

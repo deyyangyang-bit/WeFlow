@@ -75,7 +75,7 @@ import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbP
 import { AnnualReviewService, type AnnualReviewAccountContext } from './services/annualReviewService'
 import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
 import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
-import { validateAnnualReviewYearInput } from './services/annualReviewReport'
+import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
 import { exportTextFile } from './services/safeTextFileExport'
 import { buildAnnualReviewMarkdown, buildAnnualReviewCsv } from './services/annualReviewExportContent'
 import { onAssignmentInvalidated } from './services/assignmentInvalidationBus'
@@ -4230,10 +4230,23 @@ function registerIpcHandlers() {
     const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
       ? (payload as { taskId?: unknown }).taskId
       : payload
-    if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > 128) {
+    if (!validateAnnualReviewTaskId(taskId)) {
       return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
     }
     return annualReviewService.cancel(taskId)
+  })
+
+  // 只读任务状态查询：任务状态的权威来源（**不用报告缓存代替任务状态**）。渲染层仅在
+  // 「generate 响应前终态事件被容量淘汰」时按 taskId 对账；不传 year/scope（作用域在
+  // 服务内按当前账号 fail closed 校验），不返回报告正文/路径/账号标识/堆栈。
+  ipcMain.handle('annualReview:getTaskStatus', async (_, payload: unknown) => {
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
+    if (!validateAnnualReviewTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    return annualReviewService.getTaskStatus(taskId)
   })
 
   // 年度经营复盘导出（S6）：Markdown/CSV 经 safeTextFileExport + exportPathAuthorizer。

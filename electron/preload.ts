@@ -602,6 +602,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generate: (year: number) => ipcRenderer.invoke('annualReview:generate', { year }),
     getReport: (year: number) => ipcRenderer.invoke('annualReview:getReport', { year }),
     cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', { taskId }),
+    /** 只读任务状态查询（按 taskId 的权威来源；渲染层对账用——不用报告缓存代替任务状态） */
+    getTaskStatus: (taskId: string) => ipcRenderer.invoke('annualReview:getTaskStatus', { taskId }),
     export: (year: number, format: 'markdown' | 'csv') => ipcRenderer.invoke('annualReview:export', { year, format }),
     onProgress: (callback: (payload: {
       taskId: string
