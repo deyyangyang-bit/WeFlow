@@ -34,6 +34,7 @@ import {
   annualReviewSignedContractsInRange,
   asFinite,
   normSession,
+  parseStrictLocalDateKey,
   resolveAnnualReviewPeriod,
   selectSummaryAdoptedFactTimes,
   type AnnualReviewComputeOptions,
@@ -806,6 +807,30 @@ function isWarningsArray(v: unknown): v is MetricWarning[] {
   return Array.isArray(v) && v.every(isWarningShape)
 }
 
+/**
+ * 月份键（'YYYY-MM'）严格校验：拼接为 'YYYY-MM-01' 后走 parseStrictLocalDateKey
+ * （同一实现），因此 `2026-00` / `2026-13` / `2026-9` / `2026-99` 全部拒绝。
+ */
+function isMonthKey(v: unknown): boolean {
+  return typeof v === 'string' && parseStrictLocalDateKey(`${v}-01`) !== null
+}
+
+/** 轴内月份严格升序（重复或倒序拒绝） */
+function isStrictlyAscendingMonths(months: ReadonlyArray<{ month: string }>): boolean {
+  for (let i = 1; i < months.length; i++) {
+    if (months[i].month <= months[i - 1].month) return false
+  }
+  return true
+}
+
+/** warning 列表签名（code|message|count，排序后拼接）：用于「必须同源」字段的强一致性比对 */
+function warningsSignature(list: MetricWarning[]): string {
+  return list
+    .map((w) => `${w.code}|${w.message}|${typeof w.count === 'number' && Number.isFinite(w.count) ? w.count : ''}`)
+    .sort()
+    .join(';')
+}
+
 function isCoverageShape(v: unknown): boolean {
   if (!isPlainObject(v)) return false
   if (typeof v.source !== 'string' || v.source === '') return false
@@ -826,20 +851,27 @@ function isCoverageShape(v: unknown): boolean {
 // ─── 公开客户行白名单（字段精确形状；未知字段/内部字段一律拒绝） ──────────────
 
 const numField = (v: unknown): boolean => isFiniteNumber(v)
-const numOrNullField = (v: unknown): boolean => v === null || isFiniteNumber(v)
 const strOrNullField = (v: unknown): boolean => v === null || typeof v === 'string'
 const boolField = (v: unknown): boolean => typeof v === 'boolean'
+/** 非负整数（计数类字段：消息量/客户数/合同数；小数、负数、NaN/±Infinity 一律拒绝） */
+const countField = (v: unknown): boolean => isFiniteNumber(v) && Number.isInteger(v) && v >= 0
+/**
+ * 客户业务身份 accountId：只接受**正整数**（crmDb account.id 语义）；
+ * 0 / 负数 / 小数 / NaN / ±Infinity 一律拒绝（0 不是合法主键，负 id 会污染跳转与展示）。
+ */
+const accountIdField = (v: unknown): boolean => isFiniteNumber(v) && Number.isInteger(v) && v > 0
+const accountIdOrNullField = (v: unknown): boolean => v === null || accountIdField(v)
 
 /** 公开客户行 shape 白名单：键集合精确 + 每字段类型确定 */
 const CUSTOMER_ROW_SHAPES: Record<string, Record<string, (v: unknown) => boolean>> = {
-  highValue: { accountId: numField, name: strOrNullField, creditedAmount: numField, contractAmount: numField },
-  newCustomers: { accountId: numField, name: strOrNullField, createdAt: numField, imported: boolField },
-  dealing: { accountId: numField, name: strOrNullField, contractCount: numField, contractAmount: numField, firstSignDate: numField },
-  repeat: { accountId: numField, name: strOrNullField, contractCount: numField, contractAmount: numField },
-  active: { accountId: numOrNullField, name: strOrNullField },
-  silent: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField },
-  risk: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, stage: (v) => typeof v === 'string', lastContactAtMs: numField },
-  priority: { accountId: numOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField }
+  highValue: { accountId: accountIdField, name: strOrNullField, creditedAmount: numField, contractAmount: numField },
+  newCustomers: { accountId: accountIdField, name: strOrNullField, createdAt: numField, imported: boolField },
+  dealing: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField, firstSignDate: numField },
+  repeat: { accountId: accountIdField, name: strOrNullField, contractCount: countField, contractAmount: numField },
+  active: { accountId: accountIdOrNullField, name: strOrNullField },
+  silent: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField },
+  risk: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, stage: (v) => typeof v === 'string', lastContactAtMs: numField },
+  priority: { accountId: accountIdOrNullField, customerId: strOrNullField, name: strOrNullField, lastContactAtMs: numField }
 }
 
 function isRowShape(row: Record<string, unknown>, shape: Record<string, (v: unknown) => boolean>): boolean {
@@ -1001,6 +1033,10 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
   }
 
   // 月度趋势（S5）：三序列形状（金额/消息计数；unavailable ↔ null 双向一致）
+  //   - 月份键严格校验（年-月两段解析，月份 1–12；`2026-99`/`2026-00` 一律拒绝）；
+  //   - 轴内月份必须严格升序（升序是文档契约，也是双字段一致性比对的前提）；
+  //   - messageVolume 计数 = 非负整数（月度消息量不得为负数/小数）；
+  //   - 金额 = 有限数（A5 已批准口径允许负数金额原样求和，此处不额外加非负约束）。
   const monthlyBlock = report.monthly
   if (!isPlainObject(monthlyBlock)) return invalid('monthly 缺失')
   for (const key of MONTHLY_METRIC_KEYS) {
@@ -1010,11 +1046,14 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     }
     if (series.months !== null) {
       const valueKey = key === 'messageVolume' ? 'count' : 'amount'
+      const valueOk = key === 'messageVolume' ? countField : numField
       const pointOk = (m: unknown): boolean =>
-        isPlainObject(m) && typeof m.month === 'string' && /^\d{4}-\d{2}$/.test(m.month) &&
-        isFiniteNumber((m as Record<string, unknown>)[valueKey]) && ((m as Record<string, unknown>)[valueKey] as number) >= 0
+        isPlainObject(m) && isMonthKey(m.month) && valueOk((m as Record<string, unknown>)[valueKey])
       if (!Array.isArray(series.months) || !series.months.every(pointOk)) {
         return invalid(`monthly.${key}.months 形状非法`)
+      }
+      if (!isStrictlyAscendingMonths(series.months as Array<{ month: string }>)) {
+        return invalid(`monthly.${key}.months 未按月份严格升序`)
       }
     }
     if ((series.state === 'unavailable') !== (series.months === null)) {
@@ -1030,12 +1069,23 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     if (!isPlainObject(metric) || !isMetricState(metric.state) || !isWarningsArray(metric.warnings)) return invalid(`communication.${key} 形状非法`)
     if (!isFiniteNumber(metric.value) && metric.value !== null) return invalid(`communication.${key}.value 非法`)
     if ((metric.state === 'unavailable') !== (metric.value === null)) return invalid(`communication.${key} 的 unavailable 与 value 不一致`)
+    // 计数指标（消息量/触达客户数）= 非负整数；比例指标 ∈ [0,1]；不得出现负总量或 >1 的比例
+    if (key === 'outboundRate') {
+      if (metric.value !== null && ((metric.value as number) < 0 || (metric.value as number) > 1)) {
+        return invalid('communication.outboundRate.value 越界（必须为 [0,1] 内有限数）')
+      }
+    } else if (metric.value !== null && !countField(metric.value)) {
+      return invalid(`communication.${key}.value 必须为非负整数`)
+    }
   }
   const trend = communication.monthlyTrend
   if (!isPlainObject(trend) || !isMetricState(trend.state) || !isWarningsArray(trend.warnings)) return invalid('communication.monthlyTrend 形状非法')
   if (trend.months !== null) {
-    if (!Array.isArray(trend.months) || trend.months.some((m) => !isPlainObject(m) || typeof m.month !== 'string' || !/^\d{4}-\d{2}$/.test(m.month) || !isFiniteNumber(m.count) || (m.count as number) < 0)) {
-      return invalid('communication.monthlyTrend.months 形状非法')
+    if (!Array.isArray(trend.months) || trend.months.some((m) => !isPlainObject(m) || !isMonthKey(m.month) || !countField(m.count))) {
+      return invalid('communication.monthlyTrend.months 形状非法（月份键或非负整数计数不合法）')
+    }
+    if (!isStrictlyAscendingMonths(trend.months as Array<{ month: string }>)) {
+      return invalid('communication.monthlyTrend.months 未按月份严格升序')
     }
   }
   if ((trend.state === 'unavailable') !== (trend.months === null)) return invalid('communication.monthlyTrend 的 unavailable 与 months 不一致')
@@ -1047,6 +1097,55 @@ export function validateAnnualReviewReport(report: unknown, expectedYear: number
     }
   }
   if ((longSilent.state === 'unavailable') !== (longSilent.value === null)) return invalid('communication.longSilent 的 unavailable 与 value 不一致')
+
+  // ── 同源字段强一致性（禁止平行口径出现分歧） ──────────────────────────────
+  // 1) monthly.messageVolume 与 communication.monthlyTrend 声明来自同一数据源
+  //    （D5 单一结果）—— 月份数量/顺序/月份键/计数/state/warnings 必须逐项一致；
+  // 2) monthly.contractSign 与 summary.contractAmount（A5）、monthly.credited 与
+  //    summary.creditedAmount（A6）必须同源同一聚合（state + warning 签名一致），
+  //    否则「摘要 partial、月度 complete」这类平行口径分歧会被放行。
+  const messageSeries = monthlyBlock.messageVolume as {
+    months: Array<{ month: string; count: number }> | null
+    state: MetricState
+    warnings: MetricWarning[]
+  }
+  const trendSeries = trend as {
+    months: Array<{ month: string; count: number }> | null
+    state: MetricState
+    warnings: MetricWarning[]
+  }
+  if ((messageSeries.months === null) !== (trendSeries.months === null)) {
+    return invalid('monthly.messageVolume 与 communication.monthlyTrend 可用性不一致')
+  }
+  if (messageSeries.state !== trendSeries.state) {
+    return invalid('monthly.messageVolume 与 communication.monthlyTrend 的 state 不一致')
+  }
+  if (warningsSignature(messageSeries.warnings) !== warningsSignature(trendSeries.warnings)) {
+    return invalid('monthly.messageVolume 与 communication.monthlyTrend 的 warnings 不一致')
+  }
+  const seriesMonths = messageSeries.months ?? []
+  const trendMonths = trendSeries.months ?? []
+  if (seriesMonths.length !== trendMonths.length) {
+    return invalid('monthly.messageVolume 与 communication.monthlyTrend 的月份数量不一致')
+  }
+  for (let i = 0; i < seriesMonths.length; i++) {
+    if (seriesMonths[i].month !== trendMonths[i].month || seriesMonths[i].count !== trendMonths[i].count) {
+      return invalid(`monthly.messageVolume 与 communication.monthlyTrend 第 ${i + 1} 个月不一致（月份或计数）`)
+    }
+  }
+  const summaryMetrics = summary as unknown as Record<string, { state: MetricState; warnings: MetricWarning[] }>
+  const amountStatePairs: Array<[string, string, { state: MetricState; warnings: MetricWarning[] }, { state: MetricState; warnings: MetricWarning[] }]> = [
+    ['summary.contractAmount(A5)', 'monthly.contractSign', summaryMetrics.contractAmount, monthlyBlock.contractSign as { state: MetricState; warnings: MetricWarning[] }],
+    ['summary.creditedAmount(A6)', 'monthly.credited', summaryMetrics.creditedAmount, monthlyBlock.credited as { state: MetricState; warnings: MetricWarning[] }]
+  ]
+  for (const [summaryKey, monthlyKey, summaryMetric, monthlySeries] of amountStatePairs) {
+    if (summaryMetric.state !== monthlySeries.state) {
+      return invalid(`${monthlyKey} 与 ${summaryKey} 的 state 不一致（摘要与月度必须同一口径）`)
+    }
+    if (warningsSignature(summaryMetric.warnings) !== warningsSignature(monthlySeries.warnings)) {
+      return invalid(`${monthlyKey} 与 ${summaryKey} 的 warnings 不一致（摘要与月度必须同一口径）`)
+    }
+  }
 
   // E 组销售与分配（S5）：分项事实 + coverage + 有效跟进 + 两项贡献（无 E2/E6/E7）
   const salesAssignment = report.salesAssignment

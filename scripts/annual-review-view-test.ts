@@ -72,7 +72,7 @@ interface FakeApi {
   setCancelShouldFail(v: boolean): void
   emit: (event: AnnualReviewProgressEvent) => void
 }
-function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>> }): FakeApi {
+function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsResult?: Awaited<ReturnType<AnnualReviewApi['getAvailableYears']>>; manualStart?: boolean }): FakeApi {
   const calls = { generate: 0, cancel: 0, subscribe: 0, unsubscribe: 0, getReport: 0 }
   const gates: FakeApi['gates'] = []
   let gateSeq = 0
@@ -116,7 +116,8 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
     setCancelShouldFail: (v: boolean) => { cancelShouldFail = v },
     emit: (e) => progressCb?.(e)
   }
-  // 默认启动响应：resolve 为 { success:true, taskId: 'g<N>' }
+  // 默认启动响应：resolve 为 { success:true, taskId: 'g<N>' }；
+  // manualStart=true 时不自动 resolve（由用例显式控制「响应前/后」的事件时序）
   void (function patchGates() {
     const origPush = gates.push.bind(gates)
     gates.push = (gate) => {
@@ -124,9 +125,11 @@ function createFakeApi(opts?: { reportResults?: FakeApi['reportResults']; yearsR
       // cancelShouldFail=true 模拟主进程同键合并：复用首个 taskId（reused=true）
       const taskId = cancelShouldFail && issuedTaskId !== null ? issuedTaskId : `g${gateSeq}`
       if (issuedTaskId === null) issuedTaskId = taskId
-      void Promise.resolve().then(() => {
-        if (!gate.__settled) gate.resolve({ success: true, taskId, reused: taskId === issuedTaskId && gateSeq > 1 })
-      })
+      if (opts?.manualStart !== true) {
+        void Promise.resolve().then(() => {
+          if (!gate.__settled) gate.resolve({ success: true, taskId, reused: taskId === issuedTaskId && gateSeq > 1 })
+        })
+      }
       return origPush(gate)
     }
     Object.defineProperty(gates, 'push', { value: gates.push, writable: true, configurable: true })
@@ -378,6 +381,12 @@ async function main(): Promise<void> {
     ok('12d 有 accountId → 复用 /customers?id= 既有详情入口；无 accountId → 不可点击',
       customerDetailHref({ accountId: 7 }) === '/customers?id=7' && customerDetailHref({ accountId: null }) === null &&
       customerDetailHref({ accountId: undefined }) === null && customerDetailHref({}) === null)
+    ok('12d2 accountId 必须是正整数（0/负数/小数/NaN/±Infinity 一律不可点击）',
+      customerDetailHref({ accountId: 0 }) === null && customerDetailHref({ accountId: -3 }) === null &&
+      customerDetailHref({ accountId: 7.5 }) === null && customerDetailHref({ accountId: Number.NaN }) === null &&
+      customerDetailHref({ accountId: Number.POSITIVE_INFINITY }) === null &&
+      customerDetailHref({ accountId: Number.NEGATIVE_INFINITY }) === null &&
+      customerDetailHref({ accountId: 1 }) === '/customers?id=1')
     ok('12e 页面接线 customerDetailHref（行级跳转守卫）', pageSrc.includes('customerDetailHref(r)') &&
       pageSrc.includes('useNavigate'))
   }
@@ -394,6 +403,124 @@ async function main(): Promise<void> {
       !pageSrc.includes('annualReviewService') && pageSrc.includes('annualReviewView'))
     ok('11d 页面组件存在且默认导出', pageSrc.includes('export default function AnnualReviewPage'))
   }
+  // ══ 13 非阻塞启动竞态：generate 响应前到达的终态事件不丢失 ══════════════════
+  // 主进程 start() 在 IPC 返回 taskId 之前就已启动任务（快速任务可能先发出 completed/
+  // failed/cancelled）。手动控制启动响应时序，逐条复现「事件先行」。
+  {
+    const startManual = async (reportResults: FakeApi['reportResults']): Promise<{ fake: FakeApi; ctrl: ReturnType<typeof createAnnualReviewController> }> => {
+      const fake = createFakeApi({ reportResults, manualStart: true })
+      const ctrl = createAnnualReviewController(fake.api)
+      await ctrl.loadYears()
+      await tick()
+      ok('13 setup pending idle', ctrl.getState().phase === 'idle')
+      ctrl.startGenerate()
+      await tick()
+      return { fake, ctrl }
+    }
+
+    // 13a completed 在 generate 响应前到达 → 不丢失，最终渲染报告（不停在 generating）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }])
+      ok('13a0 响应未到：taskId 仍为空但已进入 generating（可暂存）',
+        ctrl.getState().phase === 'generating' && ctrl.getState().generation.taskId === null)
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 60, done: false })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true }) // 响应前终态
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('13a 响应前 completed 不丢失 → done + 报告可用', s.phase === 'done' && s.report?.year === 2025 &&
+        s.generation.taskId === null)
+      ctrl.dispose()
+    }
+
+    // 13b failed 在 generate 响应前到达 → 收敛 failed（不永久 generating）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'failed', progress: 30, done: true, error: { code: 'worker_error', message: '端到端失败' } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick()
+      const s = ctrl.getState()
+      ok('13b 响应前 failed 不丢失 → failed + 结构化错误', s.phase === 'failed' &&
+        s.error?.code === 'worker_error' && s.generation.taskId === null)
+      ctrl.dispose()
+    }
+
+    // 13c cancelled 在 generate 响应前到达 → 收敛 cancelled（不永久 generating）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'failed', progress: 10, done: true, error: { code: 'cancelled', message: '年度复盘生成已取消' } })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick()
+      ok('13c 响应前 cancelled 不丢失 → cancelled', ctrl.getState().phase === 'cancelled' &&
+        ctrl.getState().generation.taskId === null)
+      ctrl.dispose()
+    }
+
+    // 13d 非当前 taskId 的暂存事件在回放时被丢弃（不污染当前任务）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'old-task', year: 2021, phase: 'computing', progress: 99, done: false })
+      fake.emit({ taskId: 'old-task', year: 2021, phase: 'failed', progress: 99, done: true, error: { code: 'worker_error', message: '旧任务' } })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 25, done: false })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick()
+      const s = ctrl.getState()
+      ok('13d 仅回放匹配 taskId 的事件（旧任务事件不污染）', s.phase === 'generating' &&
+        s.generation.taskId === 'g1' && s.generation.progress === 25)
+      ctrl.dispose()
+    }
+
+    // 13e 启动响应失败：暂存事件与任务状态一起清理（不残留、不影响后续生成）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: false, error: { code: 'invalid_year', message: '非法年份' } })
+      await tick(); await tick()
+      ok('13e 启动失败 → failed 且暂存事件被清理', ctrl.getState().phase === 'failed' &&
+        ctrl.getState().error?.code === 'invalid_year' && ctrl.getState().report === null)
+      // 后续正常启动：上一次的暂存事件不得驱动新任务状态
+      ctrl.startGenerate()
+      await tick()
+      ok('13e2 后续生成不受上一代际暂存事件影响（仍 generating，进度 0）',
+        ctrl.getState().phase === 'generating' && ctrl.getState().generation.progress === 0)
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 40, done: false }) // 旧代际 taskId
+      ok('13e3 旧代际 taskId 事件仍被忽略', ctrl.getState().generation.progress === 0)
+      fake.gates[1].resolve({ success: true, taskId: 'g2' })
+      await tick()
+      fake.emit({ taskId: 'g2', year: 2021, phase: 'computing', progress: 40, done: false })
+      ok('13e4 新任务事件正常推进（竞态修复不破坏正常路径）', ctrl.getState().generation.progress === 40)
+      ctrl.dispose()
+    }
+
+    // 13f 正常路径不回归：响应后 progress → completed → done；响应前 loading 进度也被回放
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'hit', report: realReport }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'loading', progress: 5, done: false, statusText: '加载本地业务数据' })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick()
+      ok('13f 响应前的非终态进度回放（statusText/进度）', ctrl.getState().generation.progress === 5 &&
+        ctrl.getState().generation.statusText === '加载本地业务数据')
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'computing', progress: 70, done: false })
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      await tick(); await tick()
+      ok('13f2 响应后 progress → completed 正常收敛 done', ctrl.getState().phase === 'done' &&
+        ctrl.getState().report !== null && ctrl.getState().generation.taskId === null)
+      ctrl.dispose()
+    }
+
+    // 13g 快速 completed 但缓存 miss：不得停在 generating（要么 done，要么回到可重新获取的 idle）
+    {
+      const { fake, ctrl } = await startManual([{ success: true, cache: 'miss' }, { success: true, cache: 'miss' }])
+      fake.emit({ taskId: 'g1', year: 2021, phase: 'completed', progress: 100, done: true })
+      fake.gates[0].resolve({ success: true, taskId: 'g1' })
+      await tick(); await tick(); await tick()
+      const s = ctrl.getState()
+      ok('13g 快速 completed + 缓存 miss → idle（可重新生成，不停在 generating）',
+        s.phase === 'idle' && s.phase !== 'generating' && s.generation.taskId === null)
+      ctrl.dispose()
+    }
+  }
+
 }
 
 main().then(() => {

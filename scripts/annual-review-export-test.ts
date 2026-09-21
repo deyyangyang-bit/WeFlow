@@ -162,6 +162,64 @@ async function main(): Promise<void> {
     ok('2i 落盘字节数≠预期 → 失败并清理', r8.ok === false && (r8 as { code: string }).code === 'write_failed' &&
       !existsSync(join(mismatchDir, 'mismatch.bin')))
 
+    // ── 2j–2q 短写循环 fail closed：异常适配器返回值一律拒绝，绝不报告成功、不残留 ──
+    // fstatSize 由用例决定：可模拟「适配器返回值异常 + fstat 恰好相符」——旧实现只拒绝
+    // n<=0，会把 0.5 或超过 remaining 的返回值当成功并报告 ok:true
+    const abnormalCase = (
+      label: string,
+      name: string,
+      content: string,
+      writeImpl: (offset: number, length: number, totalBytes: number) => number,
+      fstatSize: (totalBytes: number) => number
+    ): void => {
+      const d = makeWorkdir()
+      const totalBytes = Buffer.byteLength(content, 'utf8')
+      const r = exportTextFile({ dir: d, fileName: name, content }, {
+        assertAllowed: allowAll,
+        write: (_fd, _buf, offset, length) => writeImpl(offset, length, totalBytes),
+        fstat: () => ({ size: fstatSize(totalBytes) })
+      })
+      ok(label, r.ok === false && (r as { code: string }).code === 'write_failed' && !existsSync(join(d, name)))
+      rmSync(d, { recursive: true, force: true })
+    }
+    abnormalCase('2j 单次写入返回 0 → fail closed 且不残留', 'zero.bin', 'hello', () => 0, () => 0)
+    abnormalCase('2k 单次写入返回负数 → fail closed 且不残留', 'neg.bin', 'hello', () => -1, () => 0)
+    abnormalCase('2l 单次写入返回小数（旧实现会当成功）→ fail closed 且不残留', 'frac.bin', 'hello',
+      () => 0.5, (total) => total)
+    abnormalCase('2m 单次写入返回 NaN → fail closed 且不残留', 'nan.bin', 'hello', () => Number.NaN, () => 0)
+    abnormalCase('2n 单次写入返回 Infinity → fail closed 且不残留', 'inf.bin', 'hello', () => Number.POSITIVE_INFINITY, () => 0)
+    abnormalCase('2o 单次写入返回 > 本次剩余字节（旧实现会当成功）→ fail closed 且不残留', 'over.bin', 'hello',
+      (_offset, length) => length + 1, (total) => total)
+
+    // 2p 正常路径不受影响：真实 fs.writeSync 一次写完，字节数精确、内容完整
+    const okDir = makeWorkdir()
+    const okContent = '年度经营复盘导出'
+    const rOk = exportTextFile({ dir: okDir, fileName: 'normal.md', content: okContent }, { assertAllowed: allowAll })
+    ok('2p 正常一次写完（真实 writeSync 路径）', rOk.ok === true &&
+      (rOk as { bytes: number }).bytes === Buffer.byteLength(okContent, 'utf8') &&
+      readFileSync(join(okDir, 'normal.md'), 'utf8') === okContent)
+    rmSync(okDir, { recursive: true, force: true })
+
+    // 2q offset 只按合法写入字节数推进（多次短写：0,3,6,9）
+    const stepDir = makeWorkdir()
+    const stepContent = 'abcdefghij'
+    const stepTotal = Buffer.byteLength(stepContent, 'utf8')
+    const offsets: number[] = []
+    const stepWritten = Buffer.alloc(stepTotal)
+    const rStep = exportTextFile({ dir: stepDir, fileName: 'step.bin', content: stepContent }, {
+      assertAllowed: allowAll,
+      write: (_fd, buf, offset, length) => {
+        offsets.push(offset)
+        const n = Math.min(3, length)
+        buf.copy(stepWritten, offset, offset, offset + n)
+        return n
+      },
+      fstat: () => ({ size: stepTotal })
+    })
+    ok('2q 多次短写：offset 只按合法字节数推进且内容完整', rStep.ok === true &&
+      offsets.join(',') === '0,3,6,9' && stepWritten.equals(Buffer.from(stepContent, 'utf8')))
+    rmSync(stepDir, { recursive: true, force: true })
+
     rmSync(dir, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
     rmSync(roDir, { recursive: true, force: true })

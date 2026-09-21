@@ -7,12 +7,15 @@
  *     手动/内部排除），本模块不扩大总体。
  *   - D2 contacted_customers：D1 中 sent+received>0 的会话数 —— 与 A3 完全同一计算结果
  *     （computeAnnualReviewCustomerActiveDetail 单一实现，禁止第二套）。
- *   - D3 outbound_rate：Σsent / (Σsent+Σreceived)，会话求和后计算；收发标识非法的会话
- *     剔除并告警，剔除比例 >20% → partial；分母 0（无消息）→ unavailable（A9 同款，
- *     不显示 0% 冒充）。
+ *   - D3 outbound_rate：Σsent / (Σsent+Σreceived)，会话求和后计算；收发计数非法
+ *     （null/NaN/±Infinity/负数/小数，sanitizeCount 单一实现）的会话剔除并告警，
+ *     剔除比例 >20% → partial；剔除后分母 0（无有效消息）→ unavailable（A9 同款，
+ *     不显示 0% 冒充）。比例恒为 [0,1] 内有限数（分子分母同为非负整数，绝不出现 >1 或负数）。
  *   - D5 monthly_communication_trend：native daily（本地日期 → 量）按本地月聚合；
- *     历史年度完整 12 个月、当前年度截至生成月、all_time 取有数据月份；单序列
- *     （发送/接收分序列待形状确认，§10 未确认项）；月轴内缺月为真实零 0。
+ *     日期键经 parseStrictLocalDateKey 严格校验（非法日期不进入月份轴并告警），
+ *     计数经 sanitizeCount（非负整数，非法值排除并告警）；历史年度完整 12 个月、
+ *     当前年度截至生成月、all_time 取有数据月份；单序列（发送/接收分序列待形状确认，
+ *     §10 未确认项）；月轴内缺月为真实零 0。
  *   - D7 long_silent_customers（仅 current_year/all_time）：绑定会话最近联系
  *     （account.last_contact_at 秒×1000，每会话取最大有效值，与 A3 回退同一规则）
  *     < asOf-180 天且代表画像阶段非 won/lost；恒 partial（回退口径）；历史年度
@@ -26,7 +29,8 @@ import {
   buildExclusionSet,
   selectCrmBoundSessions,
   selectPerSessionLastContactMs,
-  asFinite,
+  parseStrictLocalDateKey,
+  sanitizeCount,
   type AnnualReviewComputeOptions,
   type AnnualReviewPeriod,
   type MetricState,
@@ -43,6 +47,8 @@ const COMM_WARN = {
   message_stats_unavailable: '消息库不可用，无法统计沟通指标',
   daily_stats_missing: '按日消息统计缺失，月度趋势不可得',
   daily_scope_unverified: '按日消息统计的会话范围无法在 native 层核实，月度趋势按部分完整呈现',
+  daily_date_invalid: '按日消息统计含非法日期键，已排除（不进入月份轴）',
+  daily_count_invalid: '按日消息统计含非法计数，已排除（不计入月度趋势）',
   last_contact_fallback: '活跃/沉默按最近联系时间近似统计（回填口径）',
   history_contact_unavailable: '历史年度联系时间无法重建，当前投影不能代替'
 } as const
@@ -92,6 +98,8 @@ export interface AnnualReviewCommunicationBlock {
  *     会话（未绑定/被排除/群聊公众号系统号）一律忽略，不得进入总量、分子分母与
  *     非法会话比例；
  *   - 总体内但 stats 无条目 = 该区间无消息（合法 0，不是查询失败）；
+ *   - 计数合法性 = sanitizeCount 唯一实现（非负整数）：null/NaN/±Infinity/负数/小数
+ *     一律剔除并计数（绝不夹成 0）——总量与比例恒为非负数，rate ∈ [0,1]；
  *   - 非法比例分母 = 总体内在 stats 中有条目的会话数（有数据才谈得上非法）。
  */
 function sumSessions(
@@ -106,8 +114,8 @@ function sumSessions(
     const stat = messageStats.sessions?.[sid]
     if (!stat) continue // 区间无消息：合法真实零
     present++
-    const s = asFinite(stat.sent)
-    const r = asFinite(stat.received)
+    const s = sanitizeCount(stat.sent)
+    const r = sanitizeCount(stat.received)
     if (s === null || r === null) {
       invalid++
       continue
@@ -118,14 +126,37 @@ function sumSessions(
   return { total: sent + received, sent, received, invalid, present }
 }
 
-/** D5 本地月聚合：历史 12 个月、当前年截至生成月、all_time 有数据月份 */
-function aggregateMonthlyMonths(daily: Record<string, number>, period: AnnualReviewPeriod): AnnualReviewMonthlyPoint[] {
+interface MonthlyMessageAggregation {
+  /** 月份轴（升序）与月聚合量；非法日期/计数已排除 */
+  months: AnnualReviewMonthlyPoint[]
+  /** 非法日期键数量（不进入月份轴） */
+  invalidDates: number
+  /** 非法计数数量（不进入月度趋势） */
+  invalidCounts: number
+}
+
+/**
+ * D5 本地月聚合（历史 12 个月、当前年截至生成月、all_time 有数据月份）：
+ * 日期键经 parseStrictLocalDateKey 严格校验——`2026-99-99`、`2026-02-30` 等非法日期
+ * 既不产生 `2026-99` 之类的伪月份，也不落进其它月份，只计入非法数量并告警；
+ * 计数经 sanitizeCount（非负整数），非法值排除并告警。
+ */
+function aggregateMonthlyMonths(daily: Record<string, number>, period: AnnualReviewPeriod): MonthlyMessageAggregation {
   const byMonth = new Map<string, number>()
-  for (const [day, count] of Object.entries(daily)) {
-    const n = asFinite(count)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || n === null || n < 0) continue
-    const monthKey = day.slice(0, 7)
-    byMonth.set(monthKey, (byMonth.get(monthKey) ?? 0) + n)
+  let invalidDates = 0
+  let invalidCounts = 0
+  for (const [day, raw] of Object.entries(daily)) {
+    const parsed = parseStrictLocalDateKey(day)
+    if (parsed === null) {
+      invalidDates++
+      continue
+    }
+    const n = sanitizeCount(raw)
+    if (n === null) {
+      invalidCounts++
+      continue
+    }
+    byMonth.set(parsed.monthKey, (byMonth.get(parsed.monthKey) ?? 0) + n)
   }
   const months: string[] = []
   if (period.scopeKind === 'historical_year' && period.periodStart !== null && period.periodEndExclusive !== null) {
@@ -144,7 +175,11 @@ function aggregateMonthlyMonths(daily: Record<string, number>, period: AnnualRev
   } else {
     months.push(...[...byMonth.keys()].sort())
   }
-  return months.map((month) => ({ month, count: byMonth.get(month) ?? 0 }))
+  return {
+    months: months.map((month) => ({ month, count: byMonth.get(month) ?? 0 })),
+    invalidDates,
+    invalidCounts
+  }
 }
 
 /**
@@ -201,12 +236,17 @@ export function computeAnnualReviewCommunication(
     monthlyTrend = { months: null, state: 'unavailable', warnings: [{ code: 'daily_stats_missing', message: COMM_WARN.daily_stats_missing }] }
   } else {
     // native daily 的会话范围无法在实现层证明严格等于传入 sessionIds（native 层不可审计）
-    // → 恒 partial（数据存在但覆盖受限），不宣称精确（fail closed）
-    monthlyTrend = {
-      months: aggregateMonthlyMonths(messageStats.daily, period),
-      state: 'partial',
-      warnings: [{ code: 'daily_scope_unverified', message: COMM_WARN.daily_scope_unverified }]
+    // → 恒 partial（数据存在但覆盖受限），不宣称精确（fail closed）；
+    // 非法日期键/非法计数另行告警（稳定 code + count，按 code 去重）
+    const agg = aggregateMonthlyMonths(messageStats.daily, period)
+    const warnings: MetricWarning[] = [{ code: 'daily_scope_unverified', message: COMM_WARN.daily_scope_unverified }]
+    if (agg.invalidDates > 0) {
+      warnings.push({ code: 'daily_date_invalid', message: COMM_WARN.daily_date_invalid, count: agg.invalidDates })
     }
+    if (agg.invalidCounts > 0) {
+      warnings.push({ code: 'message_stats_invalid', message: COMM_WARN.daily_count_invalid, count: agg.invalidCounts })
+    }
+    monthlyTrend = { months: agg.months, state: 'partial', warnings }
   }
 
   // ── D7：长期未联系（仅 current_year/all_time；回退口径恒 partial） ──

@@ -18,6 +18,9 @@
  *   F A7：shipped 首次事件、重复不双计、首条范围外+重复范围内仍不计、无法关联合同、count/amount 同源
  *   G 健壮性：空输入、非法数字、输入不可变、warnings 去重、确定性
  *   H 数据访问层：loadAnnualReviewFacts 静态 SQL + 规范化 + 预过滤（内存 sql.js 夹具，零落盘）
+ *   I 共享口径（P1/P2 回归）：sanitizeCount（非负整数，唯一实现）／parseStrictLocalDateKey
+ *     （严格日期，无 JS Date 滚动）／aggregateSignedAmounts 与 A5、aggregateCreditedAmounts
+ *     与 A6 同一集合/金额合法性/state/warnings
  *
  * 运行：npx tsx scripts/annual-review-stats-test.ts
  */
@@ -26,10 +29,14 @@ import { fileURLToPath } from 'url'
 import initSqlJs from 'sql.js'
 import {
   AnnualReviewPeriodError,
+  aggregateCreditedAmounts,
+  aggregateSignedAmounts,
   annualReviewWcdbSeconds,
   computeAnnualReviewSummary,
   loadAnnualReviewFacts,
+  parseStrictLocalDateKey,
   resolveAnnualReviewPeriod,
+  sanitizeCount,
   sqlJsQueryRunner,
   type AnnualReviewExclusions,
   type AnnualReviewFacts,
@@ -539,6 +546,95 @@ function main(): void {
       warnOf(rb.contractAmount, 'contract_amount_invalid')?.count === 2 && warnOf(rb.creditedAmount, 'credited_amount_invalid')?.count === 1)
     // 状态取值 ∈ 四态枚举（snapshot_only 属于联合类型，S1 不产出）
     ok('G6 状态取值 ∈ 四态枚举', Object.values(r1b).every((m) => ['complete', 'partial', 'snapshot_only', 'unavailable'].includes(m.state)))
+  }
+
+  // ══ I 共享口径（P1/P2 回归）：计数清洗 / 严格日期 / A5·A6 共享聚合 ═══════
+  {
+    // I1 sanitizeCount：只接受非负整数（负数/小数/NaN/±Infinity/null 一律 null）
+    ok('I1 sanitizeCount 只接受非负整数', sanitizeCount(0) === 0 && sanitizeCount(7) === 7 &&
+      sanitizeCount(-1) === null && sanitizeCount(-5) === null && sanitizeCount(1.5) === null &&
+      sanitizeCount(0.5) === null && sanitizeCount(Number.NaN) === null &&
+      sanitizeCount(Number.POSITIVE_INFINITY) === null && sanitizeCount(Number.NEGATIVE_INFINITY) === null &&
+      sanitizeCount(null) === null && sanitizeCount(undefined) === null && sanitizeCount('3') === null)
+    ok('I1b sanitizeCount 不夹取负数（-5 不会变成 0）', sanitizeCount(-5) !== 0 && sanitizeCount(-5) === null)
+
+    // I2 parseStrictLocalDateKey：月/日逐段校验，不经 JS Date（无自动滚动）
+    ok('I2 非法日期全部拒绝',
+      parseStrictLocalDateKey('2026-00-01') === null && parseStrictLocalDateKey('2026-13-01') === null &&
+      parseStrictLocalDateKey('2026-02-30') === null && parseStrictLocalDateKey('2026-99-99') === null &&
+      parseStrictLocalDateKey('2025-02-29') === null && parseStrictLocalDateKey('2026-04-31') === null &&
+      parseStrictLocalDateKey('2026-1-01') === null && parseStrictLocalDateKey('2026-01-1') === null &&
+      parseStrictLocalDateKey('2026-01-00') === null && parseStrictLocalDateKey('2026/01/01') === null &&
+      parseStrictLocalDateKey('垃圾') === null && parseStrictLocalDateKey('') === null &&
+      parseStrictLocalDateKey(null) === null && parseStrictLocalDateKey(20260101) === null)
+    ok('I2b 闰年 2 月 29 接受、非闰年拒绝',
+      parseStrictLocalDateKey('2024-02-29')?.monthKey === '2024-02' &&
+      parseStrictLocalDateKey('2000-02-29')?.monthKey === '2000-02' &&
+      parseStrictLocalDateKey('2100-02-29') === null && parseStrictLocalDateKey('2025-02-29') === null)
+    ok('I2c 合法月末日期接受', parseStrictLocalDateKey('2026-01-31')?.monthKey === '2026-01' &&
+      parseStrictLocalDateKey('2026-04-30')?.monthKey === '2026-04' &&
+      parseStrictLocalDateKey('2025-02-28')?.monthKey === '2025-02')
+
+    // I3 aggregateSignedAmounts = A5 同一集合/金额合法性/state/warnings
+    const contracts: AnnualReviewFacts['contracts'] = [
+      { id: 1, accountId: 1, amount: 1000, status: 'signed', signDate: T(2025, 3, 1) },
+      { id: 2, accountId: 1, amount: null, status: 'signed', signDate: T(2025, 3, 2) },
+      { id: 3, accountId: 2, amount: Number.NaN, status: 'signed', signDate: T(2025, 3, 3) },
+      { id: 4, accountId: 2, amount: Number.POSITIVE_INFINITY, status: 'signed', signDate: T(2025, 3, 4) },
+      { id: 5, accountId: 2, amount: 200, status: 'signed', signDate: T(2025, 5, 1) },
+      { id: 6, accountId: 3, amount: 500, status: 'signed', signDate: null },
+      { id: 7, accountId: 3, amount: 700, status: 'signed', signDate: T(2024, 6, 1) }
+    ]
+    const signedAgg = aggregateSignedAmounts(P2025, contracts)
+    ok('I3 共享聚合：只纳入有效金额事实（非法金额不按 0 计入）',
+      signedAgg.rows.length === 2 && signedAgg.rows.every((r) => Number.isFinite(r.amount)) &&
+      signedAgg.total === 1200 && signedAgg.amountInvalid === 3)
+    ok('I3b 共享聚合与 A5 同状态同 warning（含 sign_date_missing 传播）', (() => {
+      const a5 = summary(P2025, { ...emptyFacts(), contracts }).contractAmount
+      return signedAgg.total === a5.value && signedAgg.state === a5.state &&
+        JSON.stringify(signedAgg.warnings) === JSON.stringify(a5.warnings) &&
+        warnOf(signedAgg, 'contract_amount_invalid')?.count === 3 &&
+        warnOf(signedAgg, 'sign_date_missing')?.count === 1
+    })())
+    ok('I3c 非法金额不影响计数集合（A4 仍计 5 条年内有效 sign_date）',
+      signedAgg.signed.signedInRange.length === 5 && signedAgg.signed.signMissing === 1)
+    ok('I3d 非法金额全部 → value 0 但 partial（真实零 vs 可信零区分）', (() => {
+      const onlyInvalid = summary(P2025, {
+        ...emptyFacts(),
+        contracts: [{ id: 1, accountId: 1, amount: Number.NaN, status: 'signed', signDate: T(2025, 3, 1) }]
+      }).contractAmount
+      return onlyInvalid.value === 0 && onlyInvalid.state === 'partial' &&
+        warnCodes(onlyInvalid).includes('contract_amount_invalid')
+    })())
+
+    // I4 aggregateCreditedAmounts = A6 同一集合/时间口径/state/warnings
+    const allocations: AnnualReviewFacts['allocations'] = [
+      { id: 1, accountId: 1, creditedAmount: 100, status: 'confirmed', reconciliationStatus: 'allocated', reconciledAt: T(2025, 3, 1), confirmedAt: null },
+      { id: 2, accountId: 1, creditedAmount: Number.NaN, status: 'confirmed', reconciliationStatus: 'allocated', reconciledAt: T(2025, 3, 2), confirmedAt: null },
+      { id: 3, accountId: 1, creditedAmount: 50, status: 'confirmed', reconciliationStatus: 'allocated', reconciledAt: null, confirmedAt: T(2025, 3, 3) },
+      { id: 4, accountId: 2, creditedAmount: 70, status: 'confirmed', reconciliationStatus: 'legacy_confirmed', reconciledAt: null, confirmedAt: T(2025, 4, 1) },
+      { id: 5, accountId: 2, creditedAmount: 30, status: 'confirmed', reconciliationStatus: 'legacy_confirmed', reconciledAt: null, confirmedAt: null },
+      { id: 6, accountId: 2, creditedAmount: 999, status: 'confirmed', reconciliationStatus: 'pending', reconciledAt: T(2025, 3, 1), confirmedAt: T(2025, 3, 1) },
+      { id: 7, accountId: 3, creditedAmount: 999, status: 'pending', reconciliationStatus: 'allocated', reconciledAt: T(2025, 3, 1), confirmedAt: null },
+      { id: 8, accountId: 3, creditedAmount: 999, status: 'conflict', reconciliationStatus: 'pending', reconciledAt: T(2025, 3, 1), confirmedAt: null }
+    ]
+    const creditedAgg = aggregateCreditedAmounts(P2025, allocations)
+    ok('I4 共享聚合：认领/conflict/撤销不计、非法金额排除', creditedAgg.rows.length === 2 && creditedAgg.total === 170 &&
+      creditedAgg.credited.creditedInvalid === 1 && creditedAgg.credited.allocatedNoTime === 1 &&
+      creditedAgg.credited.legacyNoTime === 1 && creditedAgg.credited.legacyFallback === 1)
+    ok('I4b 共享聚合与 A6 同状态同 warning（code/顺序/count 全等）', (() => {
+      const a6 = summary(P2025, { ...emptyFacts(), allocations }).creditedAmount
+      return creditedAgg.total === a6.value && creditedAgg.state === a6.state && creditedAgg.state === 'partial' &&
+        JSON.stringify(creditedAgg.warnings) === JSON.stringify(a6.warnings) &&
+        warnCodes(creditedAgg).join(',') === 'legacy_time_fallback,allocated_reconciled_at_missing,legacy_time_missing,credited_amount_invalid'
+    })())
+    ok('I4c 白名单口径未变（确认状态 + allocated/legacy_confirmed）', creditedAgg.credited.rows.every((r) =>
+      r.allocation.status === 'confirmed' &&
+      (r.allocation.reconciliationStatus === 'allocated' || r.allocation.reconciliationStatus === 'legacy_confirmed')))
+
+    // I5 干净数据仍为 complete（共享聚合不放大 partial）
+    const clean = aggregateSignedAmounts(P2025, [{ id: 1, accountId: 1, amount: 100, status: 'signed', signDate: T(2025, 3, 1) }])
+    ok('I5 合法数据 → complete 且无 warnings', clean.state === 'complete' && clean.warnings.length === 0 && clean.total === 100)
   }
 
   // ══ H 数据访问层（内存 sql.js 夹具，零落盘） ═════════════════════════════

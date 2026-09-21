@@ -849,6 +849,179 @@ async function main(): Promise<void> {
       rich2025.coverage['monthly.messageVolume'].status === rich2025.monthly.messageVolume.state)
   }
 
+  // ══ 23 摘要与月度同源（P1）+ validator 强化（P1/P2 回归） ══════════════════
+  {
+    const emptySales = (): AnnualReviewSalesSegmentsFacts => ({ profiles: [], intentEvents: [] })
+    const emptyCrm = (): AnnualReviewCrmSegmentsFacts => ({ opportunities: [], opportunityEvents: [] })
+    const con = (id: number, signDate: number | null, amount: number | null, status = 'signed', accountId = id): AnnualReviewFacts['contracts'][number] =>
+      ({ id, accountId, amount, status, signDate })
+    const alloc = (id: number, creditedAmount: number | null, reconciledAt: number | null, reconciliationStatus = 'allocated', confirmedAt: number | null = null): AnnualReviewFacts['allocations'][number] =>
+      ({ id, accountId: 1, creditedAmount, reconciledAt, status: 'confirmed', reconciliationStatus, confirmedAt, contractId: 1 })
+
+    // ── 23a 非法签约金额：A5 与月度序列同 state/同 warning（不再出现「摘要 partial、月度 complete 0」） ──
+    const invalidSign = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: {
+        accounts: [], allocations: [], shippedEvents: [],
+        contracts: [
+          con(1, T(2026, 2, 1), Number.NaN),
+          con(2, T(2026, 2, 2), null),
+          con(3, T(2026, 2, 3), Number.POSITIVE_INFINITY),
+          con(4, T(2026, 5, 1), 300),
+          con(5, null, 100, 'signed') // sign_date 缺失 → sign_date_missing
+        ]
+      },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    const feb = invalidSign.monthly.contractSign.months?.find((p) => p.month === '2026-02')
+    ok('23a 非法金额月 = 真实 0 且 partial（不是可信 complete 0）', feb?.amount === 0 &&
+      invalidSign.monthly.contractSign.state === 'partial' &&
+      invalidSign.summary.contractAmount.state === 'partial')
+    ok('23a2 A5 与月度同 warning code/count（contract_amount_invalid=3、sign_date_missing=1）', (() => {
+      const s = invalidSign.summary.contractAmount.warnings
+      const m = invalidSign.monthly.contractSign.warnings
+      return JSON.stringify(s) === JSON.stringify(m) &&
+        s.some((w) => w.code === 'contract_amount_invalid' && w.count === 3) &&
+        s.some((w) => w.code === 'sign_date_missing' && w.count === 1)
+    })())
+    ok('23a3 非法金额不作为 0 元有效事实计入（月合计只含 300）',
+      (invalidSign.monthly.contractSign.months ?? []).reduce((sum, p) => sum + p.amount, 0) === 300 &&
+      invalidSign.summary.contractAmount.value === 300)
+
+    // ── 23b 回款：allocated 缺 reconciled_at / legacy 缺时间 / legacy 回退 → A6 与月度同 state/同 warning ──
+    const creditedMixed = composeAnnualReviewReport({
+      period: resolveAnnualReviewPeriod(2026, GEN),
+      facts: {
+        accounts: [], contracts: [], shippedEvents: [],
+        allocations: [
+          alloc(1, 100, T(2026, 3, 1)),
+          alloc(2, 50, null),                                    // allocated 缺 reconciled_at → 排除
+          alloc(3, 70, null, 'legacy_confirmed', T(2026, 4, 1)),  // legacy 回退 confirmed_at
+          alloc(4, 30, null, 'legacy_confirmed', null),           // legacy 双缺 → 排除
+          alloc(5, Number.NaN, T(2026, 3, 2))                    // 非法金额 → 排除
+        ]
+      },
+      sales: emptySales(), crm: emptyCrm()
+    })
+    ok('23b A6 与月度回款同 state/同 warning（含 legacy 回退、缺时间、非法金额）',
+      creditedMixed.monthly.credited.state === 'partial' && creditedMixed.summary.creditedAmount.state === 'partial' &&
+      JSON.stringify(creditedMixed.monthly.credited.warnings) === JSON.stringify(creditedMixed.summary.creditedAmount.warnings) &&
+      creditedMixed.summary.creditedAmount.value === 170)
+    ok('23b2 月度回款按计入时间归月（legacy 回退落 2026-04）',
+      creditedMixed.monthly.credited.months?.find((p) => p.month === '2026-03')?.amount === 100 &&
+      creditedMixed.monthly.credited.months?.find((p) => p.month === '2026-04')?.amount === 70)
+    ok('23b3 合法回款仍 complete 且无 warnings', (() => {
+      const clean = composeAnnualReviewReport({
+        period: resolveAnnualReviewPeriod(2026, GEN),
+        facts: { accounts: [], contracts: [], shippedEvents: [], allocations: [alloc(1, 100, T(2026, 3, 1))] },
+        sales: emptySales(), crm: emptyCrm()
+      })
+      return clean.summary.creditedAmount.state === 'complete' && clean.monthly.credited.state === 'complete' &&
+        clean.monthly.credited.warnings.length === 0
+    })())
+    ok('23b4 合法签约仍 complete（月份边界左闭右开不变）', (() => {
+      const clean = composeAnnualReviewReport({
+        period: resolveAnnualReviewPeriod(2026, GEN),
+        facts: { accounts: [], contracts: [con(1, T(2026, 2, 28, 23, 59, 59, 999), 100), con(2, T(2026, 3, 1), 200)], allocations: [], shippedEvents: [] },
+        sales: emptySales(), crm: emptyCrm()
+      })
+      const months = clean.monthly.contractSign.months ?? []
+      return clean.monthly.contractSign.state === 'complete' &&
+        months.find((p) => p.month === '2026-02')?.amount === 100 &&
+        months.find((p) => p.month === '2026-03')?.amount === 200
+    })())
+    ok('23b5 非法签约金额报告通过 validator（同源一致性不误杀）', validateAnnualReviewReport(invalidSign, 2026).ok === true)
+    ok('23b6 混合回款报告通过 validator（同源一致性不误杀）', validateAnnualReviewReport(creditedMixed, 2026).ok === true)
+
+    // ── 23c validator：monthly.messageVolume 与 communication.monthlyTrend 必须完全一致 ──
+    const monthlyReport = (() => {
+      const { facts, sales, crm } = richFacts()
+      return composeAnnualReviewReport({
+        period: resolveAnnualReviewPeriod(2026, GEN), facts, sales, crm,
+        opts: { messageStats: { ok: true, sessions: { wx_a: { sent: 2, received: 1 } }, daily: { '2026-02-10': 7, '2026-03-01': 3 } } }
+      })
+    })()
+    ok('23c 同源报告通过（messageVolume 与 monthlyTrend 完全一致）',
+      validateAnnualReviewReport(monthlyReport, 2026).ok === true &&
+      JSON.stringify(monthlyReport.monthly.messageVolume.months) === JSON.stringify(monthlyReport.communication.monthlyTrend.months))
+    const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
+    const oneMonthChanged = clone(monthlyReport) as AnnualReviewReport
+    if (oneMonthChanged.monthly.messageVolume.months !== null) oneMonthChanged.monthly.messageVolume.months[0].count += 1
+    ok('23c2 只改一个月数值 → 拒绝', validateAnnualReviewReport(oneMonthChanged, 2026).ok === false)
+    const reordered = clone(monthlyReport) as AnnualReviewReport
+    if (reordered.monthly.messageVolume.months !== null) reordered.monthly.messageVolume.months.reverse()
+    ok('23c3 顺序不同 → 拒绝', validateAnnualReviewReport(reordered, 2026).ok === false)
+    const droppedMonth = clone(monthlyReport) as AnnualReviewReport
+    if (droppedMonth.monthly.messageVolume.months !== null) droppedMonth.monthly.messageVolume.months.pop()
+    ok('23c4 月份数量不同 → 拒绝', validateAnnualReviewReport(droppedMonth, 2026).ok === false)
+    const warnDiff = clone(monthlyReport) as AnnualReviewReport
+    warnDiff.monthly.messageVolume.warnings = []
+    ok('23c5 warning 不同 → 拒绝', validateAnnualReviewReport(warnDiff, 2026).ok === false)
+    const stateDiff = clone(monthlyReport) as AnnualReviewReport
+    stateDiff.monthly.messageVolume.state = 'complete'
+    ok('23c6 state 不同 → 拒绝', validateAnnualReviewReport(stateDiff, 2026).ok === false)
+    const availabilityDiff = clone(monthlyReport) as AnnualReviewReport
+    availabilityDiff.monthly.messageVolume.months = null
+    availabilityDiff.monthly.messageVolume.state = 'unavailable'
+    ok('23c7 可用性不同（一 null 一有值）→ 拒绝', validateAnnualReviewReport(availabilityDiff, 2026).ok === false)
+    const summaryDiff = clone(monthlyReport) as AnnualReviewReport
+    summaryDiff.monthly.contractSign.state = summaryDiff.summary.contractAmount.state === 'complete' ? 'partial' : 'complete'
+    ok('23c8 月度金额 state 与摘要 A5 不一致 → 拒绝', validateAnnualReviewReport(summaryDiff, 2026).ok === false)
+    const summaryWarnDiff = clone(monthlyReport) as AnnualReviewReport
+    summaryWarnDiff.monthly.credited.warnings = [{ code: 'legacy_time_fallback', message: '伪造告警' }]
+    ok('23c9 月度回款 warning 与摘要 A6 不一致 → 拒绝', validateAnnualReviewReport(summaryWarnDiff, 2026).ok === false)
+
+    // ── 23d validator：计数非负整数 / 比例 ∈ [0,1] / 月度消息量为非负整数 ──
+    const negVolume = clone(monthlyReport) as AnnualReviewReport
+    negVolume.communication.volume.value = -5
+    ok('23d 负消息总量 → 拒绝', validateAnnualReviewReport(negVolume, 2026).ok === false)
+    const fracVolume = clone(monthlyReport) as AnnualReviewReport
+    fracVolume.communication.volume.value = 1.5
+    ok('23d2 小数消息总量 → 拒绝', validateAnnualReviewReport(fracVolume, 2026).ok === false)
+    const negContacted = clone(monthlyReport) as AnnualReviewReport
+    negContacted.communication.contacted.value = -1
+    ok('23d3 负触达客户数 → 拒绝', validateAnnualReviewReport(negContacted, 2026).ok === false)
+    const bigRate = clone(monthlyReport) as AnnualReviewReport
+    bigRate.communication.outboundRate.value = 1.25
+    bigRate.communication.outboundRate.state = 'complete'
+    ok('23d4 outboundRate > 1 → 拒绝', validateAnnualReviewReport(bigRate, 2026).ok === false)
+    const negRate = clone(monthlyReport) as AnnualReviewReport
+    negRate.communication.outboundRate.value = -0.1
+    negRate.communication.outboundRate.state = 'complete'
+    ok('23d5 outboundRate < 0 → 拒绝', validateAnnualReviewReport(negRate, 2026).ok === false)
+    const negMonthlyMsg = clone(monthlyReport) as AnnualReviewReport
+    if (negMonthlyMsg.monthly.messageVolume.months !== null) negMonthlyMsg.monthly.messageVolume.months[0].count = -2
+    ok('23d6 月度消息量负数 → 拒绝', validateAnnualReviewReport(negMonthlyMsg, 2026).ok === false)
+    const fracMonthlyMsg = clone(monthlyReport) as AnnualReviewReport
+    if (fracMonthlyMsg.monthly.messageVolume.months !== null) fracMonthlyMsg.monthly.messageVolume.months[0].count = 0.5
+    ok('23d7 月度消息量小数 → 拒绝', validateAnnualReviewReport(fracMonthlyMsg, 2026).ok === false)
+    const negTrendCount = clone(monthlyReport) as AnnualReviewReport
+    if (negTrendCount.communication.monthlyTrend.months !== null) negTrendCount.communication.monthlyTrend.months[0].count = -1
+    ok('23d8 月度沟通趋势负数 → 拒绝', validateAnnualReviewReport(negTrendCount, 2026).ok === false)
+    const badMonthKey = clone(monthlyReport) as AnnualReviewReport
+    if (badMonthKey.monthly.messageVolume.months !== null && badMonthKey.communication.monthlyTrend.months !== null) {
+      badMonthKey.monthly.messageVolume.months[0].month = '2026-13'
+      badMonthKey.communication.monthlyTrend.months[0].month = '2026-13'
+    }
+    ok('23d9 非法月份键（2026-13）→ 拒绝', validateAnnualReviewReport(badMonthKey, 2026).ok === false)
+
+    // ── 23e validator：accountId 必须是正整数（0/负数/小数/NaN 拒绝） ──
+    for (const [label, value] of [['0', 0], ['负数', -3], ['小数', 7.5], ['NaN', Number.NaN]] as const) {
+      const badAccount = clone(monthlyReport) as AnnualReviewReport
+      if (badAccount.customers.active.value !== null && badAccount.customers.active.value.length > 0) {
+        badAccount.customers.active.value[0].accountId = value as number
+      } else {
+        badAccount.customers.highValue.value = [{ accountId: value as number, name: null, creditedAmount: 0, contractAmount: 0 }]
+      }
+      ok(`23e accountId=${label} → 拒绝`, validateAnnualReviewReport(badAccount, 2026).ok === false)
+    }
+    ok('23e2 合法正整数 accountId 通过', (() => {
+      const good = clone(monthlyReport) as AnnualReviewReport
+      if (good.customers.highValue.value !== null) good.customers.highValue.value = [{ accountId: 1, name: '甲', creditedAmount: 0, contractAmount: 0 }]
+      return validateAnnualReviewReport(good, 2026).ok === true
+    })())
+  }
+
   // ══ 14 progress 单调 + 终态 ═══════════════════════════════════════════════
   {
     const fakeF = createFakeRunner()

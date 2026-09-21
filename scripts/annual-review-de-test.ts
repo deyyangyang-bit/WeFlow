@@ -115,6 +115,80 @@ async function main(): Promise<void> {
     ok('D5d daily 缺失 → unavailable', block3.monthlyTrend.state === 'unavailable' && block3.monthlyTrend.months === null)
   }
 
+  // ══ D6 非法计数（P1 回归）与严格日期键（P2 回归） ══════════════════════════
+  {
+    const facts: AnnualReviewFacts = { accounts: accountsBound(), contracts: [], allocations: [], shippedEvents: [] }
+    const inputs = { facts, sales: emptySales(), crm: emptyCrm() }
+    const period = resolveAnnualReviewPeriod(2026, GEN)
+    const comm = (sessions: Record<string, { sent: number; received: number }>, daily?: Record<string, number>) =>
+      computeAnnualReviewCommunication(period, inputs, { messageStats: { ok: true, sessions, daily } })
+    const warn = (m: { warnings: Array<{ code: string; message: string; count?: number }> }, code: string) =>
+      m.warnings.find((w) => w.code === code)
+
+    // 反例（原缺陷）：{ sent: -5, received: 1 } 曾得到负总量与 outboundRate=1.25 且 state=complete
+    const negSent = comm({ wx_a: { sent: -5, received: 1 } })
+    ok('D6 负 sent：不得产生负总量 / 不得 >1 比例 / 不得 complete', (negSent.volume.value as number) >= 0 &&
+      negSent.volume.value === 0 && negSent.outboundRate.value === null && negSent.outboundRate.state === 'unavailable' &&
+      negSent.volume.state === 'partial' && warn(negSent.volume, 'message_stats_invalid')?.count === 1)
+    const negRecv = comm({ wx_a: { sent: 5, received: -1 } })
+    ok('D6b 负 received：同样剔除并告警（不夹成 0 计入）', negRecv.volume.value === 0 &&
+      negRecv.volume.state === 'partial' && warn(negRecv.volume, 'message_stats_invalid')?.count === 1)
+    const negBoth = comm({ wx_a: { sent: -3, received: -4 } })
+    ok('D6c 两者均负：剔除并告警', negBoth.volume.value === 0 && negBoth.volume.state === 'partial' &&
+      warn(negBoth.volume, 'message_stats_invalid')?.count === 1)
+    const frac = comm({ wx_a: { sent: 1.5, received: 2 } })
+    ok('D6d 小数计数：非法（非负整数才合法）', frac.volume.value === 0 && frac.volume.state === 'partial' &&
+      warn(frac.volume, 'message_stats_invalid')?.count === 1)
+    const nonFinite = comm({ wx_a: { sent: Number.POSITIVE_INFINITY, received: 2 }, wx_b: { sent: 1, received: Number.NEGATIVE_INFINITY } })
+    ok('D6e ±Infinity 计数：非法剔除并计数', nonFinite.volume.value === 0 &&
+      warn(nonFinite.volume, 'message_stats_invalid')?.count === 2)
+    // 合法值：0 与非负整数照常计入（真实零 / 正常比例）
+    const zeros = comm({ wx_a: { sent: 0, received: 0 }, wx_b: { sent: 0, received: 0 } })
+    ok('D6f 合法 0 → 真实零 complete（不误判为非法）', zeros.volume.value === 0 && zeros.volume.state === 'complete' &&
+      zeros.volume.warnings.length === 0 && zeros.outboundRate.value === null)
+    const mixed = comm({ wx_a: { sent: 2, received: 3 }, wx_b: { sent: -5, received: 1 } })
+    ok('D6g 混合：非法会话剔除后比例仍 ∈ [0,1] 且总量为非负整数', mixed.volume.value === 5 &&
+      mixed.outboundRate.value === 2 / 5 && (mixed.outboundRate.value as number) <= 1 &&
+      mixed.outboundRate.state === 'partial' && mixed.volume.state === 'partial')
+    ok('D6h 计数型输出恒为非负整数（volume/contacted/月度计数）',
+      Number.isInteger(mixed.volume.value) && Number.isInteger(mixed.contacted.value as number) &&
+      (mixed.monthlyTrend.months ?? []).every((m) => Number.isInteger(m.count) && m.count >= 0))
+
+    // ── daily 非法日期键：不进入月份轴、不产生伪月份、稳定告警 ──
+    const badDatesDaily: Record<string, number> = {
+      '2025-01-05': 3,
+      '2026-00-01': 9,
+      '2026-13-01': 9,
+      '2026-02-30': 9,
+      '2026-99-99': 5,
+      '2025-02-29': 7
+    }
+    const allTimePeriod = resolveAnnualReviewPeriod(0, GEN)
+    const badDates = computeAnnualReviewCommunication(allTimePeriod, inputs, {
+      messageStats: { ok: true, sessions: { wx_a: { sent: 1, received: 0 } }, daily: badDatesDaily }
+    })
+    const badMonths = (badDates.monthlyTrend.months ?? []).map((m) => m.month)
+    ok('D6i 非法日期不进入 all_time 月份轴（无 2026-99 之类伪月份）', badMonths.join(',') === '2025-01' &&
+      !badMonths.some((m) => m === '2026-99' || m === '2026-13' || m === '2026-00' || m === '2026-02' || m === '2025-02'))
+    ok('D6j 非法日期产生稳定告警 + partial（不静默丢弃）', badDates.monthlyTrend.state === 'partial' &&
+      badDates.monthlyTrend.warnings.some((w) => w.code === 'daily_date_invalid' && w.count === 5))
+    // 历史年度轴同样不得被非法键污染（2025-02-29 不得落进 2025-02）
+    const histBad = computeAnnualReviewCommunication(resolveAnnualReviewPeriod(2025, GEN), inputs, {
+      messageStats: { ok: true, sessions: { wx_a: { sent: 1, received: 0 } }, daily: badDatesDaily }
+    })
+    const histFeb = (histBad.monthlyTrend.months ?? []).find((m) => m.month === '2025-02')
+    ok('D6k 非闰年 2025-02-29 不落进 2025-02（保持真实零）', histFeb?.count === 0)
+
+    // ── daily 非法计数：排除并告警 ──
+    const badCounts = computeAnnualReviewCommunication(resolveAnnualReviewPeriod(2025, GEN), inputs, {
+      messageStats: { ok: true, sessions: { wx_a: { sent: 1, received: 0 } }, daily: { '2025-01-05': -3, '2025-01-06': 1.5, '2025-03-01': 4 } }
+    })
+    const jan = (badCounts.monthlyTrend.months ?? []).find((m) => m.month === '2025-01')
+    const mar = (badCounts.monthlyTrend.months ?? []).find((m) => m.month === '2025-03')
+    ok('D6l daily 负数/小数计数排除并告警', jan?.count === 0 && mar?.count === 4 &&
+      badCounts.monthlyTrend.warnings.some((w) => w.code === 'message_stats_invalid' && w.count === 2))
+  }
+
   // ══ D7 长期未联系（180 天边界 / won/lost 排除 / 排除名单 / 历史年度） ══════
   {
     const facts: AnnualReviewFacts = {

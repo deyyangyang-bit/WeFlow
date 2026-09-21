@@ -256,10 +256,13 @@ export function formatAmount(value: number): string {
 
 /**
  * 客户详情跳转（复用既有 /customers?id= 工作台路由，不发明新路由）；
- * 仅 accountId 可用时返回链接，否则 null（行保持不可点击）。
+ * 仅 accountId 为**正整数**时返回链接（crmDb account.id 主键语义；0/负数/小数/非有限数
+ * 均视为无有效身份），否则 null（行保持不可点击）。
  */
 export function customerDetailHref(row: { accountId?: number | null }): string | null {
-  return typeof row.accountId === 'number' && Number.isFinite(row.accountId) ? `/customers?id=${row.accountId}` : null
+  return typeof row.accountId === 'number' && Number.isInteger(row.accountId) && row.accountId > 0
+    ? `/customers?id=${row.accountId}`
+    : null
 }
 
 /**
@@ -317,6 +320,13 @@ export function buildSummaryCells(report: AnnualReviewReport): MetricCell[] {
 
 // ─── Controller（框架无关；React 页面经 useSyncExternalStore 接入） ──────────
 
+/**
+ * generate 响应到达前可暂存的事件上限。窗口只有「IPC 发起 → 响应返回」这一小段，
+ * 正常情况最多几条（loading/computing/completed）；上限只用于防御异常事件源
+ * （超限后丢弃新事件，不阻塞启动响应处理）。
+ */
+const MAX_PENDING_PROGRESS_EVENTS = 64
+
 export interface AnnualReviewApi {
   getAvailableYears(): Promise<AnnualReviewYearsResult>
   getReport(year: number): Promise<AnnualReviewReportResult>
@@ -344,6 +354,10 @@ export interface AnnualReviewController {
  *   - seq 代际：selectYear/startGenerate 各自递增；迟到的 getReport/generate 结果
  *     （旧代际）不得覆盖当前状态（连续生成时旧任务结果隔离）。
  *   - 进度订阅在创建时建立一次，按 taskId 过滤迟到事件；dispose 幂等精确卸载。
+ *   - generate 响应前竞态（协议层）：主进程 start() 在 IPC 返回 taskId 之前就启动了任务，
+ *     极快的任务可能在 generate 响应到达前发出 completed/failed(含 cancelled)——此时页面
+ *     尚无 taskId 可比对。事件按到达顺序暂存（有界），绑定 taskId 后按序回放（只回放同
+ *     taskId 事件），因此终态事件绝不丢失；暂存仅按事件顺序回放，不依赖任何定时器/延时。
  */
 export function createAnnualReviewController(api: AnnualReviewApi): AnnualReviewController {
   let state = initialAnnualReviewState()
@@ -353,6 +367,8 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
   let generateSeq = 0
   let disposed = false
   let unsubscribeProgress: (() => void) | null = null
+  /** generate 响应到达前暂存的事件（taskId 未知，无法过滤）；绑定后按序回放 */
+  let pendingEvents: AnnualReviewProgressEvent[] = []
 
   const emit = (): void => {
     for (const listener of listeners) {
@@ -364,22 +380,47 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     emit()
   }
 
+  const applyTerminalEvent = (event: AnnualReviewProgressEvent): void => {
+    setState(reduceTerminalEvent(state, event))
+    if (event.phase === 'completed' && state.selectedYear !== null) {
+      const year = state.selectedYear
+      void controller.loadReport(year)
+    }
+  }
+
   const onProgress = (event: AnnualReviewProgressEvent): void => {
     if (state.phase !== 'generating') return
-    if (state.generation.taskId === null || event.taskId !== state.generation.taskId) return // 迟到/其他任务事件
+    if (state.generation.taskId === null) {
+      // generate 响应未到达：无法判定归属，先暂存（有界；绑定后按序回放，旧 taskId 事件在
+      // 回放时被过滤掉，不会污染当前任务）
+      if (pendingEvents.length < MAX_PENDING_PROGRESS_EVENTS) pendingEvents.push(event)
+      return
+    }
+    if (event.taskId !== state.generation.taskId) return // 迟到/其他任务事件
     if (event.done) {
-      // 终态：completed → 拉取缓存渲染；failed(+cancelled) → cancelled；其余 → failed。
-      // 终态事件以「当前代际仍在等待」为准（generation.taskId 存在即未收敛）。
-      const next = reduceTerminalEvent(state, event)
-      setState(next)
-      if (event.phase === 'completed' && state.selectedYear !== null) {
-        const year = state.selectedYear
-        void controller.loadReport(year)
-      }
+      applyTerminalEvent(event)
       return
     }
     const next = reduceProgressEvent(state, event)
     if (next !== state) setState(next)
+  }
+
+  /**
+   * 回放 generate 响应前暂存的事件（只回放与本次绑定 taskId 一致的事件，按到达顺序）。
+   * 终态（done）即收敛：页面进入 done/cancelled/failed，不会停在 generating。
+   */
+  const replayPendingEvents = (taskId: string): void => {
+    const queued = pendingEvents
+    pendingEvents = []
+    for (const event of queued) {
+      if (event.taskId !== taskId) continue
+      if (event.done) {
+        applyTerminalEvent(event)
+        return
+      }
+      const next = reduceProgressEvent(state, event)
+      if (next !== state) setState(next)
+    }
   }
 
   const controller: AnnualReviewController = {
@@ -443,6 +484,7 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       // cancel 失败时主进程按同键合并，旧任务继续但页面状态仍随事件推进
       const prevTaskId = state.phase === 'generating' ? state.generation.taskId : null
       const seq = ++generateSeq
+      pendingEvents = [] // 新代际：上一代际的暂存事件作废（不跨代际泄漏）
       setState({
         ...state,
         phase: 'generating',
@@ -466,15 +508,24 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
       }
       if (disposed) {
         // 页面已卸载而启动响应才到达：取消刚启动的任务（不留下无人管理的后台任务）
+        pendingEvents = []
         if (outcome.kind === 'started') void api.cancel(outcome.taskId).catch(() => {})
         return
       }
       if (seq !== generateSeq || state.selectedYear !== year) {
         // 用户已切年/重新生成：本次启动作废并取消
+        pendingEvents = []
         if (outcome.kind === 'started') void api.cancel(outcome.taskId).catch(() => {})
         return
       }
       setState(reduceGenerateStart(state, outcome))
+      if (outcome.kind === 'started') {
+        // 响应前到达的事件按序回放（只回放本次 taskId）：快速任务的 completed/failed/cancelled
+        // 在这一步收敛，不会因「事件先于响应」而永久停在 generating
+        replayPendingEvents(outcome.taskId)
+      } else {
+        pendingEvents = [] // 启动失败：暂存事件与任务状态一起清理（不污染后续生成）
+      }
     },
     async cancelGeneration() {
       const taskId = state.generation.taskId
@@ -486,6 +537,7 @@ export function createAnnualReviewController(api: AnnualReviewApi): AnnualReview
     dispose() {
       if (disposed) return // 幂等
       disposed = true
+      pendingEvents = [] // 卸载后不再回放任何暂存事件
       // 页面卸载：清理仍在运行的生成任务（幂等取消；任务已终态则为 no-op）。
       // taskId 在启动响应到达后即绑定——「响应未返回前卸载」由 startGenerate 的
       // 迟到分支兜底取消。

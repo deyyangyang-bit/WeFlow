@@ -13,6 +13,9 @@
  *     不覆盖任何已存在文件/符号链接（EEXIST 直接失败）。
  *   - 失败不残留半文件：写错误时关闭句柄并 unlink 本次创建的目标（仅刚创建的）；
  *     本实现不使用临时文件（独占创建一步到位）。
+ *   - 写入循环 fail closed：单次 write 返回值必须是 [1, 本次剩余字节数] 内的整数
+ *     （0/负/小数/NaN/±Infinity/越界一律判失败并清理），offset 只按合法字节数推进；
+ *     错误信息不含导出内容、目标路径或任何秘密。
  *   - 大小上限：缺省 10 MB，超限在触碰文件系统前拒绝。
  */
 import { closeSync, fstatSync, lstatSync, openSync, unlinkSync, writeSync } from 'fs'
@@ -103,11 +106,14 @@ export function exportTextFile(req: SafeTextFileRequest, deps: SafeTextExportDep
   try {
     fd = openSync(targetPath, 'wx', 0o600) // 独占创建：已存在（含链接）→ EEXIST
     created = true
-    // 完整写循环：writeSync 单次可能部分写入——循环写满全部字节，绝不把部分写当成功
+    // 完整写循环：writeSync 单次可能部分写入——循环写满全部字节，绝不把部分写当成功。
+    // 返回值必须 fail closed：只接受 [1, remaining] 内的**整数**；0/负数/小数/NaN/±Infinity
+    // 或超过本次剩余字节数（异常适配器越界）一律终止并清理，offset 只按已接受字节数推进。
     let written = 0
     while (written < buffer.length) {
-      const n = writeFn(fd, buffer, written, buffer.length - written)
-      if (!Number.isFinite(n) || n <= 0) throw new Error('写入停滞')
+      const remaining = buffer.length - written
+      const n = writeFn(fd, buffer, written, remaining)
+      if (!Number.isInteger(n) || n <= 0 || n > remaining) throw new Error('写入停滞')
       written += n
     }
     const size = fstatFn(fd).size

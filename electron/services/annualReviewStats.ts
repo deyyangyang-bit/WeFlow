@@ -671,6 +671,94 @@ export function annualReviewCreditedAllocationsInRange(
   return { rows, legacyFallback, allocatedNoTime, legacyNoTime, creditedInvalid }
 }
 
+export interface SignedAmountAggregation {
+  /** 与 A4 完全同一 sign_date 事实集合（signedInRange + signMissing） */
+  signed: SignedContractsInRange
+  /** 采用的有效事实：signDate 与 amount 均已收窄为有效值（月度签约序列与 A5 同一集合） */
+  rows: Array<AnnualReviewContractFact & { signDate: number; amount: number }>
+  /** 被排除的非法金额数量（缺失/NaN/±Infinity；绝不按 0 元计入） */
+  amountInvalid: number
+  /** 有效金额合计（deterministicSum，无中间舍入） */
+  total: number
+  /** 与 A5 同一状态传播：任一告警（sign_date_missing / contract_amount_invalid）→ partial */
+  state: MetricState
+  /** 与 A5 同一 warning code 与顺序（sign_date_missing → contract_amount_invalid） */
+  warnings: MetricWarning[]
+}
+
+/**
+ * A5 金额聚合（唯一实现）：A4/A5 的 sign_date 集合 + 金额合法性（asFinite：null/NaN/±Infinity 排除）
+ * + 状态/告警。月度签约金额序列（annualReviewMonthly）与本函数共用同一结果，禁止第二套口径
+ * （禁止 `amount ?? 0` 把非法金额当 0 元有效事实计入）。负数金额沿用已批准的 A5 口径
+ * （asFinite 通过、原样求和），不在此处改变 A1–A9 业务口径。
+ */
+export function aggregateSignedAmounts(
+  period: AnnualReviewPeriod,
+  contracts: AnnualReviewContractFact[]
+): SignedAmountAggregation {
+  const signed = annualReviewSignedContractsInRange(period, contracts)
+  const collector = new WarningCollector()
+  if (signed.signMissing > 0) collector.add('sign_date_missing', signed.signMissing)
+  const rows: SignedAmountAggregation['rows'] = []
+  let amountInvalid = 0
+  for (const c of signed.signedInRange) {
+    const amt = asFinite(c.amount)
+    if (amt === null) {
+      amountInvalid++
+      continue
+    }
+    rows.push({ ...c, amount: amt })
+  }
+  if (amountInvalid > 0) collector.add('contract_amount_invalid', amountInvalid)
+  const warnings = collector.list()
+  return {
+    signed,
+    rows,
+    amountInvalid,
+    total: deterministicSum(rows.map((r) => r.amount)),
+    state: warnings.length > 0 ? 'partial' : 'complete',
+    warnings
+  }
+}
+
+export interface CreditedAmountAggregation {
+  /** 与 A6 完全同一核销事实集合（含 legacy 回退后计入时间与各类排除计数） */
+  credited: CreditedAllocationsInRange
+  /** 有效核销行（credited.rows 同源；金额已收窄为有限值） */
+  rows: CreditedAllocationRow[]
+  /** 有效金额合计（deterministicSum，无中间舍入） */
+  total: number
+  /** 与 A6 同一状态传播：任一告警 → partial */
+  state: MetricState
+  /** 与 A6 同一 warning code 与顺序（legacy_time_fallback → allocated_reconciled_at_missing
+   *  → legacy_time_missing → credited_amount_invalid） */
+  warnings: MetricWarning[]
+}
+
+/**
+ * A6 金额聚合（唯一实现）：A6 核销集合（creditedTotal 同款状态口径 + 时间口径）
+ * + 状态/告警。月度回款序列（annualReviewMonthly）与本函数共用同一结果。
+ */
+export function aggregateCreditedAmounts(
+  period: AnnualReviewPeriod,
+  allocations: AnnualReviewAllocationFact[]
+): CreditedAmountAggregation {
+  const credited = annualReviewCreditedAllocationsInRange(period, allocations)
+  const collector = new WarningCollector()
+  if (credited.legacyFallback > 0) collector.add('legacy_time_fallback', credited.legacyFallback)
+  if (credited.allocatedNoTime > 0) collector.add('allocated_reconciled_at_missing', credited.allocatedNoTime)
+  if (credited.legacyNoTime > 0) collector.add('legacy_time_missing', credited.legacyNoTime)
+  if (credited.creditedInvalid > 0) collector.add('credited_amount_invalid', credited.creditedInvalid)
+  const warnings = collector.list()
+  return {
+    credited,
+    rows: credited.rows,
+    total: deterministicSum(credited.rows.map((r) => r.amount)),
+    state: warnings.length > 0 ? 'partial' : 'complete',
+    warnings
+  }
+}
+
 export interface CustomerActiveDetail {
   metric: MetricValue<number>
   /** 活跃会话（sessionId 升序）；unavailable 时为 null。C5 明细与 A3 共用同一计算结果 */
@@ -820,27 +908,22 @@ export function computeAnnualReviewSummary(
   const customerActive = computeAnnualReviewCustomerActiveDetail(period, facts, opts).metric
 
   // ── A4 contract_count / A5 contract_amount / A8 dealing_customers ────────
-  // 签约集合 = annualReviewSignedContractsInRange（C1/C3/C4 共用同一集合，禁止第二套）：
+  // 签约集合 = aggregateSignedAmounts（= annualReviewSignedContractsInRange；
+  // C1/C3/C4 与月度签约序列共用同一集合，禁止第二套）：
   // 只认 sign_date ∈ [start, asOf)（all_time 即 sign_date < asOf）；
   // sign_date 缺失一律不计（禁止回退 created_at）；signed/shipped 遗留缺失 → partial + 数量。
+  const signedAgg = aggregateSignedAmounts(period, contracts)
   const a4 = new WarningCollector()
-  const signed = annualReviewSignedContractsInRange(period, contracts)
-  const signedInRange = signed.signedInRange
-  if (signed.signMissing > 0) a4.add('sign_date_missing', signed.signMissing)
+  if (signedAgg.signed.signMissing > 0) a4.add('sign_date_missing', signedAgg.signed.signMissing)
+  const signedInRange = signedAgg.signed.signedInRange
   const contractCount = metric(signedInRange.length, a4)
 
   // A5：与 A4 完全同一集合 SUM(amount)；非法金额排除并告警，不影响计数集合
+  // （金额合法性/状态/warnings 与月度签约序列共用 aggregateSignedAmounts 单一实现：
+  //  warnings 直接来自共享聚合结果，不在摘要侧另写一套条件）
   const a5 = new WarningCollector()
-  a5.merge(a4)
-  const contractAmounts: number[] = []
-  let contractAmountInvalid = 0
-  for (const c of signedInRange) {
-    const amt = asFinite(c.amount)
-    if (amt === null) contractAmountInvalid++
-    else contractAmounts.push(amt)
-  }
-  if (contractAmountInvalid > 0) a5.add('contract_amount_invalid', contractAmountInvalid)
-  const contractAmount = metric(deterministicSum(contractAmounts), a5)
+  for (const w of signedAgg.warnings) a5.addCustom(w.code, w.message, w.count)
+  const contractAmount = metric(signedAgg.total, a5)
 
   // A8：A4 集合 distinct account_id；account_id 缺失不计入客户数并告警
   const a8 = new WarningCollector()
@@ -870,20 +953,17 @@ export function computeAnnualReviewSummary(
   const avgDealSize: MetricValue<number> = { value: avgValue, state: avgState, warnings: a9.list() }
 
   // ── A6 credited_amount ───────────────────────────────────────────────────
-  // 口径 = annualReviewCreditedAllocationsInRange（C1 高价值客户共用同一集合，禁止第二套）：
+  // 口径 = aggregateCreditedAmounts（= annualReviewCreditedAllocationsInRange；
+  // C1 高价值客户与月度回款序列共用同一集合，禁止第二套）：
   // creditedTotal 同款状态口径（status='confirmed' AND reconciliation_status IN
   // ('allocated','legacy_confirmed')，规格 §2.3/§5.1）加时间维度：
   //   allocated → 仅 reconciled_at（缺失 → 排除 + 数据异常告警，绝不拿 confirmed_at 伪装）；
   //   legacy_confirmed → reconciled_at 优先，缺失回退 confirmed_at → partial；
   // confirmed+pending（认领）/ conflict / 撤销回 pending 一概不计。
+  const creditedAgg = aggregateCreditedAmounts(period, allocations)
   const a6 = new WarningCollector()
-  const credited = annualReviewCreditedAllocationsInRange(period, allocations)
-  const creditedAmounts = credited.rows.map((r) => r.amount)
-  if (credited.legacyFallback > 0) a6.add('legacy_time_fallback', credited.legacyFallback)
-  if (credited.allocatedNoTime > 0) a6.add('allocated_reconciled_at_missing', credited.allocatedNoTime)
-  if (credited.legacyNoTime > 0) a6.add('legacy_time_missing', credited.legacyNoTime)
-  if (credited.creditedInvalid > 0) a6.add('credited_amount_invalid', credited.creditedInvalid)
-  const creditedAmount = metric(deterministicSum(creditedAmounts), a6)
+  for (const w of creditedAgg.warnings) a6.addCustom(w.code, w.message, w.count)
+  const creditedAmount = metric(creditedAgg.total, a6)
 
   // ── A7 shippedCount / shippedAmount ──────────────────────────────────────
   // 事实源 contract_status_history：每合同只取全历史第一条 to_status='shipped' 事件，
@@ -930,12 +1010,41 @@ export function computeAnnualReviewSummary(
   }
 }
 
-/** 排除判定：结构性（群聊/公众号/系统账号）∪ 名单（手动/内部） */
-/** 消息收发计数清洗：非法（负数/非有限）→ null（按 0 计并告警） */
-function sanitizeCount(v: unknown): number | null {
+/**
+ * 消息收发计数清洗（唯一实现，A3/D1/D3/D5/月度消息序列共用）：
+ * 只接受**非负整数**；null/NaN/±Infinity/负数/小数一律 → null（排除该值，由调用方计数并告警）。
+ * 绝不把负值静默夹成 0——静默修正会把数据质量事故伪装成正常数值。
+ */
+export function sanitizeCount(v: unknown): number | null {
   const n = asFinite(v)
-  if (n === null || n < 0) return null
+  if (n === null || !Number.isInteger(n) || n < 0) return null
   return n
+}
+
+/** 各月实际天数（非闰年 2 月 = 28）；闰年 2 月由 isLeapYear 单独判定 */
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+}
+
+/**
+ * 本地日期键（YYYY-MM-DD）严格校验（纯函数，唯一实现）：
+ * 先按固定格式校验形状，再逐段解析并对年/月/日**独立校验**（月 1–12、日 1–当月实际天数、
+ * 闰年 2 月 29），完全不经过 JS Date——因此不存在 `new Date(2026, 1, 30)` 自动滚动到 3 月
+ * 的静默接受，也不受时区/DST 与 Date 的 0–99 年 1900+ 偏移影响。
+ * 拒绝 2026-00-01 / 2026-13-01 / 2026-02-30 / 2026-99-99 / 2025-02-29；
+ * 接受 2024-02-29 与任意合法月末。返回月份键（'YYYY-MM'）供月度聚合使用。
+ */
+export function parseStrictLocalDateKey(key: unknown): { year: number; month: number; day: number; monthKey: string } | null {
+  if (typeof key !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return null
+  const year = Number(key.slice(0, 4))
+  const month = Number(key.slice(5, 7))
+  const day = Number(key.slice(8, 10))
+  if (month < 1 || month > 12) return null
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1]
+  if (day < 1 || day > maxDay) return null
+  return { year, month, day, monthKey: key.slice(0, 7) }
 }
 
 // ─── 数据访问层（crmDb 窄接口，SQL 全静态、零拼接） ─────────────────────────
