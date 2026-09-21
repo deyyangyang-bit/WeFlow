@@ -2,7 +2,7 @@
  * annualReviewExportContent.ts —— 年度经营复盘 · Markdown/CSV 内容渲染（S6/阶段4，纯模块）
  *
  * 职责（规格 §6.3）：把最终 AnnualReviewReport 渲染为 Markdown 报告与 CSV 明细。
- * 两种格式都必须包含（与 API-CONTRACT §1.15 导出契约一致）：
+ * 两种格式都必须包含（与 API-CONTRACT §1.17 导出契约一致）：
  *   - 元数据：reportSchemaVersion / year / scopeKind / periodStart / periodEndExclusive /
  *     asOf / generatedAt / dataRange；
  *   - completeness：overall + 各 block；
