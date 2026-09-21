@@ -32,6 +32,7 @@ import {
   buildAnnualReviewAiInput,
   buildAnnualReviewAiPrompt,
   parseAnnualReviewAiOutput,
+  validateAnnualReviewAiInputContract,
   type AnnualReviewAiAnalysis,
   type AnnualReviewAiParseFailureCode
 } from './annualReviewAiCore'
@@ -43,6 +44,7 @@ export type AnnualReviewAiFailureCode =
   | 'budget_blocked'
   | 'call_failed'
   | 'invalid_report'
+  | 'unsupported_report_contract'
   | AnnualReviewAiParseFailureCode
 
 export type AnnualReviewAiRunResult =
@@ -123,7 +125,8 @@ export const ANNUAL_REVIEW_AI_FAILURE_MESSAGES = {
   timeout: 'AI 调用超时，本次分析未生成',
   cancelled: 'AI 调用已取消，本次分析未生成',
   call_failed: 'AI 调用失败，本次分析未生成',
-  invalid_report: '报告未通过结构校验，拒绝生成 AI 分析'
+  invalid_report: '报告未通过结构校验，拒绝生成 AI 分析',
+  unsupported_report_contract: '报告含 AI 分析不支持的契约取值，本次分析未生成（该报告仍可正常查看与导出）'
 } as const
 
 /** 默认出口：走 simpleCompletion（→ callChatCompletion，额度闸门与账本在此生效） */
@@ -172,7 +175,15 @@ export async function generateAnnualReviewAiAnalysis(
     return { ok: false, code: 'invalid_report', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.invalid_report }
   }
 
-  // 2) AI 配置：未配置 → 明确失败，绝不降级成模板文案（§8：AI 层整体可选，但不伪造诊断）
+  // 2) AI 投影契约（fail closed）：报告 validator 只保证 source/code/bucket/kind 是
+  //    非空字符串，不保证取值在 AI 白名单内。未知契约值不得静默删除后继续——那会把数据
+  //    质量缺口藏在一份看起来正常的诊断背后。此处在**模型调用之前**整体拒绝。
+  const contract = validateAnnualReviewAiInputContract(report)
+  if (!contract.ok) {
+    return { ok: false, code: 'unsupported_report_contract', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.unsupported_report_contract }
+  }
+
+  // 3) AI 配置：未配置 → 明确失败，绝不降级成模板文案（§8：AI 层整体可选，但不伪造诊断）
   const configured = options.configured ?? isAiConfigured(options.config)
   if (!configured) {
     return { ok: false, code: 'not_configured', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.not_configured }
@@ -183,9 +194,13 @@ export async function generateAnnualReviewAiAnalysis(
     ? 'injected-completion'
     : getAiModelConfig(options.config).model
 
-  // 3) 投影 + prompt（同一报告必得同一 prompt）
-  const input = buildAnnualReviewAiInput(report)
-  const prompt = buildAnnualReviewAiPrompt(input)
+  // 4) 投影 + prompt（同一报告必得同一 prompt）。投影自身也持契约，调用方漏检时同样不会
+  //    产出「美化过的」输入——这是同一校验的防御分支，正常路径不可达。
+  const built = buildAnnualReviewAiInput(report)
+  if (!built.ok) {
+    return { ok: false, code: 'unsupported_report_contract', message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES.unsupported_report_contract }
+  }
+  const prompt = buildAnnualReviewAiPrompt(built.input)
 
   let raw: string
   try {
@@ -200,7 +215,7 @@ export async function generateAnnualReviewAiAnalysis(
     return { ok: false, code, message: ANNUAL_REVIEW_AI_FAILURE_MESSAGES[kind] }
   }
 
-  // 4) 严格解析：任何不合约之处整体失败，不做部分采信
+  // 5) 严格解析：任何不合约之处整体失败，不做部分采信
   const parsed = parseAnnualReviewAiOutput(raw, annualReviewAiMetricKeys(report))
   if (!parsed.ok) return { ok: false, code: parsed.code, message: parsed.message }
 

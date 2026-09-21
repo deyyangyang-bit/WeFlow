@@ -11,8 +11,11 @@
  *     同一字符串（无时钟、无随机、无环境读取），键序与数组序全部由本模块固定。
  *   - parseAnnualReviewAiOutput：严格校验模型输出。剥围栏 → JSON.parse → 逐字段白名单
  *     校验：未知顶层字段、数组超长、空文本、超长文本、非法枚举、未知 metricKey、
- *     重复 metricKey 全部拒绝。**不做任何补全/截断/默认值**——宁可整体失败，也不产出
- *     半真半假的诊断（诚实优先于产量）。
+ *     重复 metricKey、**文本中的数字声明** 全部拒绝。**不做任何补全/截断/默认值**——
+ *     宁可整体失败，也不产出半真半假的诊断（诚实优先于产量）。
+ *   - validateAnnualReviewAiInputContract：AI 侧独立的输入契约校验（fail closed）。
+ *     报告 validator 只保证 source/code/bucket/kind 是「非空字符串」，不保证取值在 AI
+ *     白名单内；未知契约值一律整份拒绝，不静默删除后继续（见 §8.1.1）。
  *
  * 铁律（规格 §8）：
  *   - AI 不重新计算金额、比例、排名、增长率；输入里的数字是它唯一可引用的数字来源；
@@ -164,9 +167,77 @@ export const ANNUAL_REVIEW_AI_ALLOWED_KINDS: ReadonlyArray<AnnualReviewReport['f
   'historical_reconstruction'
 ]
 
-/** 白名单成员判定：非字符串 / 未收录 → undefined（调用方据此省略或丢弃） */
-function whitelisted(value: unknown, allowed: readonly string[]): string | undefined {
-  return typeof value === 'string' && allowed.includes(value) ? value : undefined
+// ─── AI 输入契约校验（fail closed：未知枚举一律拒绝，不静默删除） ─────────────
+
+/** AI 投影会消费、但报告 validator 只校验「是非空字符串」的字段 */
+export type AnnualReviewAiContractField =
+  | 'coverage.source'
+  | 'coverage.reasonCodes'
+  | 'warnings.code'
+  | 'distribution.bucket'
+  | 'distribution.kind'
+
+/**
+ * 契约违规：只描述**字段与位置**，不携带违规值本身——
+ * 未知取值可能携带客户姓名/路径/注入文本，绝不能随失败信息扩散。
+ * metricKey 取自报告的 coverage / funnel 键集合（合法报告里是固定键集合），不是未知枚举值。
+ */
+export interface AnnualReviewAiContractViolation {
+  field: AnnualReviewAiContractField
+  /** 出错位置；warnings 层没有 metricKey，此处为 undefined */
+  metricKey?: string
+}
+
+export type AnnualReviewAiContractCheck = { ok: true } | { ok: false; violation: AnnualReviewAiContractViolation }
+
+const ALLOWED_SOURCE_SET = new Set(ANNUAL_REVIEW_AI_ALLOWED_SOURCES)
+const ALLOWED_CODE_SET = new Set(ANNUAL_REVIEW_AI_ALLOWED_CODES)
+const ALLOWED_BUCKET_SET = new Set(ANNUAL_REVIEW_AI_ALLOWED_BUCKETS)
+const ALLOWED_KIND_SET = new Set<string>(ANNUAL_REVIEW_AI_ALLOWED_KINDS)
+
+/** 参与投影的四个阶段分布（key = 报告 coverage 键；与 buildAnnualReviewAiInput 一一对应） */
+const AI_DISTRIBUTIONS: ReadonlyArray<{
+  key: string
+  pick: (report: AnnualReviewReport) => { kind: string | null; buckets: ReadonlyArray<{ bucket: string }> | null }
+}> = [
+  { key: 'funnel.customerStage', pick: (r) => ({ kind: r.funnel.customerStage.kind, buckets: r.funnel.customerStage.distribution }) },
+  { key: 'funnel.opportunityStage', pick: (r) => ({ kind: r.funnel.opportunityStage.kind, buckets: r.funnel.opportunityStage.distribution }) },
+  { key: 'funnel.stageFlow', pick: (r) => ({ kind: null, buckets: r.funnel.stageFlow.distribution }) },
+  { key: 'funnel.lostBreakdown', pick: (r) => ({ kind: r.funnel.lostBreakdown.kind, buckets: r.funnel.lostBreakdown.customerPreviousStage }) }
+]
+
+/**
+ * AI 输入契约校验（纯函数，不抛异常，不改报告）。**必须在模型调用之前执行**。
+ *
+ * 覆盖全部「报告 validator 只保证是非空字符串」且会被投影消费的枚举：
+ * coverage.source、coverage.reasonCodes[]、warnings[].code、分布 bucket、分布 kind。
+ * 任一取值不在白名单 → 返回结构化违规（字段 + 位置），由调用方转成固定失败码。
+ *
+ * 为什么不静默删除：把含未知契约值的报告「美化」后继续交给模型，会把数据质量缺口
+ * 藏在看起来正常的诊断背后——宁可整份不做 AI 分析，也不产出建立在未知语义上的结论。
+ */
+export function validateAnnualReviewAiInputContract(report: AnnualReviewReport): AnnualReviewAiContractCheck {
+  const fail = (field: AnnualReviewAiContractField, metricKey?: string): AnnualReviewAiContractCheck =>
+    ({ ok: false, violation: metricKey === undefined ? { field } : { field, metricKey } })
+
+  for (const key of Object.keys(report.coverage ?? {})) {
+    const coverage = report.coverage[key]
+    if (!ALLOWED_SOURCE_SET.has(coverage.source)) return fail('coverage.source', key)
+    for (const code of coverage.reasonCodes ?? []) {
+      if (!ALLOWED_CODE_SET.has(code)) return fail('coverage.reasonCodes', key)
+    }
+  }
+  for (const warning of report.warnings ?? []) {
+    if (!ALLOWED_CODE_SET.has(warning.code)) return fail('warnings.code')
+  }
+  for (const distribution of AI_DISTRIBUTIONS) {
+    const { kind, buckets } = distribution.pick(report)
+    if (kind !== null && !ALLOWED_KIND_SET.has(kind)) return fail('distribution.kind', distribution.key)
+    for (const bucket of buckets ?? []) {
+      if (!ALLOWED_BUCKET_SET.has(bucket.bucket)) return fail('distribution.bucket', distribution.key)
+    }
+  }
+  return { ok: true }
 }
 
 // ─── AI 输出结构（规格 §8 契约） ─────────────────────────────────────────────
@@ -241,8 +312,8 @@ export interface AnnualReviewAiSeries {
 export interface AnnualReviewAiCoverageEntry {
   key: string
   status: MetricState
-  /** 未通过 source 白名单时整个字段省略（报告只保证它是非空字符串） */
-  source?: string
+  /** 数据来源；合法性由 AI 输入契约校验保证（见 validateAnnualReviewAiInputContract） */
+  source: string
   rows?: number
   exactCoverage?: boolean
   /** null = 分母不可知（exactCoverage=false），语义与缺省不同，必须保留 */
@@ -309,29 +380,24 @@ function localDateKey(ms: number): string {
   return `${d.getFullYear()}-${month}-${day}`
 }
 
-/** 覆盖结构 → AI 输入条目：source/reasonCodes 走白名单，未确认的值省略而非转发 */
-function toCoverageEntry(key: string, coverage: AnnualReviewCoverage, allowedCodes: ReadonlySet<string>): AnnualReviewAiCoverageEntry {
-  const entry: AnnualReviewAiCoverageEntry = { key, status: coverage.status }
-  const source = whitelisted(coverage.source, ANNUAL_REVIEW_AI_ALLOWED_SOURCES)
-  if (source !== undefined) entry.source = source
+/** 覆盖结构 → AI 输入条目。契约已保证 source/reasonCodes 合法，此处不再过滤/降级 */
+function toCoverageEntry(key: string, coverage: AnnualReviewCoverage): AnnualReviewAiCoverageEntry {
+  const entry: AnnualReviewAiCoverageEntry = { key, status: coverage.status, source: coverage.source }
   if (typeof coverage.rows === 'number') entry.rows = coverage.rows
   if (typeof coverage.exactCoverage === 'boolean') entry.exactCoverage = coverage.exactCoverage
   if (coverage.coverageRatio !== undefined) entry.coverageRatio = coverage.coverageRatio
-  const codes = Array.isArray(coverage.reasonCodes)
-    ? [...new Set(coverage.reasonCodes.filter((code) => allowedCodes.has(code)))]
-    : []
-  if (codes.length > 0) entry.reasonCodes = codes
+  if (Array.isArray(coverage.reasonCodes) && coverage.reasonCodes.length > 0) entry.reasonCodes = [...coverage.reasonCodes]
   return entry
 }
 
-/** 分布桶：桶名必须命中 FUNNEL_ORDER；全部未命中 → null（无法确认，不冒充空分布） */
+/** 分布桶原样搬运（桶名合法性由契约校验负责，此处不删不改） */
 function toBuckets(list: ReadonlyArray<{ bucket: string; count: number }> | null): Array<{ bucket: string; count: number }> | null {
-  if (list === null) return null
-  const buckets = list
-    .filter((d) => ANNUAL_REVIEW_AI_ALLOWED_BUCKETS.includes(d.bucket))
-    .map((d) => ({ bucket: d.bucket, count: d.count }))
-  return buckets.length > 0 ? buckets : null
+  return list === null ? null : list.map((d) => ({ bucket: d.bucket, count: d.count }))
 }
+
+export type AnnualReviewAiInputResult =
+  | { ok: true; input: AnnualReviewAiInput }
+  | { ok: false; violation: AnnualReviewAiContractViolation }
 
 // ─── 输入构造（纯投影，不修改报告） ───────────────────────────────────────────
 
@@ -352,7 +418,10 @@ export function annualReviewAiMetricKeys(report: AnnualReviewReport): string[] {
  *     字段「是非空字符串」，不能据此相信其内容；
  *   - 所有数组/对象都是新分配（不与报告共享引用），报告只读。
  */
-export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualReviewAiInput {
+export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualReviewAiInputResult {
+  const contract = validateAnnualReviewAiInputContract(report)
+  if (!contract.ok) return { ok: false, violation: contract.violation }
+
   const meta: AnnualReviewAiMeta = {
     year: report.year,
     scopeKind: report.scopeKind,
@@ -377,13 +446,13 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
   const distributions: AnnualReviewAiDistribution[] = [
     {
       key: 'funnel.customerStage',
-      kind: whitelisted(report.funnel.customerStage.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
+      kind: report.funnel.customerStage.kind,
       state: report.funnel.customerStage.coverage.status,
       buckets: toBuckets(report.funnel.customerStage.distribution)
     },
     {
       key: 'funnel.opportunityStage',
-      kind: whitelisted(report.funnel.opportunityStage.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
+      kind: report.funnel.opportunityStage.kind,
       state: report.funnel.opportunityStage.coverage.status,
       buckets: toBuckets(report.funnel.opportunityStage.distribution)
     },
@@ -395,7 +464,7 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
     },
     {
       key: 'funnel.lostBreakdown',
-      kind: whitelisted(report.funnel.lostBreakdown.kind, ANNUAL_REVIEW_AI_ALLOWED_KINDS) ?? null,
+      kind: report.funnel.lostBreakdown.kind,
       state: report.funnel.lostBreakdown.coverage.status,
       buckets: toBuckets(report.funnel.lostBreakdown.customerPreviousStage)
     }
@@ -421,39 +490,24 @@ export function buildAnnualReviewAiInput(report: AnnualReviewReport): AnnualRevi
     }
   ]
 
-  const allowedCodes = new Set(ANNUAL_REVIEW_AI_ALLOWED_CODES)
-  const allowedKeys = new Set(annualReviewAiMetricKeys(report))
-  const coverage: AnnualReviewAiCoverageEntry[] = [...allowedKeys]
-    .sort()
-    .map((key) => toCoverageEntry(key, report.coverage[key], allowedCodes))
+  const coverage: AnnualReviewAiCoverageEntry[] = annualReviewAiMetricKeys(report)
+    .map((key) => toCoverageEntry(key, report.coverage[key]))
 
-  // 警告：未知 code（可能携带任意文本）连行一起丢；metricKey 同样只认报告 coverage 键集合；
-  // 不转发 message（自由文本，见 AnnualReviewAiWarning 注释）
-  const warnings: AnnualReviewAiWarning[] = []
-  for (const w of report.warnings) {
-    if (!allowedCodes.has(w.code)) continue
-    const metricKeys = [...new Set(w.metricKeys.filter((key) => allowedKeys.has(key)))]
-    if (metricKeys.length === 0) continue
-    const row: AnnualReviewAiWarning = { code: w.code, metricKeys }
-    if (w.counts !== undefined) {
-      const counts: Record<string, number> = {}
-      for (const key of metricKeys) {
-        const count = w.counts[key]
-        if (typeof count === 'number') counts[key] = count
-      }
-      if (Object.keys(counts).length > 0) row.counts = counts
-    }
-    warnings.push(row)
-  }
+  // 警告：契约已保证 code 合法，此处只做结构化搬运；不转发 message（自由文本，见类型注释）
+  const warnings: AnnualReviewAiWarning[] = report.warnings.map((w) => {
+    const row: AnnualReviewAiWarning = { code: w.code, metricKeys: [...w.metricKeys] }
+    if (w.counts !== undefined) row.counts = { ...w.counts }
+    return row
+  })
 
-  return { meta, metrics, distributions, series, coverage, warnings }
+  return { ok: true, input: { meta, metrics, distributions, series, coverage, warnings } }
 }
 
 // ─── Prompt ──────────────────────────────────────────────────────────────────
 
 /**
  * 固定 system prompt。四条必须在提示词里说清，因为它们是本模块的验收口径：
- * 数字只能来自输入、**文本里一个数字都不许写**（见 ANNUAL_REVIEW_AI_NUMERIC_CLAIM）、
+ * 文本里不得出现具体数字（规则见 ANNUAL_REVIEW_AI_NUMERIC_RULES）、
  * unavailable 不是 0、每条判断必须引用真实 metricKeys。
  */
 export const ANNUAL_REVIEW_AI_SYSTEM_PROMPT = [
@@ -462,7 +516,7 @@ export const ANNUAL_REVIEW_AI_SYSTEM_PROMPT = [
   '铁律（违反即视为无效输出）：',
   '1. 只能用输入数据说话：不得引入行业常识、经验值、外部事实或任何输入中不存在的信息。',
   '2. 不得自行计算、推算、换算或改写金额、比例、排名、增长率、同比环比；也不要复述输入中的具体数值。',
-  `3. **正文里不得出现任何数字**：阿拉伯数字、全角数字、中文数字（〇零一二三四五六七八九十百千万亿两 等）都不允许。不要写百分比、金额、数量、排名（如「排名第几」）、年份、季度序号、月份序号。需要表达多少时只用定性词：多数 / 大部分 / 部分 / 少数 / 若干 / 明显 / 略低 / 偏高。确定性数字由页面按 metricKeys 从原报告直接展示，你只做定性解释。唯一允许出现数字的位置是 JSON 字段 priority 的取值（如 1 表示最高优先级）。`,
+  `3. **正文里不得出现具体数值**。一律禁止：阿拉伯数字与全角数字（含百分比、金额、年份）；中文序数（第几）；中文比例或倍数（成 / 折 / 倍）；中文数量、金额与时间（几万元、几个客户、几个月、几年、二零二六年这类连续数字字符）。需要表达多少时用定性词：多数 / 大部分 / 部分 / 少数 / 若干 / 明显 / 略低 / 偏高。普通词汇里的数字字符不受限制（统一口径、保持一致、两类风险、十分谨慎、万一发生、一方面、两端协同均可用）。确定性数字由页面按 metricKeys 从原报告直接展示，你只做定性解释。唯一允许出现数字的位置是 JSON 字段 priority 的取值（如 1 表示最高优先级）。`,
   '4. 每条 diagnoses / actions / risks 的 metricKeys 必须至少一个，且只能取输入 coverage 中出现的键；不得发明键名。',
   '5. state 为 unavailable 的指标表示数据不可得，不是 0，也不是「很低」；不得据此下结论，若影响判断须在 risks 或 observation 中明确指出数据缺口。',
   '6. state 为 partial / snapshot_only 的指标含义受限，结论须相应降低 confidence。warnings 只给稳定 code（不含文案），code 表示相应指标存在数据缺口，遇到缺口须降低 confidence 并在 risks 中说明。',
@@ -508,21 +562,81 @@ export type AnnualReviewAiParseResult =
   | { ok: false; code: AnnualReviewAiParseFailureCode; message: string }
 
 /**
- * 数字字面量检测（V1 最保守规则）。
+ * 数字声明识别（V1：禁止 AI 在正文里给出具体数字）。
  *
- * 只校验 metricKeys 并不能阻止模型在正文里编造数字——「回款比签约高 83%」「损失 100 万元」
- * 「排名第一」都可以挂着合法 metricKey 出现，而报告里根本没有这些数。V1 的做法是彻底
- * 不在 AI 文本里接受数字：确定性数字由页面依据 metricKeys 从原报告渲染，AI 只输出定性解释。
+ * 只校验 metricKeys 并不能阻止模型编造数字——「回款比签约高 83%」「损失 100 万元」
+ * 「排名第一」都可以挂着合法 metricKey 出现，而报告里根本没有这些数。因此文本字段
+ * 一律做机械识别，命中即整体失败；确定性数字由页面依据 metricKeys 从原报告渲染。
  *
- * 覆盖：任意 Unicode 十进制数字（含全角），以及中文数字字符（小写、大写、两/萬/億 等变体）。
- * 这是「宁可更严」的取舍：正文里「统一」「一致」「十分」这类词也会被拒绝，
- * 提示词已明确要求改用定性词表达程度。
+ * ## 规则边界（明确数值表达 vs 普通词汇）
+ *
+ * 判据不是「出现数字字符」——中文里 `统一`/`一致`/`两类`/`十分`/`万一`/`一方面` 的
+ * 数字字符不表示数量。识别按下列**可解释规则**逐条匹配（见 ANNUAL_REVIEW_AI_NUMERIC_RULES），
+ * 命中任一即视为声明了数值：
+ *
+ *   1. decimal_digit     任意 Unicode 十进制数字（`83%`、全角 `８３％`）
+ *   2. cn_ordinal        `第` + 数字字符（`第一名`、`第二阶段`、`第三季度`）
+ *   3. cn_ratio          数字字符 + `成`/`折`/`倍`（`八成`、`三成以上`）
+ *   4. cn_quantity       数字字符 + 量词/单位（`三万元`、`十二个客户`、`三个月`、`二零二六年`）
+ *   5. cn_numeral_run    连续 ≥2 个数字字符（`二零二六`、`十二个`）
+ *
+ * 单个数字字符后既不接单位、也不构成连续串时**不算**数值声明，因此上面那批普通词汇全部放行。
+ *
+ * ## 已知歧义（不做自然语言语义识别，本规则是机械匹配）
+ *
+ * - 固定短语白名单（ANNUAL_REVIEW_AI_NUMERIC_IDIOMS：万一、千万、一一、万万、一成不变）
+ *   在扫描前整体屏蔽，用于救回会被规则 4/5 误伤的虚词与成语；测试会断言表内每条都确实
+ *   被某条规则命中（不留死条目）；
+ * - 量词表刻意**不含** `分`、`类`、`级`、`档`：含 `分` 会误杀「十分」、含 `类` 会误杀「两类」，
+ *   `级`/`档` 又会误杀「两级分化」「三档」这类非数量表达。代价是 `一分钱`、`三级客户`
+ *   这类表述不会被识别（已知漏检，宁漏不误杀）；
+ * - `一处`/`一方面` 这类「一 + 非量词」的模糊表述按普通词汇放行；
+ * - 无法穷尽自然语言：这是模式匹配，不是语义理解，新增误杀/漏检都应改本表与对应测试。
  */
-const NUMERIC_CLAIM = /[\p{Nd}]|[〇零一二三四五六七八九十百千万亿兆两廿卅壹贰叁肆伍陆柒捌玖拾佰仟萬億兩]/u
+const CN_NUMERALS = '〇零一二三四五六七八九十百千万亿兆两廿卅壹贰叁肆伍陆柒捌玖拾佰仟萬億兩'
+/** 量词/单位（金额、数量、时间、比例单位）：紧跟数字字符即视为具体数值 */
+const CN_UNITS = '个人家位名次条份件台套张笔项元万亿千百月年天日周季岁'
 
-/** 数字禁令的单一实现（readQualitativeText 使用；行为经 parseAnnualReviewAiOutput 断言） */
-function hasNumericClaim(text: string): boolean {
-  return NUMERIC_CLAIM.test(text)
+/** 非数值语义的固定短语：扫描前整体屏蔽（白名单式，不做语义推断） */
+export const ANNUAL_REVIEW_AI_NUMERIC_IDIOMS: readonly string[] = [
+  '万一', '千万', '一一', '万万', '一成不变'
+]
+
+export interface AnnualReviewAiNumericRule {
+  /** 稳定 id：进失败文案，便于定位是哪条规则命中 */
+  id: string
+  /** 规则说明（可解释性集中在规则表里，不散落在注释中） */
+  description: string
+  pattern: RegExp
+}
+
+export const ANNUAL_REVIEW_AI_NUMERIC_RULES: readonly AnnualReviewAiNumericRule[] = [
+  { id: 'decimal_digit', description: '任意 Unicode 十进制数字（含全角）', pattern: /\p{Nd}/u },
+  { id: 'cn_ordinal', description: '中文序数：第 + 数字字符', pattern: new RegExp(`第[${CN_NUMERALS}]`, 'u') },
+  { id: 'cn_ratio', description: '中文比例/倍数：数字字符 + 成/折/倍', pattern: new RegExp(`[${CN_NUMERALS}][成折倍]`, 'u') },
+  { id: 'cn_quantity', description: '中文数量/金额/时间：数字字符 + 量词', pattern: new RegExp(`[${CN_NUMERALS}][${CN_UNITS}]`, 'u') },
+  { id: 'cn_numeral_run', description: '连续两个及以上数字字符', pattern: new RegExp(`[${CN_NUMERALS}]{2,}`, 'u') }
+]
+
+export type AnnualReviewAiNumericVerdict = { claimed: false } | { claimed: true; ruleIds: string[] }
+
+/** 屏蔽固定短语（等长替换，保持偏移）：只放行本表列出的短语，不做语义判断 */
+function maskNumericIdioms(text: string): string {
+  let out = text
+  for (const idiom of ANNUAL_REVIEW_AI_NUMERIC_IDIOMS) {
+    if (out.includes(idiom)) out = out.split(idiom).join('\u25c7'.repeat(idiom.length))
+  }
+  return out
+}
+
+/**
+ * 数字声明识别（纯函数，单一实现；readQualitativeText 使用）。
+ * 返回命中的规则 id 列表：调用方据此给出可解释的失败文案，测试据此锁定规则边界。
+ */
+export function detectNumericClaim(text: string): AnnualReviewAiNumericVerdict {
+  const scanned = maskNumericIdioms(text)
+  const ruleIds = ANNUAL_REVIEW_AI_NUMERIC_RULES.filter((rule) => rule.pattern.test(scanned)).map((rule) => rule.id)
+  return ruleIds.length === 0 ? { claimed: false } : { claimed: true, ruleIds }
 }
 
 const DIAGNOSIS_KEYS = ['title', 'observation', 'hypothesis', 'metricKeys', 'confidence'] as const
@@ -580,13 +694,16 @@ function compactEcho(value: string): string {
 type QualitativeText = { ok: true; text: string } | { ok: false; code: AnnualReviewAiParseFailureCode; message: string }
 
 /**
- * 读取一个 AI 文本字段：trim 后必须非空、不超长，且不得含数字表达。
- * V1 不接受数字——见 NUMERIC_CLAIM 注释。
+ * 读取一个 AI 文本字段：trim 后必须非空、不超长，且不得含数字声明。
+ * V1 不接受具体数字——判定规则见 ANNUAL_REVIEW_AI_NUMERIC_RULES。
  */
 function readQualitativeText(v: unknown, at: string, max: number): QualitativeText {
   const text = readText(v, max)
   if (text === null) return { ok: false, code: 'invalid_shape', message: `${at} 为空或超长` }
-  if (hasNumericClaim(text)) return { ok: false, code: 'numeric_claim', message: `${at} 含数字表达（V1 禁止 AI 文本出现数字）` }
+  const verdict = detectNumericClaim(text)
+  if (verdict.claimed) {
+    return { ok: false, code: 'numeric_claim', message: `${at} 含数字声明（命中规则：${verdict.ruleIds.join('/')}）` }
+  }
   return { ok: true, text }
 }
 
