@@ -665,13 +665,17 @@ export function collectAnnualReviewSalesIdentityValues(report: AnnualReviewRepor
 }
 
 /**
- * 销售身份公开展示标签指派（纯函数，同输入同输出）：
- *   - 非原始微信 ID（真实姓名）→ 原样保留（身份映射）；
- *   - 原始微信 ID 且解析到显示名（且显示名自身不是原始 ID）→ 用显示名；
- *   - 无法解析 → 稳定回退标签「销售 N」：按原文排序指派（确定性），并跳过本报告内
- *     已被其他销售占用的标签（真实销售恰名「销售 1」时从「销售 2」起）——不同销售
- *     绝不因掩蔽被错误合并（两个 ID 解析到同一显示名 = 同一人的多形态来源，属映射语义）。
- * 解析失败/未提供解析器时全部 ID 走回退标签：**解析不可用绝不放弃掩蔽**。
+ * 销售身份公开展示标签指派（纯函数，同输入同输出，与输入行序无关——ID 条目内部
+ * 按 raw 字典序稳定排序）：
+ *   - 非原始微信 ID（真实姓名）→ 原样保留并优先占用标签（永不改写）；
+ *   - 原始微信 ID 按解析结果显示名**分组**：组内只有一个成员且显示名未被占用 → 直接用
+ *     显示名；同昵称碰撞（多个 ID → 同一显示名）或显示名与真实名/已分配标签冲突 →
+ *     组内**全部**加稳定后缀「显示名（销售 N）」（不保留纯名，避免「谁拿纯名」歧义）；
+ *   - 解析失败 → 稳定回退标签「销售 N」。
+ * 「销售 N」序号（回退与消歧后缀共享）按分配顺序全局递增并跳过已占用标签——不同销售
+ * 绝不因掩蔽被错误合并；两个 ID 解析到同一显示名视为同一人的多形态来源，但**标签必须
+ * 可区分**（贡献行/分配行不能因同名而无法对应）。解析失败/未提供解析器时全部 ID 走
+ * 回退标签：**解析不可用绝不放弃掩蔽**。
  */
 export function buildAnnualReviewSalesIdentityLabels(
   values: readonly string[],
@@ -679,23 +683,63 @@ export function buildAnnualReviewSalesIdentityLabels(
 ): Map<string, string> {
   const labels = new Map<string, string>()
   const used = new Set<string>()
-  const fallbackRaw: string[] = []
+  const realRaw: string[] = []
+  const idRaw: string[] = []
   for (const raw of values) {
-    if (!isRawWechatAccountId(raw)) {
-      labels.set(raw, raw)
-      used.add(raw)
-      continue
-    }
+    if (isRawWechatAccountId(raw)) idRaw.push(raw)
+    else realRaw.push(raw)
+  }
+  // 阶段 1：真实销售名原文占用（需求：真实名保持不变，其余分配全部避让）
+  for (const raw of realRaw) {
+    labels.set(raw, raw)
+    used.add(raw)
+  }
+  // 阶段 2：ID 条目按 raw 字典序排序；解析成功按显示名分组，解析失败进回退池
+  const sortedIds = [...idRaw].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  const groups = new Map<string, string[]>()
+  const fallbackRaw: string[] = []
+  for (const raw of sortedIds) {
     const display = resolved.get(raw) ?? null
     if (typeof display === 'string' && display !== '' && !isRawWechatAccountId(display)) {
-      labels.set(raw, display)
-      used.add(display)
+      const members = groups.get(display) ?? []
+      members.push(raw)
+      groups.set(display, members)
+    } else {
+      fallbackRaw.push(raw)
+    }
+  }
+  // 「销售 N」序号全局递增（回退标签与消歧后缀共享），跳过已占用标签
+  let n = 1
+  const claimDisambiguated = (base: string): string => {
+    let candidate = [base, '（销售 ', String(n), '）'].join('')
+    while (used.has(candidate)) {
+      n += 1
+      candidate = [base, '（销售 ', String(n), '）'].join('')
+    }
+    used.add(candidate)
+    n += 1
+    return candidate
+  }
+  // 阶段 3：解析组按组内最小 raw 排序处理（组间顺序同样与输入行序无关）
+  const groupOrder = [...groups.keys()].sort((a, b) => {
+    const firstOf = (key: string): string => (groups.get(key) ?? [])[0] ?? ''
+    const fa = firstOf(a)
+    const fb = firstOf(b)
+    return fa < fb ? -1 : fa > fb ? 1 : 0
+  })
+  for (const base of groupOrder) {
+    const members = groups.get(base) ?? []
+    if (members.length === 1 && !used.has(base)) {
+      labels.set(members[0], base) // 唯一且无冲突：干净显示名
+      used.add(base)
       continue
     }
-    fallbackRaw.push(raw)
+    for (const raw of members) {
+      labels.set(raw, claimDisambiguated(base)) // 同名碰撞/冲突：全部加稳定后缀
+    }
   }
-  let n = 1
-  for (const raw of [...fallbackRaw].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+  // 阶段 4：回退标签（解析不可用 → 稳定「销售 N」，继续避让全部已占用标签）
+  for (const raw of fallbackRaw) {
     let candidate = [SALES_IDENTITY_FALLBACK_PREFIX, String(n)].join('')
     while (used.has(candidate)) {
       n += 1

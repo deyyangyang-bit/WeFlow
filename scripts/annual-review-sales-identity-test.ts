@@ -18,6 +18,9 @@
  *  5  服务层端到端：Worker 结果带原文 → 掩蔽后才入缓存；解析 dep 抛错 → 仍掩蔽；
  *     未注入解析 dep → 回退标签
  *  6  main.ts 接线守卫（resolveSalesDisplayNames 复用 wcdb 显示名映射）
+ *  C  同名昵称碰撞与消歧：不同 wxid 同昵称 → 稳定后缀可区分；撞真实名 → 真实名不变
+ *     ID 加后缀；「销售 1」昵称与真实名/回退形态不混淆；顺序无关；五类字段可区分、
+ *     计数金额不变；MD/CSV 可区分且无原文；页面 React key 防重复
  * 运行：npx tsx scripts/annual-review-sales-identity-test.ts
  */
 import { readFileSync } from 'fs'
@@ -265,6 +268,97 @@ async function main(): Promise<void> {
   ok('8 main.ts 注入 resolveSalesDisplayNames（复用 wcdb 显示名映射）',
     mainSrc.includes('resolveSalesDisplayNames') && mainSrc.includes('getDisplayNames') &&
     mainSrc.includes('isRawWechatAccountId') && mainSrc.includes('isSessionIdLike(real)'))
+
+  // ══ C 同名昵称碰撞与消歧（0fe4447 上为失败反例） ══════════════════════════
+  {
+    const WX_NA = 'wxid_na10a9b8c7d6e5'
+    const WX_NB = 'wxid_nb20f9e8d7c6b5'
+    const WX_NC = 'wxid_nc30a1b2c3d4e5'
+    const WX_NF = 'wxid_nf40z9y8x7w6v5'
+    const collideResolved = new Map<string, string | null>([[WX_NA, '小王'], [WX_NB, '小王']])
+
+    // C1 两个不同 wxid 解析出相同昵称 → 稳定消歧为可区分标签
+    const l1 = buildAnnualReviewSalesIdentityLabels([WX_NA, WX_NB], collideResolved)
+    ok('C1 同名昵称消歧为带序号的可区分标签',
+      l1.get(WX_NA) === '小王（销售 1）' && l1.get(WX_NB) === '小王（销售 2）')
+    ok('C1b 消歧标签不含原文且不合并',
+      !(l1.get(WX_NA) ?? '').includes(WX_NA) && !(l1.get(WX_NB) ?? '').includes(WX_NB) &&
+      l1.get(WX_NA) !== l1.get(WX_NB))
+
+    // C2 解析昵称与已有真实销售名相同：真实名保持原文，ID 标签加稳定后缀
+    const l2 = buildAnnualReviewSalesIdentityLabels([WX_NC, NAME_REAL], new Map<string, string | null>([[WX_NC, NAME_REAL]]))
+    ok('C2 真实销售名保持原文不被改写', l2.get(NAME_REAL) === NAME_REAL)
+    ok('C2b 撞真实名的 ID 标签加稳定后缀（不与真实名同名）',
+      l2.get(WX_NC) !== NAME_REAL && l2.get(WX_NC) === NAME_REAL + '（销售 1）')
+
+    // C3 解析昵称恰好为「销售 1」且真实销售名也叫「销售 1」：两者可区分
+    const l3 = buildAnnualReviewSalesIdentityLabels([WX_NF, '销售 1'], new Map<string, string | null>([[WX_NF, '销售 1']]))
+    ok('C3 真实名「销售 1」原文保留', l3.get('销售 1') === '销售 1')
+    ok('C3b ID 的「销售 1」昵称不与真实名/回退形态混淆',
+      l3.get(WX_NF) !== '销售 1' && (l3.get(WX_NF) ?? '').startsWith('销售 1（销售'))
+
+    // C4 输入顺序颠倒（未排序输入）后映射结果完全一致
+    const fwd = buildAnnualReviewSalesIdentityLabels([WX_NA, WX_NB], collideResolved)
+    const rev = buildAnnualReviewSalesIdentityLabels([WX_NB, WX_NA], collideResolved)
+    ok('C4 输入顺序颠倒后映射完全一致（按 raw ID 稳定排序）',
+      JSON.stringify([...fwd.entries()].sort()) === JSON.stringify([...rev.entries()].sort()))
+
+    // C5 端到端：两个同名 wxid 各有核销贡献与初始分配 → 五类字段仍可区分、计数金额不变
+    const collideFacts: AnnualReviewFacts = {
+      accounts: [
+        { id: 21, name: '碰撞客户A', createdAt: T(2025, 2, 1), importedAt: null, sessionId: 'wxid_collide_aaa', lastContactAtSec: null },
+        { id: 22, name: '碰撞客户B', createdAt: T(2025, 3, 1), importedAt: null, sessionId: 'wxid_collide_bbb', lastContactAtSec: null }
+      ],
+      contracts: [],
+      allocations: [
+        { id: 21, accountId: 21, creditedAmount: 800, reconciledAt: T(2025, 7, 1), status: 'confirmed', reconciliationStatus: 'allocated', confirmedAt: null, contractId: null, salesName: WX_NA },
+        { id: 22, accountId: 22, creditedAmount: 300, reconciledAt: T(2025, 8, 1), status: 'confirmed', reconciliationStatus: 'allocated', confirmedAt: null, contractId: null, salesName: WX_NB }
+      ],
+      shippedEvents: [],
+      assignments: [],
+      leads: [],
+      auditEvents: [
+        { id: 21, action: 'lead_assign', createdAt: T(2025, 4, 1), detailType: null, salesName: WX_NA, toSales: null, fromSales: null, mode: 'manual', assignmentId: 21 },
+        { id: 22, action: 'lead_assign', createdAt: T(2025, 4, 2), detailType: null, salesName: WX_NB, toSales: null, fromSales: null, mode: 'manual', assignmentId: 22 }
+      ]
+    }
+    const raw2 = composeAnnualReviewReport({ period: resolveAnnualReviewPeriod(2025, GEN), facts: collideFacts, sales, crm })
+    const values2 = collectAnnualReviewSalesIdentityValues(raw2)
+    const labels2 = buildAnnualReviewSalesIdentityLabels(values2, collideResolved)
+    const masked2 = applyAnnualReviewSalesIdentityLabels(raw2, labels2)
+    const creditedRows = masked2.salesAssignment.creditedContribution.value ?? []
+    const tag800 = (creditedRows.find(({ totalAmount }) => totalAmount === 800) ?? { salesName: null }).salesName ?? ''
+    const tag300 = (creditedRows.find(({ totalAmount }) => totalAmount === 300) ?? { salesName: null }).salesName ?? ''
+    ok('C5 两个同名销售的贡献行标签可区分（金额不合并）',
+      tag800 === '小王（销售 1）' && tag300 === '小王（销售 2）' && tag800 !== tag300)
+    const iaTags = masked2.salesAssignment.assignedFacts.initialAssignments.groups.map(({ salesName }) => salesName ?? '')
+    ok('C5b 同一 raw ID 在初始分配与核销贡献中同标签（跨字段一致）',
+      iaTags.includes(labels2.get(WX_NA) ?? '') && iaTags.includes(labels2.get(WX_NB) ?? '') &&
+      labels2.get(WX_NA) === tag800 && labels2.get(WX_NB) === tag300)
+    ok('C5c 分组数与 total 不变',
+      masked2.salesAssignment.assignedFacts.initialAssignments.total === raw2.salesAssignment.assignedFacts.initialAssignments.total &&
+      masked2.salesAssignment.assignedFacts.initialAssignments.groups.length === 2 && creditedRows.length === 2)
+    ok('C5d 贡献金额总和不变', creditedRows.reduce((acc, { totalAmount }) => acc + totalAmount, 0) === 1100)
+    containsNone(JSON.stringify(masked2), 'C5e 碰撞掩蔽报告')
+
+    // C6 页面导出面：Markdown/CSV 中两个标签可区分且无原文
+    const md2 = buildAnnualReviewMarkdown(masked2)
+    const csv2 = buildAnnualReviewCsv(masked2)
+    ok('C6 Markdown 两个消歧标签均可区分出现',
+      md2.includes('小王（销售 1）') && md2.includes('小王（销售 2）'))
+    ok('C6b CSV 同样可区分', csv2.includes('小王（销售 1）') && csv2.includes('小王（销售 2）'))
+    ok('C6c MD/CSV 均不含原始 wxid',
+      !md2.includes(WX_NA) && !md2.includes(WX_NB) && !csv2.includes(WX_NA) && !csv2.includes(WX_NB))
+
+    // C7 页面销售区块 React key 不再仅依赖可能重复的显示名（源码守卫）
+    const pageSrc = readFileSync(join(ROOT, 'src', 'pages', 'AnnualReviewPage.tsx'), 'utf8')
+    ok('C7 页面三处销售列表 map 携带 index（key 防重复）',
+      pageSrc.includes('initialAssignments.groups.map((g, i)') &&
+      pageSrc.includes('contractContribution.value.map((row, i)') &&
+      pageSrc.includes('creditedContribution.value.map((row, i)') &&
+      pageSrc.includes('`cc-${i}-') && pageSrc.includes('`kc-${i}-') &&
+      pageSrc.includes("-${g.mode ?? ''}-${i}"))
+  }
 }
 
 main().then(() => {

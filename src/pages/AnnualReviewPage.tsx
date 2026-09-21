@@ -794,8 +794,8 @@ function ReportBody({ report, ai, aiTaskId, onRunAi, onRunAiForce, onCancelAi, o
               <p className="ar-empty-list">本机审计中无分配事实（真实零）</p>
             ) : (
               <div className="ar-reasons">
-                {report.salesAssignment.assignedFacts.initialAssignments.groups.map((g) => (
-                  <div key={`${g.salesName ?? ''}-${g.mode ?? ''}`} className="ar-reasons__row">
+                {report.salesAssignment.assignedFacts.initialAssignments.groups.map((g, i) => (
+                  <div key={`${g.salesName ?? ''}-${g.mode ?? ''}-${i}`} className="ar-reasons__row">
                     <span>{g.salesName ?? '未署名'}{g.mode ? ` · ${g.mode}` : ''}</span><span className="num">{g.count}</span>
                   </div>
                 ))}
@@ -822,8 +822,8 @@ function ReportBody({ report, ai, aiTaskId, onRunAi, onRunAiForce, onCancelAi, o
               <p className="ar-empty-list">该年度没有符合条件的事实（真实零）</p>
             ) : (
               <div className="ar-reasons">
-                {report.salesAssignment.contractContribution.value.map((row) => (
-                  <div key={`cc${row.ownerSales ?? ''}`} className="ar-reasons__row">
+                {report.salesAssignment.contractContribution.value.map((row, i) => (
+                  <div key={`cc-${i}-${row.ownerSales ?? ''}`} className="ar-reasons__row">
                     <span>{row.ownerSales ?? '未归属'} · {row.contractCount} 份</span>
                     <span className="num">{row.totalAmount.toLocaleString('zh-CN')} 元</span>
                   </div>
@@ -840,8 +840,8 @@ function ReportBody({ report, ai, aiTaskId, onRunAi, onRunAiForce, onCancelAi, o
               <p className="ar-empty-list">该年度没有符合条件的事实（真实零）</p>
             ) : (
               <div className="ar-reasons">
-                {report.salesAssignment.creditedContribution.value.map((row) => (
-                  <div key={`kc${row.salesName ?? ''}`} className="ar-reasons__row">
+                {report.salesAssignment.creditedContribution.value.map((row, i) => (
+                  <div key={`kc-${i}-${row.salesName ?? ''}`} className="ar-reasons__row">
                     <span>{row.salesName ?? '未认领'}</span>
                     <span className="num">{row.totalAmount.toLocaleString('zh-CN')} 元</span>
                   </div>
