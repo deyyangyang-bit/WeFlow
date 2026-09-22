@@ -54,7 +54,7 @@
 - **话术提炼 v2**：AI销售教练模式（分析+诊断+优化+多版本）已完成；扫描→确认→提炼→导入全链路打通；日期区间筛选；单选+一键批量双模式
 - **知识库**：已导入 353 条产品参数（3个Excel→CSV转标准格式）
 - **PRD v2 三周计划**：P0/P1/P2 全部代码完成
-- **打包**：Mac DMG+ZIP + Windows EXE 均已产出，沙箱环境打包输出到 `/tmp/weflow-release`
+- **打包**：Mac DMG+ZIP + Windows EXE 均已产出；沙箱环境打包输出到**每次新建的唯一目录**（如 `/tmp/weflow-release-<时间戳>-win-x64`），不要把新包写进旧包目录；记录新包路径与 SHA-256，归档回 `release/` 前先确认目标不存在、不覆盖旧包（步骤见 MAINTENANCE.md §3）
 - **Windows 适配**：koffi 打包问题已修复（`@koromix/koffi-win32-x64@3.1.0` + asarUnpack）
 
 ---
@@ -132,7 +132,7 @@
 - **Electron 闪退真因修正**：旧判断"dist 是 Node wrapper 混入的坏 Electron v24"是**误判**；真因是 `ELECTRON_RUN_AS_NODE=1` 环境变量让 Electron 以 Node 模式启动（`--version` 输出 v24.17.0）。防御已落地 `vite.config.ts`（spawn 前 `delete`），详见 `docs/归档/交接旧版/HANDOVER-20260731-驾驶舱改造与打包问题.md` §四 修正版
 - **配置项**：`crmAutoConfirmEnabled`(默认 true) · `crmAutoConfirmThreshold`(默认 0.8) · `crmAutoConfirmInvoiceDocgen`(默认 false)
 - 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
-- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动 pkill；`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需按 PID `kill -9`（Electron 偶发卡 UE 不可中断睡眠，不影响新实例）
+- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程：`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需**按 PID 定向结束**——先 `kill "$PID"`（SIGTERM）并确认退出；仅当确认仍卡住（Electron 偶发卡 UE 不可中断睡眠）再 `kill -9 "$PID"`（不影响新实例）
 
 ## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
 
@@ -3060,15 +3060,21 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 
 ```bash
 # 清理：见 MAINTENANCE.md §3「打包前排查残留构建进程」——先按 PID 识别，优先 SIGTERM，
-# 确认目标后再定向 kill；不要按名称批量 pkill，也不要递归删除 release/（历史安装包），
-# 新构建用 --config.directories.output=<独立目录> 输出。
+# 确认目标后再定向 kill；不要按名称批量 pkill，也不要递归删除 release/（历史安装包）。
+# 工具一律走项目本地二进制（普通 shell 里 tsc/vite/electron-builder 不在 PATH）；
+# 每次构建用唯一输出目录，旧包不动；产物要记录 SHA-256。
 
 # Mac
-CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --arm64
+OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-mac-arm64"; mkdir -p "$OUT"
+CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --mac --arm64 --config.directories.output="$OUT"
+find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
 
-# Windows（交叉编译）
+# Windows（交叉编译；win 只打 x64）
 npm install @koromix/koffi-win32-x64@3.1.0 --save-optional --force
-CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
+OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-win-x64"; mkdir -p "$OUT"
+CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$OUT"
+find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
+# 归档回 release/ 前先检查目标不存在，不覆盖同名旧包（片段见 MAINTENANCE.md §3）
 ```
 
 ---

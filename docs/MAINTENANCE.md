@@ -48,30 +48,61 @@ AI 调用一律按需触发：早间简报(每天首次打开)/「AI 识别这�
   REPO="$PWD"
   # ① 只列出「命令行里带本仓库路径」的构建进程清单——先看清有哪些，不要直接杀
   ps -Ao pid,ppid,lstart,command | grep -E "electron-builder|app-builder|vite|esbuild" | grep -F "$REPO" | grep -v grep
-  # ② 逐个确认目标确属本仓库这次构建（必要时看它占用了哪些本仓库文件）
-  ps -o pid,ppid,lstart,command -p <PID>
-  lsof -p <PID> | grep -F "$REPO"
+  # ② 填入①清单里逐个确认过的 PID（留空不会误杀任何进程，下面会直接停下）
+  PID=
+  [ -n "$PID" ] || { echo "先把确认过的具体 PID 填进 PID="; exit 1; }
+  ps -o pid,ppid,lstart,command -p "$PID"
+  lsof -p "$PID" | grep -F "$REPO"
   # ③ 优先正常退出（SIGTERM），等它自行收尾并确认真的退出
-  kill <PID>; sleep 5; ps -p <PID> >/dev/null && echo "仍在运行 → 回到 ② 再确认" || echo "已退出"
+  kill "$PID"; sleep 5; ps -p "$PID" >/dev/null && echo "仍在运行 → 回到 ② 再确认" || echo "已退出"
   # ④ 仅在确认仍残留、且确属本仓库构建进程时，对这「一个」PID 定向强制结束（逐个进行）
-  kill -9 <PID>
+  kill -9 "$PID"
   ```
   注意：打包版 `WeFlow.app` 自身的运行实例，命令行不含上述构建命令，**不属于**残留构建进程——不要为了打包去结束用户正在使用的实例。
 - **不要递归删除整个 `release/`**（里面有历史安装包，删掉不可恢复）：
   - `dist` / `dist-electron` 是**可再生**目录，`npm run build` 已自行清理（`scripts/clean-dist-electron.cjs` 清空 `dist-electron/` 并删除 `electron/`、`shared/` 源码旁的过期 `.js`；`vite build` 默认清空其输出目录 `dist`）——**不需要手工 `rm -rf`**。
-  - **新构建输出到独立目录，旧产物原地保留**（推荐，也便于回滚对比）：
+  - **新构建输出到唯一目录，旧产物原地保留**（推荐，也便于回滚对比）。构建链与 `npm run build` 等价，但工具必须走**项目本地二进制**：`npm run` 会把 `node_modules/.bin` 加进 PATH，普通 shell 里 `tsc` / `vite` / `electron-builder` **都不在 PATH**（直接敲会 `command not found`），因此一律写成 `./node_modules/.bin/tsc`、`./node_modules/.bin/vite`、`./node_modules/.bin/electron-builder`：
     ```bash
-    node scripts/clean-dist-electron.cjs && tsc && vite build && node scripts/verify-electron-bundle.cjs
-    OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M)"
-    CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --arm64 --config.directories.output="$OUT"
+    cd "/Users/yang/weflow优化/WeFlow"          # 仓库根，按实际路径替换
+    node scripts/clean-dist-electron.cjs
+    ./node_modules/.bin/tsc
+    ./node_modules/.bin/vite build
+    node scripts/verify-electron-bundle.cjs
+
+    # 每次构建都用唯一输出目录（时间戳）——不要复用固定目录、不要覆盖旧包
+    OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-mac-arm64"
+    mkdir -p "$OUT"
+    CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --mac --arm64 --config.directories.output="$OUT"
+
+    # 记录新包路径与 SHA-256（归档/交付核对用）
+    find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
     ```
-  - 若确实要用默认 `release/`：先把已有安装包改名留档（`mv`，不要 `rm`）再构建——electron-builder 会覆盖同名的 `release/WeFlow-<version>-Setup.*` 与 `release/mac-arm64/`。
-- **mac（Apple Silicon）**：`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac` → 出 dmg+zip（未签名，单机自用足够）。快速验证可加 `--dir` 只出 .app。
+    平台/架构参数（`--mac` / `--win` / `--arm64` / `--x64`）与 `--config.directories.output="$OUT"` 都直接传给上面**这一条 electron-builder 命令**；点号覆盖是 electron-builder 官方支持的写法（其 CLI 自带示例：`-c.extraMetadata.foo=bar`、`--config.nsis.unicode=false`）。
+  - **Windows（在 mac 上交叉编译）**：同一条 electron-builder 命令换平台参数即可（`--win --x64`，**win 只打 x64**，理由见下），输出目录同样换成唯一值：
+    ```bash
+    OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-win-x64"
+    mkdir -p "$OUT"
+    CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$OUT"
+    find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
+    ```
+  - **归档一律"先检查目标不存在"，绝不覆盖同名安装包**（旧包是历史交付物）：
+    ```bash
+    SRC="$OUT/WeFlow-1.0.1-Setup.dmg"          # 按实际产物名替换（.dmg / .zip / .exe）
+    DEST="release/$(basename "$SRC")"
+    if [ -e "$DEST" ]; then
+      echo "目标已存在，未覆盖：$DEST —— 保留在 $OUT，或改用带日期的新文件名"
+    else
+      cp "$SRC" "$DEST" && shasum -a 256 "$DEST"
+    fi
+    ```
+  - 若确实要用默认 `release/`（即直接 `npm run build`）：注意 electron-builder 会**覆盖同名的** `release/WeFlow-<version>-Setup.*` 与 `release/mac-arm64/`——先把已有安装包改名留档（`mv`，不要 `rm`）再构建。
+- **mac（Apple Silicon）**：命令见上「新构建输出到唯一目录」（`--mac --arm64`，出 dmg+zip，未签名，单机自用足够）。只想快速验证可加 `--dir` 只出 `.app`。
 - **⚠️ GitHub 下载 electron 超时（600s Timeout awaiting request）**：加镜像 `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/` 前缀再跑（2026-08 实测 mac/win 均通）。**注意镜像只覆盖 electron zip**——electron dist 下完后 `got` 还会请求 electron-builder-binaries 组件（winCodeSign 等），该请求不走 `ELECTRON_MIRROR`，无代理时同样 600s 卡死（2026-08-29 实测，症状：卡在 `unpacking default Electron distribution` 后，DEBUG 日志才有 `downloaded progress=100%`）；解法 = 构建时带系统代理（本机 Bitz Net）：
   ```bash
-  HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897 NO_PROXY=localhost,127.0.0.1 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
+  HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897 NO_PROXY=localhost,127.0.0.1 CSC_IDENTITY_AUTO_DISCOVERY=false \
+    ./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-win-x64"
   ```
-- **win（在 mac 上交叉编译）**：`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64` → 出 nsis 安装包 `.exe`。**win 只打 x64**（`resources/key/win32/` 只有 x64 的解密 key，arm64 缺 key 会解密失败）。需联网下载 electron + nsis 资源。
+- **win（在 mac 上交叉编译）**：`./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$OUT"`（`$OUT` = 本次构建的唯一输出目录，完整命令见上）→ 出 nsis 安装包 `.exe`。**win 只打 x64**（`resources/key/win32/` 只有 x64 的解密 key，arm64 缺 key 会解密失败）。需联网下载 electron + nsis 资源。
 - **⚠️ win 交叉编译前必须安装 koffi win32 原生包**（mac 上 `npm install` 不会自动装）：
   ```bash
   npm install @koromix/koffi-win32-x64@3.1.0 --save-optional --force
@@ -79,18 +110,30 @@ AI 调用一律按需触发：早间简报(每天首次打开)/「AI 识别这�
   版本必须与 `koffi` 主包**精确一致**（当前 3.1.0），否则运行时报 `Mismatched native Koffi modules`。若漏装则报 `Cannot find the native Koffi module`。`package.json` 的 `asarUnpack` 已含 `node_modules/@koromix/koffi-*/**/*`，无需额外配置。
 - **一套源码、两个产物**，无法一个包通吃两平台。
 - **⚠️ 在 Codex/沙箱环境内打包会"死锁"在 packaging 阶段（2 分钟 0 字节）——根因与解法**：
-  - **根因**：沙箱的 `writable_roots` 白名单**不含本项目路径** `/Users/yang/weflow优化/`（只含 `数据分析`/visualizations/`/tmp`/tmpdir）。electron-builder 往 `release/` 写文件被静默拒绝（`Operation not permitted`），表现为卡死。**不是** OS 挂载/overlay/配额问题（`mount`/`df` 已证伪：同文件系统、空间充足），也**不是** symlink/xattr 限制。验证命令：`touch release/.t` → `Operation not permitted`，而 `touch /tmp/.t` 成功。
-  - **解法**：把输出目录改到白名单内的 `/tmp`，打完再拷回：
+  - **根因**：沙箱的 `writable_roots` 白名单**不含本项目路径** `/Users/yang/weflow优化/`（只含 `数据分析`/visualizations/`/tmp`/tmpdir）。electron-builder 往 `release/` 写文件被静默拒绝（`Operation not permitted`），表现为卡死。**不是** OS 挂载/overlay/配额问题（`mount`/`df` 已证伪：同文件系统、空间充足），也**不是** symlink/xattr 限制。验证命令（自带清理）：`touch release/.t && rm -f release/.t` → `Operation not permitted`，而 `touch /tmp/.t && rm -f /tmp/.t` 成功。
+  - **解法**：把输出目录改到白名单内可写的位置（如 `/tmp`），**每次构建用新的唯一目录**——不要复用固定路径，也不要把新包写进旧包所在目录：
     ```bash
-    CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64 --config.directories.output=/tmp/weflow-release
-    # 完成后拷回（release/ 在沙箱内不可写，需 escalation/提权）
-    cp /tmp/weflow-release/WeFlow-*-Setup.exe release/
+    OUT="/tmp/weflow-release-$(date +%Y-%m-%d-%H%M%S)-win-x64"
+    mkdir -p "$OUT"
+    CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$OUT"
+    # 记录新包路径与 SHA-256（后面归档、交付核对都要用）
+    find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
     ```
-    Mac 同理加 `--config.directories.output=/tmp/weflow-release`。
-  - **为什么不把 `/tmp` 写死进 `package.json` 的 `build.directories.output`**：该限制只在沙箱内存在；在你自己的终端（非沙箱）跑时 `release/` 完全可写且更符合直觉，`/tmp` 重启还会清空。故保持默认 `release/`，仅沙箱内手动加参数。若你长期在沙箱内打包且嫌每次加参数麻烦，可自行在 `package.json` 加 `"directories": {"output": "/tmp/weflow-release"}`，但须知正常终端也会跟着输出到 `/tmp`。
+    Mac 同理：平台参数换 `--mac --arm64`，目录名后缀换 `mac-arm64`。注意沙箱里 `tsc`/`vite` 同样不在 PATH，前面的构建链要用 `./node_modules/.bin/tsc`、`./node_modules/.bin/vite build`。
+  - **把产物归档回 `release/` 时必须先检查目标不存在，绝不覆盖同名安装包**（`release/` 在沙箱内可能需要提权才可写）：
+    ```bash
+    SRC="$OUT/WeFlow-1.0.1-Setup.exe"          # 按实际产物名替换
+    DEST="release/$(basename "$SRC")"
+    if [ -e "$DEST" ]; then
+      echo "目标已存在，未覆盖：$DEST —— 保留在 $OUT，或改用带日期的新文件名"
+    else
+      cp "$SRC" "$DEST" && shasum -a 256 "$DEST"
+    fi
+    ```
+  - **不要**把 `/tmp`（或任何固定路径）写死进 `package.json` 的 `build.directories.output`：那样正常终端也会把产物输出到 `/tmp`（重启即清空），固定目录还会让新旧产物互相覆盖。仅在沙箱内用 `--config.directories.output="$OUT"` 临时指定唯一目录。
 
-- **打包后必查 asar 含新接口**（吸取过 preload 漏打包的亏）：
-  `grep -a -o "<新ipc或方法名>" release/*/WeFlow.app/Contents/Resources/app.asar`
+- **打包后必查 asar 含新接口**（吸取过 preload 漏打包的亏）：路径用**本次构建的输出目录**（`$OUT`；若用默认 `release/` 则替换为 `release`）：
+  `grep -a -o "<新ipc或方法名>" "$OUT"/mac-arm64/WeFlow.app/Contents/Resources/app.asar`
 - **Hermes Utility 打包资源（2026-09-08 起）**：`vite build` 产物 `dist-electron/hermesUtility.js` 经全局 `build.extraResources`（from `dist-electron/hermesUtility.js` → to `hermes/hermesUtility.js`）落到 `.app/Contents/Resources/hermes/`；`build.files` 以 `!dist-electron/hermesUtility.js` 负模式保证 asar 内无重复副本。打包后必查两点：Resources/hermes/hermesUtility.js 存在 + `npx asar list` 无该文件（或直接跑 `WEFLOW_WORKER=1 npx tsx scripts/hermes-package-test.ts`，产物红线与安装目录结构一并验证）。产物缺失时主程序不崩，Hermes 报「暂时不可用，请重新安装或升级」。
 
 ## 4. 已知坑（血泪清单）
