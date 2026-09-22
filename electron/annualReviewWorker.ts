@@ -40,12 +40,14 @@ function run(): void {
     }
     post({ type: 'annualReview:progress', taskId, data: { phase: 'computing', progress: 90, statusText: '组装报告' } })
     post({ type: 'annualReview:result', taskId, data: report })
-  } catch (e) {
-    // 结构化错误：只回传稳定 code 与面向用户的 message；不回传堆栈与内部细节
+  } catch {
+    // 结构化错误：只回传稳定 code 与固定安全文案，绝不回传堆栈与内部细节。
+    // compose 抛出的任何异常（含第三方/原生层的原始异常消息——可能携带数据库路径、
+    // SQL 片段或凭据标记）一律不得进入 message；调用方按 code 展示统一文案。
     post({
       type: 'annualReview:error',
       taskId,
-      error: { code: 'worker_error', message: e instanceof Error ? `年度复盘统计失败：${e.message}` : '年度复盘统计失败' }
+      error: { code: 'worker_error', message: '年度复盘统计失败，请稍后重试' }
     })
   }
 }

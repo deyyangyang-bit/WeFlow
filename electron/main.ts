@@ -4147,9 +4147,9 @@ function registerIpcHandlers() {
     try {
       return { success: true, data: await annualReviewService.getAvailableYears() }
     } catch (e) {
-      // 结构化错误信封：保留稳定 code，不回堆栈/路径/SQL
+      // 结构化错误信封：保留稳定 code，message 用固定安全文案——不回传 e.message/堆栈/路径/SQL
       const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
-      return { success: false, error: { code, message: e instanceof Error ? e.message : '可用年份查询失败' } }
+      return { success: false, error: { code, message: '可用年份查询失败，请稍后重试' } }
     }
   })
 
@@ -4164,7 +4164,13 @@ function registerIpcHandlers() {
     }
     // 非阻塞启动：立即返回 taskId/reused；完成与失败经 annualReview:progress（done=true）
     // 推送，渲染层收到 completed 后再 getReport（任务生命周期可取消的前提）。
-    const started = annualReviewService.start(validation.year)
+    // 启动异常同样走稳定信封：handle 若 reject，Electron 会把原始异常消息序列化给渲染层。
+    let started: ReturnType<AnnualReviewService['start']>
+    try {
+      started = annualReviewService.start(validation.year)
+    } catch {
+      return { success: false, error: { code: 'internal', message: '生成任务启动失败，请稍后重试' } }
+    }
     return { success: true, taskId: started.taskId, reused: started.reused }
   })
 
@@ -4248,8 +4254,9 @@ function registerIpcHandlers() {
       }
       return { success: true, dir, files: [result.path] }
     } catch (e) {
+      // 结构化错误信封：保留稳定 code，message 用固定安全文案——不回传 e.message/堆栈/路径/SQL
       const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
-      return { success: false, error: { code, message: e instanceof Error ? e.message : '导出失败' } }
+      return { success: false, error: { code, message: '导出失败，请稍后重试' } }
     }
   })
 

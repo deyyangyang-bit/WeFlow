@@ -104,6 +104,22 @@ export interface AnnualReviewTaskError {
 
 const CANCELLED_MESSAGE = '年度复盘生成已取消'
 const INVALIDATED_MESSAGE = '数据已失效（账号/业务库变更或数据写入），本次生成已终止'
+const GENERIC_FAILURE_MESSAGE = '年度复盘生成失败，请稍后重试'
+
+/**
+ * 终态错误文案白名单：任务快照会经 `annualReview:progress` 广播与 `getTaskStatus`
+ * 返回直达渲染层/页面文案，message 只允许以下固定安全中文文案。任何来源不明的
+ * 消息（底层异常的原始 e.message 可能携带数据库路径、SQL 片段或凭据标记）一律由
+ * failTask 收敛为 GENERIC_FAILURE_MESSAGE，不透传。
+ */
+const ANNUAL_REVIEW_SAFE_TASK_MESSAGES: ReadonlySet<string> = new Set([
+  CANCELLED_MESSAGE,
+  INVALIDATED_MESSAGE,
+  '本地业务数据加载失败，无法生成年报复盘',
+  '年度复盘生成结果非法',
+  '报告时间契约解析失败，请稍后重试',
+  GENERIC_FAILURE_MESSAGE
+])
 
 function abortError(code: 'cancelled' | 'invalidated'): Error {
   return Object.assign(new Error(code === 'cancelled' ? CANCELLED_MESSAGE : INVALIDATED_MESSAGE), { code })
@@ -705,8 +721,9 @@ export class AnnualReviewService {
       let period: AnnualReviewPeriod
       try {
         period = resolveAnnualReviewPeriod(year, generatedAt)
-      } catch (e) {
-        this.failTask(scopeKey, taskId, 'internal', e instanceof Error ? e.message : '时间契约解析失败')
+      } catch {
+        // 边界：不把底层异常消息（可能含输入值/内部细节）透传进任务快照
+        this.failTask(scopeKey, taskId, 'internal', '报告时间契约解析失败，请稍后重试')
         return
       }
 
@@ -803,17 +820,21 @@ export class AnnualReviewService {
         return
       }
       if (err?.code === 'invalidated') {
-        this.failTask(scopeKey, taskId, 'invalidated', e instanceof Error && e.message ? e.message : INVALIDATED_MESSAGE)
+        // 边界：失效语义固定文案（底层异常消息不得借失效通道透传）
+        this.failTask(scopeKey, taskId, 'invalidated', INVALIDATED_MESSAGE)
         return
       }
-      this.failTask(scopeKey, taskId, 'worker_error', e instanceof Error && e.message ? e.message : '年度复盘生成失败')
+      this.failTask(scopeKey, taskId, 'worker_error', GENERIC_FAILURE_MESSAGE)
     }
   }
 
   private failTask(scopeKey: string, taskId: string, code: AnnualReviewTaskError['code'], message: string): void {
     const record = this.tasks.get(scopeKey)
     if (!record || record.snapshot.taskId !== taskId) return
-    this.updateTask(scopeKey, taskId, { status: 'failed', error: { code, message } })
+    // 错误文案边界（最后防线）：快照直达渲染层/页面文案，message 只放行白名单固定
+    // 中文文案；任何来源不明的消息（底层异常可能携带路径/SQL/Token）一律收敛为通用文案。
+    const safeMessage = ANNUAL_REVIEW_SAFE_TASK_MESSAGES.has(message) ? message : GENERIC_FAILURE_MESSAGE
+    this.updateTask(scopeKey, taskId, { status: 'failed', error: { code, message: safeMessage } })
     // 有界清理统一在 startWithScope 的 settle finally 中执行（覆盖全部终态路径）
   }
 
