@@ -85,6 +85,7 @@ import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services
 import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
 import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
 import { exportTextFile } from './services/safeTextFileExport'
+import { annualReviewIpcFailureResponse } from './services/annualReviewIpcError'
 import { buildAnnualReviewMarkdown, buildAnnualReviewCsv } from './services/annualReviewExportContent'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
@@ -4147,9 +4148,9 @@ function registerIpcHandlers() {
     try {
       return { success: true, data: await annualReviewService.getAvailableYears() }
     } catch (e) {
-      // 结构化错误信封：保留稳定 code，message 用固定安全文案——不回传 e.message/堆栈/路径/SQL
-      const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
-      return { success: false, error: { code, message: '可用年份查询失败，请稍后重试' } }
+      // 结构化错误信封：code 经本通道契约白名单收敛（任意字符串 code 一律 internal），
+      // message 为固定安全文案——不回传 e.message/堆栈/路径/SQL/Token
+      return annualReviewIpcFailureResponse('annualReview:getAvailableYears', e)
     }
   })
 
@@ -4254,9 +4255,9 @@ function registerIpcHandlers() {
       }
       return { success: true, dir, files: [result.path] }
     } catch (e) {
-      // 结构化错误信封：保留稳定 code，message 用固定安全文案——不回传 e.message/堆栈/路径/SQL
-      const code = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'internal'
-      return { success: false, error: { code, message: '导出失败，请稍后重试' } }
+      // 结构化错误信封：code 经本通道契约白名单收敛（任意字符串 code 一律 internal），
+      // message 为固定安全文案——不回传 e.message/堆栈/路径/SQL/Token
+      return annualReviewIpcFailureResponse('annualReview:export', e)
     }
   })
 

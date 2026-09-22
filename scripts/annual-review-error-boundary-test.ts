@@ -158,8 +158,13 @@ async function main(): Promise<void> {
     ok('3b export catch 不回传 e.message',
       exportBlock.length > 0 && !/e instanceof Error \? e\.message/.test(exportBlock),
       'block 含 e.message 透传或未找到')
-    ok('3c 两个 catch 都返回固定安全文案',
-      yearsBlock.includes('可用年份查询失败') && exportBlock.includes('导出失败'))
+    // 固定文案 + 码白名单收敛到唯一出口（electron/services/annualReviewIpcError.ts）：
+    // 两个 handler 必须经该出口返回，文案常量在同源模块内断言（不再各自内联 code/message）
+    const ipcErrorSrc = readFileSync(join(ROOT, 'electron', 'services', 'annualReviewIpcError.ts'), 'utf8')
+    ok('3c 两个 catch 都经固定安全文案的唯一出口（文案常量在同源模块内）',
+      yearsBlock.includes("annualReviewIpcFailureResponse('annualReview:getAvailableYears'") &&
+      exportBlock.includes("annualReviewIpcFailureResponse('annualReview:export'") &&
+      ipcErrorSrc.includes('可用年份查询失败，请稍后重试') && ipcErrorSrc.includes('导出失败，请稍后重试'))
     ok('3d generate 对 start() 异常有稳定信封（不使 IPC reject 泄露 Electron 包装消息）',
       generateBlock.includes('生成任务启动失败'))
     // Worker/Service 源码不得再引用 e.message 构造对外文案
