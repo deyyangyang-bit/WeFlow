@@ -42,45 +42,40 @@ AI 调用一律按需触发：早间简报(每天首次打开)/「AI 识别这�
 ## 3. 启动与打包（最常踩坑，务必照做）
 - **调试**：`npm run dev` —— 仅开发期。3011 会话规模下渲染进程易崩，**不要用于验收/日常**。
 - **正式运行/验收**：用打包版，不用 dev。
-- **打包前排查残留构建进程（先识别、后定向结束；不要按名称批量杀）**：上一次构建异常中断时，残留在 packaging 阶段的 `electron-builder` / `app-builder` 进程会占住产物文件，表现为长时间不写盘（约 2 分钟 0 字节）。**禁止 `pkill -9 -f "vite|…|WeFlow|…|Electron|…"` 这类名称匹配批量结束**——它会连带杀掉正在运行的 WeFlow 打包版（验收用的就是它）、其它项目的 vite/esbuild、以及其它 Electron 应用，可能造成未保存数据丢失。SIGTERM 之后**禁止无条件 `kill -9`**：只有再次确认**同一个 PID 仍存活**，且它的命令行仍是本仓库的目标构建进程（`electron-builder` / `app-builder` / `vite` / `esbuild`，并且命令行包含本仓库路径），才允许对这一个 PID 强制结束。进程已经退出，或者这个 PID 已经被别的进程复用，都要跳过。
+- **打包前排查残留构建进程（先识别、只自动发送 SIGTERM；不要按名称批量杀）**：上一次构建异常中断时，残留在 packaging 阶段的 `electron-builder` / `app-builder` 进程会占住产物文件，表现为长时间不写盘（约 2 分钟 0 字节）。**禁止 `pkill -9 -f "vite|…|WeFlow|…|Electron|…"` 这类名称匹配批量结束**——它会连带杀掉正在运行的 WeFlow 打包版（验收用的就是它）、其它项目的 vite/esbuild、以及其它 Electron 应用，可能造成未保存数据丢失。脚本**只自动发送 SIGTERM**。等待之后如果这个 PID 还在，就打印当前 PID、启动时间和命令行，然后停止，由操作者重新人工确认。强杀不是这段脚本的下一步，这里也不提供可直接复制执行的强杀命令。PID 和命令行对得上，也不能证明还是刚才那个进程：同仓库里新起来的构建进程可能已经复用了这个 PID。`ps` 打印的启动时间只给操作者看，不是自动放行或自动跳过的依据。
   ```bash
   cd "/Users/yang/weflow优化/WeFlow"                 # 仓库根，按实际路径替换
   REPO="$PWD"
   # ① 只列出候选。本段不要加 set -e：清单为空是正常情况，不是失败。
   ps -Ao pid,ppid,lstart,command | grep -E "electron-builder|app-builder|vite|esbuild" | grep -F "$REPO" | grep -v grep || true
-  # ② 填入①里逐个人工确认过的 PID。留空则停止，不会发信号。
+  # ② 填入①里人工确认过的 PID。留空则停止，不会发信号。
   PID=
   [ -n "$PID" ] || { echo "先把确认过的具体 PID 填进 PID="; exit 1; }
   ps -ww -o pid,ppid,lstart,command -p "$PID" || { echo "该 PID 不存在，停止"; exit 1; }
   CMD_NOW="$(ps -ww -o command= -p "$PID" 2>/dev/null || true)"
   printf '%s\n' "$CMD_NOW" | grep -F "$REPO" >/dev/null 2>&1 \
     && printf '%s\n' "$CMD_NOW" | grep -E "electron-builder|app-builder|vite|esbuild" >/dev/null 2>&1 \
-    || { echo "该 PID 不是本仓库目标构建进程，停止，不发送信号"; exit 1; }
+    || { echo "该 PID 当前不像本仓库构建进程，停止，不发送信号"; exit 1; }
   lsof -p "$PID" | grep -F "$REPO" || true
-  # ③ 只发 SIGTERM。这里不强制结束。
+  # ③ 只自动发送 SIGTERM。本段没有强杀命令。
   if ! kill "$PID"; then
     if ps -p "$PID" >/dev/null 2>&1; then
-      echo "SIGTERM 失败且进程仍在。停止；不要接着 kill -9，先回到 ① 重新确认。"
+      echo "SIGTERM 失败且进程仍在。脚本停止。请看下面的 PID、启动时间和命令行，重新人工确认。"
+      ps -ww -o pid,lstart,command -p "$PID" || true
       exit 1
     fi
-    echo "进程已不在，跳过 kill -9"
+    echo "进程已不在，停止"
     exit 0
   fi
   sleep 5
-  # ④ 再次确认同一个 PID。已退出，或不再是本仓库目标构建进程：跳过。
+  # ④ 等待后 PID 仍在就停。不要用命令行或秒级启动时间判断它还是不是原进程。
   if ! ps -p "$PID" >/dev/null 2>&1; then
-    echo "进程已退出，跳过 kill -9"
+    echo "SIGTERM 后该 PID 已不在，停止"
     exit 0
   fi
-  CMD_AFTER="$(ps -ww -o command= -p "$PID" 2>/dev/null || true)"
-  if printf '%s\n' "$CMD_AFTER" | grep -F "$REPO" >/dev/null 2>&1 \
-    && printf '%s\n' "$CMD_AFTER" | grep -E "electron-builder|app-builder|vite|esbuild" >/dev/null 2>&1
-  then
-    echo "PID $PID 仍存活且仍是本仓库目标构建进程，定向强制结束"
-    kill -9 "$PID"
-  else
-    echo "PID $PID 仍存活，但已不是本仓库目标构建进程，跳过 kill -9"
-  fi
+  echo "SIGTERM 后 PID 仍在。脚本停止。请根据下面的 PID、启动时间和命令行重新人工确认。"
+  ps -ww -o pid,lstart,command -p "$PID" || true
+  exit 1
   ```
   注意：打包版 `WeFlow.app` 自身的运行实例，命令行不含上述构建命令，**不属于**残留构建进程——不要为了打包去结束用户正在使用的实例。
 - **不要递归删除整个 `release/`**（里面有历史安装包，删掉不可恢复）：

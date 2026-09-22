@@ -132,7 +132,7 @@
 - **Electron 闪退真因修正**：旧判断"dist 是 Node wrapper 混入的坏 Electron v24"是**误判**；真因是 `ELECTRON_RUN_AS_NODE=1` 环境变量让 Electron 以 Node 模式启动（`--version` 输出 v24.17.0）。防御已落地 `vite.config.ts`（spawn 前 `delete`），详见 `docs/归档/交接旧版/HANDOVER-20260731-驾驶舱改造与打包问题.md` §四 修正版
 - **配置项**：`crmAutoConfirmEnabled`(默认 true) · `crmAutoConfirmThreshold`(默认 0.8) · `crmAutoConfirmInvoiceDocgen`(默认 false)
 - 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
-- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程。`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），也不要按名称批量杀。只处理这一个 PID：先发 SIGTERM；只有该 PID 仍存活，且命令行仍是本仓库这次 dev/Electron 进程时，才可以对该 PID 执行 `kill -9`，否则跳过（PID 退出后可能被复用）。
+- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程。`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），也不要按名称批量杀。只对人工确认过的一个 PID 发送 SIGTERM。若等待后该 PID 仍在，停下来看当前 PID、启动时间和命令行，重新人工确认。命令行对得上也不能当成还是原进程，同仓库的新进程可能已经复用该 PID。这里不提供可直接复制的强杀命令。
 
 ## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
 
@@ -3047,7 +3047,7 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 5. **单一固定 system prompt**，差异放 user prompt（API缓存）
 6. **win 只打 x64**，交叉编译前必须 `npm install @koromix/koffi-win32-x64@3.1.0 --force`
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
-8. **打包前排查残留构建进程**（按 PID 识别；先 SIGTERM；只有该 PID 仍存活且仍是本仓库目标构建进程才 `kill -9`，否则跳过。不要按名称批量 pkill。步骤只以 MAINTENANCE.md §3 为准）
+8. **打包前排查残留构建进程**（按 PID 识别；脚本只自动发送 SIGTERM。等待后 PID 仍在就打印 PID、启动时间和命令行并停止，由操作者重新人工确认。不要按名称批量 pkill，也不要把强杀写成可直接复制的下一步。步骤只以 MAINTENANCE.md §3 为准）
 9. **ffmpeg 缺失会崩**：用户需自备 `~/bin/ffmpeg`
 10. **WCDB 消息字段是 snake_case**：`is_send`/`create_time`/`message_content`/`sender_username`（不是 camelCase），用错字段名全部读到 undefined
 11. **`chatService.getSessions()` 返回 `{success, sessions[]}`** 而非裸数组，`Array.isArray()` 永远 false，需解包 `.sessions`
@@ -3058,7 +3058,7 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 
 可执行步骤只有 `docs/MAINTENANCE.md` §3 的整段脚本。本节不重复命令，避免缩略命令绕过这些规则：
 
-- 残留构建进程：先 SIGTERM。只有同一个 PID 仍存活，且命令行仍是本仓库的 `electron-builder` / `app-builder` / `vite` / `esbuild`，才对这一个 PID 执行 `kill -9`；否则跳过。不要按名称批量杀。
+- 残留构建进程：脚本只自动发送 SIGTERM。等待后 PID 仍在就停止，并打印当前 PID、启动时间和命令行，由操作者重新人工确认。PID 和命令行对得上，也不能证明还是原进程（同仓库的新构建进程可能复用该 PID）；秒级启动时间也不是自动放行的依据。不要按名称批量杀，文档不提供可直接复制的强杀命令。
 - 清理、`tsc`、`vite build`、`scripts/verify-electron-bundle.cjs`、`electron-builder` 用 `&&` 串成与 `package.json` 的 `build` 相同的链，末尾 `|| exit 1`。任一步失败立即停止，不能拿旧产物继续打包。
 - 输出目录用 `mktemp -d` 独占创建。秒级时间戳加 `mkdir -p` 不算唯一；同名或创建失败就停，或者由 `mktemp` 换一个新目录，绝不复用旧目录。
 - 归档用 `noclobber` 独占创建目标，并核对非空和 SHA-256。目标已存在、复制失败、产物为空或校验不一致都是失败，不得写成交付成功。
