@@ -1,0 +1,23 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+# Linux 宿主内网 HTTPS 端点。hostname/CIDR/绑定地址由 central/proxy.env 提供；
+# 不放中央凭证与客户数据。bind 收敛监听接口；remote_ip 为真实 LAN peer
+#（host 模式无 NAT），网段之外一律 403 fail closed。
+https://{$WEFLOW_CENTRAL_HOSTNAME} {
+	bind {$WEFLOW_CENTRAL_HTTPS_BIND}
+	tls internal
+
+	@allowed remote_ip {$WEFLOW_CENTRAL_ALLOWED_CIDR}
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# Fail closed for peers outside the explicitly allowed LAN CIDR.
+	handle {
+		respond "forbidden" 403
+	}
+}

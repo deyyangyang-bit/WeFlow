@@ -2,19 +2,23 @@
  * EvalAnnotatePage.tsx —— D7 评测集应用内标注页（替代 Excel 流程）
  *
  * 两页签（cws-tabs 全局分段控件）：商机样本（opportunity_eval_case）/ 告警样本（alert_eval_case，宪法 §3）。
- * 商机页签：主管逐卡看会话最近消息，点「有商机 / 无商机 / 不确定」即写库（status=confirmed + annotated_by），
- * 自动跳下一卡。防锚定偏差（宪法 §1.10 / 评测集标注指引）：AI 预标注在人工标注前不可见——
- * 服务端（evalListCases）对未确认行不下发 ai_*，本页 UI 只是第二道闸。已标注卡可展开比对 AI 答案。
- * 每张候选卡带「证据可回查」锚点（evidence_key = messageKey，经 evidenceGetByKey 可回原话）。
+ * 版式（概念稿屏 11）：左「判断队列」（qrow 行式：来源色条 + 样本名 + 状态副行 + 类型 tag）、
+ * 右「标注详情」（判断依据 + 标注档位）。点队列行换详情；标注即写库并自动跳下一条。
+ * 商机详情看会话最近消息，三档「有商机 / 无商机 / 不确定」即写库（status=confirmed + annotated_by）。
+ * 防锚定偏差（宪法 §1.10 / 评测集标注指引）：AI 预标注在人工标注前不可见——
+ * 服务端（evalListCases）对未确认行不下发 ai_*，本页 UI 只是第二道闸；已标注样本可展开比对 AI 答案。
+ * 标注档位以真实存储枚举为准：商机 has/none/uncertain、告警 correct/wrong/uncertain（DB CHECK 同口径），
+ * 概念稿的「正确 / 部分正确 / 错误」档位名不套用；「纠正备注」后端 eval.label 无此字段，本页不造。
+ * 每个样本带「证据可回查」锚点（evidence_key = messageKey，经 evidenceGetByKey 可回原话）。
  * 基线门槛（PRD ≥100 样本 + ≥100 人工确认）：未达标时顶部横幅显示「未达到评测门槛」，
  * P/R/F1 与混淆矩阵只在达标后展示；「导出基线报告」输出 JSON + Markdown（未达标报告明确标注）。
  * 告警页签：候选由 scripts/alert-eval.ts import 通道产出（应用内不生成）；行 = 类型 pill + 会话 + 证据锚点 +
- * AI 预判（标注前只显示「AI 已预判」不显值——防锚定同商机口径）+ 人工三档（成立 correct / 不成立 wrong / 不确定）；
+ * AI 预判（标注前只显示「AI 已预判」不显值——防锚定同商机口径）+ 人工三档；
  * 有 anchor_key 的行显示「证据可回查」标识；统计行给出各类型「已标注数 / 人机一致率」——≥85% 开门判定直接读数。
  * PIPL：聊天原话就地展示、不出本机；库内只存 messageKey 引用 + ≤200 字原话快照。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ClipboardCheck, RefreshCw, ChevronDown, ChevronUp, UserCircle, ShieldCheck, Download, Ban, FileWarning } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronUp, UserCircle, ShieldCheck, Ban, FileWarning, CheckCircle2 } from 'lucide-react'
 import type { EvalCaseRow, EvalGenerateResult, EvalStats, AlertEvalCaseRow, AlertEvalStats,
   EvalBaselineReport } from '../types/electron'
 import type { Message } from '../types/models'
@@ -23,7 +27,7 @@ import './EvalAnnotatePage.scss'
 
 /** 标注人 localStorage 键（记住一次，不用每卡填） */
 const ANNOTATOR_KEY = 'eval_annotator_name'
-/** 每卡展示的最近消息条数 */
+/** 详情区展示的最近消息条数 */
 const MSG_LIMIT = 15
 
 const LABEL_TEXT: Record<string, string> = { has: '有商机', none: '无商机', uncertain: '不确定' }
@@ -64,26 +68,80 @@ function shortTime(sec: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** 单张商机标注卡：客户名 + 会话最近消息 + 三档标注按钮；已标注后可展开 AI 答案比对 */
-function EvalCard(props: {
+/** 队列行色条语义：商机样本按来源，告警样本按类型（与详情档位/类型 pill 同一色族） */
+function sourceStripeClass(source: string): string {
+  switch (String(source || '')) {
+    case 'intent_tag_log': return 'st-accent'
+    case 'quote_signal': return 'st-warning'
+    case 'intent_signal': return 'st-success'
+    default: return 'st-neutral'
+  }
+}
+
+function alertStripeClass(alertType: string): string {
+  switch (String(alertType || '')) {
+    case 'competitor': return 'st-danger'
+    case 'loss': return 'st-warning'
+    case 'payment_overdue': return 'st-success'
+    default: return 'st-neutral'
+  }
+}
+
+/** 证据锚点标识（有 anchor_key 才「可回查」，无锚点行明确「待补」，不得让标注员误以为有编号可查） */
+function AnchorBadge({ anchorKey }: { anchorKey: string }) {
+  const hasAnchor = Boolean(String(anchorKey || '').trim())
+  if (hasAnchor) {
+    return <span className="ec-anchor" title={`evidence_key（anchor_key）：${anchorKey}`}><ShieldCheck size={12} /> 证据可回查</span>
+  }
+  return (
+    <span className="ec-anchor-missing" title="本条没有可回查的消息编号（历史存量样本）；判定依据以聊天记录为准，锚点待补，不要臆造编号">
+      <FileWarning size={12} /> 待补证据
+    </span>
+  )
+}
+
+// ─── 商机样本：队列行 + 详情 ──────────────────────────────────────────────────
+
+/** 判断队列行（概念稿 .qrow 语法）：色条 + 样本名 + 状态副行 + 来源 tag */
+function EvalQueueRow({ item, index, selected, onSelect, rowRef }: {
   item: EvalCaseRow
-  busy: boolean
-  onLabel: (item: EvalCaseRow, label: string) => void
-  cardRef: (el: HTMLDivElement | null) => void
+  index: number
+  selected: boolean
+  onSelect: () => void
+  rowRef: (el: HTMLDivElement | null) => void
 }) {
-  const { item, busy, onLabel } = props
   const confirmed = item.status === 'confirmed'
+  const sourceText = SOURCE_TEXT[String(item.source || '')] || item.source || '未知来源'
+  const hint = confirmed
+    ? `已标：${LABEL_TEXT[String(item.label)] || item.label} · ${item.annotated_by || '—'}`
+    : `${item.display_name} · 待标注`
+  return (
+    <div ref={rowRef}>
+      <button type="button" className={`qrow ${selected ? 'is-on' : ''}`} onClick={onSelect} data-eval-index={index}>
+        <span className={`qrow__stripe ${sourceStripeClass(String(item.source || ''))}`} />
+        <span className="qrow__main">
+          <span className="qrow__n">{item.display_name}</span>
+          <span className="qrow__s">{hint}</span>
+        </span>
+        <span className="tag tag--plain">{sourceText}</span>
+      </button>
+    </div>
+  )
+}
+
+/** 详情区会话消息（点选后才拉取：一次只取当前样本的最近消息，按时间升序截尾 MSG_LIMIT 条） */
+function DetailMessages({ sessionId }: { sessionId: string }) {
   const [messages, setMessages] = useState<Message[] | null>(null)
   const [msgError, setMsgError] = useState('')
-  const [showAi, setShowAi] = useState(false)
-  const hasAnchor = Boolean(String(item.anchor_key || '').trim())
 
-  // 调现有 chat 端点取最近消息（应用读取层，不碰 WCDB）；按时间升序后截尾 MSG_LIMIT 条
   useEffect(() => {
     let alive = true
+    setMessages(null)
+    setMsgError('')
     void (async () => {
       try {
-        const r = await window.electronAPI.chat.getLatestMessages(item.session_id, MSG_LIMIT)
+        // 调现有 chat 端点取最近消息（应用读取层，不碰 WCDB）
+        const r = await window.electronAPI.chat.getLatestMessages(sessionId, MSG_LIMIT)
         if (!alive) return
         if (r.success && r.messages) {
           const asc = r.messages.slice().sort((a, b) => a.createTime - b.createTime).slice(-MSG_LIMIT)
@@ -96,65 +154,77 @@ function EvalCard(props: {
       }
     })()
     return () => { alive = false }
-  }, [item.session_id])
+  }, [sessionId])
 
+  return (
+    <div className="ec-msgs">
+      {messages === null && !msgError && <div className="ec-msg-loading">读取聊天记录中…</div>}
+      {msgError && <div className="ec-msg-loading">无法读取聊天记录（会话可能已删除或无权限）：{msgError}</div>}
+      {messages?.length === 0 && <div className="ec-msg-loading">该会话暂无消息记录</div>}
+      {messages?.map((m) => (
+        <div key={m.messageKey || `${m.localId}`} className={`ec-msg ${m.isSend === 1 ? 'me' : 'other'}`}>
+          <div className="ec-msg-meta">{m.isSend === 1 ? '销售' : '客户'} · {shortTime(m.createTime)}</div>
+          <div className="ec-msg-bubble">{messageText(m)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 商机详情（概念稿 judge/markbar 语法）：判断依据 + 标注档位；已标注行显结果与 AI 比对 */
+function EvalDetail(props: {
+  item: EvalCaseRow
+  index: number
+  total: number
+  busy: boolean
+  onLabel: (item: EvalCaseRow, label: string) => void
+}) {
+  const { item, index, total, busy, onLabel } = props
+  const confirmed = item.status === 'confirmed'
+  const [showAi, setShowAi] = useState(false)
+  const sourceText = SOURCE_TEXT[String(item.source || '')] || item.source || '未知来源'
   const aiLabel = String(item.ai_label || '')
   const agree = confirmed && aiLabel ? item.label === aiLabel : null
 
   return (
-    <div className={`eval-card ${confirmed ? 'done' : ''}`} ref={props.cardRef}>
-      <div className="ec-head">
-        <span className="ec-name">{item.display_name}</span>
-        <span className="ec-sid">{item.session_id}</span>
-        <span className="ec-src">{SOURCE_TEXT[String(item.source || '')] || item.source}</span>
-        {hasAnchor ? (
-          <span className="ec-anchor" title={`evidence_key（anchor_key）：${item.anchor_key}`}>
-            <ShieldCheck size={12} /> 证据可回查
-          </span>
-        ) : (
-          <span className="ec-anchor-missing" title="本条没有可回查的消息编号（历史存量样本）；判定依据以下方聊天记录为准，锚点待补，不要臆造编号">
-            <FileWarning size={12} /> 待补证据
-          </span>
-        )}
-        {confirmed && (
-          <span className={`ec-verdict v-${item.label}`}>{LABEL_TEXT[String(item.label)] || item.label} · {item.annotated_by}</span>
-        )}
+    <div className="ea-detail">
+      <div className="ea-detail__name">第 {index + 1} / {total} 条 · {sourceText}</div>
+      <div className="ea-detail__sub">
+        {item.display_name} · {item.session_id}
+        {confirmed ? ` · 已标注` : ' · 待标注'}
       </div>
 
-      {/* 判断依据区：信号原文 + 会话最近消息（聊天记录独立滚动，长会话不顶开卡片） */}
-      <section className="ec-block">
-        <div className="seclabel ec-block__head">
-          <span className="seclabel__t">判断依据</span>
-          <span className="ec-block__h">先看聊天自己判</span>
+      {/* 判断依据区：信号原文 + 会话最近消息（先看聊天自己判） */}
+      <div className="ea-judge">
+        <div className="ea-judge__k">判断依据</div>
+        {item.evidence_text
+          ? <div className="ea-judge__v">信号原文：{item.evidence_text}</div>
+          : <div className="ea-judge__v">（本条无信号原文，以聊天记录为准）</div>}
+        <div className="ea-judge__ev">
+          <AnchorBadge anchorKey={String(item.anchor_key || '')} />
+          <DetailMessages sessionId={item.session_id} />
         </div>
-        {item.evidence_text ? <div className="ec-evidence">信号原文：{item.evidence_text}</div> : null}
+      </div>
 
-        <div className="ec-msgs">
-          {messages === null && !msgError && <div className="ec-msg-loading">读取聊天记录中…</div>}
-          {msgError && <div className="ec-msg-loading">无法读取聊天记录（会话可能已删除或无权限）：{msgError}</div>}
-          {messages?.length === 0 && <div className="ec-msg-loading">该会话暂无消息记录</div>}
-          {messages?.map((m) => (
-            <div key={m.messageKey || `${m.localId}`} className={`ec-msg ${m.isSend === 1 ? 'me' : 'other'}`}>
-              <div className="ec-msg-meta">{m.isSend === 1 ? '销售' : '客户'} · {shortTime(m.createTime)}</div>
-              <div className="ec-msg-bubble">{messageText(m)}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 标注区：三档按钮点击即写库，成功后自动跳下一张未标注卡 */}
+      {/* 标注档位：三档以存储枚举为准（has/none/uncertain），点击即写库并自动跳下一条 */}
       {!confirmed && (
-        <section className="ec-block ec-block--mark">
-          <div className="seclabel ec-block__head">
-            <span className="seclabel__t">人工判定</span>
-            <span className="ec-block__h">点击即写库并跳到下一条</span>
+        <>
+          {aiLabel && <div className="ec-ai-hint">AI 已预判（标注后可见，防锚定）</div>}
+          <div className="ea-markbar">
+            <button className="ea-mark ea-mark--has" disabled={busy} onClick={() => onLabel(item, 'has')}>有商机</button>
+            <button className="ea-mark ea-mark--none" disabled={busy} onClick={() => onLabel(item, 'none')}>无商机</button>
+            <button className="ea-mark ea-mark--uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
           </div>
-          <div className="ec-actions">
-            <button className="ec-btn has" disabled={busy} onClick={() => onLabel(item, 'has')}>有商机</button>
-            <button className="ec-btn none" disabled={busy} onClick={() => onLabel(item, 'none')}>无商机</button>
-            <button className="ec-btn uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
-          </div>
-        </section>
+          <p className="sub ea-detail__hint">口径：先看聊天自己判，再点档位；点击即写库并跳到下一条。AI 答案标完后才能看（防锚定）。</p>
+        </>
+      )}
+
+      {confirmed && (
+        <div className="ea-markbar ea-markbar--done">
+          <span className={`ea-mark ea-mark--has${item.label === 'has' ? ' is-on' : ''} is-static`}>{LABEL_TEXT.has}</span>
+          <span className={`ea-mark ea-mark--none${item.label === 'none' ? ' is-on' : ''} is-static`}>{LABEL_TEXT.none}</span>
+          <span className={`ea-mark ea-mark--uncertain${item.label === 'uncertain' ? ' is-on' : ''} is-static`}>{LABEL_TEXT.uncertain}</span>
+        </div>
       )}
 
       {confirmed && (
@@ -180,63 +250,87 @@ function EvalCard(props: {
   )
 }
 
-/** 单行告警样本：类型 pill + 会话 + 证据锚点标识 + AI 预判（标注前不显值防锚定）+ 三档标注 */
-function AlertRow(props: {
+// ─── 告警样本：队列行 + 详情 ──────────────────────────────────────────────────
+
+/** 告警队列行：色条按类型（competitor=danger / loss=warning / payment_overdue=success） */
+function AlertQueueRow({ item, selected, onSelect, rowRef }: {
   item: AlertEvalCaseRow
-  busy: boolean
-  onLabel: (item: AlertEvalCaseRow, label: string) => void
+  selected: boolean
+  onSelect: () => void
   rowRef: (el: HTMLDivElement | null) => void
 }) {
-  const { item, busy, onLabel } = props
+  const confirmed = item.status === 'confirmed'
+  const typeText = ALERT_TYPE_TEXT[String(item.alert_type || '')] || String(item.alert_type || '未分类')
+  const hint = confirmed
+    ? `已标：${ALERT_LABEL_TEXT[String(item.label)] || item.label} · ${item.annotated_by || '—'}`
+    : `${item.display_name} · 待标注`
+  return (
+    <div ref={rowRef}>
+      <button type="button" className={`qrow ${selected ? 'is-on' : ''}`} onClick={onSelect}>
+        <span className={`qrow__stripe ${alertStripeClass(String(item.alert_type || ''))}`} />
+        <span className="qrow__main">
+          <span className="qrow__n">{item.display_name}</span>
+          <span className="qrow__s">{hint}</span>
+        </span>
+        <span className="tag tag--plain">{typeText}</span>
+      </button>
+    </div>
+  )
+}
+
+/** 告警详情：告警依据原话 + 三档（correct/wrong/uncertain）；已标注行显结果与 AI 预判比对 */
+function AlertDetail(props: {
+  item: AlertEvalCaseRow
+  index: number
+  total: number
+  busy: boolean
+  onLabel: (item: AlertEvalCaseRow, label: string) => void
+}) {
+  const { item, index, total, busy, onLabel } = props
   const confirmed = item.status === 'confirmed'
   const [showAi, setShowAi] = useState(false)
-
+  const typeText = ALERT_TYPE_TEXT[String(item.alert_type || '')] || String(item.alert_type || '未分类')
   const aiLabel = String(item.ai_label || '')
   const agree = confirmed && aiLabel ? item.label === aiLabel : null
-  const hasAnchor = Boolean(String(item.anchor_key || '').trim())
-  const typeText = ALERT_TYPE_TEXT[String(item.alert_type || '')] || String(item.alert_type || '未分类')
 
   return (
-    // 行容器用本页类名（ec-alert-card）：全局基础件 .alert-row 是「左色条 + 内容 + 动作」三列网格，
-    // 同名会把本卡的头/依据/标注三块按三列排开
-    <div className={`eval-card ec-alert-card ${confirmed ? 'done' : ''}`} ref={props.rowRef}>
-      <div className="ec-head">
-        <span className={`ec-type t-${String(item.alert_type || 'other')}`}>{typeText}</span>
-        <span className="ec-name">{item.display_name}</span>
-        <span className="ec-sid">{item.session_id}</span>
-        {hasAnchor
-          ? <span className="ec-anchor" title={`anchor_key：${item.anchor_key}`}><ShieldCheck size={12} /> 证据可回查</span>
-          : <span className="ec-anchor-missing" title="本条没有可回查的消息编号；锚点待补"><FileWarning size={12} /> 待补证据</span>}
-        {confirmed && (
-          <span className={`ec-verdict v-${String(item.label)}`}>
-            {ALERT_LABEL_TEXT[String(item.label)] || item.label} · {item.annotated_by}
-          </span>
-        )}
+    <div className="ea-detail">
+      <div className="ea-detail__name">第 {index + 1} / {total} 条 · {typeText}</div>
+      <div className="ea-detail__sub">
+        {item.display_name} · {item.session_id}
+        {confirmed ? ' · 已标注' : ' · 待标注'}
       </div>
 
-      {/* 判断依据区：告警依据原话（消息锚点回查在行首标识） */}
-      <section className="ec-block">
-        <div className="seclabel ec-block__head">
-          <span className="seclabel__t">判断依据</span>
-          <span className="ec-block__h">对照原话判类型是否成立</span>
+      {/* 判断依据区：告警依据原话（消息锚点回查在依据区标识） */}
+      <div className="ea-judge">
+        <div className="ea-judge__k">判断依据</div>
+        {item.evidence_text
+          ? <div className="ea-judge__v">告警依据原话：{item.evidence_text}</div>
+          : <div className="ea-judge__v">（本条无依据原话）</div>}
+        <div className="ea-judge__ev">
+          <AnchorBadge anchorKey={String(item.anchor_key || '')} />
         </div>
-        {item.evidence_text ? <div className="ec-evidence">告警依据原话：{item.evidence_text}</div> : null}
-      </section>
+      </div>
 
-      {/* 标注区：三档点击即写库（已标行退出待标注队列） */}
+      {/* 标注档位：三档以存储枚举为准（correct/wrong/uncertain），点击即写库 */}
       {!confirmed && (
-        <section className="ec-block ec-block--mark">
-          <div className="seclabel ec-block__head">
-            <span className="seclabel__t">人工判定</span>
-            <span className="ec-block__h">点击即写库</span>
-          </div>
+        <>
           {aiLabel && <div className="ec-ai-hint">AI 已预判（标注后可见，防锚定）</div>}
-          <div className="ec-actions">
-            <button className="ec-btn has" disabled={busy} onClick={() => onLabel(item, 'correct')}>告警成立</button>
-            <button className="ec-btn none" disabled={busy} onClick={() => onLabel(item, 'wrong')}>不成立</button>
-            <button className="ec-btn uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
+          <div className="ea-markbar">
+            <button className="ea-mark ea-mark--has" disabled={busy} onClick={() => onLabel(item, 'correct')}>告警成立</button>
+            <button className="ea-mark ea-mark--none ea-mark--no" disabled={busy} onClick={() => onLabel(item, 'wrong')}>不成立</button>
+            <button className="ea-mark ea-mark--uncertain" disabled={busy} onClick={() => onLabel(item, 'uncertain')}>不确定</button>
           </div>
-        </section>
+          <p className="sub ea-detail__hint">口径：对照原话判类型是否成立；分母只算人工已标且非「不确定」的样本。</p>
+        </>
+      )}
+
+      {confirmed && (
+        <div className="ea-markbar ea-markbar--done">
+          <span className={`ea-mark ea-mark--has${item.label === 'correct' ? ' is-on' : ''} is-static`}>{ALERT_LABEL_TEXT.correct}</span>
+          <span className={`ea-mark ea-mark--none ea-mark--no${item.label === 'wrong' ? ' is-on' : ''} is-static`}>{ALERT_LABEL_TEXT.wrong}</span>
+          <span className={`ea-mark ea-mark--uncertain${item.label === 'uncertain' ? ' is-on' : ''} is-static`}>{ALERT_LABEL_TEXT.uncertain}</span>
+        </div>
       )}
 
       {confirmed && (
@@ -271,13 +365,16 @@ export default function EvalAnnotatePage() {
   const [alertCases, setAlertCases] = useState<AlertEvalCaseRow[]>([])
   const [alertStats, setAlertStats] = useState<AlertEvalStats | null>(null)
   const [alertFilter, setAlertFilter] = useState<'pending' | 'done'>('pending')
-  /** 商机页签队列过滤：默认只列待标注（100+ 卡片全量铺开滚不动，逐卡标注效率低） */
+  /** 商机页签队列过滤：默认只列待标注（100+ 样本全量铺开滚不动） */
   const [oppFilter, setOppFilter] = useState<'pending' | 'done'>('pending')
+  /** 判断队列选中项（左右双栏联动：点左侧行换右侧详情） */
+  const [selectedOppId, setSelectedOppId] = useState<number | null>(null)
+  const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null)
   const [annotator, setAnnotator] = useState(() => window.localStorage.getItem(ANNOTATOR_KEY) || '')
   const [busy, setBusy] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
-  const cardRefs = useRef(new Map<number, HTMLDivElement>())
+  const oppRowRefs = useRef(new Map<number, HTMLDivElement>())
   const alertRowRefs = useRef(new Map<number, HTMLDivElement>())
   const annotatorRef = useRef<HTMLInputElement>(null)
 
@@ -360,16 +457,20 @@ export default function EvalAnnotatePage() {
     URL.revokeObjectURL(a.href)
   }
 
-  /** 商机样本：点击即写库，成功后自动跳到下一张未标注卡 */
-  const doLabel = async (item: EvalCaseRow, label: string) => {
+  const requireAnnotator = (): boolean => {
     const by = annotator.trim()
-    if (!by) {
-      // 未填标注人：滚回顶部 + 聚焦姓名框 + 红圈提示（原来只在顶部出提示条，滚下去后看不见，像「点不动」）
-      setNotice('请先在右上角填写标注人姓名，再点标注按钮')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
-      annotatorRef.current?.focus()
-      return
-    }
+    if (by) return true
+    // 未填标注人：滚回顶部 + 聚焦姓名框 + 红圈提示（原来只在顶部出提示条，滚下去后看不见，像「点不动」）
+    setNotice('请先在右上角填写标注人姓名，再点标注档位')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+    annotatorRef.current?.focus()
+    return false
+  }
+
+  /** 商机样本：点击档位即写库，成功后自动选中下一条未标注样本 */
+  const doLabel = async (item: EvalCaseRow, label: string) => {
+    if (!requireAnnotator()) return
+    const by = annotator.trim()
     window.localStorage.setItem(ANNOTATOR_KEY, by)
     setBusy(true)
     setNotice('')
@@ -378,25 +479,23 @@ export default function EvalAnnotatePage() {
       if (r.success && r.case) {
         const updated = { ...r.case, display_name: item.display_name } as EvalCaseRow
         // 就地更新并保持「未标在前、已标沉底」排序
-        setCases((prev) => {
-          const next = prev.map((c) => (c.id === item.id ? updated : c))
-          const rank = (c: EvalCaseRow) => (c.status === 'confirmed' ? 1 : 0)
-          return next.slice().sort((a, b) => rank(a) - rank(b) || Number(b.updated_at || 0) - Number(a.updated_at || 0))
-        })
+        const next = cases.map((c) => (c.id === item.id ? updated : c))
+        const rank = (c: EvalCaseRow) => (c.status === 'confirmed' ? 1 : 0)
+        const sorted = next.slice().sort((a, b) => rank(a) - rank(b) || Number(b.updated_at || 0) - Number(a.updated_at || 0))
+        setCases(sorted)
         // 进度/门槛/基线指标都随标注推进（门槛达标瞬间指标区即时出现）
         void Promise.all([window.electronAPI.eval.stats(), window.electronAPI.eval.report()]).then(([sr, rr]) => {
           if (sr.success && sr.stats) setStats(sr.stats)
           if (rr.success && rr.report) { setReport(rr.report); setReportMd(rr.markdown || '') }
         })
-        // 自动跳下一卡：排序后第一张未标注卡
-        requestAnimationFrame(() => {
-          setCases((prev) => {
-            const nextPending = prev.find((c) => c.status !== 'confirmed' && c.id !== item.id)
-            const el = nextPending?.id != null ? cardRefs.current.get(nextPending.id) : undefined
-            el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            return prev
+        // 自动跳下一条：排序后第一条未标注样本
+        const nextPending = sorted.find((c) => c.status !== 'confirmed' && c.id !== item.id)
+        if (nextPending?.id != null) {
+          setSelectedOppId(nextPending.id)
+          requestAnimationFrame(() => {
+            oppRowRefs.current.get(nextPending.id!)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
           })
-        })
+        }
       } else {
         setNotice(r.error || '标注失败')
       }
@@ -406,15 +505,10 @@ export default function EvalAnnotatePage() {
     } finally { setBusy(false) }
   }
 
-  /** 告警样本：点击即写库（import 式幂等 upsert，ai_* 不动）；已标行退出待标注队列 */
+  /** 告警样本：点击档位即写库（import 式幂等 upsert，ai_* 不动）；已标行退出待标注队列 */
   const doAlertLabel = async (item: AlertEvalCaseRow, label: string) => {
+    if (!requireAnnotator()) return
     const by = annotator.trim()
-    if (!by) {
-      setNotice('请先在右上角填写标注人姓名，再点标注按钮')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
-      annotatorRef.current?.focus()
-      return
-    }
     window.localStorage.setItem(ANNOTATOR_KEY, by)
     setBusy(true)
     setNotice('')
@@ -428,6 +522,10 @@ export default function EvalAnnotatePage() {
           return next.slice().sort((a, b) => rank(a) - rank(b) || Number(b.updated_at || 0) - Number(a.updated_at || 0))
         })
         void window.electronAPI.eval.alertStats().then((sr) => { if (sr.success && sr.stats) setAlertStats(sr.stats) })
+        // 自动跳下一条待标注样本
+        const pool = alertCases.filter((c) => c.id !== item.id)
+        const nextPending = pool.find((c) => c.status !== 'confirmed')
+        if (nextPending?.id != null) setSelectedAlertId(nextPending.id)
       } else {
         setNotice(r.error || '标注失败')
       }
@@ -441,13 +539,43 @@ export default function EvalAnnotatePage() {
   /** 商机页签队列过滤（口径同告警页签） */
   const filteredOppCases = cases.filter((c) => (oppFilter === 'pending' ? c.status !== 'confirmed' : c.status === 'confirmed'))
 
+  // 队列过滤视图变化时，选中项回落到视图内第一行（详情永远显示真实存在的样本）
+  useEffect(() => {
+    if (filteredOppCases.length === 0) {
+      if (selectedOppId !== null) setSelectedOppId(null)
+      return
+    }
+    if (selectedOppId == null || !filteredOppCases.some((c) => c.id === selectedOppId)) {
+      setSelectedOppId(filteredOppCases[0]?.id ?? null)
+    }
+  }, [filteredOppCases, selectedOppId])
+
+  useEffect(() => {
+    if (filteredAlertCases.length === 0) {
+      if (selectedAlertId !== null) setSelectedAlertId(null)
+      return
+    }
+    if (selectedAlertId == null || !filteredAlertCases.some((c) => c.id === selectedAlertId)) {
+      setSelectedAlertId(filteredAlertCases[0]?.id ?? null)
+    }
+  }, [filteredAlertCases, selectedAlertId])
+
+  const selectedOpp = filteredOppCases.find((c) => c.id === selectedOppId) ?? null
+  const selectedOppIndex = filteredOppCases.findIndex((c) => c.id === selectedOppId)
+  const selectedAlert = filteredAlertCases.find((c) => c.id === selectedAlertId) ?? null
+  const selectedAlertIndex = filteredAlertCases.findIndex((c) => c.id === selectedAlertId)
+
   return (
     <div className="eval-annotate-page">
-      {/* 页眉（概念稿 .shead）：小标 → 页名 → 口径说明；右侧为标注人与生成动作 */}
+      {/* 页眉（概念稿 .shead）：小标 → 衬线主张句（真实待标注数）→ 口径说明；右侧为标注人与生成动作 */}
       <div className="shead ea-header">
         <div className="ea-header-main">
           <p className="eyebrow">AI · 评测标注</p>
-          <h1 className="hero ea-title"><ClipboardCheck size={18} /> 评测标注</h1>
+          <h1 className="hero">
+            {tab === 'opportunity'
+              ? `待标注 ${cases.filter((c) => c.status !== 'confirmed').length} 条`
+              : `待标注 ${alertCases.filter((c) => c.status !== 'confirmed').length} 条`}
+          </h1>
           <p className="sub">人工判定写回样本库，用于评测基线；AI 答案在标注前不可见（防锚定）。</p>
         </div>
         <div className="ea-header-acts">
@@ -486,46 +614,66 @@ export default function EvalAnnotatePage() {
 
       {tab === 'opportunity' && (
         <>
-          {/* 评测门槛横幅（PRD ≥100 样本 + ≥100 人工确认）：未达标必须显眼，不能输出已达标 */}
-          {stats?.gate && (
-            <div className={`ea-gate-banner ${stats.gate.met ? 'pass' : 'fail'}`}>
-              {stats.gate.met
-                ? <>✅ 已达到评测门槛：候选样本 {stats.gate.total}/{stats.gate.minTotal}，人工确认 {stats.gate.confirmed}/{stats.gate.minConfirmed}——基线指标生效，可导出基线报告</>
-                : <><Ban size={14} /> 未达到评测门槛：{stats.gate.shortfalls.join('；')}——先「生成/刷新候选」补足样本并完成人工标注，基线指标暂不生效</>}
-            </div>
-          )}
-
-          {report && (
-            <div className="ea-report-bar">
-              <span>{report.gate.met ? '导出正式基线报告' : '导出当前评测进度（未达门槛）'}</span>
-              <button className="btn btn--plain btn--sm" disabled={!countConfirmed(cases)} onClick={downloadLabels}
-                title="逐条导出人工标注结果（会话/结论/标注人/时间/锚点/AI 比对）；不含聊天原文">
-                <Download size={13} /> 标注结果 CSV（{countConfirmed(cases)} 条）
-              </button>
-              <button className="btn btn--plain btn--sm" onClick={() => downloadReport('md')}><Download size={13} /> Markdown</button>
-              <button className="btn btn--plain btn--sm" onClick={() => downloadReport('json')}><Download size={13} /> JSON</button>
-            </div>
-          )}
-
-          <div className="ea-stats">
-            <div className="ea-stat">
-              <div className="ea-num">{stats?.confirmed ?? 0}<span className="ea-den">/ {stats?.total ?? 0}</span></div>
-              <div className="ea-label">标注进度</div>
-            </div>
-            <div className="ea-stat">
-              <div className="ea-num">{stats?.agreeRate == null ? '—' : `${stats.agreeRate}%`}</div>
-              <div className="ea-label">人机一致率{stats?.compared ? `（${stats.agree}/${stats.compared}）` : ''}</div>
-            </div>
-            <div className="ea-stat">
-              <div className="ea-num ea-split">
-                <span className="lb-has">{stats?.byLabel?.has ?? 0}</span>
-                <span className="lb-none">{stats?.byLabel?.none ?? 0}</span>
-                <span className="lb-uncertain">{stats?.byLabel?.uncertain ?? 0}</span>
+          {/* 评测门槛（PRD ≥100 样本 + ≥100 人工确认）：概念稿 .notice 细条款——左侧 2px 语义条
+              （通过=accent / 未达=warn），不铺满色块；导出按钮收进 acts 次级位（plain 档），
+              未达标也绝不输出成已达标 */}
+          {(stats?.gate || report) && (
+            <div className={`notice notice--brief ${stats?.gate ? (stats.gate.met ? 'notice--accent' : 'notice--warn') : ''}`}>
+              {stats?.gate
+                ? (stats.gate.met ? <CheckCircle2 size={15} className="icon" /> : <Ban size={15} className="icon" />)
+                : <span aria-hidden />}
+              <div className="notice__row">
+                {stats?.gate && (
+                  <>
+                    <span className="notice__h">{stats.gate.met ? '已达到评测门槛' : '未达到评测门槛'}</span>
+                    <span className="ea-gate-text">
+                      {stats.gate.met
+                        ? `候选样本 ${stats.gate.total}/${stats.gate.minTotal}，人工确认 ${stats.gate.confirmed}/${stats.gate.minConfirmed}——基线指标生效，可导出基线报告`
+                        : `${stats.gate.shortfalls.join('；')}——先「生成/刷新候选」补足样本并完成人工标注，基线指标暂不生效`}
+                    </span>
+                  </>
+                )}
+                {report && (
+                  <div className="notice__acts">
+                    <button className="btn btn--plain btn--sm" disabled={!countConfirmed(cases)} onClick={downloadLabels}
+                      title="逐条导出人工标注结果（会话/结论/标注人/时间/锚点/AI 比对）；不含聊天原文">
+                      标注结果 CSV（{countConfirmed(cases)} 条）
+                    </button>
+                    <button className="btn btn--plain btn--sm" onClick={() => downloadReport('md')}>Markdown</button>
+                    <button className="btn btn--plain btn--sm" onClick={() => downloadReport('json')}>JSON</button>
+                  </div>
+                )}
               </div>
-              <div className="ea-label">人工分档 has / none / uncertain</div>
+            </div>
+          )}
+
+          {/* 四格统计条（概念稿 .stats 语法；数字全部用真实字段，没有的口径不造假——
+              「本周已标注」无按周字段，落为累计「已标注」；纠正样本 = 人工与引擎不一致数） */}
+          <div className="stats ea-stats4">
+            <div className="stat">
+              <div className="stat__n">{stats?.confirmed ?? 0}<small>/ {stats?.total ?? 0}</small></div>
+              <div className="stat__l">已标注</div>
+              <div className="stat__d">
+                has {stats?.byLabel?.has ?? 0} · none {stats?.byLabel?.none ?? 0} · uncertain {stats?.byLabel?.uncertain ?? 0}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat__n">{stats?.agreeRate == null ? '—' : <>{stats.agreeRate}<small>%</small></>}</div>
+              <div className="stat__l">与引擎一致</div>
+              <div className="stat__d">{stats?.compared ? `${stats.agree}/${stats.compared} 可比对` : '暂无可比对样本'}</div>
+            </div>
+            <div className="stat">
+              <div className="stat__n">{(stats?.total ?? 0) - (stats?.confirmed ?? 0)}</div>
+              <div className="stat__l">待标注</div>
+              <div className="stat__d">含 AI 预标注 {cases.filter((c) => c.status !== 'confirmed' && String(c.ai_label || '')).length} 条</div>
+            </div>
+            <div className="stat">
+              <div className="stat__n">{stats?.compared ? stats.compared - stats.agree : '—'}</div>
+              <div className="stat__l">纠正样本</div>
+              <div className="stat__d">人工与引擎判定不一致</div>
             </div>
           </div>
-          <p className="sub ea-tip">口径：先看聊天自己判，再点按钮；AI 答案标完后才能看（防锚定）。三档定义见《评测集标注指引》。</p>
+          <p className="sub ea-tip">口径：先看聊天自己判，再点档位；AI 答案标完后才能看（防锚定）。三档定义见《评测集标注指引》。</p>
 
           {/* 基线指标（只统计人工确认样本）：门槛达标才展示，未达标不给正式数字 */}
           {stats?.gate?.met && report?.metrics && (
@@ -572,7 +720,7 @@ export default function EvalAnnotatePage() {
             </div>
           )}
 
-          {/* 队列过滤：只列待标注 / 只看已标注——100+ 卡片全量铺开时滚不到底，逐卡标注效率低 */}
+          {/* 队列过滤：只列待标注 / 只看已标注——100+ 样本全量铺开时滚不到底 */}
           <div className="cws-tabs ea-subtabs">
             <button className={`cws-tab ${oppFilter === 'pending' ? 'active' : ''}`} onClick={() => setOppFilter('pending')}>
               待标注（{cases.filter((c) => c.status !== 'confirmed').length}）
@@ -582,49 +730,81 @@ export default function EvalAnnotatePage() {
             </button>
           </div>
 
-          {filteredOppCases.length === 0 && (
-            <div className="empty">
-              {cases.length === 0
-                ? '暂无候选样本——点右上角「生成/刷新候选」开始'
-                : oppFilter === 'pending' ? '待标注队列已清空——全部样本都标完了' : '暂无已标注样本'}
+          <div className="ea-grid">
+            {/* 左：判断队列（概念稿 .qrow 行式；点一条在右侧看依据） */}
+            <div className="ea-queue">
+              <div className="seclabel ea-queue__head">
+                <span className="seclabel__t">{oppFilter === 'pending' ? '待标注队列' : '已标注队列'}</span>
+                <span className="num ea-queue__hint">点一条看依据</span>
+              </div>
+              <div className="ea-queue__list">
+                {filteredOppCases.length === 0 ? (
+                  <div className="empty">
+                    {cases.length === 0
+                      ? '暂无候选样本——点右上角「生成/刷新候选」开始'
+                      : oppFilter === 'pending' ? '待标注队列已清空——全部样本都标完了' : '暂无已标注样本'}
+                  </div>
+                ) : filteredOppCases.map((c, i) => (
+                  <EvalQueueRow
+                    key={c.id}
+                    item={c}
+                    index={i}
+                    selected={c.id === selectedOppId}
+                    onSelect={() => setSelectedOppId(c.id ?? null)}
+                    rowRef={(el) => {
+                      if (c.id == null) return
+                      if (el) oppRowRefs.current.set(c.id, el); else oppRowRefs.current.delete(c.id)
+                    }}
+                  />
+                ))}
+              </div>
             </div>
-          )}
-          {filteredOppCases.map((c) => (
-            <EvalCard
-              key={c.id}
-              item={c}
-              busy={busy}
-              onLabel={(item, label) => void doLabel(item, label)}
-              cardRef={(el) => {
-                if (c.id == null) return
-                if (el) cardRefs.current.set(c.id, el); else cardRefs.current.delete(c.id)
-              }}
-            />
-          ))}
+
+            {/* 右：标注详情（判断依据 + 标注档位） */}
+            {selectedOpp ? (
+              <EvalDetail
+                item={selectedOpp}
+                index={selectedOppIndex}
+                total={filteredOppCases.length}
+                busy={busy}
+                onLabel={(item, label) => void doLabel(item, label)}
+              />
+            ) : (
+              <div className="ea-detail ea-detail--empty">
+                <p>{cases.length === 0 ? '先「生成/刷新候选」，再从这里逐条判断' : '队列里没有样本——换个过滤看看'}</p>
+              </div>
+            )}
+          </div>
         </>
       )}
 
       {tab === 'alert' && (
         <>
-          <div className="ea-stats">
+          {/* 告警统计：同一套四格语法，每类型一格 + 待标注一格（分母只算人工已标且非「不确定」） */}
+          <div className="stats ea-stats4">
             {(alertStats?.types ?? []).map((t) => (
-              <div className="ea-stat" key={t.alertType}>
-                <div className="ea-num">
-                  {t.annotated}<span className="ea-den">/ {t.total}</span>
+              <div className="stat" key={t.alertType}>
+                <div className="stat__n">
+                  {t.annotated}<small>/ {t.total}</small>
                 </div>
-                <div className="ea-label">
-                  {ALERT_TYPE_TEXT[t.alertType] || t.alertType || '未分类'} · 人机一致率
-                  {t.agreeRate == null ? '—' : `${t.agreeRate}%（${t.agree}/${t.compared}）`}
+                <div className="stat__l">
+                  {ALERT_TYPE_TEXT[t.alertType] || t.alertType || '未分类'}
                   {t.agreeRate != null && (
                     <span className={`ea-gate ${t.agreeRate >= GATE_THRESHOLD ? 'pass' : 'fail'}`}>
                       {t.agreeRate >= GATE_THRESHOLD ? '≥85% 达标' : '未达 85%'}
                     </span>
                   )}
                 </div>
+                <div className="stat__d">一致率 {t.agreeRate == null ? '—' : `${t.agreeRate}%（${t.agree}/${t.compared}）`}</div>
               </div>
             ))}
+            <div className="stat">
+              <div className="stat__n">{alertCases.filter((c) => c.status !== 'confirmed').length}</div>
+              <div className="stat__l">待标注</div>
+              <div className="stat__d">共 {alertStats?.total ?? 0} 条 · import 通道产出</div>
+            </div>
             {(!alertStats || alertStats.types.length === 0) && (
-              <div className="ea-stat"><div className="ea-num">—</div><div className="ea-label">暂无告警样本</div></div>
+              <div className="stat"><div className="stat__n">—</div><div className="stat__l">暂无告警样本</div></div>
             )}
           </div>
           <p className="sub ea-tip">口径：分母只算人工已标且非「不确定」的样本；某类型一致率 ≥85% 才允许开推送门（ALERT_PUSH_APPROVED）。
@@ -639,23 +819,46 @@ export default function EvalAnnotatePage() {
             </button>
           </div>
 
-          {filteredAlertCases.length === 0 && (
-            <div className="empty">
-              {alertFilter === 'pending' ? '待标注队列为空——样本由 alert-eval.ts import 通道产出' : '暂无已标注样本'}
+          <div className="ea-grid">
+            <div className="ea-queue">
+              <div className="seclabel ea-queue__head">
+                <span className="seclabel__t">{alertFilter === 'pending' ? '待标注队列' : '已标注队列'}</span>
+                <span className="num ea-queue__hint">点一条看依据</span>
+              </div>
+              <div className="ea-queue__list">
+                {filteredAlertCases.length === 0 ? (
+                  <div className="empty">
+                    {alertFilter === 'pending' ? '待标注队列为空——样本由 alert-eval.ts import 通道产出' : '暂无已标注样本'}
+                  </div>
+                ) : filteredAlertCases.map((c) => (
+                  <AlertQueueRow
+                    key={c.id}
+                    item={c}
+                    selected={c.id === selectedAlertId}
+                    onSelect={() => setSelectedAlertId(c.id ?? null)}
+                    rowRef={(el) => {
+                      if (c.id == null) return
+                      if (el) alertRowRefs.current.set(c.id, el); else alertRowRefs.current.delete(c.id)
+                    }}
+                  />
+                ))}
+              </div>
             </div>
-          )}
-          {filteredAlertCases.map((c) => (
-            <AlertRow
-              key={c.id}
-              item={c}
-              busy={busy}
-              onLabel={(item, label) => void doAlertLabel(item, label)}
-              rowRef={(el) => {
-                if (c.id == null) return
-                if (el) alertRowRefs.current.set(c.id, el); else alertRowRefs.current.delete(c.id)
-              }}
-            />
-          ))}
+
+            {selectedAlert ? (
+              <AlertDetail
+                item={selectedAlert}
+                index={selectedAlertIndex}
+                total={filteredAlertCases.length}
+                busy={busy}
+                onLabel={(item, label) => void doAlertLabel(item, label)}
+              />
+            ) : (
+              <div className="ea-detail ea-detail--empty">
+                <p>{alertFilter === 'pending' ? '待标注队列为空——样本由 alert-eval.ts import 通道产出' : '队列里没有样本'}</p>
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

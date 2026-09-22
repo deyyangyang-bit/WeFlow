@@ -1022,13 +1022,15 @@
   }
 }
 
+// 2026-09-18 P1.5 会话列表行对齐概念稿 .srow：行距 10/14、头像 36 圆、
+// 主名 13/600 突出，最后一条消息与时间降为 tertiary（11.5px / mono 10.5px），细线行无卡片感
 .session-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 10px 14px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.14s;
   border-bottom: 1px solid var(--border-color);
 
   &:last-child {
@@ -1045,9 +1047,9 @@
 }
 
 .session-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
@@ -1070,7 +1072,7 @@
 
   .avatar-letter {
     color: white;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 600;
   }
 
@@ -1107,9 +1109,10 @@
 }
 
 .session-name {
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1117,8 +1120,10 @@
 }
 
 .session-time {
-  font-size: 12px;
-  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
 
@@ -1130,8 +1135,8 @@
 }
 
 .session-summary {
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   flex: 1;
@@ -5652,9 +5657,9 @@
   }
 
   .fold-entry-avatar {
-    width: 48px;
-    height: 48px;
-    border-radius: 8px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
     background: #fff;
     display: flex;
     align-items: center;
@@ -5664,7 +5669,7 @@
   }
 
   .session-name {
-    font-weight: 500;
+    font-weight: 600;
   }
 }
 
@@ -5678,9 +5683,9 @@
   }
 
   .biz-entry-avatar {
-    width: 48px;
-    height: 48px;
-    border-radius: 8px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
     background: #fff;
     display: flex;
     align-items: center;
@@ -5690,7 +5695,7 @@
   }
 
   .session-name {
-    font-weight: 500;
+    font-weight: 600;
   }
 }
 // 消息信息弹窗
@@ -6145,7 +6150,7 @@
 }
 
 // 会话列表项：细线分隔、无卡片感；选中态改 inset 底 + 名称回到 text-primary
-//（概念稿 .srow / .srow.is-on / .srow__n）
+//（概念稿 .srow / .srow.is-on / .srow__n；行距/头像/字号层级已在基础块对齐 P1.5）
 .session-item {
   border-bottom: 1px solid var(--color-divider);
   transition: background 0.14s;
@@ -6166,14 +6171,6 @@
     .session-name {
       color: var(--color-text-primary);
     }
-  }
-
-  // 时间戳：等宽 + 表格数字（概念稿 .srow__t，等同 .num 语义）
-  .session-time {
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 11px;
-    color: var(--color-text-tertiary);
   }
 }
 
@@ -6355,6 +6352,8 @@
 // 右侧辅助栏（概念稿 .chat__col--side）：本机判断 / 依据 / 回复建议的常驻栏位。
 // 与会话详情面板共用同一栏位：详情面板打开时给本栏加 --tucked 让整栏退出布局
 // （组件保持挂载，状态不丢），窄窗口由下面的媒体查询整栏收起（消息列优先，辅助栏不覆盖主内容）。
+// P1.5：内边距对齐概念稿 16/18；不再另设栏级标题（.chat-rail-head 已删）——
+// 三段各有共享 .side-head，栏头与客户右栏不是一套语法，属于多余的工具条。
 .chat-rail {
   flex: 0 0 auto;
   width: clamp(264px, 20vw, 300px);
@@ -6362,7 +6361,7 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: 14px 16px 18px;
+  padding: 16px 18px;
   background: var(--color-bg-surface-muted);
   border-left: 1px solid var(--color-border);
 
@@ -6382,167 +6381,14 @@
   display: none;
 }
 
-// 栏头（概念稿 .side-head）：标题 + 该栏实际承载的三段名，不写没有依据的「本地模型」之类说明
-.chat-rail-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--color-divider);
-
-  &__title {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--color-text-primary);
-  }
-
-  &__kicker {
-    font-size: 10.5px;
-    color: var(--color-text-tertiary);
-    white-space: nowrap;
-  }
-}
-
-// 辅助栏内的销售上下文条：条自己的底色/下边框退掉（栏底已承担），
-// 展开区按「判断 / 依据 / 回复建议」分段排版：
-//   判断 = __judgments 逐行 label/value；依据 = 每行判断的「有据可查」回查（原话来自 P0-2B，不是另造一份）；
-//   回复建议 = __suggestion 卡片。
-// 未识别时保留组件自身的真实空态（__empty / 阶段 pill「未知」），这里只做排版，不补默认值。
+// 辅助栏内的销售上下文（SalesContextStrip）：组件自身已按「判断 / 依据 / 回复建议」三段
+// （.side-block / .side-head / .verdicts）排版，本栏只负责栏位本身 ——
+// 条自己的底色与下边框退掉（栏底与栏头已承担），给三段之间留出侧栏节奏。
+// 判断栏、判断行、判断出处标记全部走全局基础件，不在这里重画一套。
 .chat-rail .sales-context-strip {
-  background: transparent;
-  border-bottom: 0;
   font-size: 12px;
 
-  &__bar {
-    min-height: 30px;
-    padding: 0 6px;
-    margin: 0 -6px;
-    gap: 6px;
-    border-radius: var(--radius-small);
-  }
-
-  &__stage {
-    font-size: 10px;
-    letter-spacing: 0.04em;
-  }
-
-  &__silent {
-    font-size: 11.5px;
-    white-space: nowrap;
-  }
-
-  // 最近意向理由：窄栏里允许换行（概念稿右栏不靠单行省略号承载信息），最多两行
-  &__reason {
-    white-space: normal;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
-
-  &__detail {
-    margin-top: 10px;
-    padding: 12px 0 0;
-    border-top: 1px solid var(--color-divider);
-  }
-
-  &__notes {
-    font-size: 12px;
-    line-height: 1.55;
-    margin-bottom: 10px;
-  }
-
-  &__judgments {
-    display: flex;
-    flex-direction: column;
-    margin: 0 0 10px;
-  }
-
-  &__j-row {
-    display: grid;
-    grid-template-columns: 44px minmax(0, 1fr);
-    gap: 8px;
-    margin-bottom: 0;
-    padding: 8px 0;
-    font-size: 12.5px;
-    border-bottom: 1px solid var(--color-divider);
-    flex-wrap: nowrap;
-
-    &:last-child {
-      border-bottom: 0;
-    }
-  }
-
-  &__j-label {
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 400;
-    color: var(--color-text-tertiary);
-    padding-top: 2px;
-  }
-
-  &__j-value {
-    min-width: 0;
-    color: var(--color-text-primary);
-    line-height: 1.6;
-    overflow-wrap: anywhere;
-  }
-
-  &__j-badge {
-    margin-left: 6px;
-  }
-
-  &__j-evidence {
-    display: inline-flex;
-    align-items: center;
-    margin: 4px 0 0;
-    padding: 1px 7px;
-    font-size: 11px;
-    font-family: var(--font-mono);
-  }
-
-  &__j-evidence-text {
-    grid-column: 1 / -1;
-    margin: 6px 0 0;
-    padding: 8px 10px;
-    background: var(--color-bg-inset);
-    border-left: 2px solid var(--color-accent-border);
-    font-size: 11.5px;
-    line-height: 1.6;
-  }
-
-  &__empty {
-    line-height: 1.6;
-    margin-bottom: 10px;
-  }
-
-  // 回复建议（概念稿 .draft）：surface 底 + 1px 描边 + 12.5px/1.65
-  &__suggestion {
-    padding: 10px 12px;
-    font-size: 12.5px;
-    line-height: 1.65;
-  }
-
-  &__suggestion-text {
-    padding-right: 46px;
-  }
-
-  &__copy {
-    top: 8px;
-    right: 8px;
-    font-size: 11px;
-  }
-
-  &__suggest-btn {
-    width: 100%;
-    justify-content: center;
-    height: 28px;
-    padding: 0 10px;
-    font-size: 12px;
-  }
+  .side-block:first-child { margin-top: 0; }
 }
 
 .message-list {

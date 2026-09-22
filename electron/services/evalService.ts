@@ -120,7 +120,7 @@ function isChatroom(sessionId: string): boolean {
  * 系统会话（非客户）：文件传输助手 / 公众号 / 企业微信客服。
  * 这些不是客户，进评测集只会让标注员白标一行并污染「无商机对照」分母
  * （live 库曾把 filehelper 收编成对照样本，且它在 intent_tag_log 里带「比价」打标）。
- * 判据沿用 analyticsService / annualReportService 既有口径。
+ * 判据沿用 analyticsService 既有口径。
  */
 function isSystemSession(sessionId: string): boolean {
   return sessionId === 'filehelper' || sessionId.startsWith('gh_') ||

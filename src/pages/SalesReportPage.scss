@@ -1,5 +1,7 @@
-// SalesReportPage.scss
-
+// SalesReportPage.scss —— P2.3 观感对齐概念语法（发丝版）
+// 页头接共享 .shead（eyebrow/hero/sub，hero 用页内既有计数拼句）；数字区接共享 .stats 发丝条；
+// 图表/排行/历史/热冷弃列表全部去卡壳改发丝分隔；按钮接共享 .btn--* 档位。
+// 纯视觉 + 文案映射：salesReportStore 计算、排除会话逻辑、图表数据源一律不动。
 .sr-page {
   display: flex;
   flex-direction: column;
@@ -7,93 +9,21 @@
   overflow: hidden;
   /* 页边留白由外壳 .content 提供（24px 32px），本页不再叠加整页 padding；
      height: 100% 取外壳内容框高度，border-box 下不会顶出滚动条 */
-  /* 限宽居中（§2.41 遗留补齐）：与其余六页同组同宽——main.scss 六页组 max-width: 1280px；
-     全高滚动布局只加水平居中，内层 .sr-page-body 滚动条随列宽收窄，宽屏不再横向铺满 */
+  /* 限宽居中：与其余六页同组同宽 */
   max-width: 1280px;
   margin: 0 auto;
   width: 100%;
 }
 
-/* 页眉：标题在左、操作在右（概念稿 .shead 几何）；窄窗口时工具条整体换行到标题下方，
-   而不是把四个控件挤在同一行里溢出 */
-.sr-page-header {
+// ─── 页头（共享 .shead：布局交给共享类，本页只管呼吸与 hero 强调） ───────────
+
+.sr-shead {
   flex-shrink: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px 20px;
-  flex-wrap: wrap;
   margin-bottom: 16px;
-}
 
-.sr-page-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 0;
-  h2 { font-size: 20px; font-weight: 600; margin: 0; }
-}
-
-.sr-page-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-left: auto;
-  justify-content: flex-end;
-}
-
-.sr-period-toggle {
-  display: flex;
-  background: var(--color-bg-inset);
-  border-radius: 9px;
-  padding: 3px;
-  gap: 2px;
-}
-
-.sr-period-btn {
-  padding: 6px 16px;
-  border: none;
-  background: transparent;
-  border-radius: 7px;
-  font-size: 13px;
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  transition: all 0.2s;
-  &.active {
-    background: var(--color-bg-surface);
-    color: var(--color-accent);
-    font-weight: 600;
-    box-shadow: var(--shadow-control);
-  }
-}
-
-.sr-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: var(--radius-control);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s;
-  &:disabled { opacity: 0.5; cursor: not-allowed; }
-}
-
-.sr-btn-primary {
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-  font-weight: 600;
-  &:hover:not(:disabled) { background: var(--color-accent-hover); }
-}
-
-.sr-btn-plain {
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border);
-  &:hover:not(:disabled) { background: var(--color-bg-hover); }
+  .hero b { color: var(--color-accent); font-weight: 600; }
+  .hero { max-width: 760px; }
+  .sub { color: var(--color-text-tertiary); }
 }
 
 .spinning { animation: spin 1s linear infinite; }
@@ -122,26 +52,28 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 22px;
 }
 
-// ─── 刀 2 采纳率行（只读聚合，PRD DoD 只看这两个数）───────────────────────────
+// ─── 刀 2 采纳率行（只读聚合，PRD DoD 只看这两个数）：安静行，不再盒装 ────────
 
 .sr-adoption-line {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 9px 14px;
-  font-size: 13px;
+  padding: 8px 2px;
+  font-size: 12.5px;
   color: var(--color-text-secondary);
-  background: var(--color-bg-inset);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
+  border-bottom: 1px solid var(--color-divider);
+
+  svg { color: var(--color-text-tertiary); }
 
   strong {
     color: var(--color-accent);
     font-weight: 600;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -150,102 +82,45 @@
 .sr-current-report {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
   min-width: 0;
 }
 
-/* 报告元信息行：周期文案可长（周报带起止日期、月报带年份），窄窗口换行而不是把
-   「生成于 …」顶到卡片外 */
-.sr-report-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 14px;
-  color: var(--color-text-secondary);
+/* 报告元信息：类型 + 周期在左，生成时间退右侧等宽小字 */
+.sr-report-meta {
   .sr-report-time {
-    margin-left: auto;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--color-text-tertiary);
     white-space: nowrap;
   }
 }
 
-// ─── 统计卡片 ────────────────────────────────────────────────────────────────
+// ─── 数字区（共享 .stats 发丝顶底） ──────────────────────────────────────────
 
-.sr-stats-grid {
-  display: grid;
+.sr-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* 周报 / 月报只有三个既有指标，不凑第四格 */
+.sr-stats--3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 
-.sr-stat-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  padding: 16px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  transition: transform .15s, border-color .15s;
-  &:hover { transform: translateY(-1px); border-color: var(--color-accent-border); }
-}
+// ─── 本机给出的复盘结论 / AI 分析摘要（共享 .notice 左 2px 语义条语法） ───────
 
-.sr-stat-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--stat-color, var(--color-accent)) 12%, transparent);
-  color: var(--stat-color, var(--color-accent));
+.sr-conclusion {
+  .sr-sec-hint {
+    font-size: 11px;
+    color: var(--color-text-tertiary);
+  }
 }
-
-.sr-stat-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.sr-stat-value {
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -.3px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-  color: var(--color-text-primary);
-  overflow-wrap: anywhere;
-}
-
-.sr-stat-label {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-}
-
-// ─── AI 摘要 ─────────────────────────────────────────────────────────────────
 
 .sr-ai-summary {
-  padding: 16px 18px;
-  background: linear-gradient(135deg, var(--color-accent-bg), transparent 60%);
-  border: 1px solid var(--color-accent-border);
-  border-radius: var(--radius-card);
-
-  .sr-ai-summary-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-accent);
-    margin-bottom: 8px;
-  }
+  margin: 12px 0 0;
 
   p {
     margin: 0;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.8;
     color: var(--color-text-primary);
     /* AI 摘要可能夹带长串（链接 / 无空格英文），只在此处断行，不影响其他文本 */
@@ -253,50 +128,39 @@
   }
 }
 
-// ─── 图表 ────────────────────────────────────────────────────────────────────
+// ─── 图表（数据源不动；外壳去卡壳，只留发丝顶线） ────────────────────────────
 
 .sr-charts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 0 28px;
 }
 
-.sr-chart-card {
+.sr-chart-sec {
   min-width: 0;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 16px;
-
-  h4 {
-    font-size: 13px;
-    font-weight: 600;
-    margin: 0 0 12px;
-    color: var(--color-text-primary);
-  }
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
 }
 
-// ─── Top 列表 ────────────────────────────────────────────────────────────────
-
-.sr-top-list {
-  background: var(--color-bg-surface);
+/* 每日消息量（概念稿屏 12 .chart：细线框卡 + 内嵌标题/图例 + 手写 SVG） */
+.sr-chartbox {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 16px;
-
-  h4 {
-    font-size: 13px;
-    font-weight: 600;
-    margin: 0 0 12px;
-  }
+  background: var(--color-bg-surface);
+  padding: 18px 20px 14px;
+  .sr-chartbox__h { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .sr-chartbox__t { font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+  .sr-chartbox__legend { display: flex; gap: 16px; font-size: 11px; color: var(--color-text-tertiary); }
+  .sr-chartbox__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  svg { display: block; width: 100%; height: auto; margin-top: 14px; }
 }
+
+// ─── Top 列表（互动排行：发丝行） ────────────────────────────────────────────
 
 .sr-top-items {
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .sr-top-item {
@@ -304,9 +168,11 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
-  padding: 8px 10px;
-  border-radius: var(--radius-control);
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--color-divider);
   transition: background 0.15s;
+
+  &:last-child { border-bottom: none; }
   &:hover { background: var(--color-bg-hover); }
 }
 
@@ -319,7 +185,7 @@
   justify-content: center;
   border-radius: 7px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
   background: var(--color-bg-inset);
@@ -332,7 +198,7 @@
 .sr-top-name {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -341,21 +207,15 @@
 
 .sr-top-count {
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--color-text-secondary);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-// ─── 历史报表 ────────────────────────────────────────────────────────────────
+// ─── 历史报告（发丝行；active 项 accent 左条 + 浅底） ────────────────────────
 
 .sr-history {
-  h3 {
-    font-size: 16px;
-    font-weight: 600;
-    margin: 0 0 12px;
-  }
+  .seclabel { margin-bottom: 4px; }
 }
 
 .sr-empty {
@@ -365,13 +225,12 @@
   gap: 12px;
   padding: 40px 20px;
   color: var(--color-text-tertiary);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .sr-history-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .sr-history-item {
@@ -379,26 +238,23 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  box-shadow: var(--shadow-card);
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--color-divider);
   cursor: pointer;
   position: relative;
-  transition: all 0.15s;
+  transition: background 0.15s;
 
-  &:hover { border-color: var(--color-accent-border); }
+  &:hover { background: var(--color-bg-hover); }
+  &:last-child { border-bottom: none; }
   &.active {
-    border-color: var(--color-accent-border);
     background: var(--color-accent-bg);
-    // active 左侧 accent 竖条（与下钻弹层小节标题同语言）
+    // active 左侧 accent 竖条
     &::before {
       content: '';
       position: absolute;
       left: 0;
-      top: 10px;
-      bottom: 10px;
+      top: 9px;
+      bottom: 9px;
       width: 3px;
       border-radius: 999px;
       background: var(--color-accent);
@@ -416,7 +272,7 @@
 }
 
 .sr-history-period {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--color-text-primary);
   overflow: hidden;
@@ -425,7 +281,7 @@
 }
 
 .sr-history-meta {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -440,7 +296,7 @@
 }
 
 .sr-history-time {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-tertiary);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -469,39 +325,41 @@
   @media (hover: none) { opacity: 1; }
 }
 
-// ─── 周复盘 ──────────────────────────────────────────────────────────────────
+// ─── 历史报告类型徽章：安静 tag 语法 ─────────────────────────────────────────
 
-.sr-report-type {
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 12px;
+.sr-history-badge {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-micro);
+  font-size: 11px;
   font-weight: 500;
-  background: var(--color-accent-bg);
-  color: var(--color-accent);
-}
+  line-height: 17px;
+  background: transparent;
+  color: var(--color-text-tertiary);
 
-.sr-review-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-
-  .sr-stat-card {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
+  &.review {
+    background: var(--color-accent-bg);
+    border-color: var(--color-accent-border);
+    color: var(--color-accent);
   }
 }
 
+// ─── 周复盘：阶段分布 + 热/冷/弃三列（去 tint 卡壳，语义只留在计数点） ───────
+
 .sr-empty-mini {
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--color-text-tertiary);
 }
 
 .sr-review-stage {
-  h4 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
 }
 
 .sr-stage-dist {
+  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -515,7 +373,7 @@
   .sr-stage-label {
     /* 阶段名是固定标签槽：给足宽度并允许省略，长阶段名不会挤掉右侧进度条与计数 */
     flex: 0 0 76px;
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--color-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -524,7 +382,7 @@
 
   .sr-stage-bar-track {
     flex: 1;
-    height: 8px;
+    height: 6px;
     border-radius: 999px;
     background: var(--color-bg-inset);
     overflow: hidden;
@@ -539,7 +397,7 @@
   .sr-stage-count {
     flex: 0 0 28px;
     text-align: right;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--color-text-primary);
@@ -549,23 +407,22 @@
 .sr-review-sections {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 0 28px;
 }
 
 .sr-review-list {
-  padding: 14px 16px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--color-divider);
-  background: var(--color-bg-surface);
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
 
   h4 {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin: 0 0 10px;
-    font-size: 14px;
+    margin: 0 0 8px;
+    font-size: 12px;
     font-weight: 600;
-    color: var(--color-text-primary);
+    letter-spacing: 0.04em;
+    color: var(--color-text-secondary);
   }
 
   ul {
@@ -581,118 +438,48 @@
     display: flex;
     align-items: flex-start;
     gap: 7px;
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 12.5px;
+    line-height: 1.55;
     color: var(--color-text-secondary);
     word-break: break-all;
   }
 
-  // 语义 tint 卡：颜色第一次与含义对齐（🔥热=红 / ❄️冷=蓝 / ✂️弃=灰）
-  &.hot { background: var(--color-danger-bg); border-color: var(--color-danger-border);
-    h4 { color: var(--color-danger); } }
-  &.cold { background: var(--color-accent-bg); border-color: var(--color-accent-border);
-    h4 { color: var(--color-accent); } }
-  &.drop { background: var(--color-bg-inset); border-color: var(--color-divider);
-    h4 { color: var(--color-text-secondary); } }
-
+  // 语义只进计数点：🔥红 / ❄️蓝 / ✂️灰，不再整块 tint 底
   &.hot .sr-review-item-dot { background: var(--color-danger); }
   &.cold .sr-review-item-dot { background: var(--color-accent); }
   &.drop .sr-review-item-dot { background: var(--color-text-tertiary); }
 }
 
 .sr-review-count {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
   font-weight: 500;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
 }
 
 .sr-review-item-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   margin-top: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-// ─── 历史报告类型徽章 ────────────────────────────────────────────────────────
-
-.sr-history-badge {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--color-bg-inset);
-  color: var(--color-text-secondary);
-
-  &.review {
-    background: var(--color-accent-bg);
-    color: var(--color-accent);
-  }
-}
-
-/* 图表并排需要每张卡 ≥ ~470px 才不至于把 Top 图表的长客户名挤到与柱条重叠；
-   1024 宽窗口（侧栏展开时内容区约 740）仍按单列堆叠，1280 及以上保持左右并排 */
+/* 图表并排需要每张 ≥ ~470px 才不至于把 Top 图表的长客户名挤到与柱条重叠 */
 @media (max-width: 1100px) {
   .sr-charts-grid { grid-template-columns: minmax(0, 1fr); }
-  .sr-review-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .sr-review-sections { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 820px) {
-  .sr-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sr-stats,
+  .sr-stats--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sr-review-sections { grid-template-columns: 1fr; gap: 14px; }
 }
 
 @media (max-width: 620px) {
-  .sr-stats-grid { grid-template-columns: minmax(0, 1fr); }
+  .sr-stats,
+  .sr-stats--3 { grid-template-columns: minmax(0, 1fr); }
 }
 
-// ─── 排除联系人 ──────────────────────────────────────────────────────────────
-
-.sr-btn-exclude {
-  background: color-mix(in srgb, var(--color-divider) 55%, transparent);
-  color: var(--color-text-secondary);
-  &:hover:not(:disabled) { color: var(--color-text-primary); }
-}
-
-.sr-btn-badge {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  text-align: center;
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-}
-
-.sr-top-exclude {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  opacity: 0;
-  transition: all 0.15s;
-
-  /* 与历史报告删除键同一处理：聚焦 / 触屏下可见，键盘用户不会找不到入口 */
-  .sr-top-item:hover &,
-  .sr-top-item:focus-within & { opacity: 1; }
-  &:focus-visible { opacity: 1; outline: 2px solid var(--color-accent-border); outline-offset: 1px; }
-  &:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent); color: var(--color-danger); }
-
-  @media (hover: none) { opacity: 1; }
-}
+// ─── 排除联系人弹窗（内部沿用既有样式，按钮接共享档位） ──────────────────────
 
 .sr-exclude-mask {
   position: fixed;
@@ -711,7 +498,7 @@
   max-height: min(600px, calc(100vh - 80px));
   background: var(--color-bg-surface);
   border-radius: 14px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
@@ -815,4 +602,28 @@
   flex: 1;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.sr-top-exclude {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+
+  /* 与历史报告删除键同一处理：聚焦 / 触屏下可见，键盘用户不会找不到入口 */
+  .sr-top-item:hover &,
+  .sr-top-item:focus-within & { opacity: 1; }
+  &:focus-visible { opacity: 1; outline: 2px solid var(--color-accent-border); outline-offset: 1px; }
+  &:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent); color: var(--color-danger); }
+
+  @media (hover: none) { opacity: 1; }
 }

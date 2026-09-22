@@ -18,22 +18,23 @@
     color: var(--color-accent);
   }
 
+  // 抬头右侧的进度戳记：与 Chat / 客户右栏的栏头 .num 同一档（10.5px 等宽 tertiary）
   &__count {
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--color-text-tertiary);
   }
 
-  // 进度：2px 细刻度（稿子的 .bar），不再用 6px 圆角轨道
+  // 进度：2px 细刻度（稿子的 .bar），不再用 6px 圆角轨道；P1.6 起用中性色档（bar--mute）
   &__bar {
     width: 100%;
     margin: 10px 0 2px;
     height: 2px;
   }
 
-  // 进度旁的真实分子分母（11px 等宽小字，与抬头数字同档；数字大时不挤压抬头行）
+  // 进度旁的真实分子分母（等宽小字，与抬头数字同档；数字大时不挤压抬头行）
   &__progress {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--color-text-tertiary);
   }
 

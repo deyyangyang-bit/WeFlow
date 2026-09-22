@@ -250,15 +250,11 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
         const [
           savedDbPath,
           savedCachePath,
-          savedWxid,
-          savedImageXorKey,
-          savedImageAesKey
+          savedWxid
         ] = await Promise.all([
           configService.getDbPath(),
           configService.getCachePath(),
-          configService.getMyWxid(),
-          configService.getImageXorKey(),
-          configService.getImageAesKey()
+          configService.getMyWxid()
         ])
         if (cancelled) return
 
@@ -266,10 +262,9 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
         setCachePath(savedCachePath || '')
         setDecryptKey('')
         setHasReacquiredDbKey(false)
-        if (typeof savedImageXorKey === 'number' && Number.isFinite(savedImageXorKey)) {
-          setImageXorKey(`0x${savedImageXorKey.toString(16).toUpperCase().padStart(2, '0')}`)
-        }
-        setImageAesKey(savedImageAesKey || '')
+        // H2：已保存图片密钥不回显到输入框（留空 = 不修改；新账号经自动获取或手动粘贴）
+        setImageXorKey('')
+        setImageAesKey('')
 
         if (savedDbPath) {
           const scannedWxids = await window.electronAPI.dbPath.scanWxids(savedDbPath)
@@ -383,6 +378,10 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
           setError(validationError)
         } else {
           setError('')
+          // P0：目录经原生对话框批准 → 走专用端点落库 dbPath
+          try { await configService.setDbPath(selectedPath) } catch (setErr) {
+            setError(String(setErr instanceof Error ? setErr.message : setErr))
+          }
         }
       }
     } catch (e) {
@@ -752,14 +751,16 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
         return
       }
 
-      await configService.setDbPath(dbPath)
+      // P0：dbPath 已在前置动作落库——目录选择经 dbpath:setFromDialog（对话框批准校验），
+      // 自动检测经 dbpath:autoDetect（主进程直接落库）；渲染层不再有 dbPath 写通道
       await configService.setDecryptKey(decryptKey)
       await configService.setMyWxid(wxid)
       await configService.setCachePath(cachePath)
       const parsedXorKey = imageXorKey ? parseInt(imageXorKey.replace(/^0x/i, ''), 16) : null
       await configService.setImageXorKey(typeof parsedXorKey === 'number' && !Number.isNaN(parsedXorKey) ? parsedXorKey : 0)
       await configService.setImageAesKey(imageAesKey || '')
-      await configService.setWxidConfig(wxid, {
+      // H2：wxid 配置经专用端点写（补丁语义；首次引导为该账号录入完整密钥组）
+      await configService.setWxidSecretConfig(wxid, {
         decryptKey,
         imageXorKey: typeof parsedXorKey === 'number' && !Number.isNaN(parsedXorKey) ? parsedXorKey : 0,
         imageAesKey
@@ -948,7 +949,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                     className="field-input"
                     placeholder={dbPathPlaceholder}
                     value={dbPath}
-                    onChange={(e) => handleDbPathChange(e.target.value)}
+                    readOnly
+                    title="请使用「自动检测」或目录选择按钮"
                   />
                 </div>
                 <div className="action-row">

@@ -1,121 +1,40 @@
-// SalesContextStrip — 聊天页销售上下文条
-// 2026-09-02 UI 美化（批次 B）：旧族 var(--bg-*/--text-*) 与字面 hex → 前进视觉 tokens。纯样式。
+// SalesContextStrip — 聊天页右栏「销售上下文」
+// 2026-09-18 概念稿 P1：由顶部一条折叠条改为侧栏分段（.side-block / .side-head / .verdicts）。
+// 2026-09-18 P1.1：判断 / 依据 / 回复建议三段全部吃概念稿基础件（.verdicts / .evidence+.ev / .draft+.draft__acts，
+// 定义在 src/styles/main.scss）——本文件只留「侧栏里怎么排」的紧凑元信息，不再持有一层私有皮肤。
+// 旧族 var(--bg-*/--text-*) 与字面 hex 一律不用，颜色全走 --color-*。
+// 2026-09-18 P1.5：栏头右侧收敛为概念稿同款单一 .num 戳记（.cws-side__meta 同档），
+// 旧的 __meta 弹性组与内联色 .pill 徽章、__silent 档已删；本文件只剩前提行与戳记的字号档。
 .sales-context-strip {
-  border-bottom: 1px solid var(--color-divider);
-  background: var(--color-bg-surface-muted);
   font-size: 12px;
 
-  &__bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 16px;
-    cursor: pointer;
-    user-select: none;
-    &:hover { background: var(--color-bg-hover); }
-  }
+  // 侧栏分段的间距与 .side-block 全局规则一致（22px），这里只补首段与栏头的贴合
+  > .side-block:first-child { margin-top: 0; }
 
-  // 阶段 pill：底色由 TSX 按阶段内联注入（彩色面），字面白文字保留
-  &__stage {
-    color: #fff;
-    font-size: 10px;
-    font-weight: 600;
-    padding: 1px 7px;
-    border-radius: 999px;
-    flex-shrink: 0;
-  }
-
-  &__silent {
-    color: var(--color-text-secondary);
-    flex-shrink: 0;
-    &.warn { color: var(--color-danger); font-weight: 600; }
-  }
-
+  // 前提行：最近意向 / 备注（等宽小字，不抢判断栏的注意力）
   &__reason {
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    line-height: 1.6;
     color: var(--color-text-tertiary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-  }
-
-  &__toggle {
-    color: var(--color-text-tertiary);
-    flex-shrink: 0;
-    margin-left: auto;
-  }
-
-  &__detail {
-    padding: 8px 16px 10px;
-    border-top: 1px dashed var(--color-divider);
+    overflow-wrap: anywhere;
   }
 
   &__notes {
-    font-size: 12px;
-    color: var(--color-text-secondary);
-    margin-bottom: 8px;
-    line-height: 1.4;
+    margin-top: 3px;
   }
 
-  &__suggestion {
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    padding: 10px 12px;
-    position: relative;
-
-    &-text {
-      font-size: 13px;
-      color: var(--color-text-primary);
-      line-height: 1.5;
-      padding-right: 50px;
-    }
+  // 栏头右侧的次要数字：依据条数（依据消息）/ 阶段·沉默·识别时间（本机识别）——
+  // 同一档语气（10.5px 等宽 tertiary），等宽字形由 tsx 里的 .num 提供，不新造徽章
+  &__count,
+  &__stamp {
+    font-size: 10.5px;
+    color: var(--color-text-tertiary);
+    white-space: nowrap;
   }
 
-  &__copy {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 11px;
-    color: var(--color-text-secondary);
-    background: var(--color-bg-surface-muted);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-small);
-    padding: 2px 7px;
-    cursor: pointer;
-    &:hover { background: var(--color-bg-hover); }
+  // 判断为空时的说明：沿用全局 .coverage 底，只把 22px 上边距收到侧栏节奏里
+  .coverage {
+    margin-top: 8px;
   }
-
-  // AI 建议按钮：蓝 = 信息（原紫色 → 品牌 accent 近似）
-  &__suggest-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
-    color: var(--color-accent);
-    background: var(--color-accent-bg);
-    border: 1px solid var(--color-accent-border);
-    border-radius: var(--radius-small);
-    padding: 5px 12px;
-    cursor: pointer;
-    transition: background 0.12s;
-    &:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-    &:disabled { opacity: 0.5; cursor: not-allowed; }
-  }
-
-  /* P0-3.3 AI 当前判断卡（消费 currentView.judgments；evidence 点击才回查 P0-2B） */
-  &__judgments { margin: 4px 0 8px; }
-  &__j-row { display: flex; gap: 8px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
-  &__j-label { flex-shrink: 0; color: var(--color-accent); font-weight: 500; min-width: 48px; }
-  &__j-value { color: var(--color-text-primary); line-height: 1.5; }
-  &__j-badge { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-size: 11px; vertical-align: 1px; }
-  &__j-badge--stale { background: var(--color-warning-bg); color: var(--color-warning); }
-  &__j-badge--manual { background: var(--color-accent-bg); color: var(--color-accent); }
-  &__j-evidence { margin-left: 8px; padding: 0 8px; font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg); border: none; border-radius: var(--radius-small); cursor: pointer; }
-  &__j-evidence:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-  &__j-evidence-text { margin: 4px 0 2px 56px; padding: 6px 10px; background: var(--color-bg-surface-muted); border-left: 3px solid var(--color-accent-border); border-radius: var(--radius-small); font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; }
-  &__empty { color: var(--color-text-tertiary); font-size: 12px; margin-bottom: 8px; }
 }

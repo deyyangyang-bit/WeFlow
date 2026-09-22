@@ -72,7 +72,9 @@ export interface ActionStats {
   r6Count: number
 }
 
-export type SignalFilter = 'all' | 'task' | 'urgent'
+// 2026-09-19 概念稿屏 1 四档筛选（all/task/insight/urgent）。insight 来源本体已随
+// 设计-AI见解重定位 §3.2 移出卡流，档位保留、语义改按「非 task 来源」（提醒/商机动向）取数
+export type SignalFilter = 'all' | 'task' | 'insight' | 'urgent'
 
 /** 待办清单条目（TodoSidebar 数据源，与主卡流同 store 同步） */
 export interface TodoTask {

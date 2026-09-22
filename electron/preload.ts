@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 // 分配模式只有一份定义（shared/centralDownCommand.ASSIGNMENT_MODES）；此处只做类型引用，不另建枚举
 import type { AssignmentMode } from '../shared/centralDownCommand'
+// annualReview:progress 订阅辅助：wrapper + removeListener（多订阅者独立清理，不用 removeAllListeners）
+import { subscribeIpcEvent } from './services/ipcEventSubscription'
 
 type CloseConfirmPayload = {
   canMinimizeToTray: boolean
@@ -11,9 +13,49 @@ type CloseConfirmPayload = {
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
   config: {
+    // H2：通用 config:get/set 由主进程白名单把关（秘密键/未知键拒绝）
     get: (key: string) => ipcRenderer.invoke('config:get', key),
     set: (key: string, value: any) => ipcRenderer.invoke('config:set', key, value),
     clear: () => ipcRenderer.invoke('config:clear')
+  },
+
+  // H2：用户录入秘密的专用通道——写入接收新值，读取只回 hasValue/maskedValue，完整秘密永不回传
+  secret: {
+    getStatus: () => ipcRenderer.invoke('secret:status'),
+    setDbKey: (value: string) => ipcRenderer.invoke('secret:setDbKey', value),
+    setImageKeys: (patch: { xorKey?: number | null; aesKey?: string | null }) => ipcRenderer.invoke('secret:setImageKeys', patch),
+    setHttpApiToken: (value: string) => ipcRenderer.invoke('secret:setHttpApiToken', value),
+    setAiModelApiKey: (value: string) => ipcRenderer.invoke('secret:setAiModelApiKey', value),
+    setTelegramToken: (value: string) => ipcRenderer.invoke('secret:setTelegramToken', value),
+    setWecomWebhook: (value: string) => ipcRenderer.invoke('secret:setWecomWebhook', value),
+    setWxidConfig: (wxid: string, patch: { decryptKey?: string | null; imageAesKey?: string | null; imageXorKey?: number | null }) =>
+      ipcRenderer.invoke('secret:setWxidConfig', wxid, patch),
+    removeWxidConfig: (wxid: string) => ipcRenderer.invoke('secret:removeWxidConfig', wxid),
+    undoRemoveWxidConfig: (token: string) => ipcRenderer.invoke('secret:undoRemoveWxidConfig', token)
+  },
+
+  // H2：账号切换/自动连接由主进程依已保存配置执行（密钥不经过渲染层）
+  account: {
+    switchTo: (wxid: string) => ipcRenderer.invoke('account:switchTo', wxid),
+    applySavedKey: () => ipcRenderer.invoke('account:applySavedKey')
+  },
+
+  // P0：受限服务地址专用端点——地址变化时主进程原子清除对应凭据（AI Key/中央令牌）
+  serviceAddr: {
+    setAiModelBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setAiModelBaseUrl', url),
+    setAiInsightBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setAiInsightBaseUrl', url),
+    setCentralSyncBaseUrl: (url: string) => ipcRenderer.invoke('serviceaddr:setCentralSyncBaseUrl', url)
+  },
+
+  // P0：dbPath 专用端点（对话框批准路径 / 主进程验证过的自动检测结果）
+  dbPathGate: {
+    setFromDialog: (path: string) => ipcRenderer.invoke('dbpath:setFromDialog', path),
+    setVerified: (path: string) => ipcRenderer.invoke('dbpath:setVerified', path)
+  },
+
+  // P1b：导出根目录专用选择（主进程弹对话框 → 授权 + 持久化根 + 更新偏好）
+  exportGate: {
+    chooseRoot: () => ipcRenderer.invoke('export:chooseRoot')
   },
 
   // 通知
@@ -513,44 +555,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('groupAnalytics:exportGroupMemberMessages', chatroomId, memberUsername, outputPath, startTime, endTime)
   },
 
-  // 年度报告
-  annualReport: {
-    getAvailableYears: () => ipcRenderer.invoke('annualReport:getAvailableYears'),
-    startAvailableYearsLoad: () => ipcRenderer.invoke('annualReport:startAvailableYearsLoad'),
-    cancelAvailableYearsLoad: (taskId: string) => ipcRenderer.invoke('annualReport:cancelAvailableYearsLoad', taskId),
-    generateReport: (year: number) => ipcRenderer.invoke('annualReport:generateReport', year),
-    exportImages: (payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) =>
-      ipcRenderer.invoke('annualReport:exportImages', payload),
-    captureCurrentWindow: () => ipcRenderer.invoke('annualReport:captureCurrentWindow'),
-    onAvailableYearsProgress: (callback: (payload: {
+  // 年度经营复盘（S3：确定性统计报告与生成编排；旧「年度报告/双人报告」通道 S8 已下线，勿恢复）
+  annualReview: {
+    getAvailableYears: () => ipcRenderer.invoke('annualReview:getAvailableYears'),
+    generate: (year: number) => ipcRenderer.invoke('annualReview:generate', { year }),
+    getReport: (year: number) => ipcRenderer.invoke('annualReview:getReport', { year }),
+    cancel: (taskId: string) => ipcRenderer.invoke('annualReview:cancel', { taskId }),
+    /** 只读任务状态查询（按 taskId 的权威来源；渲染层对账用——不用报告缓存代替任务状态） */
+    getTaskStatus: (taskId: string) => ipcRenderer.invoke('annualReview:getTaskStatus', { taskId }),
+    export: (year: number, format: 'markdown' | 'csv') => ipcRenderer.invoke('annualReview:export', { year, format }),
+    /**
+     * AI 分析（S7.2）：只提交 { taskId, force? }——报告由主进程在当前账号作用域内定位，
+     * 渲染层不上传报告内容/prompt/模型参数。force=true 仅用于「重新生成 AI 诊断」
+     * （跳过结果缓存、真实调用模型；不绕过任何校验）。
+     * 返回严格结构化结果（成功=analysis+model+promptVersion+generatedAt；失败=固定 code+固定文案）。
+     */
+    aiAnalysis: (taskId: string, force?: boolean) =>
+      ipcRenderer.invoke('annualReview:aiAnalysis', { taskId, force: force === true }),
+    /** 取消在途 AI 分析（只中止该 taskId；无在途调用 → analysis_not_found） */
+    aiCancel: (taskId: string) => ipcRenderer.invoke('annualReview:aiAnalysisCancel', { taskId }),
+    onProgress: (callback: (payload: {
       taskId: string
-      years?: number[]
-      done: boolean
-      error?: string
-      canceled?: boolean
-      strategy?: 'cache' | 'native' | 'hybrid'
-      phase?: 'cache' | 'native' | 'scan' | 'done'
+      year: number
+      phase: 'loading' | 'computing' | 'completed' | 'failed'
+      progress: number
       statusText?: string
-      nativeElapsedMs?: number
-      scanElapsedMs?: number
-      totalElapsedMs?: number
-      switched?: boolean
-      nativeTimedOut?: boolean
+      done: boolean
+      error?: { code: string; message: string }
     }) => void) => {
-      ipcRenderer.on('annualReport:availableYearsProgress', (_, payload) => callback(payload))
-      return () => ipcRenderer.removeAllListeners('annualReport:availableYearsProgress')
-    },
-    onProgress: (callback: (payload: { status: string; progress: number }) => void) => {
-      ipcRenderer.on('annualReport:progress', (_, payload) => callback(payload))
-      return () => ipcRenderer.removeAllListeners('annualReport:progress')
-    }
-  },
-  dualReport: {
-    generateReport: (payload: { friendUsername: string; year: number }) =>
-      ipcRenderer.invoke('dualReport:generateReport', payload),
-    onProgress: (callback: (payload: { status: string; progress: number }) => void) => {
-      ipcRenderer.on('dualReport:progress', (_, payload) => callback(payload))
-      return () => ipcRenderer.removeAllListeners('dualReport:progress')
+      // 只移除本次注册的 wrapper：A/B 两个订阅者并存时，清理 A 后 B 继续收到事件（幂等）
+      return subscribeIpcEvent(ipcRenderer, 'annualReview:progress', (payload) => callback(payload as Parameters<typeof callback>[0]))
     }
   },
 
@@ -647,6 +681,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // AI 见解
   insight: {
     testConnection: () => ipcRenderer.invoke('insight:testConnection'),
+    sendWecomTest: (webhook: string) => ipcRenderer.invoke('insight:sendWecomTest', webhook),
     listRecords: (filters?: any) => ipcRenderer.invoke('insight:listRecords', filters),
     getRecord: (id: string) => ipcRenderer.invoke('insight:getRecord', id),
     markRecordRead: (id: string) => ipcRenderer.invoke('insight:markRecordRead', id),
@@ -744,7 +779,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     allocationReject: (id: number) => ipcRenderer.invoke('crm:allocation:reject', id),
     paymentApprove: (id: number) => ipcRenderer.invoke('crm:payment:approve', id),
     paymentsByDay: (days?: number) => ipcRenderer.invoke('crm:payments:byDay', days),
-    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string }) => ipcRenderer.invoke('crm:payment:claim', id, patch),
+    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string }) => ipcRenderer.invoke('crm:payment:claim', id, patch),
+    allocationReconcile: (id: number) => ipcRenderer.invoke('crm:allocation:reconcile', id),
+    allocationInvoiceRequirement: (id: number, requirement: 'unknown' | 'required' | 'not_required' | 'info_pending') =>
+      ipcRenderer.invoke('crm:allocation:invoiceRequirement', id, requirement),
     currentSalesName: () => ipcRenderer.invoke('crm:currentSalesName'),
     salesTeam: () => ipcRenderer.invoke('crm:sales:team'),
     salesTeamAdd: (name: string) => ipcRenderer.invoke('crm:sales:team:add', name),
@@ -783,6 +821,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 单机线索流转
     leadImport: (source: string, fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:import', source, fileName, rows),
+    leadDupCheck: (input: { phone?: string; wechat?: string }) => ipcRenderer.invoke('crm:lead:dupCheck', input),
+    leadCreate: (input: { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }) => ipcRenderer.invoke('crm:lead:create', input),
+    leadQrSave: (fileName: string, srcPath: string) => ipcRenderer.invoke('crm:lead:qrSave', fileName, srcPath),
+    leadHistoryImport: (fileName: string, rows: unknown[]) => ipcRenderer.invoke('crm:lead:historyImport', fileName, rows),
+    dupGroupList: () => ipcRenderer.invoke('crm:dupGroup:list'),
     leadList: (opts?: unknown) => ipcRenderer.invoke('crm:lead:list', opts),
     leadDetail: (id: number) => ipcRenderer.invoke('crm:lead:detail', id),
     leadOverview: () => ipcRenderer.invoke('crm:lead:overview'),
@@ -802,6 +845,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     assignmentList: (opts?: { leadId?: number; salesName?: string; status?: string; page?: number; pageSize?: number }) => ipcRenderer.invoke('crm:assignment:list', opts),
     // 批量分配（设计稿屏 3）：按模式从待分配池取 N 条分给名单（weight/round_robin/load），批次审计可追溯
     assignmentAssignBatch: (req: { count: number; mode?: Exclude<AssignmentMode, 'manual'>; weights?: Record<string, number>; actor?: string }) => ipcRenderer.invoke('crm:assignment:assignBatch', req),
+    // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名，空串=名单第一位；无写路径）
+    assignmentRoundRobinNext: () => ipcRenderer.invoke('crm:assignment:roundRobinNext') as Promise<{ ok: boolean; data?: { next: string } }>,
+    // 分配数据失效事件（SLA 回收 / LAN、中央下行 / 其他主进程或窗口写入后广播；载荷只含 action + leadIds，
+    // 不含任何客户敏感字段）。返回清理函数，组件卸载必须调用以免监听器泄漏。
+    onAssignmentInvalidated: (callback: (payload: { action: string; leadIds: number[]; at: number }) => void) => {
+      const listener = (_e: unknown, payload: { action: string; leadIds: number[]; at: number }) => callback(payload)
+      ipcRenderer.on('crm:assignment:invalidated', listener)
+      return () => ipcRenderer.removeListener('crm:assignment:invalidated', listener)
+    },
     // 加好友判定（PRD 1.4a 手动路）：绑定微信 → customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => ipcRenderer.invoke('crm:identity:bind', req),
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论写 assignment.sla2_scan_ref + 审计

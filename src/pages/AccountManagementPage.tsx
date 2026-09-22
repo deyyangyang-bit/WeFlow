@@ -33,7 +33,8 @@ type AccountProfileCacheEntry = {
 
 interface DeleteUndoState {
   targetWxid: string
-  deletedConfigEntries: Array<[string, configService.WxidConfig]>
+  /** 主进程内存中的配置快照 token（H2：密钥快照不经渲染层往返） */
+  undoToken?: string
   deletedProfileEntries: Array<[string, AccountProfileCacheEntry]>
   previousCurrentWxid: string
   shouldRestoreAsCurrent: boolean
@@ -148,7 +149,7 @@ function AccountManagementPage() {
       const [path, rawCurrentWxid, wxidConfigs] = await Promise.all([
         configService.getDbPath(),
         configService.getMyWxid(),
-        configService.getWxidConfigs()
+        configService.getWxidSecretConfigs()
       ])
       const nextDbPath = String(path || '').trim()
       const nextCurrentWxid = String(rawCurrentWxid || '').trim()
@@ -168,13 +169,13 @@ function AccountManagementPage() {
 
       const accountProfileCache = readAccountProfilesCache()
       const configEntries = Object.entries(wxidConfigs || {})
-      const configByNormalized = new Map<string, { key: string; value: configService.WxidConfig }>()
+      const configByNormalized = new Map<string, { key: string; value: configService.WxidSecretStatus }>()
       for (const [wxid, cfg] of configEntries) {
         const normalized = normalizeAccountId(wxid) || wxid
         if (!normalized) continue
         const previous = configByNormalized.get(normalized)
         if (!previous || Number(cfg?.updatedAt || 0) > Number(previous.value?.updatedAt || 0)) {
-          configByNormalized.set(normalized, { key: wxid, value: cfg || {} })
+          configByNormalized.set(normalized, { key: wxid, value: cfg || { hasDecryptKey: false, hasImageXorKey: false, hasImageAesKey: false, updatedAt: 0 } })
         }
       }
 
@@ -288,11 +289,10 @@ function AccountManagementPage() {
     resetChatStore()
   }, [clearAnalyticsStoreCache, isDbConnected, resetChatStore])
 
-  const applyWxidConfig = useCallback(async (wxid: string, wxidConfig: configService.WxidConfig | null) => {
-    await configService.setMyWxid(wxid)
-    await configService.setDecryptKey(wxidConfig?.decryptKey || '')
-    await configService.setImageXorKey(typeof wxidConfig?.imageXorKey === 'number' ? wxidConfig.imageXorKey : 0)
-    await configService.setImageAesKey(wxidConfig?.imageAesKey || '')
+  // H2：账号切换/恢复统一走主进程能力——密钥由主进程从已保存配置应用，渲染层零密钥经手
+  const switchToAccount = useCallback(async (wxid: string) => {
+    const result = await configService.switchToWxidAccount(wxid)
+    if (!result.ok) throw new Error(result.reason || '账号切换失败')
   }, [])
 
   const handleSwitchAccount = useCallback(async (wxid: string) => {
@@ -305,25 +305,18 @@ function AccountManagementPage() {
     setNotice(null)
     setDeleteUndoState(null)
     try {
-      const allConfigs = await configService.getWxidConfigs()
-      const configEntries = Object.entries(allConfigs || {})
-      const matched = configEntries.find(([key]) => {
-        const normalized = normalizeAccountId(key) || key
-        return key === wxid || normalized === targetNormalized
-      })
-      const targetConfig = matched?.[1] || null
-      await applyWxidConfig(wxid, targetConfig)
+      await switchToAccount(wxid)
       await clearRuntimeCacheState()
       window.dispatchEvent(new CustomEvent('wxid-changed', { detail: { wxid } }))
       setNotice({ type: 'success', text: `已切换到账号「${wxid}」` })
       await loadAccounts()
     } catch (error) {
       console.error('切换账号失败:', error)
-      setNotice({ type: 'error', text: '切换账号失败，请稍后重试' })
+      setNotice({ type: 'error', text: `切换账号失败：${error instanceof Error ? error.message : '请稍后重试'}` })
     } finally {
       setWorkingWxid('')
     }
-  }, [applyWxidConfig, clearRuntimeCacheState, currentWxid, loadAccounts, workingWxid])
+  }, [clearRuntimeCacheState, currentWxid, loadAccounts, switchToAccount, workingWxid])
 
   const handleAddAccount = useCallback(async () => {
     if (workingWxid) return
@@ -349,23 +342,12 @@ function AccountManagementPage() {
     setNotice(null)
     setDeleteUndoState(null)
     try {
-      const allConfigs = await configService.getWxidConfigs()
-      const nextConfigs: Record<string, configService.WxidConfig> = { ...allConfigs }
-      const matchedKeys = Object.keys(nextConfigs).filter((key) => {
-        const normalized = normalizeAccountId(key) || key
-        return key === targetWxid || normalized === normalizedTarget
-      })
-
-      if (matchedKeys.length === 0) {
+      // H2：删除与撤销快照都由主进程完成（密钥快照只在主进程内存）
+      const removeResult = await configService.removeWxidSecretConfig(targetWxid)
+      if (!removeResult.ok || removeResult.removed === 0) {
         setNotice({ type: 'info', text: `账号「${targetWxid}」暂无可删除配置` })
         return
       }
-
-      const deletedConfigEntries: Array<[string, configService.WxidConfig]> = matchedKeys.map((key) => [key, nextConfigs[key] || {}])
-      for (const key of matchedKeys) {
-        delete nextConfigs[key]
-      }
-      await configService.setWxidConfigs(nextConfigs)
 
       const accountProfileCache = readAccountProfilesCache()
       const deletedProfileEntries: Array<[string, AccountProfileCacheEntry]> = []
@@ -382,7 +364,7 @@ function AccountManagementPage() {
       const isDeletingCurrent = Boolean(currentNormalized && currentNormalized === normalizedTarget)
       const undoPayload: DeleteUndoState = {
         targetWxid,
-        deletedConfigEntries,
+        undoToken: removeResult.undoToken,
         deletedProfileEntries,
         previousCurrentWxid: currentWxid,
         shouldRestoreAsCurrent: isDeletingCurrent,
@@ -392,13 +374,14 @@ function AccountManagementPage() {
       if (isDeletingCurrent) {
         await clearRuntimeCacheState()
 
-        const remainingEntries = Object.entries(nextConfigs)
+        const remainingConfigs = await configService.getWxidSecretConfigs()
+        const remainingEntries = Object.entries(remainingConfigs)
           .filter(([wxid]) => Boolean(String(wxid || '').trim()))
           .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))
 
         if (remainingEntries.length > 0) {
-          const [nextWxid, nextConfig] = remainingEntries[0]
-          await applyWxidConfig(nextWxid, nextConfig || null)
+          const [nextWxid] = remainingEntries[0]
+          await switchToAccount(nextWxid)
           window.dispatchEvent(new CustomEvent('wxid-changed', { detail: { wxid: nextWxid } }))
           addHiddenDeletedAccountNormId(normalizedTarget)
           setDeleteUndoState(undoPayload)
@@ -408,6 +391,7 @@ function AccountManagementPage() {
         }
 
         await configService.setMyWxid('')
+        // 清空当前密钥位（专用端点：'' = 清除）
         await configService.setDecryptKey('')
         await configService.setImageXorKey(0)
         await configService.setImageAesKey('')
@@ -430,7 +414,7 @@ function AccountManagementPage() {
     } finally {
       setWorkingWxid('')
     }
-  }, [applyWxidConfig, clearRuntimeCacheState, currentWxid, isDbConnected, loadAccounts, setDbConnected, workingWxid])
+  }, [clearRuntimeCacheState, currentWxid, isDbConnected, loadAccounts, setDbConnected, switchToAccount, workingWxid])
 
   const handleUndoDelete = useCallback(async () => {
     if (!deleteUndoState || workingWxid) return
@@ -438,12 +422,10 @@ function AccountManagementPage() {
     setWorkingWxid(`undo:${deleteUndoState.targetWxid}`)
     setNotice(null)
     try {
-      const currentConfigs = await configService.getWxidConfigs()
-      const restoredConfigs: Record<string, configService.WxidConfig> = { ...currentConfigs }
-      for (const [key, configValue] of deleteUndoState.deletedConfigEntries) {
-        restoredConfigs[key] = configValue || {}
+      // H2：配置快照恢复在主进程完成（按删除时返回的 token）
+      if (deleteUndoState.undoToken) {
+        await configService.undoRemoveWxidSecretConfig(deleteUndoState.undoToken)
       }
-      await configService.setWxidConfigs(restoredConfigs)
       removeHiddenDeletedAccountNormId(normalizeAccountId(deleteUndoState.targetWxid) || deleteUndoState.targetWxid)
 
       const accountProfileCache = readAccountProfilesCache()
@@ -453,17 +435,8 @@ function AccountManagementPage() {
       window.localStorage.setItem(ACCOUNT_PROFILES_CACHE_KEY, JSON.stringify(accountProfileCache))
 
       if (deleteUndoState.shouldRestoreAsCurrent && deleteUndoState.previousCurrentWxid) {
-        const previousNormalized = normalizeAccountId(deleteUndoState.previousCurrentWxid) || deleteUndoState.previousCurrentWxid
-        const restoreConfigEntry = Object.entries(restoredConfigs)
-          .filter(([key]) => {
-            const normalized = normalizeAccountId(key) || key
-            return key === deleteUndoState.previousCurrentWxid || normalized === previousNormalized
-          })
-          .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))[0]
-        const restoreConfig = restoreConfigEntry?.[1] || null
-
         await clearRuntimeCacheState()
-        await applyWxidConfig(deleteUndoState.previousCurrentWxid, restoreConfig)
+        await switchToAccount(deleteUndoState.previousCurrentWxid)
         if (deleteUndoState.previousDbConnected) {
           setDbConnected(true, dbPath || undefined)
         }
@@ -479,7 +452,7 @@ function AccountManagementPage() {
     } finally {
       setWorkingWxid('')
     }
-  }, [applyWxidConfig, clearRuntimeCacheState, dbPath, deleteUndoState, loadAccounts, setDbConnected, workingWxid])
+  }, [clearRuntimeCacheState, dbPath, deleteUndoState, loadAccounts, setDbConnected, switchToAccount, workingWxid])
 
   const currentAccountLabel = useMemo(() => {
     if (!currentWxid) return '未设置'

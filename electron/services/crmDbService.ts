@@ -16,6 +16,15 @@ import { archivedDbName, businessDbPath } from './businessDbPath'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
 import { trackProposalEvent, currentActor } from './proposalEventTracking'
 import { emitInfoFieldConfirmed, emitOpportunityDealRegistered } from './crmLifecycleHooks'
+import {
+  announceAnnualReviewAuditAction,
+  announceAnnualReviewCrmWrite,
+  announceAnnualReviewDataChangedMany,
+  assertAnnualReviewWriteReason,
+  type AnnualReviewInvalidationReason
+} from './annualReviewInvalidation'
+import { nextAutoStage, type AutoStageDecision } from './salesStagePolicy'
+import { normalizeStage } from '../../shared/salesStage'
 
 // ─── 建表 SQL ────────────────────────────────────────────────────────────────
 const SCHEMA_SQL = `
@@ -106,27 +115,32 @@ CREATE TABLE IF NOT EXISTS invoice (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, account_id INTEGER, invoice_no TEXT,
   buyer TEXT, invoice_type TEXT, amount REAL DEFAULT 0, tax_rate REAL,
   invoice_date INTEGER, status TEXT DEFAULT 'pre_issue', attachment_path TEXT,
-  custom_fields TEXT DEFAULT '{}', created_at INTEGER, auto_updated_by TEXT
+  custom_fields TEXT DEFAULT '{}', created_at INTEGER, auto_updated_by TEXT,
+  requirement_status TEXT DEFAULT 'unknown', source_msg_id TEXT,
+  request_attachment_path TEXT, requested_by TEXT
 );
 CREATE TABLE IF NOT EXISTS payment_record (
   id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT, group_id TEXT, bank TEXT,
   account_tail TEXT, payer TEXT, amount_net REAL DEFAULT 0, pay_time INTEGER,
   memo TEXT, source TEXT DEFAULT 'bank_text', pay_channel TEXT DEFAULT 'bank_direct',
   needs_review INTEGER DEFAULT 0, attachment_path TEXT, raw_content TEXT, created_at INTEGER,
-  auto_approved_by TEXT
+  auto_approved_by TEXT, source_server_id TEXT
 );
 CREATE TABLE IF NOT EXISTS allocation (
   id INTEGER PRIMARY KEY AUTOINCREMENT, payment_record_id INTEGER,
   customer_hint TEXT, sales_hint TEXT, amount_hint REAL DEFAULT 0,
   credited_amount REAL DEFAULT 0, account_id INTEGER, contract_id INTEGER,
   sales_name TEXT, status TEXT DEFAULT 'pending', created_at INTEGER, confirmed_at INTEGER,
-  auto_confirmed_by TEXT, auto_reason TEXT
+  auto_confirmed_by TEXT, auto_reason TEXT, sales_wxid TEXT,
+  invoice_requirement TEXT DEFAULT 'unknown', invoice_requirement_source TEXT,
+  reconciliation_status TEXT DEFAULT 'pending', reconciled_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS logistics (
   id INTEGER PRIMARY KEY AUTOINCREMENT, tracking_no TEXT, brand TEXT,
   receiver TEXT, city TEXT, courier TEXT, status TEXT DEFAULT 'shipped',
   latest_update_at INTEGER, source_msg_id TEXT, link_status TEXT DEFAULT 'unlinked',
-  account_id INTEGER, contract_id INTEGER, created_at INTEGER, auto_linked_by TEXT
+  account_id INTEGER, contract_id INTEGER, created_at INTEGER, auto_linked_by TEXT,
+  exception_note TEXT DEFAULT '', superseded_by TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS product (
   id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, name TEXT, spec TEXT,
@@ -228,6 +242,24 @@ CREATE TABLE IF NOT EXISTS customer_identity (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cust_ident_pair ON customer_identity(identity_type, identity_value);
 CREATE INDEX IF NOT EXISTS idx_cust_ident_customer ON customer_identity(customer_id);
+-- ── dup_group（宪法 §3.1 duplicate_group 登记行，2026-09-19 撞客一期）──
+-- 中央身份锚点冲突登记的重复组本机落地表：只存身份哈希 + 成员（customerRef + 归属销售姓名）。
+-- 不存对方任何资料（昵称/头像/消息/聊天内容）；写者 = crmDupGroupService.applyDupGroupEvent 单点
+-- （中央下行 duplicate_group 广播事件），member_count 单调防旧事件回退。
+CREATE TABLE IF NOT EXISTS dup_group (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  anchor_type TEXT NOT NULL CHECK (anchor_type IN ('phone', 'wechat')),
+  anchor_hash TEXT NOT NULL,
+  anchor_masked TEXT DEFAULT '',
+  members_json TEXT NOT NULL DEFAULT '[]',
+  member_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (anchor_type, anchor_hash)
+);
+-- P1c：本地重复组版本裁决列（幂等 ALTER 兼容存量库）——aggregate_version 单调防回退
+-- （不再依赖 member_count：同成员数内容变化的新事件必须落地），content_digest 供同版本幂等判定
+CREATE INDEX IF NOT EXISTS idx_dup_group_anchor ON dup_group(anchor_type, anchor_hash);
 CREATE TABLE IF NOT EXISTS assignment (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id INTEGER NOT NULL,
@@ -366,9 +398,24 @@ const ENTITIES = [
   'payment_record', 'allocation', 'logistics', 'product', 'alias_map', 'group_config', 'shipping_info',
   'contract_status_history', 'activity_log', 'quote_signal', 'opportunity_event', 'crm_risk',
   'customer', 'customer_identity', 'assignment', 'ownership_history', 'outbox_event', 'audit_event',
-  'payment_promise', 'notify_inbox', 'first_classification', 'migration_dismissal'
+  'payment_promise', 'notify_inbox', 'first_classification', 'migration_dismissal', 'dup_group'
 ] as const
 export type CrmEntity = (typeof ENTITIES)[number]
+
+/**
+ * 事务对象的窄接口：写语句 + 读语句 + 年度复盘失效标记。
+ *
+ * 标记是**唯一**的失效声明入口（不再有静态 `affectsAnnualReview` 参数）：
+ *   - `markAnnualReviewChanged`：调用点已确认确实改写了白名单数据源；
+ *   - `markAnnualReviewChangedIfWrote`：以「最近一条写语句影响 ≥1 行」为条件（可能 no-op 的写点用）。
+ * 未标记 = 不影响年度复盘；标记只在 COMMIT 成功后派发。
+ */
+export interface CrmWriteTx {
+  run: (sql: string, params?: unknown[]) => number
+  all: (sql: string, params?: unknown[]) => CrmRow[]
+  markAnnualReviewChanged: (reason: AnnualReviewInvalidationReason) => void
+  markAnnualReviewChangedIfWrote: (reason: AnnualReviewInvalidationReason) => boolean
+}
 
 // ─── 客户信息自动填充（enrich）：字段定义 + 纯合并规则（可单测）───────────────
 /** AI 可自动填充的客户字段：前 6 个为 account 正式列，其余存 custom_fields */
@@ -549,14 +596,32 @@ class CrmDbService {
       try { this.db.run(`ALTER TABLE account ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
     }
     // Migration: 确认中心自动确认审计列（auto_confirm_log 表由 SCHEMA_SQL 保证）
+    const allocationColumnsBefore = new Set(this.all('PRAGMA table_info(allocation)').map((r) => String(r.name)))
     const autoConfirmCols: Array<[string, string, string]> = [
       ['allocation', 'auto_confirmed_by', 'TEXT'], ['allocation', 'auto_reason', 'TEXT'],
+      ['allocation', 'sales_wxid', 'TEXT'],
+      ['allocation', 'invoice_requirement', "TEXT DEFAULT 'unknown'"],
+      ['allocation', 'invoice_requirement_source', 'TEXT'],
+      ['allocation', 'reconciliation_status', "TEXT DEFAULT 'pending'"],
+      ['allocation', 'reconciled_at', 'INTEGER'],
       ['payment_record', 'auto_approved_by', 'TEXT'],
+      ['payment_record', 'source_server_id', 'TEXT'],
       ['logistics', 'auto_linked_by', 'TEXT'],
-      ['invoice', 'account_id', 'INTEGER'], ['invoice', 'auto_updated_by', 'TEXT']
+      ['logistics', 'exception_note', "TEXT DEFAULT ''"],
+      ['logistics', 'superseded_by', "TEXT DEFAULT ''"],
+      ['invoice', 'account_id', 'INTEGER'], ['invoice', 'auto_updated_by', 'TEXT'],
+      ['invoice', 'requirement_status', "TEXT DEFAULT 'unknown'"],
+      ['invoice', 'source_msg_id', 'TEXT'],
+      ['invoice', 'request_attachment_path', 'TEXT'],
+      ['invoice', 'requested_by', 'TEXT']
     ]
     for (const [table, col, type] of autoConfirmCols) {
       try { this.db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`) } catch { /* 列已存在 */ }
+    }
+    // 旧版 confirmed 同时承担「已认领/已核销」语义；首次新增核销列时保留为 legacy_confirmed。
+    // 新版销售认领只写 pending，必须由财务显式核销后才进入 allocated。
+    if (!allocationColumnsBefore.has('reconciliation_status')) {
+      this.db.run("UPDATE allocation SET reconciliation_status = 'legacy_confirmed' WHERE status = 'confirmed'")
     }
     // Migration: logistics 跟单列（认领销售 + 签收时间 + 认领客户；signed_at 0 = 未签收）
     // account_id = 物流归属客户（无合同客户也认领），contract_id 可选关联合同
@@ -569,6 +634,11 @@ class CrmDbService {
     }
     // Migration: contract 补 attachment_path（docgen 生成的合同 docx 路径写回用）
     try { this.db.run('ALTER TABLE contract ADD COLUMN attachment_path TEXT') } catch { /* 列已存在 */ }
+    // Migration: dup_group 版本裁决列（P1c 2026-09-20，幂等 ALTER 兼容存量库）：
+    // aggregate_version 单调防回退（不再依赖 member_count——同成员数内容变化的新事件必须落地），
+    // content_digest 供同版本幂等/冲突判定；存量行回填 0/''（下一事件按新版本落地）。
+    try { this.db.run('ALTER TABLE dup_group ADD COLUMN aggregate_version INTEGER DEFAULT 0') } catch { /* 列已存在 */ }
+    try { this.db.run('ALTER TABLE dup_group ADD COLUMN content_digest TEXT DEFAULT \'\'') } catch { /* 列已存在 */ }
     // Migration: opportunity 商机模块列（AI 从聊天自动识别采购信号 → 商机；opportunity_event 表由 SCHEMA_SQL 保证）
     const oppCols: Array<[string, string]> = [
       ['product', "TEXT DEFAULT ''"], ['quantity', 'INTEGER DEFAULT 0'],
@@ -691,6 +761,12 @@ class CrmDbService {
     //     导入批次回溯（→ import_batch.id 逻辑外键）；写者 = importLeads 单点；存量 = NULL。
     //     独立 ALTER 幂等吞错——lead 旧结构 DROP 重建块上方已跑过，此处保证重建后列必在（双路径模式）。
     try { this.db.run('ALTER TABLE lead ADD COLUMN import_batch_id INTEGER') } catch { /* 列已存在 */ }
+    // Migration: lead.wx_nickname / lead.qr_path（2026-09-19 单条录入通道，宪法 §3 登记行）：
+    //     wx_nickname = 人工登记的客户微信昵称（手机号录入必填同步项，绑定弹窗人工核对锚点，
+    //     永不参与自动好友判定）；qr_path = 微信二维码附件落盘路径（存图不解析）。
+    //     写者 = createLead 单点；存量 = 空串。独立 ALTER 幂等吞错（同 import_batch_id 双路径模式）。
+    try { this.db.run("ALTER TABLE lead ADD COLUMN wx_nickname TEXT DEFAULT ''") } catch { /* 列已存在 */ }
+    try { this.db.run("ALTER TABLE lead ADD COLUMN qr_path TEXT DEFAULT ''") } catch { /* 列已存在 */ }
     // §2.52 启动守卫补写审计：库从自动备份恢复时留一条 db_recover（此时 SCHEMA 已就位可写）
     if (openRes.outcome === 'restored') {
       try {
@@ -704,12 +780,27 @@ class CrmDbService {
     this.persist()
   }
 
-  /** 事务执行一组写操作（sql.js 单库事务）：成功 COMMIT+persist，失败 ROLLBACK 后抛错。tx.run 返回 last_insert_rowid。 */
-  runTx<T>(fn: (tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] }) => T): T {
+  /**
+   * 事务执行一组写操作（sql.js 单库事务）：成功 COMMIT+persist，失败 ROLLBACK 后抛错。tx.run 返回 last_insert_rowid。
+   *
+   * **年度复盘失效 = 事务内显式 changed 标记**（已删除「静态声明 → 事务成功即通知」的旧参数）：
+   *   - `tx.markAnnualReviewChanged(reason)`：调用点确认**确实改写了**年度复盘数据源（白名单表 /
+   *     白名单 audit action）时标记；
+   *   - `tx.markAnnualReviewChangedIfWrote(reason)`：仅当**最近一条写语句**实际影响 ≥1 行
+   *     （`SELECT changes()`）时标记——用于条件 UPDATE、幂等迁移等「可能 no-op」的写点；
+   *   - 默认无标记 = 不影响年度复盘：空事务、0 行命中、只写 scan_state / outbox / migration 表
+   *     一律不失效；
+   *   - 标记在 **COMMIT + persist 成功后**统一派发，且**同一次事务的全部标记走一次批量入口**
+   *     （`announceAnnualReviewDataChangedMany`）：多 reason 事务是一次事件，绝不产生
+   *     「首条立即 + 150ms 后补发第二条」的二次失效；ROLLBACK 与抛错路径不派发；
+   *   - reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配。
+   */
+  runTx<T>(fn: (tx: CrmWriteTx) => T): T {
     if (!this.db) throw new Error('CrmDb 未初始化')
     this.db.run('BEGIN')
+    const marked = new Set<AnnualReviewInvalidationReason>()
     try {
-      const tx = {
+      const tx: CrmWriteTx = {
         run: (sql: string, params: unknown[] = []) => {
           this.db!.run(sql, params as any[])
           const stmt = this.db!.prepare('SELECT last_insert_rowid() AS id')
@@ -726,11 +817,28 @@ class CrmDbService {
             while (stmt.step()) rows.push(stmt.getAsObject() as CrmRow)
             return rows
           } finally { stmt.free() }
+        },
+        markAnnualReviewChanged: (reason) => {
+          assertAnnualReviewWriteReason(reason)
+          marked.add(reason)
+        },
+        markAnnualReviewChangedIfWrote: (reason) => {
+          assertAnnualReviewWriteReason(reason)
+          // SELECT changes() = 最近一条 INSERT/UPDATE/DELETE 实际影响的行数（读语句不影响它），
+          // 因此标记必须紧跟在目标写语句之后、其他写语句之前。
+          const row = tx.all('SELECT changes() AS c')[0]
+          if (Number(row?.c || 0) <= 0) return false
+          marked.add(reason)
+          return true
         }
       }
       const out = fn(tx)
       this.db.run('COMMIT')
       this.persist()
+      // 事务已提交：**只派发一次**批量失效（事务内确实标记过的原因，去重稳定排序）。
+      // 逐条派发会让第一个 reason 立即失效、第二个 reason 进窗口并在 150ms 后再补一次——
+      // 同一次提交产生两次失效，正是本入口被批量化的原因。
+      announceAnnualReviewDataChangedMany([...marked])
       return out
     } catch (e) {
       try { this.db.run('ROLLBACK') } catch { /* ignore */ }
@@ -816,12 +924,23 @@ class CrmDbService {
     } finally { stmt.free() }
   }
 
+  /**
+   * 单条写语句（私有；create/update 及部分业务写方法经此）。
+   * 本方法**不**声明年度复盘失效（原始 SQL 不做表名匹配）：失效由调用点显式声明——
+   * 白名单表经 `create`/`update` 的 entity 参数自动声明，其余原始 SQL 写点各自调用
+   * `announceAnnualReviewCrmWrite` / `announceAnnualReviewAuditAction`。读操作走 all()/get()。
+   */
   private run(sql: string, params: unknown[] = []): number {
     if (!this.db) return 0
     this.db.run(sql, params as any[])
     const r = this.all('SELECT last_insert_rowid() AS id')
     this.persist()
     return r.length ? Number(r[0].id) : 0
+  }
+
+  /** 最近一条 INSERT/UPDATE/DELETE 实际影响的行数（0 = 没有真正改变数据 → 不触发失效） */
+  private lastChangeCount(): number {
+    return Number(this.all('SELECT changes() AS c')[0]?.c || 0)
   }
 
   private isEntity(e: string): e is CrmEntity { return (ENTITIES as readonly string[]).includes(e) }
@@ -887,6 +1006,8 @@ class CrmDbService {
         accountId = tx.run('INSERT INTO account (name, custom_fields, created_at, updated_at) VALUES (?,?,?,?)', [name, JSON.stringify(header), now, now])
       }
       const id = tx.run('INSERT INTO contract (account_id, name, amount, status, custom_fields, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', [accountId, `${name}-合同`, input.amount, 'pending_sign', JSON.stringify({ ...header, creation_request_id: input.requestId }), now, now])
+      // 合同（及可能新建的 account）已写入本事务 → 显式标记年度复盘失效
+      tx.markAnnualReviewChanged('crm:contract')
       tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)', [currentActor(), 'contract_entry_create', 'contract', id, JSON.stringify({ account_id: accountId, creation_request_id: input.requestId }), now])
       return id
     })
@@ -901,7 +1022,14 @@ class CrmDbService {
     if (entity === 'quotation') throw new Error('报价单禁止散写：请走 createQuotation 版本链（宪法 §1.6 append-only）')
     const keys = Object.keys(data)
     const sql = `INSERT INTO ${entity} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`
-    return this.run(sql, keys.map((k) => data[k]))
+    const id = this.run(sql, keys.map((k) => data[k]))
+    // 年度复盘失效声明（类型化 entity，不做 SQL 匹配）：白名单表**且确实写入了一行**才通知；
+    // audit_event 只看 action 是否属于年报复盘读取的动作。
+    if (this.lastChangeCount() > 0) {
+      announceAnnualReviewCrmWrite(entity)
+      if (entity === 'audit_event') announceAnnualReviewAuditAction(String(data?.action ?? ''))
+    }
+    return id
   }
 
   /** 报价版本现行态允许回写的字段（文件/存证哈希/备注/有效期）；价格与行项变更必须新建版本 */
@@ -935,9 +1063,12 @@ class CrmDbService {
         throw new Error(`报价单字段不可直改（${illegal.join(',')}）：价格/行项变更请新建报价版本（宪法 §1.6）`)
       }
       this.run(`UPDATE quotation SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
+      if (this.lastChangeCount() > 0) announceAnnualReviewCrmWrite(entity)
       return
     }
     this.run(`UPDATE ${entity} SET ${keys.map((k) => `${k} = ?`).join(',')} WHERE id = ?`, [...keys.map((k) => patch[k]), id])
+    // 年度复盘失效声明（类型化 entity）：白名单表**且条件 UPDATE 确实命中了一行**才通知
+    if (this.lastChangeCount() > 0) announceAnnualReviewCrmWrite(entity)
   }
 
   // ─── 幂等 ─────────────────────────────────────────────────────────────────
@@ -1015,14 +1146,19 @@ class CrmDbService {
 
   /**
    * AI 意向客户导入（幂等）：session_id 精确命中或 display_name 匹配则补联动列，
-   * 未命中则新建 account。命中内部名单（同事）则跳过。返回 { id, created }。
+   * 未命中则新建 account。命中内部名单（同事）则跳过。
+   * H6：已有 account 的阶段写入走 salesStagePolicy.nextAutoStage——终态 won/lost 不被
+   * 自动判定回退/改写，contacted→quoted→negotiating 单调前进；阶段与变更意图都一致时
+   * 连 updated_at 都不刷新（重复导入完全幂等）。
+   * P2：返回明确阶段裁决——调用方只能在 `stageChanged === true`（或新建）时联动商机，
+   * 且联动必须用 `effectiveStage`（canonical），不得用原始 AI 字符串。
    */
-  importCustomerFromProfile(p: { name: string; sessionId: string; stage: string; lastContactAt?: number | null; reason?: string }): { id: number; created: boolean } {
+  importCustomerFromProfile(p: { name: string; sessionId: string; stage: string; lastContactAt?: number | null; reason?: string }): { id: number; created: boolean; effectiveStage?: string; stageChanged?: boolean; stageDecisionReason?: string } {
     const name = String(p.name || '').trim()
-    if (!name) return { id: 0, created: false }
+    if (!name) return { id: 0, created: false, effectiveStage: '', stageChanged: false, stageDecisionReason: 'invalid' }
     if (this.isInternal(name, String(p.sessionId || ''))) {
       salesLog('INFO', `[CrmImport] 跳过内部人员：${name}`)
-      return { id: 0, created: false }
+      return { id: 0, created: false, effectiveStage: '', stageChanged: false, stageDecisionReason: 'internal' }
     }
     let acc: CrmRow | null = null
     if (p.sessionId) {
@@ -1033,21 +1169,31 @@ class CrmDbService {
     if (!acc) acc = this.matchAccountByName(name)
     const now = Date.now()
     if (acc) {
-      // 已存在：补联动信息（不清空已有业务字段）
+      // 已存在：补联动信息（不清空已有业务字段；阶段经推进策略裁决）
       const patch: CrmRow = { updated_at: now }
       if (p.sessionId && !acc.session_id) patch.session_id = p.sessionId
-      if (p.stage) patch.sales_stage = p.stage
       if (p.lastContactAt) patch.last_contact_at = Number(p.lastContactAt)
-      this.update('account', Number(acc.id), patch)
-      return { id: Number(acc.id), created: false }
+      let decision: AutoStageDecision = { stage: normalizeStage(acc.sales_stage), changed: false, reason: 'same' }
+      if (p.stage) {
+        decision = nextAutoStage(acc.sales_stage, p.stage)
+        if (decision.changed) patch.sales_stage = decision.stage
+        else if (decision.reason === 'terminal-kept' || decision.reason === 'regression-blocked') {
+          salesLog('INFO', `[CrmImport] 阶段推进拦截（${decision.reason}）：${name} 保持 ${decision.stage}，导入意图 ${p.stage}`)
+        }
+      }
+      // 幂等：没有实际字段要写时不动行（updated_at 也不刷新）
+      if (Object.keys(patch).length > 1) this.update('account', Number(acc.id), patch)
+      return { id: Number(acc.id), created: false, effectiveStage: decision.stage, stageChanged: decision.changed, stageDecisionReason: decision.reason }
     }
+    const decision = nextAutoStage(null, p.stage)
     const id = this.create('account', {
-      name, session_id: p.sessionId || null, sales_stage: p.stage || null,
+      name, session_id: p.sessionId || null,
+      sales_stage: p.stage ? decision.stage : null,
       last_contact_at: p.lastContactAt ?? null, imported_at: now, created_at: now, updated_at: now
     })
-    if (!id) return { id: 0, created: false } // db 未初始化时静默失败，不虚报 created
+    if (!id) return { id: 0, created: false, effectiveStage: decision.stage, stageChanged: false, stageDecisionReason: 'db-unavailable' }
     this.logActivity('account', id, 'imported', `AI 意向客户导入（${p.stage || 'unknown'}）${p.reason ? `：${p.reason}` : ''}`)
-    return { id, created: true }
+    return { id, created: true, effectiveStage: decision.stage, stageChanged: true, stageDecisionReason: decision.reason }
   }
   // ─── 客户信息自动填充（enrich）────────────────────────────────────────────
   /** 读取并解析 account.enrich_meta */
@@ -1229,6 +1375,8 @@ class CrmDbService {
     if (!oppId) return
     this.run('INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
       [oppId, eventType, stage, detail.slice(0, 200), Date.now()])
+    // opportunity_event 是 B7 流失归因与商机时间线的事实源 → 实际写入后声明失效
+    if (this.lastChangeCount() > 0) announceAnnualReviewCrmWrite('opportunity_event')
   }
   /** 商机漏斗统计：active 商机按阶段分布 + 总金额 */
   opportunityStats(): { stageDist: Array<{ stage: string; count: number; amount: number }>; total: number; totalAmount: number } {
@@ -1375,6 +1523,8 @@ class CrmDbService {
             mainModel, orderQty, shipStart, shipEnd, Number(deal.delivery_date || 0), dealType,
             quoteVersionId > 0 ? quoteVersionId : null, JSON.stringify(customFields), now, id]
         )
+        // 商机成交字段已落库（本事务必然改写 opportunity）→ 显式标记年度复盘失效
+        tx.markAnnualReviewChanged('crm:opportunity')
         // ② 商机事件留痕
         tx.run(
           'INSERT INTO opportunity_event (opportunity_id, event_type, stage, detail, created_at) VALUES (?,?,?,?,?)',
@@ -1522,26 +1672,25 @@ class CrmDbService {
   createPaymentRecord(rec: CrmRow): number {
     return this.create('payment_record', { created_at: Date.now(), ...rec })
   }
-  addAllocations(paymentRecordId: number, rows: Array<{ customerHint: string; salesHint: string; amountHint: number }>): number[] {
+  addAllocations(paymentRecordId: number, rows: Array<{ customerHint: string; salesHint: string; amountHint: number; invoiceIntent?: string | null }>): number[] {
     return rows.map((r) => this.create('allocation', {
       payment_record_id: paymentRecordId, customer_hint: r.customerHint, sales_hint: r.salesHint,
-      amount_hint: r.amountHint, credited_amount: r.amountHint, status: 'pending', created_at: Date.now()
+      amount_hint: r.amountHint, credited_amount: r.amountHint, status: 'pending', created_at: Date.now(),
+      invoice_requirement: r.invoiceIntent === 'not_required' ? 'not_required' : r.invoiceIntent === 'required' ? 'required' : r.invoiceIntent === 'info_pending' ? 'info_pending' : 'unknown',
+      invoice_requirement_source: r.invoiceIntent ? 'claim_message' : null,
+      reconciliation_status: 'pending'
     }))
   }
   pendingAllocations(): CrmRow[] { return this.all("SELECT * FROM allocation WHERE status = 'pending' ORDER BY id") }
-  /** 归属确认：返回 linked=是否挂上了合同（回款是否计入），供「已认领」提示区分「计入合同回款 / 未关联合同」 */
-  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string }, opts: { autoBy?: string; reason?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
+  /** 归属确认：返回 linked=是否明确选择合同；此动作不代表财务核销。 */
+  confirmAllocation(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string }, opts: { autoBy?: string; reason?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
     const a = this.getById('allocation', id)
     if (!a) return { ok: false, reason: '归属项不存在' }
     if (a.status !== 'pending') return { ok: false, reason: '已被处理（先到先得）' }
-    // 客户已确定但未选合同 → 自动挂到该客户最近一条可挂款合同，避免确认后回款不落地
+    // 认领只确认「谁的客户」，不等于财务核销；未明确选择合同时禁止猜挂最近合同。
     const accountId = patch.account_id ?? (a.account_id ? Number(a.account_id) : null)
-    let contractId = patch.contract_id
-    if (!contractId && accountId) {
-      const contract = this.activeContractForAccount(accountId)
-      if (contract) contractId = Number(contract.id)
-    }
-    const final: CrmRow = { ...patch, status: 'confirmed', confirmed_at: Date.now() }
+    const contractId = patch.contract_id
+    const final: CrmRow = { ...patch, status: 'confirmed', confirmed_at: Date.now(), reconciliation_status: 'pending' }
     if (contractId) final.contract_id = contractId
     if (opts.autoBy) {
       final.auto_confirmed_by = opts.autoBy
@@ -1555,9 +1704,33 @@ class CrmDbService {
     return { ok: true, linked: Boolean(contractId) }
   }
 
+  /** 财务核销：与销售认领分离；只有显式动作才进入 allocated。 */
+  reconcileAllocation(id: number, opts: { actor?: string } = {}): { ok: boolean; reason?: string } {
+    const a = this.getById('allocation', id)
+    if (!a) return { ok: false, reason: '归属项不存在' }
+    if (String(a.status) !== 'confirmed') return { ok: false, reason: '请先完成销售认领' }
+    if (!a.account_id) return { ok: false, reason: '请先关联客户' }
+    if (String(a.reconciliation_status || '') === 'allocated') return { ok: true }
+    this.update('allocation', id, { reconciliation_status: 'allocated', reconciled_at: Date.now() })
+    this.logActivity('allocation', id, 'reconciled', `财务核销 ${String(a.customer_hint || '')} ¥${Number(a.credited_amount || 0)}`, opts.actor || '')
+    return { ok: true }
+  }
+
+  /** 订单/认领级开票需求；客户偏好不得覆盖本次订单选择。 */
+  setAllocationInvoiceRequirement(id: number, requirement: string, opts: { actor?: string } = {}): { ok: boolean; reason?: string } {
+    const allowed = new Set(['unknown', 'required', 'not_required', 'info_pending'])
+    if (!allowed.has(requirement)) return { ok: false, reason: '无效的开票需求状态' }
+    const a = this.getById('allocation', id)
+    if (!a) return { ok: false, reason: '归属项不存在' }
+    this.update('allocation', id, { invoice_requirement: requirement, invoice_requirement_source: 'manual' })
+    const labels: Record<string, string> = { unknown: '待确认', required: '需要开票', not_required: '不开发票', info_pending: '待补资料' }
+    this.logActivity('allocation', id, 'invoice_requirement', `开票需求：${labels[requirement]}`, opts.actor || '')
+    return { ok: true }
+  }
+
   /**
    * 到款审核通过：若该笔到款尚无任何归属，则自动建一条 pending 归属（挂到归属待确认）。
-   * 保证审核通过后钱不"消失"——最终通过归属确认计入合同回款。
+   * 保证审核通过后钱不"消失"——完成归属后仍需财务显式核销，才计入合同回款。
    */
   approvePayment(id: number, opts: { autoBy?: string } = {}): { ok: boolean; reason?: string; allocationCreated?: boolean } {
     const p = this.getById('payment_record', id)
@@ -1582,8 +1755,8 @@ class CrmDbService {
   }
   /**
    * 每日到款清单（销售认领视图）：近 N 天 payment_record 平铺，带认领状态 + 客户/合同/开票状态。
-   * 开票判定：该认领账户最近一张非作废发票（订单群 PDF 归档 → status='issued' 即已开票）。
-   * 未认领（allocation 为空）时 invoice 各列为 null——开票状态认领后可见。
+   * 开票判定：仅当认领明确关联合同时，读取该合同最近一张非作废发票；
+   * 禁止用「客户最近一张发票」冒充本次订单发票。未关联合同时 invoice 各列为 null。
    */
   paymentsByDay(days = 30): CrmRow[] {
     const startMs = Date.now() - days * 24 * 3600 * 1000
@@ -1591,7 +1764,9 @@ class CrmDbService {
       `SELECT pr.id, pr.payer, pr.amount_net, pr.pay_time, pr.group_id, pr.source, pr.raw_content,
               pr.pay_channel, pr.needs_review,
               al.id AS allocation_id, al.status AS alloc_status, al.account_id, al.contract_id,
-              al.sales_name, al.confirmed_at, al.credited_amount,
+              al.sales_name, al.sales_wxid, al.confirmed_at, al.credited_amount,
+              al.invoice_requirement, al.invoice_requirement_source,
+              al.reconciliation_status, al.reconciled_at,
               ac.name AS account_name, c.name AS contract_name,
               iv.id AS invoice_id, iv.invoice_no, iv.status AS invoice_status
        FROM payment_record pr
@@ -1599,7 +1774,7 @@ class CrmDbService {
        LEFT JOIN account ac ON ac.id = al.account_id
        LEFT JOIN contract c ON c.id = al.contract_id
        LEFT JOIN invoice iv ON iv.id = (
-         SELECT id FROM invoice WHERE account_id = al.account_id AND status != 'voided'
+         SELECT id FROM invoice WHERE al.contract_id IS NOT NULL AND contract_id = al.contract_id AND status != 'voided'
          ORDER BY id DESC LIMIT 1)
        WHERE pr.pay_time >= ?
        ORDER BY pr.pay_time DESC`, [startMs])
@@ -1607,10 +1782,10 @@ class CrmDbService {
 
   /**
    * 销售手动认领到款：无归属则先建（approvePayment），已确认的拒绝重复认领，
-   * 然后确认归属到客户/合同。返回 linked 表示已计入合同回款。
+   * 然后确认归属到客户/合同。返回 linked 仅表示明确选择合同；财务核销另走 reconcileAllocation。
    * 历史遗留：AutoConfirm 确认过但未挂客户/合同的行（仅 confirmed + 公司名）允许补认领。
    */
-  claimPayment(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
+  claimPayment(id: number, patch: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string } = {}): { ok: boolean; reason?: string; linked?: boolean } {
     const p = this.getById('payment_record', id)
     if (!p) return { ok: false, reason: '到款不存在' }
     let alloc = this.all('SELECT * FROM allocation WHERE payment_record_id = ? LIMIT 1', [id])[0] || null
@@ -1636,7 +1811,7 @@ class CrmDbService {
     this.logActivity('allocation', id, 'rejected', `驳回归属 ${String(this.getById('allocation', id)?.customer_hint ?? '')}`)
   }
   creditedTotal(contractId: number): number {
-    const r = this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE contract_id = ? AND status = 'confirmed'", [contractId])
+    const r = this.all("SELECT COALESCE(SUM(credited_amount),0) AS s FROM allocation WHERE contract_id = ? AND status = 'confirmed' AND reconciliation_status IN ('allocated','legacy_confirmed')", [contractId])
     return Number(r[0]?.s ?? 0)
   }
 
@@ -1680,6 +1855,9 @@ class CrmDbService {
       'INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',
       [actor, action, entityType, entityId, typeof detail === 'string' ? detail : JSON.stringify(detail), Date.now()]
     )
+    // 年度复盘只读取 lead_assign / lead_transfer / sync_apply 三类审计（E1 分配事实与
+    // sync 缺口检测）；其余 action（业务留痕为主，写入频繁）不触发失效。0 行写入同样不触发。
+    if (this.lastChangeCount() > 0) announceAnnualReviewAuditAction(action)
   }
   contractStatusHistory(contractId: number): CrmRow[] {
     return this.all('SELECT * FROM contract_status_history WHERE contract_id = ? ORDER BY id', [contractId])
@@ -1764,49 +1942,157 @@ class CrmDbService {
     this.exportSnapshot('delete')
   }
 
-  /** 级联删除单个合同的全部子资源（不含 activity_log，调用方处理） */
-  private deleteContractCascade(id: number): number {
-    if (!this.db) return 0
+  /** 级联删除单个合同的全部子资源（不含 activity_log 合同行自身，调用方处理）。
+   *  H4 重构：改为在**传入事务**内执行（tx.run 不再触发 persist），供 deleteContract /
+   *  deleteAccount 在各自事务里复用同一删除语义。返回删除的子资源行数。 */
+  private deleteContractCascadeTx(tx: { run: (sql: string, params?: unknown[]) => number; all: (sql: string, params?: unknown[]) => CrmRow[] }, id: number): number {
     let removed = 0
-    for (const t of ['quotation', 'invoice', 'logistics', 'allocation', 'contract_status_history']) {
-      removed += this.db.run(`DELETE FROM ${t} WHERE contract_id = ?`, [id]).changes
+    const del = (sql: string, params: unknown[]): number => {
+      tx.run(sql, params)
+      return Number(tx.all('SELECT changes() AS c')[0]?.c || 0)
     }
-    this.db.run('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['contract', id])
-    this.db.run('DELETE FROM contract WHERE id = ?', [id])
+    // 二审补口：删除前收集子资源 ID——invoice/logistics/allocation 允许合同级记录只有
+    // contract_id、account_id 为 NULL，日志必须按收集的 ID（而非 account_id）清理；
+    // 独立 deleteContract 同样不留下子资源日志孤儿。
+    const collect = (table: string): number[] =>
+      tx.all(`SELECT id FROM ${table} WHERE contract_id = ?`, [id]).map((r) => Number(r.id))
+    const logTargets: Array<{ entity: string; ids: number[] }> = [
+      { entity: 'quotation', ids: collect('quotation') },
+      { entity: 'invoice', ids: collect('invoice') },
+      { entity: 'logistics', ids: collect('logistics') },
+      { entity: 'allocation', ids: collect('allocation') }
+    ]
+    for (const t of ['quotation', 'invoice', 'logistics', 'allocation', 'contract_status_history']) {
+      removed += del(`DELETE FROM ${t} WHERE contract_id = ?`, [id])
+    }
+    for (const target of logTargets) {
+      if (!target.ids.length) continue
+      removed += del(`DELETE FROM activity_log WHERE entity = ? AND entity_id IN (${target.ids.map(() => '?').join(',')})`, [target.entity, ...target.ids])
+    }
+    // removed 口径 = 子资源行数（含子资源日志行），**不含被删实体自身行**（contract/account）
+    del('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['contract', id])
+    del('DELETE FROM contract WHERE id = ?', [id])
     return removed
   }
 
   /**
-   * 删除合同及其全部子资源（报价单/发票/物流/回款归属/状态历史/操作日志）。
-   * @returns removed = 级联删除的子资源行数
+   * 删除合同及其全部子资源（报价单/发票/物流/回款归属/状态历史/操作日志），单事务。
+   * 子资源日志（quotation/invoice/logistics/allocation 实体）按删除前收集的 ID 一并清理，
+   * 覆盖 contract_id-only、account_id 为 NULL 的合同级行（二审补口）。
+   * @returns removed = 级联删除的子资源行数（含子资源 activity_log 行）
    */
   deleteContract(id: number): { ok: boolean; reason?: string; removed?: number } {
     const c = this.getById('contract', id)
     if (!c || !this.db) return { ok: false, reason: '合同不存在' }
     this.backupDb()
-    const removed = this.deleteContractCascade(id)
+    let removed = 0
+    // 合同行进入事务前已确认存在 → 级联删除必然改写 contract（及其子链）→ 事务内显式标记
+    this.runTx((tx) => { removed = this.deleteContractCascadeTx(tx, id); tx.markAnnualReviewChanged('crm:contract') })
     this.logActivity('contract', id, 'deleted', `删除合同「${String(c.name ?? '')}」（含 ${removed} 条子资源）`)
     this.persistNow()
     return { ok: true, removed }
   }
 
   /**
-   * 删除客户及其全部合同（合同子资源一并级联），同时清理别名与操作日志。
-   * @returns removed = 级联删除的子资源行数
+   * 删除客户及其全部级联（H4 事务化完整版）。
+   *
+   * 依据 docs/DATA-CONSTITUTION.md 与 SCHEMA_SQL 逐表枚举 account 的全部真实引用：
+   *   合同链（contract → quotation/invoice/logistics/allocation/contract_status_history/activity_log）
+   *   复用既有合同删除语义；商机（opportunity）及其 opportunity_event（事件先于商机删）、
+   *   crm_risk（含 account_id 为空但 opportunity_id 命中待删商机的历史行）、payment_promise、
+   *   quote_signal、contact、shipping_info、alias_map、账户级 logistics、账户级 allocation、
+   *   **账户级 invoice（contract_id 可为 NULL，crmParseService 通道）** 随客户删除；
+   *   子资源删除前收集 ID（invoice/logistics/allocation 按 account_id 命中客户 **或**
+   *   contract_id 命中待删合同，SQL 层 OR 去重）并同事务清理 activity_log（quotation/
+   *   invoice/logistics/allocation 等实体日志），避免孤儿日志。
+   *   **payment_record 是原始到款事实（宪法 §3 跟单收口），不随客户删除**——客户删除只移除
+   *   allocation 认领行，银行流水保留。
+   *   customer / customer_identity 是独立事实源（宪法 §1.1/§1.2），不误删——只随 account 行
+   *   本身消失的 customer_id 挂接解除；lead.account_id 同理只解除引用不删线索历史。
+   *   audit_event / ownership_history / outbox_event 为 append-only，永不删改。
+   * 全部级联处于同一个 sql.js 事务：任一步失败整体回滚，成功后只落盘一次。
+   * @returns removed = 级联删除的子资源行数（不含 account 本行）
    */
   deleteAccount(id: number): { ok: boolean; reason?: string; removed?: number } {
     const acc = this.getById('account', id)
     if (!acc || !this.db) return { ok: false, reason: '客户不存在' }
     this.backupDb()
     let removed = 0
-    const contracts = this.all('SELECT id FROM contract WHERE account_id = ?', [id])
-    for (const c of contracts) removed += this.deleteContractCascade(Number(c.id))
-    removed += this.db.run('DELETE FROM alias_map WHERE account_id = ?', [id]).changes
-    // 账户级认领的物流（无合同）随客户删除清理；合同级已由上方 deleteContractCascade 处理
-    removed += this.db.run('DELETE FROM logistics WHERE account_id = ?', [id]).changes
-    this.db.run('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['account', id])
-    this.db.run('DELETE FROM account WHERE id = ?', [id])
-    this.logActivity('account', id, 'deleted', `删除客户「${String(acc.name ?? '')}」（含 ${contracts.length} 份合同）`)
+    let contractCount = 0
+    this.runTx((tx) => {
+      const del = (sql: string, params: unknown[]): number => {
+        tx.run(sql, params)
+        return Number(tx.all('SELECT changes() AS c')[0]?.c || 0)
+      }
+      // 0. 删除前收集全部子资源 ID（日志清理目标必须先于 DELETE 收集）。
+      // 二审补口：invoice/logistics/allocation 的合同级行可能 account_id 为 NULL（只有
+      // contract_id），收集条件 = account_id 命中客户 **或** contract_id 命中待删合同，
+      // SQL 层 OR 天然去重（一行只出现一次）。
+      const contracts = tx.all('SELECT id FROM contract WHERE account_id = ?', [id])
+      const contractIds = contracts.map((c) => Number(c.id))
+      const opps = tx.all('SELECT id FROM opportunity WHERE account_id = ?', [id])
+      const oppIds = opps.map((o) => Number(o.id))
+      const idList = (n: number): string => (n ? Array.from({ length: n }, () => '?').join(',') : '')
+      const contractIn = contractIds.length ? ` OR contract_id IN (${idList(contractIds.length)})` : ''
+      const childParams = (extra: unknown[]): unknown[] => contractIds.length ? [...extra, ...contractIds] : extra
+      const quotationIds = contractIds.length
+        ? tx.all(`SELECT id FROM quotation WHERE contract_id IN (${idList(contractIds.length)})`, contractIds).map((r) => Number(r.id))
+        : []
+      const invoiceIds = tx.all(`SELECT id FROM invoice WHERE (account_id = ?${contractIn})`, childParams([id])).map((r) => Number(r.id))
+      const logisticsIds = tx.all(`SELECT id FROM logistics WHERE (account_id = ?${contractIn})`, childParams([id])).map((r) => Number(r.id))
+      const allocationIds = tx.all(`SELECT id FROM allocation WHERE (account_id = ?${contractIn})`, childParams([id])).map((r) => Number(r.id))
+      // 1. 合同链（复用既有删除语义）
+      contractCount = contractIds.length
+      for (const c of contracts) removed += this.deleteContractCascadeTx(tx, Number(c.id))
+      // 2. 商机：opportunity_event 先于 opportunity 删除（引用完整），活动日志一并清理
+      for (const oppId of oppIds) {
+        removed += del('DELETE FROM opportunity_event WHERE opportunity_id = ?', [oppId])
+        removed += del('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['opportunity', oppId])
+      }
+      removed += del('DELETE FROM opportunity WHERE account_id = ?', [id])
+      // 3. 客户维度的其余事实（crm_risk 含 account_id 为空但 opportunity_id 命中待删商机的历史行；
+      //    必须用**删除前收集**的 oppIds 处理，不能在商机删除后子查询）
+      removed += del(`DELETE FROM crm_risk WHERE account_id = ?${oppIds.length ? ` OR opportunity_id IN (${idList(oppIds.length)})` : ''}`,
+        oppIds.length ? [id, ...oppIds] : [id])
+      removed += del('DELETE FROM payment_promise WHERE account_id = ?', [id])
+      removed += del('DELETE FROM quote_signal WHERE account_id = ?', [id])
+      removed += del('DELETE FROM contact WHERE account_id = ?', [id])
+      removed += del('DELETE FROM shipping_info WHERE account_id = ?', [id])
+      // 4. 账户级认领/别名/物流/发票（发票含 contract_id 为空的账户级发票——crmParseService 会
+      //    创建 contract_id=NULL 只有 account_id 的发票；payment_record 原始事实按契约保留）
+      removed += del('DELETE FROM allocation WHERE account_id = ?', [id])
+      removed += del('DELETE FROM alias_map WHERE account_id = ?', [id])
+      removed += del('DELETE FROM logistics WHERE account_id = ?', [id])
+      removed += del('DELETE FROM invoice WHERE account_id = ?', [id])
+      // 5. 孤儿活动日志清理（P1 补枚举）：用步骤 0 收集的子资源 ID 清理对应实体日志
+      const logTargets: Array<{ entity: string; ids: number[] }> = [
+        { entity: 'contract', ids: contractIds },
+        { entity: 'quotation', ids: quotationIds },
+        { entity: 'invoice', ids: invoiceIds },
+        { entity: 'logistics', ids: logisticsIds },
+        { entity: 'allocation', ids: allocationIds }
+      ]
+      for (const target of logTargets) {
+        if (!target.ids.length) continue
+        removed += del(`DELETE FROM activity_log WHERE entity = ? AND entity_id IN (${idList(target.ids.length)})`, [target.entity, ...target.ids])
+      }
+      // 6. lead.account_id 挂接只解除引用（线索是独立事实源，历史保留）
+      tx.run('UPDATE lead SET account_id = NULL WHERE account_id = ?', [id])
+      // 7. 客户活动日志 + 客户本体
+      removed += del('DELETE FROM activity_log WHERE entity = ? AND entity_id = ?', ['account', id])
+      del('DELETE FROM account WHERE id = ?', [id])
+      // 客户行进入事务前已确认存在 → 级联删除必然改写 account（及其合同/核销链）→ 事务内标记
+      tx.markAnnualReviewChanged('crm:account')
+    })
+    // 墓碑日志在事务外写（activity_log 可见时间线），文案与实际删除范围一致。
+    // 墓碑写入失败不推翻已提交的删除（删除事务已成功即删除成功），只记告警——
+    // 避免「主事务已提交、墓碑写失败却返回失败」的语义不一致。
+    try {
+      this.logActivity('account', id, 'deleted',
+        `删除客户「${String(acc.name ?? '')}」（含 ${contractCount} 份合同、商机/风险/承诺/报价信号/联系人/到款归属等共 ${removed} 条关联记录）`)
+    } catch (e) {
+      salesLog('WARN', `[CrmDb] 客户 ${id} 删除墓碑写入失败（删除事务已提交）: ${e}`)
+    }
     this.persistNow()
     return { ok: true, removed }
   }
@@ -1827,7 +2113,7 @@ class CrmDbService {
   logisticsList(opts: { filter?: 'unlinked' | 'pending' | 'signed' } = {}): CrmRow[] {
     let where = ''
     if (opts.filter === 'unlinked') where = "WHERE link_status = 'unlinked'"
-    else if (opts.filter === 'pending') where = "WHERE link_status = 'linked' AND status = 'shipped'"
+    else if (opts.filter === 'pending') where = "WHERE link_status = 'linked' AND status NOT IN ('signed','cancelled')"
     else if (opts.filter === 'signed') where = "WHERE status = 'signed'"
     return this.all(`SELECT * FROM logistics ${where} ORDER BY created_at DESC, id DESC`)
   }
@@ -2176,6 +2462,8 @@ class CrmDbService {
   /** 写一条结构化自动确认日志（auto_confirm_log，供前端回看/撤销） */
   logAutoConfirm(entity: string, entityId: number, decision: string, confidence: number, reason: string, action: string): void {
     if (!this.db) return
+    // 只写审计日志表（annual review 不读它）：这里**不**上报年度复盘失效，
+    // 真正的业务影响由同一调用方随后的 allocation/payment 写入（经 run()/runTx()）触发。
     this.db.run(
       'INSERT INTO auto_confirm_log (entity, entity_id, decision, confidence, reason, action, created_at) VALUES (?,?,?,?,?,?,?)',
       [entity, entityId, decision, confidence, reason, action, Date.now()]
@@ -2244,6 +2532,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
+    announceAnnualReviewCrmWrite('account') // 客户被删除：A/C 组客户数与相关指标口径已变
     return ids.length
   }
 
@@ -2262,6 +2551,7 @@ class CrmDbService {
     this.db.run(`DELETE FROM account WHERE id IN (${placeholders})`, ids)
     this.db.run(`DELETE FROM activity_log WHERE entity = 'account' AND entity_id IN (${placeholders})`, ids)
     this.persist()
+    announceAnnualReviewCrmWrite('account') // 客户被删除：A/C 组客户数与相关指标口径已变
     return ids.length
   }
 
@@ -2272,7 +2562,7 @@ class CrmDbService {
         (SELECT COUNT(*) FROM contract c WHERE c.account_id = a.id) AS contract_count,
         (SELECT COALESCE(SUM(al.credited_amount), 0) FROM allocation al
            JOIN contract c2 ON c2.id = al.contract_id
-           WHERE c2.account_id = a.id AND al.status = 'confirmed') AS credited_total
+           WHERE c2.account_id = a.id AND al.status = 'confirmed' AND al.reconciliation_status IN ('allocated','legacy_confirmed')) AS credited_total
       FROM account a ORDER BY a.imported_at DESC, a.id DESC
     `)
     return rows.map((r) => {
@@ -2294,10 +2584,10 @@ class CrmDbService {
     const active = this.all("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS n FROM contract WHERE status IN ('pending_sign','signed')")[0]
     const now = new Date()
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
-    // 口径：只计已人工认领（account_id 非空）+ 按**到款日**（pay_time）归类——
+    // 口径：只计已财务核销（allocated；旧数据 legacy_confirmed 兼容）+ 按**到款日**（pay_time）归类——
     // 历史补扫入库后集中认领的款按真实到账日进月/周统计，不冒充当月；旧 AutoConfirm 遗留 confirmed 无客户/合同不算
     const monthPaid = Number(this.all(
-      "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ?", [monthStart])[0]?.s ?? 0)
+      "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.reconciliation_status IN ('allocated','legacy_confirmed') AND al.account_id IS NOT NULL AND pr.pay_time >= ?", [monthStart])[0]?.s ?? 0)
     const q = this.reviewQueues()
     const pendingReview = q.allocations.length + q.logistics.length + q.payments.length + q.invoices.length + q.infoPending.length
     // 近 8 周到款趋势（周一为一周起点）
@@ -2307,7 +2597,7 @@ class CrmDbService {
     for (let i = 7; i >= 0; i--) {
       const start = thisMonday - i * weekMs
       const r = this.all(
-        "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ? AND pr.pay_time < ?", [start, start + weekMs])
+        "SELECT COALESCE(SUM(al.credited_amount),0) AS s FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id WHERE al.status = 'confirmed' AND al.reconciliation_status IN ('allocated','legacy_confirmed') AND al.account_id IS NOT NULL AND pr.pay_time >= ? AND pr.pay_time < ?", [start, start + weekMs])
       const d = new Date(start)
       paidWeekly.push({ week: `${d.getMonth() + 1}/${d.getDate()}`, amount: Number(r[0]?.s ?? 0) })
     }
@@ -2362,7 +2652,7 @@ class CrmDbService {
       "SELECT COALESCE(a.owner_sales, '') AS owner_sales, COALESCE(SUM(al.credited_amount),0) AS amount, COUNT(*) AS count " +
       'FROM allocation al JOIN payment_record pr ON pr.id = al.payment_record_id ' +
       'LEFT JOIN account a ON a.id = al.account_id ' +
-      "WHERE al.status = 'confirmed' AND al.account_id IS NOT NULL AND pr.pay_time >= ? " +
+      "WHERE al.status = 'confirmed' AND al.reconciliation_status IN ('allocated','legacy_confirmed') AND al.account_id IS NOT NULL AND pr.pay_time >= ? " +
       "GROUP BY COALESCE(a.owner_sales, '')",
       [monthStart]
     ).map((r) => ({ owner_sales: String(r.owner_sales || ''), amount: Number(r.amount || 0), count: Number(r.count || 0) }))
@@ -2391,9 +2681,10 @@ class CrmDbService {
 
   // ─── 工作台 ───────────────────────────────────────────────────────────────
   workbench(): CrmRow[] {
-    // 合同无 owner_sales 列（宪法设计）：owner 经 account_id JOIN account 带出（页面过滤档用，只加 SELECT 列不改口径）
+    // 合同无 owner_sales 列（宪法设计）：owner 经 account_id JOIN account 带出（页面过滤档用，只加 SELECT 列不改口径）。
+    // account_name 同为 JOIN 带出的展示列（P2.1c-fix：台账客户主列），不改 IPC 名/签名与口径
     const contracts = this.all(
-      'SELECT c.*, a.owner_sales AS owner_sales FROM contract c LEFT JOIN account a ON a.id = c.account_id ORDER BY c.id DESC LIMIT 200'
+      'SELECT c.*, a.owner_sales AS owner_sales, a.name AS account_name FROM contract c LEFT JOIN account a ON a.id = c.account_id ORDER BY c.id DESC LIMIT 200'
     )
     return contracts.map((c) => {
       const paid = this.creditedTotal(Number(c.id))

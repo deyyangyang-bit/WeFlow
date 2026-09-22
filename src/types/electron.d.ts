@@ -3,6 +3,24 @@ import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from 
 import type { OpportunityAnalysisResult } from '../../shared/opportunitySignals'
 // 分配模式的唯一来源（与 electron/services/crmAssignmentService.ts 同源）
 import type { AssignmentMode } from '../../shared/centralDownCommand'
+// 年度经营复盘 AI 分析契约（与 electron/services/annualReviewAiCore.ts 的模型输出契约、
+// annualReviewAiCoordinator.ts 的 IPC 信封同源；shared 是主进程与渲染层唯一共用编译单元，
+// 因此不是镜像类型而是**同一份定义**）
+import type {
+  AnnualReviewAiAnalysisResponse,
+  AnnualReviewAiCancelResponse
+} from '../../shared/annualReviewAi'
+
+/**
+ * CRM 分配数据失效事件载荷（'crm:assignment:invalidated'，主进程 → 渲染层只读广播）。
+ * 最小载荷纪律：只有 action（assign/claim/recycle/transfer，去抖合并多动作用逗号连接）、
+ * 发生归属变化的 leadIds、时刻；绝不携带联系方式、聊天内容或任何客户敏感字段。
+ */
+export interface CrmAssignmentInvalidation {
+  action: string
+  leadIds: number[]
+  at: number
+}
 
 // ─── Hermes 只读智能体任务快照类型（与 electron/services/hermesAgent.ts 状态模型对应）───
 export interface HermesEvidenceItem {
@@ -642,6 +660,41 @@ export interface KbEntryRecord {
   updated_at: number
 }
 
+/** P0：服务地址专用端点结果（地址变化时主进程原子清除对应凭据） */
+export interface ServiceAddressResult {
+  ok?: boolean
+  changed: boolean
+  url: string
+  credentialsCleared: boolean
+  apiKey?: SecretStatus
+  error?: string
+}
+
+/** H2：秘密状态（普通加载只回 hasValue/maskedValue，完整秘密不回传渲染层） */
+export interface SecretStatus {
+  hasValue: boolean
+  masked: string
+}
+
+export interface WxidSecretStatus {
+  hasDecryptKey: boolean
+  hasImageXorKey: boolean
+  hasImageAesKey: boolean
+  updatedAt: number
+}
+
+export interface SecretStatusReport {
+  dbKey: SecretStatus
+  imageXorKey: SecretStatus
+  imageAesKey: SecretStatus
+  httpApiToken: SecretStatus
+  aiModelApiKey: SecretStatus
+  weiboCookie: SecretStatus
+  telegramToken: SecretStatus
+  wecomWebhook: SecretStatus
+  wxidConfigs: Record<string, WxidSecretStatus>
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -663,9 +716,43 @@ export interface ElectronAPI {
     openSessionChatWindow: (sessionId: string, options?: SessionChatWindowOpenOptions) => Promise<boolean>
   }
   config: {
+    /** H2：主进程白名单把关——秘密键/主进程托管键/未知键一律拒绝 */
     get: (key: string) => Promise<unknown>
     set: (key: string, value: unknown) => Promise<void>
     clear: () => Promise<boolean>
+  }
+  /** H2：用户录入秘密的专用通道——读取只回 hasValue/maskedValue，完整秘密永不回传渲染层 */
+  secret: {
+    getStatus: () => Promise<SecretStatusReport>
+    setDbKey: (value: string) => Promise<SecretStatus>
+    setImageKeys: (patch: { xorKey?: number | null; aesKey?: string | null }) => Promise<{ imageXorKey: SecretStatus; imageAesKey: SecretStatus }>
+    setHttpApiToken: (value: string) => Promise<SecretStatus>
+    setAiModelApiKey: (value: string) => Promise<SecretStatus>
+    setWxidConfig: (wxid: string, patch: { decryptKey?: string | null; imageAesKey?: string | null; imageXorKey?: number | null }) => Promise<WxidSecretStatus>
+    removeWxidConfig: (wxid: string) => Promise<{ ok: boolean; removed: number; undoToken?: string }>
+    undoRemoveWxidConfig: (token: string) => Promise<{ ok: boolean; restored: number }>
+    setTelegramToken: (value: string) => Promise<SecretStatus>
+    setWecomWebhook: (value: string) => Promise<SecretStatus>
+  }
+  /** H2：账号切换/自动连接由主进程依已保存配置执行（wxidConfigs 密钥不经过渲染层） */
+  account: {
+    switchTo: (wxid: string) => Promise<{ ok: boolean; reason?: string }>
+    applySavedKey: () => Promise<{ hasDbPath: boolean; hasKey: boolean; myWxid: string; onboardingDone: boolean; appliedSavedKey: boolean }>
+  }
+  /** P0：受限服务地址专用端点——地址变化时主进程原子清除对应凭据 */
+  serviceAddr: {
+    setAiModelBaseUrl: (url: string) => Promise<ServiceAddressResult>
+    setAiInsightBaseUrl: (url: string) => Promise<ServiceAddressResult>
+    setCentralSyncBaseUrl: (url: string) => Promise<ServiceAddressResult>
+  }
+  /** P0：dbPath 专用端点（对话框批准路径 / 主进程验证过的自动检测结果） */
+  dbPathGate: {
+    setFromDialog: (path: string) => Promise<{ ok: boolean; path?: string; reason?: string }>
+    setVerified: (path: string) => Promise<{ ok: boolean; path?: string; reason?: string }>
+  }
+  /** P1b：导出根目录专用选择（主进程弹对话框 → 授权 + 持久化根 + 更新偏好） */
+  exportGate: {
+    chooseRoot: () => Promise<{ canceled: boolean; ok?: boolean; path?: string; error?: string }>
   }
   auth: {
     hello: (message?: string) => Promise<{ success: boolean; error?: string }>
@@ -677,6 +764,9 @@ export interface ElectronAPI {
     setHelloSecret: (password: string) => Promise<{ success: boolean }>
     clearHelloSecret: () => Promise<{ success: boolean }>
     isLockMode: () => Promise<boolean>
+    /** H2：应用锁密码哈希写点（authPassword 不再经通用 config:set） */
+    setPasswordHash: (passwordHash: string) => Promise<{ success: boolean; error?: string }>
+    setUseHello: (useHello: boolean) => Promise<{ success: boolean; error?: string }>
   }
   identity: {
     /** nameAliases = 归属别名（绑定中央身份时为该中央 displayName，解绑/未绑定为 []）；
@@ -1570,214 +1660,104 @@ export interface ElectronAPI {
       error?: string
     }>
   }
-  annualReport: {
+  /** 年度经营复盘（S3）：确定性统计报告；口径详见 docs/设计-年度经营复盘-规格.md §7.2 */
+  annualReview: {
     getAvailableYears: () => Promise<{
       success: boolean
-      data?: number[]
-      error?: string
+      data?: {
+        /** 自然年份升序排列；特殊项 year=0（历史以来）固定放在最后 */
+        years: Array<{
+          /** 年份；0 = 历史以来（固定排在自然年之后） */
+          year: number
+          coverage: {
+            source: string
+            status: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+            coverageFrom?: number
+            coverageTo?: number
+            rows: number
+            reasonCodes: string[]
+          }
+        }>
+        currentYear: number
+        supportsAllTime: boolean
+        defaultYear: number
+        generatedAt: number
+      }
+      error?: { code: string; message: string }
     }>
-    startAvailableYearsLoad: () => Promise<{
+    /** 非阻塞启动生成：立即返回 taskId；完成/失败经 onProgress 终态事件（done=true）推送 */
+    generate: (year: number) => Promise<{
       success: boolean
       taskId?: string
+      /** true = 合并到同键已运行任务（未重复启动 Worker） */
       reused?: boolean
-      snapshot?: {
-        years?: number[]
-        done: boolean
-        error?: string
-        canceled?: boolean
-        strategy?: 'cache' | 'native' | 'hybrid'
-        phase?: 'cache' | 'native' | 'scan' | 'done'
-        statusText?: string
-        nativeElapsedMs?: number
-        scanElapsedMs?: number
-        totalElapsedMs?: number
-        switched?: boolean
-        nativeTimedOut?: boolean
-      }
-      error?: string
+      error?: { code: string; message: string }
     }>
-    cancelAvailableYearsLoad: (taskId: string) => Promise<{
+    /** 查询报告：cache='hit' 携带 report 与产生该报告的 taskId；'miss' 无缓存；'stale' 已过期（>10 分钟） */
+    getReport: (year: number) => Promise<{
       success: boolean
-      error?: string
+      cache: 'hit' | 'miss' | 'stale'
+      report?: AnnualReviewReport
+      /** 命中时给出产生该报告的生成任务（AI 分析请求只需该 taskId，不上传报告内容） */
+      taskId?: string
+      error?: { code: string; message: string }
     }>
-    generateReport: (year: number) => Promise<{
+    /** 取消：loading/computing 都有效；终态幂等成功；未知 taskId → task_not_found */
+    cancel: (taskId: string) => Promise<{
       success: boolean
-      data?: {
+      error?: { code: string; message: string }
+    }>
+    /**
+     * 只读任务状态查询（任务状态的权威来源，**不用报告缓存代替任务状态**）：
+     * 按 taskId 在服务内部任务记录中查找；跨账号作用域 fail closed 为 found:false；
+     * running（loading/computing）→ done:false，completed/failed → done:true
+     * （cancelled 仍为 failed + error.code='cancelled'，渲染层映射为 cancelled）；
+     * 未找到 → found:false；非法 taskId → success:false + invalid_task_id。
+     * 不返回报告正文/scopeId/账号标识/路径/堆栈；查询不创建、取消或修改任务。
+     */
+    getTaskStatus: (taskId: string) => Promise<{
+      success: boolean
+      found?: boolean
+      task?: {
+        taskId: string
         year: number
-        totalMessages: number
-        totalFriends: number
-        coreFriends: Array<{
-          username: string
-          displayName: string
-          avatarUrl?: string
-          messageCount: number
-          sentCount: number
-          receivedCount: number
-        }>
-        monthlyTopFriends: Array<{
-          month: number
-          displayName: string
-          avatarUrl?: string
-          messageCount: number
-        }>
-        peakDay: {
-          date: string
-          messageCount: number
-          topFriend?: string
-          topFriendCount?: number
-        } | null
-        longestStreak: {
-          friendName: string
-          days: number
-          startDate: string
-          endDate: string
-        } | null
-        activityHeatmap: {
-          data: number[][]
-        }
-        midnightKing: {
-          displayName: string
-          count: number
-          percentage: number
-        } | null
-        selfAvatarUrl?: string
-        mutualFriend: {
-          displayName: string
-          avatarUrl?: string
-          sentCount: number
-          receivedCount: number
-          ratio: number
-        } | null
-        socialInitiative: {
-          initiatedChats: number
-          receivedChats: number
-          initiativeRate: number
-          topInitiatedFriend?: string
-          topInitiatedCount?: number
-        } | null
-        responseSpeed: {
-          avgResponseTime: number
-          fastestFriend: string
-          fastestTime: number
-        } | null
-        topPhrases: Array<{
-          phrase: string
-          count: number
-        }>
-        snsStats?: {
-          totalPosts: number
-          typeCounts?: Record<string, number>
-          topLikers: { username: string; displayName: string; avatarUrl?: string; count: number }[]
-          topLiked: { username: string; displayName: string; avatarUrl?: string; count: number }[]
-        }
-        lostFriend: {
-          username: string
-          displayName: string
-          avatarUrl?: string
-          earlyCount: number
-          lateCount: number
-          periodDesc: string
-        } | null
+        phase: 'loading' | 'computing' | 'completed' | 'failed'
+        /** 0–100，单调不回退 */
+        progress: number
+        statusText?: string
+        done: boolean
+        error?: { code: string; message: string }
       }
-      error?: string
+      error?: { code: string; message: string }
     }>
-    exportImages: (payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) => Promise<{
+    /** 导出 Markdown/CSV：弹出目录对话框授权后独占写（不覆盖已有文件） */
+    export: (year: number, format: 'markdown' | 'csv') => Promise<{
       success: boolean
       dir?: string
-      error?: string
+      files?: string[]
+      error?: { code: string; message: string }
     }>
-    captureCurrentWindow: () => Promise<{
-      success: boolean
-      dataUrl?: string
-      size?: { width: number; height: number }
-      error?: string
-    }>
-    onAvailableYearsProgress: (callback: (payload: {
+    /**
+     * AI 分析（S7.2）：只提交 `{ taskId, force? }`——主进程按 taskId 在当前账号作用域内定位
+     * 「已完成且报告仍有效」的结果，渲染层不上传报告内容。成功返回 analysis + model +
+     * promptVersion + generatedAt；失败返回固定失败码与固定文案（不携带异常/模型原文/URL/
+     * 路径/Token）。`force=true` 仅用于「重新生成 AI 诊断」：跳过结果缓存并真实调用模型
+     * （不绕过 taskId/账号/报告身份校验、single-flight、额度闸门与契约校验）。
+     * 返回值类型与主进程共享同一契约（shared/annualReviewAi.ts）。
+     */
+    aiAnalysis: (taskId: string, force?: boolean) => Promise<AnnualReviewAiAnalysisResponse>
+    /** 取消在途 AI 分析（只中止该 taskId；无在途调用 → analysis_not_found） */
+    aiCancel: (taskId: string) => Promise<AnnualReviewAiCancelResponse>
+    onProgress: (callback: (payload: {
       taskId: string
-      years?: number[]
-      done: boolean
-      error?: string
-      canceled?: boolean
-      strategy?: 'cache' | 'native' | 'hybrid'
-      phase?: 'cache' | 'native' | 'scan' | 'done'
+      year: number
+      phase: 'loading' | 'computing' | 'completed' | 'failed'
+      /** 0–100，单调不回退 */
+      progress: number
       statusText?: string
-      nativeElapsedMs?: number
-      scanElapsedMs?: number
-      totalElapsedMs?: number
-      switched?: boolean
-      nativeTimedOut?: boolean
+      done: boolean
+      error?: { code: string; message: string }
     }) => void) => () => void
-    onProgress: (callback: (payload: { status: string; progress: number }) => void) => () => void
-  }
-  dualReport: {
-    generateReport: (payload: { friendUsername: string; year: number }) => Promise<{
-      success: boolean
-      data?: {
-        year: number
-        selfName: string
-        selfAvatarUrl?: string
-        friendUsername: string
-        friendName: string
-        friendAvatarUrl?: string
-        firstChat: {
-          createTime: number
-          createTimeStr: string
-          content: string
-          isSentByMe: boolean
-          senderUsername?: string
-        } | null
-        firstChatMessages?: Array<{
-          content: string
-          isSentByMe: boolean
-          createTime: number
-          createTimeStr: string
-        }>
-        yearFirstChat?: {
-          createTime: number
-          createTimeStr: string
-          content: string
-          isSentByMe: boolean
-          friendName: string
-          firstThreeMessages: Array<{
-            content: string
-            isSentByMe: boolean
-            createTime: number
-            createTimeStr: string
-          }>
-        } | null
-        stats: {
-          totalMessages: number
-          totalWords: number
-          imageCount: number
-          voiceCount: number
-          emojiCount: number
-          myTopEmojiMd5?: string
-          friendTopEmojiMd5?: string
-          myTopEmojiUrl?: string
-          friendTopEmojiUrl?: string
-          myTopEmojiCount?: number
-          friendTopEmojiCount?: number
-          topPhrases: Array<{ phrase: string; count: number }>
-          myExclusivePhrases: Array<{ phrase: string; count: number }>
-          friendExclusivePhrases: Array<{ phrase: string; count: number }>
-          heatmap?: number[][]
-          initiative?: { initiated: number; received: number }
-          response?: { avg: number; fastest: number; slowest?: number; count: number }
-          monthly?: Record<string, number>
-          streak?: { days: number; startDate: string; endDate: string }
-        }
-        topPhrases: Array<{ phrase: string; count: number }>
-        myExclusivePhrases: Array<{ phrase: string; count: number }>
-        friendExclusivePhrases: Array<{ phrase: string; count: number }>
-        heatmap?: number[][]
-        initiative?: { initiated: number; received: number }
-        response?: { avg: number; fastest: number; slowest?: number; count: number }
-        monthly?: Record<string, number>
-        streak?: { days: number; startDate: string; endDate: string }
-      }
-      error?: string
-    }>
-    onProgress: (callback: (payload: { status: string; progress: number }) => void) => () => void
   }
   export: {
     getExportStats: (sessionIds: string[], options: any) => Promise<{
@@ -1918,6 +1898,7 @@ export interface ElectronAPI {
   }
   insight: {
     testConnection: () => Promise<{ success: boolean; message: string }>
+    sendWecomTest: (webhook: string) => Promise<{ success: boolean; message: string }>
     listRecords: (filters?: InsightRecordFilters) => Promise<InsightRecordListResult>
     getRecord: (id: string) => Promise<InsightRecordResult>
     markRecordRead: (id: string) => Promise<{ success: boolean; error?: string }>
@@ -2012,8 +1993,10 @@ export interface ElectronAPI {
     allocationConfirm: (id: number, patch?: unknown) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
     allocationReject: (id: number) => Promise<void>
     paymentApprove: (id: number) => Promise<{ ok: boolean; reason?: string; allocationCreated?: boolean }>
-    paymentsByDay: (days?: number) => Promise<Array<{ id: number; payer: string; amount_net: number; pay_time: number; group_id?: string; source?: string; pay_channel?: string; needs_review: number; allocation_id?: number; alloc_status?: string; account_id?: number; contract_id?: number; sales_name?: string; account_name?: string; contract_name?: string; invoice_id?: number; invoice_no?: string; invoice_status?: string }>>
-    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string }) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
+    paymentsByDay: (days?: number) => Promise<Array<{ id: number; payer: string; amount_net: number; pay_time: number; group_id?: string; source?: string; pay_channel?: string; needs_review: number; allocation_id?: number; alloc_status?: string; account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string; account_name?: string; contract_name?: string; invoice_id?: number; invoice_no?: string; invoice_status?: string; invoice_requirement?: 'unknown' | 'required' | 'not_required' | 'info_pending'; reconciliation_status?: 'pending' | 'allocated' | 'legacy_confirmed'; reconciled_at?: number }>>
+    paymentClaim: (id: number, patch?: { account_id?: number; contract_id?: number; sales_name?: string; sales_wxid?: string }) => Promise<{ ok: boolean; reason?: string; linked?: boolean }>
+    allocationReconcile: (id: number) => Promise<{ ok: boolean; reason?: string }>
+    allocationInvoiceRequirement: (id: number, requirement: 'unknown' | 'required' | 'not_required' | 'info_pending') => Promise<{ ok: boolean; reason?: string }>
     currentSalesName: () => Promise<string>
     salesTeam: () => Promise<{ team: Array<{ name: string; orderCount: number; amount: number }>; removed: string[] }>
     salesTeamAdd: (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -2052,6 +2035,11 @@ export interface ElectronAPI {
 
     // 单机线索流转
     leadImport: (source: string, fileName: string, rows: unknown[]) => Promise<{ batchId: number; total: number; valid: number; duplicate: number; invalid: number; invalidIndexes: number[]; dupSameBatch: number; dupExistingLead: number; dupExistingCustomer: number; conflicts: number }>
+    leadDupCheck: (input: { phone?: string; wechat?: string }) => Promise<{ duplicate: boolean; detail: { kind: 'lead' | 'customer' | 'conflict'; contactMasked: string; leadId?: number; accountId?: number; status?: string; source?: string; currentOwner?: string; assignments: Array<{ id: number; salesName: string; mode: string; status: string; assignedAt: number; sla1Stopped: boolean }>; message: string } | null }>
+    leadCreate: (input: { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }) => Promise<{ ok: boolean; data?: { leadId: number }; code?: 'E101' | 'E201'; message: string; duplicate?: { kind: 'lead' | 'customer' | 'conflict'; contactMasked: string; leadId?: number; accountId?: number; status?: string; source?: string; currentOwner?: string; assignments: Array<{ id: number; salesName: string; mode: string; status: string; assignedAt: number; sla1Stopped: boolean }>; message: string } }>
+    leadQrSave: (fileName: string, srcPath: string) => Promise<{ ok: boolean; path?: string }>
+    leadHistoryImport: (fileName: string, rows: Array<{ contactType?: string; contactValue?: string; sales?: string; assignedAt?: string | number; endState?: string; source?: string; note?: string }>) => Promise<{ total: number; leadsCreated: number; leadsReused: number; assignmentsCreated: number; recycled: number; skipped: Array<{ line: number; contactMasked: string; reason: string }> }>
+    dupGroupList: () => Promise<{ groupCount: number; leadMatches: Record<string, { mask: string; others: string[] }>; customerMatches: Record<string, { mask: string; others: string[] }> }>
     leadList: (opts?: { status?: string; source?: string; overdueOnly?: boolean; q?: string; limit?: number; offset?: number }) => Promise<LeadRow[]>
     leadDetail: (id: number) => Promise<{ lead: LeadRow | null; activities: Array<{ id: number; lead_id: number; action: string; note?: string; created_at: number }> }>
     leadOverview: () => Promise<{ total: number; byStatus: Record<string, number>; overdue: number; todayImported: number; todayContacted: number; pendingSla: number; sources: Array<{ source: string; count: number }> }>
@@ -2072,6 +2060,11 @@ export interface ElectronAPI {
     // 批量分配（设计稿屏 3 分配控制台）：批次号 = '#A'+批次审计行号
     // 批量分配只接受三种自动模式；显式非法值一律 E101，不再静默回退 weight
     assignmentAssignBatch: (req: { count: number; mode?: Exclude<AssignmentMode, 'manual'>; weights?: Record<string, number>; actor?: string }) => Promise<{ ok: boolean; data?: { batchNo: string; assigned: number; skipped: Array<{ leadId: number; code: string; reason: string }>; perSales: Record<string, number>; mode: string }; code?: string; message?: string }>
+    // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名，空串=名单第一位；无写路径）
+    assignmentRoundRobinNext: () => Promise<{ ok: boolean; data?: { next: string } }>
+    // 分配数据失效事件（SLA 回收 / LAN、中央下行 / 其他主进程或窗口写入后广播；载荷只含 action + leadIds + at，
+    // 不含联系方式/聊天内容等敏感字段）。返回清理函数，组件卸载必须调用以免监听器泄漏。
+    onAssignmentInvalidated: (callback: (payload: CrmAssignmentInvalidation) => void) => () => void
     // 加好友判定（PRD 1.4a 手动路，契约 crm:identity:bind）：写 customer_identity + 停 SLA1 表 + lead→WX_ADDED + 审计
     identityBind: (req: { leadId: number; wxid: string; displayName?: string; actor?: string }) => Promise<{ ok: boolean; data?: { identityId: number; customerId: number | null; alreadyBound: boolean; slaStopped: boolean }; code?: string; message?: string }>
     // 两段接力 SLA 第二段「聊了没有」（PRD 1.4）：扫描/人工结论统一写入口径（assignment.sla2_scan_ref + 审计）
@@ -2612,6 +2605,215 @@ declare global {
       filePath?: string
     }
   }
+}
+
+// ─── 年度经营复盘（S3）报告类型（与 electron/services/annualReviewReport.ts / S1/S2 统计层同源）───
+// 口径语义详见 docs/设计-年度经营复盘-规格.md；UI 只渲染不推断（§7.1）。
+
+export interface AnnualReviewMetricWarning {
+  code: string
+  message: string
+  count?: number
+}
+
+export interface AnnualReviewCoverage {
+  source: string
+  status: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+  coverageFrom?: number
+  coverageTo?: number
+  rows?: number
+  reasonCodes?: string[]
+  exactCoverage?: boolean
+  coverageRatio?: number | null
+}
+
+export interface AnnualReviewMetric<T> {
+  /** unavailable 时为 null；0 是真实零 */
+  value: T | null
+  state: 'complete' | 'partial' | 'snapshot_only' | 'unavailable'
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewSummaryMetrics {
+  customerTotal: AnnualReviewMetric<number>
+  customerNew: AnnualReviewMetric<number>
+  customerActive: AnnualReviewMetric<number>
+  contractCount: AnnualReviewMetric<number>
+  contractAmount: AnnualReviewMetric<number>
+  creditedAmount: AnnualReviewMetric<number>
+  shippedCount: AnnualReviewMetric<number>
+  shippedAmount: AnnualReviewMetric<number>
+  dealingCustomers: AnnualReviewMetric<number>
+  avgDealSize: AnnualReviewMetric<number>
+}
+
+export interface AnnualReviewFunnelBucketCount {
+  bucket: '了解' | '比价' | '决策' | '成交' | '流失' | '未知'
+  count: number
+}
+
+export interface AnnualReviewDistributionBlock {
+  kind: 'current_snapshot' | 'historical_reconstruction'
+  /** unavailable（覆盖率不足/总体为空声明）时可能为 null 或全零分布，以 coverage.status 为准 */
+  distribution: AnnualReviewFunnelBucketCount[] | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewStageFlowBlock {
+  distribution: AnnualReviewFunnelBucketCount[]
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewStuckBlock {
+  value: number | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewLostBreakdownBlock {
+  kind: 'current_snapshot' | 'historical_reconstruction'
+  customerPreviousStage: AnnualReviewFunnelBucketCount[] | null
+  opportunityReasons: Array<{ reason: string; count: number }> | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewFunnelBlock {
+  customerStage: AnnualReviewDistributionBlock
+  opportunityStage: AnnualReviewDistributionBlock
+  stageFlow: AnnualReviewStageFlowBlock
+  stuck: AnnualReviewStuckBlock
+  lostBreakdown: AnnualReviewLostBreakdownBlock
+}
+
+export interface AnnualReviewListBlock<T> {
+  value: T | null
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+}
+
+export interface AnnualReviewCustomersBlock {
+  highValue: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; creditedAmount: number; contractAmount: number }>>
+  newCustomers: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; createdAt: number; imported: boolean }>>
+  dealing: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number; firstSignDate: number }>>
+  repeat: AnnualReviewListBlock<Array<{ accountId: number; name: string | null; contractCount: number; contractAmount: number }>>
+  /** C5–C8 行只引用业务身份（规格 §7.2）；统计层 sessionId 不进入公开报告 */
+  active: AnnualReviewListBlock<Array<{ accountId: number | null; name: string | null }>>
+  silent: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }>>
+  risk: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; stage: string; lastContactAtMs: number }>>
+  priority: AnnualReviewListBlock<Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }>>
+}
+
+/** 尚未实现区块的显式占位（D/E 组、月度趋势）：UI 按 unavailable 渲染，绝不显示为 0 */
+export interface AnnualReviewUnavailableBlock {
+  status: 'unavailable'
+  reasonCodes: string[]
+}
+
+/** 本报告涉及数据源的实际最早/最晚有效事实时间；空数据没有真实范围 → 双 null */
+export interface AnnualReviewDataRange {
+  from: number | null
+  to: number | null
+}
+
+/** 完整性区块 id（稳定枚举） */
+export type AnnualReviewBlockId = 'summary' | 'funnel' | 'customers' | 'monthly' | 'communication' | 'salesAssignment'
+
+export interface AnnualReviewCompleteness {
+  overall: AnnualReviewCoverage['status']
+  blocks: Record<AnnualReviewBlockId, AnnualReviewCoverage['status']>
+}
+
+/** 全指标 warnings 聚合行：同 code 合并；metricKeys/counts 稳定排序（count 不跨指标相加） */
+export interface AnnualReviewAggregatedWarning {
+  code: string
+  message: string
+  metricKeys: string[]
+  counts?: Record<string, number>
+}
+
+/** 月度趋势区块（S5/阶段2：三序列量纲独立；轴内缺月为真实零） */
+export interface AnnualReviewMonthlyBlock {
+  /** 签约金额（元，本地自然月；与 A4/A5 同一 sign_date 集合） */
+  contractSign: { months: Array<{ month: string; amount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** 已核销回款（元，按计入时间；与 A6 同一集合） */
+  credited: { months: Array<{ month: string; amount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** 客户消息量（条；复用 D5 单一结果） */
+  messageVolume: { months: Array<{ month: string; count: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
+export interface AnnualReviewSourceSummaryRow {
+  source: string
+  tables: string[]
+  rows: number
+  note?: string
+}
+
+/** D 组沟通质量区块（S5；D7 行已映射业务身份，无 sessionId） */
+export interface AnnualReviewCommunicationBlock {
+  /** D1 年度客户消息量 */
+  volume: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D2 有沟通客户数（=A3 同一结果） */
+  contacted: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D3 主动联系率（0–1）；unavailable（无消息）时为 null */
+  outboundRate: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D5 月度沟通趋势（本地月 'YYYY-MM' 升序单序列） */
+  monthlyTrend: { months: Array<{ month: string; count: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  /** D7 长期未联系客户（仅 current_year/all_time；历史年度 unavailable） */
+  longSilent: { value: Array<{ accountId: number | null; customerId: string | null; name: string | null; lastContactAtMs: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
+/** E 组销售与分配区块（S5；E1 分项事实不相加，无 E2/E6/E7） */
+export interface AnnualReviewSalesAssignmentBlock {
+  assignedFacts: {
+    /** 初始分配（lead_assign，按 salesName+mode 分组）——不得与移交相加命名 */
+    initialAssignments: { total: number; groups: Array<{ salesName: string | null; mode: string | null; count: number }> }
+    /** 移入（lead_transfer 按 detail.toSales） */
+    transfersIn: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+    /** 移出（lead_transfer 按 detail.fromSales） */
+    transfersOut: { total: number; groups: Array<{ salesName: string | null; count: number }> }
+  }
+  /** sync 缺口 → partial + exactCoverage=false + coverageRatio=null */
+  coverage: AnnualReviewCoverage
+  warnings: AnnualReviewMetricWarning[]
+  effectiveFollowup: { value: number | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  contractContribution: { value: Array<{ ownerSales: string | null; contractCount: number; totalAmount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+  creditedContribution: { value: Array<{ salesName: string | null; totalAmount: number }> | null; state: AnnualReviewCoverage['status']; warnings: AnnualReviewMetricWarning[] }
+}
+
+export interface AnnualReviewReport {
+  reportSchemaVersion: number
+  /** 年份；0 = 历史以来 */
+  year: number
+  scopeKind: 'current_year' | 'historical_year' | 'all_time'
+  periodStart: number | null
+  periodEndExclusive: number | null
+  /** current_year/all_time = generatedAt；historical_year = periodEndExclusive */
+  asOf: number
+  /** 永远只表示报告实际生成时间，不兼作历史数据时点 */
+  generatedAt: number
+  timezoneNote: 'local'
+  /** 本次报告实际输入并参与计算的有效事实时间范围（参与窗口并集）；空数据双 null */
+  dataRange: AnnualReviewDataRange
+  /** 四态完整性（统计层结果聚合；UI 不计算） */
+  completeness: AnnualReviewCompleteness
+  /** 稳定 metricKey → 覆盖结构（B/C 复用统计层；A 组组装层单一映射） */
+  coverage: Record<string, AnnualReviewCoverage>
+  /** 全指标 warnings 聚合 */
+  warnings: AnnualReviewAggregatedWarning[]
+  summary: AnnualReviewSummaryMetrics
+  funnel: AnnualReviewFunnelBlock
+  customers: AnnualReviewCustomersBlock
+  /** 月度趋势（三序列） */
+  monthly: AnnualReviewMonthlyBlock
+  /** D 组沟通质量（S5） */
+  communication: AnnualReviewCommunicationBlock
+  /** E 组销售与分配（S5） */
+  salesAssignment: AnnualReviewSalesAssignmentBlock
+  /** 真实输入事实与消息统计来源摘要（行数确定、无敏感内容） */
+  sourceSummary: AnnualReviewSourceSummaryRow[]
 }
 
 export { }

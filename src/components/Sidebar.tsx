@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Settings, Download, Aperture, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, FileText, BarChart3 } from 'lucide-react'
+import { Settings, Download, Aperture, Lock, LockOpen, ChevronUp, ChevronDown, FolderClosed, Footprints, Users, ArchiveRestore, BarChart3 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { useHermesStore } from '../stores/hermesStore'
 import * as configService from '../services/config'
@@ -317,20 +317,18 @@ function Sidebar({ collapsed }: SidebarProps) {
   // 分组默认展开：CRM 与 AI/知识（核心工作区），系统默认收起
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ crm: true, ai: true })
   const openHermes = useHermesStore((s) => s.openHermes)
-  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮；设置除外——它的路由是浮层，仍标 active
+  // 动作项（无 path）不参与分组 active 判定，避免伪造路由高亮
   const groupActive = (items: NavItemDef[]) => items.some((i) => 'path' in i && isActive(i.path))
   const renderNavItem = (item: NavItemDef, child = false) => {
     if ('action' in item) {
-      const actionActive = item.action === 'openSettings' && isActive('/settings')
       // 动作项：button 原生键盘可操作；不跳路由、不改 openGroups
       return (
         <button
           key={item.label}
           type="button"
-          className={`nav-item ${child ? 'nav-item--child' : ''} ${actionActive ? 'active' : ''}`}
+          className={`nav-item ${child ? 'nav-item--child' : ''}`}
           onClick={() => {
-            if (item.action === 'openHermes') openHermes()
-            if (item.action === 'openSettings') openSettingsFromAccountMenu()
+            if (item.action === 'openHermes') { openHermes(); navigate('/hermes') }
           }}
           title={collapsed ? item.label : undefined}
           aria-label={item.label}
@@ -420,16 +418,6 @@ function Sidebar({ collapsed }: SidebarProps) {
           >
             <span className="nav-icon"><BarChart3 size={20} /></span>
             <span className="nav-label">聊天分析</span>
-          </NavLink>}
-
-          {/* 年度报告 - PRD v2 隐藏 */}
-          {false && <NavLink
-            to="/annual-report"
-            className={`nav-item ${isActive('/annual-report') ? 'active' : ''}`}
-            title={collapsed ? '年度报告' : undefined}
-          >
-            <span className="nav-icon"><FileText size={20} /></span>
-            <span className="nav-label">年度报告</span>
           </NavLink>}
 
           {/* 我的足迹 - PRD v2 隐藏 */}

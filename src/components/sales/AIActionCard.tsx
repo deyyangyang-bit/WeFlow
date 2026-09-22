@@ -5,6 +5,10 @@
  * - 右列：等宽数字 + 2px 细刻度（概念稿 .score；原环形 gauge 按稿子设计说明去掉）
  * - 点整行展开：四栏判断（概念稿 .verdicts：摘要 / 机会 / 风险 / 下一步，含出处标记与证据回查，语义未变）
  * - 动作行（打开聊天 / 复制话术 / 完成 / 跳过 / AI 深度分析）常驻可见，行为与文案不变
+ *
+ * 2026-09-18 P1.6（观感细修，纯视觉）：动作行全部降档 —— 文字项走 quiet 文字钮，「完成」为
+ * 唯一轻 primary（.btn--primary-soft）；信号行档默认再压平为文字链、行指向/展开才升 accent
+ * 字色（同客户 P1.4b）。出处按钮与证据块对齐客户/聊天侧栏同一套（.ahead--btn / .verdict__evi）。
  */
 import { useCallback, useState } from 'react'
 import { Check, ChevronDown, Copy, MessageCircle, RotateCw, Sparkles, X } from 'lucide-react'
@@ -46,10 +50,15 @@ function SourceTag({ source }: { source: SignalSource }) {
   )
 }
 
-export default function AIActionCard({ item }: { item: ActionItem }) {
+/**
+ * @param lead 主张卡档（概念稿 .lead-card）：排序首位提升到索引上方时用。
+ *   数据、判断、证据回查与动作全部沿用细线行那一套，只是外壳与头部换成「一句话答案」的排布，
+ *   并且四栏判断默认摊开且四格常驻（缺哪栏标「尚未识别」）—— 完整判断只留给被主张的这一位。
+ */
+export default function AIActionCard({ item, lead = false }: { item: ActionItem; lead?: boolean }) {
   const { completeItem, fetchSuggestion } = useTodayActionStore()
   const navigate = useNavigate()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(lead)
   const [loadingSuggestion, setLoadingSuggestion] = useState(false)
   const [copied, setCopied] = useState(false)
   // P0-3.4 证据回查：判断只带 messageKey 锚点，点击才走 P0-2B 拉原话（与 360/上下文条同语义）
@@ -151,71 +160,57 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
   // 均无聊天对象 → 隐藏「打开聊天」按钮（SLA 卡 displayName 已含脱敏联系方式，销售自行微信搜索）
   const isVirtualTodo = ['todo:', 'lead:', 'logi:'].some((p) => String(item.sessionId || '').startsWith(p))
 
-  return (
-    <div className={`sig ${tierClass} ${expanded ? 'is-open' : ''}`}>
-      {/* 整行可点：展开/收起四栏判断（原「AI深度分析」入口同语义，键盘可达） */}
-      <button
-        type="button"
-        className="sigrow signal-sigrow"
-        aria-expanded={expanded}
-        onClick={() => { if (hasAnalysis) setExpanded(!expanded) }}
-      >
-        <span className={`dot ${tier === 'normal' ? '' : `dot--${tier}`}`} />
-        <span className="sigrow__main">
-          <span
-            className="sigrow__name signal-card__name--link"
-            title="查看客户 360 档案"
-            onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
-          >{item.displayName}</span>
-          <span className="sigrow__sub">
-            <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
-              {stage.text}
-            </span>
-            <span className="sigrow__tags">
-              {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
-            </span>
-            <span className="sigrow__silent">{item.silentDays} 天未互动</span>
-          </span>
-        </span>
-        <span className={`score ${tier === 'normal' ? '' : `score--${tier}`}`}>
-          <span className="score__n">{item.priorityScore}<small>分</small></span>
-          <span className="score__bar"><i style={{ width: `${scorePct * 100}%` }} /></span>
-        </span>
-        <ChevronDown size={16} strokeWidth={1.6} className="chev" />
-      </button>
+  // P0-3.4 判断面板：只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
+  // 空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断）。
+  // 细线行档收在 .sigdetail 里按需展开，主张卡档直接摊在卡内 —— 内容同一份，只有外壳不同。
+  // 2026-09-18 P1.2：主张卡（lead）四格常驻（摘要 / 机会 / 风险 / 下一步），不再 filter 掉空判断 ——
+  // 整格消失会被读成「这一栏没问题」，缺哪栏就如实标「尚未识别」（与聊天上下文条 / 客户 360 同一句空态文案）。
+  // 细线行档保持原样：仍然按需展开，展开后也只列已有判断，不改列表密度。
+  const cells: Array<{ label: string; v: JudgmentValue | null }> = [
+    { label: '摘要', v: judgments?.summary ?? null },
+    { label: '机会', v: judgments?.opportunity ?? null },
+    { label: '风险', v: judgments?.risk ?? null },
+    { label: '下一步', v: judgments?.nextAction ?? null }
+  ]
+  // 细线行展开档保持原密度：只列已有判断；主张卡四格常驻，缺栏如实标「尚未识别」
+  const visibleCells = lead ? cells : cells.filter((c) => !!c.v)
 
-      {/* P0-3.4 折叠面板：判断只消费系统已形成的当前视图（currentView.judgments，与 360/上下文条同语义：
-          空态不补 / stale 标较旧 / 证据点击回查；analysis JSON 快照与 insight 文本不再冒充当前判断） */}
-      {expanded && hasAnalysis && (
-        <div className="sigdetail">
-          {hasJudgments && (
+  const panel = <>
+          {(lead || hasJudgments) && (
             <div className="verdicts">
-              {([
-                { label: '摘要', v: judgments!.summary },
-                { label: '机会', v: judgments!.opportunity },
-                { label: '风险', v: judgments!.risk },
-                { label: '下一步', v: judgments!.nextAction }
-              ] as Array<{ label: string; v: JudgmentValue | null }>)
-              .filter((c): c is { label: string; v: JudgmentValue } => !!c.v).map((c) => {
+              {visibleCells.map((c) => {
+                // const 绑定：narrow 后的判断值在 onClick 闭包里仍然非空（属性访问的 narrow 进不了闭包）
+                const v = c.v
+                if (!v) {
+                  return (
+                    <div key={c.label} className="verdict verdict--muted">
+                      <div className="verdict__k">{c.label}</div>
+                      <div className="verdict__v">尚未识别</div>
+                    </div>
+                  )
+                }
                 return (
                 <div key={c.label} className="verdict">
                   <div className="verdict__k">{c.label}</div>
                   <div className="verdict__v">
-                    {String(c.v.value || '')}
+                    {String(v.value || '')}
                     <div className="verdict__meta">
                       {/* 出处标记：新鲜 = AI 当前判断，较旧 = 生成超 24h，人工 = 手动锁定 */}
-                      <span className={`ahead ${c.v.source === 'manual' ? 'ahead--human' : 'ahead--ai'}`}>
+                      <span className={`ahead ${v.source === 'manual' ? 'ahead--human' : 'ahead--ai'}`}>
                         <span className="ahead__i" />
-                        {c.v.source === 'manual' ? '人工确认' : c.v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
+                        {v.source === 'manual' ? '人工确认' : v.freshness === 'stale' ? 'AI·较旧' : 'AI·新鲜'}
                       </span>
-                      {c.v.evidenceStatus === 'ok' && c.v.messageKey && (
-                        <button className="signal-card__j-evidence" onClick={(e) => { e.stopPropagation(); void toggleEvidence(c.v) }}>
-                          {evidenceKey === c.v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
+                      {v.evidenceStatus === 'ok' && v.messageKey && (
+                        /* P1.6：出处按钮压平到客户 360 同一个 .ahead--btn 语法（tertiary 字，hover accent），
+                            不再自带蓝底小按钮 —— 判断栏在今日行动 / 客户 / 聊天侧栏是同一套 */
+                        <button className="ahead ahead--src ahead--btn" onClick={(e) => { e.stopPropagation(); void toggleEvidence(v) }}>
+                          <i className="ahead__i" />
+                          {evidenceKey === v.messageKey ? (evidenceMsg && !evidenceMsg.startsWith('正在') ? '收起依据' : '回查中…') : '依据消息'}
                         </button>
                       )}
                     </div>
-                    {evidenceKey === c.v.messageKey && evidenceMsg && (
-                      <div className="signal-card__j-evidence-text">{evidenceMsg}</div>
+                    {evidenceKey === v.messageKey && evidenceMsg && (
+                      <div className="verdict__evi">{evidenceMsg}</div>
                     )}
                   </div>
                 </div>
@@ -236,20 +231,76 @@ export default function AIActionCard({ item }: { item: ActionItem }) {
               </div>
             </div>
           )}
+  </>
+
+  return (
+    <div className={lead ? 'lead-card' : `sig ${tierClass} ${expanded ? 'is-open' : ''}`}>
+      {lead ? (
+        /* 主张卡头部（概念稿 .lead-card__top）：名字 + 阶段 + 沉默/优先级，右侧标明它是被引擎置顶的那一条 */
+        <div className="lead-card__top">
+          <div className="lead-card__who">
+            <span
+              className="lead-card__name signal-card__name--link"
+              title="查看客户 360 档案"
+              onClick={() => navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`)}
+            >{item.displayName}</span>
+            <span className="pill" style={{ background: `${stage.color}1A`, color: stage.color }}>{stage.text}</span>
+            <span className="lead-card__meta">沉默 {item.silentDays} 天 · 优先级 {item.priorityScore}</span>
+          </div>
+          <span className="tag tag--plain">引擎置顶</span>
         </div>
+      ) : (
+        /* 整行可点：展开/收起四栏判断（原「AI深度分析」入口同语义，键盘可达） */
+        <button
+          type="button"
+          className="sigrow signal-sigrow"
+          aria-expanded={expanded}
+          onClick={() => { if (hasAnalysis) setExpanded(!expanded) }}
+        >
+          <span className={`dot ${tier === 'normal' ? '' : `dot--${tier}`}`} />
+          <span className="sigrow__main">
+            <span
+              className="sigrow__name signal-card__name--link"
+              title="查看客户 360 档案"
+              onClick={(e) => { e.stopPropagation(); navigate(`/customers?sid=${encodeURIComponent(item.sessionId)}`) }}
+            >{item.displayName}</span>
+            <span className="sigrow__sub">
+              <span className="signal-card__stage" style={{ background: `${stage.color}1A`, color: stage.color }}>
+                {stage.text}
+              </span>
+              <span className="sigrow__tags">
+                {item.sources.map((s, i) => <SourceTag key={i} source={s} />)}
+              </span>
+              <span className="sigrow__silent">{item.silentDays} 天未互动</span>
+            </span>
+          </span>
+          <span className={`score ${tier === 'normal' ? '' : `score--${tier}`}`}>
+            <span className="score__n">{item.priorityScore}<small>分</small></span>
+            <span className="score__bar"><i style={{ width: `${scorePct * 100}%` }} /></span>
+          </span>
+          <ChevronDown size={16} strokeWidth={1.6} className="chev" />
+        </button>
       )}
 
-      {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致 */}
-      <div className="sigdetail__acts signal-card__actions">
+      {/* 主张卡档摊开判断（四格常驻，无判断时也如实标「尚未识别」）；细线行档按需展开 */}
+      {lead
+        ? panel
+        : (expanded && hasAnalysis && <div className="sigdetail">{panel}</div>)}
+
+      {/* 动作行：常驻可见（红线 5：行动任务可见性与可点击性不变），行为与文案与改造前一致。
+          P1.6 观感降档：文字链档（打开聊天 / 复制话术 / 跳过 / AI 分析都是 quiet 文字钮），
+          主操作只留「完成」一档轻 primary（.btn--primary-soft）；信号行档在 scss 里再压平为
+          文字链、hover/is-open 才升 accent 字色（同客户 P1.4b），列表里不摆色块。 */}
+      <div className={lead ? 'lead-card__acts' : 'sigdetail__acts signal-card__actions'}>
         {!isVirtualTodo && (
-          <button className="btn btn--sm" onClick={handleOpenChat}>
+          <button className="btn btn--sm btn--quiet" onClick={handleOpenChat}>
             <MessageCircle size={14} strokeWidth={1.6} /> 打开聊天
           </button>
         )}
-        <button className="btn btn--sm" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
+        <button className="btn btn--sm btn--quiet" onClick={() => void handleCopyScript()} disabled={loadingSuggestion}>
           {copied ? <Check size={14} strokeWidth={1.6} /> : <Copy size={14} strokeWidth={1.6} />} {copied ? '已复制' : '复制话术'}
         </button>
-        <button className="btn btn--sm btn--primary" onClick={handleComplete}>
+        <button className="btn btn--sm btn--primary-soft" onClick={handleComplete}>
           <Check size={14} strokeWidth={1.6} /> 完成
         </button>
         <button className="btn btn--sm btn--quiet" onClick={handleSkip}>

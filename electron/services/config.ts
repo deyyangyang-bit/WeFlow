@@ -40,6 +40,12 @@ interface ConfigSchema {
   imageXorKey: number
   imageAesKey: string
   wxidConfigs: Record<string, { decryptKey?: string; imageXorKey?: number; imageAesKey?: string; updatedAt?: number }>
+  /**
+   * P1b 导出授权根（主进程托管）：经原生目录对话框批准并持久化的导出根目录。
+   * 键不在渲染层白名单（rendererConfigPolicy），渲染层经通用 config:get/set **零读写**；
+   * 读取/恢复/再验证只由 exportPathAuthorizer 在主进程进行。
+   */
+  exportAuthorizedRoots?: Record<string, { realPath: string; grantedAt: number }>
   exportPath?: string;
   // 缓存相关
   cachePath: string
@@ -168,6 +174,14 @@ interface ConfigSchema {
   crmSalesList: string[]
   /** 分配权重（设计稿屏 3 比例权重滑杆；销售名 → 0-100 整数，缺省等权；调整属 C 类操作走审计） */
   crmAssignWeights: Record<string, number>
+  /**
+   * round_robin 跨批次公平游标（2026-09-20）：存「下一位销售姓名」，仅主进程内部读写。
+   * ⛔ 不进 rendererConfigPolicy 任何白名单（渲染层经通用 config:get/set 为未知键，零读写）；
+   *   前端只经只读端点 crm:assignment:roundRobinNext 取最小起始信息。
+   * 名单当前是姓名数组（crmSalesList），游标暂以规范化姓名记录；名单 employeeId 化时此键
+   * 同步迁移为 employeeId（边界见 shared/leadRoundRobin.ts 头注释）。空串 = 从名单第一位开始。
+   */
+  crmRoundRobinCursor: string
   /** SLA1 回收器扫描间隔（分钟，5-1440，默认 30；扫 assignment status=assigned 且 sla1_deadline 过期 → 自动回收） */
   crmSlaRecycleIntervalMin: number
   /** 加好友自动检测扫描间隔（分钟，5-1440，默认 30；PRD 1.4a 自动路：精确匹配 WCDB 联系人 → 停 SLA1 表） */
@@ -228,6 +242,10 @@ interface ConfigSchema {
   aiInsightTelegramToken: string
   /** Telegram 接收 Chat ID，逗号分隔，支持多个 */
   aiInsightTelegramChatIds: string
+  /** 是否启用企业微信群机器人推送 */
+  aiInsightWecomEnabled: boolean
+  /** 企业微信群机器人 Webhook 地址（内含 key= 密钥，保密级别同 Telegram Token，不明文进日志） */
+  aiInsightWecomWebhook: string
 
   // AI 足迹
   aiFootprintEnabled: boolean
@@ -255,7 +273,9 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'aiModelApiKey',
   'aiInsightApiKey',
   'centralSyncDeviceToken',
-  'aiInsightWeiboCookie'
+  'aiInsightWeiboCookie',
+  'aiInsightTelegramToken',
+  'aiInsightWecomWebhook'
 ])
 const ENCRYPTED_BOOL_KEYS: Set<string> = new Set(['authEnabled', 'authUseHello'])
 const ENCRYPTED_NUMBER_KEYS: Set<string> = new Set(['imageXorKey'])
@@ -277,6 +297,9 @@ export class ConfigService {
   // Worker 环境不创建（CacheMap 键仅主进程访问，避免多进程并发写同一文件）
   private cacheMapStore: CacheMapStore | null = null
 
+  /** 全部配置键（defaults 键集）：secret-config-ipc-test 据此动态扫描凭据字段，防新增秘密漏进白名单 */
+  static ALL_CONFIG_KEYS: ReadonlySet<string> = new Set()
+
   // 锁定模式运行时状态
   private unlockedKeys: Map<string, any> = new Map()
   private unlockPassword: string | null = null
@@ -296,14 +319,14 @@ export class ConfigService {
       return ConfigService.instance
     }
     ConfigService.instance = this
-    const defaults: ConfigSchema = {
-      dbPath: '',
+    const defaults: ConfigSchema = {      dbPath: '',
       decryptKey: '',
       myWxid: '',
       onboardingDone: false,
       imageXorKey: 0,
       imageAesKey: '',
       wxidConfigs: {},
+      exportAuthorizedRoots: {},
       cachePath: '',
       lastOpenedDb: '',
       lastSession: '',
@@ -389,6 +412,7 @@ export class ConfigService {
       crmLeadSourcePreset: '抖音,视频号,小红书',
       crmSalesList: ['杨青', '李林辉', '许丽娟'],
       crmAssignWeights: {},
+      crmRoundRobinCursor: '',
       crmSlaRecycleIntervalMin: 30,
       crmFriendDetectIntervalMin: 30,
       crmSla2ScanIntervalMin: 30,
@@ -418,6 +442,8 @@ export class ConfigService {
       aiInsightTelegramEnabled: false,
       aiInsightTelegramToken: '',
       aiInsightTelegramChatIds: '',
+      aiInsightWecomEnabled: false,
+      aiInsightWecomWebhook: '',
       aiInsightWeiboCookie: '',
       aiInsightWeiboBindings: {},
       aiFootprintEnabled: false,
@@ -440,6 +466,7 @@ export class ConfigService {
       defaults,
       projectName: String(process.env.WEFLOW_PROJECT_NAME || 'WeFlow').trim() || 'WeFlow'
     }
+    ConfigService.ALL_CONFIG_KEYS = new Set(Object.keys(defaults))
     const runningInWorker = process.env.WEFLOW_WORKER === '1'
     if (runningInWorker) {
       const cwd = String(process.env.WEFLOW_CONFIG_CWD || process.env.WEFLOW_USER_DATA_PATH || '').trim()
@@ -547,10 +574,15 @@ export class ConfigService {
     return raw
   }
 
-  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
+  /**
+   * 单键写入前的存储值准备（P1 批量更新共用）：完整复用既有转换——dbPath expandHomePath、
+   * safeStorage/lock 加密、wxidConfigs 整包加密、lock 模式 unlockedKeys 内存态副作用。
+   * CacheMap 键走旁路存储，返回 cache 标记由调用方分流。
+   */
+  private prepareStoreValue<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]):
+    { kind: 'cache' } | { kind: 'store'; storeValue: ConfigSchema[K] } {
     if (this.cacheMapStore && isCacheMapKey(key as string)) {
-      this.cacheMapStore.set(key as string, value)
-      return
+      return { kind: 'cache' }
     }
     let toStore = value
     const inLockMode = this.isLockMode() && this.unlockPassword
@@ -587,7 +619,36 @@ export class ConfigService {
       }
     }
 
-    this.store.set(key, toStore)
+    return { kind: 'store', storeValue: toStore }
+  }
+
+  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
+    const prepared = this.prepareStoreValue(key, value)
+    if (prepared.kind === 'cache') {
+      this.cacheMapStore!.set(key as string, value)
+      return
+    }
+    this.store.set(key, prepared.storeValue)
+  }
+
+  /**
+   * 批量更新（P1：地址切换与凭据清理的原子化）：全部键经 prepareStoreValue 转换后合并成
+   * **一次** electron-store 持久化（单次同步写入，等价于 migrateCacheMapKeys 的整体重写先例），
+   * 消除「先写新地址、后清凭据」的多次独立写盘窗口——任何一次持久化失败，磁盘与内存
+   * 都不会出现「新地址 + 旧凭据」的组合。调用方仍应把凭据条目排在地址条目之前
+   * （安全顺序语义：即使未来降级为逐项写入，顺序也是安全的）。
+   */
+  setMany(entries: Array<[keyof ConfigSchema, unknown]>): void {
+    const merged: Record<string, unknown> = { ...(this.store.store as unknown as Record<string, unknown>) }
+    for (const [key, value] of entries) {
+      const prepared = this.prepareStoreValue(key, value as ConfigSchema[keyof ConfigSchema])
+      if (prepared.kind === 'cache') {
+        this.cacheMapStore!.set(key as string, value)
+        continue
+      }
+      merged[key as string] = prepared.storeValue
+    }
+    ;(this.store as unknown as { store: Record<string, unknown> }).store = merged
   }
 
   // === 加密/解密工具 ===

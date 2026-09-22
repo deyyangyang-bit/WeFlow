@@ -1,0 +1,42 @@
+# Linux 宿主变体（仅 Linux 宿主使用）：Caddy 以 network_mode: host 运行。
+# 与 docker-compose.central.tls.yml（Windows/Docker Desktop 用）的区别：
+#   1. host 模式下无 NAT、无 userland-proxy，Caddy 直接看到真实 LAN 客户端源 IP，
+#      `remote_ip` CIDR 判定天然成立——这是 Linux 宿主不建 Windows 原生交付层的根因；
+#   2. host 模式不能与自定义 networks 组合，故本文件不声明 networks，
+#      Caddyfile 改用 bind + reverse_proxy 127.0.0.1:8787（central 仍按基础 compose 发布到宿主回环）；
+#   3. 不写 ports 映射：监听地址由 central/Caddyfile.linux 的 bind 指令收敛到
+#      ${WEFLOW_CENTRAL_HTTPS_BIND}（proxy.env 必填，语义与 Windows 版一致）。
+# 启动命令见 docs/规划/Linux中央节点部署步骤.md §6。
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      central:
+        condition: service_started
+    env_file:
+      - ./central/proxy.env
+    volumes:
+      - ./central/Caddyfile.linux:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

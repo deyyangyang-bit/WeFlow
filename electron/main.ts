@@ -10,16 +10,19 @@ import { autoUpdater } from 'electron-updater'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { ConfigService } from './services/config'
+import { readRendererConfig, writeRendererConfig } from './services/rendererConfigPolicy'
+import { registerSecretConfigIpc } from './services/secretConfigIpc'
 import { dbPathService } from './services/dbPathService'
 import { wcdbService } from './services/wcdbService'
+import { isSessionIdLike, isRawWechatAccountId } from '../shared/wechatId'
 import { chatService } from './services/chatService'
 import { imageDecryptService } from './services/imageDecryptService'
 import { imagePreloadService } from './services/imagePreloadService'
 import { analyticsService } from './services/analyticsService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
-import { annualReportService } from './services/annualReportService'
 import { ExportOptions, ExportProgress } from './services/export'
 import { exportTaskControlService } from './services/exportTaskControlService'
+import { exportPathAuthorizer } from './services/exportPathAuthorizer'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
@@ -67,7 +70,23 @@ import { judgeAndImportCrmCustomer, backfillImportFromInsightRecords, collectInt
 import { enrichCustomer } from './services/crmEnrichService'
 import { enqueueSalesTask } from './services/salesQueue'
 import { crmDbService } from './services/crmDbService'
-import { migrateLegacyBusinessDbs } from './services/businessDbPath'
+import { migrateLegacyBusinessDbs, businessDbName } from './services/businessDbPath'
+import { AnnualReviewService, shapeAnnualReviewGetReportResponse, type AnnualReviewAccountContext } from './services/annualReviewService'
+import {
+  AnnualReviewAiCoordinator,
+  bindAnnualReviewAiSenderAbort,
+  parseAnnualReviewAiAnalysisRequest
+} from './services/annualReviewAiCoordinator'
+import {
+  announceAnnualReviewDataChangedNow,
+  installAnnualReviewInvalidation
+} from './services/annualReviewInvalidation'
+import { loadAnnualReviewFacts, type AnnualReviewMessageStats } from './services/annualReviewStats'
+import { loadAnnualReviewSalesSegments, loadAnnualReviewCrmSegments } from './services/annualReviewSegments'
+import { validateAnnualReviewYearInput, validateAnnualReviewTaskId } from './services/annualReviewReport'
+import { exportTextFile } from './services/safeTextFileExport'
+import { annualReviewIpcFailureResponse } from './services/annualReviewIpcError'
+import { buildAnnualReviewMarkdown, buildAnnualReviewCsv } from './services/annualReviewExportContent'
 import { resetLegacyGroupScanSla, cleanupLegacyGroupScanTags } from './services/crmLeadService'
 import { restoreLegacyGroupScanAssignments, backfillAssignmentSla1, correctSla1Misrecycle, syncLeadDeadlineFromAssignment, startSlaRecycleScheduler } from './services/crmAssignmentService'
 import { startFirstClassifyScheduler } from './services/crmFirstClassifyService'
@@ -730,32 +749,6 @@ const getDialogReleaseNotes = (rawReleaseNotes: unknown): string => {
   return normalizeReleaseNotes(rawReleaseNotes)
 }
 
-type AnnualReportYearsLoadStrategy = 'cache' | 'native' | 'hybrid'
-type AnnualReportYearsLoadPhase = 'cache' | 'native' | 'scan' | 'done'
-
-interface AnnualReportYearsProgressPayload {
-  years?: number[]
-  done: boolean
-  error?: string
-  canceled?: boolean
-  strategy?: AnnualReportYearsLoadStrategy
-  phase?: AnnualReportYearsLoadPhase
-  statusText?: string
-  nativeElapsedMs?: number
-  scanElapsedMs?: number
-  totalElapsedMs?: number
-  switched?: boolean
-  nativeTimedOut?: boolean
-}
-
-interface AnnualReportYearsTaskState {
-  cacheKey: string
-  canceled: boolean
-  done: boolean
-  snapshot: AnnualReportYearsProgressPayload
-  updatedAt: number
-}
-
 interface OpenSessionChatWindowOptions {
   source?: 'chat' | 'export'
   initialDisplayName?: string
@@ -797,71 +790,113 @@ const loadSessionChatWindowContent = (
   })
 }
 
-const annualReportYearsLoadTasks = new Map<string, AnnualReportYearsTaskState>()
-const annualReportYearsTaskByCacheKey = new Map<string, string>()
-const annualReportYearsSnapshotCache = new Map<string, { snapshot: AnnualReportYearsProgressPayload; updatedAt: number; taskId: string }>()
-const annualReportYearsSnapshotTtlMs = 10 * 60 * 1000
-
-const normalizeAnnualReportYearsSnapshot = (snapshot: AnnualReportYearsProgressPayload): AnnualReportYearsProgressPayload => {
-  const years = Array.isArray(snapshot.years) ? [...snapshot.years] : []
-  return { ...snapshot, years }
+// ─── 年度经营复盘（S3）：主进程编排 + 账号作用域缓存 + Worker 纯统计 ─────────
+// 数据库访问只在主进程服务边界内（salesDb/crmDb/wcdb 既有单例）；Worker 只接收可序列化的
+// 窄事实。排除名单取现有真实来源（reportExcludedSessions + crmInternalList）。
+// WCDB 重连/切号与部分同步写入暂无统一失效事件 → 10 分钟 TTL + generate 强制重算兜底
+// （不保证实时一致，规格 §7.2）。
+// SqlQueryRunner 适配：既有服务 all() 的行类型（CrmRow/泛型直返）与统计层窄接口在此对接；
+// 仅做行形状的边界转换（同构对象数组），不改变任何查询语义。
+const annualReviewCrmRunner = {
+  all<T = Record<string, unknown>>(sql: string, params?: ReadonlyArray<unknown>): T[] {
+    return crmDbService.all(sql, [...(params ?? [])]) as unknown as T[]
+  }
 }
-
-const buildAnnualReportYearsCacheKey = (dbPath: string, wxid: string): string => {
-  return `${String(dbPath || '').trim()}\u0001${String(wxid || '').trim()}`
+const annualReviewSalesRunner = {
+  all<T = Record<string, unknown>>(sql: string, params?: ReadonlyArray<unknown>): T[] {
+    return salesDbService.all(sql, [...(params ?? [])])
+  }
 }
-
-const pruneAnnualReportYearsSnapshotCache = (): void => {
-  const now = Date.now()
-  for (const [cacheKey, entry] of annualReportYearsSnapshotCache.entries()) {
-    if (now - entry.updatedAt > annualReportYearsSnapshotTtlMs) {
-      annualReportYearsSnapshotCache.delete(cacheKey)
+const buildAnnualReviewAccountContext = (): AnnualReviewAccountContext => {
+  const cfg = configService || new ConfigService()
+  configService = cfg
+  const wxid = (cfg.getMyWxidCleaned() || '').trim()
+  const rawManual = cfg.get('reportExcludedSessions')
+  const rawInternal = cfg.get('crmInternalList')
+  const toSessionList = (raw: unknown): string[] =>
+    Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : []
+  // 实际业务库身份 = 当前真正打开的库文件（currentDbPath）；未打开时回退按 wxid 推导的
+  // 规范名。路径只参与主进程内部作用域键派生，不写日志、不返回渲染层。
+  return {
+    wxid,
+    salesDbName: salesDbService.currentDbPath() ?? businessDbName(wxid, 'sales'),
+    crmDbName: crmDbService.currentDbPath() ?? businessDbName(wxid, 'crm'),
+    exclusions: {
+      manualSessions: toSessionList(rawManual),
+      internalSessions: toSessionList(rawInternal)
     }
   }
 }
 
-const persistAnnualReportYearsSnapshot = (
-  cacheKey: string,
-  taskId: string,
-  snapshot: AnnualReportYearsProgressPayload
-): void => {
-  annualReportYearsSnapshotCache.set(cacheKey, {
-    taskId,
-    snapshot: normalizeAnnualReportYearsSnapshot(snapshot),
-    updatedAt: Date.now()
-  })
-  pruneAnnualReportYearsSnapshotCache()
-}
-
-const getAnnualReportYearsSnapshot = (
-  cacheKey: string
-): { taskId: string; snapshot: AnnualReportYearsProgressPayload } | null => {
-  pruneAnnualReportYearsSnapshotCache()
-  const entry = annualReportYearsSnapshotCache.get(cacheKey)
-  if (!entry) return null
-  return {
-    taskId: entry.taskId,
-    snapshot: normalizeAnnualReportYearsSnapshot(entry.snapshot)
+const annualReviewService = new AnnualReviewService({
+  loadFacts: async () => loadAnnualReviewFacts(annualReviewCrmRunner),
+  loadSalesSegments: async () => loadAnnualReviewSalesSegments(annualReviewSalesRunner),
+  loadCrmSegments: async () => loadAnnualReviewCrmSegments(annualReviewCrmRunner),
+  loadMessageStats: async (sessionIds, beginSec, endSec): Promise<AnnualReviewMessageStats> => {
+    const result = await wcdbService.getAnnualReportStats(sessionIds, beginSec, endSec)
+    if (!result.success || !result.data || typeof result.data !== 'object') {
+      return { ok: false, sessions: {} }
+    }
+    const sessions = (result.data as { sessions?: unknown }).sessions
+    // D5 月度趋势用：native 全局 daily（本地日期 → 消息量）；形状异常时留空（D5 自行降级）
+    const rawDaily = (result.data as { daily?: unknown }).daily
+    const daily: Record<string, number> = {}
+    if (rawDaily && typeof rawDaily === 'object' && !Array.isArray(rawDaily)) {
+      for (const [day, count] of Object.entries(rawDaily as Record<string, unknown>)) {
+        const n = typeof count === 'number' && Number.isFinite(count) ? count : Number(count)
+        if (typeof day === 'string' && day !== '' && Number.isFinite(n) && n >= 0) daily[day] = n
+      }
+    }
+    return {
+      ok: true,
+      sessions: sessions && typeof sessions === 'object' ? sessions as AnnualReviewMessageStats['sessions'] : {},
+      daily
+    }
+  },
+  getAccountContext: buildAnnualReviewAccountContext,
+  // 销售身份显示名解析（公开报告数据边界）：复用既有 wcdb 备注/昵称映射
+  // （与 crmIpcHandlers 的 resolveMySalesName 同源）；解析不到回 null，
+  // 服务层回退稳定展示标签——不同销售不合并，wxid 原文绝不进入公开报告。
+  resolveSalesDisplayNames: async (rawValues) => {
+    const map = new Map<string, string | null>()
+    for (const raw of rawValues) map.set(raw, null)
+    const ids = rawValues.filter((v) => isRawWechatAccountId(v))
+    if (ids.length === 0) return map
+    try {
+      const dn = await wcdbService.getDisplayNames(ids)
+      if (!dn.success || !dn.map) return map
+      for (const id of ids) {
+        const real = dn.map[id]
+        if (real && !isSessionIdLike(real) && real !== id) map.set(id, real)
+      }
+    } catch {
+      // 查询失败：保持 null → 全部回退稳定标签（掩蔽不可放弃）
+    }
+    return map
   }
-}
+})
 
-const broadcastAnnualReportYearsProgress = (
-  taskId: string,
-  payload: AnnualReportYearsProgressPayload
-): void => {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue
-    win.webContents.send('annualReport:availableYearsProgress', {
-      taskId,
-      ...payload
-    })
+// AI 分析（S7.2）：报告由 taskId 在当前账号作用域内定位（渲染层不上传报告），模型调用走
+// S7.1 已验收的 generateAnnualReviewAiAnalysis（唯一出口，额度闸门与账本自动生效）。
+// 结果缓存仅在主进程内存（键 = 账号作用域 + taskId + promptVersion，TTL 与报告缓存一致），
+// 账号切换/业务库重开/数据写入失效时与报告缓存一起失效。
+const annualReviewAiCoordinator = new AnnualReviewAiCoordinator({
+  getTaskReport: (taskId) => annualReviewService.getTaskReport(taskId),
+  getConfig: () => {
+    const cfg = configService || new ConfigService()
+    configService = cfg
+    return cfg
   }
-}
+})
 
-const isYearsLoadCanceled = (taskId: string): boolean => {
-  const task = annualReportYearsLoadTasks.get(taskId)
-  return task?.canceled === true
-}
+// 年度经营复盘的**唯一失效订阅点**：确定性报告缓存与 AI 结果缓存订阅同一条失效事实
+// （annualReviewInvalidation）。写入侧（crmDb/salesDb 写漏斗、WCDB 连接成功、名单变化、
+// 账号切换）只负责在**成功后**上报，绝不各自直接调用这两个失效方法——否则两处会各自遗漏
+// 不同的领域。10 分钟 TTL 仅作兜底，不替代明确成功点的通知。
+installAnnualReviewInvalidation({
+  handleDataChanged: () => annualReviewService.handleDataChanged(),
+  invalidateAll: () => annualReviewAiCoordinator.invalidateAll()
+})
 
 const setupCustomTitleBarWindow = (win: BrowserWindow): void => {
   if (process.platform === 'darwin') {
@@ -1983,9 +2018,10 @@ function registerIpcHandlers() {
   registerNotificationHandlers()
   ensureNotificationNavigateHandlerRegistered()
   bizService.registerHandlers()
-  // 配置相关
+  // 配置相关（H2：白名单边界——秘密键与未知键一律拒绝；秘密走 secret:* 专用端点）
   ipcMain.handle('config:get', async (_, key: string) => {
-    return configService?.get(key as any)
+    if (!configService) return undefined
+    return readRendererConfig(configService, String(key || ''))
   })
 
   // §2.40 微信号分库：业务库归属 wxid（清洗后；空 = 未完成引导，回退 legacy 名）
@@ -2002,9 +2038,63 @@ function registerIpcHandlers() {
       }
       await crmDbService.reopenForWxid(userData, wxid)
       await salesDbService.reopenForWxid(userData, wxid)
+      // 账号切换/业务库重开：立即失效（无合并窗口）——确定性报告缓存、可用年份与 AI 结果
+      // 缓存由统一订阅点一并失效，并终止运行中任务
+      announceAnnualReviewDataChangedNow('account_switch')
       console.log(`[Sales] 业务库已切换到账号 ${wxid || '(未设置)'}`)
     })
   }
+
+  // H2：秘密专用端点 + 主进程账号切换能力（wxidConfigs 密钥整包永不回渲染层）
+  // P0：dbPath 对话框批准校验 / 主进程验证回调注入
+  registerSecretConfigIpc(ipcMain as never, () => configService as ConfigService, {
+    switchBusinessDbs: switchBusinessDbsForWxid,
+    onAccountChanged: () => hermesUtilityManager.invalidateCapabilities('account_changed'),
+    checkDialogGrant: (path, expect) => exportPathAuthorizer.check(path, expect),
+    verifyDbPath: (p) => {
+      // 自动检测结果一致性验证：路径必须等于主进程当下 autoDetect 的结果（防渲染层任意路径）
+      const detected = dbPathService.autoDetect()
+      const detectedPath = String((detected as { path?: string })?.path || '')
+      return detectedPath && detectedPath === String(p).trim()
+        ? { ok: true }
+        : { ok: false, reason: '路径与主进程自动检测结果不一致' }
+    }
+  })
+
+  // P1b：导出授权器——持久化根走主进程托管 config 键（渲染层白名单外），内置根 = 系统 Downloads
+  exportPathAuthorizer.configure({
+    loadRoots: () => {
+      const raw = configService?.get('exportAuthorizedRoots') as Record<string, { realPath?: string; grantedAt?: number }> | undefined
+      return Object.entries(raw || {}).map(([path, meta]) => ({
+        path, realPath: String(meta?.realPath || path), grantedAt: Number(meta?.grantedAt || 0)
+      }))
+    },
+    saveRoots: (roots) => {
+      try {
+        const map: Record<string, { realPath: string; grantedAt: number }> = {}
+        for (const r of roots) map[r.path] = { realPath: r.realPath, grantedAt: r.grantedAt }
+        configService?.set('exportAuthorizedRoots', map)
+      } catch (e) {
+        console.warn('[Export] 持久化导出授权根失败:', e)
+      }
+    },
+    builtinRoots: () => [app.getPath('downloads')]
+  })
+
+  // P1b：导出根目录专用选择端点——主进程弹目录对话框 → 会话授权 + 持久化根 + 更新导出偏好路径
+  ipcMain.handle('export:chooseRoot', async () => {
+    const { dialog } = await import('electron')
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      title: '选择导出目录'
+    })
+    if (result.canceled || !result.filePaths?.[0]) return { canceled: true }
+    const chosen = result.filePaths[0]
+    const grant = exportPathAuthorizer.grant(chosen, 'dir', { persist: true })
+    if (!grant) return { canceled: false, ok: false, error: '目录授权失败' }
+    try { configService?.set('exportPath', chosen) } catch { /* 偏好写失败不影响授权 */ }
+    return { canceled: false, ok: true, path: chosen }
+  })
 
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     let result: unknown
@@ -2024,7 +2114,9 @@ function registerIpcHandlers() {
     if (key === 'launchAtStartup') {
       result = applyLaunchAtStartupPreference(value === true)
     } else {
-      result = configService?.set(key as any, value)
+      // H2：白名单校验在真实写入前执行（秘密/托管/未知 key 抛错，绝不落库）
+      if (configService) writeRendererConfig(configService, String(key || ''), value)
+      result = undefined
     }
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
@@ -2068,6 +2160,13 @@ function registerIpcHandlers() {
       // 旧 capability 此后一律拒绝）。兜底防线是 Manager 每次 host.request 的指纹重校验
       hermesUtilityManager.invalidateCapabilities('account_changed')
     }
+    // 年度经营复盘（S3）：手动排除名单/内部人员名单变化 → 数据口径已变，立即失效
+    // 缓存并终止运行中任务（旧名单结果不得落缓存）。置于此处 = writeRendererConfig
+    // 已成功返回之后：写失败抛错时既不失效也不返回成功。
+    if (key === 'reportExcludedSessions' || key === 'crmInternalList') {
+      // 口径已变：立即失效（无合并窗口）；两类缓存由统一订阅点一并清空
+      announceAnnualReviewDataChangedNow('config_exclusions')
+    }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
     void groupSummaryService.handleConfigChanged(key)
@@ -2082,6 +2181,11 @@ function registerIpcHandlers() {
   // AI 见解
   ipcMain.handle('insight:testConnection', async () => {
     return insightService.testConnection()
+  })
+
+  // 企业微信群机器人「发送测试消息」：真实 POST 一条测试文本（webhook 密钥不进日志）
+  ipcMain.handle('insight:sendWecomTest', async (_, webhook: string) => {
+    return insightService.sendWecomTest(webhook)
   })
 
   ipcMain.handle('insight:listRecords', async (_, filters?: {
@@ -2253,23 +2357,29 @@ function registerIpcHandlers() {
     return true
   })
 
-  // 文件对话框
+  // 文件对话框（H3：用户经原生对话框确认的路径登记为本次会话的导出授权；导出 IPC 写前强制校验）
   ipcMain.handle('dialog:openFile', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showOpenDialog(options)
+    const result = await dialog.showOpenDialog(options)
+    for (const p of result.filePaths || []) exportPathAuthorizer.grant(p)
+    return result
   })
 
   ipcMain.handle('dialog:openDirectory', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showOpenDialog({
+    const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
       ...options
     })
+    for (const p of result.filePaths || []) exportPathAuthorizer.grant(p, 'dir')
+    return result
   })
 
   ipcMain.handle('dialog:saveFile', async (_, options) => {
     const { dialog } = await import('electron')
-    return dialog.showSaveDialog(options)
+    const result = await dialog.showSaveDialog(options)
+    if (result.filePath) exportPathAuthorizer.grant(result.filePath, 'file')
+    return result
   })
 
   ipcMain.handle('shell:openPath', async (_, path: string) => {
@@ -2664,9 +2774,14 @@ function registerIpcHandlers() {
     }
   })
 
-  // 数据库路径相关
+  // 数据库路径相关（P0：autoDetect 是主进程可信来源，检测成功后由主进程直接落库 dbPath）
   ipcMain.handle('dbpath:autoDetect', async () => {
-    return dbPathService.autoDetect()
+    const detected = await dbPathService.autoDetect()
+    const detectedPath = String((detected as { path?: string })?.path || '')
+    if ((detected as { success?: boolean })?.success && detectedPath) {
+      try { configService?.set('dbPath', detectedPath) } catch { /* 落库失败时返回原结果 */ }
+    }
+    return detected
   })
 
   ipcMain.handle('dbpath:scanWxids', async (_, rootPath: string) => {
@@ -2998,6 +3113,8 @@ function registerIpcHandlers() {
         }
         await crmDbService.reopenForWxid(userData, wxid)
         await salesDbService.reopenForWxid(userData, wxid)
+        // 业务库重开：立即失效（无合并窗口）
+        announceAnnualReviewDataChangedNow('account_switch')
         console.log(`[Sales] 业务数据已归档（账号 ${wxid || '(未设置)'}）：${archived.map((a) => a.to).join(', ') || '无库文件'}`)
         return { success: true, archived }
       })
@@ -3107,6 +3224,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('chat:exportMyFootprint', async (_, beginTimestamp: number, endTimestamp: number, format: 'csv' | 'json', filePath: string) => {
+    exportPathAuthorizer.assertAllowed(filePath, 'file')
     return chatService.exportMyFootprint(beginTimestamp, endTimestamp, format, filePath)
   })
 
@@ -3138,6 +3256,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sns:exportTimeline', async (event, options: any) => {
     const exportOptions = { ...(options || {}) }
+    exportPathAuthorizer.assertAllowed(String(exportOptions.outputDir || ''), 'dir')
     const taskId = normalizeExportTaskId(exportOptions.taskId)
     delete exportOptions.taskId
     const taskControl = taskId ? exportTaskControlService.createControl(taskId, String(exportOptions.outputDir || '')) : undefined
@@ -3168,6 +3287,9 @@ function registerIpcHandlers() {
     if (result.canceled || !result.filePaths?.[0]) {
       return { canceled: true }
     }
+    // P1b：导出专用目录选择 = 会话授权 + 持久化根 + 偏好路径
+    exportPathAuthorizer.grant(result.filePaths[0], 'dir', { persist: true })
+    try { configService?.set('exportPath', result.filePaths[0]) } catch { /* 偏好写失败不影响授权 */ }
     return { canceled: false, filePath: result.filePaths[0] }
   })
 
@@ -3469,6 +3591,31 @@ function registerIpcHandlers() {
     return configService?.verifyAuthEnabled() ?? false
   })
 
+  // H2：应用锁密码写入走主进程端点（authPassword/authEnabled 不再经通用 config:set）
+  // 语义 = 首次引导保存「密码哈希 + 启用开关」，与 auth:enableLock 的密钥重加密不同
+  ipcMain.handle('auth:setPasswordHash', async (_event, passwordHash: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    try {
+      const hash = String(passwordHash || '')
+      if (!/^[0-9a-f]{64}$/i.test(hash)) return { success: false, error: '密码哈希格式非法' }
+      configService.set('authPassword', hash)
+      configService.set('authEnabled', true)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('auth:setUseHello', async (_event, useHello: boolean) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    try {
+      configService.set('authUseHello', useHello === true)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 密码解锁（验证 + 解密密钥到内存）
   ipcMain.handle('auth:unlock', async (_event, password: string) => {
     if (!configService) return { success: false, error: '配置服务未初始化' }
@@ -3544,6 +3691,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => {
+    exportPathAuthorizer.assertAllowed(outputDir, 'dir')
     const taskId = normalizeExportTaskId(controlOptions?.taskId)
     if (taskId) exportTaskControlService.createControl(taskId, outputDir)
     if (taskId) activeExportTasks.add(taskId)
@@ -3736,6 +3884,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('export:exportContacts', async (_, outputDir: string, options: any) => {
+    exportPathAuthorizer.assertAllowed(outputDir, 'dir')
     const cfg = configService || new ConfigService()
     configService = cfg
     const workerPath = join(__dirname, 'exportWorker.js')
@@ -3923,12 +4072,14 @@ function registerIpcHandlers() {
   )
 
   ipcMain.handle('groupAnalytics:exportGroupMembers', async (_, chatroomId: string, outputPath: string) => {
+    exportPathAuthorizer.assertAllowed(outputPath, 'file')
     return groupAnalyticsService.exportGroupMembers(chatroomId, outputPath)
   })
 
   ipcMain.handle(
     'groupAnalytics:exportGroupMemberMessages',
     async (_, chatroomId: string, memberUsername: string, outputPath: string, startTime?: number, endTime?: number) => {
+      exportPathAuthorizer.assertAllowed(outputPath, 'file')
       return groupAnalyticsService.exportGroupMemberMessages(chatroomId, memberUsername, outputPath, startTime, endTime)
     }
   )
@@ -3980,381 +4131,162 @@ function registerIpcHandlers() {
     return true
   })
 
-  // 年度报告相关
-  ipcMain.handle('annualReport:getAvailableYears', async () => {
-    const cfg = configService || new ConfigService()
-    configService = cfg
-    return annualReportService.getAvailableYears({
-      dbPath: cfg.get('dbPath'),
-      decryptKey: cfg.get('decryptKey'),
-      wxid: cfg.getMyWxidCleaned()
-    })
-  })
-
-  ipcMain.handle('annualReport:startAvailableYearsLoad', async (event) => {
-    const cfg = configService || new ConfigService()
-    configService = cfg
-
-    const dbPath = cfg.get('dbPath')
-    const decryptKey = cfg.get('decryptKey')
-    const wxid = cfg.get('myWxid')
-    const cacheKey = buildAnnualReportYearsCacheKey(dbPath, wxid)
-
-    const runningTaskId = annualReportYearsTaskByCacheKey.get(cacheKey)
-    if (runningTaskId) {
-      const runningTask = annualReportYearsLoadTasks.get(runningTaskId)
-      if (runningTask && !runningTask.done) {
-        return {
-          success: true,
-          taskId: runningTaskId,
-          reused: true,
-          snapshot: normalizeAnnualReportYearsSnapshot(runningTask.snapshot)
-        }
-      }
-      annualReportYearsTaskByCacheKey.delete(cacheKey)
-    }
-
-    const cachedSnapshot = getAnnualReportYearsSnapshot(cacheKey)
-    if (cachedSnapshot && cachedSnapshot.snapshot.done) {
-      return {
-        success: true,
-        taskId: cachedSnapshot.taskId,
-        reused: true,
-        snapshot: normalizeAnnualReportYearsSnapshot(cachedSnapshot.snapshot)
+  // ── 年度经营复盘（S3）：独立 annualReview:* 命名空间（旧「年度报告/双人报告」通道 S8 已下线，勿恢复） ──
+  // 进度广播：任务状态机统一推送，phase ∈ loading/computing/completed/failed，done 后锁定。
+  annualReviewService.onProgress((event) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('annualReview:progress', event)
       }
     }
-
-    const taskId = `years_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    const initialSnapshot: AnnualReportYearsProgressPayload = cachedSnapshot?.snapshot && !cachedSnapshot.snapshot.done
-      ? {
-        ...normalizeAnnualReportYearsSnapshot(cachedSnapshot.snapshot),
-        done: false,
-        canceled: false,
-        error: undefined
-      }
-      : {
-        years: [],
-        done: false,
-        strategy: 'native',
-        phase: 'native',
-        statusText: '准备使用原生快速模式加载年份...',
-        nativeElapsedMs: 0,
-        scanElapsedMs: 0,
-        totalElapsedMs: 0,
-        switched: false,
-        nativeTimedOut: false
-      }
-
-    const updateTaskSnapshot = (payload: AnnualReportYearsProgressPayload): AnnualReportYearsProgressPayload | null => {
-      const task = annualReportYearsLoadTasks.get(taskId)
-      if (!task) return null
-
-      const hasPayloadYears = Array.isArray(payload.years)
-      const nextYears = (hasPayloadYears && (payload.done || (payload.years || []).length > 0))
-        ? [...(payload.years || [])]
-        : Array.isArray(task.snapshot.years) ? [...task.snapshot.years] : []
-
-      const nextSnapshot: AnnualReportYearsProgressPayload = normalizeAnnualReportYearsSnapshot({
-        ...task.snapshot,
-        ...payload,
-        years: nextYears
-      })
-      task.snapshot = nextSnapshot
-      task.done = nextSnapshot.done === true
-      task.updatedAt = Date.now()
-      annualReportYearsLoadTasks.set(taskId, task)
-      persistAnnualReportYearsSnapshot(task.cacheKey, taskId, nextSnapshot)
-      return nextSnapshot
-    }
-
-    annualReportYearsLoadTasks.set(taskId, {
-      cacheKey,
-      canceled: false,
-      done: false,
-      snapshot: normalizeAnnualReportYearsSnapshot(initialSnapshot),
-      updatedAt: Date.now()
-    })
-    annualReportYearsTaskByCacheKey.set(cacheKey, taskId)
-    persistAnnualReportYearsSnapshot(cacheKey, taskId, initialSnapshot)
-
-    void (async () => {
-      try {
-        const result = await annualReportService.getAvailableYears({
-          dbPath,
-          decryptKey,
-          wxid,
-          onProgress: (progress) => {
-            if (isYearsLoadCanceled(taskId)) return
-            const snapshot = updateTaskSnapshot({
-              ...progress,
-              done: false
-            })
-            if (!snapshot) return
-            broadcastAnnualReportYearsProgress(taskId, snapshot)
-          },
-          shouldCancel: () => isYearsLoadCanceled(taskId)
-        })
-
-        const canceled = isYearsLoadCanceled(taskId)
-        if (canceled) {
-          const snapshot = updateTaskSnapshot({
-            done: true,
-            canceled: true,
-            phase: 'done',
-            statusText: '已取消年份加载'
-          })
-          if (snapshot) {
-            broadcastAnnualReportYearsProgress(taskId, snapshot)
-          }
-          return
-        }
-
-        const completionPayload: AnnualReportYearsProgressPayload = result.success
-          ? {
-            years: result.data || [],
-            done: true,
-            strategy: result.meta?.strategy,
-            phase: 'done',
-            statusText: result.meta?.statusText || '年份数据加载完成',
-            nativeElapsedMs: result.meta?.nativeElapsedMs,
-            scanElapsedMs: result.meta?.scanElapsedMs,
-            totalElapsedMs: result.meta?.totalElapsedMs,
-            switched: result.meta?.switched,
-            nativeTimedOut: result.meta?.nativeTimedOut
-          }
-          : {
-            years: result.data || [],
-            done: true,
-            error: result.error || '加载年度数据失败',
-            strategy: result.meta?.strategy,
-            phase: 'done',
-            statusText: result.meta?.statusText || '年份数据加载失败',
-            nativeElapsedMs: result.meta?.nativeElapsedMs,
-            scanElapsedMs: result.meta?.scanElapsedMs,
-            totalElapsedMs: result.meta?.totalElapsedMs,
-            switched: result.meta?.switched,
-            nativeTimedOut: result.meta?.nativeTimedOut
-          }
-
-        const snapshot = updateTaskSnapshot(completionPayload)
-        if (snapshot) {
-          broadcastAnnualReportYearsProgress(taskId, snapshot)
-        }
-      } catch (e) {
-        const snapshot = updateTaskSnapshot({
-          done: true,
-          error: String(e),
-          phase: 'done',
-          statusText: '年份数据加载失败',
-          strategy: 'hybrid'
-        })
-        if (snapshot) {
-          broadcastAnnualReportYearsProgress(taskId, snapshot)
-        }
-      } finally {
-        const task = annualReportYearsLoadTasks.get(taskId)
-        if (task) {
-          annualReportYearsTaskByCacheKey.delete(task.cacheKey)
-        }
-        annualReportYearsLoadTasks.delete(taskId)
-      }
-    })()
-
-    return {
-      success: true,
-      taskId,
-      reused: false,
-      snapshot: normalizeAnnualReportYearsSnapshot(initialSnapshot)
-    }
   })
+  // 数据写入失效：**唯一权威链路 = 写事务内的 changed 标记**（crmDb/salesDb 写漏斗、LAN/中央
+  // 下行与上行回执的同步事务各自标记）。assignment 失效总线只服务线索页/UI 刷新（见
+  // crmIpcHandlers 的广播桥接），不参与年度复盘——否则同一次分配会经两条链路各失效一次。
 
-  ipcMain.handle('annualReport:cancelAvailableYearsLoad', async (_, taskId: string) => {
-    const key = String(taskId || '').trim()
-    if (!key) return { success: false, error: '任务ID不能为空' }
-    const task = annualReportYearsLoadTasks.get(key)
-    if (!task) return { success: true }
-    task.canceled = true
-    annualReportYearsLoadTasks.set(key, task)
-    return { success: true }
-  })
-
-  ipcMain.handle('annualReport:generateReport', async (_, year: number) => {
-    const cfg = configService || new ConfigService()
-    configService = cfg
-
-    const dbPath = cfg.get('dbPath')
-    const decryptKey = cfg.get('decryptKey')
-    const wxid = cfg.getMyWxidCleaned()
-    const logEnabled = cfg.get('logEnabled')
-
-    const resourcesPath = app.isPackaged
-      ? join(process.resourcesPath, 'resources')
-      : join(app.getAppPath(), 'resources')
-    const userDataPath = app.getPath('userData')
-
-    const workerPath = join(__dirname, 'annualReportWorker.js')
-
-    return await new Promise((resolve) => {
-      const worker = new Worker(workerPath, {
-        workerData: { year, dbPath, decryptKey, myWxid: wxid, resourcesPath, userDataPath, logEnabled }
-      })
-
-      const cleanup = () => {
-        worker.removeAllListeners()
-      }
-
-      worker.on('message', (msg: any) => {
-        if (msg && msg.type === 'annualReport:progress') {
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) {
-              win.webContents.send('annualReport:progress', msg.data)
-            }
-          }
-          return
-        }
-        if (msg && (msg.type === 'annualReport:result' || msg.type === 'done')) {
-          cleanup()
-          void worker.terminate()
-          resolve(msg.data ?? msg.result)
-          return
-        }
-        if (msg && (msg.type === 'annualReport:error' || msg.type === 'error')) {
-          cleanup()
-          void worker.terminate()
-          resolve({ success: false, error: msg.error || '年度报告生成失败' })
-        }
-      })
-
-      worker.on('error', (err) => {
-        cleanup()
-        resolve({ success: false, error: String(err) })
-      })
-
-      worker.on('exit', (code) => {
-        if (code !== 0) {
-          cleanup()
-          resolve({ success: false, error: `年度报告线程异常退出: ${code}` })
-        }
-      })
-    })
-  })
-
-  ipcMain.handle('dualReport:generateReport', async (_, payload: { friendUsername: string; year: number }) => {
-    const cfg = configService || new ConfigService()
-    configService = cfg
-
-    const dbPath = cfg.get('dbPath')
-    const decryptKey = cfg.get('decryptKey')
-    const wxid = cfg.getMyWxidCleaned()
-    const logEnabled = cfg.get('logEnabled')
-    const friendUsername = payload?.friendUsername
-    const year = payload?.year ?? 0
-    const excludeWords = cfg.get('wordCloudExcludeWords') || []
-
-    if (!friendUsername) {
-      return { success: false, error: '缺少好友用户名' }
-    }
-
-    const resourcesPath = app.isPackaged
-      ? join(process.resourcesPath, 'resources')
-      : join(app.getAppPath(), 'resources')
-    const userDataPath = app.getPath('userData')
-
-    const workerPath = join(__dirname, 'dualReportWorker.js')
-
-    return await new Promise((resolve) => {
-      const worker = new Worker(workerPath, {
-        workerData: { year, friendUsername, dbPath, decryptKey, myWxid: wxid, resourcesPath, userDataPath, logEnabled, excludeWords }
-      })
-
-      const cleanup = () => {
-        worker.removeAllListeners()
-      }
-
-      worker.on('message', (msg: any) => {
-        if (msg && msg.type === 'dualReport:progress') {
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) {
-              win.webContents.send('dualReport:progress', msg.data)
-            }
-          }
-          return
-        }
-        if (msg && (msg.type === 'dualReport:result' || msg.type === 'done')) {
-          cleanup()
-          void worker.terminate()
-          resolve(msg.data ?? msg.result)
-          return
-        }
-        if (msg && (msg.type === 'dualReport:error' || msg.type === 'error')) {
-          cleanup()
-          void worker.terminate()
-          resolve({ success: false, error: msg.error || '双人报告生成失败' })
-        }
-      })
-
-      worker.on('error', (err) => {
-        cleanup()
-        resolve({ success: false, error: String(err) })
-      })
-
-      worker.on('exit', (code) => {
-        if (code !== 0) {
-          cleanup()
-          resolve({ success: false, error: `双人报告线程异常退出: ${code}` })
-        }
-      })
-    })
-  })
-
-  ipcMain.handle('annualReport:exportImages', async (_, payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) => {
+  ipcMain.handle('annualReview:getAvailableYears', async () => {
     try {
-      const { baseDir, folderName, images } = payload
-      if (!baseDir || !folderName || !Array.isArray(images) || images.length === 0) {
-        return { success: false, error: '导出参数无效' }
-      }
-
-      let targetDir = join(baseDir, folderName)
-      if (existsSync(targetDir)) {
-        let idx = 2
-        while (existsSync(`${targetDir}_${idx}`)) idx++
-        targetDir = `${targetDir}_${idx}`
-      }
-
-      await mkdir(targetDir, { recursive: true })
-
-      for (const img of images) {
-        const dataUrl = img.dataUrl || ''
-        const commaIndex = dataUrl.indexOf(',')
-        if (commaIndex <= 0) continue
-        const base64 = dataUrl.slice(commaIndex + 1)
-        const buffer = Buffer.from(base64, 'base64')
-        const filePath = join(targetDir, img.name)
-        await writeFile(filePath, buffer)
-      }
-
-      return { success: true, dir: targetDir }
+      return { success: true, data: await annualReviewService.getAvailableYears() }
     } catch (e) {
-      return { success: false, error: String(e) }
+      // 结构化错误信封：code 经本通道契约白名单收敛（任意字符串 code 一律 internal），
+      // message 为固定安全文案——不回传 e.message/堆栈/路径/SQL/Token
+      return annualReviewIpcFailureResponse('annualReview:getAvailableYears', e)
     }
   })
 
-  ipcMain.handle('annualReport:captureCurrentWindow', async (event) => {
-    try {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win || win.isDestroyed()) {
-        return { success: false, error: '窗口不可用' }
-      }
-
-      const image = await win.webContents.capturePage()
-      return {
-        success: true,
-        dataUrl: image.toDataURL(),
-        size: image.getSize()
-      }
-    } catch (e) {
-      return { success: false, error: String(e) }
+  ipcMain.handle('annualReview:generate', async (_, payload: unknown) => {
+    // 运行时校验：只接受 { year: 合法整数 | 0 }；拒绝未来年份与任意非整型输入
+    const year = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { year?: unknown }).year
+      : payload
+    const validation = validateAnnualReviewYearInput(year, Date.now())
+    if (!validation.ok) {
+      return { success: false, error: { code: validation.code, message: validation.message } }
     }
+    // 非阻塞启动：立即返回 taskId/reused；完成与失败经 annualReview:progress（done=true）
+    // 推送，渲染层收到 completed 后再 getReport（任务生命周期可取消的前提）。
+    // 启动异常同样走稳定信封：handle 若 reject，Electron 会把原始异常消息序列化给渲染层。
+    let started: ReturnType<AnnualReviewService['start']>
+    try {
+      started = annualReviewService.start(validation.year)
+    } catch {
+      return { success: false, error: { code: 'internal', message: '生成任务启动失败，请稍后重试' } }
+    }
+    return { success: true, taskId: started.taskId, reused: started.reused }
+  })
+
+  ipcMain.handle('annualReview:getReport', async (_, payload: unknown) => {
+    const year = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { year?: unknown }).year
+      : payload
+    const validation = validateAnnualReviewYearInput(year, Date.now())
+    if (!validation.ok) {
+      return { success: false, cache: 'miss', error: { code: validation.code, message: validation.message } }
+    }
+    const result = annualReviewService.getReport(validation.year)
+    // hit 必须携带产生该报告的 taskId（报告身份）：页面据此发起 AI 分析——
+    // 丢弃 taskId 会把命中报告判为「缺生成任务标识」而永久禁用 AI 入口；
+    // miss/stale 绝不伪造 taskId（fail closed）。整形逻辑纯函数化，与测试共用。
+    return shapeAnnualReviewGetReportResponse(result)
+  })
+
+  ipcMain.handle('annualReview:cancel', async (_, payload: unknown) => {
+    // 规格契约：请求对象 { taskId }；非法载荷返回稳定 code，不回传堆栈/路径
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
+    if (!validateAnnualReviewTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    return annualReviewService.cancel(taskId)
+  })
+
+  // 只读任务状态查询：任务状态的权威来源（**不用报告缓存代替任务状态**）。渲染层仅在
+  // 「generate 响应前终态事件被容量淘汰」时按 taskId 对账；不传 year/scope（作用域在
+  // 服务内按当前账号 fail closed 校验），不返回报告正文/路径/账号标识/堆栈。
+  ipcMain.handle('annualReview:getTaskStatus', async (_, payload: unknown) => {
+    const taskId = (payload && typeof payload === 'object' && !Array.isArray(payload))
+      ? (payload as { taskId?: unknown }).taskId
+      : payload
+    if (!validateAnnualReviewTaskId(taskId)) {
+      return { success: false, error: { code: 'invalid_task_id', message: '非法的任务标识' } }
+    }
+    return annualReviewService.getTaskStatus(taskId)
+  })
+
+  // 年度经营复盘导出（S6）：Markdown/CSV 经 safeTextFileExport + exportPathAuthorizer。
+  // 每次导出都弹出原生目录对话框 → 目录即席授权（不持久化）→ assertAllowed 后独占写。
+  ipcMain.handle('annualReview:export', async (_, payload: unknown) => {
+    try {
+      const format = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? (payload as { format?: unknown }).format
+        : undefined
+      const yearRaw = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? (payload as { year?: unknown }).year
+        : undefined
+      if (format !== 'markdown' && format !== 'csv') {
+        return { success: false, error: { code: 'invalid_format', message: '导出格式仅支持 markdown 或 csv' } }
+      }
+      const validation = validateAnnualReviewYearInput(yearRaw, Date.now())
+      if (!validation.ok) {
+        return { success: false, error: { code: validation.code, message: validation.message } }
+      }
+      const lookup = annualReviewService.getReport(validation.year)
+      if (!lookup.success || lookup.cache !== 'hit' || !lookup.report) {
+        return { success: false, error: { code: 'report_not_found', message: '该年度尚无已生成的报告，请先生成' } }
+      }
+      const report = lookup.report
+      const content = format === 'markdown' ? buildAnnualReviewMarkdown(report) : buildAnnualReviewCsv(report)
+      const { dialog } = await import('electron')
+      const picked = await dialog.showOpenDialog({
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: '导出到此目录'
+      })
+      if (picked.canceled || picked.filePaths.length === 0) {
+        return { success: false, error: { code: 'cancelled', message: '已取消导出' } }
+      }
+      const dir = picked.filePaths[0]
+      exportPathAuthorizer.grant(dir, 'dir') // 目录即席授权（本次会话内有效）
+      const ext = format === 'markdown' ? 'md' : 'csv'
+      const fileName = `年度经营复盘-${report.year === 0 ? '历史以来' : report.year}-${new Date(report.generatedAt).toISOString().slice(0, 10)}.${ext}`
+      const result = exportTextFile({ dir, fileName, content })
+      if (!result.ok) {
+        return { success: false, error: { code: result.code, message: result.message } }
+      }
+      return { success: true, dir, files: [result.path] }
+    } catch (e) {
+      // 结构化错误信封：code 经本通道契约白名单收敛（任意字符串 code 一律 internal），
+      // message 为固定安全文案——不回传 e.message/堆栈/路径/SQL/Token
+      return annualReviewIpcFailureResponse('annualReview:export', e)
+    }
+  })
+
+  // AI 分析（S7.2）：请求只带 { taskId, force? }——报告由主进程在当前账号作用域内定位，
+  // 渲染层不上传报告内容（伪造报告/改口径/注入文本无入口）。force 只接受 boolean（不做
+  // truthy 转换），用于页面「重新生成 AI 诊断」跳过结果缓存并真实调用模型。
+  // 模型出口唯一（generateAnnualReviewAiAnalysis），失败码与固定文案原样返回；
+  // 窗口销毁 → 中止在途调用，不再向该窗口发送结果。
+  ipcMain.handle('annualReview:aiAnalysis', async (event, payload: unknown) => {
+    const parsed = parseAnnualReviewAiAnalysisRequest(payload)
+    if (!parsed.ok) {
+      return { success: false, error: { code: parsed.code, message: parsed.message } }
+    }
+    const guard = bindAnnualReviewAiSenderAbort(event.sender)
+    try {
+      return await annualReviewAiCoordinator.run(parsed.taskId, { signal: guard.signal, force: parsed.force })
+    } finally {
+      guard.dispose()
+    }
+  })
+
+  // 取消 AI 分析：只中止该 taskId 的在途调用。没有在途调用 → analysis_not_found，
+  // 调用方（页面）据此**不**把界面切到「已取消」（避免把已返回的成功结果显示成取消）。
+  ipcMain.handle('annualReview:aiAnalysisCancel', async (_, payload: unknown) => {
+    const parsed = parseAnnualReviewAiAnalysisRequest(payload)
+    if (!parsed.ok) {
+      return { success: false, error: { code: parsed.code, message: parsed.message } }
+    }
+    return annualReviewAiCoordinator.cancel(parsed.taskId)
   })
 
   // 密钥获取
@@ -4883,7 +4815,10 @@ function registerIpcHandlers() {
     return { success: true }
   })
 
-  ipcMain.handle('sales:action:refresh', async () => { void refreshActionSignals().catch(e => salesLog('WARN', String(e))); return { ok: true } })
+  // 等扫描任务真正跑完再返回：前端「重算今日信号」据此在重算完成后取数，否则
+  // fire-and-forget 会让随后的 getUnified 读到重算前的旧数据（按钮点了数据不动）。
+  // refreshActionSignals 内部已 enqueue（最外层入口），此处只 await 不再入队。
+  ipcMain.handle('sales:action:refresh', async () => { try { await refreshActionSignals() } catch (e) { salesLog('WARN', String(e)) } return { ok: true } })
   ipcMain.handle('sales:action:getUnified', async () => {
     return getUnifiedSignals()
   })

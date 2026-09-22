@@ -4,7 +4,6 @@ export type BackgroundTaskSourcePage =
   | 'analytics'
   | 'sns'
   | 'groupAnalytics'
-  | 'annualReport'
   | 'other'
 
 export type BackgroundTaskStatus =

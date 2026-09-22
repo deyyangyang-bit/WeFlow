@@ -1103,36 +1103,35 @@
   }
 }
 
-// 主题选择器
+// 主题选择器（视觉收口：对齐全局 .chipbar 分段语法与前进 --color-* token；setThemeMode 逻辑不动）
 .theme-mode-toggle {
   display: inline-flex;
-  background: var(--bg-secondary);
-  padding: 4px;
-  border-radius: 10px;
+  background: var(--color-bg-inset);
+  padding: 3px;
+  border-radius: var(--radius-control);
   margin-bottom: 24px;
-  border: 1px solid var(--border-color);
+  border: 1px solid transparent;
 
   .mode-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 16px;
+    padding: 6px 14px;
     border: none;
     background: transparent;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
+    border-radius: var(--radius-small);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
 
-    &:hover { color: var(--text-primary); }
+    &:hover { color: var(--color-text-primary); }
 
     &.active {
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      border: 1px solid var(--border-color);
+      background: var(--color-bg-surface);
+      color: var(--color-accent);
+      box-shadow: var(--shadow-control);
     }
   }
 }

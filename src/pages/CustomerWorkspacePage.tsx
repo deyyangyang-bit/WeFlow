@@ -15,12 +15,13 @@
  *  - 客户主数据：crm.customers()（account + profile_stage/profile_display_name 投影）
  *  - 行动信号：sales.actionGetUnified()（getUnifiedSignals，全量不截断，过滤 todo:/logi:/lead: 虚拟前缀）
  *  - 360 档案：crm.customerProfile(sessionId)
+ *  - 在谈金额（2026-09-19 UI 第一批）：crm.opportunityList({status:'active'}) 一次拉取，按会话汇总金额
+ *  - 报价版本表（同批）：档案 contracts → crm.quotationHistory(contractId) 版本链，只读
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
-import { RefreshCw, Plus, X, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, ClipboardCheck, RotateCw, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
+import { RefreshCw, Plus, Sparkles, Trash2, MessageCircle, Download, CheckCircle2, Bot, Ban, Search, ChevronRight, AlertCircle } from 'lucide-react'
 import { useHermesStore } from '../stores/hermesStore'
-import { Avatar } from '../components/Avatar'
 import { filterByOwner, isSalesView, identityLikeFromIpc, type IdentityLike } from '../utils/leadAssignmentView'
 import { buildActionQueue, type ActionCardItem } from '../utils/customerActionQueue'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -47,6 +48,8 @@ const FIELD_LABELS_WB: Record<string, string> = {
 }
 const ENRICH_FIELD_ORDER = ['company', 'position', 'phone', 'industry', 'province', 'city', 'needs', 'budget', 'intent_model', 'purchase_timeframe', 'competitor', 'price_sensitive']
 const FORMAL_SET = new Set(['company', 'position', 'phone', 'industry', 'province', 'city'])
+// 档案列首屏只露 3 条待办：超过的部分收进「展开其余 N 条」，避免右栏一进来就出滚动条
+const TODO_PREVIEW_COUNT = 3
 
 export default function CustomerWorkspacePage() {
   const { notice, setNotice, queues, fetchQueues } = useCrmStore()
@@ -57,10 +60,17 @@ export default function CustomerWorkspacePage() {
   // 页面过滤档（2026-09-05 拍板）：销售视角只看 owner_sales=本人 或 未归属；展示层便利，非安全边界（宪法 §1.12）
   const [identity, setIdentity] = useState<IdentityLike>({ name: '', role: '' })
   const [signals, setSignals] = useState<any[]>([])
+  // 在谈金额（概念稿索引列）：active 商机金额按会话汇总，一次 IPC，展示层口径（商机表 amount 单位=元）
+  const [dealAmounts, setDealAmounts] = useState<Record<string, number>>({})
+  // 报价版本链（概念稿「报价单」表）：当前档案各合同的 quotation 行，随档案打开拉取（只读）
+  const [quotesByContract, setQuotesByContract] = useState<Record<number, any[]>>({})
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState('')
   // 处理成功即从队列移除：乐观移除键集（重新拉取后源数据已消失，键集可安全保留）
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  // 撞客一期：重复组徽标（只显示「与同事某某的客户重复」，不显示对方任何资料）
+  const [dupMatches, setDupMatches] = useState<{ leadMatches: Record<string, { others: string[] }>; customerMatches: Record<string, { others: string[] }> }>({ leadMatches: {}, customerMatches: {} })
+  const [dupPopId, setDupPopId] = useState('')
 
   // 打开聊天：跳转到该客户的微信聊天页（需关联了微信会话 session_id）
   const openChat = (c: any) => {
@@ -71,6 +81,8 @@ export default function CustomerWorkspacePage() {
   // 拉取客户列表 + 行动信号（一次刷新两路数据）
   const fetchAll = async () => {
     const rows = (await window.electronAPI.crm.customers()) || []
+    // 撞客一期：重复组徽标匹配（失败不影响客户列表）
+    try { setDupMatches(await window.electronAPI.crm.dupGroupList()) } catch { /* ignore */ }
     const idt = await window.electronAPI.identity.get().catch(() => ({ name: '', role: '', nameAliases: [] }))
     const idLike = identityLikeFromIpc(idt)
     setIdentity(idLike)
@@ -84,6 +96,17 @@ export default function CustomerWorkspacePage() {
       })
       setSignals(sigs)
     } catch { /* 信号失败不影响客户列表 */ }
+    // 在谈金额：active 商机一次拉取，按会话汇总（商机行自带 session_id）；失败不影响客户列表
+    try {
+      const opps = await (window as any).electronAPI.crm.opportunityList({ status: 'active' })
+      const sums: Record<string, number> = {}
+      for (const o of opps || []) {
+        const sid = String(o?.session_id || '')
+        if (!sid) continue
+        sums[sid] = (sums[sid] || 0) + Number(o?.amount || 0)
+      }
+      setDealAmounts(sums)
+    } catch { setDealAmounts({}) }
     return rows
   }
   useEffect(() => { void fetchAll() }, [])
@@ -120,6 +143,21 @@ export default function CustomerWorkspacePage() {
   // ─── 展示 helper ──────────────────────────────────────────────────────────
   // 名称双轨读取侧统一：优先取画像最新微信备注（跟随备注改名），account.name 作兜底（导入时刻冻结）
   const displayNameOf = (c: any) => String(c.profile_display_name || '') || String(c.name || '')
+  /**
+   * 备注名里的日期前缀（销售常把微信备注写成「26.8.14 张伟」这类）。
+   * 列表行主行只显示人名，日期退到次行 meta —— 纯展示，store 字段与检索口径都不动：
+   * 搜索仍按原始 displayNameOf 匹配，改备注名后这里跟着变。
+   * 整名就是一个日期时不拆（拆了主行会空），原样显示。
+   */
+  const namePartsOf = (raw: string): { main: string; date: string } => {
+    const full = String(raw || '').trim()
+    const m = /^(?:[[(（【])?((?:\d{2}|\d{4})[.\-/]\d{1,2}[.\-/]\d{1,2})(?:[\])）】])?[\s·\-—–,，、|]*/.exec(full)
+    const rest = m ? full.slice(m[0].length).trim() : ''
+    if (!m || !rest) return { main: full, date: '' }
+    return { main: rest, date: m[1] }
+  }
+  const nameOnlyOf = (raw: string) => namePartsOf(raw).main
+  const nameDateOf = (raw: string) => namePartsOf(raw).date
   // 阶段统一走漏斗档位语义层（与销售漏斗同源）：profile_stage 或回退 sales_stage，过 stageToFunnel 归桶
   // 历史漏斗计「窗口内曾进入」，下钻列表是「当前阶段为该档位」——穿过该档位但现已流失/删除的客户不在列表，属正常
   const rowStage = (c: any) => stageToFunnel(String(c.profile_stage || '') || String(c.sales_stage ?? ''))
@@ -144,6 +182,17 @@ export default function CustomerWorkspacePage() {
   }
   // 卡片信号徽章：task 信号优先（R0-R8 跟进规则），否则 insight
   const signalOf = (c: any) => signalBySession.get(String(c.session_id || '')) || null
+  // 在谈金额（概念稿 .irow__amt）：active 商机金额合计（元 → 万，一位小数）；无商机显示 —，不写「未报价」
+  const dealAmountOf = (c: any) => dealAmounts[String(c.session_id || '')] || 0
+  const dealAmountTextOf = (c: any) => {
+    const v = dealAmountOf(c)
+    return v > 0 ? `${(v / 10000).toFixed(1)}` : '—'
+  }
+  // 在谈合计（.rail__sum）：本页客户全集（owner 过滤后）的商机金额总和
+  const totalDealAmount = useMemo(
+    () => customers.reduce((acc, c) => acc + dealAmountOf(c), 0),
+    [customers, dealAmounts] // eslint-disable-line react-hooks/exhaustive-deps
+  )
 
   // ─── 行动队列（屏 1）与搜索态（屏 3）──────────────────────────────────────
   const withTask = (s: any) => (s?.sources || []).some((src: any) => src.type === 'task')
@@ -191,24 +240,31 @@ export default function CustomerWorkspacePage() {
     await fetchAll()
   }
 
-  // 搜索态结果列表（概念稿细线索引 .tbl/.thead/.trow）：每页 10 条 + Pager；筛选变化回第 1 页
+  // 搜索态结果列表（概念稿细线索引 .tbl/.thead/.trow）：每页 20 条 + Pager；筛选变化回第 1 页
   const [searchPage, setSearchPage] = useState(1)
   useEffect(() => { setSearchPage(1) }, [searchKw, stageFilter])
-  const INDEX_PAGE_SIZE = 10
+  const INDEX_PAGE_SIZE = 20
   const indexTotalPages = Math.max(1, Math.ceil(searchResults.length / INDEX_PAGE_SIZE))
   const indexPage = Math.min(searchPage, indexTotalPages)
   const indexRows = searchResults.slice((indexPage - 1) * INDEX_PAGE_SIZE, indexPage * INDEX_PAGE_SIZE)
   // 阶段栏计数（概念稿 .rail__n）：口径 = 本页已过滤的客户全集，与 indexRows 同源
   const stageCounts: Record<string, number> = {}
   for (const c of customers) { const st = rowStage(c); stageCounts[st] = (stageCounts[st] || 0) + 1 }
-  // 阶段 pill 语义档 → 全局 .pill 族（流失=中性 / 成交=won / 其余=new）
-  const stagePillClass = (st: string) => (st === '流失' ? 'pill' : st === '成交' ? 'pill pill--won' : 'pill pill--new')
-  // 行动卡 pill（来源语义由 buildActionQueue 给出）→ 全局 .pill 族
-  const queuePillClass = (p: string) => (p === 'amber' ? 'pill pill--quote' : 'pill pill--new')
+  // 阶段 pill 语义档 → 全局 .pill 族（概念稿 CRM 索引行口径：只有「在谈」的阶段带颜色，
+  // 比价=warning / 决策=danger / 成交=success，了解·流失·未知一律中性档，安静不抢注意力）
+  const stagePillClass = (st: string) => (
+    st === '比价' ? 'pill pill--quote'
+      : st === '决策' ? 'pill pill--nego'
+        : st === '成交' ? 'pill pill--won'
+          : 'pill'
+  )
+  // 行动卡状态标记（来源语义由 buildActionQueue 给出）→ 本页安静 tag：
+  // 发丝边 + 语义色字，不上实心底（P1.4b：列表行里「待跟进」「AI 发现」不该是彩色实心块）
+  const queuePillClass = (p: string) => (p === 'amber' ? 'cws-q__tag cws-q__tag--follow' : 'cws-q__tag cws-q__tag--insight')
 
   // ─── 客户 360 档案 ─────────────────────────────────────────────────────────
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
-  // 档案抽屉（屏 4）：AI 工具下拉 + 折叠行（时间线/画像/业务默认收起，点开才渲染）
+  // 档案侧栏（屏 4）：顶部动作行 + 分段（本机判断 / 待办 / 客户信息 / 折叠行），全部扁平，无浮层外壳
   const [showAiTools, setShowAiTools] = useState(false)
   /** AI 见解屏蔽名单（只影响自动/批量触发；本页只做手动加入与解除） */
   const [insightBlacklist, setInsightBlacklist] = useState<InsightBlacklistEntry[]>([])
@@ -220,6 +276,15 @@ export default function CustomerWorkspacePage() {
     })()
     return () => { cancelled = true }
   }, [])
+
+  // 窄窗（<1280px）档案列落在索引下方（见 .scss 窄窗档）：选中客户后把它滚进视野。
+  // 并排列档不走这条 —— 栏内本来就与索引同顶可见，不打扰。
+  const railRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!selectedCustomer) return
+    if (!window.matchMedia('(max-width: 1279px)').matches) return
+    railRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [selectedCustomer])
 
   /**
    * 屏蔽 / 解除屏蔽所选客户的 AI 见解（决策：入口放客户工作台「…」菜单，带二次确认）。
@@ -253,11 +318,14 @@ export default function CustomerWorkspacePage() {
     await configService.setAiInsightNonCustomerBlacklist(next)
     setNotice(`已解除对「${name}」的 AI 见解屏蔽`)
   }
-  // Hermes 智能体入口（档案「AI 工具」下拉）：App 级单例抽屉，带着当前客户上下文打开
+  // Hermes 智能体入口（档案顶部动作行的「AI 工具」）：App 级单例抽屉，带着当前客户上下文打开
   const openHermes = useHermesStore((s) => s.openHermes)
   const [foldTimeline, setFoldTimeline] = useState(false)
   const [foldProfile, setFoldProfile] = useState(false)
   const [foldBiz, setFoldBiz] = useState(false)
+  // 客户信息（12 字段两列网格）是栏内最高的一块：默认收起，点标题展开
+  const [foldInfo, setFoldInfo] = useState(false)
+  const [todosOpen, setTodosOpen] = useState(false)
   const [customerProfile, setCustomerProfile] = useState<any>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [editingField, setEditingField] = useState('')
@@ -325,6 +393,7 @@ export default function CustomerWorkspacePage() {
     setSelectedCustomer(c)
     setCustomerProfile(null)
     setDeepReport('')
+    setQuotesByContract({}) // 换客户＝换版本链，先清空旧表防串档
     deepReqRef.current = Number(c?.id ?? -1) // 使在途的旧客户深度分析请求失效
     setDeepLoading(false)
     setEvidenceKey(null)
@@ -333,11 +402,27 @@ export default function CustomerWorkspacePage() {
     setFoldTimeline(false)
     setFoldProfile(false)
     setFoldBiz(false)
+    // 换客户＝换档案：折叠态与待办展开态一起回默认（与上面三个折叠同规矩），
+    // 新客户的 12 字段与超过 3 条的待办都从收起态开始
+    setFoldInfo(false)
+    setTodosOpen(false)
     if (!c.session_id) return
     setProfileLoading(true)
     try {
       const r = await window.electronAPI.crm.customerProfile(String(c.session_id))
       if (r?.success) setCustomerProfile(r.data)
+      // 报价版本链（概念稿「报价单」表）：按档案返回的合同逐个取历史（只读 IPC，无新增）；
+      // 期间切换客户（deepReqRef 已变）则丢弃，防串档
+      const contracts: any[] = r?.data?.contracts || []
+      if (contracts.length) {
+        const entries = await Promise.all(contracts.map(async (ct: any) => {
+          try {
+            const list = await (window as any).electronAPI.crm.quotationHistory(Number(ct.id))
+            return [Number(ct.id), Array.isArray(list) ? list : []] as const
+          } catch { return [Number(ct.id), []] as const }
+        }))
+        if (deepReqRef.current === Number(c.id)) setQuotesByContract(Object.fromEntries(entries))
+      }
     } catch { /* ignore */ }
     setProfileLoading(false)
   }
@@ -525,8 +610,52 @@ export default function CustomerWorkspacePage() {
   const subLine = actionQueue.length > 0
     ? `今天有 ${actionQueue.length} 位客户需要处理 · 处理完即消失 · 档案与信号取本机业务库，不做云端汇总`
     : '队列里没有待处理事项 · 档案与信号取本机业务库，不做云端汇总'
-  // 档案抽屉：跟进待办只列待处理/逾期（口径与旧渲染一致）
+  // 档案侧栏：跟进待办只列待处理/逾期（口径与旧渲染一致）
   const pendingTodos = (customerProfile?.todos || []).filter((t: any) => t.status === 'pending' || t.status === 'overdue')
+  // ── 报价版本表（概念稿屏 2「报价单」quotetable）──────────────────────────────
+  // 日期取整到天；无效/缺列如实略去，不补假值
+  const fmtDay = (ms: number) => {
+    if (!ms || !Number.isFinite(ms)) return ''
+    const d = new Date(ms)
+    if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2000) return ''
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const quotePeriodOf = (q: any) => {
+    const from = fmtDay(Number(q?.effective_from || 0)) || fmtDay(Number(q?.created_at || 0))
+    const to = fmtDay(Number(q?.effective_to || 0))
+    if (from && to) return `${from} → ${to}`
+    if (from) return `${from} 起`
+    if (to) return `${to} 止`
+    return '—'
+  }
+  // 版本链扁平视图：档案各合同的 quotation 行，新版本在前（quotationHistoryForContract 的顺序）；
+  // 首行=当前版（effective_to=0），其余=已换版。多合同都挂着报价时加「合同」列防歧义
+  const quoteRows = useMemo(() => {
+    const contracts: any[] = customerProfile?.contracts || []
+    const rows: Array<{ key: string; contractName: string; versionLabel: string; period: string; total: string }> = []
+    for (const ct of contracts) {
+      for (const q of (quotesByContract[Number(ct.id)] || [])) {
+        const ver = Number(q?.version || 0)
+        rows.push({
+          key: `${ct.id}-${q?.id ?? rows.length}`,
+          contractName: String(ct?.name || `合同 #${ct?.id}`),
+          versionLabel: ver > 0 ? `v${ver}` : '—',
+          period: quotePeriodOf(q),
+          total: Number(q?.total || 0).toLocaleString('zh-CN'),
+        })
+      }
+    }
+    return rows
+  }, [customerProfile, quotesByContract])
+  const quoteContractCount = useMemo(() => (
+    new Set(Object.entries(quotesByContract).filter(([, list]) => (list as any[]).length > 0).map(([cid]) => Number(cid))).size
+  ), [quotesByContract])
+  // 档案侧栏判断四格（摘要/机会/风险/下一步）：字段名同 customerCurrentView 投影，缺栏如实留空占位
+  const judgmentRows: Array<[string, any]> = (() => {
+    const j: any = customerProfile?.currentView?.judgments || {}
+    return [['摘要', j.summary], ['机会', j.opportunity], ['风险', j.risk], ['下一步', j.nextAction]]
+  })()
+  const hasAnyJudgment = judgmentRows.some(([, v]) => v)
   // AI 准确率（近 7 天）九格：值与旧渲染逐个一致，只换细线键值语法（.defs/.def）
   const accuracyItems: Array<{ l: string; v: any }> = accuracy ? [
     { l: 'AI 自动写入字段', v: accuracy.enrichAuto },
@@ -632,7 +761,11 @@ export default function CustomerWorkspacePage() {
             {st}<span className="rail__n">{stageCounts[st] || 0}</span>
           </button>
         ))}
-        <span className="rail__sum">显示 <b>{searchActive ? searchResults.length : actionQueue.length}</b> / {customers.length} · 本机业务库</span>
+        <span className="rail__sum">
+          显示 <b>{searchActive ? searchResults.length : actionQueue.length} / {customers.length}</b>
+          {totalDealAmount > 0 && <> · 在谈合计 <b>¥{(totalDealAmount / 10000).toFixed(1)} 万</b></>}
+          {' '}· 本机业务库
+        </span>
       </div>
 
       {/* 客户索引 + 当前档案（概念稿 .crm）：宽窗两栏并排，窄窗档案转为浮层；选择/关闭/遮罩行为与旧抽屉一致 */}
@@ -650,7 +783,7 @@ export default function CustomerWorkspacePage() {
         <>
           <div className="tbl tbl--air">
             <div className="thead cws-ix">
-              <span>客户</span><span>阶段</span><span className="tc-r">最近互动</span><span />
+              <span>客户</span><span>阶段</span><span className="tc-r">最近互动</span><span className="tc-r">在谈金额</span><span />
             </div>
             {indexRows.length === 0 && <div className="cws-ix__empty">无匹配客户</div>}
             {indexRows.map((c: any) => (
@@ -661,23 +794,28 @@ export default function CustomerWorkspacePage() {
                 onClick={() => void openCustomer(c)}
               >
                 <span className="cws-ix__who">
-                  <Avatar src={(c as any).avatarUrl} name={displayNameOf(c)} size={28} />
                   <span className="cws-ix__main">
-                    <span className="tc-n">{displayNameOf(c)}</span>
-                    <span className="tc-s">{c.company || '未填公司'}</span>
+                    <span className="tc-n">{nameOnlyOf(displayNameOf(c))}</span>
+                    <span className="cws-ix__sub">
+                      <span className="tc-s">{c.company || '未填公司'}</span>
+                      {nameDateOf(displayNameOf(c)) && <span className="cws-rowdate">{nameDateOf(displayNameOf(c))}</span>}
+                    </span>
                   </span>
                 </span>
                 <span><span className={stagePillClass(rowStage(c))}>{rowStage(c)}</span></span>
                 <span className="cws-ix__silent tc-r">{silentTextOf(c)}</span>
+                <span className={`cws-ix__amt tc-r${dealAmountOf(c) > 0 ? '' : ' cws-ix__amt--none'}`}>
+                  {dealAmountOf(c) > 0 ? <>{dealAmountTextOf(c)}<span>万</span></> : '—'}
+                </span>
                 <ChevronRight size={14} className="chev" />
               </button>
             ))}
           </div>
           {indexTotalPages > 1 && (
             <div className="cws-pager">
-              <button className="btn btn--sm" disabled={indexPage <= 1} onClick={() => setSearchPage(indexPage - 1)}>上一页</button>
+              <button className="btn btn--plain btn--sm" disabled={indexPage <= 1} onClick={() => setSearchPage(indexPage - 1)}>上一页</button>
               <span className="cws-pager__info">第 {indexPage} / {indexTotalPages} 页 · 共 {searchResults.length} 条</span>
-              <button className="btn btn--sm" disabled={indexPage >= indexTotalPages} onClick={() => setSearchPage(indexPage + 1)}>下一页</button>
+              <button className="btn btn--plain btn--sm" disabled={indexPage >= indexTotalPages} onClick={() => setSearchPage(indexPage + 1)}>下一页</button>
             </div>
           )}
         </>
@@ -704,28 +842,43 @@ export default function CustomerWorkspacePage() {
               <span>客户</span><span>为什么现在看</span><span className="tc-r">操作</span>
             </div>
             {actionQueue.map((it: ActionCardItem) => (
-              <div key={it.key} className="trow cws-q__row" onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
+              <div key={it.key} className={`trow cws-q__row${selectedCustomer && it.customer && Number(selectedCustomer.id) === Number(it.customer.id) ? ' is-on' : ''}`} onClick={() => it.kind === 'info' && it.accountId ? void openInfoCustomer(it.accountId) : it.customer ? void openCustomer(it.customer) : undefined}>
                 <span className="cws-q__who">
-                  <Avatar src={(it.customer as any)?.avatarUrl} name={it.displayName} size={28} />
                   <span className="cws-q__name">
-                    <span className="tc-n">{it.displayName}</span>
-                    <span className={queuePillClass(it.pill)}>{it.pillText}</span>
+                    <span className="tc-n">{nameOnlyOf(it.displayName)}</span>
+                    {it.customer && (() => {
+                      // 撞客一期（宪法 §3.1 duplicate_group）：点徽标只显示对方归属人姓名
+                      const hit = dupMatches.customerMatches[String(it.customer.id)]
+                      if (!hit) return null
+                      const pop = dupPopId === `cust-${it.customer.id}`
+                      return (
+                        <span className="dup-badge-wrap" onClick={(e) => e.stopPropagation()}>
+                          <span className="tag tag--insight dup-badge" title="撞客提示" onClick={() => setDupPopId(pop ? '' : `cust-${it.customer.id}`)}>重复</span>
+                          {pop && <span className="dup-pop">与同事 {hit.others.join('、')} 的客户重复</span>}
+                        </span>
+                      )
+                    })()}
+                    <span className="cws-q__sub">
+                      <span className={queuePillClass(it.pill)}>{it.pillText}</span>
+                      {nameDateOf(it.displayName) && <span className="cws-rowdate">{nameDateOf(it.displayName)}</span>}
+                    </span>
                   </span>
                 </span>
                 <span className="cws-q__why">
                   <span className="cws-q__reason">{it.reason}</span>
                   <span className="cws-q__suggest">{it.suggest}</span>
                 </span>
+                {/* 行内动作（概念稿行内按钮口径：文字按钮，不带图标；默认安静，行被指向/选中时主操作才升档） */}
                 <span className="cws-q__ops tc-a" onClick={(e) => e.stopPropagation()}>
                   {it.kind === 'follow' && (
                     <>
-                      <button className="btn btn--sm btn--primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 去聊天</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => void openChat(it.customer)} disabled={!it.sessionId}>去聊天</button>
                       {pendingTodoIdOf(it) > 0 && (
                         <button className="btn btn--sm" disabled={completingTodo === pendingTodoIdOf(it)} onClick={() => void completeTodoOfCard(it, pendingTodoIdOf(it))} title="该客户有待办未完成，点此直接闭环">
-                          {completingTodo === pendingTodoIdOf(it) ? <RotateCw size={13} className="spinning" /> : <ClipboardCheck size={13} />} {completingTodo === pendingTodoIdOf(it) ? '完成中…' : '完成待办'}
+                          {completingTodo === pendingTodoIdOf(it) ? '完成中…' : '完成待办'}
                         </button>
                       )}
-                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}>{completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
                     </>
                   )}
                   {it.kind === 'info' && (
@@ -733,14 +886,14 @@ export default function CustomerWorkspacePage() {
                       <label className="cws-info-check" title="勾选后可批量采纳">
                         <input type="checkbox" checked={selectedInfoKeys.has(it.key)} onChange={(e) => toggleInfoSelect(it.key, e.target.checked)} />
                       </label>
-                      <button className="btn btn--sm btn--primary" onClick={() => void handleInfo(it, 'accept')}>✓ 采纳</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => void handleInfo(it, 'accept')}>采纳</button>
                       <button className="btn btn--sm" onClick={() => void handleInfo(it, 'reject')}>放弃</button>
                     </>
                   )}
                   {it.kind === 'insight' && (
                     <>
-                      <button className="btn btn--sm btn--primary" onClick={() => it.sessionId ? void openChat(it.customer) : void openCustomer(it.customer)} disabled={!it.sessionId}><MessageCircle size={13} /> 看原话</button>
-                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}><CheckCircle2 size={13} /> {completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
+                      <button className="btn btn--sm btn--primary" onClick={() => it.sessionId ? void openChat(it.customer) : void openCustomer(it.customer)} disabled={!it.sessionId}>看原话</button>
+                      <button className="btn btn--sm" disabled={completing === String(it.customer?.id)} onClick={() => void handleComplete(it)}>{completing === String(it.customer?.id) ? '处理中…' : '已处理'}</button>
                     </>
                   )}
                 </span>
@@ -752,57 +905,64 @@ export default function CustomerWorkspacePage() {
 
       </div>{/* /.cws-index */}
 
-      {/* 当前档案：宽窗为并排列（.cws-side 常规文档流内粘顶），窄窗为浮层抽屉（同旧遮罩行为） */}
+      {/* 当前档案：与索引并排的扁平档案列（概念稿 .detail / 聊天右栏同一套语法）。
+          不再有浮层外壳：无白底卡、无阴影、无关闭 X —— 与列表只隔一条发丝线（窄窗落到索引下方，仍是扁平的）。 */}
       {selectedCustomer && (
-        <aside className="cws-side" aria-label="客户档案" onClick={() => setSelectedCustomer(null)}>
-          <div className="cws-side__panel" onClick={(e) => e.stopPropagation()}>
+        <aside className="cws-side" aria-label="客户档案" ref={railRef}>
+          <div className="cws-side__panel">
           <div className="crm-detail">
+          {/* 栏头：客户名在上（吸睛主体），动作收成下面一行、可换行，权重次于客户名 */}
           <div className="crm-detail-head">
             <div className="cws-detail__id">
               <div className="cws-detail__name">
-                {displayNameOf(selectedCustomer)}
+                {/* 与列表行同一套拆分：备注名里的日期前缀不进大标题（纯展示；识别 / Hermes 等
+                    入参仍传原始 displayNameOf，存库名不动）。整名就是日期时 namePartsOf 兜底不拆 */}
+                {nameOnlyOf(displayNameOf(selectedCustomer))}
                 {rowStage(selectedCustomer) && <span className={stagePillClass(rowStage(selectedCustomer))}>{rowStage(selectedCustomer)}</span>}
               </div>
-              {/* 核心客户信息一行（阶段在上面胶囊里）：公司 / 归属 / 最近互动，全部取索引行同源字段，不新增查询 */}
+              {/* 核心客户信息一行（阶段在上面胶囊里）：备注日期 / 公司 / 归属 / 最近互动，
+                  全部取索引行同源字段，不新增查询；日期有才显示，缺省不造空节点 */}
               <div className="cws-detail__sub">
                 {[
+                  nameDateOf(displayNameOf(selectedCustomer)),
                   selectedCustomer.company || '未填公司',
                   selectedCustomer.owner_sales ? `归属 ${selectedCustomer.owner_sales}` : '未归属',
                   silentTextOf(selectedCustomer)
-                ].join(' · ')}
+                ].filter(Boolean).join(' · ')}
               </div>
             </div>
             <div className="crm-detail-actions">
-              {/* AI 识别这个客户（PRD §5.2）：主按钮。单飞作用域全局——任一识别进行中，所有入口按钮全部禁用 */}
-              <button className="btn btn--sm btn--primary" onClick={() => void runIdentify()}
+              {/* AI 识别这个客户（PRD §5.2）：与旁边几个入口同一档的次要按钮——右栏第一视觉留给客户名，
+                  识别是常规动作不是「今天先做这个」。单飞作用域全局——任一识别进行中，所有入口按钮全部禁用 */}
+              <button className="btn btn--sm" onClick={() => void runIdentify()}
                 disabled={identifyBusy || !selectedCustomer.session_id}
                 title={!selectedCustomer.session_id ? '未关联微信会话，无法识别' : identifyBusy ? '正在识别中，请稍候' : '读取该客户最近聊天，抽取跟进承诺'}>
                 <Sparkles size={14} /> {identifyBusy ? '识别中…' : 'AI 识别这个客户'}
               </button>
               <button className="btn btn--sm" onClick={() => void openChat(selectedCustomer)} disabled={!selectedCustomer.session_id}><MessageCircle size={14} /> 打开聊天</button>
               <button className="btn btn--sm" onClick={() => void createContractForCustomer(selectedCustomer)}><Plus size={14} /> 建合同</button>
-              <div className="cws-aitools">
-                <button className="btn btn--sm btn--quiet" onClick={() => setShowAiTools((v) => !v)}>AI 工具 ▾</button>
-                {showAiTools && (
-                  <div className="cws-aitools__menu">
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
-                    <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }) }}><Bot size={12} /> 让 Hermes 分析</button>
-                    {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
-                    <button
-                      className="cws-aitools__item"
-                      onClick={() => { setShowAiTools(false); void toggleInsightBlacklist(selectedCustomer) }}
-                      disabled={!selectedCustomer.session_id}
-                      title={!selectedCustomer.session_id ? '未关联微信会话，无法屏蔽' : '只影响自动/批量触发，不影响你手动发起的识别与见解'}
-                    >
-                      <Ban size={12} /> {isInsightBlacklisted(insightBlacklist, String(selectedCustomer.session_id || '')) ? '解除 AI 见解屏蔽' : '屏蔽 TA 的 AI 见解'}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <button className="iconbtn cws-side__close" title="关闭档案（回到客户索引；窄窗下点遮罩同样关闭）" onClick={() => setSelectedCustomer(null)}><X size={15} /></button>
+              {/* 其余 AI 动作：在侧栏内展开成扁平清单（贴着动作行往下排），不再是浮起的白卡菜单 */}
+              <button className="btn btn--sm btn--quiet" aria-expanded={showAiTools} onClick={() => setShowAiTools((v) => !v)}>
+                AI 工具 {showAiTools ? '▴' : '▾'}
+              </button>
             </div>
+            {showAiTools && (
+              <div className="cws-aitools">
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void runEnrichOne(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 补全</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genDeepAnalysis(selectedCustomer) }}><Sparkles size={12} /> {deepLoading ? '分析中…' : '深度分析'}</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); void genAiQuotation(selectedCustomer) }} disabled={!selectedCustomer.session_id}><Sparkles size={12} /> AI 报价</button>
+                <button className="cws-aitools__item" onClick={() => { setShowAiTools(false); openHermes({ kind: 'customer', accountId: Number(selectedCustomer.id || 0), sessionId: String(selectedCustomer.session_id || ''), customerName: displayNameOf(selectedCustomer) }); navigate('/hermes') }}><Bot size={12} /> 让 Hermes 分析</button>
+                {/* AI 见解屏蔽名单（2026-09-13 重定义）：手动加入/解除，带二次确认 */}
+                <button
+                  className="cws-aitools__item"
+                  onClick={() => { setShowAiTools(false); void toggleInsightBlacklist(selectedCustomer) }}
+                  disabled={!selectedCustomer.session_id}
+                  title={!selectedCustomer.session_id ? '未关联微信会话，无法屏蔽' : '只影响自动/批量触发，不影响你手动发起的识别与见解'}
+                >
+                  <Ban size={12} /> {isInsightBlacklisted(insightBlacklist, String(selectedCustomer.session_id || '')) ? '解除 AI 见解屏蔽' : '屏蔽 TA 的 AI 见解'}
+                </button>
+              </div>
+            )}
           </div>
           {/* 识别结果提示（PRD §6.2 六态）：无新内容 / 成功 / 失败 / 额度不足都必须有明确文案 */}
           {identifyNotice && (
@@ -817,120 +977,165 @@ export default function CustomerWorkspacePage() {
           {!selectedCustomer.session_id && <p className="crm-insight">（未关联微信会话，无 AI 档案）</p>}
           {!profileLoading && selectedCustomer.session_id && customerProfile && (
             <div className="crm-profile">
-              {customerProfile.currentView && (() => {
-                // 屏 4 ①：AI 当前判断——概念稿四栏判断 .verdicts（摘要/机会/风险/下一步，字段名同 customerCurrentView 投影）
-                const j: any = customerProfile.currentView.judgments || {}
-                const rows: Array<[string, any]> = [
-                  ['摘要', j.summary], ['机会', j.opportunity], ['风险', j.risk], ['下一步', j.nextAction]
-                ]
-                if (!rows.some(([, v]) => v)) return null
-                return (
-                  <div className="cws-sec">
-                    <div className="seclabel">
-                      <span className="seclabel__t">AI 当前判断</span>
-                      <span className="cws-seclabel__h">最近一次识别 · 本机</span>
-                    </div>
-                    <div className="verdicts">
-                      {rows.map(([label, v]) => {
-                        const open = !!v && !!v.messageKey && evidenceKey === v.messageKey
-                        return (
-                          <div key={label} className={`verdict${v ? '' : ' verdict--muted'}`}>
-                            <div className="verdict__k">{label}</div>
-                            <div>
-                              <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
-                              <div className="verdict__meta">
-                                {!v && <span className="ahead"><i className="ahead__i" />点「AI 识别这个客户」生成</span>}
-                                {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
-                                {v && v.source !== 'manual' && (
-                                  <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
-                                    <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
-                                  </span>
-                                )}
-                                {v && v.evidenceStatus === 'ok' && v.messageKey && (
-                                  <button className="ahead ahead--src cws-ahead-btn" onClick={() => void toggleEvidence(v)}>
-                                    <i className="ahead__i" />{open ? (evidenceMsg && evidenceMsg.startsWith('正在') ? '回查中…' : '收起') : '依据消息'}
-                                  </button>
-                                )}
-                              </div>
-                              {open && evidenceMsg && <div className="cws-verdict__evi">{evidenceMsg}</div>}
-                            </div>
+              {/* 屏 4 ①：本机判断——四格常驻（概念稿 .verdicts，与聊天右栏同一份基础件），缺栏如实标「尚未识别」 */}
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">本机判断</span>
+                  <span className="cws-side__meta">{hasAnyJudgment ? '最近一次识别 · 本机' : '尚未识别'}</span>
+                </div>
+                <div className="verdicts">
+                  {judgmentRows.map(([label, v]) => {
+                    const open = !!v && !!v.messageKey && evidenceKey === v.messageKey
+                    return (
+                      <div key={label} className={`verdict${v ? '' : ' verdict--muted'}`}>
+                        <div className="verdict__k">{label}</div>
+                        <div>
+                          <div className="verdict__v">{v ? String(v.value || '') : '尚未识别'}</div>
+                          <div className="verdict__meta">
+                            {/* 空栏引导句：整份都没识别过时只在首格说一次，不四遍重复 */}
+                            {!v && (hasAnyJudgment || label === '摘要') && <span className="ahead"><i className="ahead__i" />点「AI 识别这个客户」生成</span>}
+                            {v && v.source === 'manual' && <span className="ahead ahead--human"><i className="ahead__i" />人工确认</span>}
+                            {v && v.source !== 'manual' && (
+                              <span className="ahead ahead--ai" title={v.freshness === 'stale' ? '生成已超 24h，可能过时' : ''}>
+                                <i className="ahead__i" />{v.freshness === 'stale' ? 'AI · 可能已过期' : 'AI · 新鲜'}
+                              </span>
+                            )}
+                            {v && v.evidenceStatus === 'ok' && v.messageKey && (
+                              <button className="ahead ahead--src ahead--btn" onClick={() => void toggleEvidence(v)}>
+                                <i className="ahead__i" />{open ? (evidenceMsg && evidenceMsg.startsWith('正在') ? '回查中…' : '收起') : '依据消息'}
+                              </button>
+                            )}
                           </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })()}
-              {customerProfile.todos?.length > 0 && (
-                <div className="cws-sec">
-                  <div className="seclabel">
-                    <span className="seclabel__t">跟进待办</span>
-                    <span className="cws-seclabel__h">{pendingTodos.length} 条待处理</span>
-                  </div>
-                  {pendingTodos.map((t: any) => (
-                    <div key={t.id} className="todo">
-                      <div>
-                        <div className="todo__t">{t.promise_summary || t.title}</div>
-                        <div className="todo__m">[{t.status}]</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="cws-sec">
-                <div className="seclabel">
-                  <span className="seclabel__t">客户信息</span>
-                  <span className="cws-seclabel__h">点击字段可编辑，手改后 AI 不再覆盖</span>
-                </div>
-                <div className="cws-typerow">
-                  <span className="cws-typerow__k">客户类型</span>
-                  {customerProfile.customer ? (
-                    <select
-                      className="crm-filter-select"
-                      value={String(customerProfile.customer.type || '')}
-                      onChange={(e) => void saveCustomerType(e.target.value)}
-                    >
-                      <option value="">未设置</option>
-                      <option value="dealer">经销商</option>
-                      <option value="end_user">终端客户</option>
-                    </select>
-                  ) : (
-                    <span className="crm-muted">未建档（account 未挂接 customer，存量迁移后可用）</span>
-                  )}
-                </div>
-                <div className="defs">
-                  {accountFieldView(customerProfile.account).map((f) => (
-                    <div key={f.field} className={`def cws-def${f.value ? '' : ' cws-def--empty'}`}>
-                      <div className="def__k">
-                        {f.label}
-                        {f.value && f.source === 'ai' && (
-                          <span className="ahead ahead--ai cws-def__src" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
-                            <i className="ahead__i" />AI · {Math.round((f.confidence ?? 0) * 100)}%
-                          </span>
-                        )}
-                        {f.value && f.source === 'manual' && <span className="ahead ahead--human cws-def__src"><i className="ahead__i" />人工确认</span>}
-                      </div>
-                      {editingField === f.field ? (
-                        <div className="cws-def__edit">
-                          <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
-                          <button className="btn btn--sm btn--primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
-                          <button className="btn btn--sm" onClick={() => setEditingField('')}>取消</button>
+                          {/* 与聊天侧栏同一份证据样式（main.scss .verdict__evi），不再各写一套 */}
+                          {open && evidenceMsg && <div className="verdict__evi">{evidenceMsg}</div>}
                         </div>
-                      ) : (
-                        <div className="def__v" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
-                          title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
-                          {f.value || '未提取'}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
-              <div className="cws-sec">
+              {/* 屏 4 ②：跟进待办——与判断区同一段节奏（.side-block / .side-head） */}
+              {customerProfile.todos?.length > 0 && (
+                <div className="side-block">
+                  <div className="side-head">
+                    <span className="side-head__t">跟进待办</span>
+                    <span className="cws-side__meta">{pendingTodos.length} 条待处理</span>
+                  </div>
+                  <div className="cws-side__rows">
+                    {(todosOpen ? pendingTodos : pendingTodos.slice(0, TODO_PREVIEW_COUNT)).map((t: any) => (
+                      <div key={t.id} className="todo">
+                        <div>
+                          <div className="todo__t">{t.promise_summary || t.title}</div>
+                          <div className="todo__m">[{t.status}]</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {pendingTodos.length > TODO_PREVIEW_COUNT && (
+                    <div className="cws-side__more">
+                      <button className="btn btn--sm btn--quiet" onClick={() => setTodosOpen((v) => !v)}>
+                        {todosOpen ? '收起' : `展开其余 ${pendingTodos.length - TODO_PREVIEW_COUNT} 条`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* 屏 4 ③：客户信息（12 字段两列网格，栏内最高的一块）：与时间线/画像/业务同一套
+                  折叠语法，默认收起——首屏先留给客户名 + 动作行 + 本机判断四格 + 跟进待办。 */}
+              <div className="side-block">
+                <button className="cws-fold" onClick={() => setFoldInfo((v) => !v)}>
+                  <span className="side-head__t">客户信息</span>
+                  <span className="cws-side__meta">
+                    {foldInfo ? '点击字段可编辑，手改后 AI 不再覆盖 · 收起 ▲' : `${ENRICH_FIELD_ORDER.length} 项 · 展开 ▼`}
+                  </span>
+                </button>
+                {foldInfo && (
+                  <>
+                    <div className="cws-typerow">
+                      <span className="cws-typerow__k">客户类型</span>
+                      {customerProfile.customer ? (
+                        <select
+                          className="crm-filter-select"
+                          value={String(customerProfile.customer.type || '')}
+                          onChange={(e) => void saveCustomerType(e.target.value)}
+                        >
+                          <option value="">未设置</option>
+                          <option value="dealer">经销商</option>
+                          <option value="end_user">终端客户</option>
+                        </select>
+                      ) : (
+                        <span className="crm-muted">未建档（account 未挂接 customer，存量迁移后可用）</span>
+                      )}
+                    </div>
+                    <div className="defs">
+                      {accountFieldView(customerProfile.account).map((f) => (
+                        <div key={f.field} className={`def cws-def${f.value ? '' : ' cws-def--empty'}`}>
+                          <div className="def__k">
+                            {f.label}
+                            {f.value && f.source === 'ai' && (
+                              <span className="ahead ahead--ai cws-def__src" title={f.evidence ? `AI 提取 · 证据「${f.evidence}」` : 'AI 提取'}>
+                                <i className="ahead__i" />AI · {Math.round((f.confidence ?? 0) * 100)}%
+                              </span>
+                            )}
+                            {f.value && f.source === 'manual' && <span className="ahead ahead--human cws-def__src"><i className="ahead__i" />人工确认</span>}
+                          </div>
+                          {editingField === f.field ? (
+                            <div className="cws-def__edit">
+                              <input autoFocus value={editingValue} onChange={(e) => setEditingValue(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') void saveFieldManual(f.field); if (e.key === 'Escape') setEditingField('') }} />
+                              <button className="btn btn--sm btn--primary" onClick={() => void saveFieldManual(f.field)}>保存</button>
+                              <button className="btn btn--sm" onClick={() => setEditingField('')}>取消</button>
+                            </div>
+                          ) : (
+                            <div className="def__v" onClick={() => { setEditingField(f.field); setEditingValue(f.value) }}
+                              title={f.evidence ? `证据「${f.evidence}」` : '点击编辑'}>
+                              {f.value || '未提取'}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              {/* 概念稿屏 2「报价单」：版本链 quotetable（main.scss 基础件）。行取真实报价链，
+                  版本 / 生效期 / 总额 / 当前版标记全部读库；多合同都挂报价时加「合同」列防歧义 */}
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">报价单</span>
+                  <span className="cws-side__meta">{quoteRows.length > 0 ? `${quoteRows.length} 个版本` : '尚无报价'}</span>
+                </div>
+                {quoteRows.length > 0 ? (
+                  <table className="quotetable">
+                    <thead>
+                      <tr>
+                        <th>版本</th>
+                        {quoteContractCount > 1 && <th>合同</th>}
+                        <th>生效期</th>
+                        <th style={{ textAlign: 'right' }}>总额</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {quoteRows.map((q, i) => (
+                        <tr key={q.key} className={i === quoteRows.length - 1 ? 'is-last' : ''}>
+                          <td className="num">{q.versionLabel}</td>
+                          {quoteContractCount > 1 && <td>{q.contractName}</td>}
+                          <td className="num">{q.period}</td>
+                          <td className="num" style={{ textAlign: 'right' }}>¥{q.total}</td>
+                          <td>{i === 0 ? <span className="tag tag--task">当前版</span> : <span className="tag tag--neutral">已换版</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="cws-side__quotempty">该客户还没有报价记录；报价单随合同版本建档，AI 报价或手动新建后在这里列出。</p>
+                )}
+              </div>
+              <div className="side-block">
                 <button className="cws-fold" onClick={() => setFoldTimeline((v) => !v)}>
-                  <span className="seclabel__t">动态时间线</span>
-                  <span className="cws-fold__meta">{customerProfile.activities?.length ?? 0} 条 · {foldTimeline ? '收起 ▲' : '展开 ▼'}</span>
+                  <span className="side-head__t">动态时间线</span>
+                  <span className="cws-side__meta">{customerProfile.activities?.length ?? 0} 条 · {foldTimeline ? '收起 ▲' : '展开 ▼'}</span>
                 </button>
                 {foldTimeline && (customerProfile.activities?.length > 0 || customerProfile.insights?.length > 0) && (
                   <div className="crm-timeline">
@@ -949,21 +1154,21 @@ export default function CustomerWorkspacePage() {
                 )}
               </div>
               {customerProfile.aiProfile && (
-                <div className="cws-sec">
+                <div className="side-block">
                   <button className="cws-fold" onClick={() => setFoldProfile((v) => !v)}>
-                    <span className="seclabel__t">AI 画像</span>
-                    <span className="cws-fold__meta">{foldProfile ? '收起 ▲' : '展开 ▼'}</span>
+                    <span className="side-head__t">AI 画像</span>
+                    <span className="cws-side__meta">{foldProfile ? '收起 ▲' : '展开 ▼'}</span>
                   </button>
                   {foldProfile && <p className="crm-insight">{customerProfile.aiProfile}</p>}
                 </div>
               )}
-              <div className="cws-sec">
+              <div className="side-block">
                 <button className="cws-fold" onClick={() => setFoldBiz((v) => !v)}>
-                  <span className="seclabel__t">业务</span>
-                  <span className="cws-fold__meta">合同 {customerProfile.contracts?.length ?? 0} 份 · 回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()} · {foldBiz ? '收起 ▲' : '展开 ▼'}</span>
+                  <span className="side-head__t">业务</span>
+                  <span className="cws-side__meta">合同 {customerProfile.contracts?.length ?? 0} 份 · 回款 ¥{Number(customerProfile.credited ?? 0).toLocaleString()} · {foldBiz ? '收起 ▲' : '展开 ▼'}</span>
                 </button>
                 {foldBiz && (
-                  <div className="cws-sec__acts">
+                  <div className="cws-side__acts">
                     <button className="btn btn--sm cws-danger-btn" onClick={() => void deleteCustomer(selectedCustomer)}><Trash2 size={13} /> 删除客户</button>
                   </div>
                 )}
@@ -972,9 +1177,9 @@ export default function CustomerWorkspacePage() {
           )}
           {deepReport && (
             <div className="crm-profile">
-              <div className="cws-sec">
-                <div className="seclabel">
-                  <span className="seclabel__t">资深销售助理 · 深度分析</span>
+              <div className="side-block">
+                <div className="side-head">
+                  <span className="side-head__t">资深销售助理 · 深度分析</span>
                 </div>
                 <p className="crm-insight crm-deep-report">{deepReport}</p>
               </div>

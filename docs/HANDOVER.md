@@ -54,7 +54,7 @@
 - **话术提炼 v2**：AI销售教练模式（分析+诊断+优化+多版本）已完成；扫描→确认→提炼→导入全链路打通；日期区间筛选；单选+一键批量双模式
 - **知识库**：已导入 353 条产品参数（3个Excel→CSV转标准格式）
 - **PRD v2 三周计划**：P0/P1/P2 全部代码完成
-- **打包**：Mac DMG+ZIP + Windows EXE 均已产出，沙箱环境打包输出到 `/tmp/weflow-release`
+- **打包**：Mac DMG+ZIP + Windows EXE 均已产出。现行打包步骤只在 `docs/MAINTENANCE.md` §3：输出目录用 `mktemp -d` 独占创建（秒级时间戳加 `mkdir -p` 不算唯一，同名就失败或换新目录，不复用旧目录）；清理、`tsc`、Vite、产物校验、`electron-builder` 任一步失败都立即停止；归档用 `noclobber` 独占写入，复制失败或产物为空不得视为交付成功。
 - **Windows 适配**：koffi 打包问题已修复（`@koromix/koffi-win32-x64@3.1.0` + asarUnpack）
 
 ---
@@ -132,7 +132,7 @@
 - **Electron 闪退真因修正**：旧判断"dist 是 Node wrapper 混入的坏 Electron v24"是**误判**；真因是 `ELECTRON_RUN_AS_NODE=1` 环境变量让 Electron 以 Node 模式启动（`--version` 输出 v24.17.0）。防御已落地 `vite.config.ts`（spawn 前 `delete`），详见 `docs/归档/交接旧版/HANDOVER-20260731-驾驶舱改造与打包问题.md` §四 修正版
 - **配置项**：`crmAutoConfirmEnabled`(默认 true) · `crmAutoConfirmThreshold`(默认 0.8) · `crmAutoConfirmInvoiceDocgen`(默认 false)
 - 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
-- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动 pkill；`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需按 PID `kill -9`（Electron 偶发卡 UE 不可中断睡眠，不影响新实例）
+- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程。`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），也不要按名称批量杀。诊断只列出 PID、启动时间和命令行，不自动发送信号，也不提供可直接连续复制的结束进程命令。确需结束时，在诊断之外重新确认目标并自行处理。普通 PID 检查无法绝对消除竞态。
 
 ## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
 
@@ -3047,7 +3047,7 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 5. **单一固定 system prompt**，差异放 user prompt（API缓存）
 6. **win 只打 x64**，交叉编译前必须 `npm install @koromix/koffi-win32-x64@3.1.0 --force`
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
-8. **打包前必杀残留进程**（否则 packaging 阶段死锁）
+8. **打包前排查残留构建进程**（只读诊断：列出候选并打印 PID、启动时间和命令行。脚本不发送信号，也不提供可直接连续复制的结束进程命令。确需结束时在脚本外重新确认并自行处理。普通 PID 检查无法绝对消除竞态。不要按名称批量 pkill。步骤只以 MAINTENANCE.md §3 为准）
 9. **ffmpeg 缺失会崩**：用户需自备 `~/bin/ffmpeg`
 10. **WCDB 消息字段是 snake_case**：`is_send`/`create_time`/`message_content`/`sender_username`（不是 camelCase），用错字段名全部读到 undefined
 11. **`chatService.getSessions()` 返回 `{success, sessions[]}`** 而非裸数组，`Array.isArray()` 永远 false，需解包 `.sessions`
@@ -3056,20 +3056,13 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 
 ## 8. 打包发布
 
-详见 MAINTENANCE.md §3。快速参考：
+可执行步骤只有 `docs/MAINTENANCE.md` §3 的整段脚本。本节不重复命令，避免缩略命令绕过这些规则：
 
-```bash
-# 清理
-pkill -9 -f "vite|esbuild|rolldown|WeFlow|Electron|electron-builder|app-builder"; sleep 3
-rm -rf release dist dist-electron
-
-# Mac
-CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --arm64
-
-# Windows（交叉编译）
-npm install @koromix/koffi-win32-x64@3.1.0 --save-optional --force
-CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
-```
+- 残留构建进程：诊断脚本只读，列出候选并打印 PID、启动时间和命令行。不自动发送信号，也不提供可直接连续复制的结束进程命令。确需结束时在脚本外重新确认目标并自行处理。普通 PID 检查无法绝对消除竞态。不要按名称批量杀。
+- 清理、`tsc`、`vite build`、`scripts/verify-electron-bundle.cjs`、`electron-builder` 用 `&&` 串成与 `package.json` 的 `build` 相同的链，末尾 `|| exit 1`。任一步失败立即停止，不能拿旧产物继续打包。
+- 输出目录用 `mktemp -d` 独占创建。秒级时间戳加 `mkdir -p` 不算唯一；同名或创建失败就停，或者由 `mktemp` 换一个新目录，绝不复用旧目录。
+- 归档用 `noclobber` 独占创建目标，并核对非空和 SHA-256。目标已存在、复制失败、产物为空或校验不一致都是失败，不得写成交付成功。
+- Mac 用 `--mac --arm64` 与 `mac-arm64`。Windows 先安装与 `koffi` 精确一致的 `@koromix/koffi-win32-x64@3.1.0`（失败就停止），再把同一整段改成 `--win --x64` 与 `win-x64`。代理变量写在同一整段上。沙箱只把父目录改成 `/tmp`。不要另跑一条 `electron-builder`。
 
 ---
 
@@ -3259,3 +3252,102 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --win --x64
 - `dcf834e` fix: 移除 chatService 依赖
 - `38d7370` fix: 消息读取和会话过滤
 - `380dd40` fix: main.ts 多余括号
+
+## 2.117 权限矩阵拆分：command.issue → 四域指令能力位（2026-09-19）
+
+### 2.117.1 问题与根因
+
+权限矩阵审查发现越权漏洞：`/sync/commands` 仅有 `command.issue` 一个能力位（app.ts preHandler），
+而 `permissions.ts` 中 **allocator 与 supervisor 能力完全相同**，下行指令注册表（DOWN_COMMAND_SPECS）
+却含 `permission_change`（权限变更）与 `supervisor_correction`（主管修正）两类高危指令——
+**分配员可越权给自己/他人改角色**，与 PRD §3「权限变更归管理员」的矩阵意图不符。
+
+### 2.117.2 修复口径（方案 a：能力位按指令域拆分）
+
+- `command.issue` 拆为四域，映射登记在 `shared/centralDownCommand.ts` 每个指令 spec 的
+  `capability` 字段（单一事实源，中央下发端按 spec 查表鉴权，不在路由散落比较）：
+  `assign`/`recycle` → `command.assign`；`transfer`/`supervisor_correction` → `command.transfer`；
+  `permission_change` → `command.permission`；`sla1_escalate_supervisor` → `command.notify`；
+- 角色授予：allocator = assign+notify；supervisor = assign+transfer+notify；
+  admin = 全部四域；**sales = notify**（权限表 §三.6 本就声明 SLA 升级通知由持有分配行的设备
+  产生，销售机可上报 `sla1_escalate_supervisor`——此前 sales 无 command.issue，销售机产生的
+  升级通知经 /sync/commands 会被 403 丢弃，本次一并修复）；service 仍零指令域；
+- 鉴权点：`/sync/commands` handler 内按 `spec.capability` 检查（未登记类型仍由后置 E103 拒收，
+  不在鉴权位提前泄密）；`DownCommandSpec.capability` 为必填字段，新增指令类型漏配能力位 =
+  编译失败；
+- 迁移（升级当天自动生效，无需任何手工动作）：能力位由服务端 `employee.role` **实时派生**、
+  不落盘不进令牌，设备令牌/邀请码/绑定关系零操作；本地客户端不检查能力位、无需更新；
+  唯一行为变化 = 分配员/主管下发 `permission_change`、分配员下发 `supervisor_correction`
+  由 201 → 403（即本次要修的越权），assign/transfer/recycle/sla1 通知全部不变；
+  回滚 = 镜像 tag 回退（无 schema/数据变更）；
+- 文档同步：`docs/API-CONTRACT.md` §3.2 能力矩阵 + §端点表第 11 行；electron 两条注释
+  （centralSyncClient / centralSyncService）。
+
+### 2.117.3 验证
+
+- `central/test/app-test.ts` 新增 C13-C18：分配员发 supervisor_correction / permission_change
+  → 403；主管发 supervisor_correction → 201、发 permission_change → 403；管理员发
+  permission_change → 201；**销售发 sla1_escalate_supervisor → 201**（notify 域新断言）；
+  原 C1-C4/C11（recycle 域）语义不变全绿；
+- `central` typecheck + 全部测试通过；根目录 `npx tsc --noEmit` 零错误（shared 改动影响主工程）。
+
+## 2.118 单条录入 + 查重面板 + 历史分配导入（2026-09-19）
+
+### 2.118.1 需求拍板（用户 2026-09-19）
+
+- 新增线索表单：**去掉姓名**（客户可能没留）；手机号/微信号**二选一必填**（可都填→both）；可能留**微信二维码**（存图不解析）；**填手机号必须同步填微信昵称**（加好友人工核对锚点）；
+- 录入时**必须显示分配过给谁**：输入即查重，命中强制三选一（联系原销售/走移交/复购归并），三者都不建新线索；
+- 历史客户分配情况导入：**SLA 哨兵强制 2100**（历史行永不参与 SLA 计时）；
+- 入口仅主管/分配员可见（UI 门禁 `!salesView`，与「导入线索」同口径；宪法 §1.12 角色仅署名，本地不新增强拦截）。
+
+### 2.118.2 实现
+
+- **宪法先行**（§1.4 写入者增补 + §3 三个登记行）：`lead.wx_nickname`（人工核对锚点，永不参与自动好友判定，§2.4 铁律不变）/ `lead.qr_path`（存图不解析，userData/lead-qr/）/ assignment 第 4 写者（历史导入通道，哨兵铁律入宪）；幂等 ALTER 加列（crmDbService 双路径模式）；
+- **服务层**（crmLeadService）：`checkLeadDuplicate`（双标识跨 contact_type 实时查重，口径同 importLeads：先正式客户后线索池，conflict 待人工；命中返回当前归属 + assignment 历史 1:N）、`createLead`（E101 参数校验 / E201 硬拒收重复 + UNIQUE 索引兜底；contact_type both 落库口径同导入；入池 deadline=2100 哨兵）、`importHistoricalAssignments`（claimed/recycled 状态回填 + ownership_history（仅 active 归属变化）+ lead_activity `ASSIGN_HISTORY` + audit_event 批次汇总；**sla1_deadline 强制哨兵**；幂等：active 已归属同销售 / recycled 行已存在均跳过）；
+- **IPC**：`crm:lead:dupCheck / create / qrSave / historyImport` 四通道（API-CONTRACT §1.5 增补；qrSave 复制文件进 userData/lead-qr/）；
+- **UI**（CrmLeadPage）：工具栏「新增线索」「导入历史分配」两按钮（`!salesView`）；录入表单（渠道下拉/手机号/微信号/微信昵称条件必填/二维码/备注）+ 手机号/微信号 blur 即查重 + 查重面板（归属/状态/分配历史表格 + 三选一按钮）；历史导入粘贴框（`联系方式,销售,分配时间[,结束状态][,渠道]` 逐行解析）+ 结果/跳过明细展示。
+
+### 2.118.3 验证
+
+- `npm run test:lead-entry`（scripts/crm-lead-entry-test.ts）：24/24 通过——创建落库/哨兵/昵称必填/格式校验/both 命中/历史导入哨兵铁律/SLA 扫描不回收历史行/幂等跳过/非法行明细全覆盖；
+- `npx tsc --noEmit` 零错误（renderer + electron 主进程）。
+
+## 2.119 撞客方案一期：重复组登记 + 下行投影 + 「重复」徽标（2026-09-19）
+
+### 2.119.1 需求（用户 2026-09-19）
+
+① 中央在身份锚点冲突（`identity_anchor_conflict`）时，除 `sync_entity_conflict` 审计外登记
+「重复组」投影（身份哈希 + 双方客户引用 + 各自归属销售，**不含聊天内容**）；② 重复组进中央
+下行投影白名单随同步下发各端；③ 客户端在线索/客户行渲染「重复」徽标，点开**只显示
+「与同事某某的客户重复」（对方归属人姓名），不显示对方任何资料**；④ 沿用现有 token 与组件类。
+
+### 2.119.2 实现
+
+- **入宪先行**（§3.1 登记行 + 新增「下行投影白名单」条款）：`duplicate_group` = 第 11 实体、
+  **中央自产**（设备永不上行，上行会命中归属/身份闸门）；表 `central_duplicate_group`（标准投影
+  形态：(workspace_id, entity_id) 主键 + aggregate_version + source_device_id + deleted；
+  entity_id = `dupgroup:<anchor_type>:<anchor_hash>` 业务键 + 锚点唯一索引）。
+- **中央**：`shared/centralSync` 增 `duplicate_group` 实体 + `DOWN_PROJECTION_ENTITY_TYPES`
+  下行投影白名单（与下行指令互斥：投影是事实通告，不走 `validateDownCommand` /
+  `applyDownEventDirect`）；`projections.ts` 注册表补 `duplicate_group` 项（required:
+  anchorType/anchorHash/membersJson/memberCount）；`migrations/003_duplicate_group.sql`；
+  `postgresStore.registerDuplicateGroup`（身份锚点冲突分支单点调用，独立连接不随被拒事件
+  savepoint 回滚；组行 upsert + 广播下行事件，**幂等键含成员数**——成员不变不重发，第三位
+  成员进组自动重新广播）；`memoryStore` 同构实现 + `dupGroupRows()` 测试视图。
+- **客户端**：`centralSyncService.pullAndApply` 对 `entityType==='duplicate_group'` 分流（ack
+  applied/invalid，不进指令链）；新服务 `crmDupGroupService`——`applyDupGroupEvent` 落地
+  `crmDb.dup_group`（ENTITIES 白名单已登记；member_count 单调防晚到旧事件回退）+
+  `listDupMatches`（本机联系方式用与上行投影同一 `identityHash` 算法锚定到组；线索行按
+  contact_type 双锚点、客户卡按 account.phone + custom_fields 内嵌 wxid；others = 成员
+  ownerSales 过滤本机署名）；IPC `crm:dupGroup:list`；CrmLeadPage 线索行 +
+  CustomerWorkspacePage 客户队列行渲染 `.tag.tag--insight`「重复」徽标（既有组件类 +
+  warning token），点击行内展开「与同事某某的客户重复」，无新增设计 token、无造假数据。
+
+### 2.119.3 验证
+
+- central 全套：app 172（新增 I17–I21：冲突登记重复组 / 广播可见 / 成员=双方引用+归属销售 /
+  锚点哈希一致 / 无禁出字段 / 幂等不重发）、projection 36、migration 23（B2–B4 标准投影形态）、
+  context 6、build-guard 8 —— 全绿；
+- 客户端 `npm run test:dup-group`（scripts/crm-dup-group-test.ts）14/14：落地/校验拒收/单调
+  防回退/三方组/徽标匹配/对方姓名过滤/无对方资料字段；
+- 根 `npx tsc --noEmit` 零错误。

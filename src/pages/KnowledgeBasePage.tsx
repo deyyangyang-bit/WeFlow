@@ -414,7 +414,43 @@ function ProposalForm({ onClose }: { onClose: () => void }) {
   )
 }
 
-// ─── 知识条目卡片 ─────────────────────────────────────────────────────────────
+// ─── 文档列表行 + 正文预览（概念稿屏 10 三栏版式的中栏 / 右栏）───────────────
+
+/** 状态徽标（版本链节点/列表行通用） */
+function statusLabel(e: Pick<KnowledgeEntry, 'status'>): string {
+  if (e.status === 'published') return '已发布'
+  if (e.status === 'rejected') return '已拒绝'
+  if (e.status === 'closed') return '历史版本'
+  return '待审核'
+}
+
+/** 中栏文档行：发丝细线行（标题 + 元信息 + 状态 tag），点击在右栏预览正文 */
+function KbDocRow({ entry, selected, onSelect }: {
+  entry: KnowledgeEntry
+  selected: boolean
+  onSelect: () => void
+}) {
+  const isRejected = entry.status === 'rejected'
+  return (
+    <button
+      type="button"
+      className={`kb-row ${selected ? 'is-on' : ''} ${isRejected ? 'is-rej' : ''}`}
+      onClick={onSelect}
+    >
+      <span className="kb-row__n">
+        {entry.title}
+        <span className="kb-row__v">v{entry.version ?? 1}</span>
+      </span>
+      <span className="kb-row__s">
+        {CATEGORY_LABELS[entry.category] ?? entry.category}
+        {entry.product_line ? ` · ${entry.product_line}` : ''}
+        {entry.scene ? ` · ${entry.scene}` : ''}
+        {` · 更新于 ${formatTime(entry.updated_at)}`}
+      </span>
+      <span className={`tag ${isRejected ? 'tag--danger' : 'tag--success'}`}>{statusLabel(entry)}</span>
+    </button>
+  )
+}
 
 /** 刀 1 authority 徽标（published 条目必带）：官方=审定权威口径，社区=默认 */
 function AuthorityBadge({ authority }: { authority?: string }) {
@@ -424,30 +460,19 @@ function AuthorityBadge({ authority }: { authority?: string }) {
   return <span className="kb-badge kb-badge-community"><Shield size={11} />社区</span>
 }
 
-/** 状态徽标（版本链节点/卡片通用） */
-function statusLabel(e: Pick<KnowledgeEntry, 'status'>): string {
-  if (e.status === 'published') return '已发布'
-  if (e.status === 'rejected') return '已拒绝'
-  if (e.status === 'closed') return '历史版本'
-  return '待审核'
-}
-
-function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence }: {
+/** 右栏正文预览（概念稿 .kdoc 语法）：题头 + 元信息 + 正文全文；
+ *  卡片时代挂在卡上的既有能力（编辑 / 删除 / 续期 TTL / 新版本 / 查看依据 / 版本链 / 拒因）全部随行进来 */
+function KbDocPreview({ entry, chain, onNewVersion, onShowEvidence }: {
   entry: KnowledgeEntry
-  highlighted?: boolean
-  /** 版本链：同名标题的全部条目（含自身），created_at 升序 */
+  /** 版本链：同一 logical_id 的全部条目（含自身），created_at 升序 */
   chain: KnowledgeEntry[]
   onNewVersion: (e: KnowledgeEntry) => void
   onShowEvidence: (e: KnowledgeEntry) => void
 }) {
   const { openForm, deleteEntry, renewTtl } = useKnowledgeStore()
   const [confirmDelete, setConfirmDelete] = useState(false)
-  // 正文预览折叠：卡片只截前几行，长条目可就地展开读全文（纯展示状态，不改数据）
-  const [contentOpen, setContentOpen] = useState(false)
   const tags = parseTags(entry.tags)
-  const IconComp = CATEGORY_ICONS[entry.category] ?? BookOpen
   const isRejected = entry.status === 'rejected'
-  const isPublished = entry.status === 'published'
   const isStaging = (entry.status ?? 'staging') === 'staging'
   // 治理规则：published/rejected 只读且不能删除；staging 可编辑删除
   const canEdit = isStaging
@@ -476,54 +501,42 @@ function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence
   }
 
   return (
-    <div className={`kb-card ${isRejected ? 'kb-card-rejected' : ''} ${highlighted ? 'kb-card-highlight' : ''}`} data-kb-entry={entry.id}>
-      <div className="kb-card-header">
-        <span className="kb-card-icon"><IconComp size={16} /></span>
-        <span className="kb-card-category">{CATEGORY_LABELS[entry.category] ?? entry.category}</span>
-        {entry.product_line && <span className="kb-card-product-line">{entry.product_line}</span>}
-        {entry.scene && <span className="kb-card-scene">{entry.scene}</span>}
-        <div className="kb-card-actions">
-          {canEdit && (
-            <button className="kb-card-action" onClick={() => openForm(entry)} title="编辑（待审核条目可改）">
-              <Pencil size={14} />
+    <div className="kdoc" data-kb-entry={entry.id}>
+      <div className="kdoc__acts">
+        {canEdit && (
+          <button className="kb-card-action" onClick={() => openForm(entry)} title="编辑（待审核条目可改）">
+            <Pencil size={14} />
+          </button>
+        )}
+        {canDelete && (
+          <button
+            className={`kb-card-action ${confirmDelete ? 'danger' : ''}`}
+            onClick={handleDelete}
+            title={confirmDelete ? '再次点击确认删除' : '删除（仅待审核条目可删）'}
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+        {entry.status === 'published' && (
+          <>
+            <button className="kb-card-action" onClick={handleRenewTtl} title="续期 TTL（不产生新内容版本）">
+              <Clock size={14} />
             </button>
-          )}
-          {canDelete && (
-            <button
-              className={`kb-card-action ${confirmDelete ? 'danger' : ''}`}
-              onClick={handleDelete}
-              title={confirmDelete ? '再次点击确认删除' : '删除（仅待审核条目可删）'}
-            >
-              <Trash2 size={14} />
+            <button className="kb-card-action" onClick={() => onNewVersion(entry)} title="创建新版本（生成待审核条目，发布后接替当前版本）">
+              <FilePlus2 size={14} />
             </button>
-          )}
-          {isPublished && (
-            <>
-              <button className="kb-card-action" onClick={handleRenewTtl} title="续期 TTL（不产生新内容版本）">
-                <Clock size={14} />
-              </button>
-              <button className="kb-card-action" onClick={() => onNewVersion(entry)} title="创建新版本（生成待审核条目，发布后接替当前版本）">
-                <FilePlus2 size={14} />
-              </button>
-            </>
-          )}
-        </div>
+          </>
+        )}
       </div>
 
-      <h4 className="kb-card-title">
-        {entry.title}
-        <span className="kb-card-version" title={`版本 v${entry.version ?? 1} · ${statusLabel(entry)}`}>v{entry.version ?? 1}</span>
-      </h4>
-      <p className={`kb-card-content ${contentOpen ? 'is-open' : ''}`}>{entry.content}</p>
-      {entry.content.length > 140 && (
-        <button
-          className="kb-card-more"
-          onClick={() => setContentOpen(v => !v)}
-          title={contentOpen ? '收起正文预览' : '展开正文全文（长条目不必进编辑态）'}
-        >
-          {contentOpen ? '收起' : '展开全文'}
-        </button>
-      )}
+      <h3 className="kdoc__t">{entry.title}</h3>
+      <div className="kdoc__m">
+        {CATEGORY_LABELS[entry.category] ?? entry.category}
+        {entry.product_line ? ` · ${entry.product_line}` : ''}
+        {entry.scene ? ` · ${entry.scene}` : ''}
+        {` · v${entry.version ?? 1} ${statusLabel(entry)}`}
+        {` · 更新于 ${formatTime(entry.updated_at)}`} · 本机资料
+      </div>
 
       {chain.length > 1 && (
         <div className="kb-chain" title="同一 logical_id 的知识条目构成版本链；发布新版本后旧版被接替">
@@ -547,31 +560,26 @@ function KnowledgeCard({ entry, highlighted, chain, onNewVersion, onShowEvidence
         </div>
       )}
 
-      <div className="kb-card-footer">
-        <span>更新于 {formatTime(entry.updated_at)}</span>
-        {isPublished && <AuthorityBadge authority={entry.authority} />}
-        {isRejected && (
-          <span className="kb-badge kb-badge-rejected"><XCircle size={11} />已拒绝</span>
-        )}
-      </div>
-
-      <div className="kb-card-meta">
-        <span className={`kb-ttl ${ttlExpired ? 'kb-ttl--expired' : entry.ttl_date ? '' : 'kb-ttl--none'}`}>
-          <Clock size={10} />
-          {entry.ttl_date ? `TTL 至 ${entry.ttl_date}${ttlExpired ? '（已过期）' : ''}` : 'TTL 未设置'}
-        </span>
-        {entry.evidence_key && (
-          <button className="kb-evidence-btn" onClick={() => onShowEvidence(entry)}>
-            <FileSearch size={11} />查看依据
-          </button>
-        )}
-      </div>
+      <div className="kdoc__body">{entry.content}</div>
 
       {isRejected && entry.reject_reason && (
         <div className="kb-card-reject-reason" title={entry.reject_reason}>
           <AlertTriangle size={11} />拒因：{entry.reject_reason}
         </div>
       )}
+
+      <div className="kdoc__foot">
+        <span className={`kb-ttl ${ttlExpired ? 'kb-ttl--expired' : entry.ttl_date ? '' : 'kb-ttl--none'}`}>
+          <Clock size={10} />
+          {entry.ttl_date ? `TTL 至 ${entry.ttl_date}${ttlExpired ? '（已过期）' : ''}` : 'TTL 未设置'}
+        </span>
+        {entry.status === 'published' && <AuthorityBadge authority={entry.authority} />}
+        {entry.evidence_key && (
+          <button className="kb-evidence-btn" onClick={() => onShowEvidence(entry)}>
+            <FileSearch size={11} />查看依据
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -754,10 +762,13 @@ function ReviewItem({ entry, conflict, selected, onToggle, forceDiffOpen, onShow
   )
 }
 
-function ReviewSection({ entries, publishedEntries, onShowEvidence }: {
+function ReviewSection({ entries, publishedEntries, onShowEvidence, collapsed, onToggleCollapsed }: {
   entries: KnowledgeEntry[]
   publishedEntries: KnowledgeEntry[]
   onShowEvidence: (e: KnowledgeEntry) => void
+  /** 折叠整区（staging 多时给三栏正文让位；折叠只收列表，头部计数与批量动作保留） */
+  collapsed?: boolean
+  onToggleCollapsed?: () => void
 }) {
   const { reviewEntries } = useKnowledgeStore()
   // 刀 4 批量通过（确认队列升级，防确认疲劳）：勾选多条一次发布
@@ -822,23 +833,34 @@ function ReviewSection({ entries, publishedEntries, onShowEvidence }: {
           >
             <GitCompare size={14} />只看 diff{conflictEntries.length > 0 ? `（${conflictEntries.length}）` : ''}
           </button>
+          {onToggleCollapsed && (
+            <button
+              className="kb-btn kb-btn-secondary kb-btn-sm"
+              onClick={onToggleCollapsed}
+              title={collapsed ? '展开待审核列表' : '收起待审核列表（计数与批量动作保留在头部）'}
+            >
+              {collapsed ? '展开列表' : '收起列表'}
+            </button>
+          )}
         </div>
       </div>
-      <div className="kb-review-list">
-        {visible.length === 0 ? (
-          <div className="kb-review-evidence">只看 diff：没有与已发布条目同标题冲突的提案</div>
-        ) : visible.map(entry => (
-          <ReviewItem
-            key={entry.id}
-            entry={entry}
-            conflict={conflictOf(entry)}
-            selected={selected.has(entry.id)}
-            onToggle={toggleOne}
-            forceDiffOpen={onlyDiff}
-            onShowEvidence={onShowEvidence}
-          />
-        ))}
-      </div>
+      {!collapsed && (
+        <div className="kb-review-list">
+          {visible.length === 0 ? (
+            <div className="kb-review-evidence">只看 diff：没有与已发布条目同标题冲突的提案</div>
+          ) : visible.map(entry => (
+            <ReviewItem
+              key={entry.id}
+              entry={entry}
+              conflict={conflictOf(entry)}
+              selected={selected.has(entry.id)}
+              onToggle={toggleOne}
+              forceDiffOpen={onlyDiff}
+              onShowEvidence={onShowEvidence}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -858,7 +880,10 @@ export default function KnowledgeBasePage() {
   const [searchInput, setSearchInput] = useState('')
   const [extractOpen, setExtractOpen] = useState(false)
   const [batchExtractOpen, setBatchExtractOpen] = useState(false)
-  const [proposalOpen, setProposalOpen] = useState(false) // 刀 4「补充知识」提案表单
+  // 刀 4「补充知识」提案表单开关 + 待审核区折叠（219 条 staging 会把三栏正文顶出视口，
+  // 默认折叠只留头部一行计数与批量动作；一键展开随时可用）
+  const [proposalOpen, setProposalOpen] = useState(false)
+  const [reviewCollapsed, setReviewCollapsed] = useState(true)
   // 治理补齐：published「创建新版本」（预填表单 → 新 staging 行）+「查看依据」弹窗
   const [versionBase, setVersionBase] = useState<KnowledgeEntry | null>(null)
   const [evidenceEntry, setEvidenceEntry] = useState<KnowledgeEntry | null>(null)
@@ -899,13 +924,40 @@ export default function KnowledgeBasePage() {
     return map
   }, [versionEntries])
 
-  // 刀 3 引用跳转深链：/knowledge-base state.focusEntryId → 滚动定位 + 短暂高亮
+  // 三栏版式：中栏选中条目 → 右栏正文预览（列表为空/选中行被过滤时回落到首行）
+  const [selectedEntryId, setSelectedEntryId] = useState<number | null>(null)
+  const selectedEntry = useMemo(
+    () => gridEntries.find(e => e.id === selectedEntryId) ?? null,
+    [gridEntries, selectedEntryId]
+  )
+  useEffect(() => {
+    if (gridEntries.length === 0) {
+      if (selectedEntryId !== null) setSelectedEntryId(null)
+      return
+    }
+    if (selectedEntryId == null || !gridEntries.some(e => e.id === selectedEntryId)) {
+      setSelectedEntryId(gridEntries[0].id)
+    }
+  }, [gridEntries, selectedEntryId])
+
+  // 分类树计数：与中栏列表完全同源（当前发布 + rejected 沉底），不另拉接口
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const e of gridEntries) {
+      const k = e.category || ''
+      counts.set(k, (counts.get(k) || 0) + 1)
+    }
+    return counts
+  }, [gridEntries])
+
+  // 刀 3 引用跳转深链：/knowledge-base state.focusEntryId → 选中 + 滚动定位 + 短暂高亮
   const location = useLocation()
   const [highlightId, setHighlightId] = useState<number | null>(null)
   useEffect(() => {
     const focusId = Number((location.state as { focusEntryId?: number } | null)?.focusEntryId || 0)
     if (!focusId) return
     setHighlightId(focusId)
+    setSelectedEntryId(focusId)
     const scrollTimer = window.setTimeout(() => {
       document.querySelector(`[data-kb-entry="${focusId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 300)
@@ -987,61 +1039,39 @@ export default function KnowledgeBasePage() {
       {/* 话术提炼弹窗（批量） */}
       <ExtractScriptDialog open={batchExtractOpen} onClose={() => setBatchExtractOpen(false)} batch />
 
-      {/* 页眉（概念稿 .shead）：小标 → 页名 → 条数说明；右侧为搜索与动作区 */}
+      {/* 页眉（概念稿 .shead）：小标「AI · 知识」→ 衬线主张句 → 真实计数副行；右侧为降噪后的动作区 */}
       <div className="shead kb-page-header">
         <div className="kb-page-title-block">
-          <p className="eyebrow">知识治理 · 待审核 → 已发布</p>
-          <h1 className="hero kb-page-title">
-            <BookOpen size={22} strokeWidth={1.6} />
-            <span>知识库</span>
-          </h1>
+          <p className="eyebrow">AI · 知识</p>
+          <h1 className="hero kb-page-title">知识库</h1>
           <p className="sub">
             {total} 条{stagingEntries.length > 0 ? ` · 待审核 ${stagingEntries.length} 条（发布后才被问答引用）` : ''}
           </p>
         </div>
 
         <div className="shead__actions kb-page-toolbar">
-          <div className="kb-search-box">
-            <Search size={16} />
-            <input
-              type="text"
-              value={searchInput}
-              onChange={e => handleSearch(e.target.value)}
-              placeholder="搜索标题、内容、标签..."
-            />
-            {searchInput && (
-              <button className="kb-search-clear" onClick={() => {
-                setSearchInput('')
-                setSearchKeyword('')
-                fetchList({ category: filterCategory || undefined })
-              }}>
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
-          <button className="kb-btn kb-btn-secondary" onClick={handleImportClick} disabled={importing}>
-            <Upload size={16} />
+          <button className="btn btn--plain" onClick={handleImportClick} disabled={importing}>
+            <Upload size={14} />
             {importing ? '导入中...' : '批量导入'}
           </button>
 
-          <button className="kb-btn kb-btn-accent" onClick={() => setExtractOpen(true)}>
-            <Sparkles size={16} />
+          <button className="btn btn--plain" onClick={() => setExtractOpen(true)}>
+            <Sparkles size={14} />
             提炼话术
           </button>
 
-          <button className="kb-btn kb-btn-accent" onClick={() => setBatchExtractOpen(true)}>
-            <Sparkles size={16} />
+          <button className="btn btn--plain" onClick={() => setBatchExtractOpen(true)}>
+            <Sparkles size={14} />
             一键提炼
           </button>
 
-          <button className="kb-btn kb-btn-secondary" onClick={() => setProposalOpen(true)} title="客户问过但知识库答不上来的问题，登记为提案进待审核（证据锚点必填）">
-            <FilePlus2 size={16} />
+          <button className="btn btn--plain" onClick={() => setProposalOpen(true)} title="客户问过但知识库答不上来的问题，登记为提案进待审核（证据锚点必填）">
+            <FilePlus2 size={14} />
             补充知识
           </button>
 
-          <button className="kb-btn kb-btn-primary" onClick={() => openForm()}>
-            <Plus size={16} />
+          <button className="btn btn--primary" onClick={() => openForm()}>
+            <Plus size={14} />
             新增
           </button>
 
@@ -1062,13 +1092,30 @@ export default function KnowledgeBasePage() {
         </div>
       )}
 
+      {/* 待审核区（刀 1 治理分区：staging 行逐条发布/拒绝 + 批量通过 + 只看 diff）：
+          概念稿三栏没有审核位，本区保留在三栏之上——给高度上限 + 内部滚动 + 折叠开关，
+          staging 多时不把三栏正文顶出视口，能力一个不少 */}
+      <div className={`kb-review-wrap ${reviewCollapsed ? 'is-collapsed' : ''}`}>
+        <ReviewSection
+          entries={stagingEntries}
+          publishedEntries={currentPublished}
+          onShowEvidence={setEvidenceEntry}
+          collapsed={reviewCollapsed}
+          onToggleCollapsed={() => setReviewCollapsed(v => !v)}
+        />
+      </div>
+
       <div className="kb-page-body">
-        {/* 分类栏（左）：沿用 store 现有 filterCategory 单一状态与既有分类枚举，不新增分类能力 */}
+        {/* 分类栏（左，概念稿 .ktree 语法）：沿用 store 现有 filterCategory 单一状态与既有分类枚举，
+            计数与中栏列表同源；不新增分类能力 */}
         <aside className="kb-rail" aria-label="知识分类">
-          <div className="ktree__g kb-rail__g">分类</div>
+          <div className="kb-rail__g">分类</div>
           {CATEGORY_OPTIONS.map((option) => {
             const IconComp = CATEGORY_ICONS[option.value] ?? BookOpen
             const active = (filterCategory || '') === option.value
+            const count = option.value
+              ? (categoryCounts.get(option.value) || 0)
+              : gridEntries.length
             return (
               <button
                 key={option.value || 'all'}
@@ -1079,32 +1126,65 @@ export default function KnowledgeBasePage() {
               >
                 <IconComp size={14} />
                 <span className="kb-rail__t">{option.label}</span>
+                <span className="kb-rail__n num">{count}</span>
               </button>
             )
           })}
         </aside>
 
-        <div className="kb-main">
-          <ReviewSection entries={stagingEntries} publishedEntries={currentPublished} onShowEvidence={setEvidenceEntry} />
-          {loading ? (
-            <div className="kb-loading">加载中...</div>
-          ) : gridEntries.length === 0 ? (
-            <div className="kb-empty">
-              <BookOpen size={48} />
-              <p>{searchKeyword ? '没有找到匹配的条目' : stagingEntries.length > 0 ? '没有已发布的条目，先在上方「待审核」区发布' : '知识库为空，点击"新增"添加第一条知识'}</p>
-            </div>
+        {/* 文档列表（中，概念稿 srow 细线行语法）：搜索框随列表列，行点击在右栏预览 */}
+        <div className="kb-docs">
+          <div className="kb-docs__search">
+            <Search size={15} />
+            <input
+              type="text"
+              value={searchInput}
+              onChange={e => handleSearch(e.target.value)}
+              placeholder="搜索资料"
+            />
+            {searchInput && (
+              <button className="kb-search-clear" onClick={() => {
+                setSearchInput('')
+                setSearchKeyword('')
+                fetchList({ category: filterCategory || undefined })
+              }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <div className="kb-docs__g">资料列表 · {gridEntries.length}</div>
+          <div className="kb-docs__list">
+            {loading ? (
+              <div className="kb-loading">加载中...</div>
+            ) : gridEntries.length === 0 ? (
+              <div className="kb-empty">
+                <BookOpen size={36} />
+                <p>{searchKeyword ? '没有找到匹配的条目' : stagingEntries.length > 0 ? '没有已发布的条目，先在上方「待审核」区发布' : '知识库为空，点击右上角"新增"添加第一条知识'}</p>
+              </div>
+            ) : gridEntries.map(entry => (
+              <KbDocRow
+                key={entry.id}
+                entry={entry}
+                selected={entry.id === selectedEntryId}
+                onSelect={() => setSelectedEntryId(entry.id)}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* 正文预览（右，概念稿 .kdoc 语法）：选中条目的全文与既有能力；深链高亮走 kb-preview--flash */}
+        <div className={`kb-preview ${highlightId != null && selectedEntry?.id === highlightId ? 'kb-preview--flash' : ''}`}>
+          {selectedEntry ? (
+            <KbDocPreview
+              entry={selectedEntry}
+              chain={chainMap.get(knowledgeChainKey(selectedEntry)) ?? [selectedEntry]}
+              onNewVersion={setVersionBase}
+              onShowEvidence={setEvidenceEntry}
+            />
           ) : (
-            <div className="kb-card-grid">
-              {gridEntries.map(entry => (
-                <KnowledgeCard
-                  key={entry.id}
-                  entry={entry}
-                  highlighted={highlightId === entry.id}
-                  chain={chainMap.get(knowledgeChainKey(entry)) ?? [entry]}
-                  onNewVersion={setVersionBase}
-                  onShowEvidence={setEvidenceEntry}
-                />
-              ))}
+            <div className="kb-preview__empty">
+              <BookOpen size={36} />
+              <p>{gridEntries.length === 0 && !loading ? '没有可预览的条目' : '在中间选择一条资料查看正文'}</p>
             </div>
           )}
         </div>

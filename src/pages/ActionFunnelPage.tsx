@@ -13,7 +13,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, X, Filter } from 'lucide-react'
-import FunnelCylinder from '../components/FunnelCylinder'
 import './ActionFunnelPage.scss'
 
 interface FunnelData {
@@ -44,16 +43,8 @@ const DAY_OPTIONS = [
   { label: '全部', value: 0 }
 ] as const
 
-// 五段行为阶段：色板由 FunnelCylinder 组件内部统一取 shared/funnelPalette（页面不碰色值）
+// 五段行为阶段：转化率条行式呈现（概念稿屏 13），数据仍来自 actionFunnelGet（口径不变）
 const STAGE_NAMES = ['行动产生', '销售执行', '客户响应', '有效推进', '成交']
-// 梯形固定比例收窄（纯装饰分层，不与数值绑定——跳级/转化率>100% 不改变形状；修复版规格）
-const STAGE_WIDTHS = [100, 76, 56, 40, 28] as const
-
-/** 推进/成交段与销售漏斗的映射关系（tooltip 弱化，非常驻文字） */
-const STAGE_MAPPINGS: Partial<Record<string, string>> = {
-  progressed: '有效推进 = 比价→决策→成交 的阶段变更（customer_profile.stage 变更）',
-  won: '成交 = 销售漏斗「成交」档（同一 customer_profile.stage 口径）'
-}
 
 /** 下钻弹层内容（统一结构：说明行 + 可选事件明细 + 可选任务样本 + 口径注）；value 兼容 number（事件计数直传） */
 interface DrillContent {
@@ -125,8 +116,7 @@ export default function ActionFunnelPage() {
 
   useEffect(() => { void fetch(days) }, [days, fetch])
 
-  // 立体圆柱漏斗数据（A048 风格，2026-09-03 拍板；宽度固定比例纯装饰，不与数值绑定）
-  // 每段 = 段名 + 人数（大字）；段间标注 = 相邻转化率（第 1 段为源头不显示；N/A = 分母 0 不硬算）
+  // 五级行式漏斗（概念稿屏 13 .fn）：行宽条 + 级间转化率；口径/下钻与拍板契约一致
   const funnelStages = useMemo(() => {
     if (!data) return null
     return [
@@ -138,14 +128,6 @@ export default function ActionFunnelPage() {
     ] as Array<{ key: DrillKey; name: string; count: number; rate: number | null }>
   }, [data])
   const hasAny = funnelStages?.some((s) => s.count > 0) ?? false
-  const cylinderStages = useMemo(() =>
-    funnelStages?.map((s, i) => ({
-      key: s.key,
-      name: s.name,
-      countText: String(s.count),
-      gapText: i === 0 ? null : (s.rate === null ? 'N/A' : `转化 ${(s.rate * 100).toFixed(1)}%`),
-      hint: STAGE_MAPPINGS[s.key]
-    })), [funnelStages])
 
   // 下钻说明文案（数字可解释，不裸给数字；执行/响应有事件明细，推进/成交只有口径说明）
   const drillContent = useMemo(() => {
@@ -217,25 +199,29 @@ export default function ActionFunnelPage() {
 
   return (
     <div className="af-page">
-      {/* 页眉（概念稿 .shead：左小标/标题/口径说明，右时间窗与刷新）——标题语义不变，
-          说明沿用页内原有口径句，不新增承诺 */}
+      {/* 页眉（概念稿 .shead：左小标/标题/口径说明，右时间窗与刷新）——hero 用窗口内既有计数拼句
+          （行动/执行/响应均为窗口口径；成交数是「当前 stage」，不进 hero，避免跨口径混读） */}
       <header className="shead af-header">
         <div className="af-header__lead">
           <p className="eyebrow">报表 · 行动漏斗</p>
-          <h1 className="hero af-header__title">行动漏斗</h1>
+          <h1 className="hero af-header__title">
+            {data
+              ? `${days === 0 ? '全部' : `近${days}天`} ${data.stages.created} 个行动，${data.stages.executed} 已执行、${data.stages.responded} 已响应`
+              : '行动漏斗'}
+          </h1>
           <p className="sub af-header__sub">AI 推荐 → 销售执行 → 客户响应 → 商机推进（Task-level，P0-4）</p>
         </div>
         <div className="shead__actions af-header__actions">
-          <div className="af-days">
+          <div className="chipbar" role="group" aria-label="统计时间窗">
             {DAY_OPTIONS.map((o) => (
               <button
                 key={o.value}
-                className={`af-days__btn${days === o.value ? ' af-days__btn--active' : ''}`}
+                className={`chip${days === o.value ? ' is-on' : ''}`}
                 onClick={() => setDays(o.value)}
               >{o.label}</button>
             ))}
           </div>
-          <button className="af-btn" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
+          <button className="btn btn--quiet" onClick={() => void fetch(days)} disabled={loading}><RefreshCw size={14} /> 刷新</button>
         </div>
       </header>
       {error && <div className="af-error">{error}</div>}
@@ -254,18 +240,31 @@ export default function ActionFunnelPage() {
             <KpiCard label="曝光" value="N/A" note="当前未埋点——不为好看硬算曝光率" />
           </div>
 
-          {/* 五段漏斗（A048 立体圆柱，共用组件 FunnelCylinder；不含曝光段——无数字不入图） */}
-          <div className="af-chart">
-            {cylinderStages && hasAny ? (
-              <FunnelCylinder
-                stages={cylinderStages}
-                widths={STAGE_WIDTHS}
-                onStageClick={(k) => setDrill(k as DrillKey)}
-              />
-            ) : (
-              <div className="af-empty">暂无行动数据</div>
-            )}
-          </div>
+          {/* 五级转化率条（概念稿屏 13 .fn 语法：行式漏斗，条长按占首级比例，数字等宽、
+              级间转化率标在行右）——版式替代 A048 立体圆柱（用户当前指令：对齐概念稿屏 13），
+              数据与口径不变，行点击仍开既有下钻弹层（拍板契约 ③「点击可解释」保留）。
+              不含曝光段——未埋点无数字不入图（KPI 行已诚实 N/A） */}
+          {funnelStages && hasAny ? (
+            <div className="af-fn">
+              {funnelStages.map((s, i) => {
+                const top = funnelStages[0]?.count || 0
+                const pct = top > 0 ? (s.count / top) * 100 : 0
+                return (
+                  <button key={s.key} type="button" className="af-fn__row" onClick={() => setDrill(s.key)} title={`查看「${s.name}」下钻`}>
+                    <span className="af-fn__s">{s.name}</span>
+                    <span className="af-fn__track"><i style={{ width: `${pct.toFixed(1)}%` }} /></span>
+                    <span className="af-fn__v">{s.count}</span>
+                    <span className="af-fn__r">
+                      {i === 0 ? '起点' : s.rate === null ? 'N/A' : `${(s.rate * 100).toFixed(1)}%`}
+                      <small>{i === 0 ? '行动产生' : '较上一级'}</small>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="af-empty">暂无行动数据</div>
+          )}
 
           <p className="af-footnote">
             口径：每个任务布尔 0/1（非事件条数）；分母为 0 显示 N/A（不误读 0%）；执行/响应率点击可下钻到事件明细。

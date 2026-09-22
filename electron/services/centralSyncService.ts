@@ -25,9 +25,11 @@ import { findForbiddenCentralField, isRefOwnedByDevice, parseScopedRef, scopedRe
 import { validateCentralEntityId, validateDownCommand } from '../../shared/centralDownCommand'
 import { maskContact as maskLeadContact } from './crmLeadImportCore'
 import { ConfigService } from './config'
+import { serviceApplyCentralBaseUrlForClaim } from './secretConfigIpc'
 import { crmDbService, type CrmRow } from './crmDbService'
 import { healLegacyDownPayload } from './crmDownPayloadCompat'
 import { getTerminalId, applyDownEventDirect, maskAuditText, type DeliveryRole, type SyncEventFile } from './lanSyncService'
+import { applyDupGroupEvent } from './crmDupGroupService'
 import { recordSupervisorNotificationTx } from './crmNotifyService'
 import { CentralSyncClient, CentralSyncHttpError, type CentralPrincipal } from './centralSyncClient'
 import { LOCAL_PROJECTIONS, projectionByKey, type ProjectionDraft, type ProjectionWatermark } from './centralProjection'
@@ -231,7 +233,8 @@ export function resolveDirectoryEmployee(
  *    上线内容由 centralProjection 的同一构造器重建（与增量扫描共用一份字段白名单，
  *    因此这里产出的 idempotencyKey 与扫描完全一致，中央按 key 去重不会重复入库）；
  *  - command：本地分配动作必须走中央指令链，**不得**伪装成 direction=up 的上行投影
- *    （/sync/push 只收上行投影，指令走 /sync/commands，服务端按 command.issue 授权）。
+ *    （/sync/push 只收上行投影，指令走 /sync/commands，服务端按指令域细分能力位授权：
+ *    command.assign / command.transfer / command.permission / command.notify）。
  */
 type OutboxRoute =
   | { kind: 'projection'; projectionKey: string; refOf: (payload: Record<string, unknown>) => string | null }
@@ -939,6 +942,16 @@ async function pullAndApply(client: CentralSyncClient): Promise<number> {
   let nextCursor = cursor
   let applied = 0
   for (const event of result.events) {
+    // 撞客一期：重复组 = 中央自产下行投影（DOWN_PROJECTION_ENTITY_TYPES 白名单），**不是指令**——
+    // 不进 toLocalEvent / applyDownEventDirect / 下行业务校验器，落地 crmDb.dup_group 供界面徽标。
+    if (event.entityType === 'duplicate_group') {
+      // P1c：信封 aggregateVersion 传入裁决——同 member_count 内容变化的新事件必须落地
+      const ok = applyDupGroupEvent(event.payload, event.aggregateVersion)
+      acknowledgements.push({ centralSeq: event.centralSeq, eventId: event.eventId,
+        outcome: ok ? 'applied' : 'invalid', detail: ok ? '重复组已落地' : '重复组载荷校验失败' })
+      nextCursor = event.centralSeq
+      continue
+    }
     const local = toLocalEvent(event)
     if (!local) {
       // 不合法 / 本机不认识的事件类型：**不是**可重试状态。重试不会改变结果，直接回终态 invalid。
@@ -975,10 +988,13 @@ async function pullAndApply(client: CentralSyncClient): Promise<number> {
 // ─── 绑定 / 解绑 ───────────────────────────────────────────────────────────────
 
 export async function claimCentralBinding(baseUrl: string, inviteCode: string, deviceName = hostname()): Promise<CentralPrincipal> {
-  const client = new CentralSyncClient({ baseUrl })
-  const result = await client.claim(inviteCode, deviceName)
   const cfg = ConfigService.getInstance()
-  cfg.set('centralSyncBaseUrl', baseUrl.trim().replace(/\/$/, ''))
+  // P0：baseUrl 变化时先原子清除旧设备令牌与绑定状态——旧令牌永不发往新 origin；
+  // 随后 claim 失败也只留下「新地址 + 无凭据」的安全态，要求重新绑定。
+  const baseResult = serviceApplyCentralBaseUrlForClaim(cfg, baseUrl)
+  const client = new CentralSyncClient({ baseUrl: baseResult.url })
+  const result = await client.claim(inviteCode, deviceName)
+  cfg.set('centralSyncBaseUrl', baseResult.url)
   cfg.set('centralSyncDeviceToken', result.deviceToken)
   cfg.set('centralSyncWorkspaceId', result.principal.workspaceId)
   cfg.set('centralSyncEmployeeId', result.principal.employeeId)

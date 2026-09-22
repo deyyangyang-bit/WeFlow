@@ -63,7 +63,7 @@
 | `crm:customers` | — | `account[]` + `profile_stage` / `profile_display_name`（salesDb 联查） | R。副作用：首次调用回填「微信号格式名 → 微信备注」（幂等，WCDB 未连则重试） |
 | `crm:customer:profile` | `sessionId: string` | `{ success, data: { profile, aiProfile, todos, intentHistory, insights, account, contracts, credited, currentView, activities } }` | R。sessionId 空 → `{ success:false, error }` |
 | `crm:customer:deepAnalysis` | `sessionId, displayName: string` | AI 七板块分析报告 | N（现场调 LLM，贵） |
-| `crm:customer:delete` | `id: number` | `boolean` | N。级联删 + 删前备份 `crm-backups/` |
+| `crm:customer:delete` | `id: number` | `{ ok, removed? }` | N。**单事务完整级联**（合同链复用既有合同删除语义 + 商机（事件先于商机删）/crm_risk/payment_promise/quote_signal/contact/shipping_info/alias_map/账户级 logistics/账户级 allocation），`payment_record` 原始到款事实按宪法 §3 保留，customer/customer_identity/lead（独立事实源）不误删（lead 仅解除 account_id 挂接）；任一步失败整体回滚；删前备份 `crm-backups/`；`removed` = 级联删除行数（子资源及其 activity_log 行，**不含 account 行自身**） |
 | `crm:account:ensure` | `name: string` | account（不存在则建） | U（按名 ensure） |
 | `crm:accounts:bySessions` | `sessionIds: string[]` | 会话 → account 映射 | R |
 | `crm:enrich:manualSet` | `accountId: number, field: string, value: string` | `boolean` | N。手动编辑并**锁定字段**（AI 不再覆盖，enrich_meta.locked） |
@@ -106,6 +106,11 @@
 | `crm:lead:slaComplete` | `taskId: number` | 完成（卡 done + lead→CONTACTED + 流水） | S |
 | `crm:lead:slaSkip` | `taskId: number` | 跳过 | S |
 | `crm:lead:deadReasons` | — | `DEFAULT_DEAD_REASONS` | R |
+| `crm:lead:dupCheck` | `{ phone?, wechat? }` | `{ duplicate, detail }`（kind=lead/customer/conflict + 当前归属 + assignment 历史 1:N） | R。输入即查只读无审计；口径同 importLeads 库内查重（2026-09-19） |
+| `crm:lead:create` | `{ source, phone?, wechat?, wxNickname?, qrPath?, note? }` | `{ ok, data.leadId }` / `{ ok:false, code:'E101'\|'E201', message, duplicate? }` | U。单条录入（宪法 §1.4 通道增补）：命中硬拒收 E201（三选一面板导航，全部不建新线索）；手机号必带 wx_nickname（2026-09-19 拍板）；入池 deadline=2100 哨兵 |
+| `crm:lead:qrSave` | `fileName: string, srcPath: string` | `{ ok, path? }` | U。二维码复制进 userData/lead-qr/，存图不解析（宪法 §3 lead.qr_path） |
+| `crm:lead:historyImport` | `fileName: string, rows: Array<{ contactType, contactValue, sales, assignedAt, endState?, source? }>` | `{ total, leadsCreated, leadsReused, assignmentsCreated, recycled, skipped[] }` | U。历史分配回填（宪法 §3 assignment 第 4 写者）：**sla1_deadline 强制 2100 哨兵**；幂等（已归属同销售/回收行已存在跳过） |
+| `crm:dupGroup:list` | — | `{ groupCount, leadMatches, customerMatches }`（命中键 → `{ mask, others[] }`，others = 对方归属人姓名） | R。撞客一期：中央下行 `duplicate_group` 投影（下行投影白名单）落 `crmDb.dup_group` 后的徽标匹配；**只回对方归属人姓名，不回对方任何资料** |
 
 ### 1.6 合同 / 报价 / 文档（10 通道）
 
@@ -122,7 +127,7 @@
 | `crm:contract:entryQuotation` | `data: { contract_id, items, creation_request_id }, scope` | `{ ok, id?, reason? }` | S。同合同同标识已存在报价版本则跳过创建；成功后 `persistNowStrict` 立即落盘 |
 | `crm:contract:byCreationRequest` | `requestId: string, scope` | 合同 \| null | R。标识格式非法（非 `^[a-zA-Z0-9-]{16,80}$`）直接返回 null；页面刷新后按库恢复未完成流程，**防重复的权威防线是这次查询而非本地草稿** |
 
-### 1.7 到款认领（allocation / payment，5 通道）
+### 1.7 到款认领（allocation / payment，7 通道）
 
 | 通道 | 请求参数 | 响应 | 幂等/备注 |
 |---|---|---|---|
@@ -131,6 +136,8 @@
 | `crm:payment:approve` | `id: number` | `boolean` | S |
 | `crm:payment:claim` | `id: number, patch: object` | 认领结果 | S。认领销售默认 `crm:currentSalesName` |
 | `crm:payments:byDay` | `days?: number` | 每日到款列表 | R |
+| `crm:allocation:reconcile` | `id: number` | `{ ok, reason? }` | S。财务显式核销；销售认领不会自动核销 |
+| `crm:allocation:invoiceRequirement` | `id: number, requirement: 'unknown' \| 'required' \| 'not_required' \| 'info_pending'` | `{ ok, reason? }` | S。订单/认领级开票需求，人工选择优先于客户默认偏好 |
 
 ### 1.8 物流（logistics，4 通道）
 
@@ -170,8 +177,8 @@
 | `crm:product:aiDesc` | `payload: object` | 产品描述文本 | N（LLM） |
 | `crm:product:aiExtract` | `template: string[], dataUrl: string` | 提取参数 JSON | N（LLM 视觉） |
 | `crm:alias:learn` | `alias: string, accountId: number` | `boolean` | U。别名学习 |
-| `crm:file:readImage` | `filePath: string` | data URL \| '' | R |
-| `crm:file:saveImage` | `dataUrl, fileName: string` | 落盘路径 | N |
+| `crm:file:readImage` | `filePath: string` | data URL \| '' | R。**只允许读 userData/crm-images 内的常规文件**；MIME 由 magic bytes 判定（JPEG/PNG/WebP，不信任扩展名）；拒绝（目录外/非常规文件/非图片内容/../、前缀碰撞、symlink 逃逸）一律返回 ''，不泄露目标是否存在 |
+| `crm:file:saveImage` | `dataUrl, fileName: string` | 落盘路径 \| '' | N。文件名清洗后不得为空（空回退 img.jpg），最终目标严格位于 crm-images 内（同上路径闸门） |
 | `crm:quotation:ai` | （见 §1.6） | | |
 
 ### 1.12 sales 域（47 通道，注册于 main.ts）
@@ -295,6 +302,27 @@
 | `crm:customer:mergeProposal` | `{ identityType: 'phone' \| 'wxid', identityValue: string, fromCustomerId, toCustomerId, actor: string }` | `{ proposalId }` | E204 无冲突；E301 | U：合并提案 B/C 档（AI 或人工提案）→ **审批后执行**（改挂 + ownership_history + audit_event 同事务；AI 永不执行合并） |
 | `crm:audit:query` | `{ entityType?: string, entityId?: number, actor?: string, action?: string, beginAt?, endAt?, page?, pageSize? }` | `{ rows, total, labels }` | — | R。audit_event 只读；activity_log / auto_confirm_log 封存只读同口径（宪法 §1.12）。`labels` = 行内实体显示名（key 为 `` `${entity_type}:${entity_id}` ``，仅 `lead`/`account`/`customer` 三类，供渲染层把 `lead #id` 换成人话名；解析不到则该 key 缺席，由渲染层回落原名，**不留空白**）。纯展示层附加字段，只读、无写入路径 |
 | `crm:ownership:history` | `{ entityType: string, entityId: number, page?, pageSize? }` | `{ rows, total }` | — | R。ownership_history 只读 |
+| `crm:assignment:roundRobinNext` | — | `{ next: string }` | — | R（2026-09-20）。round_robin 跨批次公平游标只读查询：返回「下一位销售姓名」（空串 = 名单第一位）。最小只读信息，**无写路径**；游标持久化在主进程内部配置键 `crmRoundRobinCursor`（不进渲染层 config 白名单），批量分配成功后按批末真实指针推进（成功驱动的逐条状态机：失败/跳过不移动销售指针）。名单增删/重排/游标指向不存在成员时由 `shared/leadRoundRobin.roundRobinStartIndex` 安全重置到第一位，脏配置不致分配失败。前端预览与后端 `assignBatchLeads` 共用该起点与 `shared/leadRoundRobin` 同一纯函数：全部成功时屏 3 预览 = 实际执行逐条一致；出现失败/跳过时预览为「假设全部成功」的理想分布，实际 assigned/perSales/skipped 如实反映真实结果 |
+
+**`crm:assignment:invalidated`（主进程 → 渲染层只读事件，非 invoke 端点；2026-09-20 增补）**：
+SLA 定时回收、LAN/中央下行 assign/transfer/recycle、历史导入、纠正迁移等**非本窗口**来源改变
+assignment 归属后，主进程广播给全部存活窗口；页面订阅后自行重拉所需数据。纪律：
+
+- **只在写事务成功提交后通知**；失败/回滚不发。事件由主进程轻量总线
+  （`assignmentInvalidationBus`，零 Electron 依赖）发往 IPC 注册层桥接 BrowserWindow。本总线
+  **只服务 Assignment 页面/UI 刷新，不参与年度复盘失效链路**（Assignment 归属类事务的年度复盘失效
+  在各自写事务内经 changed 标记声明，不得再经本总线桥接，见下文年度经营复盘一节）；
+- **最小载荷** `{ action: 'assign' \| 'claim' \| 'recycle' \| 'transfer'（合并多动作时按
+  assign,claim,recycle,transfer 固定顺序逗号连接）, leadIds: number[]（去重升序）, at: number }`，
+  **不含联系方式、聊天内容或任何客户敏感字段**；页面收到后重拉，不回传行内容；
+- **固定窗口合并（有界延迟，2026-09-20 修订）**：总线**首个**事件启动 150ms 窗口；窗口内后续
+  事件只合并 action/leadIds、**不重置计时**；窗口到期必然发出一条合并事件。持续写入（批量分配
+  逐条、连续同步轮巡）下最大通知延迟 = 首个事件起 150ms，不会像尾随 debounce（每次 clearTimeout
+  重计）那样被间隔小于窗口的连续事件无限推迟；preload `onAssignmentInvalidated` 返回清理函数，
+  组件卸载必须调用；
+- 页面自己发起的操作本就主动 fetchAll；页面收到主进程已合并的事件后再经固定窗口合并调度
+  （300ms，`src/utils/coalescedScheduler.ts`，同语义：首事件启动窗口、窗口内合并不重置、到期
+  必然刷新，最大额外延迟 300ms）吸收紧邻事件，不形成循环（fetchAll 为纯读，不产生新事件）。
 
 > 已有端点不重复建：归属回写 `owner_sales` 由专用 `crmOwnershipService` 走直连 SQL（account/opportunity/logistics
 > 三处同口径，宪法术语表），不经 `crm:entity:update`——后者对 opportunity 已限为 `shipped_qty`/`delivery_date`；
@@ -318,6 +346,217 @@
 | `crm:delivery:tasks` | — | `{ diff, warrantyNear, warrantyExpired, tradeIn }`（各为 FollowUpTask[]） | — | R：页面提醒唯一来源（读后端事实，非前端推导） |
 | `crm:delivery:suggestDate` | `oppId: number` | `{ date, source } \| null` | — | R：签收日期建议（只读 Suggestion；真实写入必须经 register 人工确认） |
 | `crm:delivery:recomputeRepeat` | — | `number`（等级变化客户数） | — | U：全量重算复购等级，等级变化写 audit_event（customer_repeat_level_change） |
+
+### 1.16 配置白名单与秘密专用端点（2026-09-20 H2/H3 收口；注册于 main.ts）
+
+> 通用 `config:get` / `config:set` 建立白名单边界（真源 = `electron/services/rendererConfigPolicy.ts`）：
+> **秘密键**（`decryptKey` / `imageAesKey` / `imageXorKey` / `wxidConfigs` / `authPassword` / `authHelloSecret` /
+> `httpApiToken` / `aiModelApiKey` / `aiInsightApiKey`（旧）/ `centralSyncDeviceToken` / `aiInsightWeiboCookie`）
+> 在读写两个方向都**一律拒绝**——它们不进白名单，只经本节专用端点读写；**主进程托管状态键**
+> （`centralSyncWorkspaceId/EmployeeId/DeviceId/Role/DisplayName/LastError/LastErrorAt`）可读不可写；
+> 未知键读写都拒绝（读返回 undefined，写抛错）。秘密读取只回 `hasValue` / `maskedValue` 状态，
+> **已保存的完整秘密永不回传渲染层**；设置页编辑语义 =「留空表示不修改 + 显式清除」，掩码串不落库。
+
+| 通道 | 请求参数 | 响应 | 幂等/备注 |
+|---|---|---|---|
+| `secret:status` | — | `{ dbKey, imageXorKey, imageAesKey, httpApiToken, aiModelApiKey, weiboCookie }`（各 `{ hasValue, masked }`）+ `wxidConfigs: Record<wxid, { hasDecryptKey, hasImageXorKey, hasImageAesKey, updatedAt }>` | R。wxidConfigs 只以状态露出，**密钥面不出主进程** |
+| `secret:setDbKey` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setImageKeys` | `{ xorKey?: number\|null, aesKey?: string\|null }` | `{ imageXorKey, imageAesKey }`（各 `{ hasValue, masked }`） | U。`undefined` = 不修改；`null/0/''` = 清除 |
+| `secret:setHttpApiToken` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setAiModelApiKey` | `value: string` | `{ hasValue, masked }` | U。`''` = 清除 |
+| `secret:setWxidConfig` | `wxid: string, patch: { decryptKey?, imageAesKey?, imageXorKey? }` | `{ hasDecryptKey, hasImageXorKey, hasImageAesKey, updatedAt }` | U。补丁语义：`undefined` = 不修改、`null/''` = 清除；主进程合并后整包加密落库 |
+| `secret:removeWxidConfig` | `wxid: string` | `{ ok, removed, undoToken? }` | U。删除该 wxid 全部配置（精确 + 归一化匹配）；撤销快照只在主进程内存（30min TTL，上限 20） |
+| `secret:undoRemoveWxidConfig` | `token: string` | `{ ok, restored }` | U。按 token 恢复主进程内存快照（密钥不经渲染层往返）；token 一次性 |
+| `account:switchTo` | `wxid: string` | `{ ok, reason? }` | U。**账号切换在主进程执行**：读该 wxid 已保存密钥 → 写全局密钥位 → 切业务库（enqueueSalesTask 串行）→ 失效 Hermes 能力；无配置拒绝；密钥不经过渲染层 |
+| `account:applySavedKey` | — | `{ hasDbPath, hasKey, myWxid, onboardingDone, appliedSavedKey }` | R。**自动连接前置判断**：wxidConfigs 中该账号的已保存密钥由主进程应用到全局密钥位，渲染层只拿非秘密状态 |
+| `secret:setTelegramToken` | `value: string` | `{ hasValue, masked }` | U（2026-09-20 P1a）。`''` = 清除；原值经 safeStorage 加密，读取只走 `secret:status.telegramToken` |
+| `secret:setWecomWebhook` | `value: string` | `{ hasValue, masked }` | U（P1a）。`''` = 清除；webhook 内含 key= 密钥，同上状态化读取 |
+| `serviceaddr:setAiModelBaseUrl` | `url: string` | `{ changed, url, credentialsCleared, apiKey }` | U（P0）。仅 http/https；生产远端强制 HTTPS（localhost/127.0.0.1/::1 开发例外，与中央客户端规则一致）；**地址变化原子清除 aiModelApiKey + 旧 aiInsightApiKey**，要求重新录入 Key；地址不变零副作用 |
+| `serviceaddr:setAiInsightBaseUrl` | `url: string` | `{ changed, url, credentialsCleared }` | U（P0）。地址变化原子清除 aiInsightApiKey |
+| `serviceaddr:setCentralSyncBaseUrl` | `url: string` | `{ changed, url, credentialsCleared }` | U（P0）。**地址变化原子清除 centralSyncDeviceToken 与全部绑定身份状态**（workspace/employee/device/role/displayName/lastError/**centralSyncEnabled**），要求重新绑定；含「baseUrl 为空但绑定字段残留」的历史脏数据场景；旧设备令牌永不发往新 origin（`centralsync:claim` 携带新 baseUrl 时同样先清旧凭据） |
+| `dbpath:setFromDialog` | `path: string` | `{ ok, path? }` / `{ ok:false, reason }` | U（P0）。路径必须在本会话经原生目录对话框批准（exportPathAuthorizer 会话授权），否则拒绝——dbPath 任意重定向口子关闭；`dbpath:autoDetect` 改为主进程检测成功后直接落库 |
+| `export:chooseRoot` | — | `{ canceled, ok?, path? }` | U（2026-09-20 P1b）。主进程弹目录对话框 → 会话授权 + **持久化授权根**（主进程托管 config 键 `exportAuthorizedRoots`，渲染层白名单外）+ 更新 exportPath 偏好；`sns:selectExportDir` 同语义 |
+| （边界声明） | — | — | 导出授权根恢复：重启后主进程从托管存储恢复并**重新验证**（存在 + 真实目录 + 非符号链接 + realpath 与批准时一致），失效根剔除并要求用户重新选择；**系统 Downloads 为内置授权根**（首次默认导出可用）；自动化导出只能落在持久授权根 / 内置根（或本会话新批准目录），未授权 outputDir 由 assertAllowed 在写入前明确拒绝；通用 config 里的 exportPath 仅是 UI 偏好展示，**不构成授权**。通用 `config:set` 对 `aiModelApiBaseUrl` / `aiInsightApiBaseUrl` / `centralSyncBaseUrl` / `dbPath` / `exportPath` 一律拒绝（rendererConfigPolicy.RESTRICTED_WRITE_CONFIG_KEYS） |
+
+> 应用锁密码/Hello 走既有 `auth:*` 通道并新增 `auth:setPasswordHash`（64hex 校验 + authEnabled 同写）与
+> `auth:setUseHello`；微博 Cookie 写入走既有 `social:saveWeiboCookie`（状态化读取经 `secret:status.weiboCookie`）。
+>
+> **导出 IPC 的用户批准路径闸门**（2026-09-20 H3 收口；真源 = `electron/services/exportPathAuthorizer.ts`）：
+> `chat:exportMyFootprint`、`groupAnalytics:exportGroupMembers`、`groupAnalytics:exportGroupMemberMessages`、
+> `export:exportSessions`、`export:exportContacts`、`sns:exportTimeline` 六个通道的输出目标必须是
+> **本次应用会话中由 Electron 原生 open/save dialog 返回并登记**的路径（`dialog:openFile` /
+> `dialog:openDirectory` / `dialog:saveFile` / `sns:selectExportDir` 在用户确认后登记；目录授权允许其内
+> 创建导出文件，文件授权只允许对应文件本身）。校验在真正写入前的主进程入口执行：`../`、路径前缀碰撞、
+> 已有符号链接、最近存在祖先 realpath 逃出授权真径一律抛错。授权保存在进程内存（24h TTL，上限 200，
+> 重启即清空），不做全局永久白名单。HTTP API（独立鉴权信任面）不套用本闸门。
+
+### 1.17 年度经营复盘（S3 · 2026-09-20；AI 分析接线 S7.2；实现 = electron/services/annualReviewService.ts + annualReviewWorker.ts + annualReviewAiCoordinator.ts + annualReviewIpcError.ts（IPC 失败码白名单/固定文案）；2026-09-22 补 `annualReview:export` 端点与两个 catch 的失败码白名单规则；2026-09-21 重编号：原误编为 §1.15，与交付售后重复）
+
+> 确定性统计报告（规格 docs/设计-年度经营复盘-规格.md §7.2）；AI 诊断与下一年度行动计划
+> （规格 §8，S7.1 纯模块/服务层 + S7.2 接线）。独立 `annualReview:*` 命名空间——**旧社交年度报告
+> 通道（`annualReport:*` / `dualReport:*`）及其页面、Worker、图片导出已于 S8（2026-09-21）随
+> 「年度报告/双人报告」产品链路一并下线，本域不存在并存的第二套报告 IPC**。preload 命名空间
+> `annualReview`。
+> 通道命名与本域其余 `域:动作` 二段式略异（三段式对齐规格草案），以本节为准。
+
+**报告结构**（`AnnualReviewReport`，完整类型见 `src/types/electron.d.ts`）：
+`{ reportSchemaVersion, year, scopeKind: 'current_year'|'historical_year'|'all_time', periodStart,
+periodEndExclusive, asOf, generatedAt, timezoneNote: 'local', dataRange, completeness, coverage,
+warnings, summary(A1–A9), funnel(B1/B2/B3/B6/B7), customers(C1–C8), monthly, communication,
+salesAssignment, sourceSummary }`。每区块的 value/state/warnings/coverage
+原样来自统计层（主进程/Worker/UI 不做第二次口径计算）；`monthly`（V2 结构化三序列：
+`contractSign` 签约金额——与 A4/A5 同一 sign_date 集合、`credited` 核销回款——与 A6 同一
+计入时间、`messageVolume` 客户消息量——**复用 D5 单一结果**；月份轴 historical=完整 12 个月、
+current=1 月至生成月、all_time=三序列数据月并集升序；轴内缺月为真实零 0；金额不做中间舍入；
+unavailable（消息序列）不伪装空数组/0）为正式区块；`communication`（D 组：D1 消息量/D2 有沟通客户/D3 主动联系率/D5
+月度趋势单序列/D7 长期未联系名单，S5 已实现）与 `salesAssignment`（E 组：E1 分项分配事实
++ sync 缺口检测/E3 有效跟进/E4 合同贡献/E5 核销贡献；E2/E6/E7 移出 V1，初始分配与移交
+**分项展示不相加**；sync 缺口 → partial + exactCoverage=false + coverageRatio=null，禁止
+覆盖率百分比）为真实区块。补全字段（规格 §7.2）：`dataRange = { from, to }` = **各指标实际采用事实时间的并集**
+（唯一来源：A 组由 stats 的 selectSummaryAdoptedFactTimes 与指标同源选择；B/C 组由各纯统计
+结果返回的 adoptedFactTimes——排除名单/总体/代表画像/事件合法性/首次事件规则均在统计层裁决；
+unavailable 指标结果未产出，其事实不进入范围）。存量类无下界（A1 早于 periodStart 的建档仍参与）；
+区间类 [periodStart, asOf)；重放类 < asOf；仅 current/all_time 参与的画像 last_contact 按
+代表画像计。WCDB 消息聚合（A3 主口径/D1/D5）为 aggregate-only，无真实事件时间可采——不进入
+dataRange、不伪造，其覆盖边界由 coverage 与文档声明。account.importedAt 仅参与导入布尔判定。
+毫秒级合理值（≥2000-01-01），非法/秒/毫秒脏值不进入；空数据 → `{from:null,to:null}`；
+validator 校验 from/to 同 null 或同为有限且 from ≤ to ≤ asOf。`completeness = { overall, blocks }`（四态聚合，优先级
+确定性：unavailable > partial > snapshot_only > complete，由主进程聚合、UI 不计算；
+未实现的 D/E/monthly 恒 unavailable，不得把 A/B/C 数字伪装为 complete）；`coverage` =
+稳定 metricKey（35 键全集：`summary.*`×10 / `funnel.*`×5 / `customers.*`×8 /
+`monthly.contractSign|credited|messageVolume` /
+`communication.volume|contacted|outboundRate|monthlyTrend|longSilent` /
+`salesAssignment.assignedFacts|effectiveFollowup|contractContribution|creditedContribution`）
+→ `Coverage` 映射（键集合固定，缺一/多一/未知键被运行时校验拒绝；B/C 组原样复用统计层
+coverage；A/D/E 组由组装层单一
+映射 source/status/reasonCodes，reasonCodes 与统计结果 warnings 一致）；`warnings` =
+全指标聚合数组 `{ code, message, metricKeys[], counts? }`（同 code 合并；metricKeys 与
+counts 键稳定排序；**count 按指标拆分、不相加**；输出与输入顺序无关）；`sourceSummary`
+= `[{ source, tables[], rows, note? }]`（真实输入事实行数与消息统计会话数，确定、无敏感
+内容）。输出可结构化克隆；**不含 sessionId/session_id、wxid 原文**（C5–C8 客户条目映射为
+`accountId` 优先、其次 `customer_profile.customer_id`，无法映射的行保留但身份字段为
+null，计数口径不变）、不含数据库路径、SQL、Token、原始聊天内容、堆栈。
+
+**时间契约**：`current_year` 区间 `[periodStart, generatedAt)`；`historical_year` asOf=periodEndExclusive、
+区间 `[periodStart, periodEndExclusive)`；`all_time`（year=0）无下界、右开 generatedAt。UI/渲染层不自行推导年份边界。
+
+| 通道 | 幂等 | 请求 → 响应 | 说明 |
+|---|---|---|---|
+| `annualReview:getAvailableYears` | R | `()` → `{ success, data?: { years: Array<{ year, coverage: { source, status:'complete', coverageFrom?, coverageTo?, rows, reasonCodes } }>, currentYear, supportsAllTime, defaultYear, generatedAt }, error?: { code, message } }` | 主进程全量扫描本地事实（account.created_at / contract.sign_date（sign_date 有效值）/ A6 核销计入时间 / intent_tag_log.created_at / opportunity.created_at，全部右开 generatedAt）推导年份；**自然年份升序排列，特殊项 year=0（历史以来）固定放在最后**；含 0=历史以来（有数据时）；2000 年前与未来年份的秒/毫秒混存脏值不生成候选；`coverage.rows` 仅陈述「该年度存在 N 条事实」，**不代表该年度各指标完整性**（完整性以 `getReport` 各区块 coverage 为准）。空库 → `years: []`、`supportsAllTime: false`。按 accountScopeId 隔离缓存（TTL 10 分钟）；加载期间发生失效（`invalidateAll`/`handleDataChanged`/账号切换）→ 旧结果不缓存不返回，收敛 `error.code='invalidated'`，新请求重新加载事实。**异常 catch**：`error.code` 只可能是 `invalidated` 或 `internal`（映射逻辑 = `electron/services/annualReviewIpcError.ts`，与 `annualReview:export` 共用同一出口）——契约码之外的任意字符串型 `e.code`、非字符串/缺失 code、读取 `code` 抛错一律收敛 `internal`；`error.message` 固定为「可用年份查询失败，请稍后重试」，不透传异常正文/堆栈/路径/SQL/Token。 |
+| `annualReview:generate` | N | `{ year: number }` → `{ success, taskId?, reused?, error?: { code, message } }` | year 只接受合法整数年份或 `0`（运行时校验，拒绝未来/小数/字符串/NaN）。**非阻塞启动**：立即返回 `taskId`（不等待完成）；同一 {accountScopeId, year} 已有运行中任务 → 合并（`reused: true`，不重复启动 Worker）；不同账号作用域独立运行。**完成与失败经 `annualReview:progress` 终态事件（done=true, phase=completed/failed）推送**，渲染层收到 completed 后再 getReport；取消用 `cancel({taskId})`。任务失败只体现在 progress 终态事件（error.code ∈ worker_error/worker_exit/invalid_worker_result/fact_load_failed/cancelled/invalidated/internal），不在本通道返回。启动参数非法 → `{ success: false, error: { code: invalid_year/future_year, message } }`。generate 强制重算并覆盖同键缓存。**schemaVersion V2**：monthly 升级为结构化区块后 `reportSchemaVersion=2`，缓存键随版本隔离，V1 报告不可命中。 |
+| `annualReview:getReport` | R | `{ year: number }` → `{ success, cache: 'hit'\|'miss'\|'stale', report?, taskId?, error?: { code, message } }` | 只读当前账号作用域内存缓存；`hit` 携带 report（TTL 10 分钟内）与**产生该报告的 `taskId`**（报告身份，供 `annualReview:aiAnalysis` 使用）；`miss` 无缓存；`stale` 有缓存但已过期（**明确区分，绝不回退其他账号/其他作用域缓存**）。历史年度同样受 TTL 约束——迟到同步/补录/迁移/删除都可能改变结果。 |
+| `annualReview:cancel` | N | `{ taskId: string }` → `{ success, error?: { code, message } }` | 终止运行中任务，**对 loading 与 computing 都有效**：loading 阶段取消后不再启动 Worker；computing 阶段真实 terminate Worker。任务收敛为 failed，`error.code='cancelled'`，done=true；被取消任务不写报告/年份缓存。已完成/已失败任务幂等成功（终态不可变，重复 cancel 不抛错、不产生冲突终态）；未知 taskId → `{ success: false, error: { code:'task_not_found', message } }`（终态快照被有界清理淘汰的旧 taskId 同样按未找到返回，见 `getTaskStatus` 保留策略）；非法载荷 → `invalid_task_id`。 |
+| `annualReview:getTaskStatus` | R | `{ taskId: string }` → `{ success: true, found: true, task: { taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } } }` \| `{ success: true, found: false }` \| `{ success: false, error: { code, message } }` | **只读任务状态查询 = 任务状态的权威来源**（`getReport` 只是报告缓存，绝不用它代替任务状态）。按 taskId 在服务内部任务记录中查找（不按 year、不按缓存、不猜终态）；running（loading/computing）→ `done:false`，completed/failed → `done:true`（cancelled 仍是 failed + `error.code='cancelled'`，渲染层映射为 cancelled）；未找到 → `found:false`；非法/空/超长 taskId → `invalid_task_id`。**账号隔离 fail closed**：记录属于其他账号作用域时按 `found:false` 返回（不泄漏任务存在性）。返回快照副本（内部可变引用不外泄），不含报告正文/scopeId/wxid/数据库路径/Token/SQL/堆栈；查询不创建、取消、重启或修改任务。用途：渲染层在「generate 响应前终态事件因暂存容量被淘汰」时按 taskId 对账恢复真实终态。终态快照按 {accountScopeId, year} 保留（同键新任务覆盖旧任务），**全局**（跨账号作用域）非运行中快照最多保留 64 条——当前账号不豁免（否则同一账号连续生成 65 个以上年份即可突破上限）；超限时按 `updatedAt` 升序淘汰最旧快照（同值以 taskId 字典序稳定决胜），本次刚收敛的任务在本次清理中保留；运行中任务永不淘汰。被淘汰的旧 taskId 查询返回 `found:false`（`cancel` 亦返回 `task_not_found`），渲染层按可恢复错误处理。 |
+| `annualReview:export` | N | `{ year: number, format: 'markdown'\|'csv' }` → `{ success: true, dir, files: [path] }` \| `{ success: false, error: { code, message } }` | 导出当前账号作用域内**已生成**的报告（本通道不触发生成）：仅 `getReport` 命中 `cache='hit'` 时导出，`miss`/`stale` 一律 `report_not_found`（不伪造报告、不回退其他作用域缓存）。每次导出弹原生目录对话框 → 选中目录**即席授权**（`exportPathAuthorizer.grant(dir,'dir')`，进程内存、不持久化、不写配置）→ `exportTextFile` 独占创建（`wx` + 0600，**绝不覆盖**已存在文件/符号链接，失败清理本次半文件）。文件名 `年度经营复盘-{year\|历史以来}-{YYYY-MM-DD}.{md\|csv}`（日期 = `new Date(report.generatedAt).toISOString().slice(0, 10)`，UTC 日期）；内容由 `buildAnnualReviewMarkdown` / `buildAnnualReviewCsv` 渲染（CSV 带 UTF-8 BOM + CRLF，公式注入转义；Markdown 转义 HTML 字段），单文件上限 10 MB（超限在触碰文件系统前拒绝）。**失败码（正常结果路径）**：`format` 非 `markdown`/`csv` → `invalid_format`；`validateAnnualReviewYearInput` 拒绝 → `invalid_year` / `future_year`；无命中报告 → `report_not_found`；用户在对话框取消 → `cancelled`；导出执行器 `SafeTextFileResult` 封闭联合 → `invalid_leaf_name` / `unauthorized` / `too_large` / `exists` / `write_failed`（message 为执行器固定中文文案，不含路径/SQL/Token）。**异常 catch**（映射逻辑 = `electron/services/annualReviewIpcError.ts`，与 `getAvailableYears` 共用同一出口）：`error.code` 只可能是上述契约码之一或 `internal`——**任意字符串型 `e.code` 不再被原样返回**（契约码外的字符串、非字符串/缺失 code、读取 `code` 抛错一律收敛 `internal`）；`error.message` 固定为「导出失败，请稍后重试」，不透传异常正文/堆栈/路径/SQL/Token。成功响应只返回目录与落盘文件路径，不返回内容正文。 |
+| `annualReview:aiAnalysis` | N | `{ taskId: string, force?: boolean }` → `{ success: true, analysis: { executiveSummary, diagnoses[], actions[], risks[] }, model, promptVersion, generatedAt, cached: boolean }` \| `{ success: false, error: { code, message } }` | **年度经营复盘 AI 分析（S7.2）。载荷是严格对象，只允许 `{ taskId, force? }`**——多出任何字段（例如报告正文、prompt、模型参数）或非对象载荷一律 `invalid_request`；`force` 只接受 boolean（`'yes'`/`1`/`null`/`{}` 都不做 truthy 转换，直接拒绝）。渲染层不上传报告内容，因此伪造报告/改口径/注入文本都没有入口。主进程按 taskId 在**当前账号作用域**内定位「已完成、且报告仍有效」的结果（`AnnualReviewService.getTaskReport`：任务存在 → 属于当前作用域 → `completed` → 报告未过 TTL 且由该任务产出），再调 `generateAnnualReviewAiAnalysis`（S7.1 唯一模型出口；不复制第二套 prompt/校验/客户端，日调用上限闸门与用量账本自动生效，`purpose='annual_review_ai'`、`promptVersion='annual_review_ai_v1'`）。**`force` 语义**：默认 `false`（首次生成、失败重试、页面重新打开均允许命中结果缓存）；`true` 用于页面成功态「重新生成 AI 诊断」——跳过「结果缓存命中」这一步并**真实调用模型**，成功后覆盖同键缓存；失败时**保留旧缓存条目**。force 不绕过任何校验：报告定位/账号归属、同键 single-flight（在途 force 同样返回 `analysis_in_progress`）、日调用额度、输入与输出契约、取消与失效防护全部照旧。**失败码**（全部保留，逐字）：`invalid_report` / `unsupported_report_contract` / `not_configured` / `budget_blocked` / `call_failed`（含超时与取消，文案区分）/ `empty_output` / `invalid_json` / `invalid_shape` / `numeric_claim`；另有定位/并发/失效层稳定码：`invalid_task_id` / `invalid_request` / `task_not_found`（不存在、被有界清理淘汰，或属于其他账号作用域——按不存在返回，不泄漏存在性）/ `task_not_completed`（loading/computing/failed，含 cancelled/invalidated）/ `report_not_available`（报告过期或被新报告取代）/ `analysis_in_progress`（同一 {作用域, taskId, promptVersion} 已有分析在跑，不重复计费）/ `invalidated`（分析期间账号或业务库变更，结果作废）/ `internal`。失败文案全部是编译期常量（只做分类判断，不透传异常正文、模型原文、URL、路径、Token）。**取消是权威终态**：`annualReview:aiAnalysisCancel({ taskId })` 中止该 taskId 的在途调用（HTTP 层真实 abort），无在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`（调用方据此不把界面切到「已取消」）；请求来源窗口销毁 → 主进程自动中止在途调用。**不假设底层模型遵守 AbortSignal**：`await` 返回后与写缓存前重新复核——期间发生数据/账号失效优先返回 `invalidated`，用户取消或窗口销毁则一律按取消收敛（`call_failed` + 取消固定文案），**绝不返回成功、绝不写缓存**。**结果缓存**：仅主进程内存，键 = `accountScopeId + taskId + promptVersion`，TTL 与报告缓存一致（10 分钟）；不跨账号、不跨报告身份、不跨 promptVersion 复用；任何已接入的确定性数据写入（见下）都会与报告缓存**同时**失效。**不持久化**（未新建数据库表；prompt、模型原始输出、客户明细与密钥一律不入缓存）。**AI 失败不影响确定性报告**：该接口只读报告，不写报告缓存、不改任务状态、不触发重新统计。 |
+| `annualReview:aiAnalysisCancel` | N | `{ taskId: string }` → `{ success: boolean, error?: { code, message } }` | 取消在途 AI 分析（与 `annualReview:aiAnalysis` 同一命名空间，载荷同样要求严格对象）。只中止该 taskId **正在运行**的调用；没有在途调用 → `{ success: false, error: { code: 'analysis_not_found' } }`；非法 taskId → `invalid_task_id`；非对象/多字段载荷 → `invalid_request`。**取消是权威终态**：被取消的调用即使底层模型忽略 AbortSignal 并正常返回，也不会返回成功、不会写 AI 结果缓存（`cacheSize` 不增加）；取消是否成功不影响确定性报告、任务状态与导出。 |
+| `annualReview:progress`（广播） | — | 主进程 → 渲染层：`{ taskId, year, phase: 'loading'\|'computing'\|'completed'\|'failed', progress: 0–100, statusText?, done, error?: { code, message } }` | 单调不回退；completed/failed 为终态（done=true）且进度锁定；taskId 标记使旧任务迟到消息不覆盖新任务。preload `annualReview.onProgress(cb)` 返回清理函数（`removeListener` 只移除本次订阅的 wrapper——多订阅者独立清理，互不影响）。 |
+
+**缓存与失效**：键 `{accountScopeId, year, reportSchemaVersion}`；`accountScopeId` = 主进程内部
+**完整复合键**（`JSON.stringify([规范化 wxid, 实际 salesDb 库身份, 实际 crmDb 库身份])`，长度
+自描述、字符转义无歧义，任意输入组合两两可区分——不使用短哈希折叠，无碰撞面）。实际业务库
+身份 = `salesDbService.currentDbPath()` / `crmDbService.currentDbPath()`（当前真正打开的库文件，
+未打开时回退按 wxid 推导的规范文件名）。该复合键仅作主进程内部 Map 键：**不写日志、不返回
+渲染层、不进 Worker 载荷**；路径只参与内部键派生。仅主进程内存缓存，TTL 10 分钟，不持久化、
+不写 config。**报告缓存条目同时记录产出它的 `taskId`（报告身份）**：`getReport` 命中时把它
+一并返回，`annualReview:aiAnalysis` 据此复核「这份报告确实是该任务产出的」（同 year 被新任务
+覆盖后旧 taskId 不再命中）。
+
+**失效总线（annualReviewInvalidation，零 Electron 依赖的纯模块）**：确定性报告缓存与 AI 结果
+缓存**订阅同一条失效事实**，主进程只有**一个**订阅点（`installAnnualReviewInvalidation`，见
+`electron/main.ts`），不在每个 handler 里并列复制两行失效调用。
+
+**失效范围 = 显式白名单（默认不影响年度复盘）**。只有年报复盘**真实读取**的数据源才触发失效；
+其余写入（含高频后台写）不触发。白名单是唯一事实源（`ANNUAL_REVIEW_*_SOURCE_TABLES` /
+`ANNUAL_REVIEW_AUDIT_ACTIONS`），声明方式为**类型化调用点声明**（`create/update` 的 entity 参数、
+事务内 `tx.markAnnualReviewChanged(reason)` / `tx.markAnnualReviewChangedIfWrote(reason)` 标记、
+`announceAnnualReview*Write` 辅助函数），**不做 SQL 字符串匹配**：
+
+| 数据源 | 触发方式 | 说明 |
+|---|---|---|
+| crmDb `account` / `contract` / `allocation` / `contract_status_history` / `assignment` / `lead` / `opportunity` / `opportunity_event` | `create()` / `update()` 按 entity 自动声明；原始 SQL 事务在事务内显式标记 `markAnnualReviewChanged` / `markAnnualReviewChangedIfWrote` | A/C 组客户与合同指标、B1/B2 漏斗、B7 归因、E 组分配事实 |
+| crmDb `audit_event` 仅 `lead_assign` / `lead_transfer` / `sync_apply` | `auditAppend()` / `create('audit_event')` 按 **action** 条件声明 | E1 分配事实与 sync 缺口检测 |
+| salesDb `customer_profile` / `intent_tag_log` | `customerUpsert` / `setCustomerProfileCustomerId` / `updateStageChangeTime` / `intentCreate` 显式声明 | B1/B3 阶段分布与流转 |
+| Assignment / CRM / LAN·Central sync 归属变化写路径 | 在**各自真实写事务内**显式标记对应 reason（如 `crm:assignment`、`crm:lead`、`crm:audit_event:sync_apply`）；conflict / nolead / 脏类型分支零标记 | `assignmentInvalidationBus` 只负责 Assignment UI 刷新，**不再桥接**年度复盘失效总线 |
+| WCDB 切号 / 重连 | `wcdbService.open()` 返回 true 的**稳定成功点** | 只覆盖「连接建立成功」 |
+| 手动排除名单 / 内部人员名单 | `main.ts` 的 `config:set` 写成功后**立即**上报（`config_exclusions`） | 无合并窗口 |
+| 账号切换 / salesDb·crmDb reopen / 归档逃生舱 | 三处**立即**上报（`account_switch`） | 无合并窗口，同时终止运行中任务 |
+
+**明确不触发失效的写入**（写入频繁但与年报复盘无关）：`scan_state`、`processed_msg`、
+`migration_report`、`migration_dismissal`、`activity_log`、`auto_confirm_log`、无关 `audit_event`
+action、`knowledge_base`、`report_snapshot`、`opportunity_eval_case`、`alert_eval_case`、
+`follow_up_task`、`outbox_event`、`notify_inbox`、`dup_group`、`ownership_history`、
+`customer` / `customer_identity`、`payment_record` / `payment_promise` / `logistics` / `invoice`、
+`quotation` 版本链等。**通知时机**：只在内存写成功后（事务内存 COMMIT 返回后 / 单语句执行未抛错 /
+连接建立成功）；失败、ROLLBACK 与纯读路径一律不通知（读走 `all()/get()`，不经过声明点）。
+**持久化语义**：crmDb/salesDb 的文件落盘是**延迟、尽力而为**的（`persist()` 只排约 500ms 的防抖
+落盘任务，`atomicWriteFileSync` 的错误在定时回调中捕获并记录、不向写入路径抛出），失效通知
+**不等待磁盘落盘成功**——进程在延迟落盘前崩溃或落盘失败时，可能出现「内存事实已变更并已通知，
+但重启后磁盘事实未保存」的窗口。
+
+**事务 changed 标记（`runTx` 管理的多语句 CRM 事务内部唯一的年度复盘失效声明方式；已删除静态
+`affectsAnnualReview` 参数）**：事务成功 ≠ 数据改变，因此 `runTx` 回调拿到的是带标记能力的事务对象：
+
+```ts
+crmDbService.runTx((tx) => {
+  tx.run("UPDATE assignment SET status='claimed' WHERE id = ? AND status='assigned'", [id])
+  tx.markAnnualReviewChangedIfWrote('crm:assignment')  // 仅当上一条写语句影响 ≥1 行才标记（SELECT changes()）
+  // 或：tx.markAnnualReviewChanged('crm:contract')     // 调用点已确认确实改写了白名单数据源
+})
+```
+
+- **默认无标记 = 不影响年度复盘**：空事务、条件 UPDATE 命中 0 行、只写 `scan_state` / `outbox_event` /
+  `migration_report` / `migration_dismissal` 的事务一律不失效；
+- 标记只在**内存事务成功 COMMIT 后**统一派发；ROLLBACK 与事务回调抛错不派发。失效通知**不等待
+  磁盘落盘成功**（`persist()` 的延迟落盘语义见上「通知时机」）；
+- **一次事务 = 一次批量上报**：同一事务内无论标记多少个不同 reason，都只调用一次批量发布函数
+  `announceAnnualReviewDataChangedMany`；reasons 在该调用内**去重并稳定排序**。每一次调用代表一次
+  已提交变更，对当前窗口的 `count` **只贡献 1**（不按 reason 数量累加）——目标是防止「同一事务
+  多个 reason 被误算成多个提交」，而非保证所有事件的 `count` 都不超过 1：窗口空闲时该提交立即派发一条
+  `count=1` 的 leading-edge 事件；已有 150ms 窗口打开时该提交并入窗口、不立即单独派发，窗口结束时
+  的 coalesced 事件 `count` 为窗口内累计的独立提交次数（可大于 1）。**禁止**按 reason 逐条派发，
+  也**不依赖** 150ms 窗口碰巧合并同一次提交；
+- reason 运行时按白名单校验（越界抛错并回滚），不做任何 SQL 字符串/表名匹配；
+- `markAnnualReviewChangedIfWrote` 读的是「最近一条 INSERT/UPDATE/DELETE 的影响行数」，必须**紧跟在目标
+  写语句之后**（读语句不影响该计数）；
+- 单语句路径（`create()` / `update()` / `auditAppend()` / `opportunityEventAdd()`）同样按**实际影响行数**
+  声明：0 行命中的条件 UPDATE 与重复写入不触发失效；
+- **入口范围**：changed 标记只约束 `runTx` 事务内部的声明；非 `runTx` 写入与上下文变化继续经各自的
+  类型化入口上报——单语句辅助入口、salesDb 写入辅助入口（`announceAnnualReviewSalesWrite`）、WCDB
+  成功重连/切号（`wcdb_connected`）、账号切换与业务库 reopen（`account_switch`）、手动排除名单 /
+  内部人员名单变化（`config_exclusions`，走 `announceAnnualReviewDataChangedNow` 立即失效）。
+
+**窗口语义 = leading-edge（首条立即）**：窗口空闲时的**第一条**相关事件**立即派发**——报告缓存与
+AI 缓存马上失效、运行中的报告生成任务与在途 AI 分析马上进入失效/取消路径，**不存在「首次失效
+还要等 150 ms」**，也不依赖测试专用 flush。其后 150 ms 内的重复事件被**抑制**（去重计数），窗口
+结束时若确有被抑制的事件则**补一次**合并派发（每窗口至多一次，覆盖「窗口内又有写入、而期间缓存
+可能已重建」的窄窗口，因此窗口内的第二批写入最多延迟一个窗口，≤150 ms）。窗口**从首条事件起算
+固定长度、不随新事件顺延**，持续写入不会造成无限延迟。关键失效（账号切换 / 名单变化）走
+`announceAnnualReviewDataChangedNow`：它**先吸收（丢弃并清掉计时器）此前打开的窗口，再立即派发**——Now 自身已对两类缓存
+做过全量失效，因此旧窗口不必也不能在 150 ms 后再补派发一次（否则会取消账号切换后刚启动的新任务，即「幽灵失效」）；
+丢弃窗口不丢真实变化（窗口内被抑制的写入所影响的缓存已被本次全量失效覆盖）。Now 之后的新普通写入从空窗口重新开始，
+仍是新窗口首条、立即派发。派发只携带**原因与计数**（含
+`coalesced` 标记），不含任何业务数据。
+
+**仍未实时覆盖（如实列出，勿宣称已全覆盖）**：① 微信库（WCDB）在**连接保持期间**的增量新增/
+变更消息不触发失效——消息类指标每次生成都实时读取，但已缓存的报告不会因此立即作废，仍由
+10 分钟 TTL 兜底；② 数据库文件被外部进程直接改写（绕过本进程服务层）无法感知，同样只有 TTL
+兜底；③ 归属/合同等领域的任何**未声明**的原始 SQL 事务不会触发失效（默认不影响），新增此类写入
+时必须显式声明。**10 分钟 TTL 只是兜底**，不替代白名单内的明确成功点通知。
+
+**在途任务**：报告生成任务与 AI 分析在开始时捕获失效纪元，任一 await 完成后、Worker 启动前、
+缓存写入前复核——纪元或账号上下文已变化的旧任务收敛 `failed` + `error.code='invalidated'`，
+在途 AI 调用收敛 `invalidated` 且**既不返回也不缓存**；失效后新请求重新加载事实。**不保证
+实时一致**（合并窗口内仍可能读到旧结果，且上表未覆盖的领域只有 TTL 兜底）。
+
+**Worker 边界**：Worker（`dist-electron/annualReviewWorker.js`，vite 独立 entry）只接收可序列化
+`{ taskId, reportSchemaVersion, period, facts, sales, crm, messageStats, exclusions }`——不打开任何数据库、
+不接触路径/密钥；内部只调用 S1/S2 已验收纯统计。Worker 返回结果在主进程经
+`validateAnnualReviewReport` 运行时结构校验（schemaVersion/year/scopeKind/时间契约/区块形状/
+unavailable↔null 一致/无 NaN/可 structuredClone+JSON 序列化），**非法结果不写缓存**、任务收敛
+`failed`。Worker throw/exit/非法消息/超时进度消息一律收敛为
+`failed`（error.code ∈ worker_error/worker_exit/invalid_worker_result/fact_load_failed/cancelled/invalidated/internal），
+不留下永久 loading，错误不携带堆栈。
 
 ---
 
@@ -410,7 +649,10 @@
 | `sync.push` 上行推送 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `sync.pull` 下行拉取 | ✅ | ✅ | ✅ | ✅ | ✅（只读） |
 | `sync.ack` 回执 | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `command.issue` 下发指令 | ❌ | ✅ | ✅ | ✅ | ❌ |
+| `command.assign` 分配/回收指令（assign/recycle） | ❌ | ✅ | ✅ | ✅ | ❌ |
+| `command.transfer` 移交/主管修正指令（transfer/supervisor_correction） | ❌ | ✅ | ❌ | ✅ | ❌ |
+| `command.permission` 权限变更指令（permission_change） | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `command.notify` SLA 升级通知（sla1_escalate_supervisor） | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `invite.create` 签发邀请码 | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `device.rotate` 轮换本机令牌 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `device.revokeSelf` 自助解绑 | ✅ | ✅ | ✅ | ✅ | ❌ |
@@ -441,7 +683,7 @@
 | 8 | POST | `/api/v1/sync/push` | Bearer | `sync.push` | 上行事件批推（≤100 条/批） |
 | 9 | GET | `/api/v1/sync/pull` | Bearer | `sync.pull` | 按游标拉取本设备下行事件 |
 | 10 | POST | `/api/v1/sync/ack` | Bearer | `sync.ack` | 下行事件回执（applied/conflict/invalid/retry） |
-| 11 | POST | `/api/v1/sync/commands` | Bearer | `command.issue` | 下发中央指令（归属/移交/回收/主管修正/权限变更） |
+| 11 | POST | `/api/v1/sync/commands` | Bearer | 按 eventType 细分（§3.2 指令域） | 下发中央指令：assign/recycle→`command.assign`；transfer/supervisor_correction→`command.transfer`；permission_change→`command.permission`；sla1_escalate_supervisor→`command.notify` |
 
 #### 3 邀请码签发
 

@@ -312,11 +312,18 @@ export function buildCentralApp(options: BuildAppOptions): FastifyInstance {
     })
 
     api.post('/sync/commands', {
-      preHandler: [require_('command.issue'), requireWorkspace],
+      preHandler: [requireWorkspace],
       schema: { body: syncEventSchema }
     }, async (request, reply) => {
       const event = request.body as CentralSyncEvent
       const reject = (code: string, message: string) => reply.code(400).send(error(code, message, request.id))
+      // ⓪ 指令域授权（2026-09-19 权限矩阵拆分）：按 eventType 查 spec.capability 细分鉴权，
+      //   取代旧的一刀切 command.issue——分配员不可越权下发 supervisor_correction / permission_change。
+      //   未登记类型不在此处表态，仍由 ⑤ 的 E103 拒收。
+      const commandCapability = downCommandSpec(event.eventType)?.capability
+      if (commandCapability && !can(request.principal!.role, commandCapability)) {
+        return reply.code(403).send(error('E403', `当前角色无权下发指令类型 ${event.eventType}`, request.id))
+      }
       // ① 信封层：协议字段、禁字段（下行只拦聊天正文，见 findForbiddenDownlinkField）
       if (!isDownDirection(event)) return reject('E102', '下行指令必须 direction=down')
       const envelopeError = validateCentralSyncEvent(event)

@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { announceAnnualReviewDataChanged } from './annualReviewInvalidation'
 
 /**
  * Worker 消息接口
@@ -162,9 +163,14 @@ export class WcdbService {
    * 打开数据库
    * @param accountDir 账号目录的完整路径
    * @param hexKey 解密密钥
+   *
+   * 成功（返回 true）是「WCDB 切号 / 重连」的稳定成功点：连接切到另一个账号或重新连上后，
+   * 消息类统计（A3/D1/D5）的可见范围可能已经不同，因此在此上报年度复盘数据失效。
    */
   async open(accountDir: string, hexKey: string): Promise<boolean> {
-    return this.callWorker('open', { accountDir, hexKey })
+    const opened = (await this.callWorker('open', { accountDir, hexKey })) === true
+    if (opened) announceAnnualReviewDataChanged('wcdb_connected')
+    return opened
   }
 
   async getLastInitError(): Promise<string | null> {
@@ -481,24 +487,10 @@ export class WcdbService {
   }
 
   /**
-   * 获取年度报告统计
+   * 获取年度报告统计（命名沿用原生导出；消费者：annualReviewStats、salesReportService）
    */
   async getAnnualReportStats(sessionIds: string[], beginTimestamp: number = 0, endTimestamp: number = 0): Promise<{ success: boolean; data?: any; error?: string }> {
     return this.callWorker('getAnnualReportStats', { sessionIds, beginTimestamp, endTimestamp })
-  }
-
-  /**
-   * 获取年度报告扩展数据
-   */
-  async getAnnualReportExtras(sessionIds: string[], beginTimestamp: number, endTimestamp: number, peakDayBegin: number, peakDayEnd: number): Promise<{ success: boolean; data?: any; error?: string }> {
-    return this.callWorker('getAnnualReportExtras', { sessionIds, beginTimestamp, endTimestamp, peakDayBegin, peakDayEnd })
-  }
-
-  /**
-   * 获取双人报告统计数据
-   */
-  async getDualReportStats(sessionId: string, beginTimestamp: number, endTimestamp: number): Promise<{ success: boolean; data?: any; error?: string }> {
-    return this.callWorker('getDualReportStats', { sessionId, beginTimestamp, endTimestamp })
   }
 
   /**

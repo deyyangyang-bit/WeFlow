@@ -4,6 +4,12 @@
 > 审计日期：2026-09-12
 > 审计范围：`src/` 255 文件 / 116,104 行、`electron/` 354 文件 / 123,641 行、`shared/` 32 文件 / 2,157 行、`scripts/` 106 文件 / 23,120 行
 > 排除：`node_modules/ dist/ dist-electron/ release/ out/ .git/ weflow-web-offical/ resources/ packages/`
+>
+> **2026-09-21 补注（S8，不改写原文）**：本报告是 2026-09-12 基线的一次性审计记录，其余结论仍按当时基线理解。
+> 其中涉及旧社交年度报告链路（`/annual-report`、`/dual-report` 及 `annualReport:*`/`dualReport:*`）的判读——
+> 尤其「**是活路由，不要删**」（见「不是孤儿」表）与模板字符串入口那条方法论备注——**已随该产品链路于 S8 整体
+> 删除而失效**：该链路不再存在，其「入口隐藏但可达」的事实与本文当时的「不要删」结论均不再适用。处置见
+> `docs/设计-年度经营复盘-规格.md` §11；当前报告链路为 `/annual-review`（`annualReview:*`）。
 
 ---
 

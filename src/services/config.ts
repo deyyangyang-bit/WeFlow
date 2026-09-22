@@ -6,25 +6,21 @@ import { normalizeInsightBlacklist, type InsightBlacklistEntry } from '../../sha
 
 // 配置键名
 export const CONFIG_KEYS = {
-  DECRYPT_KEY: 'decryptKey',
-  DB_PATH: 'dbPath',
   MY_WXID: 'myWxid',
-  WXID_CONFIGS: 'wxidConfigs',
+  DB_PATH: 'dbPath',
   THEME: 'theme',
   THEME_ID: 'themeId',
+  EXPORT_PATH: 'exportPath',
   LAST_SESSION: 'lastSession',
   WINDOW_BOUNDS: 'windowBounds',
   CACHE_PATH: 'cachePath',
   LAUNCH_AT_STARTUP: 'launchAtStartup',
   SILENT_STARTUP: 'silentStartup',
 
-  EXPORT_PATH: 'exportPath',
   AGREEMENT_ACCEPTED: 'agreementAccepted',
   LOG_ENABLED: 'logEnabled',
   ONBOARDING_DONE: 'onboardingDone',
   LLM_MODEL_PATH: 'llmModelPath',
-  IMAGE_XOR_KEY: 'imageXorKey',
-  IMAGE_AES_KEY: 'imageAesKey',
   WHISPER_MODEL_NAME: 'whisperModelName',
   WHISPER_MODEL_DIR: 'whisperModelDir',
   WHISPER_DOWNLOAD_SOURCE: 'whisperDownloadSource',
@@ -60,7 +56,6 @@ export const CONFIG_KEYS = {
 
   // 安全
   AUTH_ENABLED: 'authEnabled',
-  AUTH_PASSWORD: 'authPassword',
   AUTH_USE_HELLO: 'authUseHello',
 
   // 更新
@@ -73,7 +68,6 @@ export const CONFIG_KEYS = {
   NOTIFICATION_POSITION: 'notificationPosition',
   NOTIFICATION_FILTER_MODE: 'notificationFilterMode',
   NOTIFICATION_FILTER_LIST: 'notificationFilterList',
-  HTTP_API_TOKEN: 'httpApiToken',
   HTTP_API_ENABLED: 'httpApiEnabled',
   HTTP_API_PORT: 'httpApiPort',
   HTTP_API_HOST: 'httpApiHost',
@@ -105,7 +99,6 @@ export const CONFIG_KEYS = {
   LAN_SYNC_ROLE: 'lanSyncRole',
   CENTRAL_SYNC_ENABLED: 'centralSyncEnabled',
   CENTRAL_SYNC_BASE_URL: 'centralSyncBaseUrl',
-  CENTRAL_SYNC_DEVICE_TOKEN: 'centralSyncDeviceToken',
   CENTRAL_SYNC_WORKSPACE_ID: 'centralSyncWorkspaceId',
   CENTRAL_SYNC_EMPLOYEE_ID: 'centralSyncEmployeeId',
   CENTRAL_SYNC_DEVICE_ID: 'centralSyncDeviceId',
@@ -118,14 +111,12 @@ export const CONFIG_KEYS = {
 
   // AI 见解
   AI_MODEL_API_BASE_URL: 'aiModelApiBaseUrl',
-  AI_MODEL_API_KEY: 'aiModelApiKey',
   AI_MODEL_API_MODEL: 'aiModelApiModel',
   AI_MODEL_API_MAX_TOKENS: 'aiModelApiMaxTokens',
   AI_DAILY_CALL_LIMIT_ENABLED: 'aiDailyCallLimitEnabled',
   AI_DAILY_CALL_LIMIT: 'aiDailyCallLimit',
   AI_INSIGHT_ENABLED: 'aiInsightEnabled',
   AI_INSIGHT_API_BASE_URL: 'aiInsightApiBaseUrl',
-  AI_INSIGHT_API_KEY: 'aiInsightApiKey',
   AI_INSIGHT_API_MODEL: 'aiInsightApiModel',
   AI_INSIGHT_ALLOW_CONTEXT: 'aiInsightAllowContext',
   AI_INSIGHT_ALLOW_MOMENTS_CONTEXT: 'aiInsightAllowMomentsContext',
@@ -142,9 +133,8 @@ export const CONFIG_KEYS = {
   AI_INSIGHT_SOCIAL_CONTEXT_COUNT: 'aiInsightSocialContextCount',
   AI_INSIGHT_SYSTEM_PROMPT: 'aiInsightSystemPrompt',
   AI_INSIGHT_TELEGRAM_ENABLED: 'aiInsightTelegramEnabled',
-  AI_INSIGHT_TELEGRAM_TOKEN: 'aiInsightTelegramToken',
   AI_INSIGHT_TELEGRAM_CHAT_IDS: 'aiInsightTelegramChatIds',
-  AI_INSIGHT_WEIBO_COOKIE: 'aiInsightWeiboCookie',
+  AI_INSIGHT_WECOM_ENABLED: 'aiInsightWecomEnabled',
   AI_INSIGHT_WEIBO_BINDINGS: 'aiInsightWeiboBindings',
 
   // AI 足迹
@@ -163,11 +153,50 @@ export const CONFIG_KEYS = {
   AUTO_DOWNLOAD_WHITELIST: 'autoDownloadWhitelist'
 } as const
 
-export interface WxidConfig {
-  decryptKey?: string
-  imageXorKey?: number
-  imageAesKey?: string
-  updatedAt?: number
+/**
+ * H2：wxidConfigs 的密钥面永不进入渲染层。配置列表只给状态（hasXxx/updatedAt）；
+ * 写入经 secret:setWxidConfig 专用端点（undefined = 不修改，null/'' = 清除）。
+ */
+export interface WxidSecretStatus {
+  hasDecryptKey: boolean
+  hasImageXorKey: boolean
+  hasImageAesKey: boolean
+  updatedAt: number
+}
+
+/** 单个 wxid 配置的补丁（专用端点入参；undefined = 不修改） */
+export interface WxidSecretPatch {
+  decryptKey?: string | null
+  imageAesKey?: string | null
+  imageXorKey?: number | null
+}
+
+export type ServiceAddressResult = import('../types/electron.d.ts').ServiceAddressResult
+
+/** 秘密状态（普通加载只回 hasValue/maskedValue，完整秘密不回传） */
+export interface SecretStatus {
+  hasValue: boolean
+  masked: string
+}
+
+export interface SecretStatusReport {
+  dbKey: SecretStatus
+  imageXorKey: SecretStatus
+  imageAesKey: SecretStatus
+  httpApiToken: SecretStatus
+  aiModelApiKey: SecretStatus
+  weiboCookie: SecretStatus
+  telegramToken: SecretStatus
+  wecomWebhook: SecretStatus
+  wxidConfigs: Record<string, WxidSecretStatus>
+}
+
+export interface AutoConnectStatus {
+  hasDbPath: boolean
+  hasKey: boolean
+  myWxid: string
+  onboardingDone: boolean
+  appliedSavedKey: boolean
 }
 
 export interface AiInsightWeiboBinding {
@@ -207,15 +236,64 @@ const DEFAULT_EXPORT_MEDIA_CONFIG: ExportDefaultMediaConfig = {
   maxFileSizeMb: 200
 }
 
-// 获取解密密钥
-export async function getDecryptKey(): Promise<string | null> {
-  const value = await config.get(CONFIG_KEYS.DECRYPT_KEY)
-  return value as string | null
+// ─── 秘密配置（H2 专用通道）──────────────────────────────────────────────────
+// 普通加载只读状态（hasValue/maskedValue）；写入接收新值（''/null = 清除）；
+// 已保存的完整秘密永不回传渲染层。
+
+export async function getSecretStatus(): Promise<SecretStatusReport> {
+  return window.electronAPI.secret.getStatus()
 }
 
-// 设置解密密钥
+export async function getWxidSecretConfigs(): Promise<Record<string, WxidSecretStatus>> {
+  const report = await getSecretStatus()
+  return report.wxidConfigs || {}
+}
+
+/** 账号切换：主进程读已保存密钥 → 写全局密钥位 → 切业务库（密钥不经过渲染层） */
+export async function switchToWxidAccount(wxid: string): Promise<{ ok: boolean; reason?: string }> {
+  return window.electronAPI.account.switchTo(wxid)
+}
+
+/** 自动连接前置：主进程依已保存配置判断并落地（wxidConfigs 的密钥不发给渲染层） */
+export async function applySavedKeyForAutoConnect(): Promise<AutoConnectStatus> {
+  return window.electronAPI.account.applySavedKey()
+}
+
+/** 设置/清除解密密钥（'' = 清除） */
 export async function setDecryptKey(key: string): Promise<void> {
-  await config.set(CONFIG_KEYS.DECRYPT_KEY, key)
+  await window.electronAPI.secret.setDbKey(String(key ?? ''))
+}
+
+/** 写入图片密钥（undefined = 不修改；null/0/'' = 清除） */
+export async function setImageXorKey(key: number | null): Promise<void> {
+  await window.electronAPI.secret.setImageKeys({ xorKey: key })
+}
+
+export async function setImageAesKey(key: string | null): Promise<void> {
+  await window.electronAPI.secret.setImageKeys({ aesKey: key })
+}
+
+export async function setHttpApiToken(token: string): Promise<void> {
+  await window.electronAPI.secret.setHttpApiToken(String(token ?? ''))
+}
+
+export async function setAiModelApiKey(key: string): Promise<void> {
+  await window.electronAPI.secret.setAiModelApiKey(String(key ?? ''))
+}
+
+/** 写单个 wxid 配置（undefined = 该字段不修改；null/'' = 清除） */
+export async function setWxidSecretConfig(wxid: string, patch: WxidSecretPatch): Promise<void> {
+  if (!wxid) return
+  await window.electronAPI.secret.setWxidConfig(wxid, patch)
+}
+
+/** 删除某 wxid 的全部配置；撤销 token 只在主进程内存（密钥快照不经渲染层往返） */
+export async function removeWxidSecretConfig(wxid: string): Promise<{ ok: boolean; removed: number; undoToken?: string }> {
+  return window.electronAPI.secret.removeWxidConfig(wxid)
+}
+
+export async function undoRemoveWxidSecretConfig(token: string): Promise<{ ok: boolean; restored: number }> {
+  return window.electronAPI.secret.undoRemoveWxidConfig(token)
 }
 
 // 获取数据库路径
@@ -224,20 +302,17 @@ export async function getDbPath(): Promise<string | null> {
   return value as string | null
 }
 
-// 获取api access_token
-export async function getHttpApiToken(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.HTTP_API_TOKEN)
-  return (value as string) || ''
-}
-
-// 设置access_token
-export async function setHttpApiToken(token: string): Promise<void> {
-  await config.set(CONFIG_KEYS.HTTP_API_TOKEN, token)
-}
+// H2：getHttpApiToken 已删除——Access Token 用 getSecretStatus().httpApiToken 读状态，
+// 写入走 setHttpApiToken（'' = 清除，普通加载不回传完整 Token）。
 
 // 设置数据库路径
+/**
+ * P0：dbPath 专用端点——渲染层传来的路径必须在本会话被原生目录对话框批准过，
+ * 或是主进程验证过的自动检测结果；通用 config:set 已拒绝写入 dbPath。
+ */
 export async function setDbPath(path: string): Promise<void> {
-  await config.set(CONFIG_KEYS.DB_PATH, path)
+  const result = await window.electronAPI.dbPathGate.setFromDialog(String(path || ''))
+  if (!result.ok) throw new Error(result.reason || '目录未经过对话框批准')
 }
 
 // 清洗账号目录名称（移除后缀）
@@ -276,35 +351,9 @@ export async function setMyWxid(wxid: string): Promise<void> {
   await config.set(CONFIG_KEYS.MY_WXID, wxid)
 }
 
-export async function getWxidConfigs(): Promise<Record<string, WxidConfig>> {
-  const value = await config.get(CONFIG_KEYS.WXID_CONFIGS)
-  if (value && typeof value === 'object') {
-    return value as Record<string, WxidConfig>
-  }
-  return {}
-}
-
-export async function setWxidConfigs(configs: Record<string, WxidConfig>): Promise<void> {
-  await config.set(CONFIG_KEYS.WXID_CONFIGS, configs || {})
-}
-
-export async function getWxidConfig(wxid: string): Promise<WxidConfig | null> {
-  if (!wxid) return null
-  const configs = await getWxidConfigs()
-  return configs[wxid] || null
-}
-
-export async function setWxidConfig(wxid: string, configValue: WxidConfig): Promise<void> {
-  if (!wxid) return
-  const configs = await getWxidConfigs()
-  const previous = configs[wxid] || {}
-  configs[wxid] = {
-    ...previous,
-    ...configValue,
-    updatedAt: Date.now()
-  }
-  await config.set(CONFIG_KEYS.WXID_CONFIGS, configs)
-}
+// H2：getWxidConfigs/getWxidConfig/setWxidConfigs 已删除——wxidConfigs 整包（含密钥）
+// 永不回渲染层；列表用 getWxidSecretConfigs()（状态），写入用 setWxidSecretConfig()（补丁），
+// 账号切换用 switchToWxidAccount()（主进程能力）。
 
 // 获取主题
 export async function getTheme(): Promise<'light' | 'dark' | 'system'> {
@@ -350,8 +399,12 @@ export async function getExportPath(): Promise<string | null> {
 }
 
 // 设置导出路径
-export async function setExportPath(path: string): Promise<void> {
-  await config.set(CONFIG_KEYS.EXPORT_PATH, path)
+/**
+ * P1b：导出根目录选择走专用端点——主进程弹原生对话框，授权 + 持久化根 + 更新偏好路径。
+ * 渲染层不再持有「直接写 exportPath」的能力（通用 config:set 已拒绝）。
+ */
+export async function chooseExportRoot(): Promise<{ canceled: boolean; ok?: boolean; path?: string; error?: string }> {
+  return window.electronAPI.exportGate.chooseRoot()
 }
 
 
@@ -418,29 +471,6 @@ export async function setWhisperModelDir(dir: string): Promise<void> {
 // 清除所有配置
 export async function clearConfig(): Promise<void> {
   await config.clear()
-}
-
-// 获取图片 XOR 密钥
-export async function getImageXorKey(): Promise<number | null> {
-  const value = await config.get(CONFIG_KEYS.IMAGE_XOR_KEY)
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  return null
-}
-
-// 设置图片 XOR 密钥
-export async function setImageXorKey(key: number): Promise<void> {
-  await config.set(CONFIG_KEYS.IMAGE_XOR_KEY, key)
-}
-
-// 获取图片 AES 密钥
-export async function getImageAesKey(): Promise<string | null> {
-  const value = await config.get(CONFIG_KEYS.IMAGE_AES_KEY)
-  return (value as string) || null
-}
-
-// 设置图片 AES 密钥
-export async function setImageAesKey(key: string): Promise<void> {
-  await config.set(CONFIG_KEYS.IMAGE_AES_KEY, key)
 }
 
 // 获取是否完成首次配置引导
@@ -1306,12 +1336,13 @@ export async function setContactsAvatarCache(
 
 // === 安全相关 ===
 
-export async function setAuthEnabled(enabled: boolean): Promise<void> {
-  await config.set(CONFIG_KEYS.AUTH_ENABLED, enabled)
+/** H2：应用锁密码哈希经专用 auth 端点写入（authPassword 不再走通用 config:set） */
+export async function setAuthPassword(passwordHash: string): Promise<void> {
+  await window.electronAPI.auth.setPasswordHash(String(passwordHash || ''))
 }
 
-export async function setAuthPassword(passwordHash: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AUTH_PASSWORD, passwordHash)
+export async function setAuthEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.AUTH_ENABLED, enabled)
 }
 
 export async function getAuthUseHello(): Promise<boolean> {
@@ -1642,19 +1673,25 @@ export async function getAiModelApiBaseUrl(): Promise<string> {
   return typeof legacy === 'string' ? legacy : ''
 }
 
-export async function setAiModelApiBaseUrl(url: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_MODEL_API_BASE_URL, url)
+/** P0：AI 通用服务地址专用端点——地址变化时主进程原子清除 aiModelApiKey/旧 aiInsightApiKey */
+export async function setAiModelApiBaseUrl(url: string): Promise<ServiceAddressResult> {
+  const result = await window.electronAPI.serviceAddr.setAiModelBaseUrl(String(url || ''))
+  if (result.ok === false) throw new Error(result.error || 'AI 服务地址保存失败')
+  return result
 }
 
-export async function getAiModelApiKey(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.AI_MODEL_API_KEY)
-  if (typeof value === 'string' && value.trim()) return value
-  const legacy = await config.get(CONFIG_KEYS.AI_INSIGHT_API_KEY)
-  return typeof legacy === 'string' ? legacy : ''
+/** P0：旧 AI 见解独立地址专用端点——地址变化时原子清除 aiInsightApiKey */
+export async function setAiInsightApiBaseUrl(url: string): Promise<ServiceAddressResult> {
+  const result = await window.electronAPI.serviceAddr.setAiInsightBaseUrl(String(url || ''))
+  if (result.ok === false) throw new Error(result.error || 'AI 见解服务地址保存失败')
+  return result
 }
 
-export async function setAiModelApiKey(key: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_MODEL_API_KEY, key)
+/** P0：中央服务地址专用端点——地址变化时原子清除设备令牌与绑定身份状态（要求重新绑定） */
+export async function setCentralSyncBaseUrl(url: string): Promise<ServiceAddressResult> {
+  const result = await window.electronAPI.serviceAddr.setCentralSyncBaseUrl(String(url || ''))
+  if (result.ok === false) throw new Error(result.error || '中央服务地址保存失败')
+  return result
 }
 
 export async function getAiModelApiModel(): Promise<string> {
@@ -1834,13 +1871,11 @@ export async function setAiInsightTelegramEnabled(enabled: boolean): Promise<voi
   await config.set(CONFIG_KEYS.AI_INSIGHT_TELEGRAM_ENABLED, enabled)
 }
 
-export async function getAiInsightTelegramToken(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_TELEGRAM_TOKEN)
-  return typeof value === 'string' ? value : ''
-}
 
+
+/** P1a：Telegram Token 专用只写端点（'' = 清除）；读取走 getSecretStatus().telegramToken */
 export async function setAiInsightTelegramToken(token: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_INSIGHT_TELEGRAM_TOKEN, token)
+  await window.electronAPI.secret.setTelegramToken(String(token ?? ''))
 }
 
 export async function getAiInsightTelegramChatIds(): Promise<string> {
@@ -1852,13 +1887,20 @@ export async function setAiInsightTelegramChatIds(chatIds: string): Promise<void
   await config.set(CONFIG_KEYS.AI_INSIGHT_TELEGRAM_CHAT_IDS, chatIds)
 }
 
-export async function getAiInsightWeiboCookie(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_WEIBO_COOKIE)
-  return typeof value === 'string' ? value : ''
+export async function getAiInsightWecomEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_WECOM_ENABLED)
+  return value === true
 }
 
-export async function setAiInsightWeiboCookie(cookieValue: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_INSIGHT_WEIBO_COOKIE, cookieValue)
+export async function setAiInsightWecomEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_WECOM_ENABLED, enabled)
+}
+
+
+
+/** P1a：企微 Webhook 专用只写端点（'' = 清除）；读取走 getSecretStatus().wecomWebhook */
+export async function setAiInsightWecomWebhook(webhook: string): Promise<void> {
+  await window.electronAPI.secret.setWecomWebhook(String(webhook ?? ''))
 }
 
 export async function getAiInsightWeiboBindings(): Promise<Record<string, AiInsightWeiboBinding>> {

@@ -9,32 +9,28 @@
 .af-header__title { font-size: clamp(21px, 2.1vw, 26px); } /* 与其它页 h1.hero 同档，页内说明置底 */
 .af-header__sub { margin-top: 2px; }
 .af-header__actions { gap: 10px; flex-wrap: wrap; }
-.af-btn { border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary); border-radius: var(--radius-control); padding: 4px 12px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; transition: background .15s;
-  &:hover { background: var(--color-bg-inset); }
-  &:disabled { opacity: .6; cursor: default; } }
+// 刷新按钮（P2.2 换共享 .btn--quiet，本页自定义按钮皮肤退场）
 .af-error { background: var(--color-danger-bg); border: 1px solid var(--color-danger-border); border-radius: var(--radius-small); padding: 10px 14px; font-size: 13px; color: var(--color-danger); margin-bottom: 12px; }
 .af-empty { color: var(--color-text-secondary); padding: 24px; text-align: center; }
 
-// 时间窗口 toggle（复用漏斗页惯例：iOS 分段控件）
-.af-days { display: inline-flex; background: var(--color-bg-inset); border-radius: 9px; padding: 3px; gap: 2px; }
-.af-days__btn { border: 0; background: transparent; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--color-text-secondary); border-radius: 7px; transition: color .15s; }
-.af-days__btn--active { background: var(--color-bg-surface); color: var(--color-accent); font-weight: 600; box-shadow: var(--shadow-control); }
+// 时间窗口 toggle（P2.2 换共享 .chipbar/.chip——同合同台账 demoted 分段，本页自定义分段皮肤退场）
 
 // 正文容器：KPI 条 → 漏斗卡 → 口径注，统一由一处 gap 控制间距（原先三段各自 margin，叠起来不好对）
 .af-body { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
-// KPI 卡（可点击 = 有下钻）；统计卡语言与销售漏斗同规格：白卡浮起 + 标签在上 + 26px/700 tabular
-.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
-.af-kpi { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: 14px 18px; cursor: default; box-shadow: var(--shadow-card); transition: box-shadow .15s, border-color .15s;
-  &--clickable { cursor: pointer; &:hover { border-color: var(--color-accent-border); box-shadow: var(--shadow-card); } }
-  &--star { border-color: var(--color-warning-border); background: var(--color-warning-bg);
+// KPI 卡（可点击 = 有下钻）；P2.2 收敛为安静发丝卡：去阴影 + 发丝边 + mono 数字（贴共享 .stats 的数字语法），
+// ★ 北极星卡只留警示色标签与边，不再整卡 tint 底
+.af-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.af-kpi { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; background: var(--color-bg-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-small); padding: 12px 14px; cursor: default; transition: border-color .15s;
+  &--clickable { cursor: pointer; &:hover { border-color: var(--color-accent-border); } }
+  &--star { border-color: var(--color-warning-border);
     .af-kpi__label { color: var(--color-warning); }
   }
 }
-.af-kpi__label { font-size: 12px; color: var(--color-text-secondary); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.af-kpi__label { font-size: 11.5px; color: var(--color-text-secondary); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .af-kpi__star { color: var(--color-warning); font-size: 13px; }
-.af-kpi__value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--color-text-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.af-kpi__note { font-size: 11px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.af-kpi__value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 600; line-height: 1.15; letter-spacing: -0.01em; color: var(--color-text-primary); overflow-wrap: anywhere; }
+.af-kpi__note { font-size: 11px; color: var(--color-text-tertiary); overflow-wrap: anywhere; }
 
 // 曝光段（G1 未埋点，诚实 N/A）
 .af-exposed { display: flex; align-items: baseline; gap: 8px; background: var(--color-bg-inset); border: 1px dashed var(--color-chart-neutral); border-radius: var(--radius-small); padding: 8px 14px; flex-wrap: wrap; }
@@ -42,10 +38,23 @@
 .af-exposed__value { font-size: 13px; color: var(--color-text-tertiary); font-weight: 600; }
 .af-exposed__hint { font-size: 12px; color: var(--color-text-tertiary); }
 
-// 五段漏斗卡片（容器规格与销售漏斗 funnel-chart 一致：限宽 860 居中 + 16 圆角 + shadow-card；
-// 内部为共用组件 FunnelCylinder（A048 立体圆柱），样式自含于 components/FunnelCylinder.scss）
-// 不设 overflow：组件内的口径 tooltip 是绝对定位浮层，裁切会切掉提示
-.af-chart { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: 12px; margin: 0 auto; max-width: 860px; width: 100%; min-width: 0; }
+// 五级转化率条（概念稿屏 13 .fn 语法落地，af- 前缀防与其他页 .fn 撞名）：
+// 行式漏斗替代 A048 立体圆柱——条长按占首级（行动产生）比例，右列 = 级间转化率（等宽 mono）；
+// 行可点击开下钻（拍板契约 ③）。首行顶线 + 行间发丝线，无卡壳。
+.af-fn { width: 100%; min-width: 0; }
+.af-fn__row {
+  display: grid; grid-template-columns: 82px minmax(0, 1fr) 96px 84px; gap: 16px; align-items: center;
+  width: 100%; padding: 14px 0; border: 0; border-bottom: 1px solid var(--color-divider);
+  background: none; text-align: left; font-family: inherit; color: inherit; cursor: pointer;
+  &:first-child { border-top: 1px solid var(--color-divider); }
+  &:hover .af-fn__s { color: var(--color-accent); }
+}
+.af-fn__s { font-size: 12.5px; font-weight: 600; color: var(--color-text-primary); transition: color .15s; }
+.af-fn__track { display: block; height: 24px; background: var(--color-bg-inset); border-radius: 4px; overflow: hidden;
+  i { display: block; height: 100%; background: var(--color-bg-inset-strong); border-right: 2px solid var(--color-accent); } }
+.af-fn__v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
+.af-fn__r { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--color-text-secondary); text-align: right;
+  small { display: block; font-size: 10px; color: var(--color-text-tertiary); font-family: var(--font-app); } }
 
 .af-footnote { font-size: 12px; color: var(--color-text-secondary); line-height: 1.7; overflow-wrap: break-word; }
 

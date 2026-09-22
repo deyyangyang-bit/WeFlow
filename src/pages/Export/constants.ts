@@ -104,7 +104,6 @@ export const backgroundTaskSourceLabels: Record<string, string> = {
   analytics: '分析页',
   sns: '朋友圈页',
   groupAnalytics: '群分析页',
-  annualReport: '年度报告',
   other: '其他页面'
 }
 

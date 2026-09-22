@@ -45,6 +45,7 @@ const InsightInboxPage = lazy(() => import('./pages/InsightInboxPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const EvalAnnotatePage = lazy(() => import('./pages/EvalAnnotatePage'))
 const SalesReportPage = lazy(() => import('./pages/SalesReportPage'))
+const AnnualReviewPage = lazy(() => import('./pages/AnnualReviewPage'))
 const ActionFunnelPage = lazy(() => import('./pages/ActionFunnelPage'))
 const OpportunityPage = lazy(() => import('./pages/OpportunityPage'))
 const TodayActionPage = lazy(() => import('./pages/TodayActionPage'))
@@ -56,10 +57,6 @@ const CrmLeadPage = lazy(() => import('./pages/CrmLeadPage'))
 const RoleViewPage = lazy(() => import('./pages/RoleViewPage'))
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
 const GroupAnalyticsPage = lazy(() => import('./pages/GroupAnalyticsPage'))
-const AnnualReportPage = lazy(() => import('./pages/AnnualReportPage'))
-const AnnualReportWindow = lazy(() => import('./pages/AnnualReportWindow'))
-const DualReportPage = lazy(() => import('./pages/DualReportPage'))
-const DualReportWindow = lazy(() => import('./pages/DualReportWindow'))
 const ExportPage = lazy(() => import('./pages/Export/ExportPage'))
 
 function RouteStateRedirect({ to }: { to: string }) {
@@ -95,16 +92,16 @@ function App() {
   } = useAppStore()
 
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
-  // Hermes 只读智能体 App 级单例：三入口经 hermesStore.openHermes(context) 打开，
-  // HermesPanel 组件内部自消费 store（本文件不取值）；任务真源在主进程内存，切路由不丢任务
+  // Hermes 只读智能体：全屏三栏路由页（/hermes，概念稿屏 8 形态）。三入口经
+  // hermesStore.openHermes(context) 注入上下文后 navigate('/hermes')；HermesPanel 组件
+  // 内部自消费 store（本文件不取值）。任务真源在主进程内存：离开路由不删任务，
+  // 回到 /hermes 按上下文锚点恢复视图并重订阅进度。
   const isAgreementWindow = location.pathname === '/agreement-window'
   const isOnboardingWindow = location.pathname === '/onboarding-window'
   const isVideoPlayerWindow = location.pathname === '/video-player-window'
   const isChatHistoryWindow = location.pathname.startsWith('/chat-history/') || location.pathname.startsWith('/chat-history-inline/')
   const isStandaloneChatWindow = location.pathname === '/chat-window'
   const isNotificationWindow = location.pathname === '/notification-window'
-  const isAnnualReportWindow = location.pathname === '/annual-report/view'
-  const isDualReportWindow = location.pathname === '/dual-report/view'
   const isSettingsRoute = location.pathname === '/settings'
   const settingsRouteState = location.state as { backgroundLocation?: Location; initialTab?: unknown } | null
   const routeLocation = isSettingsRoute
@@ -140,7 +137,7 @@ function App() {
 
   const isStandaloneWindow =
     isAgreementWindow || isOnboardingWindow || isVideoPlayerWindow || isChatHistoryWindow ||
-    isStandaloneChatWindow || isNotificationWindow || isAnnualReportWindow || isDualReportWindow ||
+    isStandaloneChatWindow || isNotificationWindow ||
     location.pathname === '/image-viewer-window'
 
   // 全局快捷键（⌘K 命令面板 / ⌘1-3 切前三屏）：只在主窗口、未锁定时挂
@@ -192,7 +189,7 @@ function App() {
     const body = document.body
     const appRoot = document.getElementById('app')
 
-    if (isOnboardingWindow || isNotificationWindow || isAnnualReportWindow || isDualReportWindow) {
+    if (isOnboardingWindow || isNotificationWindow) {
       root.style.background = 'transparent'
       body.style.background = 'transparent'
       body.style.overflow = 'hidden'
@@ -209,7 +206,7 @@ function App() {
         appRoot.style.overflow = ''
       }
     }
-  }, [isOnboardingWindow, isNotificationWindow, isAnnualReportWindow, isDualReportWindow])
+  }, [isOnboardingWindow, isNotificationWindow])
 
   // 应用主题 (accent color + light/dark mode)
   useEffect(() => {
@@ -230,7 +227,7 @@ function App() {
     }
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
-  }, [currentTheme, themeMode, isOnboardingWindow, isNotificationWindow, isAnnualReportWindow, isDualReportWindow])
+  }, [currentTheme, themeMode, isOnboardingWindow, isNotificationWindow])
 
   // 读取已保存的主题设置
   useEffect(() => {
@@ -389,19 +386,16 @@ function App() {
 
     const autoConnect = async () => {
       try {
-        const dbPath = await configService.getDbPath()
-        const decryptKey = await configService.getDecryptKey()
-        const wxid = await configService.getMyWxid()
-        const onboardingDone = await configService.getOnboardingDone()
-        const wxidConfig = wxid ? await configService.getWxidConfig(wxid) : null
-        const effectiveDecryptKey = wxidConfig?.decryptKey || decryptKey
-
-        if (wxidConfig?.decryptKey && wxidConfig.decryptKey !== decryptKey) {
-          await configService.setDecryptKey(wxidConfig.decryptKey)
-        }
+        // H2：自动连接前置判断由主进程执行——wxidConfigs 中该账号的已保存密钥由主进程
+        // 应用到全局密钥位，密钥值不返回渲染层；渲染层只拿非秘密状态决定是否连接。
+        const savedDbPath = await configService.getDbPath()
+        const status = await configService.applySavedKeyForAutoConnect()
+        const decryptKeyReady = status.hasKey
+        const wxid = status.myWxid
+        const onboardingDone = status.onboardingDone
 
         // 如果配置完整，自动测试连接
-        if (dbPath && effectiveDecryptKey && wxid) {
+        if (status.hasDbPath && decryptKeyReady && wxid) {
           if (!onboardingDone) {
             await configService.setOnboardingDone(true)
           }
@@ -410,7 +404,7 @@ function App() {
 
           if (result.success) {
 
-            setDbConnected(true, dbPath)
+            setDbConnected(true, savedDbPath || undefined)
             // 如果当前在欢迎页，跳转到首页
             if (window.location.hash === '#/' || window.location.hash === '') {
               navigate('/home')
@@ -558,24 +552,6 @@ function App() {
     )
   }
 
-  // 独立年度报告全屏窗口
-  if (isAnnualReportWindow) {
-    return (
-      <Suspense fallback={null}>
-        <AnnualReportWindow />
-      </Suspense>
-    )
-  }
-
-  // 独立双人报告全屏窗口
-  if (isDualReportWindow) {
-    return (
-      <Suspense fallback={null}>
-        <DualReportWindow />
-      </Suspense>
-    )
-  }
-
   // 主窗口 - 完整布局
   const handleCloseSettings = () => {
     const backgroundLocation = settingsRouteState?.backgroundLocation ?? settingsBackgroundRef.current
@@ -646,9 +622,6 @@ function App() {
         onCancel={() => handleWindowCloseAction('cancel')}
       />
 
-      {/* Hermes 只读智能体全局唯一面板实例：常驻挂载（hidden 控制显隐），路由切换不丢任务 */}
-      <HermesPanel />
-
       {/* 命令面板（⌘K / 顶栏搜索按钮）与全局提示条：主窗口外壳件 */}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <GlobalToast />
@@ -679,10 +652,6 @@ function App() {
                 <Route path="/analytics/group" element={<GroupAnalyticsPage />} />
                 <Route path="/analytics/view" element={<RouteStateRedirect to="/analytics/private/view" />} />
                 <Route path="/group-analytics" element={<RouteStateRedirect to="/analytics/group" />} />
-                <Route path="/annual-report" element={<AnnualReportPage />} />
-                <Route path="/annual-report/view" element={<AnnualReportWindow />} />
-                <Route path="/dual-report" element={<DualReportPage />} />
-                <Route path="/dual-report/view" element={<DualReportWindow />} />
                 <Route path="/footprint" element={<MyFootprintPage />} />
 
                 <Route path="/export" element={<div className="export-route-anchor" aria-hidden="true" />} />
@@ -690,7 +659,10 @@ function App() {
                 <Route path="/insight-inbox" element={<InsightInboxPage />} />
                 <Route path="/knowledge-base" element={<KnowledgeBasePage />} />
                 <Route path="/eval-annotate" element={<EvalAnnotatePage />} />
+                <Route path="/hermes" element={<HermesPanel />} />
                 <Route path="/sales-report" element={<SalesReportPage />} />
+                {/* 年度经营复盘（S4）：独立路由；旧社交年度报告链路已下线（S8） */}
+                <Route path="/annual-review" element={<AnnualReviewPage />} />
                 {/* 「漏斗」已并入商机「阶段分析」视图（2026-09-13）；旧链接/书签不失效 */}
                 <Route path="/sales-funnel" element={<RouteStateRedirect to="/opportunities?view=analysis" />} />
                 <Route path="/action-funnel" element={<ActionFunnelPage />} />

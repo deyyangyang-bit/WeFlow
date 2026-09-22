@@ -7,6 +7,9 @@
  * 复用既有 `sales.actionSuggest` 受控链路，不新增 purpose）。
  *
  * 口径纪律：本视图只展示 active 商机；成交（won）只出现在「近 30 天成交」独立指标里。
+ *
+ * 2026-09-18 P2.1b：纯视觉——动作行接共享按钮档位（去跟进 = 轻 primary，其余 quiet），
+ * 管道总览三卡改共享 .stats 三列；数据与资格判定不动。
  */
 import { useState } from 'react'
 import { AlertTriangle, ClipboardList, Loader2, Sparkles, Target } from 'lucide-react'
@@ -79,14 +82,14 @@ function CandidateRow({ assessment, rank, suggest, onGoFollow, onTodo, onSuggest
         )}
       </div>
       <div className="opp-prow__act">
-        <button className="opp-btn opp-btn--primary" onClick={() => onGoFollow(a)}>
+        <button className="btn btn--sm btn--primary-soft" onClick={() => onGoFollow(a)}>
           <Target size={13} /> 去跟进
         </button>
-        <button className="opp-btn" onClick={() => onTodo(a)}>
+        <button className="btn btn--sm btn--quiet" onClick={() => onTodo(a)}>
           <ClipboardList size={13} /> {hasTodo ? '查看待办' : '建待办'}
         </button>
         <button
-          className="opp-btn opp-btn--ai"
+          className="btn btn--sm btn--quiet"
           onClick={() => onSuggest(a)}
           disabled={suggest.loading || !canSuggest}
           title={canSuggest ? undefined : '该商机未关联聊天会话，无法生成基于对话的跟进建议'}
@@ -171,25 +174,22 @@ export default function OpportunityStageAnalysis({ data, loading, onGoFollow, on
 
   return (
     <div className="opp-analysis">
-      {/* 管道总览：进行中 / 滞留 / 近 30 天成交（成交独立计数，不进管道） */}
-      <div className="opp-pipe">
-        <div className="opp-pstat">
-          <div className="opp-pstat__k">进行中商机（active）</div>
-          <div className="opp-pstat__v">
-            {overview.activeCount} <small>/ {fmtAmount(overview.activeAmount)}</small>
-          </div>
+      {/* 管道总览：进行中 / 滞留 / 近 30 天成交（成交独立计数，不进管道）。P2.1b 接共享 .stats 三列 */}
+      <div className="stats stats--3">
+        <div className="stat">
+          <div className="stat__n">{overview.activeCount} <small>{fmtAmount(overview.activeAmount)}</small></div>
+          <div className="stat__l">进行中商机</div>
+          <div className="stat__d">active · 金额合计</div>
         </div>
-        <div className="opp-pstat">
-          <div className="opp-pstat__k">滞留商机（超阶段阈值）</div>
-          <div className="opp-pstat__v opp-pstat__v--warn">
-            {overview.stuckCount} <small>/ {fmtAmount(overview.stuckAmount)}</small>
-          </div>
+        <div className="stat">
+          <div className="stat__n stat__n--warn">{overview.stuckCount} <small>{fmtAmount(overview.stuckAmount)}</small></div>
+          <div className="stat__l">滞留商机</div>
+          <div className="stat__d">超阶段阈值</div>
         </div>
-        <div className="opp-pstat">
-          <div className="opp-pstat__k">近 30 天成交（won，不计入管道）</div>
-          <div className="opp-pstat__v opp-pstat__v--ok">
-            {overview.wonCount30d} <small>/ {fmtAmount(overview.wonAmount30d)}</small>
-          </div>
+        <div className="stat">
+          <div className="stat__n stat__n--ok">{overview.wonCount30d} <small>{fmtAmount(overview.wonAmount30d)}</small></div>
+          <div className="stat__l">近 30 天成交</div>
+          <div className="stat__d">won · 不计入管道</div>
         </div>
       </div>
 

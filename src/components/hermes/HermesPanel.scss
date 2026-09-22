@@ -1,115 +1,264 @@
 /**
- * HermesPanel.scss —— Hermes 只读智能体抽屉（App 级单例）
+ * HermesPanel.scss —— Hermes 只读智能体全屏三栏页（概念稿屏 8 .chat--ai 语法）
  * 零硬编码 hex：全部走 --color-* 族 token（styles/main.scss 定义，light/dark 两套自适应）。
  */
-.hermes-panel {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  pointer-events: none;
 
-  &.open {
-    pointer-events: auto;
+// ── 页面骨架：216px 上下文栏 / 1fr 问答流 / 304px 调用记录栏，发丝线分栏 ──
 
-    .hermes-panel__mask {
-      opacity: 1;
-    }
+.hermes-page {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr) 304px;
+  background: var(--color-bg-surface);
+}
 
-    .hermes-panel__drawer {
-      transform: translateX(0);
-    }
+// ── 左栏：上下文 + 任务锚点（概念稿 .srow 会话行语法；真实口径无会话史）──
+
+.hermes-col {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.hermes-col--nav {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border);
+  padding: 12px 0 0;
+}
+
+.hermes-col__g {
+  flex: none;
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  color: var(--color-text-tertiary);
+  font-weight: 600;
+  padding: 8px 14px 6px;
+}
+
+.hermes-ctx {
+  flex: none;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  transition: background 0.14s;
+
+  &.is-on {
+    background: var(--color-bg-inset);
   }
 }
 
-.hermes-panel__mask {
-  position: absolute;
-  inset: 0;
-  background: var(--color-bg-hover);
-  opacity: 0;
-  transition: opacity 0.2s ease;
+.hermes-ctx__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--color-bg-inset);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+
+  &--task {
+    color: var(--color-accent);
+  }
 }
 
-.hermes-panel__drawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 520px;
-  max-width: 92vw;
+.hermes-ctx__main {
+  min-width: 0;
+}
+
+.hermes-ctx__n {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-ctx__s {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.hermes-col__empty {
+  padding: 6px 14px 8px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.hermes-col__hint {
+  margin-top: auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--color-divider);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-text-tertiary);
+}
+
+// ── 中栏：问答流（概念稿 .thread 语法：head / body / foot）──
+
+.hermes-thread {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg-surface);
-  border-left: 1px solid var(--color-border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
-  transform: translateX(100%);
-  transition: transform 0.24s ease;
 }
 
-.hermes-panel__head {
+.hermes-thread__head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--color-border);
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--color-divider);
+}
 
-  .hermes-panel__head-icon {
-    display: flex;
+.hermes-thread__title {
+  min-width: 0;
+}
+
+.hermes-thread__t {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-thread__s {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.hermes-thread__acts {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.hermes-thread__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hermes-thread__foot {
+  flex: none;
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-divider);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  &.hermes-thread__foot--acting {
+    flex-direction: row;
     align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    background: var(--color-accent-bg);
-    color: var(--color-accent);
-    flex-shrink: 0;
-  }
-
-  .hermes-panel__head-meta {
-    flex: 1;
-    min-width: 0;
-
-    h3 {
-      margin: 0;
-      font-size: 15px;
-      color: var(--color-text-primary);
-      line-height: 1.3;
-    }
-  }
-
-  .hermes-panel__head-sub {
-    font-size: 12px;
-    color: var(--color-text-tertiary);
-  }
-
-  .hermes-panel__close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-
-    &:hover {
-      background: var(--color-bg-hover);
-      color: var(--color-text-primary);
-    }
+    justify-content: space-between;
+    gap: 10px;
   }
 }
 
-.hermes-panel__body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 14px 16px;
+.hermes-foot__note {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.hermes-foot__acts {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 
-.hermes-panel__hint {
+.hermes-input-row {
+  display: flex;
+  gap: 8px;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+
+    &::placeholder {
+      color: var(--color-text-tertiary);
+    }
+
+    &:focus {
+      border-color: var(--color-accent-border);
+    }
+  }
+}
+
+// ── 空闲态：目标提示 + 推荐目标（细线行，hover 才 accent）──
+
+.hermes-idle {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hermes-idle__label {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  color: var(--color-text-tertiary);
+  font-weight: 600;
+  padding: 14px 0 2px;
+}
+
+.hermes-idle__chips {
+  display: flex;
+  flex-direction: column;
+}
+
+.hermes-chip {
+  text-align: left;
+  padding: 12px 2px;
+  border: none;
+  border-bottom: 1px solid var(--color-divider);
+  background: none;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color 0.15s ease;
+
+  &:hover {
+    color: var(--color-accent);
+  }
+}
+
+// ── 运行占位 / 提示行（accent 图标 + 人话）──
+
+.hermes-run {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -122,39 +271,160 @@
     margin-top: 2px;
     color: var(--color-accent);
   }
-}
 
-.hermes-panel__chips {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.hermes-chip {
-  text-align: left;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg-surface-muted);
-  color: var(--color-text-primary);
-  font-size: 13px;
-  line-height: 1.45;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-
-  &:hover {
-    background: var(--color-accent-bg);
-    border-color: var(--color-accent-border);
+  &--idle {
+    align-items: center;
   }
 }
 
-.hermes-panel__goal-line {
-  font-size: 12px;
+.hermes-run__n {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
   color: var(--color-text-tertiary);
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--color-border);
+}
+
+// ── 问答流气泡（概念稿 .msg 语法）：提问右 accent 弱底，回答左 inset ──
+
+.hermes-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hermes-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 74%;
+
+  &.hermes-msg--out {
+    align-self: flex-end;
+    align-items: flex-end;
+
+    .hermes-msg__b {
+      background: var(--color-accent-bg);
+      color: var(--color-text-primary);
+      border-top-right-radius: 3px;
+    }
+  }
+
+  &.hermes-msg--in {
+    align-self: flex-start;
+
+    .hermes-msg__b {
+      background: var(--color-bg-inset);
+      border-top-left-radius: 3px;
+    }
+  }
+
+  .hermes-msg__b {
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+}
+
+// 回答气泡（承载结论/发现/建议/依据条的大气泡）
+.hermes-msg--broad {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border-top-left-radius: 3px;
+  background: var(--color-bg-inset);
+  align-self: flex-start;
+
+  &.hermes-msg--error {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 6px;
+    color: var(--color-text-secondary);
+
+    svg { flex: none; margin-top: 2px; color: var(--color-text-tertiary); }
+
+    p { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+  }
+}
+
+.hermes-msg__tag {
+  font-size: 11px;
+  color: var(--color-accent);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.hermes-msg__text {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--color-text-primary);
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
+
+.hermes-msg__block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.hermes-msg__label {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  margin-bottom: 5px;
+  letter-spacing: 0.04em;
+}
+
+// 依据条（概念稿 .cite 语法）：等宽小字号 chips；可点的 hover 才 accent
+.hermes-cites {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.hermes-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 1.5;
+  text-align: left;
+
+  svg { flex: none; color: var(--color-text-tertiary); }
+
+  .hermes-cite__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+button.hermes-cite {
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-accent-bg);
+    color: var(--color-accent);
+
+    svg { color: var(--color-accent); }
+  }
+}
+
+// ── 工具轨迹（右栏）：状态色只进图标，发丝分隔 ──
 
 .hermes-steps {
   list-style: none;
@@ -162,16 +432,17 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .hermes-step {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--color-bg-surface-muted);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--color-divider);
+
+  &:first-child { padding-top: 2px; }
+  &:last-child { border-bottom: none; }
 
   .hermes-step__icon {
     flex-shrink: 0;
@@ -183,7 +454,7 @@
   }
 
   .hermes-step__icon--error {
-    color: var(--danger);
+    color: var(--color-danger);
   }
 
   .hermes-step__icon--running {
@@ -198,170 +469,105 @@
   }
 
   .hermes-step__label {
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--color-text-primary);
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
 
   .hermes-step__summary {
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--color-text-secondary);
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
 }
 
-// 分段（执行步骤 / 结果分区）：小标 + 计数，行内细线，不加卡片重量
-.hermes-section {
+// 回答气泡内的列表（发现 / 建议下一步）：圆点行 + 内联证据编号徽标
+.hermes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 
-  .hermes-section__head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--color-divider);
-  }
-
-  .hermes-section__t {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--color-text-secondary);
-  }
-
-  .hermes-section__n {
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-  }
-}
-
-.hermes-panel__cancel {
-  padding: 6px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--color-bg-hover);
+  li {
+    position: relative;
+    padding-left: 14px;
+    font-size: 13px;
     color: var(--color-text-primary);
-  }
-}
-
-.hermes-card {
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--color-bg-surface-muted);
-
-  &.hermes-card--summary {
-    background: var(--color-accent-bg);
-    border-color: var(--color-accent-border);
-  }
-
-  .hermes-card__tag {
-    font-size: 11px;
-    color: var(--color-text-tertiary);
-    margin-bottom: 6px;
-    letter-spacing: 0.04em;
-  }
-
-  .hermes-card__text {
-    margin: 0;
-    font-size: 14px;
-    color: var(--color-text-primary);
-    line-height: 1.55;
+    line-height: 1.5;
     overflow-wrap: anywhere;
-  }
 
-  .hermes-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-
-    li {
-      position: relative;
-      padding-left: 14px;
-      font-size: 13px;
-      color: var(--color-text-primary);
-      line-height: 1.5;
-      overflow-wrap: anywhere;
-
-      &::before {
-        content: '';
-        position: absolute;
-        left: 2px;
-        top: 8px;
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: var(--color-accent);
-      }
-
-      // 发现条目内联证据徽标（eN 编号，与证据列表一一对应）
-      .hermes-finding__refs {
-        display: inline-block;
-        margin-left: 6px;
-        padding: 0 5px;
-        border-radius: 6px;
-        font-size: 11px;
-        line-height: 16px;
-        color: var(--color-text-secondary);
-        background: var(--color-bg-hover);
-        vertical-align: 1px;
-      }
+    &::before {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 8px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--color-accent);
     }
-  }
 
-  .hermes-evidence {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-
-    li {
-      display: flex;
-      align-items: flex-start;
-      gap: 6px;
-      font-size: 12px;
+    // 发现条目内联证据徽标（eN 编号，与依据条一一对应）
+    .hermes-finding__refs {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 0 5px;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 16px;
       color: var(--color-text-secondary);
-      line-height: 1.45;
-
-      svg {
-        flex-shrink: 0;
-        margin-top: 2px;
-        color: var(--color-text-tertiary);
-      }
-    }
-
-    .hermes-evidence__label {
-      color: var(--color-text-primary);
-      flex-shrink: 0;
-    }
-
-    .hermes-evidence__excerpt {
-      min-width: 0;
-      // 证据原话是结论的回执：最多折两行，不做单行省略号截断
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      overflow-wrap: anywhere;
+      background: var(--color-bg-hover);
+      vertical-align: 1px;
     }
   }
 }
+
+// ── 右栏：调用记录 + 边界（概念稿 .side-block 语法）──
+
+.hermes-col--side {
+  border-left: 1px solid var(--color-border);
+  padding: 14px 18px;
+}
+
+.hermes-side-block + .hermes-side-block {
+  margin-top: 24px;
+}
+
+.hermes-side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.hermes-side-head__t {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.hermes-side-head__n {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.hermes-side__empty {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  padding: 4px 0;
+}
+
+.hermes-side__text {
+  line-height: 1.7;
+}
+
+// ── 免责 / 错误条 ──
 
 .hermes-panel__disclaimer {
   font-size: 11px;
@@ -402,102 +608,6 @@
   }
 }
 
-// 底部操作区：常驻抽屉底部（不随正文滚动），弱底与正文分开
-.hermes-panel__footer {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--color-border);
-  background: var(--color-bg-surface-muted);
-
-  &.hermes-panel__footer--acting {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
-}
-
-.hermes-panel__footer-acts {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.hermes-panel__footer-note {
-  min-width: 0;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-}
-
-.hermes-panel__input-row {
-  display: flex;
-  gap: 8px;
-
-  input {
-    flex: 1;
-    min-width: 0;
-    padding: 9px 12px;
-    border: 1px solid var(--color-border);
-    border-radius: 9px;
-    background: var(--color-bg-surface-muted);
-    color: var(--color-text-primary);
-    font-size: 13px;
-    outline: none;
-
-    &::placeholder {
-      color: var(--color-text-tertiary);
-    }
-
-    &:focus {
-      border-color: var(--color-accent-border);
-    }
-  }
-}
-
-.hermes-panel__go {
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  border: none;
-  border-radius: 9px;
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-
-  &:hover:not(:disabled) {
-    background: var(--color-accent-hover);
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-}
-
-.hermes-panel__new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 9px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-}
-
 .spin {
   animation: hermes-spin 1s linear infinite;
 }
@@ -505,4 +615,41 @@
 @keyframes hermes-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+// ── 响应式（概念稿同款）：≤1280 右栏折整行；≤900 收单列 ──
+
+@media (max-width: 1280px) {
+  .hermes-page {
+    grid-template-columns: 216px minmax(0, 1fr);
+  }
+
+  .hermes-col--side {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+    max-height: 320px;
+  }
+}
+
+@media (max-width: 900px) {
+  .hermes-page {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .hermes-col--nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    max-height: 220px;
+  }
+
+  .hermes-thread__body {
+    max-height: 60svh;
+  }
+
+  .hermes-col--side {
+    max-height: none;
+  }
 }

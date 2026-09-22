@@ -18,6 +18,7 @@ import { isProposalEventType, isProposalEventStage, type ProposalEventRecord, ty
 import { archivedDbName, businessDbPath } from './businessDbPath'
 import { salesLog } from './salesLogger'
 import { atomicWriteFileSync, loadBusinessDbWithGuard, dbGuardLog } from './atomicPersist'
+import { announceAnnualReviewSalesWrite } from './annualReviewInvalidation'
 
 /**
  * sql.js「列已存在」错误识别（迁移 ALTER 幂等忽略的唯一依据）。
@@ -658,9 +659,11 @@ class SalesDbService {
   }
 
   /**
-   * 执行查询并返回所有行（对象数组）
+   * 执行查询并返回所有行（对象数组）。
+   * 2026-09-20 S3：由 private 放宽为 public——annualReviewService 以本服务实例作为
+   * SqlQueryRunner 注入 S2 窄加载器（静态 SQL、参数绑定），避免复制第二套查询入口。
    */
-  private all<T>(sql: string, params: unknown[] = []): T[] {
+  all<T>(sql: string, params: unknown[] = []): T[] {
     const db = this.getDb()
     const stmt = db.prepare(sql)
     stmt.bind(params as any[])
@@ -688,7 +691,13 @@ class SalesDbService {
   }
 
   /**
-   * 执行写操作
+   * 执行写操作。
+   *
+   * **不在此处声明年度复盘失效**：本漏斗承载大部分写入（knowledge_base / report_snapshot /
+   * follow_up_task / eval case / customer_event / proposal_event 等）与年报复盘无关，
+   * 「所有写入都失效」会把无关后台写变成缓存清空与任务取消。年度复盘失效由**写年度复盘
+   * 数据源表的方法**显式声明：`customer_profile`（customerUpsert / setCustomerProfileCustomerId /
+   * updateStageChangeTime）与 `intent_tag_log`（intentCreate），见 announceAnnualReviewSalesWrite。
    */
   private run(sql: string, params: unknown[] = []): void {
     const db = this.getDb()
@@ -1329,6 +1338,8 @@ ORDER BY kb.updated_at DESC LIMIT ?`
         [data.session_id, data.display_name ?? null, data.customer_id ?? null, data.external_source ?? null, data.stage ?? 'unknown', data.tags ?? '[]', data.notes ?? null, data.last_contact_at ?? null, createdMs, now]
       )
     }
+    // customer_profile 是 B1 阶段分布 / C 组客户结构的事实源 → 显式声明年度复盘失效
+    announceAnnualReviewSalesWrite('customer_profile')
     return this.customerGetBySession(data.session_id)!
   }
 
@@ -1362,6 +1373,7 @@ ORDER BY kb.updated_at DESC LIMIT ?`
   /** 迁移用：回写 customer_profile.customer_id（跨库对齐，幂等——只写目标值） */
   setCustomerProfileCustomerId(id: number, customerId: string): void {
     this.run('UPDATE customer_profile SET customer_id = ?, updated_at = ? WHERE id = ?', [customerId, Date.now(), id])
+    announceAnnualReviewSalesWrite('customer_profile')
   }
 
   // ─── 意向标签 ─────────────────────────────────────────────────────────────
@@ -1375,6 +1387,8 @@ ORDER BY kb.updated_at DESC LIMIT ?`
       [tag.session_id, tag.stage, tag.confidence ?? null, tag.source, tag.reason ?? null,
        tag.message_key ?? null, tag.evidence_text ?? null, created]
     )
+    // intent_tag_log 是 B3 阶段流转的事实源 → 显式声明年度复盘失效
+    announceAnnualReviewSalesWrite('intent_tag_log')
     const id = this.lastInsertRowId()
     return this.get<IntentTagLog>('SELECT * FROM intent_tag_log WHERE id = ?', [id])!
   }
@@ -1856,6 +1870,7 @@ ORDER BY kb.updated_at DESC LIMIT ?`
    */
   updateStageChangeTime(sessionId: string, timestampMs: number): void {
     this.run('UPDATE customer_profile SET last_stage_change_at = ? WHERE session_id = ?', [timestampMs, sessionId])
+    announceAnnualReviewSalesWrite('customer_profile')
   }
 
   /**

@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import { CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, UserCheck, X } from 'lucide-react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Ban, CalendarDays, Code, Copy, MessageSquare, RefreshCw, Search, Sparkles, SlidersHorizontal, X } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
+import * as configService from '../services/config'
+import {
+  addInsightBlacklistEntry,
+  isInsightBlacklisted,
+  removeInsightBlacklistEntry,
+  type InsightBlacklistEntry
+} from '../../shared/insightBlacklist'
 import type {
   InsightRecord,
   InsightRecordContactFacet,
@@ -12,8 +19,6 @@ import type {
   InsightRecordTriggerReason
 } from '../types/electron'
 import './InsightInboxPage.scss'
-
-const INSIGHT_AVATAR_URL = './assets/insight/AI_Insight.png'
 
 type DateFilterMode = 'all' | 'today' | 'week' | 'custom'
 type SourceFilterMode = InsightRecordSourceType | 'all'
@@ -75,6 +80,15 @@ function getSourceLabel(sourceType?: InsightRecordSourceType): string {
   return sourceType === 'message_analysis' ? '深度解析' : 'AI 见解'
 }
 
+/** 阶段 tag 的语义档（安静 4px 直角 tag，不加大彩条块） */
+function getStageTagClass(stage: string): string {
+  if (stage === '决策') return 'tag--danger'
+  if (stage === '比价') return 'tag--warning'
+  if (stage === '了解') return 'tag--task'
+  if (stage === '成交') return 'tag--success'
+  return 'tag--neutral'
+}
+
 function buildLogText(record: InsightRecord): string {
   const log = record.log
   const lines = [
@@ -120,6 +134,7 @@ function buildLogText(record: InsightRecord): string {
 
 export default function InsightInboxPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const [records, setRecords] = useState<InsightRecordSummary[]>([])
   // 会话 → CRM 客户映射（已入 CRM 徽章 + 查看档案深链）
@@ -138,6 +153,48 @@ export default function InsightInboxPage() {
   const [focusedRecordId, setFocusedRecordId] = useState(searchParams.get('recordId') || '')
   const [logRecord, setLogRecord] = useState<InsightRecord | null>(null)
   const [message, setMessage] = useState('')
+
+  // AI 见解屏蔽名单（概念稿「静音此规则」的真实落点）：客户级屏蔽 = 不再自动/批量触发该客户的见解。
+  // 存储与客户工作台共用同一份 config（shared/insightBlacklist），手动见解不受影响，设置页可解除
+  const [insightBlacklist, setInsightBlacklist] = useState<InsightBlacklistEntry[]>([])
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const list = await configService.getAiInsightNonCustomerBlacklist().catch(() => [])
+      if (!cancelled) setInsightBlacklist(list)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const flashMessage = (text: string) => {
+    setMessage(text)
+    window.setTimeout(() => setMessage(''), 2400)
+  }
+
+  // 静音/解除静音当前提醒所属客户（写既有屏蔽名单，带二次确认；无会话 id 的记录不显示入口）
+  const toggleInsightBlacklist = async (record: InsightRecordSummary) => {
+    const sessionId = String(record.sessionId || '')
+    if (!sessionId) return
+    if (!isInsightBlacklisted(insightBlacklist, sessionId)) {
+      const ok = window.confirm(
+        `屏蔽「${record.displayName}」的 AI 见解？\n\n` +
+        '屏蔽后：TA 不会被自动或批量触发 AI 见解与分析（例如早间简报）。\n' +
+        '你手动发起的识别与见解仍会正常执行。\n\n可随时在设置页解除。'
+      )
+      if (!ok) return
+      const next = addInsightBlacklistEntry(insightBlacklist, sessionId, 'manual', Date.now())
+      setInsightBlacklist(next)
+      await configService.setAiInsightNonCustomerBlacklist(next)
+      flashMessage(`已屏蔽「${record.displayName}」的 AI 见解，可在设置页查看名单`)
+      return
+    }
+    const ok = window.confirm(`解除对「${record.displayName}」的 AI 见解屏蔽？\n\n解除后 TA 会重新参与自动与批量的 AI 见解与分析。`)
+    if (!ok) return
+    const next = removeInsightBlacklistEntry(insightBlacklist, sessionId)
+    setInsightBlacklist(next)
+    await configService.setAiInsightNonCustomerBlacklist(next)
+    flashMessage(`已解除对「${record.displayName}」的 AI 见解屏蔽`)
+  }
 
   const dateRange = useMemo(() => {
     const now = new Date()
@@ -276,39 +333,67 @@ export default function InsightInboxPage() {
     setSearchParams(searchParams, { replace: true })
   }
 
+  // 逐条已读闭环（既有 insight:markRecordRead 能力，只读展示不改触发链路）
+  const markRead = async (recordId: string) => {
+    try {
+      const result = await window.electronAPI.insight.markRecordRead(recordId)
+      if (result.success) {
+        setRecords((prev) => prev.map((record) => record.id === recordId ? { ...record, read: true } : record))
+      }
+    } catch { /* 已读失败不打断浏览，刷新后以存储为准 */ }
+  }
+
   return (
     <div className="insight-inbox-page">
       <section className="insight-inbox-main">
-        {/* 页眉（概念稿 .shead）：小标 → 页名 → 说明；右侧为操作区 */}
+        {/* 页眉（概念稿 .shead）：hero 用既有 unread / today 统计拼句，无新口径；
+            右侧 刷新 / 规则设置（跳既有设置页 AI 见解 tab）均为 quiet 档，不造无接口按钮 */}
         <header className="shead insight-inbox-header">
           <div className="insight-inbox-title-block">
             <p className="eyebrow">AI · 重要提醒</p>
             <h1 className="hero insight-inbox-title-line">
-              <img src={INSIGHT_AVATAR_URL} alt="" className="insight-inbox-logo" />
-              <span>重要提醒</span>
+              {stats.unreadCount > 0
+                ? <><b>{stats.unreadCount}</b> 条提醒未读 · 今天新增 <b>{stats.todayCount}</b> 条</>
+                : '暂无未读提醒'}
             </h1>
-            <p className="sub">需要及时关注的客户动态；每条都能打开对应会话核对。</p>
+            <p className="sub">既有规则触发的留存记录 · 每条都能打开对应会话核对</p>
           </div>
           <div className="shead__actions">
-            <button className="insight-icon-btn" onClick={() => { void loadRecords() }} title="刷新">
-              <RefreshCw size={18} className={loading ? 'spinning' : ''} />
+            <button
+              className="btn btn--quiet"
+              onClick={() => navigate('/settings', { state: { initialTab: 'insight', backgroundLocation: location } })}
+              title="在设置 · AI 见解中调整触发范围"
+            >
+              <SlidersHorizontal size={14} /> 规则设置
+            </button>
+            <button className="btn btn--quiet" onClick={() => { void loadRecords() }} title="刷新">
+              <RefreshCw size={14} className={loading ? 'spinning' : ''} /> 刷新
             </button>
           </div>
         </header>
 
-        {/* 状态数字条（概念稿 .stats）：数字只取既有统计口径，不加派生指标 */}
+        {/* 状态数字条（概念稿 .stats 四格）：数字只取 listRecords 既有 summary 字段，不加派生口径。
+            total 受筛选影响，today/unread 是当前可见范围——副行写清楚，避免读错 */}
         <div className="stats insight-inbox-stats">
           <div className="stat">
-            <div className="stat__n">{stats.total}</div>
-            <div className="stat__l">当前筛选</div>
+            <div className="stat__n">{stats.unreadCount}</div>
+            <div className="stat__l">未读</div>
+            <div className="stat__d">打开或查看日志即记已读</div>
           </div>
           <div className="stat">
             <div className="stat__n">{stats.todayCount}</div>
             <div className="stat__l">今天新增</div>
+            <div className="stat__d">以今日 0 点为界</div>
           </div>
           <div className="stat">
-            <div className="stat__n">{stats.unreadCount}</div>
-            <div className="stat__l">未读</div>
+            <div className="stat__n">{contacts.length}</div>
+            <div className="stat__l">涉及联系人</div>
+            <div className="stat__d">按提醒条数排序</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.total}</div>
+            <div className="stat__l">当前筛选</div>
+            <div className="stat__d">受关键词 / 日期 / 来源筛选影响</div>
           </div>
         </div>
 
@@ -352,20 +437,20 @@ export default function InsightInboxPage() {
                   key={record.id}
                   className={`insight-card ${record.read ? '' : 'unread'} ${focusedRecordId === record.id ? 'focused' : ''}`}
                 >
-                  <div className="insight-card-avatar">
-                    <Avatar src={INSIGHT_AVATAR_URL} name="见解" size={44} shape="rounded" lazy={false} />
-                  </div>
                   <div className="insight-card-content">
-                    {/* 状态行：对象（发给谁 / 会话）+ 时间 */}
+                    {/* 状态行：对象（会话）+ 未读标 + 时间 */}
                     <div className="insight-card-header">
                       <div className="insight-recipient">
-                        <Avatar src={record.avatarUrl} name={record.displayName} size={28} shape="rounded" />
+                        <Avatar src={record.avatarUrl} name={record.displayName} size={24} shape="rounded" />
                         <div className="insight-recipient-text">
-                          <span className="insight-recipient-name">发给 {record.displayName}</span>
-                          <span className="insight-session-id">{record.sessionId}</span>
+                          <span className="insight-recipient-name">
+                            {record.displayName}
+                            {!record.read && <span className="tag tag--task insight-unread-tag">未读</span>}
+                          </span>
+                          <span className="insight-session-id num">{record.sessionId}</span>
                         </div>
                       </div>
-                      <span className="insight-time">{formatRecordTime(record.createdAt)}</span>
+                      <span className="insight-time num">{formatRecordTime(record.createdAt)}</span>
                     </div>
                     {record.sourceType === 'message_analysis' && record.messageInsight && (
                       <div className="message-analysis-target">
@@ -379,39 +464,55 @@ export default function InsightInboxPage() {
                     <p className="insight-body">{record.insight}</p>
                     {record.sourceType === 'message_analysis' && record.messageInsight && (
                       <div className="message-analysis-tags">
-                        <span>情绪：{record.messageInsight.analysis.emotion}</span>
-                        <span>意图：{record.messageInsight.analysis.intent}</span>
-                        <span>话题：{record.messageInsight.analysis.topic}</span>
+                        <span className="tag tag--neutral">情绪：{record.messageInsight.analysis.emotion}</span>
+                        <span className="tag tag--neutral">意图：{record.messageInsight.analysis.intent}</span>
+                        <span className="tag tag--neutral">话题：{record.messageInsight.analysis.topic}</span>
                       </div>
                     )}
-                    {/* 操作区：来源/触发/阶段状态 + 动作按钮 */}
+                    {/* 操作区：来源/触发安静 tag + 动作（每条最多一个轻 primary = 打开会话） */}
                     <div className="insight-card-foot">
                       <div className="insight-card-tags">
-                        <span className={`insight-source-pill ${record.sourceType || 'insight'}`}>{getSourceLabel(record.sourceType)}</span>
-                        <span className={`insight-trigger-pill ${record.triggerReason}`}>{getTriggerLabel(record.triggerReason)}</span>
+                        <span className="tag tag--neutral">{getSourceLabel(record.sourceType)}</span>
+                        <span className="tag tag--plain">{getTriggerLabel(record.triggerReason)}</span>
                         {record.salesStage && (
-                          <span className={`insight-stage-pill stage-${record.salesStage}`}>{record.salesStage}</span>
+                          <span className={`tag ${getStageTagClass(record.salesStage)}`}>{record.salesStage}</span>
                         )}
                       </div>
                       <div className="insight-card-actions">
+                        <button className="btn btn--primary-soft btn--sm" onClick={() => openChat(record)} title="打开对应会话核对">
+                          <MessageSquare size={13} /> 打开会话
+                        </button>
+                        {!record.read && (
+                          <button className="btn btn--quiet btn--sm" onClick={() => { void markRead(record.id) }}>
+                            标为已读
+                          </button>
+                        )}
                         {crmMap[record.sessionId] && (
                           <button
-                            className="insight-action-btn crm"
+                            className="btn btn--quiet btn--sm"
                             onClick={() => navigate(`/customers?id=${crmMap[record.sessionId].id}`)}
                             title={`已在 CRM：${crmMap[record.sessionId].name} · 查看档案`}
                           >
-                            <UserCheck size={14} />
+                            查看档案
                           </button>
                         )}
-                        <button className="insight-action-btn" onClick={() => openChat(record)} title="打开聊天">
-                          <MessageSquare size={14} />
+                        <button className="btn btn--quiet btn--sm" onClick={() => { void copyText(record.insight, '提醒内容已复制') }}>
+                          <Copy size={13} /> 复制
                         </button>
-                        <button className="insight-action-btn" onClick={() => { void copyText(record.insight, '提醒内容已复制') }} title="复制提醒内容">
-                          <Copy size={14} />
+                        <button className="btn btn--quiet btn--sm" onClick={() => { void openLog(record.id) }}>
+                          <Code size={13} /> 请求日志
                         </button>
-                        <button className="insight-action-btn code" onClick={() => { void openLog(record.id) }} title="查看请求日志">
-                          <Code size={14} />
-                        </button>
+                        {/* 静音（概念稿 alert__acts）：真实存储 = AI 见解屏蔽名单（客户级，带确认，设置页可解除）；
+                            无会话 id 的记录无从屏蔽，不渲染 */}
+                        {record.sessionId && (
+                          <button
+                            className="btn btn--quiet btn--sm"
+                            onClick={() => { void toggleInsightBlacklist(record) }}
+                            title="只影响自动/批量触发，不影响你手动发起的识别与见解"
+                          >
+                            <Ban size={13} /> {isInsightBlacklisted(insightBlacklist, record.sessionId) ? '解除静音' : '静音'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

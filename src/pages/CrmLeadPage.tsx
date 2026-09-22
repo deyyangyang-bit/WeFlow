@@ -19,6 +19,8 @@ import type { ContactInfo } from '../types/models'
 import { getCrmLeadSourcePreset, getCrmSalesList, setCrmSalesList } from '../services/config'
 import { buildOwnerMap, canBindWxid, canClaimLead, canManageAssignment, isSalesView, filterLeadsForView, visibleOwnerChips, leadPageView, distributePreview, suggestReassignOwner, buildMyCards, sla2StatusView, identityLikeFromIpc, type LeadOwnerInfo, type IdentityLike, type ManagerTab, type AssignMode, type Sla2StatusView } from '../utils/leadAssignmentView'
 import { LEAD_SLA_UNASSIGNED_SENTINEL } from '../../shared/leadSla'
+import { roundRobinStartIndex } from '../../shared/leadRoundRobin'
+import { createCoalescedScheduler } from '../utils/coalescedScheduler'
 import { parseJsonObject, parseJsonArray } from '../../shared/safeJson'
 import { getCrmAssignWeights, setCrmAssignWeights } from '../services/config'
 import './CrmLeadPage.scss'
@@ -39,10 +41,31 @@ const FC_TYPE_LABEL: Record<string, string> = { dealer: '疑似经销商', end_u
 const FC_FIELD_LABEL: Record<string, string> = { company: '公司', industry: '行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间', needs: '需求' }
 const FC_GAP_LABEL: Record<string, string> = { customer_type: '客户类型', company_industry: '公司/行业', intent_model: '需求型号', quantity: '数量', budget: '预算', purchase_timeframe: '采购时间' }
 const PAGE_SIZE = 50
+/** 失效事件 → fetchAll 的固定窗口合并时长（主进程总线已合并 150ms 一轮；本页最大额外延迟 = 本值） */
+const INVALIDATION_REFRESH_COALESCE_MS = 300
 /** SLA2「查看依据」出口状态（主进程 crmSla2EvidenceService 已脱敏/裁剪，前端只展示） */
 type Sla2EvidenceResult = Awaited<ReturnType<typeof window.electronAPI.crm.sla2Evidence>>
 
 interface RawRow { text?: string; phone?: string; wechat?: string; name?: string; tag?: string; note?: string }
+
+// ── 单条录入查重面板 + 历史分配导入（2026-09-19）──
+interface DupAssignmentRow { id: number; salesName: string; mode: string; status: string; assignedAt: number; sla1Stopped: boolean }
+interface DupDetail {
+  kind: 'lead' | 'customer' | 'conflict'
+  contactMasked: string
+  leadId?: number
+  accountId?: number
+  status?: string
+  source?: string
+  currentOwner?: string
+  assignments: DupAssignmentRow[]
+  message: string
+}
+interface HistoryRow { contactType?: string; contactValue?: string; sales?: string; assignedAt?: string; endState?: string; source?: string }
+interface HistoryResult { total: number; leadsCreated: number; leadsReused: number; assignmentsCreated: number; recycled: number; skipped: Array<{ line: number; contactMasked: string; reason: string }> }
+interface DupBadgeInfo { mask: string; others: string[] }
+const ASSIGN_STATUS_LABEL: Record<string, string> = { assigned: '已分配', claimed: '已认领', recycled: '已回收', transferred: '已移交' }
+const ASSIGN_MODE_LABEL: Record<string, string> = { manual: '手动', weight: '比例', round_robin: '轮询', load: '负载' }
 
 function fmtTime(ts?: number): string {
   if (!ts) return '-'
@@ -127,6 +150,22 @@ export default function CrmLeadPage() {
   const [customSource, setCustomSource] = useState('')
   const [rows, setRows] = useState<RawRow[]>([])
   const [fileName, setFileName] = useState('')
+  // 单条录入 + 查重面板 + 历史分配导入（2026-09-19）
+  const [showCreate, setShowCreate] = useState(false)
+  const [createSource, setCreateSource] = useState(PRESET_SOURCES[0])
+  const [createPhone, setCreatePhone] = useState('')
+  const [createWechat, setCreateWechat] = useState('')
+  const [createNick, setCreateNick] = useState('')
+  const [createNote, setCreateNote] = useState('')
+  const [qrFilePath, setQrFilePath] = useState('')
+  const [qrFileName, setQrFileName] = useState('')
+  const [dupDetail, setDupDetail] = useState<DupDetail | null>(null)
+  const [dupMatches, setDupMatches] = useState<{ leadMatches: Record<string, DupBadgeInfo>; customerMatches: Record<string, DupBadgeInfo> }>({ leadMatches: {}, customerMatches: {} })
+  const [dupPopId, setDupPopId] = useState('')
+  const [showHistoryImport, setShowHistoryImport] = useState(false)
+  const [historyText, setHistoryText] = useState('')
+  const [historyBusy, setHistoryBusy] = useState(false)
+  const [historyResult, setHistoryResult] = useState<HistoryResult | null>(null)
   const [detail, setDetail] = useState<{ lead: LeadRow; activities: Array<{ action: string; note?: string; created_at: number }>; ownHist: OwnHistRow[]; sla2: Sla2StatusView | null } | null>(null)
   const [deadLead, setDeadLead] = useState<LeadRow | null>(null)
   const [deadReason, setDeadReason] = useState('')
@@ -139,10 +178,13 @@ export default function CrmLeadPage() {
   const [editWechat, setEditWechat] = useState('')
   const [page, setPage] = useState(1)
   const fileRef = useRef<HTMLInputElement>(null)
+  const qrRef = useRef<HTMLInputElement>(null)
   // ── 线索分配（Phase 1）：勾选集合 / 归属筛选（默认「未分配」）/ 当前归属映射 / 分配弹窗 ──
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [ownerChip, setOwnerChip] = useState('未分配')
   const [salesList, setSalesList] = useState<string[]>([])
+  // round_robin 跨批次游标（crm:assignment:roundRobinNext 只读）：预览起点与后端同口径
+  const [rrNext, setRrNext] = useState('')
   const [ownerByLead, setOwnerByLead] = useState<Record<number, LeadOwnerInfo>>({})
   const [showAssign, setShowAssign] = useState(false)
   const [assignName, setAssignName] = useState('')
@@ -241,17 +283,22 @@ export default function CrmLeadPage() {
   }
 
   const fetchAll = async () => {
-    const [ls, ov, sales, asg, idt] = await Promise.all([
+    const [ls, ov, sales, asg, idt, rr] = await Promise.all([
       window.electronAPI.crm.leadList({ limit: 10000 }),
       window.electronAPI.crm.leadOverview(),
       getCrmSalesList(),
       window.electronAPI.crm.assignmentList({ pageSize: 100000 }),
-      window.electronAPI.identity.get()
+      window.electronAPI.identity.get(),
+      // round_robin 跨批次游标（只读最小信息）：预览起点与后端 assignBatchLeads 同口径
+      window.electronAPI.crm.assignmentRoundRobinNext().catch(() => null)
     ])
+    // 撞客一期：重复组徽标匹配（失败不影响列表装载）
+    try { setDupMatches(await window.electronAPI.crm.dupGroupList()) } catch { /* ignore */ }
     setLeads(ls || [])
     setOverview(ov || null)
     setSalesList(sales)
     setIdentity(identityLikeFromIpc(idt))
+    setRrNext(rr?.data?.next || '')
     // 当前归属 = 该 lead 最新一条有效分配行（宪法 §1.3）；含 assignmentId 供调派/回收用
     setOwnerByLead(buildOwnerMap(asg?.data?.rows || []))
     setAsgRows((asg?.data?.rows || []) as unknown as Array<Record<string, unknown>>)
@@ -262,6 +309,21 @@ export default function CrmLeadPage() {
   useEffect(() => { void fetchAll() }, [])
   // 切微信号 = 换库（§2.40）：账号切换后重查
   useWxidRefresh(() => { void fetchAll() })
+  // 分配数据失效事件（SLA 定时回收 / LAN、中央下行 assign/transfer/recycle / 其他主进程或窗口写入）：
+  // 固定窗口 300ms 合并后重拉（2026-09-20：主进程总线已按 150ms 固定窗口合并过一轮；本页再合并
+  // 同语义——首个事件启动窗口、窗口内只合并不重置、到期必然 fetchAll，持续事件流下最大额外延迟
+  // = 300ms，不会像尾随 debounce 那样被连续事件无限推迟。不形成循环：fetchAll 零写入，不产生新事件）。
+  // 组件卸载必须移除监听并 dispose 窗口。
+  const fetchAllRef = useRef(fetchAll)
+  fetchAllRef.current = fetchAll
+  useEffect(() => {
+    const scheduler = createCoalescedScheduler(INVALIDATION_REFRESH_COALESCE_MS, () => { void fetchAllRef.current() })
+    const off = window.electronAPI.crm.onAssignmentInvalidated(() => scheduler.schedule())
+    return () => {
+      off()
+      scheduler.dispose()
+    }
+  }, [])
   // 来源预设与设置页联动
   useEffect(() => {
     void getCrmLeadSourcePreset().then((sources) => {
@@ -396,9 +458,11 @@ export default function CrmLeadPage() {
   const curPage = Math.min(page, totalPages)
   const pageItems = poolFiltered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
 
-  // 屏 3 预览（纯前端，与后端 buildDistribution 同口径）
+  // 屏 3 预览（纯前端，与后端 buildDistribution 同口径；round_robin 起点与后端同一游标 +
+  // 同一 shared/leadRoundRobin 纯函数，批量成功后 fetchAll 刷新 rrNext → 预览自动跟随）
   const poolAvailable = poolCounts.pool
-  const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable])
+  const rrStartIdx = useMemo(() => roundRobinStartIndex(salesList, rrNext), [salesList, rrNext])
+  const batchPreview = useMemo(() => distributePreview(assignMode, Math.min(batchCount, poolAvailable || batchCount), salesList, assignWeights, loads, rrStartIdx), [assignMode, batchCount, salesList, assignWeights, loads, poolAvailable, rrStartIdx])
   // 屏 6 左 待改派列表：最新分配行 recycled 的线索
   const reassignLeads = useMemo(() => leads.filter((l) => String(latestAsg[l.id]?.status || '') === 'recycled'), [leads, latestAsg])
   // 屏 4 销售资源卡三分段（buildMyCards 纯函数）：待跟进/跟进中按当前有效权属，已回收按最新分配行判——
@@ -469,6 +533,64 @@ export default function CrmLeadPage() {
       setDedupeDetail(d?.rows || [])
     } catch { setDedupeDetail(null) }
     await fetchAll()
+  }
+  // ── 单条录入 + 查重面板（2026-09-19）：输入即查、命中强制三选一（三者都不建新线索）──
+  const resetCreate = () => { setCreatePhone(''); setCreateWechat(''); setCreateNick(''); setCreateNote(''); setQrFilePath(''); setQrFileName(''); setDupDetail(null) }
+  const runDupCheck = async (phone: string, wechat: string) => {
+    const p = phone.trim(); const w = wechat.trim()
+    if (!p && !w) { setDupDetail(null); return }
+    try {
+      const res = await window.electronAPI.crm.leadDupCheck({ phone: p || undefined, wechat: w || undefined })
+      setDupDetail(res.duplicate ? res.detail : null)
+    } catch { setDupDetail(null) }
+  }
+  const doCreate = async () => {
+    if (!createSource.trim()) { setNotice('请选择渠道来源'); return }
+    if (!createPhone.trim() && !createWechat.trim()) { setNotice('手机号 / 微信号至少填一项'); return }
+    if (createPhone.trim() && !createNick.trim()) { setNotice('填了手机号必须同步填写微信昵称'); return }
+    let qr = ''
+    if (qrFilePath) {
+      const saved = await window.electronAPI.crm.leadQrSave(qrFileName || 'qr.png', qrFilePath)
+      if (!saved.ok || !saved.path) { setNotice('二维码图片保存失败，请重试'); return }
+      qr = saved.path
+    }
+    const res = await window.electronAPI.crm.leadCreate({
+      source: createSource.trim(),
+      phone: createPhone.trim() || undefined,
+      wechat: createWechat.trim() || undefined,
+      wxNickname: createNick.trim() || undefined,
+      qrPath: qr || undefined,
+      note: createNote.trim() || undefined
+    })
+    if (res.ok) {
+      setShowCreate(false); resetCreate()
+      setNotice(`线索已创建（lead #${res.data?.leadId}），已入资源池待分配`)
+      await fetchAll()
+      return
+    }
+    if (res.code === 'E201' && res.duplicate) setDupDetail(res.duplicate)
+    else setNotice(res.message || '创建失败')
+  }
+  // ── 历史分配导入（SLA 哨兵 2100，宪法 §3 登记行）──
+  const parseHistoryText = (text: string): HistoryRow[] =>
+    text.split(/\n+/).map((l) => l.trim()).filter(Boolean).map((line) => {
+      const parts = line.split(/[,，\t]/).map((s) => s.trim())
+      const value = parts[1] || ''
+      const looksPhone = /^1[3-9]\d{9}$/.test(value)
+      const type = parts[0] ? (/微信|wechat/i.test(parts[0]) ? 'wechat' : (looksPhone ? 'phone' : 'wechat')) : (looksPhone ? 'phone' : 'wechat')
+      return { contactType: type, contactValue: value, sales: parts[2] || '', assignedAt: parts[3] || '', endState: parts[4] || '', source: parts[5] || '' }
+    }).filter((r) => r.contactValue && r.sales)
+  const doHistoryImport = async () => {
+    const parsed = parseHistoryText(historyText)
+    if (!parsed.length) { setNotice('未解析到有效行（格式：联系方式,销售,分配时间[,结束状态][,渠道]）'); return }
+    setHistoryBusy(true)
+    try {
+      const res = await window.electronAPI.crm.leadHistoryImport('粘贴文本', parsed)
+      setHistoryResult(res)
+      setNotice(`历史导入完成：新建线索 ${res.leadsCreated}、复用 ${res.leadsReused}，写入分配 ${res.assignmentsCreated} 条（已回收 ${res.recycled}），跳过 ${res.skipped.length} 条——历史行永不参与 SLA 计时`)
+      await fetchAll()
+    } catch { setNotice('历史导入失败，请检查格式') }
+    setHistoryBusy(false)
   }
   // 查重明细导出 CSV（BOM 头保证 Excel 中文不乱码；明细源端已脱敏，导出不出敏感原文）
   const exportDedupeCsv = () => {
@@ -758,15 +880,17 @@ export default function CrmLeadPage() {
         </div>
         <div className="shead__actions">
           {!salesView && managerTab === 'pool' && (
-            <button className="btn btn--plain" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
+            <button className="btn btn--quiet" onClick={doRefresh} title="重新检查线索的首触截止时间，超时未联系的会加入今日行动提醒"><RefreshCw size={14} /> 检查超时</button>
           )}
           {!salesView && selected.size > 0 && managerTab === 'pool' && (
-            <button className="btn btn--primary" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
+            <button className="btn btn--primary-soft" onClick={() => { setAssignName(''); setNewSales(''); setShowAssign(true) }}><UserCheck size={14} /> 分配给…（{selected.size}）</button>
           )}
           {!salesView && (
-            <button className="btn btn--plain" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
+            <button className="btn btn--quiet" title="销售离职时，把其名下的线索分配与客户/商机/物流归属批量移交给接手人" onClick={() => { setDepartFrom(''); setDepartTo(''); setShowDeparture(true) }}><UserX size={14} /> 离职移交</button>
           )}
-          {!salesView && <button className="btn btn--primary" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
+          {!salesView && <button className="btn btn--plain" onClick={() => setShowImport(true)}><Upload size={14} /> 导入线索</button>}
+          {!salesView && <button className="btn btn--plain" onClick={() => { resetCreate(); setShowCreate(true) }}><UserPlus size={14} /> 新增线索</button>}
+          {!salesView && <button className="btn btn--plain" title="升级前历史客户分配情况回填（历史行永不参与 SLA 计时）" onClick={() => { setHistoryText(''); setHistoryResult(null); setShowHistoryImport(true) }}><ClipboardPaste size={14} /> 导入历史分配</button>}
         </div>
       </div>
       {notice && <div className="crm-notice">{notice}</div>}
@@ -774,18 +898,16 @@ export default function CrmLeadPage() {
       {view === 'sales' ? (
         /* ── 屏 4：销售 · 我的资源卡 ── */
         <div className="lp-sales">
-          <div className="lp-seg-wrap">
-            <div className="chipbar">
-              {salesSegDefs.map((d) => (
-                <button key={d.id} className={`chip ${salesSeg === d.id ? 'is-on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label}<span className="chip__n">{d.count}</span></button>
-              ))}
-            </div>
-            <span className="lp-hint">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
+          <div className="rail lp-tabs" aria-label="我的资源分段">
+            {salesSegDefs.map((d) => (
+              <button key={d.id} className={`rail__item ${salesSeg === d.id ? 'is-on' : ''}`} onClick={() => setSalesSeg(d.id)}>{d.label}<span className="rail__n">{d.count}</span></button>
+            ))}
+            <span className="rail__sum">第一段 SLA：分配后 24h 内加好友；超时每 24h 复查，第 3 次抄送主管后回收改派</span>
           </div>
           {myCardsShown.map(({ lead: l, cd, recycled, sla2 }) => (
             <div key={l.id} className="lp-card" onClick={() => void openDetail(l.id)}>
               <div className="lp-card__main">
-                <div className="lp-card__t1 num">{maskLead(l)} <span className={`pill pill--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
+                <div className="lp-card__t1 num">{maskLead(l)} <span className={`lp-qtag lp-qtag--${cd.pill}`}>{recycled ? '已回收' : cd.pillText}</span></div>
                 <div className="lp-card__t2">{String(l.source || '')}{l.tag ? ` · ${l.tag}` : ''}{l.note ? ` · ${l.note}` : ''} · 分配于 {fmtTime(Number(latestAsg[l.id]?.created_at || 0))}</div>
               </div>
               <div className={`lp-card__countdown ${cd.tier === 'wait_claim' ? 'ok' : cd.tier}`}>
@@ -793,23 +915,23 @@ export default function CrmLeadPage() {
                 <div className="l">{recycled ? '已回资源池，等待改派' : cd.label}</div>
               </div>
               {!recycled && cd.tier === 'wait_claim' && (
-                <button className="btn btn--primary" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
+                <button className="btn btn--sm btn--primary-soft" onClick={(e) => { e.stopPropagation(); setClaimTarget(l); setClaimWechat(''); setClaimNick('') }}><Hand size={13} /> 认领</button>
               )}
               {!recycled && (cd.tier === 'ok' || cd.tier === 'warn' || cd.tier === 'over') && (
-                <button className="btn btn--plain" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
+                <button className="btn btn--sm btn--quiet" onClick={(e) => { e.stopPropagation(); setBindTarget(l) }}><Link2 size={13} /> 绑定微信</button>
               )}
               {!recycled && cd.tier !== 'wait_claim' && (
-                <button className="btn btn--plain" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
+                <button className="btn btn--sm btn--quiet" title="认领满 24 小时自动触发；也可立即分析。结果为 AI 提案，确认后才写入客户档案" onClick={(e) => { e.stopPropagation(); void openClassify(l) }}><Sparkles size={13} /> AI 首次分类</button>
               )}
               {!recycled && cd.tier === 'done' && (
-                <button className="btn btn--quiet" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
+                <button className="btn btn--sm btn--quiet" onClick={(e) => { e.stopPropagation(); void openDetail(l.id) }}>查看对话</button>
               )}
               {cd.tier === 'done' && (
                 <div className="lp-sla2" onClick={(e) => e.stopPropagation()}>
                   {sla2 ? (
-                    <span className={`pill pill--${sla2.pill}`}>{sla2.label}</span>
+                    <span className={`lp-qtag lp-qtag--${sla2.pill}`}>{sla2.label}</span>
                   ) : (
-                    <span className="pill pill--neutral">待扫描</span>
+                    <span className="lp-qtag">待扫描</span>
                   )}
                   <div className="lp-sla2__text">
                     {maskLead(l)} · {sla2 ? sla2.note : '暂无第二段结论，等规则/LLM 扫描或人工标记'}
@@ -823,14 +945,14 @@ export default function CrmLeadPage() {
         </div>
       ) : (
         <>
-          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左）：互斥视图，走概念稿分段控件 */}
-          <div className="chipbar lp-tabs">
-            <button className={`chip ${managerTab === 'pool' ? 'is-on' : ''}`} onClick={() => setManagerTab('pool')}>资源池</button>
-            <button className={`chip ${managerTab === 'console' ? 'is-on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台</button>
-            <button className={`chip ${managerTab === 'reassign' ? 'is-on' : ''}`} onClick={() => setManagerTab('reassign')}>
+          {/* 管理视角三页签（屏 2 / 屏 3 / 屏 6 左）：互斥视图，走概念稿分段控件 .rail（发丝底 / 选中 2px / mono 计数） */}
+          <div className="rail lp-tabs">
+            <button className={`rail__item ${managerTab === 'pool' ? 'is-on' : ''}`} onClick={() => setManagerTab('pool')}>资源池<span className="rail__n">{ov?.total ?? 0}</span></button>
+            <button className={`rail__item ${managerTab === 'console' ? 'is-on' : ''}`} onClick={() => setManagerTab('console')}>分配控制台<span className="rail__n">{poolCounts.pool}</span></button>
+            <button className={`rail__item ${managerTab === 'reassign' ? 'is-on' : ''}`} onClick={() => setManagerTab('reassign')}>
               回收改派
-              {poolCounts.recycledN > 0 && <span className="chip__n">{poolCounts.recycledN}</span>}
-              {notifyUnread > 0 && <span className="chip__n">升级提醒 {notifyUnread}</span>}
+              {poolCounts.recycledN > 0 && <span className="rail__n">{poolCounts.recycledN}</span>}
+              {notifyUnread > 0 && <span className="rail__n">提醒 {notifyUnread}</span>}
             </button>
           </div>
 
@@ -900,7 +1022,20 @@ export default function CrmLeadPage() {
                         {l.status === 'NEW' && <input type="checkbox" title="勾选后可批量分配" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} />}
                       </span>
                       <span className="lp-contact">
-                        <span className="lc-contact num lp-ell">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}</span>
+                        <span className="lc-contact num lp-ell">{maskLead(l)} {l.wechat && <span className="lc-wechat">微信:{l.wechat}</span>}
+                          {(() => {
+                            // 撞客一期（宪法 §3.1 duplicate_group）：只显示「与同事某某的客户重复」，不显示对方任何资料
+                            const hit = dupMatches.leadMatches[String(l.id)]
+                            if (!hit) return null
+                            const pop = dupPopId === `lead-${l.id}`
+                            return (
+                              <span className="dup-badge-wrap" onClick={(e) => e.stopPropagation()}>
+                                <span className="tag tag--insight dup-badge" title="撞客提示" onClick={() => setDupPopId(pop ? '' : `lead-${l.id}`)}>重复</span>
+                                {pop && <span className="dup-pop">与同事 {hit.others.join('、')} 的客户重复</span>}
+                              </span>
+                            )
+                          })()}
+                        </span>
                         <span className="psub lp-ell">{l.contact_type === 'wechat' ? '微信号' : l.contact_type === 'both' ? '手机+微信' : '手机号'}{l.name ? ` · ${l.name}` : ''}</span>
                       </span>
                       <span className="lp-ell">{String(l.source || '-')}</span>
@@ -1004,7 +1139,7 @@ export default function CrmLeadPage() {
             <>
           {notifies.length > 0 && (
             <div className="box">
-              <div className="box__t">升级提醒 <span className="pill pill--danger num">{notifyUnread}</span> <span className="box__h">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
+              <div className="box__t">升级提醒 <span className="lp-qtag lp-qtag--danger num">{notifyUnread}</span> <span className="box__h">SLA1 三次超时自动回收的主管通知（可投递、可确认已读）</span></div>
               <div className="lead-timeline">
                 {notifies.map((n) => {
                   let d: Record<string, unknown> = {}
@@ -1026,7 +1161,7 @@ export default function CrmLeadPage() {
             </div>
           )}
             <div className="box">
-              <div className="box__t">待改派 <span className="pill pill--danger num">{reassignLeads.length}</span> <span className="box__h">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
+              <div className="box__t">待改派 <span className="lp-qtag lp-qtag--danger num">{reassignLeads.length}</span> <span className="box__h">回收改派优先给其他人，防止同一销售循环占位（设计稿屏 6）</span></div>
               <div className="tbl">
                 <div className="thead lp-own-grid"><span>线索</span><span>原归属</span><span>回收原因</span><span>建议改派给</span><span className="tc-r">动作</span></div>
                 {reassignLeads.map((l) => {
@@ -1039,13 +1174,13 @@ export default function CrmLeadPage() {
                         <span className="psub lp-ell">{String(l.source || '')}{l.note ? ` · ${l.note}` : ''}</span>
                       </span>
                       <span className="lp-ell">{from || '-'}</span>
-                      <span className="lp-ell"><span className="pill pill--danger">{recycleReasons[l.id] || '人工回收'}</span></span>
+                      <span className="lp-ell"><span className="lp-qtag lp-qtag--danger">{recycleReasons[l.id] || '人工回收'}</span></span>
                       <span className="lp-cell">
                         {sug ? <span className="tag tag--neutral">{sug}（建议）</span> : <span className="psub">名单无其他人，请先补充销售名单</span>}
                         {sug ? <span className="psub">在手 {loads[sug] ?? 0} 条 · 非原归属</span> : null}
                       </span>
                       <span className="tc-a">
-                        <button className="btn btn--sm btn--primary" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
+                        <button className="btn btn--sm btn--primary-soft" disabled={!sug || reassignBusy === l.id} onClick={() => void doReassign(l.id, sug)}>
                           {reassignBusy === l.id ? '改派中…' : '确认改派'}
                         </button>
                       </span>
@@ -1091,6 +1226,101 @@ export default function CrmLeadPage() {
             <div className="lead-preview">已识别 {rows.length} 行{rows.length ? '，点击导入将写入线索池（重复号码自动跳过）' : ''}</div>
             <div className="form-actions">
               <button className="btn btn--primary" disabled={!rows.length} onClick={() => void doImport()}><ClipboardPaste size={14} /> 导入</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="crm-modal" onClick={() => setShowCreate(false)}>
+          <div className="crm-modal-body lead-import" onClick={(e) => e.stopPropagation()}>
+            <h3><UserPlus size={15} /> 新增线索 <button className="btn btn--plain" onClick={() => setShowCreate(false)}><X size={14} /></button></h3>
+            <div className="form-grid">
+              <label>渠道来源
+                <select value={createSource} onChange={(e) => setCreateSource(e.target.value)}>
+                  {presetSources.map((s) => <option key={s}>{s}</option>)}
+                </select>
+              </label>
+              <label>手机号（与微信号二选一）
+                <input placeholder="客户留的手机号" value={createPhone} onChange={(e) => setCreatePhone(e.target.value)} onBlur={() => void runDupCheck(createPhone, createWechat)} />
+              </label>
+              <label>微信号（与手机号二选一）
+                <input placeholder="客户留的微信号" value={createWechat} onChange={(e) => setCreateWechat(e.target.value)} onBlur={() => void runDupCheck(createPhone, createWechat)} />
+              </label>
+              <label>微信昵称{createPhone.trim() ? ' *' : '（建议填写）'}
+                <input placeholder="客户的微信昵称，加好友时人工核对用" value={createNick} onChange={(e) => setCreateNick(e.target.value)} />
+              </label>
+              <label>备注
+                <input placeholder="客户需求原话，如：求2T叉车" value={createNote} onChange={(e) => setCreateNote(e.target.value)} />
+              </label>
+              <label>微信二维码（可选，存图不解析）
+                <span className="lead-file">
+                  <button className="btn btn--plain" onClick={() => qrRef.current?.click()}><FileSpreadsheet size={14} /> 选择图片</button>
+                  <span className="lc-filename">{qrFileName || '支持 png / jpg / webp'}</span>
+                  <input ref={qrRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) { setQrFilePath((f as File & { path?: string }).path || ''); setQrFileName(f.name) } e.target.value = '' }} />
+                </span>
+              </label>
+            </div>
+            {dupDetail && (
+              <div className="lead-dup-panel">
+                <div className="lead-dup-title"><AlertTriangle size={14} /> {dupDetail.message}</div>
+                {dupDetail.kind === 'lead' && (
+                  <>
+                    <div className="lead-dup-meta">联系方式 {dupDetail.contactMasked} · 线索状态 {STATUS_META[dupDetail.status || 'NEW']?.label || dupDetail.status || 'NEW'} · 来源 {dupDetail.source || '—'} · 当前归属 {dupDetail.currentOwner || '资源池（未分配）'}</div>
+                    {dupDetail.assignments.length > 0 && (
+                      <table className="lead-dup-table">
+                        <thead><tr><th>销售</th><th>方式</th><th>状态</th><th>分配时间</th><th>加好友</th></tr></thead>
+                        <tbody>
+                          {dupDetail.assignments.map((a) => (
+                            <tr key={a.id}>
+                              <td>{a.salesName || '—'}</td>
+                              <td>{ASSIGN_MODE_LABEL[a.mode] || a.mode || '—'}</td>
+                              <td>{ASSIGN_STATUS_LABEL[a.status] || a.status || '—'}</td>
+                              <td>{a.assignedAt ? new Date(a.assignedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}</td>
+                              <td>{a.sla1Stopped ? '已加上（停表）' : '未停表'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
+                {dupDetail.kind === 'customer' && <div className="lead-dup-meta">该联系方式对应正式客户（account #{dupDetail.accountId}），成交客户不回线索池</div>}
+                <div className="lead-dup-actions">
+                  <span>请选择处理方式（不重复建线索）：</span>
+                  <button className="btn btn--plain" onClick={() => { setShowCreate(false); setNotice(`已记下：先联系原销售${dupDetail.currentOwner ? `（${dupDetail.currentOwner}）` : ''}再定`) }}>联系原销售</button>
+                  <button className="btn btn--plain" onClick={() => { setShowCreate(false); setNotice('请在列表中找到该线索，用「移交」流转给新销售') }}>走移交</button>
+                  <button className="btn btn--plain" onClick={() => { setShowCreate(false); setNotice('请在该客户档案页做复购归并') }}>复购归并</button>
+                </div>
+              </div>
+            )}
+            <div className="lead-preview">入池后先进入资源池待分配（SLA 从分配起算）；命中已有联系方式会被拦截</div>
+            <div className="form-actions">
+              <button className="btn btn--primary" disabled={Boolean(dupDetail)} onClick={() => void doCreate()}><UserPlus size={14} /> 创建线索</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showHistoryImport && (
+        <div className="crm-modal" onClick={() => setShowHistoryImport(false)}>
+          <div className="crm-modal-body lead-import" onClick={(e) => e.stopPropagation()}>
+            <h3><ClipboardPaste size={15} /> 导入历史分配 <button className="btn btn--plain" onClick={() => setShowHistoryImport(false)}><X size={14} /></button></h3>
+            <div className="lead-preview">
+              每行一条：联系方式,销售,分配时间[,结束状态][,渠道]。结束状态：active=仍在名下（默认）/ recycled=已回收。
+              ⚠️ 历史行永不参与 SLA 计时（截止时间强制 2100 哨兵）。示例：<br />
+              13800138000,张三,2025-06-01,active,抖音<br />
+              kevin_x,李四,2025-05-20,recycled,小红书
+            </div>
+            <textarea className="lead-paste" rows={7} value={historyText} onChange={(e) => setHistoryText(e.target.value)} placeholder={'13800138000,张三,2025-06-01,active,抖音\nkevin_x,李四,2025-05-20,recycled,小红书'} />
+            {historyResult && (
+              <div className="lead-preview">
+                新建线索 {historyResult.leadsCreated} · 复用 {historyResult.leadsReused} · 写入分配 {historyResult.assignmentsCreated}（已回收 {historyResult.recycled}） · 跳过 {historyResult.skipped.length}
+                {historyResult.skipped.slice(0, 5).map((s, i) => <div key={i} className="lead-dup-meta">{s.line ? `第 ${s.line} 行 ` : ''}{s.contactMasked}：{s.reason}</div>)}
+              </div>
+            )}
+            <div className="form-actions">
+              <button className="btn btn--primary" disabled={historyBusy || !historyText.trim()} onClick={() => void doHistoryImport()}><ClipboardPaste size={14} /> 导入历史分配</button>
             </div>
           </div>
         </div>

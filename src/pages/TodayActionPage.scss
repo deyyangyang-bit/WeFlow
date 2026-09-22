@@ -1,9 +1,9 @@
 /**
  * TodayActionPage.scss — 今日行动（2026-09-17 概念稿「屏 1 · 今日行动」）
  *
- * 页面语法：一句主张（.hero）→ 四格数字条（.stats）→ 信号细线索引（.siglist/.sig）
- *           → 右栏待办（.side/.todo）。这些结构件定义在 src/styles/main.scss 的
- *           「界面概念稿基础件」段；本文件只放本页自己的容器、开工简报、概览与弹窗。
+ * 页面语法：一句主张（.hero）→ 开工简报（.notice--brief）→ 四格数字条（.stats）
+ *           → 信号细线索引（.siglist/.sig）→ 右栏待办（.side/.todo）。这些结构件定义在
+ *           src/styles/main.scss 的「界面概念稿基础件」段；本文件只放本页自己的容器、概览与弹窗。
  * 颜色一律 --color-*（light/dark 与 8 套主题经 alias 自动继承）。纯样式，零逻辑改动。
  * 页边留白由外壳 .content 提供（24px 32px）——本页不再叠加整页 padding。
  */
@@ -104,6 +104,18 @@
     font-size: 11.5px;
     color: var(--color-text-tertiary);
   }
+
+  // P1.6 开工简报再安静一档（仅本页作用域；简报整件在 main.scss，聊天侧栏 / 客户档案
+  // 同语法调用不受影响）：覆盖 tag 收发丝边并去加重，brief__meta 的坐标数值降 tertiary ——
+  // 简报是「这份判断基于什么」的前提行，不该比正文更响；态的轻重仍由左 2px 色条承担。
+  .notice--brief .tag--plain {
+    border-color: var(--color-divider);
+    font-weight: 400;
+  }
+
+  .brief__meta b {
+    color: var(--color-text-tertiary);
+  }
 }
 
 // 空状态：细线框，不再白卡浮起
@@ -132,57 +144,11 @@
   }
 }
 
-// ── 开工简报（概念稿 .notice：左 2px 语义条，替代整块 tint 底 + 边框）──
-.signal-notice {
-  &--digest {
-    align-items: flex-start;
-    margin: 14px 0;
-  }
-
-  // 收起后的重开入口（digestDismissed 时渲染）：小按钮，不引入第二套样式
-  &--digest-reopen {
-    align-self: flex-start;
-    margin: 12px 0;
-  }
-
-  &__digest-body {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-    // 简报正文含会话键/客户名等长串：窄窗下按需断行，不把整页顶出横向滚动
-    overflow-wrap: anywhere;
-
-    p { margin: 0; line-height: 1.68; }
-    small { color: var(--color-text-tertiary); font-size: 11px; }
-    // 列向 flex 会把按钮拉满整行（看起来像分隔条）：动作按钮只占自身宽度，
-    // 事项行（.signal-notice__digest-item）仍整行可点
-    > .btn { align-self: flex-start; }
-  }
-
-  &__digest-coverage {
-    color: var(--color-text-tertiary);
-  }
-
-  &__digest-item {
-    background: none;
-    border: none;
-    padding: 2px 0;
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--color-accent);
-    text-align: left;
-    cursor: pointer;
-
-    &:hover { text-decoration: underline; }
-  }
-
-  &__digest-acts {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
-  }
-}
+// ── 开工简报（概念稿 .notice--brief / .brief__* / .brief-reopen 整件在 src/styles/main.scss）──
+// 简报只讲前提：六态口径 + 覆盖区间 + 生成时间 + 事项计数。事项本身交给下方「信号」与右侧待办 ——
+// 那是同一批线索 ID，同一屏出现两遍等于把列表读两次。六态轻重落在左边那条 2px
+// （accent / warn / stop 由 TSX 的 digestTone() 按态与真实覆盖缺口选择），态名另用文字标出。
+// 本页不再持有简报私有皮肤：它已随结构一起收进基础件，聊天侧栏 / 客户档案同语法调用。
 
 // ── 数据概览：降级为细线段落（概念稿把「来源/紧急度/阶段」移出首屏卡片；本页保留入口与内容，只去掉卡片外观）──
 .overview-card {

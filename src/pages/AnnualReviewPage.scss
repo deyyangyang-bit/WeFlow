@@ -1,0 +1,295 @@
+// AnnualReviewPage.scss —— 年度经营复盘（S4）
+// 复用全局设计语言：.shead/.eyebrow/.hero/.sub 页头、.seclabel 区块标、.btn--* 按钮档位、
+// --color-* 设计令牌；本页只定义 ar- 前缀布局，不创建第二套视觉系统。
+.ar-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.ar-shead {
+  flex-shrink: 0;
+  margin-bottom: 16px;
+
+  .hero { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+}
+
+// ── 完整性徽标（overall 四态档位） ─────────────────────────────────────────────
+.ar-badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  padding: 3px 8px; border-radius: 999px; letter-spacing: .02em;
+  border: 1px solid var(--color-divider);
+  &--complete { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 35%, transparent); }
+  &--partial { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 40%, transparent); }
+  &--unavailable { color: var(--color-text-tertiary); }
+}
+
+.ar-year-select {
+  height: 32px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--color-border); background: var(--color-bg-surface);
+  color: var(--color-text-primary); font-size: 12.5px; font-family: inherit;
+}
+
+// ── 阶段屏 ────────────────────────────────────────────────────────────────────
+.ar-skeleton {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border-block: 1px solid var(--color-divider);
+  &__hint { font-size: 12.5px; color: var(--color-text-tertiary); }
+  &__hint--sub { font-size: 11.5px; }
+}
+
+.ar-generating {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  border-block: 1px solid var(--color-divider);
+  &__t { font-size: 14px; font-weight: 500; }
+  &__p { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-secondary); }
+  &__hint { font-size: 11.5px; color: var(--color-text-tertiary); }
+}
+.ar-progress {
+  width: min(320px, 60%); height: 4px; border-radius: 999px; background: var(--color-bg-inset);
+  overflow: hidden;
+  &__bar { height: 100%; border-radius: 999px; background: var(--color-accent); transition: width .25s ease; }
+}
+
+.ar-state-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 4px; border-block: 1px solid var(--color-divider);
+  color: var(--color-text-secondary);
+  &__t { font-size: 13.5px; font-weight: 500; color: var(--color-text-primary); }
+  &__d { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+  .btn { margin-left: auto; flex: none; }
+  &--error { color: var(--color-warning); }
+}
+
+// ── 报告主体 ──────────────────────────────────────────────────────────────────
+.ar-body {
+  flex: 1; overflow-y: auto; padding-bottom: 32px;
+  display: flex; flex-direction: column; gap: 22px;
+}
+.ar-section { display: flex; flex-direction: column; gap: 10px; }
+
+// 指标格（A 组）：unavailable 整格灰化，绝不显示 0
+.ar-metric-grid {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden;
+  background: var(--color-bg-surface);
+}
+.ar-metric {
+  padding: 12px 14px; border-right: 1px solid var(--color-divider);
+  border-bottom: 1px solid var(--color-divider);
+  &:nth-child(5n) { border-right: 0; }
+  &:nth-last-child(-n + 5) { border-bottom: 0; }
+  &__top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  &__label { font-size: 11.5px; color: var(--color-text-secondary); }
+  &__value {
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    font-size: 19px; font-weight: 600; margin-top: 5px; line-height: 1.15;
+  }
+  &__na { font-size: 12px; font-weight: 400; color: var(--color-text-tertiary); }
+  &__note { font-size: 10.5px; color: var(--color-text-tertiary); margin-top: 3px; }
+  &--unavailable { background: var(--color-bg-surface-muted); }
+  &--unavailable .ar-metric__value { color: transparent; }
+}
+
+// 四态圆点（不只靠颜色，旁边有文案/徽标）
+.ar-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--color-bg-inset-strong);
+  &--complete { background: var(--color-success); }
+  &--partial { background: var(--color-warning); }
+  &--snapshot_only { background: var(--color-accent); }
+}
+
+.ar-chip {
+  font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--color-divider); color: var(--color-text-tertiary);
+  &--partial { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 40%, transparent); }
+  &--snapshot_only { color: var(--color-accent); border-color: var(--color-accent-border); }
+}
+
+// 双栏面板（漏斗/占位）
+.ar-two-col {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+}
+.ar-panel {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 12px 14px; min-width: 0;
+  &__h {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 12.5px; font-weight: 500; margin-bottom: 8px;
+  }
+}
+
+.ar-dist {
+  display: flex; flex-direction: column; gap: 5px;
+  &__row { display: grid; grid-template-columns: 40px 1fr 34px; align-items: center; gap: 8px; }
+  &__label { font-size: 11px; color: var(--color-text-secondary); }
+  &__track { height: 10px; border-radius: 3px; background: var(--color-bg-inset); overflow: hidden; }
+  &__bar { height: 100%; border-radius: 3px; min-width: 0; transition: width .2s ease; }
+  &__count { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-secondary); text-align: right; }
+}
+.ar-kind-note { font-size: 10.5px; color: var(--color-text-tertiary); margin-top: 6px; }
+.ar-big-num {
+  font-family: var(--font-mono); font-size: 26px; font-weight: 600; padding: 6px 0 2px;
+}
+.ar-reasons {
+  margin-top: 8px; border-top: 1px solid var(--color-divider); padding-top: 6px;
+  &__row {
+    display: flex; justify-content: space-between; gap: 10px;
+    font-size: 12px; padding: 3px 0; color: var(--color-text-secondary);
+    .num { font-family: var(--font-mono); }
+  }
+}
+
+// 区块级 unavailable 卡（当前版本暂不支持 / 暂无可靠数据）
+.ar-unavailable-card {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px dashed var(--color-border); border-radius: 8px;
+  padding: 10px 12px; color: var(--color-text-tertiary); background: var(--color-bg-surface-muted);
+  &__t { font-size: 12px; color: var(--color-text-secondary); }
+  &__c { font-size: 10.5px; margin-top: 2px; font-family: var(--font-mono); }
+}
+.ar-unavailable-mini { font-size: 12px; color: var(--color-text-tertiary); padding: 8px 0; }
+
+// 客户名单
+.ar-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ar-customer-list {
+  display: flex; flex-direction: column;
+  li {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid var(--color-divider);
+    &:last-child { border-bottom: 0; }
+  }
+  &__main { font-size: 12.5px; color: var(--color-text-primary); }
+  &__sub { font-size: 11px; color: var(--color-text-tertiary); font-family: var(--font-mono); text-align: right; }
+}
+.ar-empty-list { font-size: 12px; color: var(--color-text-tertiary); padding: 6px 0; }
+
+// 数据说明
+.ar-notes {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  &__item { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
+}
+.ar-sources {
+  margin-top: 6px; border-top: 1px solid var(--color-divider); padding-top: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+  &__row {
+    display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: baseline;
+    font-size: 11px; color: var(--color-text-tertiary);
+    .num { font-family: var(--font-mono); }
+  }
+  &__src { font-family: var(--font-mono); color: var(--color-text-secondary); }
+  &__tables { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+@media (max-width: 980px) {
+  .ar-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ar-metric:nth-child(5n) { border-right: 1px solid var(--color-divider); }
+  .ar-metric:nth-child(2n) { border-right: 0; }
+  .ar-two-col, .ar-lists { grid-template-columns: 1fr; }
+}
+
+// 三列指标格（沟通质量）：边线规则与五列版独立
+.ar-metric-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ar-metric-grid--3 .ar-metric {
+  &:nth-child(5n) { border-right: 1px solid var(--color-divider); }
+  &:nth-child(3n) { border-right: 0; }
+  &:nth-last-child(-n + 5) { border-bottom: 0; }
+}
+
+// 分配事实三格（初始分配 / 移入 / 移出，分项展示不相加）
+.ar-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden;
+  background: var(--color-bg-surface);
+  &__item { padding: 12px 14px; border-right: 1px solid var(--color-divider); &:last-child { border-right: 0; } }
+  &__n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 21px; font-weight: 600; }
+  &__l { font-size: 11.5px; color: var(--color-text-secondary); margin-top: 3px; }
+}
+
+// 月度面板（12 月轴加宽）与月份标签
+.ar-panel--wide { grid-column: 1 / -1; }
+.ar-dist__label--month { font-family: var(--font-mono); font-size: 10.5px; }
+
+// 客户行可点击（打开既有客户工作台详情）
+.ar-customer-link {
+  background: none; border: none; padding: 0; font-family: inherit;
+  font-size: 12.5px; color: var(--color-accent); cursor: pointer; text-align: left;
+  &:hover { text-decoration: underline; }
+}
+
+// sync 缺口固定文案（E1；禁止显示覆盖率百分比）
+.ar-sync-note {
+  border-left: 2px solid var(--color-warning); background: var(--color-bg-surface-muted);
+  padding: 8px 12px; font-size: 12px; color: var(--color-text-secondary);
+}
+
+// ── AI 经营诊断（S7.2） ───────────────────────────────────────────────────────
+.ar-ai-disclaimer {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+  font-size: 11px; color: var(--color-text-tertiary);
+}
+.ar-ai-idle {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  &__t { font-size: 13px; color: var(--color-text-primary); }
+  &__d { font-size: 12px; color: var(--color-text-secondary); line-height: 1.65; }
+}
+.ar-ai-running {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 14px 16px;
+  &__t { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-primary); }
+  &__p { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-secondary); }
+}
+.ar-progress--indeterminate .ar-progress__bar { width: 40%; animation: ar-ai-slide 1.2s ease-in-out infinite; }
+@keyframes ar-ai-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.ar-spin { animation: ar-ai-spin 1s linear infinite; }
+@keyframes ar-ai-spin { to { transform: rotate(360deg); } }
+
+.ar-ai-result { display: flex; flex-direction: column; gap: 12px; }
+.ar-ai-meta {
+  font-family: var(--font-mono); font-size: 11px; color: var(--color-text-tertiary);
+}
+.ar-ai-summary {
+  font-size: 13px; line-height: 1.75; color: var(--color-text-primary);
+  border-left: 2px solid var(--color-accent); padding-left: 12px; white-space: pre-wrap;
+}
+.ar-ai-block {
+  display: flex; flex-direction: column; gap: 8px;
+  &__t { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: .02em; }
+}
+.ar-ai-item {
+  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  &__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  &__title { font-size: 12.5px; font-weight: 500; color: var(--color-text-primary); }
+  &__text { font-size: 12.5px; line-height: 1.7; color: var(--color-text-secondary); white-space: pre-wrap; }
+  &__text--hypo { color: var(--color-text-tertiary); }
+}
+.ar-ai-chip {
+  font-family: var(--font-mono); font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--color-divider); color: var(--color-text-secondary);
+  &--priority { color: var(--color-accent); border-color: var(--color-accent-border); }
+}
+.ar-ai-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+.ar-ai-metric {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px;
+  background: var(--color-bg-surface-muted); border: 1px solid var(--color-divider);
+  font-size: 11px; color: var(--color-text-secondary);
+  &__v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-text-primary); }
+  &--unavailable { color: var(--color-text-tertiary); .ar-ai-metric__v { color: var(--color-text-tertiary); } }
+}
+.ar-ai-rerun { align-self: flex-start; }
+
+// 运行中的操作行（生成按钮禁用 + 取消入口）
+.ar-ai-running__actions { display: flex; gap: 8px; align-items: center; }
+.ar-ai-metric__s { font-size: 10px; color: var(--color-warning); }

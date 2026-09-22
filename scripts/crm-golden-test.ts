@@ -4,7 +4,7 @@
  */
 import {
   parseBankText, detectPayChannel, parseAllocationShorthand, isClaimKeyword,
-  parseLogisticsBatch, parseInvoicePdfName, feeCheck, wechatTimeToMs,
+  parseLogisticsBatch, parseLogisticsException, parseInvoicePdfName, parseInvoiceApplicationName, feeCheck, wechatTimeToMs,
   isCompanyHint, splitAliasHints, isDealSignal, parseQuoteSignal
 } from '../electron/services/crmParseRules'
 
@@ -31,6 +31,12 @@ const alloc = parseAllocationShorthand('吴忠伟/亮哥 2630 许丽娟\n无锡�
 ok('alloc.rows', alloc?.length === 2)
 ok('alloc.amounts', alloc?.[0].amountHint === 2630 && alloc?.[1].amountHint === 600)
 ok('alloc.sales', alloc?.[0].salesHint === '许丽娟' && alloc?.[1].salesHint === '李林辉')
+const allocInvoice = parseAllocationShorthand('田海龙 暂无开票信息 2500\n蔡世煌 不开票 2250')
+ok('alloc.flexible', allocInvoice?.length === 2 && allocInvoice[0].amountHint === 2500 && allocInvoice[1].amountHint === 2250)
+ok('alloc.invoice-intent', allocInvoice?.[0].invoiceIntent === 'info_pending' && allocInvoice?.[1].invoiceIntent === 'not_required')
+ok('alloc.sender-fallback', allocInvoice?.every((r) => r.salesHint === ''))
+const allocContact = parseAllocationShorthand('大连彤之霖商贸有限公司，韩景发，2280元')
+ok('alloc.contact-not-sales', allocContact?.[0].customerHint.includes('韩景发') === true && allocContact?.[0].salesHint === '')
 
 // 4 费率校验：2000→1996.00 / 3230→3223.54 通过；20330→2025.94 不通过
 ok('fee.2000', feeCheck(2000, 1996.00))
@@ -41,6 +47,8 @@ ok('fee.20330', !feeCheck(20330, 2025.94))
 ok('claim.收到', isClaimKeyword('收到'))
 ok('claim.ok', isClaimKeyword('👌'))
 ok('claim.not', !isClaimKeyword('吴忠伟总/王先生 2000 许丽娟'))
+ok('claim.invoice', isClaimKeyword('收到，开票'))
+ok('claim.too-broad', !isClaimKeyword('好的') && !isClaimKeyword('知道了'))
 
 // 6 物流批量
 const logi = parseLogisticsBatch('800211632728 艾驱电动 陈先生 嘉兴\n800211630064 艾驱电动 朱其峰 杭州')
@@ -57,6 +65,9 @@ ok('logi.mix.fields', logiMix?.[1].city === '东莞')
 // 纯聊天行（无 4 段结构）整批仍拒绝，避免误抓
 ok('logi.not-chat', parseLogisticsBatch('@妙妙 查一下这个快递，客户在催') === null)
 ok('logi.not-onlyno', parseLogisticsBatch('800214278737 已安排发货') === null)
+ok('logi.explicit-courier', parseLogisticsBatch('800208308952 艾驱电动 张树坪 重庆 中通')?.[0].courierHint === '中通')
+ok('logi.exception', parseLogisticsException('800212184387 这个为啥一直没有物流信息')?.status === 'delayed')
+ok('logi.cancelled', parseLogisticsException('800215874608 这个不发货了，删单')?.status === 'cancelled')
 
 // 7 发票 PDF 文件名
 const inv = parseInvoicePdfName('dzfp_263220000006267212401_深圳晶恒李…2959.pdf')
@@ -64,6 +75,11 @@ ok('inv.no', inv?.invoiceNo === '263220000006267212401')
 ok('inv.buyer', inv?.buyerPrefix === '深圳晶恒李')
 ok('inv.tail', inv?.tail === '2959')
 ok('inv.bad', parseInvoicePdfName('合同扫描件.pdf') === null)
+const fullInv = parseInvoicePdfName('dzfp_26322000006753531571_宁波龙相环保科技有限公司_20260818091246.pdf')
+ok('inv.full', fullInv?.buyerPrefix === '宁波龙相环保科技有限公司' && fullInv?.issuedAtText === '20260818091246')
+ok('inv.application.after', parseInvoiceApplicationName('开票申请（宁波龙相环保科技有限公司）.xlsx')?.buyerHint === '宁波龙相环保科技有限公司')
+ok('inv.application.before', parseInvoiceApplicationName('（宁波龙相环保科技有限公司）开票申请.xlsx')?.buyerHint === '宁波龙相环保科技有限公司')
+ok('inv.application.free', parseInvoiceApplicationName('宁波龙相环保科技有限公司 开票申请(6).xlsx')?.buyerHint === '宁波龙相环保科技有限公司')
 
 // 8 时间/别名
 const ms = wechatTimeToMs('7月30日10:16:32', new Date(2026, 7, 3))

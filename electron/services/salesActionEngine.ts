@@ -23,7 +23,7 @@ import { salesKnowledgeService } from './salesKnowledgeService'
 import { crmDbService } from './crmDbService'
 import { collectOpportunityAssessments } from './opportunityAnalysisService'
 import type { OppAssessment } from '../../shared/opportunitySignals'
-import { scanLeadSla } from './crmLeadService'
+import { scanLeadSla, completeLeadFirstContact, skipLeadFirstContact } from './crmLeadService'
 import { runAftersalesScan } from './crmAftersalesService'
 import { runDeliveryScan } from './crmDeliveryService'
 import { normalizeStage } from '../../shared/salesStage'
@@ -691,8 +691,10 @@ export async function getUnifiedSignals(): Promise<UnifiedResult> {
       continue
     }
     // SLA 首触卡不进主卡流：无客户上下文，属散任务，只在今日行动右侧 TodoSidebar 展示
-    // （职责分工 §2.19：主卡流 = 客户动作，散任务 = 侧栏清单）
-    // SLA 事项保留原 taskId；完成时仍走专用业务入口。
+    // （职责分工 §2.19：主卡流 = 客户动作，散任务 = 侧栏清单）。
+    // H5 收口：此前只有注释意图，循环没有跳过——无 session_id 的 sla_lead 卡被包装成
+    // todo:<id> 进入主卡流。这里必须在构建主卡流前明确排除；完成仍走专用业务入口。
+    if (task.trigger_type === 'sla_lead') continue
     // 物流超期卡：虚拟 sessionId logi:<logistics_id>（事实驱动，不参与沉默天数过滤）
     if (task.trigger_type === 'rule_r8_logistics_overdue') {
       const sid = String(task.session_id || '')
@@ -956,6 +958,15 @@ export function completeUnifiedSignal(sessionId: string, action: 'done' | 'skipp
   const task = salesDbService.getTask(id)
   if (!task || task.status !== 'pending') return
   if ((task.session_id || `todo:${id}`) !== sessionId) throw new Error('待办与客户不匹配')
+  // SLA 首触卡专项处理（H5 防御）：done → completeLeadFirstContact（lead NEW→CONTACTED +
+  // first_contacted_at + lead_activity + 卡 done 同事务回写）；skipped → skipLeadFirstContact
+  // （卡 skipped，线索保持 NEW 等下次扫描再提醒）。不得只调普通 completeAction——那只会改卡
+  // 状态，线索状态机永远不回写。TodoSidebar 的 crm:lead:slaComplete/slaSkip 专用路径不受影响。
+  if (task.trigger_type === 'sla_lead') {
+    const okResult = action === 'done' ? completeLeadFirstContact(id) : skipLeadFirstContact(id)
+    if (!okResult) salesLog('WARN', `[UnifiedSignals] sla_lead 卡 ${id} ${action} 回写失败（卡或线索状态已变化）`)
+    return
+  }
   // 付款/签收的正式事实必须由业务入口确认；读卡、已读不能冒充业务完成。
   if (task.trigger_type === 'rule_r8_logistics_overdue' && action === 'done') throw new Error('请到物流记录确认签收')
   completeAction(id, action)

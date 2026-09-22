@@ -3,10 +3,11 @@
 @use './chat-patterns.scss';
 
 // 编辑体（衬线）全局定义一次：--font-editorial 只用于「主张句」与说明标题。
-// 中文字重与年报窗口同一份本地资源，不引在线字体，离线可用（AnnualReportWindow.scss 里的同名定义保持不动）。
+// 不引在线字体，离线可用。2026-09-19：改用 GB2312+常用符号子集 woff2（2.6MB，原可变 TTF 24MB），
+// wght 200-900 可变轴与常用字形覆盖不变。
 @font-face {
   font-family: 'NotoSerifSCLocal';
-  src: url('../../resources/fonts/annual-report/NotoSerifSC-Var.ttf') format('truetype');
+  src: url('../../resources/fonts/editorial/NotoSerifSC-Subset.woff2') format('woff2');
   font-style: normal;
   font-weight: 200 900;
   font-display: swap;
@@ -557,6 +558,16 @@ body {
 
   &:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 }
+// .btn--primary-soft =「轻 primary」：仍是动作行里唯一的主操作档，但不上实心 accent ——
+// 浅 accent 底 + accent 字（概念稿 .tag--task 的 tint 语法）。给侧栏 / 列表动作行用，
+// 避免一行里出现实心色块（2026-09-18 P1.5/P1.6：Chat 回复建议与今日行动动作行共用）。
+.btn--primary-soft {
+  background: var(--color-accent-bg);
+  border: 1px solid transparent;
+  color: var(--color-accent);
+
+  &:hover { border-color: var(--color-accent-border); }
+}
 .btn--sm { height: 26px; padding: 0 10px; font-size: 12px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.is-off,
@@ -629,6 +640,42 @@ body {
 .notice--stop { border-left-color: var(--color-danger); }
 .notice--stop .icon { color: var(--color-danger); }
 .notice__h { display: block; color: var(--color-text-primary); font-weight: 600; margin-bottom: 2px; }
+
+// ---- 开工简报（概念稿 .notice--brief）：整屏的前提，不是又一份列表 ----
+// 它讲的是「上面这份判断基于什么」：六态口径 + 覆盖区间 + 生成时间 + 事项计数。
+// 事项与右侧「今日待办」同源，同屏出现两遍等于把列表读两次 —— 块里不再列事项标题。
+// 六态轻重落在左 2px 语义条（accent 核验通过 / warn 覆盖不全·旧快照 / stop 失败·阻断），态名另用文字标出。
+.notice--brief { margin: 16px 0 14px; }
+.notice--brief .notice__row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.notice--brief .notice__row .notice__h { margin-bottom: 0; }
+.notice--brief .notice__acts {
+  display: flex; align-items: center; gap: 4px; flex: none;
+  margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--color-divider);
+}
+.notice--brief .btn--sm { padding: 0 8px; font-size: 11.5px; }
+.notice--brief .tag { font-weight: 500; }
+.brief__meta { margin: 3px 0 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--color-text-tertiary); }
+.brief__meta b { color: var(--color-text-secondary); font-weight: 500; }
+// 覆盖缺口 / 失败原因 / 旧快照：概念稿块外的补充行，只在 warn·stop 态与覆盖未核验时出现
+.brief__note { margin: 3px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--color-text-secondary); }
+.brief__count { margin: 2px 0 0; font-size: 11.5px; color: var(--color-text-tertiary); }
+.brief__count b { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-weight: 500; }
+// 计数行本身可点（滚到下方信号列表）：按钮不当第二套皮肤，只接 .brief__count 的排版
+.brief__count-link { padding: 0; border: none; background: none; font: inherit; font-size: 11.5px; color: inherit; cursor: pointer; text-align: left; }
+.brief__count-link:hover { color: var(--color-text-primary); }
+// 收起后只留这一行入口：前提跟着它走，别让「收起」顺手把前提抹掉
+.brief-reopen {
+  display: inline-flex; align-items: center; gap: 6px; margin: 16px 0 0; padding: 0;
+  background: none; border: 0; font: inherit; font-size: 12px; color: var(--color-text-secondary);
+  cursor: pointer; transition: color .15s;
+}
+.brief-reopen:hover { color: var(--color-text-primary); }
+.brief-reopen .icon { width: 14px; height: 14px; color: var(--color-text-tertiary); }
+// 简报正文列（图标列右侧一格）：段落间距按概念稿的紧贴节奏，最长串按需断行
+.brief__body { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.brief__body p { margin: 0; line-height: 1.68; }
+.brief__body .brief__meta { margin: 3px 0 0; }
+.brief__body .brief__count { margin: 2px 0 0; }
 
 // ---- 输入框（唯一入口：旧页面各写一套 input 皮肤，新页一律走 .field）----
 .field {
@@ -737,6 +784,42 @@ body {
 .verdict__v { font-size: 13px; line-height: 1.62; }
 .verdict__meta { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-top: 6px; font-size: 11px; color: var(--color-text-tertiary); }
 .verdict--muted .verdict__v { color: var(--color-text-secondary); }
+// 「依据消息」按钮：可点的出处标记压平到 .ahead 语法，不加一个按钮皮肤（客户档案与聊天侧栏共用）
+.ahead--btn { border: none; background: none; padding: 0; font-family: inherit; cursor: pointer; }
+.ahead--btn:hover { color: var(--color-accent); }
+// 判断行内的证据回查结果（客户档案与聊天侧栏共用同一处样式，不再是两份 .cws-* / .sales-*）
+.verdict__evi {
+  margin-top: 6px; padding: 6px 10px; background: var(--color-bg-surface-muted);
+  border-left: 2px solid var(--color-accent-border);
+  font-size: 12px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all;
+}
+
+// ---- 依据条（概念稿 .evidence / .ev：细线行，点一行回查一行原话）----
+// 聊天侧栏与客户档案共用；文本超出两行封顶，is-open 时放开显示原话。
+.evidence { display: flex; flex-direction: column; }
+.ev {
+  display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 10px; width: 100%; text-align: left;
+  padding: 9px 0; transition: opacity .15s;
+  // 概念稿的 button 全局 reset 在本项目不全局开放（旧按钮依赖默认外观），逐件补齐
+  border: 0; border-bottom: 1px solid var(--color-divider); background: none; font-family: inherit; cursor: pointer;
+}
+.ev:last-child { border-bottom: 0; }
+.ev:hover { opacity: .72; }
+.ev__t { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-text-tertiary); padding-top: 2px; }
+.ev__q {
+  font-size: 12px; line-height: 1.55; color: var(--color-text-secondary);
+  overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.ev.is-open .ev__q { display: block; -webkit-line-clamp: unset; color: var(--color-text-primary); }
+
+// ---- 回复建议（概念稿 .draft：surface 底 + 1px 描边 + .draft__acts 动作行）----
+.draft {
+  margin-top: 8px; padding: 12px; background: var(--color-bg-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-small); font-size: 12.5px; line-height: 1.65;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.draft__acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 // ---- 通用行表（线索池 / 合同 / 产品库 / 通讯录复用）----
 // 维度差：旧表是 <table> 骨架，这里是 Grid 行长；网格列模板由各页 .grid-* 提供。
@@ -789,6 +872,21 @@ body {
 .side-block + .side-block { margin-top: 22px; }
 .side-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .side-head__t { font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+
+// ---- 主张卡：全稿唯一带边框的静态对象（今日行动把排序首位提升为「今天先跟谁」的答案）----
+// 概念稿 .lead-card；浮起仍不靠投影（--shadow-card: none），只靠 1px 发丝边 + 留白。
+.lead-card {
+  border: 1px solid var(--color-border); border-radius: var(--radius-card);
+  padding: 18px 20px 16px; background: var(--color-bg-surface); margin-top: 18px;
+}
+.lead-card__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.lead-card__who { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.lead-card__name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.lead-card__meta { font-size: 11.5px; color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.lead-card__acts { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+// 判断栏 / 话术块在主张卡里紧跟头部，与 .lead-card__acts 同一节奏
+.lead-card > .verdicts,
+.lead-card > .verdict { margin-top: 14px; }
 
 // ---- 待办行（右栏）----
 .todo { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--color-divider); align-items: flex-start; }
@@ -886,4 +984,21 @@ kbd {
 .toast { animation: wf-toast-in .18s ease-out both; }
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
+}
+
+// ── 撞客一期：重复徽标（复用 .tag/.tag--insight 组件类与既有 warning token，2026-09-19）──
+.dup-badge-wrap { position: relative; display: inline-flex; align-items: center; margin-left: 6px; vertical-align: middle; }
+.dup-badge { cursor: pointer; }
+.dup-pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning-border);
+  font-size: 11px;
 }

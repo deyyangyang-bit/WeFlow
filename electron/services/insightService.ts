@@ -23,6 +23,7 @@ import {
  * - 触发频率、冷却与名单过滤均在本地完成，不把调度统计塞进模型 prompt
  */
 
+import http from 'http'
 import https from 'https'
 import { ConfigService } from './config'
 import { isSessionIdLike } from '../../shared/wechatId'
@@ -41,6 +42,7 @@ import { enrichCustomer } from './crmEnrichService'
 import { enqueueSalesTask } from './salesQueue'
 import { massSendDetector, scanMessagesForTrigger, classifyInsightMessage } from './insightNoiseFilter'
 import { isInsightBlacklisted } from '../../shared/insightBlacklist'
+import { normalizeStage, CANONICAL_TO_CN } from '../../shared/salesStage'
 import {
   insightRecordService,
   type InsightRecordLog,
@@ -1151,11 +1153,10 @@ ${afterText}
   /** AI 见解判定出意向阶段 → 自动导入 CRM（幂等）。了解/比价/决策/成交=有意向，流失/未知不导入。返回是否导入 */
   private importIntentCustomerToCrm(sessionId: string, displayName: string, salesStage: string): boolean {
     if (!sessionId || sessionId.endsWith('@chatroom')) return false
-    const STAGE_TO_CRM: Record<string, string> = {
-      了解: 'contacted', 比价: 'negotiating', 决策: 'negotiating', 成交: 'won'
-    }
-    const crmStage = STAGE_TO_CRM[salesStage]
-    if (!crmStage) return false
+    // H6：删除本模块重复且错误的 STAGE_TO_CRM（曾把「比价」映射成 negotiating），阶段归一
+    // 一律走 shared/salesStage.normalizeStage 唯一语义源（比价→quoted）。
+    const crmStage = normalizeStage(salesStage)
+    if (!['contacted', 'quoted', 'negotiating', 'won'].includes(crmStage)) return false
     try {
       const res = crmDbService.importCustomerFromProfile({
         name: displayName,
@@ -1163,12 +1164,16 @@ ${afterText}
         stage: crmStage,
         reason: `AI 见解阶段：${salesStage}`
       })
-      salesLog('INFO', `[CrmImport] AI 见解判定「${displayName}」有意向（${salesStage}）→ CRM ${crmStage}（${res.created ? '新建' : '已存在'}）`)
-      // 商机阶段联动（P0）：客户阶段推进 → 活跃商机同步（了解→比价→决策 顺推；成交→待登记提醒；流失→自动丢单）
-      if (res.id) {
+      salesLog('INFO', `[CrmImport] AI 见解判定「${displayName}」有意向（${salesStage}）→ CRM ${res.effectiveStage || crmStage}（${res.created ? '新建' : '已存在'}，${res.stageDecisionReason || 'n/a'}）`)
+      // P2：商机阶段联动只在阶段实际被接受时发生（新建 / 阶段真实推进）；
+      // terminal-kept / regression-blocked / same 一律不联动——lost 客户收到「成交」判定
+      // 不得生成 deal_pending 提醒，negotiating 客户不得被 contacted 回退类事件搅动。
+      // 联动用裁决后的 effectiveStage（canonical → 中文档位），不用原始 AI 字符串。
+      if (res.id && res.stageChanged && res.effectiveStage) {
         try {
-          const synced = crmDbService.syncOpportunityStageByAccount(Number(res.id), salesStage)
-          if (synced > 0) salesLog('INFO', `[CrmImport] 商机阶段联动「${displayName}」(${salesStage}) 更新 ${synced} 个商机`)
+          const cnStage = CANONICAL_TO_CN[res.effectiveStage as keyof typeof CANONICAL_TO_CN] || res.effectiveStage
+          const synced = crmDbService.syncOpportunityStageByAccount(Number(res.id), cnStage)
+          if (synced > 0) salesLog('INFO', `[CrmImport] 商机阶段联动「${displayName}」(${cnStage}) 更新 ${synced} 个商机`)
         } catch { /* crmDb 未初始化忽略 */ }
       }
       return true
@@ -1469,6 +1474,20 @@ ${afterText}
         }
       }
 
+      // 渠道三：企业微信群机器人推送（可选，主推渠道）
+      const wecomEnabled = this.config.get('aiInsightWecomEnabled') as boolean
+      if (wecomEnabled) {
+        const wecomWebhook = ((this.config.get('aiInsightWecomWebhook') as string) || '').trim()
+        if (wecomWebhook) {
+          const wecomText = `【WeFlow】${notifTitle}\n\n${insight}`
+          sendWecomBot(wecomWebhook, wecomText).catch((e) => {
+            insightLog('WARN', `企业微信机器人推送失败: ${(e as Error).message}`)
+          })
+        } else {
+          insightLog('WARN', '企业微信机器人已启用但 Webhook 未填写，跳过')
+        }
+      }
+
       insightLog('INFO', `已完成 ${resolvedDisplayName} 的见解处理`)
       this.recordTrigger(sessionId)
       const crmNote = crmImported ? '，已自动导入 CRM 客户' : ''
@@ -1530,6 +1549,19 @@ ${afterText}
       req.write(body)
       req.end()
     })
+  }
+
+  /**
+   * 设置页「发送测试消息」：走一条真实 POST 验证 Webhook，结果回显给 UI。
+   * webhook 内含 key= 密钥，只用于请求目标，绝不写入日志。
+   */
+  sendWecomTest(webhook: string): Promise<{ success: boolean; message: string }> {
+    const trimmed = (webhook || '').trim()
+    if (!trimmed) return Promise.resolve({ success: false, message: '请先填写 Webhook 地址' })
+    return sendWecomBot(trimmed, '【WeFlow】测试消息\n\n收到这条消息说明企业微信机器人推送链路已打通。').then(
+      () => ({ success: true, message: '测试消息已发送，请到企微群确认' }),
+      (e: Error) => ({ success: false, message: `发送失败：${e.message}` })
+    )
   }
 
   // ── 批量画像 ─────────────────────────────────────────────────────────────────
@@ -1614,6 +1646,64 @@ ${afterText}
       this.batchRunning = false
     }
   }
+}
+
+/**
+ * 通过企业微信群机器人 Webhook 推送文本消息（文档：企业微信群机器人使用说明）。
+ * webhook 即完整推送地址（内含 key= 密钥，调用方负责保密，不得明文进日志）；
+ * errcode !== 0 视为失败；15s 超时（与 sendTelegram 同口径）；失败只上报不阻断主流程。
+ * webhook 为空视为未配置，静默跳过不报错；协议按 URL 自动选择 http/https（便于本地 mock 测试）。
+ */
+export function sendWecomBot(webhook: string, text: string, timeoutMs = 15_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const trimmed = (webhook || '').trim()
+    if (!trimmed) {
+      resolve()
+      return
+    }
+    let url: URL
+    try {
+      url = new URL(trimmed)
+    } catch {
+      reject(new Error('Webhook URL 无效'))
+      return
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      reject(new Error(`不支持的 Webhook 协议: ${url.protocol}`))
+      return
+    }
+    const body = JSON.stringify({ msgtype: 'text', text: { content: text } })
+    const req = (url.protocol === 'https:' ? https : http).request(
+      url,
+      {
+        method: 'POST' as const,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body).toString()
+        }
+      },
+      (res) => {
+        let data = ''
+        res.on('data', (chunk) => { data += chunk })
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data)
+            if (parsed.errcode === 0) {
+              resolve()
+            } else {
+              reject(new Error(parsed.errmsg ? `errcode=${parsed.errcode} ${parsed.errmsg}` : `errcode=${parsed.errcode}`))
+            }
+          } catch {
+            reject(new Error(`响应解析失败: ${data.slice(0, 100)}`))
+          }
+        })
+      }
+    )
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('企业微信机器人请求超时')) })
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
 }
 
 export const insightService = new InsightService()

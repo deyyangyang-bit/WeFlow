@@ -2,12 +2,31 @@
  * OpportunityPage.scss —— 商机页（概念稿 CRM 屏语法：细线行 / 等宽数字 / 键值行）
  *
  * 2026-09-17 概念稿对齐：
- * - 跨页复用件（.shead/.hero/.eyebrow/.sub/.tbl/.thead/.trow/.tc-系列/.seclabel/.num/.toast…）
- *   定义在 src/styles/main.scss 尾部「界面概念稿基础件」；本文件只写本页私有件与页内网格模板。
+ * - 跨页复用件（.shead/.hero/.eyebrow/.sub/.tbl/.thead/.trow/.tc-系列/.seclabel/.num/.toast…
+ *   /.btn 档位/.chipbar/.rail/.stats/.kv/.box/.side-head…）定义在 src/styles/main.scss
+ *   「界面概念稿基础件」；本文件只写本页私有件与页内网格模板。
  * - 页面留白由外壳 .content（padding: 24px 32px）承担，页面根不再叠加整页 padding。
- * - 按钮仍是既有 .opp-btn 族：阶段分析视图（components/crm/OpportunityStageAnalysis.tsx）与本页共用
- *   同一套控件，本轮不动该组件，故不迁移按钮类名；颜色/圆角/字体仍只消费既有 token。
  * - .opp-* 规则统一收进 .opp-page 作用域（阶段分析组件渲染在本页根内，作用域不变）。
+ *
+ * 2026-09-18 P2.1b 观感收口（纯视觉，与线索池 P2.1 同一套语法）：
+ * - 按钮：.opp-btn 族删除，全量迁共享档位——刷新/清除/建待办/生成建议 → .btn--quiet，
+ *   取消 → .btn--plain，行内「去跟进」「推进到…」→ .btn--sm .btn--primary-soft（每屏唯一轻
+ *   primary），弹窗主操作（确认成交/创建待办）保留实心 .btn--primary；确认丢单补页内危险描边档
+ *   .btn--lose。颜色/圆角/字体只消费既有 token。
+ * - 阶段筛选：渐变实心漏斗条 → 共享 .rail（发丝底 / 选中 2px accent 下划线 / mono 计数），
+ *   段色只留 8px 圆点（仍由 shared/funnelPalette 单一真源内联注入），递进率收进 .rail__sum；
+ *   点击筛选行为与数据口径不变。
+ * - 列表：阶段实心 pill → .opp-qtag 安静 tag（发丝边 + 段色字）；金额转 mono tertiary；
+ *   头像转中性底；行 hover 灰底沿用共享 .trow。
+ * - 统计条：列表视图新增共享 .stats 四格（mono 数字 / 发丝分隔 / 无投影），分析视图管道三卡
+ *   从 .opp-pstat 卡片壳改为共享 .stats 三列。
+ * - 详情弹窗压平（同客户右栏节奏）：分区改共享 .box + .box__t，字段行接共享 .kv（两列排布），
+ *   「AI 建议下一步」去 tint 底改左 2px accent 条，风险行去边框壳改左 2px 语义条，
+ *   事件/风险标签去实心底。
+ *
+ * 2026-09-18 P2.1b-A：默认主视图改阶段看板（概念稿 .board/.bcol/.deal/.win 落地本文件）——
+ * 4 列 grid（minmax(176px,1fr)）一屏铺开，≤1180px 转横向滚动 + scroll-snap；列顶 2px 色条、
+ * 卡片发丝边、赢率 2px 细条全部对齐概念尺寸；列表降为次要视图（.rail 筛选保留）。
  */
 
 .opp-page { color: var(--color-text-primary); font-family: var(--font-app); }
@@ -23,67 +42,101 @@
   &:hover { background: var(--color-warning-bg); }
   &.on { background: var(--color-warning-bg); }
 }
+/* 结果/失败提示：去 tint 色块，改左 2px accent 条的小字（同 .notice 语法） */
 .opp-page .opp-notice {
-  font-size: 12px; color: var(--color-accent); background: var(--color-accent-bg);
-  border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 4px 10px;
+  font-size: 12px; color: var(--color-text-secondary);
+  border-left: 2px solid var(--color-accent); padding-left: 8px;
 }
-.opp-page .opp-btn {
-  border: 1px solid var(--color-border); background: var(--color-bg-surface); color: var(--color-text-primary);
-  border-radius: var(--radius-control); padding: 4px 10px; font-size: 12px; cursor: pointer;
-  display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; flex-shrink: 0;
-  transition: background .15s, border-color .15s;
+/* 页内唯一补的按钮档：确认丢单（弹窗主操作，危险描边——不上实心 danger） */
+.opp-page .btn--lose {
+  border-color: var(--color-danger-border);
+  color: var(--color-danger);
 
-  &:hover { background: var(--color-bg-hover); }
-  &.opp-btn--primary { background: var(--color-accent); color: var(--color-text-on-accent); border-color: var(--color-accent); font-weight: 600;
-    &:hover { background: var(--color-accent-hover); } }
-  &.opp-btn--win { border-color: var(--color-success-border); color: var(--color-success);
-    &:hover { background: var(--color-success-bg); } }
-  &.opp-btn--lose { border-color: var(--color-danger-border); color: var(--color-danger);
-    &:hover { background: var(--color-danger-bg); } }
-  &.opp-btn--ghost { border-color: transparent; background: transparent; color: var(--color-text-secondary);
-    &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); } }
+  &:hover { background: var(--color-danger-bg); }
 }
 
-/* 视图分段（列表 / 阶段分析）：沿用既有分段控件视觉 */
-.opp-page .opp-viewseg {
-  display: inline-flex; gap: 2px; padding: 2px; flex: none;
-  background: var(--color-bg-inset); border-radius: var(--radius-control);
+/* ─── 统计条：共享 .stats/.stat（mono 数字 / 发丝分隔 / 无投影）───────────── */
+.opp-page .opp-stats { margin-top: 18px; }
+.opp-page .stats--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.opp-page .stat__n small { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); margin-left: 4px; }
+.opp-page .stat__n--warn { color: var(--color-warning); }
+.opp-page .stat__n--ok { color: var(--color-success); }
 
-  button {
-    display: inline-flex; align-items: center; gap: 4px;
-    border: 0; background: transparent; color: var(--color-text-secondary);
-    font-size: 12px; font-family: var(--font-app); padding: 4px 12px; cursor: pointer;
-    border-radius: var(--radius-small); transition: background .15s, color .15s;
+/* ─── 看板主视图（概念稿 .board/.bcol/.deal/.win，P2.1b-A）───────────────────
+   列顶 2px 色条颜色由 TSX 内联（FUNNEL_STAGE_COLORS 单一真源 / success token）；
+   卡片 = 1px 发丝边 + radius-small，hover 只变边色；赢率 = 2px 细条，不造假%。 */
+.opp-page .opp-board {
+  display: grid; grid-template-columns: repeat(4, minmax(176px, 1fr));
+  gap: 16px; margin-top: 20px; align-items: start;
+}
+.opp-page .bcol {
+  border-top: 2px solid var(--color-border);
+  border-radius: 0 0 var(--radius-small) var(--radius-small);
+  padding: 12px 8px 10px; min-width: 176px;
+  transition: background .15s;
 
-    &:hover { color: var(--color-text-primary); }
-    &:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-    &.on { background: var(--color-bg-surface); color: var(--color-text-primary); font-weight: 600; box-shadow: var(--shadow-card); }
-  }
+  &.is-over { background: var(--color-bg-hover); }
+}
+.opp-page .bcol__h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.opp-page .bcol__t { font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--color-text-primary); }
+.opp-page .bcol__n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--color-text-tertiary); }
+.opp-page .bcol__sum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--color-text-tertiary); margin-top: 5px; }
+.opp-page .bcol__empty { font-size: 11px; color: var(--color-text-tertiary); padding: 10px 2px 2px; }
+
+.opp-page .deal {
+  border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  background: var(--color-bg-surface); padding: 11px 12px; margin-top: 10px;
+  cursor: pointer; transition: border-color .15s, opacity .15s;
+
+  &:hover { border-color: var(--color-accent-border); }
+  &.is-dragging { opacity: .45; }
+  &.deal--won .deal__n { color: var(--color-text-secondary); }
+}
+.opp-page .deal__n {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-size: 12.5px; font-weight: 600; line-height: 1.35; color: var(--color-text-primary);
+}
+.opp-page .deal__nt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* active 已推进到成交档（待人工登记）的标记；won 卡不标（win 行已示「已赢单」） */
+.opp-page .deal__reg {
+  flex: none; font-size: 10px; font-weight: 500; line-height: 1.4;
+  color: var(--color-warning); border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-micro); padding: 0 5px;
+}
+.opp-page .deal__d { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.55; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opp-page .deal__d--reason { color: var(--color-text-secondary); }
+.opp-page .deal__amt {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em;
+  margin-top: 8px; color: var(--color-text-primary);
+  &.deal__amt--pending { font-size: 11.5px; font-weight: 400; color: var(--color-text-tertiary); }
+}
+/* 赢率条：2px 发丝细条（概念稿 .win）；只在有真实意向评分时渲染 */
+.opp-page .win { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.opp-page .win__bar { flex: 1; height: 2px; background: var(--color-bg-inset); border-radius: 2px; overflow: hidden;
+  i { display: block; height: 100%; background: var(--color-chart-neutral); } }
+.opp-page .win__n { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-text-tertiary); flex: none; }
+.opp-page .win__n--won { color: var(--color-success); }
+
+/* 窄屏：4 列转横向滚动（概念稿窄屏同款处理，scroll-snap 对齐列首） */
+@media (max-width: 1180px) {
+  .opp-page .opp-board { display: flex; overflow-x: auto; gap: 14px; padding-bottom: 10px; scroll-snap-type: x proximity; }
+  .opp-page .bcol { flex: none; width: 216px; scroll-snap-align: start; }
 }
 
-/* ─── 阶段漏斗（列表视图顶部）：平底块 + 分段标题，段色仍由共享色板注入 ──── */
-.opp-page .opp-funnel-block { margin: 18px 0 16px; }
+/* ─── 阶段筛选 rail（原漏斗条降权）：共享 .rail 本体，段色只留圆点 ─────────── */
+.opp-page .opp-rail-block { margin: 20px 0 16px; }
+.opp-page .opp-rail-block .rail { margin-top: 8px; }
 .opp-page .opp-hint { font-size: 11px; color: var(--color-text-tertiary); }
-/* ⚠️ 每段的包裹层必须显式 width:100% —— shrink-to-fit 下百分比宽度无法解析（同 ActionFunnelPage 的坑） */
-.opp-page .opp-funnel { display: flex; flex-direction: column; align-items: center; max-width: 560px; margin: 12px auto 0; }
-.opp-page .opp-funnel > div { width: 100%; display: flex; flex-direction: column; align-items: center; }
-.opp-page .opp-funnel__stage {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  height: 46px; border: 0; border-radius: 10px; cursor: pointer;
-  color: #fff; white-space: nowrap;
-  transition: filter .12s, transform .1s, outline .1s; outline: 2px solid transparent;
-
-  &:hover { filter: brightness(1.08); }
-  &:active { transform: scale(.99); }
-  &.active { outline-color: var(--color-accent-border); filter: brightness(1.1); }
+.opp-page .opp-rail__dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center;
 }
-.opp-page .opp-funnel__name { font-size: 12.5px; font-weight: 600; }
-.opp-page .opp-funnel__count { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.opp-page .opp-funnel__arrow { text-align: center; font-size: 11px; color: var(--color-text-tertiary); margin: 4px 0;
-  b { color: var(--color-accent); } }
 
 /* 阶段筛选提示条 */
-.opp-page .opp-filter { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-bottom: 10px; color: var(--color-accent); }
+.opp-page .opp-filter {
+  display: flex; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 12px; color: var(--color-text-secondary);
+  b { color: var(--color-text-primary); font-weight: 600; }
+}
 
 /* ─── 商机列表：细线行（概念稿 .tbl/.thead/.trow）──────────────────────────── */
 .opp-page .opp-list-block { margin-top: 18px; }
@@ -92,40 +145,74 @@
 .opp-page .opp-grid { grid-template-columns: 30px minmax(0, 1fr) 84px 132px; cursor: pointer; }
 .opp-page .opp-grid > * { min-width: 0; }
 .opp-page .opp-row__avatar {
-  width: 30px; height: 30px; border-radius: 50%; background: var(--color-accent-bg); color: var(--color-accent);
-  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex: none;
+  width: 30px; height: 30px; border-radius: 50%; background: var(--color-bg-inset); color: var(--color-text-secondary);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex: none;
 }
 .opp-page .opp-row__main { min-width: 0; }
 .opp-page .opp-row__name { display: block; font-size: 13px; font-weight: 600; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opp-page .opp-row__sub { display: block; font-size: 11px; color: var(--color-text-tertiary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opp-page .opp-row__stage { display: flex; }
-.opp-page .opp-row__amt { font-size: 13px; font-weight: 700; color: var(--color-text-primary); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
-  &--pending { color: var(--color-text-tertiary); font-weight: 400; font-size: 11px; } }
-/* 阶段徽标：背景色由 TSX 从 shared/funnelPalette 内联注入（单一真源），这里只管 pill 形状 */
-.opp-page .opp-badge { font-size: 11px; border-radius: 999px; padding: 2px 9px; color: #fff; font-weight: 500; white-space: nowrap; flex: none; }
+/* 金额列：mono tertiary（任务口径）；待确认再降一档字号与字重 */
+.opp-page .opp-row__amt {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 12.5px; font-weight: 500; color: var(--color-text-tertiary);
+  text-align: right; white-space: nowrap;
+  &--pending { font-weight: 400; font-size: 11.5px; }
+}
+/* 阶段安静 tag：发丝边 + 段色字（段色由 TSX 从 shared/funnelPalette 内联注入，单一真源），
+   无实心底——替代原整块铺色 pill；unknown 无段色时回落 tertiary */
+.opp-page .opp-qtag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-micro);
+  font-size: 11px; line-height: 1; white-space: nowrap; flex: none;
+  color: var(--color-text-tertiary);
+}
 .opp-page .opp-empty { color: var(--color-text-tertiary); padding: 20px 4px; text-align: center; font-size: 13px; }
 
-/* ─── 详情弹窗：键值行细线化（字段与口径不动）──────────────────────────── */
+/* ─── 详情弹窗：压平为键值行 + 发丝分区（字段与口径不动）──────────────────── */
 .opp-page .opp-modal { position: fixed; inset: 0; background: var(--color-overlay); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .opp-page .opp-modal__body {
-  background: var(--color-bg-elevated); border-radius: var(--radius-card); padding: 20px; width: 560px;
+  background: var(--color-bg-elevated); border-radius: var(--radius-card); padding: 20px 22px; width: 560px;
   max-height: 80vh; overflow: auto; color: var(--color-text-primary); box-shadow: var(--shadow-pop);
 
   h3 { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; margin-bottom: 12px; }
 }
-.opp-page .opp-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; margin-bottom: 14px;
-  .opp-detail__row {
-    display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: baseline;
-    padding: 6px 0; border-bottom: 1px solid var(--color-divider); font-size: 12.5px;
-    span { color: var(--color-text-tertiary); font-size: 11px; letter-spacing: .04em; }
-    b { font-weight: 600; min-width: 0; }
-  } }
-.opp-page .opp-actions { display: flex; gap: 8px; margin-bottom: 14px; }
-/* 成交/交付登记信息块（空字段「未登记」统一口径） */
-.opp-page .opp-detail--deal { border-top: 1px dashed var(--color-divider); padding-top: 10px; }
+/* 详情弹窗壳（P0 修复「✕ 随滚动消失」）：flex 列壳 = 固定头栏 + 独立滚动正文——
+   头栏不进滚动区（flex:none + 实底背景 + 发丝底边盖住正文），下滑后 ✕ 始终可点。
+   成交/丢单/建待办表单弹窗仍走上面的旧 __body 内滚样式，不受影响。 */
+.opp-page .opp-modal__body--split {
+  display: flex; flex-direction: column; overflow: hidden; padding: 0;
+}
+.opp-page .opp-modal__head {
+  flex: none; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 14px 22px 12px; background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-divider);
 
-/* ─── 弹窗内其余分区（报价历史 / 意向评分 / 风险 / 事件）：保持既有结构 ──── */
-.opp-page .opp-factors { border-top: 1px solid var(--color-divider); padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
+  h3 { display: block; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.opp-page .opp-modal__scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 22px 20px; }
+/* 主操作行：推进 = 轻 primary（本屏唯一），成交 = 描边，丢单 = quiet */
+.opp-page .opp-actions { display: flex; gap: 8px; margin-bottom: 14px; }
+/* 「AI 建议下一步」：去 tint 底，改左 2px accent 条（同 .notice 语法） */
+.opp-page .opp-next-step {
+  border-left: 2px solid var(--color-accent); padding: 2px 0 2px 12px; margin-bottom: 14px;
+  .opp-next-step__tag { display: block; font-size: 11px; font-weight: 600; color: var(--color-accent); margin-bottom: 3px; }
+  p { margin: 0; font-size: 12.5px; color: var(--color-text-secondary); line-height: 1.6; }
+}
+/* 字段键值行：共享 .kv 两列排布；每行补顶线、首行两条去掉（列对齐的发丝网格） */
+.opp-page .opp-detail {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; margin-bottom: 10px;
+
+  .kv { border-top: 1px solid var(--color-divider); }
+  .kv:nth-child(1), .kv:nth-child(2) { border-top: 0; }
+
+  .kv__v { min-width: 0; }
+}
+.opp-page .opp-detail--flush { margin-bottom: 2px; }
+/* 弹窗分区：共享 .box（发丝顶线 + 小标题），原各自边框卡壳删除 */
+.opp-page .opp-modal__body .box { margin-top: 14px; }
+
+/* ─── 弹窗内分区内容（意向评分 / 风险 / 事件 / 报价历史）───────────────────── */
 .opp-page .opp-factor { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0;
   .opp-factor__label { color: var(--color-text-secondary); width: 64px; flex-shrink: 0; }
   .opp-factor__delta { font-weight: 600; width: 40px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums;
@@ -138,70 +225,44 @@
   .opp-score__fill { height: 100%; border-radius: 999px; background: var(--color-accent); display: block; }
   .opp-score__num { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; font-weight: 600; } }
 /* 详情内意向度分数条容器（从列表挪进详情，加宽展示） */
-.opp-page .opp-factors__score { margin-bottom: 8px;
+.opp-page .opp-factors__score { margin: 8px 0;
   .opp-score { width: 200px; } }
 
-/* 风险预警（P0）：类型标签 + 严重度 + 确认处理（语义色 = 状态，保留） */
-.opp-page .opp-risks { border-top: 1px solid var(--color-divider); padding-top: 12px; margin-bottom: 14px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
-.opp-page .opp-risk { border: 1px solid var(--color-divider); border-left-width: 3px; border-radius: var(--radius-small); padding: 6px 8px; margin-bottom: 6px;
+/* 风险预警（P0）：去边框卡壳，改左 2px 语义条；类型转纯色字，「确认处理」转文字链 */
+.opp-page .opp-risk { border-left: 2px solid var(--color-chart-neutral); padding: 2px 0 2px 12px; margin-bottom: 10px;
   &.opp-risk--high { border-left-color: var(--color-danger); }
   &.opp-risk--medium { border-left-color: var(--color-warning); }
   &.opp-risk--low { border-left-color: var(--color-chart-neutral); }
   &.is-resolved { opacity: .55; }
-  .opp-risk__head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-  .opp-risk__type { background: var(--color-danger-bg); color: var(--color-danger); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+  .opp-risk__head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .opp-risk__type { color: var(--color-danger); font-weight: 600; }
   .opp-risk__severity { color: var(--color-text-secondary); }
   .opp-risk__time { color: var(--color-text-tertiary); font-size: 11px; }
-  .opp-risk__resolve { margin-left: auto; font-size: 11px; color: var(--color-accent); border: 1px solid var(--color-accent-border); background: var(--color-accent-bg); border-radius: var(--radius-small); padding: 1px 8px; cursor: pointer; }
+  .opp-risk__resolve { margin-left: auto; border: 0; background: none; padding: 0; font-size: 12px; font-family: inherit; color: var(--color-accent); cursor: pointer;
+    &:hover { text-decoration: underline; } }
   .opp-risk__done { margin-left: auto; color: var(--color-success); font-size: 11px; }
-  .opp-risk__detail { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; white-space: pre-wrap; } }
+  .opp-risk__detail { font-size: 12px; color: var(--color-text-secondary); margin-top: 3px; white-space: pre-wrap; } }
 
-.opp-page .opp-events { border-top: 1px solid var(--color-divider); padding-top: 12px; h4 { font-size: 13px; margin-bottom: 8px; color: var(--color-text-secondary); } }
-.opp-page .opp-event { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--color-divider);
-  .opp-event__tag { background: var(--color-accent-bg); color: var(--color-accent); border-radius: 999px; padding: 1px 8px; flex-shrink: 0; }
-  .opp-event__stage { color: var(--color-text-secondary); flex-shrink: 0; }
+.opp-page .opp-event { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--color-divider);
+  &:last-child { border-bottom: 0; }
+  .opp-event__tag { color: var(--color-text-secondary); font-weight: 500; flex-shrink: 0; }
+  .opp-event__stage { color: var(--color-text-tertiary); font-size: 11px; flex-shrink: 0; }
   .opp-event__detail { color: var(--color-text-primary); flex: 1; min-width: 0; }
   .opp-event__time { color: var(--color-text-tertiary); font-size: 11px; flex-shrink: 0; } }
 
-/* 详情弹窗「AI 建议下一步」置顶蓝块（设计稿屏 1；b/强调走 accent） */
-.opp-page .opp-next-step { background: var(--color-accent-bg); border-radius: var(--radius-control); padding: 12px 16px; margin-bottom: 14px;
-  .opp-next-step__tag { display: block; font-size: 11px; font-weight: 700; color: var(--color-accent); margin-bottom: 4px; }
-  p { margin: 0; font-size: 13px; color: var(--color-text-primary); line-height: 1.55; } }
-
-/* 报价历史（只读，append-only 版本链） */
-.opp-page .opp-quotes {
-  border-top: 1px solid var(--color-divider);
-  padding-top: 12px;
-  margin-bottom: 14px;
-
-  h4 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    margin-bottom: 8px;
-    color: var(--color-text-secondary);
-  }
-
-  .opp-quotes__hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 10.5px;
-    font-weight: 400;
-    color: var(--color-text-tertiary);
-  }
-}
+/* 报价历史（只读，append-only 版本链）：分区壳交给 .box，这里只管表格 */
+.opp-page .opp-quotes__hint { display: inline-flex; align-items: center; gap: 3px; font-weight: 400; }
 .opp-page .opp-quotes__table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  margin-top: 4px;
 
   th {
     text-align: left;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-tertiary);
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-divider);
     padding: 4px 8px;
     white-space: nowrap;
   }
@@ -269,56 +330,44 @@
 
 /* ─── 阶段分析视图（设计稿状态 2/3）：组件 OpportunityStageAnalysis.tsx 与本页共用这些类 ── */
 .opp-page .opp-analysis { display: flex; flex-direction: column; gap: 14px; }
-.opp-page .opp-pipe { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.opp-page .opp-pstat {
-  background: var(--color-bg-surface); border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card); padding: 14px 16px;
-
-  .opp-pstat__k { font-size: 12px; color: var(--color-text-tertiary); margin-bottom: 6px; }
-  .opp-pstat__v { font-size: 22px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums;
-    small { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); }
-    &--warn { color: var(--color-warning); }
-    &--ok { color: var(--color-success); } }
-}
+/* 分析卡去边框卡壳：只留分段标题与内容（管道总览已上移为共享 .stats 三列） */
 .opp-page .opp-analysis__card {
-  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card); padding: 16px 18px;
+  background: none; border: 0; border-radius: 0; box-shadow: none; padding: 0;
   > h4 { font-size: 13px; font-weight: 600; margin: 0 0 12px; }
 }
 .opp-page .opp-analysis__hint { font-size: 12px; color: var(--color-text-tertiary); text-align: center; padding: 4px 0; }
 
-/* 漏斗分段：条宽按商机数比例；段内「数量 + 金额」并列，「阈值 · 滞留」常驻 */
+/* 漏斗分段：条宽按商机数比例；P2.1b 实心 accent 块降权为 accent tint 条 + 发丝选中边 */
 .opp-page .opp-fstage { display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
   &__name { width: 40px; flex: none; font-size: 12.5px; font-weight: 600; color: var(--color-text-primary); }
   &__bar {
-    height: 34px; border: 0; border-radius: 8px; cursor: pointer; color: #fff;
-    font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+    height: 30px; border: 1px solid transparent; border-radius: var(--radius-small); cursor: pointer;
+    color: var(--color-text-primary); background: var(--color-accent-bg);
+    font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums;
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    background: var(--color-accent); transition: filter .12s, outline-color .12s;
-    outline: 2px solid transparent;
-    small { font-size: 11px; font-weight: 500; opacity: .9; }
-    &:hover { filter: brightness(1.08); }
-    &:focus-visible { outline-color: var(--color-accent-border); }
-    &.is-selected { outline-color: var(--color-accent-border); filter: brightness(1.1); }
+    transition: border-color .12s;
+    small { font-size: 11px; font-weight: 500; color: var(--color-text-tertiary); }
+    &:hover { border-color: var(--color-accent-border); }
+    &:focus-visible { border-color: var(--color-accent-border); }
+    &.is-selected { border-color: var(--color-accent); }
   }
   &__stuck-tag {
     display: inline-flex; align-items: center; gap: 3px; flex: none;
-    font-size: 11px; font-weight: 700; color: var(--color-danger);
-    background: var(--color-danger-bg); border: 1px solid var(--color-danger-border);
-    border-radius: var(--radius-small); padding: 1px 7px;
+    font-size: 11px; font-weight: 600; color: var(--color-danger);
+    background: none; border: 1px solid var(--color-danger-border);
+    border-radius: var(--radius-micro); padding: 1px 7px;
   }
   &__meta { flex: none; font-size: 11.5px; color: var(--color-text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 }
 
-/* 最大卡点提示条 */
+/* 最大卡点提示条：去 tint 底，改左 2px warning 条 */
 .opp-page .opp-callout {
   display: flex; align-items: flex-start; gap: 8px;
-  background: var(--color-warning-bg); border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-control); padding: 10px 14px;
-  font-size: 12.5px; color: var(--color-text-primary); line-height: 1.55;
+  border-left: 2px solid var(--color-warning); padding: 2px 0 2px 12px;
+  font-size: 12.5px; color: var(--color-text-secondary); line-height: 1.6;
 
   svg { flex: none; margin-top: 2px; color: var(--color-warning); }
-  b { color: var(--color-warning); }
+  b { color: var(--color-text-primary); font-weight: 600; }
 }
 
 /* 优先处理名单（设计稿状态 3） */
@@ -332,19 +381,19 @@
   &:last-child { border-bottom: none; }
   &__rank { width: 22px; height: 22px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
     font-size: 11px; font-weight: 700; background: var(--color-bg-inset); color: var(--color-text-secondary); margin-top: 3px;
-    &.is-first { background: var(--color-accent); color: var(--color-text-on-accent); } }
-  &__ava { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--color-accent-bg); color: var(--color-accent);
-    display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+    &.is-first { background: var(--color-accent-bg); color: var(--color-accent); } }
+  &__ava { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--color-bg-inset); color: var(--color-text-secondary);
+    display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; margin-top: 1px; }
   &__info { flex: 1; min-width: 0; }
   &__name { font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-  &__amt { font-size: 12px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+  &__amt { font-size: 12px; font-weight: 500; color: var(--color-text-tertiary); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   &__intent { font-size: 11px; color: var(--color-text-tertiary); }
   &__reasons { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
-  &__act { flex: none; display: flex; flex-direction: column; gap: 6px; width: 108px; }
+  &__act { flex: none; display: flex; flex-direction: column; gap: 6px; width: 112px; }
   &__ai { margin-top: 8px; background: var(--color-bg-inset); border-radius: var(--radius-small); padding: 8px 10px;
     display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-secondary);
     &--error { color: var(--color-danger); background: var(--color-danger-bg); }
-    &-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--color-accent); flex: none; align-self: flex-start; }
+    &-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--color-accent); flex: none; align-self: flex-start; }
     &-script { margin: 0; font-size: 12.5px; color: var(--color-text-primary); line-height: 1.55; }
     &-next { margin: 4px 0 0; font-size: 12px; color: var(--color-text-secondary); } }
 }
@@ -352,6 +401,3 @@
 .opp-page .opp-reason { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;
   &--hot { color: var(--color-danger); font-weight: 600; }
   &__src { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); } }
-.opp-page .opp-btn--ai { border-color: var(--color-accent-border); color: var(--color-accent); background: var(--color-accent-bg);
-  &:hover { background: var(--color-accent-bg); filter: brightness(.97); }
-  &:disabled { opacity: .6; cursor: default; } }

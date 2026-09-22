@@ -133,13 +133,13 @@
     white-space: nowrap;
   }
 
-  // 原因文本：唯一可压缩项。flex-basis 0 让标签的最小内容宽度 = code + label（关键内容可读），
+  // 原因文本（「为什么现在跟」的说明）：P1.6 起降为 tertiary 灰，不再跟标签同色 ——
+  // 标签说出处，理由只是注脚；flex-basis 0 让标签的最小内容宽度 = code + label（关键内容可读），
   // 富余空间再按 1:1 伸展；超出部分省略号，完整文本由 title（悬停）与 DOM 文本（读屏）保留。
   &__reason {
     flex: 1 1 0;
     min-width: 0;
-    color: inherit;
-    opacity: 0.75;
+    color: var(--color-text-tertiary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -155,6 +155,24 @@
   padding: 0 0 14px 32px;
 }
 
+// P1.6 信号行档的主操作压平：「完成」虽带 .btn--primary-soft，但在索引行里默认只给
+// 文字链档（secondary 字 + 500 权重，无底无边）——行被指向 / 键盘聚焦 / 展开时才升
+// accent 字色（同客户 P1.4b：强调交给行背景，不给列表摆色块）。
+// 主张卡档（.lead-card__acts）不在此列，保留浅 accent 底的轻 primary。
+.signal-card__actions .btn--primary-soft {
+  background: none;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+.sig:hover .signal-card__actions .btn--primary-soft,
+.sig:focus-within .signal-card__actions .btn--primary-soft,
+.sig.is-open .signal-card__actions .btn--primary-soft,
+.signal-card__actions .btn--primary-soft:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--color-accent);
+}
+
 // AI 深度分析入口的展开箭头随展开翻转
 .signal-card__ai-btn .chev.is-flip { transform: rotate(180deg); }
 
@@ -162,28 +180,4 @@
   display: block;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-// P0-3.4：判断证据回查（蓝色信息档；「依据消息」入口在 .verdict__meta 内）
-.signal-card__j-evidence {
-  margin-left: 0;
-  padding: 0 8px;
-  font-size: 11px;
-  color: var(--color-accent);
-  background: var(--color-accent-bg);
-  border: none;
-  border-radius: var(--radius-micro);
-  cursor: pointer;
-}
-.signal-card__j-evidence:hover { background: var(--color-accent-bg); filter: brightness(0.98); }
-.signal-card__j-evidence-text {
-  margin: 8px 0 2px;
-  padding: 6px 10px;
-  background: var(--color-bg-surface-muted);
-  border-left: 2px solid var(--color-accent-border);
-  border-radius: var(--radius-micro);
-  font-size: 12.5px;
-  color: var(--color-text-secondary);
-  white-space: pre-wrap;
-  word-break: break-all;
 }

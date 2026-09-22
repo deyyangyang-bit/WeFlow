@@ -4,7 +4,7 @@
 // 数据全部来自现有 IPC 与现有 store，不新增口径：客户 = crm.customers()，会话 = chat.getSessions()。
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bot, Lock, LockOpen, MessageSquare, Moon, Search, Sun, UserCircle, Users } from 'lucide-react'
+import { Bot, Lock, LockOpen, MessageSquare, Moon, Search, Settings, Sun, UserCircle, Users } from 'lucide-react'
 import { NAV_FLAT, type NavItemDef } from '../utils/appNav'
 import { useAppStore } from '../stores/appStore'
 import { useHermesStore } from '../stores/hermesStore'
@@ -123,7 +123,7 @@ function CommandPalette({ open, onClose }: CommandPaletteProps) {
         label: '打开 Hermes',
         icon: <Bot size={16} strokeWidth={1.6} />,
         keywords: '智能体 ai',
-        run: () => { openHermes() }
+        run: () => { openHermes(); navigate('/hermes') }
       },
       {
         key: 'action:contacts',
@@ -132,6 +132,14 @@ function CommandPalette({ open, onClose }: CommandPaletteProps) {
         icon: <UserCircle size={16} strokeWidth={1.6} />,
         keywords: '微信 账号 account',
         run: () => { navigate('/account-management') }
+      },
+      {
+        key: 'action:settings',
+        group: '动作',
+        label: '打开设置',
+        icon: <Settings size={16} strokeWidth={1.6} />,
+        keywords: '设置 偏好 settings preferences',
+        run: () => { navigate('/settings', { state: { backgroundLocation: location } }) }
       },
       {
         key: 'action:lock',

@@ -132,10 +132,12 @@ export function bindLeadWxid(
     if (needStatusAdvance) {
       tx.run("UPDATE lead SET status = 'WX_ADDED', wechat = CASE WHEN wechat = '' OR wechat IS NULL THEN ? ELSE wechat END, updated_at = ? WHERE id = ?",
         [value, now, id])
+      tx.markAnnualReviewChangedIfWrote('crm:lead')
       tx.run('INSERT INTO lead_activity (lead_id, action, note, created_at) VALUES (?,?,?,?)',
         [id, 'WX_ADDED', source === 'auto' ? `加好友自动检测命中：${String(opts.displayName || value)}` : `手动绑定微信：${String(opts.displayName || value)}`, now])
     } else if (needWechatBackfill) {
       tx.run('UPDATE lead SET wechat = ?, updated_at = ? WHERE id = ?', [value, now, id])
+      tx.markAnnualReviewChangedIfWrote('crm:lead')
     }
     // ④ 审计留痕（宪法 §1.12；冲突注记 + 命中账号标识（脱敏）一并入 detail）
     tx.run('INSERT INTO audit_event (actor, action, entity_type, entity_id, detail, created_at) VALUES (?,?,?,?,?,?)',

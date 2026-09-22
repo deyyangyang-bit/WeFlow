@@ -11,6 +11,14 @@
  * - 颜色/圆角/字体仍只消费既有 token（--color-* / --radius-* / --shadow-* / --font-app），未新增 token。
  * - 裸全局规则只留 .crm-pager / .crm-pager-info / .empty（CrmReviewPage 等按加载顺序可能命中，不动）；
  *   其余规则全部收进 .crm-lead-page 作用域。
+ *
+ * 2026-09-18 P2.1 观感收口（纯视觉）：
+ * - 页头动作降档：检查超时/离职移交 → .btn--quiet，导入线索 → .btn--plain（描边），
+ *   分配给… → .btn--primary-soft（轻 primary，勾选后出现）；实心 accent 只留给弹窗主操作。
+ * - 分段导航经理页签与销售分段统一 .rail（本体在 main.scss：发丝底 / 选中 2px / mono 计数）。
+ * - 销售资源卡 .lp-card 从厚卡片（底色+描边+投影）收成发丝行：行分隔线 + hover 灰底。
+ * - 状态 pill → .lp-qtag 安静 tag（发丝边 + 语义色字，同客户页 .cws-q__tag）。
+ * - 顶部通知 .crm-notice 从整块 tint 色块改为 .notice 语法（左 2px 语义条，无底色）。
  */
 
 /* 分页与空态：跨页共用，保持顶层不动 */
@@ -32,7 +40,8 @@
    免受懒加载顺序影响）。本页仍在使用这些类名，故按原值在 .crm-lead-page 下重述一份；
    值与原文件一致，不改视觉，只把归属收到本页作用域内。 */
 .crm-lead-page {
-  .crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: var(--radius-small); padding: 8px 12px; margin-bottom: 12px; font-size: 13px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+  /* P2.1：通知条从 tint 色块改为共享 .notice 语法（左 2px 语义条 + 无底色），仅本页作用域 */
+  .crm-notice { border-left: 2px solid var(--color-accent); padding: 5px 0 5px 12px; margin-bottom: 12px; font-size: 12.5px; color: var(--color-text-secondary); overflow-wrap: anywhere; }
   .crm-filterbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .psub { font-size: 11px; color: var(--color-text-tertiary); overflow-wrap: anywhere; }
 
@@ -61,8 +70,9 @@
 /* 提示条与提示行的层级调整（页头之后第一条提示留出上间距） */
 .crm-lead-page .shead + .crm-notice { margin-top: 14px; }
 
-/* ─── 分段控件 / 数字条 / 筛选区 ──────────────────────────────────────────── */
-.crm-lead-page .lp-tabs { margin: 16px 0 14px; }
+/* ─── 分段导航 / 数字条 / 筛选区 ──────────────────────────────────────────── */
+/* 页签用共享 .rail（本体 main.scss：发丝底 / 选中 2px / mono 计数），本页只收上下间距 */
+.crm-lead-page .lp-tabs { margin-bottom: 14px; }
 
 /* 四格数字条：概念稿 .stats，这里补「可点选」的按钮语义与选中态（口径不变，仍是 poolCounts） */
 .crm-lead-page .lp-stats { margin-bottom: 14px; }
@@ -121,7 +131,7 @@
 .crm-lead-page .lp-cell > .psub { display: block; margin-top: 3px; }
 
 .crm-lead-page .lc-contact { font-weight: 600; font-size: 13px; }
-.crm-lead-page .lc-wechat { font-weight: 400; font-size: 11.5px; color: #8b5cf6; }
+.crm-lead-page .lc-wechat { font-weight: 400; font-size: 11.5px; color: var(--color-text-tertiary); }
 .crm-lead-page .lc-filename { font-size: 12px; color: var(--color-text-tertiary); }
 
 /* 直角勾选框：原生 input 保留键盘/读屏语义，外观由 CSS 画（15px + 4px 圆角） */
@@ -190,26 +200,40 @@
 .crm-lead-page .lp-recent { margin-top: 18px; }
 .crm-lead-page .lp-notify-acts { margin-left: auto; display: inline-flex; gap: 6px; flex: none; }
 
-/* ─── 屏 4 销售资源卡（保留原卡片结构与倒计时语义，只对齐间距）───────────── */
-.crm-lead-page .lp-sales { display: flex; flex-direction: column; gap: 10px; }
-.crm-lead-page .lp-seg-wrap { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+/* ─── 屏 4 销售资源卡（P2.1 收成发丝行：行分隔线 + hover 灰底，倒计时保留语义色） ── */
+.crm-lead-page .lp-sales { display: flex; flex-direction: column; }
 .crm-lead-page .lp-empty { padding: 24px 0; }
 .crm-lead-page .lp-card {
   display: flex; align-items: center; gap: 16px;
-  background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); padding: 14px 16px;
-  box-shadow: var(--shadow-card); cursor: pointer;
+  padding: 11px 8px;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+  transition: background .14s;
 
-  &:hover { outline: 1px solid var(--color-border); }
+  &:hover { background: var(--color-bg-hover); }
   &__main { flex: 1; min-width: 0; }
-  &__t1 { font-size: 14px; font-weight: 600; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
-  &__t2 { font-size: 12px; color: var(--color-text-tertiary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  &__countdown { width: 168px; flex-shrink: 0; text-align: right;
-    .t { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .l { font-size: 11px; margin-top: 2px; }
-    &.ok { .t, .l { color: var(--color-success); } }
-    &.warn { .t, .l { color: var(--color-warning); } }
-    &.over { .t, .l { color: var(--color-danger); } }
-    &.done { .t, .l { color: var(--color-success); } } }
+  &__t1 { font-size: 13px; font-weight: 600; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
+  &__t2 { font-size: 11.5px; color: var(--color-text-tertiary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &__countdown { width: 150px; flex-shrink: 0; text-align: right;
+    .t { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .l { font-size: 11px; margin-top: 2px; color: var(--color-text-tertiary); }
+    &.ok .t { color: var(--color-success); }
+    &.warn .t { color: var(--color-warning); }
+    &.over .t { color: var(--color-danger); }
+    &.done .t { color: var(--color-text-tertiary); } }
+}
+
+/* 安静 tag（同客户页 .cws-q__tag 语法）：发丝边 + 语义色字、无实心底，替代行内 pill */
+.crm-lead-page .lp-qtag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border: 1px solid var(--color-border); border-radius: 4px;
+  font-size: 11px; line-height: 1; white-space: nowrap;
+  color: var(--color-text-secondary);
+
+  &--info { border-color: var(--color-accent-border); color: var(--color-accent); }
+  &--success { border-color: var(--color-success-border); color: var(--color-success); }
+  &--warning { border-color: var(--color-warning-border); color: var(--color-warning); }
+  &--danger { border-color: var(--color-danger-border); color: var(--color-danger); }
 }
 
 /* ─── 跟进状态（第二段 SLA 结论投影）：check-line 形态，颜色全走 --color-* 族 ── */
@@ -324,4 +348,26 @@
   .crm-lead-page .lp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .crm-lead-page .lp-card { flex-wrap: wrap; }
   .crm-lead-page .lp-search { width: 100%; }
+}
+
+// ── 单条录入查重面板（2026-09-19）──
+.lead-dup-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+
+  .lead-dup-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #b45309; }
+  .lead-dup-meta { margin-top: 6px; opacity: 0.75; line-height: 1.6; }
+  .lead-dup-table {
+    width: 100%;
+    margin-top: 8px;
+    border-collapse: collapse;
+
+    th, td { padding: 4px 6px; text-align: left; border-bottom: 1px solid rgba(128, 128, 128, 0.18); font-weight: 400; }
+    th { opacity: 0.6; font-size: 11px; }
+  }
+  .lead-dup-actions { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 }

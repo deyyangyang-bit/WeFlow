@@ -1,11 +1,18 @@
 /**
  * TodayActionPage.tsx — 统一信号流首页(v4 布局)
  *
- * 结构：header(标题+销售复盘+刷新) → KPI 单行条 → 高意向提示条
+ * 结构：header(标题 + 销售复盘 / 重算 / 新建待办) → 开工简报(.notice--brief：这份判断基于什么)
+ *       → KPI 单行条(.stats) → 主主张(.lead-card)
  *       → 主两栏(左:筛选chips+信号卡流 | 右:待办侧栏)
  *       → 可折叠「数据概览」(来源/紧急度/阶段)
+ *
+ * 2026-09-18 P1.6（观感细修，纯视觉）：顶栏动作全降次要档（复盘/重算 quiet、新建描边）；
+ * 信号行动作行降文字链档（AIActionCard），右栏待办对齐 Chat/客户 side-head 节奏；
+ * 简报覆盖 tag / meta 数值再安静一档（本页 scss 作用域）。骨架、口径、逻辑均不变。
+ * 2026-09-19 UI 改版第一批：chips 补「有动向」第四档（非 task 来源=提醒/商机动向）；
+ * eyebrow 补「信号截至」时刻；四格统计补真实口径副行（.stat__d）。数据契约不变。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWxidRefresh } from '../utils/useWxidRefresh'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -17,9 +24,11 @@ import TodoSidebar from '../components/sales/TodoSidebar'
 import { useTodayActionStore, type SignalFilter } from '../stores/todayActionStore'
 import './TodayActionPage.scss'
 
+// 概念稿屏 1 四档：全部 / 该联系 / 有动向 / 紧急（insight 档取数语义见下方 filtered 注释）
 const CHIPS: { key: SignalFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'task', label: '该联系' },
+  { key: 'insight', label: '有动向' },
   { key: 'urgent', label: '紧急' },
 ]
 
@@ -35,17 +44,43 @@ const STAGE_COLORS: Record<string, string> = {
 /** 简报六态（PRD §6.1）——键必须覆盖 coverage.state 的全部取值，避免漏态回退到错误结论 */
 type DigestStateKey = 'empty_account' | 'crm_only' | 'pending_data' | 'all_covered_clear' | 'failed_or_blocked' | 'stale_snapshot'
 
-const DIGEST_STATE_HINT: Record<DigestStateKey, string> = {
-  empty_account: '本账号暂无沟通数据',
-  crm_only: '仅业务事实（无聊天依据）',
-  pending_data: '数据已覆盖，正在梳理会话',
-  all_covered_clear: '已覆盖核对完成',
-  failed_or_blocked: '分析未完成 —— 下方为空不代表无人需要跟进',
-  stale_snapshot: '仅旧快照 —— 非今日最新结论'
+/** 六态 → 左侧 2px 色条的轻重（概念稿：核验通过 accent / 覆盖不全与旧快照 warn / 失败与阻断 stop）。
+ *  此前六态共用一条蓝，失败态看起来和成功态一样 —— 轻重必须由色条承担，态名另用文字标出。
+ *  注意 pending_data 是「有事项」的常态（覆盖完整也走这一态），只有真的漏了或失败了会话才降级为 warn；
+ *  判定口径与 coverage.message 里那句「另有 N 个会话未处理 · 部分未完成」一致，不把正常态一律标黄。 */
+function digestTone(state: string | undefined, coverage: any): string {
+  if (state === 'failed_or_blocked') return 'notice--stop'
+  if (state === 'crm_only' || state === 'stale_snapshot') return 'notice--warn'
+  if (state === 'pending_data' && ((coverage?.pending || 0) > 0 || (coverage?.failedSessions || 0) > 0)) return 'notice--warn'
+  return 'notice--accent'
+}
+
+/** 覆盖态 tag（概念稿 .notice__row 里的 .tag）：与 digestTone 同一套分档 —— 色条与态名不许说两件事。
+ *  无 coverage（未核验）也必须有态名，否则「没看」会看起来像「看过了」 */
+function digestTagLabel(state: string | undefined, coverage: any): string {
+  switch (state) {
+    case 'empty_account': return '本账号暂无沟通数据'
+    case 'crm_only': return '仅业务事实'
+    case 'all_covered_clear': return '已核对完成'
+    case 'failed_or_blocked': return '分析未完成'
+    case 'stale_snapshot': return '仅旧快照'
+    case 'pending_data':
+      return (coverage?.pending || 0) > 0 || (coverage?.failedSessions || 0) > 0 ? '覆盖不全' : '覆盖完整'
+    default: return '覆盖未核验'
+  }
+}
+
+/** 简报坐标时间（概念稿 .brief__meta）：区间到分钟、生成时刻到秒；无效值返回空串 —— 不伪造时间 */
+function fmtBriefTime(ms: number, withSeconds = false): string {
+  if (!ms || !Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${withSeconds ? `${hm}:${p(d.getSeconds())}` : hm}`
 }
 
 export default function TodayActionPage() {
-  const { items, stats, loading, error, filter, fetchToday, setFilter, createTodo } = useTodayActionStore()
+  const { items, stats, loading, error, filter, generatedAt, fetchToday, setFilter, createTodo } = useTodayActionStore()
   const [refreshing, setRefreshing] = useState(false)
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [page, setPage] = useState(1)
@@ -70,7 +105,6 @@ export default function TodayActionPage() {
   const [digestError, setDigestError] = useState('')
   /** 业务库尚未就绪（启动早期/切账号重开库）：加载态的一种，不是错误、也不是空态 */
   const [digestNotReady, setDigestNotReady] = useState(false)
-  const [digestExpanded, setDigestExpanded] = useState(false)
   /** 首屏阶段：frame(≤300ms 骨架) → local(≤2s 本地事项) → slow(>2s 明确加载态) → timeout(10s 报错+重试) */
   const [digestPhase, setDigestPhase] = useState<'frame' | 'local' | 'slow' | 'timeout' | 'ready'>('frame')
   /** 单飞（PRD §4.7 全局作用域）：任一识别进行中，识别与重生成两个入口同时禁用 */
@@ -172,7 +206,10 @@ export default function TodayActionPage() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
-    void (window as any).electronAPI.sales.actionRefresh()
+    try {
+      // 等 main 侧重算跑完再取数（IPC 返回即扫描已完成），避免取到重算前的旧数据
+      await (window as any).electronAPI.sales.actionRefresh()
+    } catch { /* 重算失败也要刷新当前库内数据 */ }
     await fetchToday()
     setRefreshing(false)
   }, [fetchToday])
@@ -183,6 +220,9 @@ export default function TodayActionPage() {
     // 「该联系」= 含待办来源的卡。用 some 而非 every：商机信号会并入同客户卡，
     // 若按 every 判定，被并入了报价/风险理由的卡会从本筛选中静默消失（与 customerActionQueue 的 withTask 同口径）
     if (filter === 'task') return items.filter(i => i.sources.some(s => s.type === 'task'))
+    // 「有动向」= 非待办来源的卡（例外提醒 / 商机确定性信号）。insight 来源本体已随
+    // 设计-AI见解重定位 §3.2 移出卡流，概念稿第四档按同一句语义改由剩余来源承担
+    if (filter === 'insight') return items.filter(i => i.sources.some(s => s.type !== 'task'))
     if (filter === 'urgent') return items.filter(i => i.urgencyTier === 'urgent')
     return items
   }, [items, filter])
@@ -190,18 +230,61 @@ export default function TodayActionPage() {
   // 切筛选时回到第一页
   useEffect(() => { setPage(1) }, [filter])
 
+  // 主主张（概念稿 .lead-card）：排序首位浮在信号列表上方，其余仍走细线索引。
+  // 同一批线索不在屏幕上出现两遍 —— 提升的那条不再重复进列表。
+  const leadItem = filtered.length > 0 ? filtered[0] : null
+  const restItems = useMemo(() => (filtered.length > 1 ? filtered.slice(1) : []), [filtered])
+
   // 分页切片（page 超出范围时钳制到最后一页，避免刷新后空页）
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(restItems.length / PAGE_SIZE))
   const curPage = Math.min(Math.max(1, page), pageCount)
   const pageItems = useMemo(
-    () => filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE),
-    [filtered, curPage],
+    () => restItems.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE),
+    [restItems, curPage],
   )
 
-  // chips 计数
+  // 简报只报数量，不报标题：事项本身交给下方信号列表与右侧待办，同屏出现两遍等于把列表读两次
+  const digestItemCount = digest?.items?.length || 0
+  const digestToneClass = digestTone(digest?.coverage?.state, digest?.coverage)
+  // 覆盖态 tag：色条说轻重，文字说态名（概念稿「态名另用文字标出」）
+  const digestTag = digestTagLabel(digest?.coverage?.state, digest?.coverage)
+  // 简报坐标（概念稿 .brief__meta）：只填真取到的字段，缺哪段略哪段 —— 不补默认值、不假造区间
+  const briefMeta = useMemo(() => {
+    if (!digest) return [] as ReactNode[]
+    const cov = digest.coverage
+    const parts: ReactNode[] = []
+    if (cov?.activeSessions > 0) parts.push(<>已核对 <b>{cov.analyzedSessions}</b> / <b>{cov.activeSessions}</b> 段会话</>)
+    const from = fmtBriefTime(Number(cov?.from || 0) * 1000)
+    const to = fmtBriefTime(Number(cov?.to || 0) * 1000)
+    if (from && to) parts.push(<>区间 <b>{from}</b> – <b>{to}</b></>)
+    const generatedAt = fmtBriefTime(Number(digest.createdAt || 0), true)
+    if (generatedAt) parts.push(<>生成于 <b>{generatedAt}</b></>)
+    return parts
+  }, [digest])
+  // 覆盖缺口与失败原因（概念稿块外的补充行）：accent 常态下与 .brief__meta 同源重复，只在 warn·stop 与未核验时出现
+  const briefNote = digest
+    ? (digestToneClass === 'notice--accent' && digest.coverage
+      ? ''
+      : String(digest.coverage?.message || '聊天分析覆盖尚未核验，不代表已分析全部消息'))
+    : ''
+  // 收起后的入口文案：把「不可当作已核对」的口径带在入口上，收起不等于结论已成立
+  const reopenNote = digest?.coverage?.pending > 0
+    ? `仍有 ${digest.coverage.pending} 段会话未核对，不代表「无需跟进」`
+    : digest?.coverage?.state === 'failed_or_blocked' ? '有未完成分析'
+      : digest?.coverage?.state === 'stale_snapshot' ? '仅旧快照' : ''
+  /** 未核对的会话数（未处理 + 失败）：只用于把「查看未核对会话」的去向说清，不做第二份列表 */
+  const unverifiedSessions = (digest?.coverage?.pending || 0) + (digest?.coverage?.failedSessions || 0)
+  // 简报上的两个入口（查看未核对会话 / 事项计数）都落到同一处：下方信号与右侧待办。
+  // 覆盖暂无「未核对会话」的逐条列表或深链，按既有 UI 就地滚过去 —— 不新造后端，也不假造一份列表。
+  const revealSignals = useCallback(() => {
+    document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  // chips 计数（四档与 filtered 同口径，计数联动）
   const chipCounts = useMemo(() => ({
     all: items.length,
     task: items.filter(i => i.sources.some(s => s.type === 'task')).length,
+    insight: items.filter(i => i.sources.some(s => s.type !== 'task')).length,
     urgent: items.filter(i => i.urgencyTier === 'urgent').length,
   }), [items])
 
@@ -216,12 +299,23 @@ export default function TodayActionPage() {
   }, [items])
   const maxStageCount = Math.max(1, ...stageCounts.map(([, c]) => c))
 
+  // eyebrow 第二段（概念稿「信号截至 09:42」）：取本轮取数的真实生成时刻，无值就只留日期
+  const generatedAtLabel = useMemo(() => {
+    if (!generatedAt) return ''
+    const d = new Date(generatedAt)
+    if (!Number.isFinite(d.getTime())) return ''
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }, [generatedAt])
+
   return (
     <div className="today-action-page">
       {/* 页眉（概念稿 .shead）：小标 → 一句主张 → 真实计数说明；右侧动作 */}
       <div className="shead">
         <div>
-          <p className="eyebrow">{new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</p>
+          <p className="eyebrow">
+            {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
+            {generatedAtLabel ? ` · 信号截至 ${generatedAtLabel}` : ''}
+          </p>
           <h1 className="hero">今天先跟谁</h1>
           <p className="sub">
             共 {filtered.length} 条信号{chipCounts.urgent > 0 ? ` · 其中紧急 ${chipCounts.urgent} 条` : ''}
@@ -229,58 +323,64 @@ export default function TodayActionPage() {
           </p>
         </div>
         <div className="shead__actions">
+          {/* P1.6：顶栏动作全部降为次要档（复盘/重算 quiet、新建描边），页头不放实心主色 ——
+              今日页的主张是信号本身，动作不抢（新建待办在弹窗内仍走主按钮档） */}
           <button className="btn btn--quiet" onClick={() => navigate('/sales-report')}>
             <BarChart3 size={14} strokeWidth={1.6} /> 销售复盘
           </button>
-          <button className="btn btn--plain" onClick={() => void handleRefresh()} disabled={refreshing}>
+          <button className="btn btn--quiet" onClick={() => void handleRefresh()} disabled={refreshing}>
             <RefreshCw size={14} className={refreshing ? 'spinning' : ''} strokeWidth={1.6} /> 重算今日信号
           </button>
-          <button className="btn btn--primary" onClick={() => void openTodoModal()}>
+          <button className="btn btn--plain" onClick={() => void openTodoModal()}>
             <Plus size={14} strokeWidth={1.6} /> 新建待办
           </button>
         </div>
       </div>
 
-      {/* 四格数字条（概念稿 .stats/.stat）：等宽数字 + 语义只由文字承担 */}
-      {stats && (
-        <div className="stats">
-          <div className="stat">
-            <div className="stat__n">{stats.highPriorityCount}</div>
-            <div className="stat__l">高优行动</div>
-          </div>
-          <div className="stat">
-            <div className="stat__n">{stats.riskCustomerCount}</div>
-            <div className="stat__l">沉默风险</div>
-          </div>
-          <div className="stat">
-            <div className="stat__n">{stats.activeDeals}</div>
-            <div className="stat__l">活跃商机</div>
-          </div>
-          <div className="stat">
-            <div className="stat__n">{stats.totalSignals}</div>
-            <div className="stat__l">待处理</div>
-          </div>
-        </div>
-      )}
-
       {/* 晨间摘要（设计-AI见解重定位 §3.1；§3.2 起原「高意向动向」提示条已随 insight 卡流一并移除）
           PRD §6.1 六态 + §6.2 单飞：任何失败/额度阻断都不得显示为「无风险/无需跟进/全部跟完」 */}
-      {/* 收起后的重开入口：把「不可当作已核对」的两态带在按钮上，收起不等于结论已成立 */}
+      {/* 收起后的重开入口（概念稿 .brief-reopen）：前提跟着入口走，收起不等于结论已成立 */}
       {digestDismissed && (
-        <button className="btn btn--sm signal-notice--digest-reopen" onClick={() => setDigestDismissed(false)}>
-          展开开工简报{digest?.coverage?.state === 'failed_or_blocked' ? '（有未完成分析）'
-            : digest?.coverage?.state === 'stale_snapshot' ? '（仅旧快照）' : ''}
+        <button className="brief-reopen" onClick={() => setDigestDismissed(false)}>
+          <Sunrise size={14} strokeWidth={1.6} /> 展开开工简报{reopenNote ? ` · ${reopenNote}` : ''}
         </button>
       )}
-      {!digestDismissed && <section className="notice notice--accent signal-notice signal-notice--digest" aria-label="当前账号开工简报">
+      {/* 开工简报（概念稿 .notice--accent.notice--brief / #digestBox）：整屏的前提，不是又一份列表 ——
+          六态口径 + 覆盖区间 + 生成时间 + 事项计数；事项本身交给下方「信号」与右侧「今日待办」，
+          那是同一批线索 ID，不该在同一屏出现两遍。 */}
+      {!digestDismissed && <section className={`notice ${digestToneClass} notice--brief`} aria-label="当前账号开工简报">
         <Sunrise size={16} strokeWidth={1.6} />
-        <div className="signal-notice__digest-body">
-          <span className="notice__h">开工简报 · 仅当前账号</span>
-          {/* 态一/二/三/四/五/六：coverage.state 决定展示口径；无 coverage 时按「未核验」处理 */}
-          {digest && <p>{DIGEST_STATE_HINT[digest.coverage?.state as DigestStateKey] || '聊天分析覆盖尚未核验，不代表已分析全部消息'}</p>}
-          {digest?.coverage?.message && <p className="signal-notice__digest-coverage">{digest.coverage.message}</p>}
-          {digest && <small>生成于 {new Date(digest.createdAt).toLocaleString()}
-            {digest.coverage?.state === 'stale_snapshot' ? '（旧快照，非今日结论）' : ''}</small>}
+        <div className="brief__body">
+          {/* 标题行 + 动作（概念稿 .notice__row）：态名跟在标题后，动作与标题同排 */}
+          <div className="notice__row">
+            <span className="notice__h">
+              开工简报 · 仅当前账号
+              <span className="tag tag--plain" style={{ marginLeft: 6 }}>{digestTag}</span>
+            </span>
+            <span className="notice__acts">
+              <button className="btn btn--sm btn--quiet" onClick={revealSignals}
+                title={unverifiedSessions > 0
+                  ? `另有 ${unverifiedSessions} 段会话未核对，先看下方信号与待办`
+                  : '本次覆盖已核对完成，下方为已记录的事项'}>
+                查看未核对会话
+              </button>
+              {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
+              <button className="btn btn--sm btn--quiet" disabled={digestRegenerating || identifyBusy}
+                title={identifyBusy ? '正在识别中，请稍候' : undefined}
+                onClick={() => void regenerateDigest()}>
+                {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
+              </button>
+              <button className="btn btn--sm btn--quiet" onClick={() => setDigestDismissed(true)}>收起</button>
+            </span>
+          </div>
+          {/* 一行能拿去核对的等宽坐标：已核对 a/b · 区间 · 生成于；缺字段略该段（不假造） */}
+          {briefMeta.length > 0 && (
+            <p className="brief__meta">
+              {briefMeta.map((part, i) => <Fragment key={i}>{i > 0 && ' · '}{part}</Fragment>)}
+            </p>
+          )}
+          {/* 态一/二/三/四/五/六：coverage 决定展示口径；无 coverage 时按「未核验」处理 */}
+          {briefNote && <p className="brief__note">{briefNote}</p>}
           {/* 首屏时间预算：>2s 明确加载态，10s 明确报错 —— 都不伪装成空 */}
           {!digest && !digestTimedOut && (
             <p>{digestPhase === 'frame' ? '正在打开开工简报…'
@@ -295,41 +395,63 @@ export default function TodayActionPage() {
             </p>
           )}
           {digestError && <p role="alert">{digestError} <button className="btn btn--sm btn--quiet" onClick={() => void fetchDigest()}>重试</button></p>}
-          {digest && (() => {
-            const pending = digest.items.filter((it: any) => !it.status || it.status === 'pending')
-            const visible = digestExpanded ? pending : pending.slice(0, 5)
+          {/* 简报只讲前提：计数一行说清有几条，标题不在块里再列一遍（概念稿 .brief__count） */}
+          {digest && digestItemCount > 0 && (
+            <p className="brief__count">
+              <button type="button" className="brief__count-link" onClick={revealSignals}>
+                简报共 <b>{digestItemCount}</b> 条事项 · 全部列在下方信号列表
+              </button>
+            </p>
+          )}
+          {digest && digestItemCount === 0 && (() => {
             const st = digest.coverage?.state as DigestStateKey | undefined
             return <>
               {/* 态四：全部覆盖且无有效待办；态一：新账号空态（提供建客户/建待办入口，不调 AI 凑摘要） */}
-              {!pending.length && st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
-              {!pending.length && st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
+              {st === 'all_covered_clear' && <p>已完成全量覆盖核对，当前没有待跟进事项。</p>}
+              {st === 'empty_account' && <p>还没有客户沟通记录，也没有待办。
                 <button className="btn btn--sm btn--quiet" onClick={() => navigate('/customers')}>去绑定客户</button>
                 <button className="btn btn--sm btn--quiet" onClick={() => void openTodoModal()}>新建待办</button>
               </p>}
-              {!pending.length && (st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
+              {(st === 'failed_or_blocked' || st === 'crm_only' || st === 'stale_snapshot') && (
                 <p>暂无已记录的事项。注意：{digest.coverage?.reason || '聊天分析未完成'}，
                   这不代表「无需跟进」。</p>
               )}
-              {!pending.length && !st && <p>当前暂无已记录的待办；聊天分析覆盖尚未核验，不代表「无需跟进」。</p>}
-              {visible.map((it: any, index: number) => <button key={it.itemKey || `${it.sessionId}:${index}`} className="signal-notice__digest-item" onClick={() => it.sessionId && !/^(todo|logi|lead):/.test(it.sessionId) ? navigate(`/customers?sid=${encodeURIComponent(it.sessionId)}`) : document.querySelector('.today-action-page__main')?.scrollIntoView({ behavior:'smooth' })}>
-                <strong>{it.group === 'must' ? '今天必须处理' : '建议优先跟进'} · {it.displayName}</strong>——{it.reason}
-                {it.dueAt && <small> · 期限 {new Date(it.dueAt).toLocaleString()}</small>}
-              </button>)}
-              {pending.length > 5 && <button className="btn btn--sm btn--quiet" onClick={() => setDigestExpanded(v => !v)}>{digestExpanded ? '收起' : `展开其余 ${pending.length - 5} 个事项`}</button>}
-              <details><summary>历史事项状态</summary>{digest.items.filter((it: any) => it.status && it.status !== 'pending').map((it: any) => <p key={it.itemKey}>{it.displayName} · {it.reason} · {it.status}</p>)}</details>
+              {!st && <p>当前暂无已记录的待办；聊天分析覆盖尚未核验，不代表「无需跟进」。</p>}
             </>
           })()}
-          <div className="signal-notice__digest-acts">
-            <button className="btn btn--sm btn--quiet" onClick={() => setDigestDismissed(true)}>收起</button>
-            {/* §5.3 全局「重新生成简报」：命名即定位——它是简报的手动版，不叫「重新梳理」 */}
-            <button className="btn btn--sm btn--quiet" disabled={digestRegenerating || identifyBusy}
-              title={identifyBusy ? '正在识别中，请稍候' : undefined}
-              onClick={() => void regenerateDigest()}>
-              {digestRegenerating ? '正在生成…' : identifyBusy ? '识别中…' : '重新生成简报'}
-            </button>
-          </div>
         </div>
       </section>}
+
+      {/* 四格数字条（概念稿 .stats/.stat）：整屏前提（简报）之后才是数字与列表。
+          副行（.stat__d）只填主进程真实口径：定义性说明或同源计数字段，不造趋势假数 */}
+      {stats && (
+        <div className="stats">
+          <div className="stat">
+            <div className="stat__n">{stats.highPriorityCount}</div>
+            <div className="stat__l">高优行动</div>
+            <div className="stat__d">紧急 <b>{stats.urgentCount}</b> 条需 24 小时内回应</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.riskCustomerCount}</div>
+            <div className="stat__l">沉默风险</div>
+            <div className="stat__d">活跃阶段 · 沉默 ≥ 5 天</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.activeDeals}</div>
+            <div className="stat__l">活跃商机</div>
+            <div className="stat__d">报价 / 谈判阶段客户</div>
+          </div>
+          <div className="stat">
+            <div className="stat__n">{stats.totalSignals}</div>
+            <div className="stat__l">待处理</div>
+            <div className="stat__d">该联系 <b>{stats.taskOnly}</b> 条</div>
+          </div>
+        </div>
+      )}
+
+      {/* 主主张（概念稿 .lead-card 挂载点）：整幅浮在索引上方，四栏判断直接摊开。
+          完整判断只留给被主张的这一位；其余信号仍是细线行，同一批线索不在同一屏出现两遍。 */}
+      {leadItem && <AIActionCard key={leadItem.itemKey} item={leadItem} lead />}
 
       {/* 主两栏（概念稿 .cols：左索引 / 右待办细线栏） */}
       <div className="cols today-action-page__main">
@@ -383,8 +505,8 @@ export default function TodayActionPage() {
             </div>
           )}
 
-          {/* 信号细线索引 */}
-          {filtered.length > 0 && (
+          {/* 信号细线索引（主主张已在上方 .lead-card，不在列表里重复出现） */}
+          {restItems.length > 0 && (
             <>
               <div className="siglist">
                 {pageItems.map(item => (
@@ -404,7 +526,7 @@ export default function TodayActionPage() {
                     <ChevronLeft size={14} strokeWidth={1.6} /> 上一页
                   </button>
                   <span className="num signal-pagination__info">
-                    {curPage} / {pageCount} 页 · 共 {filtered.length} 条
+                    {curPage} / {pageCount} 页 · 共 {restItems.length} 条
                   </span>
                   <button
                     className="btn btn--sm signal-pagination__btn"

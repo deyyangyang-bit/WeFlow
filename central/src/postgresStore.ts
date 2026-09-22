@@ -3,6 +3,15 @@ import { resolve } from 'node:path'
 import { Pool, type PoolClient } from 'pg'
 import type { CentralAckRequest, CentralPullResult, CentralSyncEvent } from '../../shared/centralSync.js'
 import {
+  buildDuplicateGroupDownPayload,
+  duplicateGroupDigest,
+  duplicateGroupEventIdentity,
+  duplicateGroupGroupId,
+  duplicateGroupLockKey,
+  mergeDuplicateGroupMembers,
+  type DupMember
+} from './duplicateGroup.js'
+import {
   buildProjectionUpsert,
   crossDeviceConflict,
   identityAnchorOf,
@@ -202,6 +211,114 @@ export class PostgresCentralStore implements CentralStore {
     )
   }
 
+  /**
+   * 撞客一期（宪法 §3.1 duplicate_group 登记行）：身份锚点冲突时，除 sync_entity_conflict 审计外
+   * 登记重复组投影并广播下行。与 recordConflict 同样走独立连接（pool）——被拒事件在本事务
+   * savepoint 里回滚，但「已发生的客观冲突事实」（审计 + 重复组）必须留存。
+   *
+   * H7 收口：成员**累积合并**（读取旧成员按 customerRef 去重，第三成员不再覆盖第二成员）、
+   * ownerSales 用最新可得值更新但不清空非空旧值、下行幂等键/eventId/aggregateVersion 基于
+   * canonical 成员内容摘要（成员内容不变不重发；成员数相同但内容变化也重发）。
+   * 并发：同一 (workspace, anchor) 的事务级 advisory 锁 + 组行 FOR UPDATE——两个同时到达的
+   * 新成员都在锁后读到「含对方」的最新成员集，杜绝「先 SELECT 再 UPDATE」互相覆盖。
+   * 全部 SQL 为不含插值的字面量，值一律走参数（成员集合 = ANY($2::text[]) 参数化数组）。
+   */
+  private async registerDuplicateGroup(principal: DevicePrincipal, event: CentralSyncEvent): Promise<void> {
+    const anchor = identityAnchorOf(event.payload)
+    if (!anchor) return
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      // 事务级 advisory 锁：以 (workspace, anchor) 为粒度串行化登记，COMMIT/ROLLBACK 自动释放
+      const lockKey = duplicateGroupLockKey(principal.workspaceId, anchor.identityType, anchor.identityHash)
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey])
+      const clash = await client.query(
+        `SELECT entity_id, customer_ref FROM central_customer_identity
+         WHERE workspace_id=$1 AND identity_type=$2 AND identity_hash=$3 LIMIT 1`,
+        [principal.workspaceId, anchor.identityType, anchor.identityHash]
+      )
+      const holderRef = String(clash.rows[0]?.customer_ref || clash.rows[0]?.entity_id || '')
+      const incomingRef = String(event.payload.customerRef || event.entityId || '')
+      if (!holderRef || !incomingRef || holderRef === incomingRef) {
+        await client.query('COMMIT')
+        return
+      }
+      const existingRow = await client.query(
+        `SELECT members_json, aggregate_version FROM central_duplicate_group
+         WHERE workspace_id=$1 AND anchor_type=$2 AND anchor_hash=$3 FOR UPDATE`,
+        [principal.workspaceId, anchor.identityType, anchor.identityHash]
+      )
+      let prevMembers: DupMember[] = []
+      let prevVersion = 0
+      if (existingRow.rowCount) {
+        try {
+          const parsed = JSON.parse(String(existingRow.rows[0].members_json || '[]'))
+          if (Array.isArray(parsed)) prevMembers = parsed as DupMember[]
+        } catch { prevMembers = [] }
+        prevVersion = Number(existingRow.rows[0].aggregate_version || 0)
+      }
+      // 全体成员的 owner 最新值一次查齐（= ANY($2::text[]) 参数化数组）
+      const refs = [...new Set([...prevMembers.map((m) => m.customerRef), holderRef, incomingRef])]
+      const ownerLookup = await client.query(
+        `SELECT entity_id, customer_ref, owner_sales FROM central_customer
+         WHERE workspace_id=$1 AND (entity_id = ANY($2::text[]) OR customer_ref = ANY($2::text[]))`,
+        [principal.workspaceId, refs]
+      )
+      const ownerOf = (ref: string) =>
+        String(ownerLookup.rows.find((r) => r.entity_id === ref || r.customer_ref === ref)?.owner_sales || '')
+      // 全部成员带最新可得 owner 值进入合并（查不到为 ''，merge 空不清空旧非空值）
+      const incoming = refs.map((customerRef) => ({ customerRef, ownerSales: ownerOf(customerRef) }))
+      const members = mergeDuplicateGroupMembers(prevMembers, incoming)
+      const digest = duplicateGroupDigest(members)
+      // 内容未变化（重复登记同一成员、owner 也无更新）→ 不重发不空转
+      if (prevMembers.length > 0 && members.length === prevMembers.length && digest === duplicateGroupDigest(prevMembers)) {
+        await client.query('COMMIT')
+        return
+      }
+      const identity = duplicateGroupEventIdentity(anchor.identityType, anchor.identityHash, digest, prevVersion)
+      const anchorMasked = String(event.payload.identityMasked || '')
+      const nowDate = new Date()
+      const groupKey = duplicateGroupGroupId(anchor.identityType, anchor.identityHash)
+      const membersJson = JSON.stringify(members)
+      const groupParams = [principal.workspaceId, groupKey, anchor.identityType, anchor.identityHash,
+        anchorMasked, membersJson, members.length, principal.deviceId, false, identity.aggregateVersion,
+        principal.deviceId, nowDate, nowDate]
+      // advisory 锁 + FOR UPDATE 已串行化本组登记：UPDATE 命中即更新，未命中（首登记）才 INSERT
+      const updatedGroup = await client.query(
+        `UPDATE central_duplicate_group
+         SET anchor_masked=$5, members_json=$6, member_count=$7, registered_by=$8,
+             deleted=$9, aggregate_version=$10, updated_at=$12
+         WHERE workspace_id=$1 AND entity_id=$2 AND anchor_type=$3 AND anchor_hash=$4`,
+        groupParams
+      )
+      if (!updatedGroup.rowCount) {
+        await client.query(
+          `INSERT INTO central_duplicate_group(workspace_id,entity_id,anchor_type,anchor_hash,anchor_masked,members_json,member_count,registered_by,deleted,aggregate_version,source_device_id,created_at,updated_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          groupParams
+        )
+      }
+      // 广播下行（direction=down 且无 target = pullEvents 对全工作区设备可见）；幂等键含内容摘要
+      const downPayload = buildDuplicateGroupDownPayload({
+        anchorType: anchor.identityType, anchorHash: anchor.identityHash, anchorMasked,
+        members, deleted: false, registeredByDeviceId: principal.deviceId
+      })
+      const eventParams = [principal.workspaceId, identity.eventId, members.length, identity.idempotencyKey,
+        principal.deviceId, 'down', 'duplicate_group', groupKey, 'duplicate_group_sync',
+        identity.aggregateVersion, JSON.stringify(downPayload), null, null, null, nowDate]
+      await client.query(
+        `INSERT INTO sync_event(workspace_id,event_id,event_seq,idempotency_key,source_device_id,direction,entity_type,entity_id,event_type,aggregate_version,payload,evidence_key,target_employee_id,target_device_id,occurred_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT(workspace_id,idempotency_key) DO NOTHING`,
+        eventParams
+      )
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally { client.release() }
+  }
+
   async deviceBelongsToEmployee(workspaceId: string, deviceId: string, employeeId: string): Promise<boolean> {
     if (!isUuid(deviceId) || !isUuid(employeeId)) return false
     const result = await this.pool.query(
@@ -250,6 +367,8 @@ export class PostgresCentralStore implements CentralStore {
             }
             if (await this.identityAnchorConflict(client, principal, event)) {
               await this.recordConflict(principal, event, 'identity_anchor_conflict')
+              // 撞客一期：除审计外登记重复组并广播下行（走独立连接，不随本事件 savepoint 回滚）
+              await this.registerDuplicateGroup(principal, event)
               throw new Error('identity_anchor_conflict')
             }
           }

@@ -1,7 +1,6 @@
 
 /* 页面根：留白复用外壳 .content 的 padding（任务 0 约定），本页不再叠加整页 padding */
 .crm-review-page { color: var(--text-primary, var(--color-text-primary)); }
-.crm-header { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; h2 { display: flex; gap: 6px; align-items: center; font-size: 16px; margin-right: auto; } }
 .crm-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
 /* 销售团队下拉（header 扫描按钮旁）：成员名单 + 新增/移除管理 */
 .sales-team-wrap { position: relative; }
@@ -27,7 +26,8 @@
 .logi-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .crm-card__amt { width: 90px; }
 
-.crm-review-page .gtype { font-style: normal; background: var(--color-accent-bg); color: var(--color-accent); border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+/* 群类型标签：accent tint 收成安静发丝档（管理区） */
+.crm-review-page .gtype { font-style: normal; background: transparent; color: var(--color-text-tertiary); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 6px; line-height: 17px; font-size: 11px; margin-left: 6px; }
 .crm-review-page .gswitch { font-size: 12px; display: flex; gap: 4px; align-items: center; }
 .crm-review-page .crm-search { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 12px; font-size: 13px; width: 100%; margin-bottom: 10px; }
 .crm-review-page .pick-list { max-height: 50vh; overflow: auto; }
@@ -50,11 +50,16 @@
 .logi-stats { font-style: normal; font-size: 12px; color: var(--color-text-secondary); margin-left: 10px; font-weight: 400;
   .logi-stats__overdue { color: var(--color-danger); font-weight: 600; }
 }
-.logi-overdue { font-style: normal; background: var(--color-danger-bg); color: var(--color-danger); border: 1px solid var(--color-danger-border);
-  border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 8px; font-weight: 600; }
+/* 超期 / 已开票徽标：安静 qtag 语法（发丝边 + 语义色字，去 tint 底块） */
+.logi-overdue { font-style: normal; background: transparent; color: var(--color-danger); border: 1px solid var(--color-danger-border);
+  border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 17px; margin-left: 8px; font-weight: 500; }
 .claim-ok { font-weight: 500; color: var(--color-text-primary); }
-.invoice-ok { font-style: normal; background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--color-success-border);
-  border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; }
+.invoice-ok { font-style: normal; background: transparent; color: var(--color-success); border: 1px solid var(--color-success-border);
+  border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 17px; font-weight: 500; }
+/* 安静中性 tag（未开票 / 开票中 / 未关联合同等中间态）：发丝边灰字，warn 变体琥珀字（§2.80 视觉收口） */
+.review-tag { font-style: normal; flex: none; background: transparent; color: var(--color-text-tertiary); border: 1px solid var(--color-border);
+  border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 17px; font-weight: 400; margin-left: 6px; }
+.review-tag--warn { color: var(--color-warning); border-color: var(--color-warning-border); }
 .logi-notice { background: var(--color-accent-bg); border: 1px solid var(--color-accent-border); border-radius: 8px; padding: 8px 12px;
   margin-bottom: 8px; font-size: 13px; color: var(--color-accent); }
 .logi-notice--warn { background: var(--color-warning-bg); border-color: var(--color-warning-border); color: var(--color-warning); }
@@ -79,19 +84,15 @@
   background: var(--color-success-bg); color: var(--color-success); font-size: 14px; font-weight: 700; }
 .claimed-row__amt { font-weight: 600; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
 .claimed-row__time { margin-left: 0; width: 118px; text-align: right; font-style: normal; flex: none; }
-/* 每日 header：日期加粗 + 今天/昨天 pill + 笔数弱化（对齐设计稿） */
-.day-date { font-weight: 700; }
-.day-pill { background: var(--color-accent); color: var(--color-text-on-accent); font-size: 10.5px; border-radius: 6px; padding: 2px 7px; font-weight: 600; }
+/* 每日 header：日期弱标（mono 常规字重，贴时间线气质）+ 今天/昨天安静 pill + 条数弱化 */
+.day-date { font-weight: 500; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+.day-pill { background: var(--color-accent-bg); color: var(--color-accent); font-size: 10.5px; border-radius: 6px; padding: 2px 7px; font-weight: 500; }
 .day-pill--muted { background: var(--color-bg-inset-strong); color: var(--color-text-secondary); }
-.day-count { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.day-count { color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
 /* 分页信息 pill */
 .crm-pager-info { background: var(--color-bg-inset); border-radius: 999px; padding: 4px 14px; font-size: 12px; }
 
-// 2026-08-29 对齐设计稿：ghost 按钮（刷新/表格操作——hover 才显边）+ 页头副标题
-.crm-btn--ghost { border-color: transparent; background: transparent; color: var(--color-text-secondary);
-  &:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
-  &.danger:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: transparent; } }
-.crm-header__sub { font-size: 12px; color: var(--color-text-tertiary); margin-right: auto; }
+// 2026-08-29 对齐设计稿：页头副标题（P2.2 后由共享 .sub 承担，.crm-header__sub 已随旧页头退场）
 
 // ── 管理折叠区（原「今天要办」摘要行已并入顶部视图栏 .rail，提示不再单独占一层）──
 .review-fold { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; background: var(--color-bg-surface-muted); border: none; border-radius: var(--radius-control); color: var(--color-text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 16px;
@@ -102,18 +103,28 @@
 
 /* =============================================================
    布局整理（跟单页专属，全部限定在 .crm-review-page 作用域内）
-   概念稿语法：页眉左标题右动作 → 视图栏 .rail → 分节细线行 → 队列细线行。
-   共享类（.crm-btn / .crm-card 本体 / .cws-tabs 等）不改，只在本页作用域覆写。
+   P2.2（2026-09-18）：页眉接共享 .shead（eyebrow 按真实队列命名，hero 用页内既有计数）+
+   四格概览 .stats（超期危险色仅 >0）/ 队列 .rail 去表情符号、「今天要办」并回四格与 rail 弱汇总 /
+   卡片主操作接 .btn--primary-soft、其余 quiet / 状态徽标安静化（发丝边语义色，去 tint 底）/
+   输入下拉 focus 去 default 光晕。逻辑（扫描/认领/自动匹配/签收/超期计算）不动。
+   共享类（.crm-btn 本体等，DeliveryAftersales / GeneratedFileResult / SearchTable 仍在用）不改。
    ============================================================= */
 
-/* ─── 页眉：小标 + 标题在左，扫描与刷新在右 ─── */
-.crm-review-page .crm-header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 10px; }
-.crm-review-page .crm-header__id { display: flex; flex-direction: column; gap: 1px; min-width: 0; margin-right: auto; }
-.crm-review-page .crm-header__id h2 { margin-right: 0; font-size: 17px; line-height: 1.25; }
-.crm-review-page .crm-header__ops { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* ─── 页眉（概念稿 .shead）：布局交给共享类，本页只管与四格的呼吸 ─── */
+.crm-review-page .shead { margin-bottom: 16px; }
+/* 「今天要办」verdict：三计数着 accent（设计稿屏 4 verdict b 档，衬线主张句内加重） */
+.crm-review-page .hero b { color: var(--color-accent); font-weight: 600; }
 
-/* ─── 视图栏：队列档位 + 右侧「今天要办」汇总（.rail 本体在 main.scss）─── */
-.crm-review-page .rail { margin-top: 0; margin-bottom: 12px; }
+/* ─── 视图档 chipbar（§2.80 销售归属收口）：同合同台 .crm-view-row 降级写法，shead 下单独一行 ─── */
+.crm-review-page .crm-view-row { display: flex; margin: 0 0 12px; }
+
+/* ─── 四格概览（概念稿 .stats 发丝顶底）：副行短句；超期 >0 才上危险色 ─── */
+.crm-review-page .stats { margin-top: 0; }
+.crm-review-page .stat__n--danger { color: var(--color-danger); }
+.crm-review-page .stat__d { margin-top: 2px; }
+
+/* ─── 视图栏：队列三档 + 右侧弱汇总（.rail 本体在 main.scss）─── */
+.crm-review-page .rail { margin-top: 16px; margin-bottom: 12px; }
 
 /* ─── 分节行：标题 + 统计/动作同一行，细线分隔 ─── */
 .crm-review-page .review-sec { margin-bottom: 16px; }
@@ -123,7 +134,17 @@
 }
 .crm-review-page .review-sec__t { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; color: var(--color-text-secondary); }
 .crm-review-page .review-sec__head .logi-stats { margin-left: 0; }
-.crm-review-page .review-sec__head .crm-btn { margin-left: auto; }
+.crm-review-page .review-sec__head .btn { margin-left: auto; }
+/* 节标题行内页器（款项认领 7 天窗口）：吃掉 flex 空白推到右侧，与「只看未认领」同组；
+   compact 皮去掉纵向呼吸，页码小字弱化 */
+.crm-review-page .review-sec__pager { margin-left: auto; display: flex; align-items: center; min-width: 0; }
+.crm-review-page .review-sec__pager .crm-pager,
+.crm-review-page .crm-pager--compact { padding: 0; }
+.crm-review-page .crm-pager--compact { gap: 6px; }
+.crm-review-page .crm-pager--compact .crm-pager-info { font-size: 11px; }
+.crm-review-page .review-sec__head .review-only-unclaimed { margin-left: 0; }
+/* 「只看未认领」开关：quiet 档，开启态只用 accent 字提示（不再上实心） */
+.crm-review-page .review-only-unclaimed.is-on { color: var(--color-accent); }
 .crm-review-page .review-queue__h {
   display: flex; align-items: baseline; gap: 8px;
   font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin: 12px 0 4px;
@@ -159,6 +180,9 @@
 .crm-review-page .review-field--sales { width: 132px; }
 .crm-review-page .review-field--account { width: 160px; }
 .crm-review-page .review-field--contract { width: 150px; }
+/* 输入 / 下拉 focus：去浏览器默认光晕，只描 accent 发丝边（同合同台账筛选条） */
+.crm-review-page input:focus,
+.crm-review-page select:focus { outline: none; border-color: var(--color-accent-border); box-shadow: none; }
 @media (max-width: 1100px) {
   .crm-review-page .review-field--account { width: 140px; }
   .crm-review-page .review-field--contract { width: 130px; }

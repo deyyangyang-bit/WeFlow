@@ -306,6 +306,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [whisperModelStatus, setWhisperModelStatus] = useState<{ exists: boolean; modelPath?: string; tokensPath?: string } | null>(null)
 
   const [httpApiToken, setHttpApiToken] = useState('')
+  /** H2：秘密掩码状态（普通加载只回 hasValue/maskedValue；输入框留空 = 不修改） */
+  const [keyMaskStatus, setKeyMaskStatus] = useState<configService.SecretStatusReport | null>(null)
+  const [httpApiTokenMask, setHttpApiTokenMask] = useState('')
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -323,12 +326,14 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
     setHttpApiToken(token)
     await configService.setHttpApiToken(token)
+    setHttpApiTokenMask(token.length <= 8 ? '••••••' : `••••••${token.slice(-4)}`)
     showMessage('已生成并保存新的 Access Token', true)
   }
 
   const clearApiToken = async () => {
     setHttpApiToken('')
     await configService.setHttpApiToken('')
+    setHttpApiTokenMask('')
     showMessage('已清除 Access Token，API 将允许无鉴权访问', true)
   }
 
@@ -538,8 +543,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     if (hit.url === '') { setAiServiceCustomOverride(true); return }
     setAiServiceCustomOverride(false)
     setAiModelApiBaseUrl(hit.url)
-    await configService.setAiModelApiBaseUrl(hit.url)
-    showMessage(`AI 服务地址已设为「${hit.label}」`, true)
+    // P0：地址变化时主进程原子清除旧 API Key，要求为新地址重新录入
+    const result = await configService.setAiModelApiBaseUrl(hit.url)
+    if (result.changed && result.credentialsCleared) {
+      setAiModelApiKey('')
+      await refreshKeyMaskStatus()
+      showMessage(`AI 服务地址已设为「${hit.label}」；旧 API Key 已清除，请重新录入`, true)
+    } else {
+      showMessage(`AI 服务地址已设为「${hit.label}」`, true)
+    }
   }
 
   /** 选长度档位：写入的仍是既有的 aiModelApiMaxTokens 一个键 */
@@ -577,6 +589,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiInsightTelegramEnabled, setAiInsightTelegramEnabled] = useState(false)
   const [aiInsightTelegramToken, setAiInsightTelegramToken] = useState('')
   const [aiInsightTelegramChatIds, setAiInsightTelegramChatIds] = useState('')
+  const [aiInsightWecomEnabled, setAiInsightWecomEnabled] = useState(false)
+  const [aiInsightWecomWebhook, setAiInsightWecomWebhook] = useState('')
+  const [isTestingWecom, setIsTestingWecom] = useState(false)
+  const [wecomTestResult, setWecomTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [aiInsightAllowSocialContext, setAiInsightAllowSocialContext] = useState(false)
   const [aiInsightSocialContextCount, setAiInsightSocialContextCount] = useState(3)
   const [aiInsightWeiboCookie, setAiInsightWeiboCookie] = useState('')
@@ -717,15 +733,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
   const loadConfig = async () => {
     try {
-      const savedKey = await configService.getDecryptKey()
       const savedPath = await configService.getDbPath()
       const savedWxid = await configService.getMyWxid()
       const savedCachePath = await configService.getCachePath()
 
       const savedExportPath = await configService.getExportPath()
       const savedLogEnabled = await configService.getLogEnabled()
-      const savedImageXorKey = await configService.getImageXorKey()
-      const savedImageAesKey = await configService.getImageAesKey()
       const savedWhisperModelName = await configService.getWhisperModelName()
       const savedWhisperModelDir = await configService.getWhisperModelDir()
       const savedAutoTranscribe = await configService.getAutoTranscribeVoice()
@@ -749,8 +762,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAuthUseHello = await configService.getAuthUseHello()
       const savedIsLockMode = await window.electronAPI.auth.isLockMode()
 
-      const savedHttpApiToken = await configService.getHttpApiToken()
-      if (savedHttpApiToken) setHttpApiToken(savedHttpApiToken)
+      // H2：秘密只读状态（hasValue/maskedValue）——完整密钥/Token 不再回显输入框，
+      // 输入框留空表示不修改，清除走显式清除动作。
+      const status = await configService.getSecretStatus()
+      setKeyMaskStatus(status)
+      if (status.httpApiToken.hasValue) setHttpApiTokenMask(status.httpApiToken.masked)
 
       const savedApiPort = await configService.getHttpApiPort()
       if (savedApiPort) setHttpApiPort(savedApiPort)
@@ -766,21 +782,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       if (savedWxid) setWxid(savedWxid)
       if (savedCachePath) setCachePath(savedCachePath)
 
-
-      const wxidConfig = savedWxid ? await configService.getWxidConfig(savedWxid) : null
-      const decryptKeyToUse = wxidConfig?.decryptKey ?? savedKey ?? ''
-      const imageXorKeyToUse = typeof wxidConfig?.imageXorKey === 'number'
-        ? wxidConfig.imageXorKey
-        : savedImageXorKey
-      const imageAesKeyToUse = wxidConfig?.imageAesKey ?? savedImageAesKey ?? ''
-
-      setDecryptKey(decryptKeyToUse)
-      if (typeof imageXorKeyToUse === 'number') {
-        setImageXorKey(`0x${imageXorKeyToUse.toString(16).toUpperCase().padStart(2, '0')}`)
-      } else {
-        setImageXorKey('')
-      }
-      setImageAesKey(imageAesKeyToUse)
+      // H2：密钥输入框只承载「本会话输入的新值」，加载时置空（placeholder 显示掩码状态）
+      setDecryptKey('')
+      setImageXorKey('')
+      setImageAesKey('')
       setLogEnabled(savedLogEnabled)
       setAutoTranscribeVoice(savedAutoTranscribe)
       setTranscribeLanguages(savedTranscribeLanguages)
@@ -881,7 +886,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       // 加载 AI 见解配置
       const savedAiInsightEnabled = await configService.getAiInsightEnabled()
       const savedAiModelApiBaseUrl = await configService.getAiModelApiBaseUrl()
-      const savedAiModelApiKey = await configService.getAiModelApiKey()
+      // H2：API Key 只读状态（已保存则以掩码显示在 placeholder，输入框留空 = 不修改）
       const savedAiModelApiModel = await configService.getAiModelApiModel()
       const savedAiModelApiMaxTokens = await configService.getAiModelApiMaxTokens()
       const savedAiDailyCallLimitEnabled = await configService.getAiDailyCallLimitEnabled()
@@ -895,11 +900,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAiInsightContextCount = await configService.getAiInsightContextCount()
       const savedAiInsightSystemPrompt = await configService.getAiInsightSystemPrompt()
       const savedAiInsightTelegramEnabled = await configService.getAiInsightTelegramEnabled()
-      const savedAiInsightTelegramToken = await configService.getAiInsightTelegramToken()
+      // P1a：Telegram/企微凭据状态化——不回显原文（hasValue/masked 经 secret:status 下发）
       const savedAiInsightTelegramChatIds = await configService.getAiInsightTelegramChatIds()
+      const savedAiInsightWecomEnabled = await configService.getAiInsightWecomEnabled()
+
       const savedAiInsightAllowSocialContext = await configService.getAiInsightAllowSocialContext()
       const savedAiInsightSocialContextCount = await configService.getAiInsightSocialContextCount()
-      const savedAiInsightWeiboCookie = await configService.getAiInsightWeiboCookie()
       const savedAiInsightWeiboBindings = await configService.getAiInsightWeiboBindings()
       const savedAiFootprintEnabled = await configService.getAiFootprintEnabled()
       const savedAiFootprintSystemPrompt = await configService.getAiFootprintSystemPrompt()
@@ -913,7 +919,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       setAiInsightEnabled(savedAiInsightEnabled)
       setAiModelApiBaseUrl(savedAiModelApiBaseUrl)
-      setAiModelApiKey(savedAiModelApiKey)
+      // H2：已保存的 API Key 不回显；hasValue 决定清除按钮与掩码 placeholder
+      setAiModelApiKey('')
       setAiModelApiModel(savedAiModelApiModel)
       setAiModelApiMaxTokens(savedAiModelApiMaxTokens)
       setAiDailyCallLimitEnabled(savedAiDailyCallLimitEnabled)
@@ -936,11 +943,14 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiInsightContextCount(savedAiInsightContextCount)
       setAiInsightSystemPrompt(savedAiInsightSystemPrompt)
       setAiInsightTelegramEnabled(savedAiInsightTelegramEnabled)
-      setAiInsightTelegramToken(savedAiInsightTelegramToken)
+      setAiInsightTelegramToken('')
       setAiInsightTelegramChatIds(savedAiInsightTelegramChatIds)
+      setAiInsightWecomEnabled(savedAiInsightWecomEnabled)
+      setAiInsightWecomWebhook('')
       setAiInsightAllowSocialContext(savedAiInsightAllowSocialContext)
       setAiInsightSocialContextCount(savedAiInsightSocialContextCount)
-      setAiInsightWeiboCookie(savedAiInsightWeiboCookie)
+      // H2：微博 Cookie 状态化（hasValue），原文经 social:saveWeiboCookie 专用端点写入
+      setAiInsightWeiboCookie(status.weiboCookie.hasValue ? status.weiboCookie.masked || '已设置' : '')
       setAiInsightWeiboBindings(savedAiInsightWeiboBindings)
       setAiFootprintEnabled(savedAiFootprintEnabled)
       setAiFootprintSystemPrompt(savedAiFootprintSystemPrompt)
@@ -1765,11 +1775,23 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     imageAesKey: overrides?.imageAesKey ?? imageAesKey ?? ''
   })
 
-  const buildKeysFromConfig = (wxidConfig: configService.WxidConfig | null): WxidKeys => ({
-    decryptKey: wxidConfig?.decryptKey || '',
-    imageXorKey: typeof wxidConfig?.imageXorKey === 'number' ? wxidConfig.imageXorKey : null,
-    imageAesKey: wxidConfig?.imageAesKey || ''
-  })
+  /** 把密钥值写入全局位 + wxid 配置（H2 补丁语义：undefined/空 = 该字段不修改，绝不把空串当清除） */
+  const saveKeysNow = async (
+    targetWxid: string | undefined,
+    keys?: { decryptKey?: string; imageXorKey?: number | null; imageAesKey?: string }
+  ): Promise<void> => {
+    if (!keys) return
+    if (keys.decryptKey !== undefined && keys.decryptKey.trim()) await configService.setDecryptKey(keys.decryptKey.trim())
+    if (keys.imageXorKey !== undefined) await configService.setImageXorKey(keys.imageXorKey)
+    if (keys.imageAesKey !== undefined && keys.imageAesKey.trim()) await configService.setImageAesKey(keys.imageAesKey)
+    if (targetWxid) {
+      const patch: configService.WxidSecretPatch = {}
+      if (keys.decryptKey !== undefined && keys.decryptKey.trim()) patch.decryptKey = keys.decryptKey.trim()
+      if (keys.imageXorKey !== undefined) patch.imageXorKey = keys.imageXorKey
+      if (keys.imageAesKey !== undefined && keys.imageAesKey.trim()) patch.imageAesKey = keys.imageAesKey
+      if (Object.keys(patch).length > 0) await configService.setWxidSecretConfig(targetWxid, patch)
+    }
+  }
 
   const applyKeysToState = (keys: WxidKeys) => {
     setDecryptKey(keys.decryptKey)
@@ -1781,10 +1803,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     setImageAesKey(keys.imageAesKey)
   }
 
-  const syncKeysToConfig = async (keys: WxidKeys) => {
-    await configService.setDecryptKey(keys.decryptKey)
-    await configService.setImageXorKey(typeof keys.imageXorKey === 'number' ? keys.imageXorKey : 0)
-    await configService.setImageAesKey(keys.imageAesKey)
+  /** H2：账号切换统一走主进程能力（已保存密钥由主进程应用，渲染层只刷新掩码状态） */
+  const refreshKeyMaskStatus = async () => {
+    try { setKeyMaskStatus(await configService.getSecretStatus()) } catch { /* 状态刷新失败不阻塞 */ }
   }
 
   const applyWxidSelection = async (
@@ -1796,28 +1817,38 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     const currentWxid = wxid
     const isSameWxid = currentWxid === selectedWxid
     if (currentWxid && currentWxid !== selectedWxid) {
+      // 本会话修改过的密钥（非空）先落当前账号配置；留空 = 未修改，不落库
       const currentKeys = buildKeysFromState()
-      await configService.setWxidConfig(currentWxid, {
-        decryptKey: currentKeys.decryptKey,
-        imageXorKey: typeof currentKeys.imageXorKey === 'number' ? currentKeys.imageXorKey : 0,
-        imageAesKey: currentKeys.imageAesKey
+      await saveKeysNow(currentWxid, {
+        decryptKey: currentKeys.decryptKey || undefined,
+        imageXorKey: currentKeys.imageXorKey,
+        imageAesKey: currentKeys.imageAesKey || undefined
       })
     }
 
-    const preferCurrentKeys = options?.preferCurrentKeys ?? false
-    const keys = options?.keysOverride ?? (preferCurrentKeys
-      ? buildKeysFromState()
-      : buildKeysFromConfig(await configService.getWxidConfig(selectedWxid)))
-
     setWxid(selectedWxid)
-    applyKeysToState(keys)
-    await configService.setMyWxid(selectedWxid)
-    await syncKeysToConfig(keys)
-    await configService.setWxidConfig(selectedWxid, {
-      decryptKey: keys.decryptKey,
-      imageXorKey: typeof keys.imageXorKey === 'number' ? keys.imageXorKey : 0,
-      imageAesKey: keys.imageAesKey
-    })
+    if (!isSameWxid) {
+      const sw = await configService.switchToWxidAccount(selectedWxid)
+      if (!sw.ok) {
+        showMessage(sw.reason || '账号切换失败', false)
+        setShowWxidSelect(false)
+        return
+      }
+      // 已保存密钥由主进程应用到全局位；本会话输入清空，展示回到掩码状态
+      setDecryptKey('')
+      setImageXorKey('')
+      setImageAesKey('')
+      await refreshKeyMaskStatus()
+    }
+    if (options?.keysOverride) {
+      // 自动获取等入口带来的新密钥：落状态 + 落库（专用端点）
+      applyKeysToState(options.keysOverride)
+      await saveKeysNow(selectedWxid, {
+        decryptKey: options.keysOverride.decryptKey || undefined,
+        imageXorKey: options.keysOverride.imageXorKey,
+        imageAesKey: options.keysOverride.imageAesKey || undefined
+      })
+    }
     setShowWxidSelect(false)
     if (isDbConnected) {
       try {
@@ -1860,8 +1891,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         if (validationError) {
           showMessage(validationError, false)
         } else {
+          // P0：dbpath:autoDetect 在主进程检测成功后已直接落库 dbPath（渲染层零写入）
           setDbPath(result.path)
-          await configService.setDbPath(result.path)
           showMessage(`自动检测成功：${result.path}`, true)
 
           const wxids = await window.electronAPI.dbPath.scanWxids(result.path)
@@ -2062,17 +2093,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }, delay)
   }
 
+  /** H2：字符串输入 → 补丁写入；空字符串 = 该字段未修改（不落库，防把空值/掩码存成真值） */
   const syncCurrentKeys = async (options?: { decryptKey?: string; imageXorKey?: string; imageAesKey?: string; wxid?: string }) => {
-    const keys = buildKeysFromInputs(options)
-    await syncKeysToConfig(keys)
     const wxidToUse = options?.wxid ?? wxid
-    if (wxidToUse) {
-      await configService.setWxidConfig(wxidToUse, {
-        decryptKey: keys.decryptKey,
-        imageXorKey: typeof keys.imageXorKey === 'number' ? keys.imageXorKey : 0,
-        imageAesKey: keys.imageAesKey
-      })
-    }
+    const parsedXor = options?.imageXorKey !== undefined ? parseImageXorKey(options.imageXorKey) : undefined
+    await saveKeysNow(wxidToUse, {
+      decryptKey: options?.decryptKey,
+      imageXorKey: options?.imageXorKey !== undefined ? (options.imageXorKey.trim() === '' ? undefined : (parsedXor ?? undefined)) : undefined,
+      imageAesKey: options?.imageAesKey
+    })
   }
 
   const handleAutoGetImageKey = async () => {
@@ -2095,7 +2124,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         const newAesKey = result.aesKey
         await configService.setImageXorKey(newXorKey)
         await configService.setImageAesKey(newAesKey)
-        if (wxid) await configService.setWxidConfig(wxid, { decryptKey, imageXorKey: newXorKey, imageAesKey: newAesKey })
+        if (wxid) await configService.setWxidSecretConfig(wxid, { imageXorKey: newXorKey, imageAesKey: newAesKey })
       } else {
         showMessage(result.error || '自动获取图片密钥失败', false)
       }
@@ -2125,7 +2154,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         const newAesKey = result.aesKey
         await configService.setImageXorKey(newXorKey)
         await configService.setImageAesKey(newAesKey)
-        if (wxid) await configService.setWxidConfig(wxid, { decryptKey, imageXorKey: newXorKey, imageAesKey: newAesKey })
+        if (wxid) await configService.setWxidSecretConfig(wxid, { imageXorKey: newXorKey, imageAesKey: newAesKey })
       } else {
         showMessage(result.error || '内存扫描获取图片密钥失败', false)
       }
@@ -3062,20 +3091,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="form-group">
         <label>数据库根目录</label>
-        <span className="form-hint">xwechat_files 目录</span>
+        <span className="form-hint">xwechat_files 目录（通过下方「自动检测」或目录选择按钮设置）</span>
         <input
           type="text"
+          readOnly
           placeholder={dbPathPlaceholder}
           value={dbPath}
-          onChange={(e) => {
-            const value = e.target.value
-            setDbPath(value)
-            scheduleConfigSave('dbPath', async () => {
-              if (value) {
-                await configService.setDbPath(value)
-              }
-            })
-          }}
         />
         <div className="btn-row">
           <button className="btn btn-primary" onClick={handleAutoDetectPath} disabled={isDetectingPath}>
@@ -3102,16 +3123,17 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 setWxid(value)
                 scheduleConfigSave('wxid', async () => {
                   if (previousWxid && previousWxid !== value) {
+                    // H2：本会话修改过的密钥（非空）补丁式落当前账号；留空 = 未修改
                     const currentKeys = buildKeysFromState()
-                    await configService.setWxidConfig(previousWxid, {
-                      decryptKey: currentKeys.decryptKey,
-                      imageXorKey: typeof currentKeys.imageXorKey === 'number' ? currentKeys.imageXorKey : 0,
-                      imageAesKey: currentKeys.imageAesKey
+                    await saveKeysNow(previousWxid, {
+                      decryptKey: currentKeys.decryptKey || undefined,
+                      imageXorKey: currentKeys.imageXorKey,
+                      imageAesKey: currentKeys.imageAesKey || undefined
                     })
                   }
                   if (value) {
                     await configService.setMyWxid(value)
-                    await syncCurrentKeys({ wxid: value }) // Sync keys to the new wxid entry
+                    await refreshKeyMaskStatus()
                   }
 
                   if (value && previousWxid !== value) {
@@ -4234,6 +4256,24 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
   }
 
+  /** 企业微信群机器人 Webhook 的标准前缀（用于非阻断式提示，不强制拦截） */
+  const WECOM_WEBHOOK_PREFIX = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
+  const wecomWebhookLooksValid =
+    !aiInsightWecomWebhook.trim() || aiInsightWecomWebhook.trim().startsWith(WECOM_WEBHOOK_PREFIX)
+
+  const handleSendWecomTest = async () => {
+    setIsTestingWecom(true)
+    setWecomTestResult(null)
+    try {
+      const result = await window.electronAPI.insight.sendWecomTest(aiInsightWecomWebhook)
+      setWecomTestResult(result)
+    } catch (e: any) {
+      setWecomTestResult({ success: false, message: `调用失败：${e?.message || String(e)}` })
+    } finally {
+      setIsTestingWecom(false)
+    }
+  }
+
   const renderAiCommonTab = () => (
     <div className="tab-content">
       <div className="form-group">
@@ -4263,7 +4303,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             onChange={(e) => {
               const val = e.target.value
               setAiModelApiBaseUrl(val)
-              scheduleConfigSave('aiModelApiBaseUrl', () => configService.setAiModelApiBaseUrl(val))
+              // P0：地址保存走专用端点；地址变化时主进程原子清除旧 API Key（要求重新录入）
+              scheduleConfigSave('aiModelApiBaseUrl', async () => {
+                const result = await configService.setAiModelApiBaseUrl(val)
+                if (result.changed && result.credentialsCleared) {
+                  setAiModelApiKey('')
+                  await refreshKeyMaskStatus()
+                  showMessage('服务地址已变更，旧 API Key 已清除，请重新录入', true)
+                }
+              })
             }}
             style={{ marginTop: '10px' }}
           />
@@ -4274,17 +4322,22 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <label>通用 API Key</label>
         <span className="form-hint">
           你的 API Key，保存后经过系统加密存储，不会明文写入磁盘。
+          {keyMaskStatus?.aiModelApiKey.hasValue ? ` 已保存（${keyMaskStatus.aiModelApiKey.masked}）— 留空表示不修改` : ''}
         </span>
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <input
             type={showInsightApiKey ? 'text' : 'password'}
             className="field-input"
             value={aiModelApiKey}
-            placeholder="sk-..."
+            placeholder={keyMaskStatus?.aiModelApiKey.hasValue ? '留空表示不修改' : 'sk-...'}
             onChange={(e) => {
               const val = e.target.value
               setAiModelApiKey(val)
-              scheduleConfigSave('aiModelApiKey', () => configService.setAiModelApiKey(val))
+              // H2：留空 = 不修改（清除走显式按钮）；非空新值即存
+              if (val.trim()) scheduleConfigSave('aiModelApiKey', async () => {
+                await configService.setAiModelApiKey(val)
+                await refreshKeyMaskStatus()
+              })
             }}
             style={{ flex: 1 }}
           />
@@ -4295,12 +4348,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           >
             {showInsightApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
-          {aiModelApiKey && (
+          {keyMaskStatus?.aiModelApiKey.hasValue && (
             <button
               className="btn btn-danger"
               onClick={async () => {
                 setAiModelApiKey('')
                 await configService.setAiModelApiKey('')
+                await refreshKeyMaskStatus()
               }}
               title="清除 Key"
             >
@@ -4472,16 +4526,51 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
   }
 
-  const hasWeiboCookieConfigured = aiInsightWeiboCookie.trim().length > 0
+  const hasWeiboCookieConfigured = keyMaskStatus?.weiboCookie.hasValue === true
+  // P1a：Telegram/企微凭据「已保存」状态（原文不回显）
+  const hasTelegramToken = keyMaskStatus?.telegramToken.hasValue === true
+  const hasWecomWebhook = keyMaskStatus?.wecomWebhook.hasValue === true
 
   const openWeiboCookieModal = () => {
-    setWeiboCookieDraft(aiInsightWeiboCookie)
+    // H2：已保存 Cookie 不回显原文；草稿留空 = 不修改，清空走显式「清空」按钮
+    setWeiboCookieDraft('')
     setWeiboCookieError('')
     setShowWeiboCookieModal(true)
   }
 
+  /** 显式清空微博 Cookie（与「留空 = 不修改」区分，防误清） */
+  const clearWeiboCookie = async (): Promise<boolean> => {
+    setIsSavingWeiboCookie(true)
+    setWeiboCookieError('')
+    try {
+      const result = await withAsyncTimeout(
+        window.electronAPI.social.saveWeiboCookie(''),
+        10000,
+        '清空微博 Cookie 超时，请稍后重试'
+      )
+      if (!result.success) {
+        setWeiboCookieError(result.error || '微博 Cookie 清空失败')
+        return false
+      }
+      setAiInsightWeiboCookie('')
+      setWeiboCookieDraft('')
+      if (keyMaskStatus) {
+        setKeyMaskStatus({ ...keyMaskStatus, weiboCookie: { hasValue: false, masked: '' } })
+      }
+      showMessage('微博 Cookie 已清空', true)
+      return true
+    } catch (e: any) {
+      setWeiboCookieError(e?.message || String(e))
+      return false
+    } finally {
+      setIsSavingWeiboCookie(false)
+    }
+  }
+
   const persistWeiboCookieDraft = async (draftOverride?: string): Promise<boolean> => {
     const draftToSave = draftOverride ?? weiboCookieDraft
+    // H2：草稿留空且已保存 Cookie = 不修改（原文不回显，无法与原文比较；清空走显式 clearWeiboCookie）
+    if (!draftToSave.trim() && hasWeiboCookieConfigured) return true
     if (draftToSave === aiInsightWeiboCookie) return true
     setIsSavingWeiboCookie(true)
     setWeiboCookieError('')
@@ -4495,9 +4584,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         setWeiboCookieError(result.error || '微博 Cookie 保存失败')
         return false
       }
-      const normalized = result.normalized || ''
-      setAiInsightWeiboCookie(normalized)
-      setWeiboCookieDraft(normalized)
+      // H2：状态化——只保存「已设置」标记与掩码，不保留 Cookie 原文
+      setAiInsightWeiboCookie(result.hasCookie ? '已设置' : '')
+      setWeiboCookieDraft(result.hasCookie ? '' : '')
+      if (keyMaskStatus) {
+        setKeyMaskStatus({ ...keyMaskStatus, weiboCookie: { hasValue: Boolean(result.hasCookie), masked: result.hasCookie ? '已设置' : '' } })
+      }
       showMessage(result.hasCookie ? '微博 Cookie 已保存' : '微博 Cookie 已清空', true)
       return true
     } catch (e: any) {
@@ -5016,6 +5108,95 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="divider" />
 
+      {/* 企业微信群机器人推送（推荐，主推渠道） */}
+      <div className="form-group">
+        <label>企业微信群机器人推送（推荐）</label>
+        <span className="form-hint">
+          开启后，AI 见解推送到企业微信群，销售在群里直接收到提醒。获取地址：企微群聊右上角「…」→ 群机器人 → 添加机器人 → 复制 Webhook 地址。
+          与 Telegram 推送相互独立，可同时开启。
+        </span>
+        <div className="log-toggle-line">
+          <span className="log-status">{aiInsightWecomEnabled ? '已启用' : '未启用'}</span>
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={aiInsightWecomEnabled}
+              onChange={async (e) => {
+                const val = e.target.checked
+                setAiInsightWecomEnabled(val)
+                await configService.setAiInsightWecomEnabled(val)
+              }}
+            />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      {aiInsightWecomEnabled && (
+        <>
+          <div className="form-group">
+            <label>Webhook 地址</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              type="password"
+              className="field-input"
+              style={{ width: '100%' }}
+              placeholder={hasWecomWebhook ? '已保存（留空表示不修改）' : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx'}
+              value={aiInsightWecomWebhook}
+              onChange={(e) => {
+                const val = e.target.value
+                setAiInsightWecomWebhook(val)
+                // P1a：留空 = 不修改（清除走显式按钮）；非空新值经专用只写端点保存
+                if (val.trim()) scheduleConfigSave('aiInsightWecomWebhook', async () => {
+                  await configService.setAiInsightWecomWebhook(val)
+                  setAiInsightWecomWebhook('')
+                  await refreshKeyMaskStatus()
+                  showMessage('企微 Webhook 已保存', true)
+                })
+              }}
+            />
+            {hasWecomWebhook && (
+              <button className="btn btn-danger" onClick={async () => {
+                await configService.setAiInsightWecomWebhook('')
+                await refreshKeyMaskStatus()
+                showMessage('已清除企微 Webhook', true)
+              }} title="清除 Webhook"><Trash2 size={14} /></button>
+            )}
+            </div>
+            {!wecomWebhookLooksValid && (
+              <span className="form-hint" style={{ color: 'var(--color-warning, #f59e0b)' }}>
+                企业微信群机器人地址通常以 {WECOM_WEBHOOK_PREFIX} 开头，请检查是否复制完整
+              </span>
+            )}
+          </div>
+          <div className="form-group">
+            <label>连接测试</label>
+            <span className="form-hint">向该群机器人真实发送一条测试消息，验证地址是否可用。</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleSendWecomTest}
+                disabled={isTestingWecom || !aiInsightWecomWebhook.trim()}
+              >
+                {isTestingWecom ? (
+                  <><Loader2 size={14} style={{ marginRight: 4, animation: 'spin 1s linear infinite' }} />发送中...</>
+                ) : (
+                  <>发送测试消息</>
+                )}
+              </button>
+              {wecomTestResult && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: wecomTestResult.success ? 'var(--color-success, #22c55e)' : 'var(--color-danger, #ef4444)' }}>
+                  {wecomTestResult.success ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  {wecomTestResult.message}
+                </span>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="divider" />
+
       {/* Telegram 推送 */}
       <div className="form-group">
         <label>Telegram Bot 推送</label>
@@ -5043,18 +5224,33 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <>
           <div className="form-group">
             <label>Bot Token</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
             <input
               type="password"
               className="field-input"
               style={{ width: '100%' }}
-              placeholder="在此处填入你的 Telegram Bot Token"
+              placeholder={hasTelegramToken ? '已保存（留空表示不修改）' : '在此处填入你的 Telegram Bot Token'}
               value={aiInsightTelegramToken}
               onChange={(e) => {
                 const val = e.target.value
                 setAiInsightTelegramToken(val)
-                scheduleConfigSave('aiInsightTelegramToken', () => configService.setAiInsightTelegramToken(val))
+                // P1a：留空 = 不修改（清除走显式按钮）；非空新值经专用只写端点保存
+                if (val.trim()) scheduleConfigSave('aiInsightTelegramToken', async () => {
+                  await configService.setAiInsightTelegramToken(val)
+                  setAiInsightTelegramToken('')
+                  await refreshKeyMaskStatus()
+                  showMessage('Telegram Bot Token 已保存', true)
+                })
               }}
             />
+            {hasTelegramToken && (
+              <button className="btn btn-danger" onClick={async () => {
+                await configService.setAiInsightTelegramToken('')
+                await refreshKeyMaskStatus()
+                showMessage('已清除 Telegram Token', true)
+              }} title="清除 Token"><Trash2 size={14} /></button>
+            )}
+            </div>
           </div>
           <div className="form-group">
             <label>Chat ID（支持英文逗号分隔多个）</label>
@@ -5941,26 +6137,36 @@ JSON 输出格式：
         <label>Access Token (鉴权凭证)</label>
         <span className="form-hint">
           设置后，请求头需携带 <code>Authorization: Bearer &lt;token&gt;</code>，
-          或者参数中携带 <code>?access_token=&lt;token&gt;</code>
+          或者参数中携带 <code>?access_token=&lt;token&gt;</code>。
+          {httpApiTokenMask ? ` 已保存（${httpApiTokenMask}）— 留空表示不修改` : ''}
         </span>
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <input
               type="text"
               className="field-input"
               value={httpApiToken}
-              placeholder="留空表示不验证 Token"
+              placeholder={httpApiTokenMask ? '留空表示不修改' : '留空表示不验证 Token'}
               onChange={(e) => {
                 const val = e.target.value
                 setHttpApiToken(val)
-                scheduleConfigSave('httpApiToken', () => configService.setHttpApiToken(val))
+                // H2：留空 = 不修改（清除走显式按钮）；非空新值即存
+                if (val.trim()) scheduleConfigSave('httpApiToken', async () => {
+                  await configService.setHttpApiToken(val)
+                  const status = await configService.getSecretStatus()
+                  setHttpApiTokenMask(status.httpApiToken.masked)
+                })
               }}
               style={{ flex: 1, fontFamily: 'monospace' }}
           />
           <button className="btn btn-secondary" onClick={generateRandomToken}>
             <RefreshCw size={14} style={{ marginRight: 4 }} /> 随机生成
           </button>
-          {httpApiToken && (
-              <button className="btn btn-danger" onClick={clearApiToken} title="清除 Token">
+          {httpApiTokenMask && (
+              <button className="btn btn-danger" onClick={async () => {
+                setHttpApiToken('')
+                await clearApiToken()
+                setHttpApiTokenMask('')
+              }} title="清除 Token">
                 <Trash2 size={14} />
               </button>
           )}
@@ -7327,10 +7533,10 @@ JSON 输出格式：
                 className="btn btn-secondary"
                 onClick={async () => {
                   setWeiboCookieDraft('')
-                  const ok = await persistWeiboCookieDraft('')
+                  const ok = await clearWeiboCookie()
                   if (ok) setShowWeiboCookieModal(false)
                 }}
-                disabled={isSavingWeiboCookie || !aiInsightWeiboCookie}
+                disabled={isSavingWeiboCookie || !hasWeiboCookieConfigured}
               >
                 清空
               </button>

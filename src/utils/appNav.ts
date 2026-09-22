@@ -3,12 +3,12 @@
 // 导航项两类：路由项（path，跳转）与动作项（action，执行外壳动作不跳路由）；
 // 动作项不参与 active 高亮（active 样式只属于真实路由项）。
 import {
-  BarChart3, BookOpen, Bot, Briefcase, ClipboardCheck, ClipboardList, Eye, Filter,
-  Home, Inbox, MessageSquare, Package, Settings, Sparkles, Target, UserCircle, Users,
+  BarChart3, BookOpen, Bot, Briefcase, CalendarClock, ClipboardCheck, ClipboardList, Filter,
+  Home, Inbox, MessageSquare, Package, Sparkles, Target, UserCircle, Users,
   type LucideIcon
 } from 'lucide-react'
 
-export type NavItemAction = 'openHermes' | 'openSettings'
+export type NavItemAction = 'openHermes'
 
 export type NavItemDef =
   | { label: string; path: string; icon: LucideIcon }
@@ -34,13 +34,13 @@ export const NAV_GROUPS: NavGroupDef[] = [
   ] },
   { key: 'report', label: '报表', items: [
     { label: '复盘', path: '/sales-report', icon: BarChart3 },
+    // 年度经营复盘（S4）：名称与旧「年度报告」（隐藏）明确区分
+    { label: '年度经营复盘', path: '/annual-review', icon: CalendarClock },
     { label: '行动漏斗', path: '/action-funnel', icon: Filter }
   ] },
   { key: 'system', label: '系统', items: [
     { label: '产品库', path: '/crm-product', icon: Package },
-    { label: '通讯录', path: '/contacts', icon: UserCircle },
-    { label: '角色视角', path: '/role-view', icon: Eye },
-    { label: '设置', icon: Settings, action: 'openSettings' }
+    { label: '通讯录', path: '/contacts', icon: UserCircle }
   ] }
 ]
 

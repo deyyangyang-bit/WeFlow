@@ -246,6 +246,8 @@ export function migrate02AccountToCustomer(): ModuleMigrationResult {
       for (const m of g.members) {
         tx.run('UPDATE account SET customer_id = ?, updated_at = ? WHERE id = ? AND customer_id IS NULL',
           [customerId, now, m.id])
+        // 条件 UPDATE：只有确实挂接了 account 行才标记（幂等重跑 0 行 = 不失效）
+        tx.markAnnualReviewChangedIfWrote('crm:account')
         r.applied++
       }
     }

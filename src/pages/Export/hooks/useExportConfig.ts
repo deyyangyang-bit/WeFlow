@@ -151,9 +151,11 @@ export function useExportConfig(): ExportConfigResult {
   }, [])
 
   // 2. Setters (State + ConfigService)
-  const setExportPath = useCallback((path: string) => {
-    setExportPathState(path)
-    void configService.setExportPath(path)
+  // P1b：导出根目录经专用端点选择（主进程弹对话框 → 授权 + 持久化根 + 更新偏好路径）
+  const setExportPath = useCallback((_path: string) => {
+    void configService.chooseExportRoot().then((result) => {
+      if (!result.canceled && result.ok && result.path) setExportPathState(result.path)
+    }).catch(() => undefined)
   }, [])
 
   const setWriteLayout = useCallback((layout: ExportWriteLayout) => {

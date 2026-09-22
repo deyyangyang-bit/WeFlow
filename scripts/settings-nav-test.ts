@@ -98,20 +98,20 @@ async function main(): Promise<void> {
   ok('A3f shell 零直写 config 键（一切写入走现有 service 函数，杜绝第二份键名）',
     !shellSrc.includes('config.set(') && !shellSrc.includes('localStorage.setItem'))
 
-  // ── A4. 高级页 11 行三分组 ─────────────────────────────────────
+  // ── A4. 高级页 12 行三分组（外观/主题色入口加入系统组）─────────────────────
   const groupsSrc = between(shellSrc, 'const ADVANCED_GROUPS', '// 自动下载仅')
   const groups = [...groupsSrc.matchAll(/group: '([^']+)'/g)].map((m) => m[1])
   const rows = [...groupsSrc.matchAll(/tab: '([^']+)', label: '([^']+)'/g)].map((m) => ({ tab: m[1], label: m[2] }))
   eq('A4a 分组 = AI/数据/系统 三组', groups, ['AI', '数据', '系统'])
-  eq('A4b 高级行 = 11 行（设计稿屏 2：AI 3 + 数据 4 + 系统 4）', rows.length, 11)
+  eq('A4b 高级行 = 12 行（AI 3 + 数据 4 + 系统 5，含外观/主题色入口）', rows.length, 12)
   eq('A4c 行 tab id 全集（每项恰一次）', rows.map((r) => r.tab).sort(),
-    ['about', 'aiCommon', 'analytics', 'antiRevoke', 'api', 'autoDownload', 'cache', 'database', 'models', 'notification', 'security'].sort())
+    ['about', 'aiCommon', 'analytics', 'antiRevoke', 'api', 'appearance', 'autoDownload', 'cache', 'database', 'models', 'notification', 'security'].sort())
   const settingsTabUnion = between(settingsSrc, 'type SettingsTab', '\n\nconst tabs')
   const tabUnionIds = [...settingsTabUnion.matchAll(/'([a-zA-Z]+)'/g)].map((m) => m[1])
   ok('A4d SettingsTab 联合类型完整（17 个 tab id）', tabUnionIds.length === 17)
   ok('A4e 高级行 tab id ⊆ SettingsTab（深链可达，无死行）', rows.every((r) => tabUnionIds.includes(r.tab)))
-  ok('A4f 行标签与设计稿一致（AI 设置/API 服务/模型管理/数据库连接/审计流水/缓存/自动下载/防撤回/通知细节/分析/关于）',
-    ['AI 设置', 'API 服务', '模型管理', '数据库连接', '审计流水', '缓存', '自动下载', '防撤回', '通知细节', '分析', '关于']
+  ok('A4f 行标签与设计稿一致（AI 设置/API 服务/模型管理/数据库连接/审计流水/缓存/自动下载/防撤回/通知细节/分析/关于/外观主题色）',
+    ['AI 设置', 'API 服务', '模型管理', '数据库连接', '审计流水', '缓存', '自动下载', '防撤回', '通知细节', '分析', '关于', '外观 / 主题色']
       .every((label) => rows.some((r) => r.label === label)))
   ok('A4g 自动下载行沿用 filteredTabs 平台门控（win32+x64）',
     shellSrc.includes("proc?.platform === 'win32'") && shellSrc.includes("proc?.arch === 'x64'"))

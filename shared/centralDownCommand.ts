@@ -180,9 +180,27 @@ function checkDeclaredField(field: string, value: unknown, rule: DownFieldRule, 
   return checkNumberField(field, value, rule)
 }
 
+/**
+ * 下行指令的发送侧能力位（与 central/src/permissions.ts 的 Capability 同名同义）。
+ * 2026-09-19 权限矩阵拆分：取代旧的一刀切 `command.issue`——分配员不再能越权下发
+ * supervisor_correction / permission_change；SLA 升级通知单列 notify 域（销售机可上报）。
+ */
+export type CentralCommandCapability =
+  | 'command.assign'
+  | 'command.transfer'
+  | 'command.permission'
+  | 'command.notify'
+
 export interface DownCommandSpec {
   entityType: CentralEntityType
   roles: readonly DownDeliveryRole[]
+  /**
+   * 发送侧能力位：中央 /sync/commands 按 spec.capability 鉴权（按 eventType 细分，
+   * 不再是一刀切的 command.issue）。映射：assign/recycle→command.assign、
+   * transfer/supervisor_correction→command.transfer、permission_change→command.permission、
+   * sla1_escalate_supervisor→command.notify。
+   */
+  capability: CentralCommandCapability
   /** 顶层必填字段（缺失/空串即拒收） */
   required: readonly string[]
   /** 顶层允许字段（严格白名单；未登记字段拒收整事件） */
@@ -224,6 +242,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   assign: {
     entityType: 'assignment',
     roles: ['apply'],
+    capability: 'command.assign',
     required: ['type', 'leadId', 'assignmentId', 'salesName', 'lead'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'mode', 'sla1Deadline', 'actor', 'slaHours', 'lead'],
     allowsLead: true,
@@ -244,6 +263,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   transfer: {
     entityType: 'assignment',
     roles: ['apply', 'remove'],
+    capability: 'command.transfer',
     required: ['type', 'leadId', 'assignmentId', 'toSales', 'lead', 'mode'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'fromSales', 'toSales', 'reason', 'oldAssignmentId', 'actor', 'slaHours', 'mode', 'sla1Deadline', 'lead'],
     allowsLead: true,
@@ -269,6 +289,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   recycle: {
     entityType: 'assignment',
     roles: ['apply'],
+    capability: 'command.assign',
     required: ['type', 'leadId', 'assignmentId', 'salesName'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'reason', 'actor'],
     // SMB 历史信封在 recycle 上也携带 lead 资料与 slaHours（emitDownEvents 统一附加，Phase 1 口径）；
@@ -290,6 +311,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   sla1_escalate_supervisor: {
     entityType: 'assignment',
     roles: ['notify'],
+    capability: 'command.notify',
     required: ['type', 'leadId', 'assignmentId', 'salesName', 'remindCount'],
     // contactMasked：跨机投递时通知正文里的联系方式只出**掩码**（原文不出机，PRD §10 R4）
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'salesName', 'remindCount', 'reason', 'recycledAt', 'contactMasked'],
@@ -313,6 +335,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   supervisor_correction: {
     entityType: 'assignment',
     roles: ['apply'],
+    capability: 'command.transfer',
     required: ['type', 'leadId', 'title', 'summary'],
     allowed: ['type', 'deliveryRole', 'leadId', 'assignmentId', 'title', 'summary', 'detail', 'actor'],
     maxLength: { title: TITLE_MAX, summary: SUMMARY_MAX },
@@ -330,6 +353,7 @@ export const DOWN_COMMAND_SPECS: Record<string, DownCommandSpec> = {
   permission_change: {
     entityType: 'permission',
     roles: ['apply'],
+    capability: 'command.permission',
     required: ['type', 'employeeRef', 'declaredRole'],
     allowed: ['type', 'deliveryRole', 'employeeRef', 'declaredRole', 'authoritySource', 'displayName'],
     maxLength: { employeeRef: 120, declaredRole: ROLE_MAX, displayName: SALES_NAME_MAX },

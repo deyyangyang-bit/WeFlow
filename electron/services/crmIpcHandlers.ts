@@ -3,7 +3,7 @@
  * CRM 模块 IPC 注册（service→main 注册约定）。无删除端点（合规）。
  */
 import type { IpcMain } from 'electron'
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { isSessionIdLike } from '../../shared/wechatId'
 import { join } from 'path'
 import { crmDbService } from './crmDbService'
@@ -19,9 +19,11 @@ import { wcdbService } from './wcdbService'
 import { insightProfileService } from './insightProfileService'
 import { insightRecordService } from './insightRecordService'
 import { getCustomerCurrentView } from './customerCurrentView'
-import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail } from './crmLeadService'
-import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory } from './crmAssignmentService'
+import { importLeads, listLeads, leadDetail, leadOverview, updateLeadStatus, updateLeadProfile, toAccount, scanLeadSla, completeLeadFirstContact, skipLeadFirstContact, setLeadConfig, DEFAULT_DEAD_REASONS, getImportDedupeDetail, checkLeadDuplicate, createLead, importHistoricalAssignments } from './crmLeadService'
+import { assignLeads, assignBatchLeads, listAssignments, claimLead, recycleAssignment, transferAssignment, queryAuditEvents, listOwnershipHistory, getRoundRobinCursor } from './crmAssignmentService'
+import { onAssignmentInvalidated, type AssignmentInvalidationEvent } from './assignmentInvalidationBus'
 import { bindLeadWxid } from './crmFriendDetectService'
+import { listDupMatches } from './crmDupGroupService'
 import { markSla2ScanResult } from './crmSla2Service'
 import { setCustomerType, getCustomerById } from './crmCustomerService'
 import { registerDelivery, saveEquipment, proposeTradeIn, decideTradeIn, runDeliveryScan, listDeliveryTasks, suggestDeliveryDate, recomputeAllRepeatLevels } from './crmDeliveryService'
@@ -31,12 +33,27 @@ import { listNotifyInbox, markNotifyRead } from './crmNotifyService'
 import { sla2EvidenceGetForLead } from './crmSla2EvidenceService'
 import { aiGenerateQuotation } from './crmQuoteService'
 import { deepAnalyzeSession } from './crmDeepAnalysisService'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'fs'
 import type { ConfigService } from './config'
+import { getActorLabel } from './identityService'
+import { crmImagesRoot, resolveInsideRoot, isRegularFile, detectImageMime, sanitizeImageFileName } from './crmImageFile'
 
 // 微信备注是客户名真相源：存量 account.name / profile.display_name 若为微信号格式（wan923121735、wxid_xxx），
 // 从 WCDB contact 表取真实备注回填。幂等：只处理微信号格式名字；WCDB 未连接 / 无备注则跳过。
 let displayNameBackfillRan = false
+
+// assignment 失效事件 → 存活窗口广播的桥接（总线零 Electron 依赖，桥接只在 IPC 注册层）。
+// registerCrmIpcHandlers 只在 main 启动链路调用一次；模块级守卫防御未来重复注册导致重复广播。
+let invalidationBridgeRegistered = false
+function bridgeAssignmentInvalidation(): void {
+  if (invalidationBridgeRegistered) return
+  invalidationBridgeRegistered = true
+  onAssignmentInvalidated((ev: AssignmentInvalidationEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('crm:assignment:invalidated', ev)
+    }
+  })
+}
 
 async function backfillWxidDisplayNames(): Promise<number> {
   const accounts = crmDbService.customers()
@@ -240,7 +257,10 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:payment:approve', async (_, id: number) => crmDbService.approvePayment(id))
   ipcMain.handle('crm:payments:byDay', async (_, days?: number) => crmDbService.paymentsByDay(days))
   ipcMain.handle('crm:payment:claim', async (_, id: number, patch) => crmDbService.claimPayment(id, patch || {}))
-  // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
+  ipcMain.handle('crm:allocation:reconcile', async (_, id: number) =>
+    crmDbService.reconcileAllocation(Number(id), { actor: getActorLabel() || '' }))
+  ipcMain.handle('crm:allocation:invoiceRequirement', async (_, id: number, requirement: string) =>
+    crmDbService.setAllocationInvoiceRequirement(Number(id), String(requirement || 'unknown'), { actor: getActorLabel() || '' }))
   // 当前登录账户显示名（认领销售默认值，单人团队不用每次手输）：wxid → 微信真实备注/昵称，取不到回退空
   const resolveMySalesName = async (): Promise<string> => {
     const myWxid = String(config.get('myWxid') || '').trim()
@@ -340,22 +360,33 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
     const m = out.match(/\{[\s\S]*\}/)
     return m ? JSON.parse(m[0]) : {}
   })
+  // H1 收口：只允许读 userData/crm-images 内的常规文件；MIME 由 magic bytes 判定（不信任扩展名）；
+  // 拒绝时与「目标不存在」同款返回 ''，不泄露目标是否存在。
   ipcMain.handle('crm:file:readImage', async (_, filePath: string) => {
     try {
-      if (!filePath || !existsSync(filePath)) return ''
-      const buf = readFileSync(filePath)
-      const ext = String(filePath).split('.').pop()?.toLowerCase() || 'jpg'
-      const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+      const root = crmImagesRoot(app.getPath('userData'))
+      const check = resolveInsideRoot(root, String(filePath || ''))
+      if (!check.ok) return ''
+      if (!isRegularFile(check.path)) return ''
+      const buf = readFileSync(check.path)
+      const mime = detectImageMime(buf)
+      if (!mime) return ''
       return `data:${mime};base64,${buf.toString('base64')}`
     } catch { return '' }
   })
+  // H1 收口：保存目标严格位于 crm-images 下；文件名清洗后不得为空（空回退 img.jpg），
+  // 最终路径再过一次路径闸门（../、前缀碰撞、symlink 逃逸全拒绝）。
   ipcMain.handle('crm:file:saveImage', async (_, dataUrl: string, fileName: string) => {
-    const dir = join(app.getPath('userData'), 'crm-images')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    const b64 = String(dataUrl || '').includes(',') ? String(dataUrl).split(',')[1] : String(dataUrl)
-    const dest = join(dir, `${Date.now()}_${String(fileName || 'img.jpg').replace(/[^\w.\-]/g, '_')}`)
-    writeFileSync(dest, Buffer.from(b64, 'base64'))
-    return dest
+    try {
+      const dir = crmImagesRoot(app.getPath('userData'))
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const clean = sanitizeImageFileName(String(fileName || '')) || 'img.jpg'
+      const b64 = String(dataUrl || '').includes(',') ? String(dataUrl).split(',')[1] : String(dataUrl)
+      const check = resolveInsideRoot(dir, join(dir, `${Date.now()}_${clean}`))
+      if (!check.ok) return ''
+      writeFileSync(check.path, Buffer.from(b64, 'base64'))
+      return check.path
+    } catch { return '' }
   })
 
   // ── 单机线索流转：导入 / 列表 / 详情 / 状态流转 / 转客户 / SLA ──────────────
@@ -370,6 +401,28 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   ipcMain.handle('crm:lead:slaComplete', async (_, taskId: number) => completeLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:slaSkip', async (_, taskId: number) => skipLeadFirstContact(Number(taskId)))
   ipcMain.handle('crm:lead:deadReasons', async () => DEFAULT_DEAD_REASONS)
+
+  // ── 单条录入 + 查重面板 + 历史分配导入（2026-09-19，宪法 §1.4/§3 登记行）─────────────
+  // 查重 = 输入即查（只读无审计）；create 硬拒收重复（E201 携带历史分配明细，前端三选一面板导航，
+  // 三选一全部不建新线索）；历史导入 = assignment 历史回填，sla1_deadline 强制 2100 哨兵（宪法 §3）。
+  // 角色可见性 = UI 门禁（与「导入线索」同口径，宪法 §1.12 角色仅署名，本地不新增强拦截）。
+  ipcMain.handle('crm:lead:dupCheck', async (_, input) => checkLeadDuplicate((input || {}) as { phone?: string; wechat?: string }))
+  ipcMain.handle('crm:lead:create', async (_, input) => createLead((input || {}) as { source?: string; phone?: string; wechat?: string; wxNickname?: string; qrPath?: string; note?: string }))
+  // 二维码图片：渲染层传选取文件的绝对路径，主进程复制进 userData/lead-qr/ 存图不解析（宪法 §3）
+  ipcMain.handle('crm:lead:qrSave', async (_, fileName: string, srcPath: string) => {
+    if (!srcPath) return { ok: false }
+    try {
+      const dir = join(app.getPath('userData'), 'lead-qr')
+      mkdirSync(dir, { recursive: true })
+      const ext = /\.(png|jpe?g|webp|gif)$/i.exec(String(fileName || ''))?.[1]?.toLowerCase() || 'png'
+      const dest = join(dir, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`)
+      copyFileSync(String(srcPath), dest)
+      return { ok: true, path: dest }
+    } catch { return { ok: false } }
+  })
+  ipcMain.handle('crm:lead:historyImport', async (_, fileName: string, rows) => importHistoricalAssignments(String(fileName || '粘贴文本'), Array.isArray(rows) ? rows : []))
+  // 撞客一期：重复组徽标匹配（只回对方归属人姓名，不回对方任何资料）
+  ipcMain.handle('crm:dupGroup:list', async () => listDupMatches())
 
   // ── 线索分配（Phase 1 完整版，API-CONTRACT §1.14 契约五端点，统一信封）──
   // actor 兜底链：显式 > 身份档案 getActorLabel() > 「分配员」（仅署名，宪法 §1.12）
@@ -388,6 +441,11 @@ export function registerCrmIpcHandlers(ipcMain: IpcMain, config: ConfigService):
   // 同上：mode 不做 `String()` 掩盖；缺省由 service 按「未设置」处理，显式非法值由 service 返回 E101
   ipcMain.handle('crm:assignment:assignBatch', async (_, req: { count?: number; mode?: unknown; weights?: Record<string, number>; actor?: string }) =>
     assignBatchLeads({ count: Number(req?.count) || 0, mode: req?.mode, weights: req?.weights || {}, actor: String(req?.actor || '') }))
+  // round_robin 跨批次游标只读查询（最小只读信息 = 下一位销售姓名；无任何写路径，游标键不在渲染层白名单）
+  ipcMain.handle('crm:assignment:roundRobinNext', () => getRoundRobinCursor())
+  // 分配数据失效事件桥接（SLA 回收 / LAN、中央下行 / 其他主进程写入后，打开中的线索页自动重拉；
+  // 页面自己发起的操作本就主动 fetchAll，收到的相邻事件经页面统一去抖合并，不形成循环）
+  bridgeAssignmentInvalidation()
 
   // ── 加好友判定（PRD 1.4a 手动路，API-CONTRACT §1.14 契约端点）──────────────
   // 绑定微信：写 customer_identity(source='manual', confidence=1.0) + 停 SLA1 表 + lead→WX_ADDED + 审计；
