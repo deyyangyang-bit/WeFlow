@@ -54,7 +54,7 @@
 - **话术提炼 v2**：AI销售教练模式（分析+诊断+优化+多版本）已完成；扫描→确认→提炼→导入全链路打通；日期区间筛选；单选+一键批量双模式
 - **知识库**：已导入 353 条产品参数（3个Excel→CSV转标准格式）
 - **PRD v2 三周计划**：P0/P1/P2 全部代码完成
-- **打包**：Mac DMG+ZIP + Windows EXE 均已产出；沙箱环境打包输出到**每次新建的唯一目录**（如 `/tmp/weflow-release-<时间戳>-win-x64`），不要把新包写进旧包目录；记录新包路径与 SHA-256，归档回 `release/` 前先确认目标不存在、不覆盖旧包（步骤见 MAINTENANCE.md §3）
+- **打包**：Mac DMG+ZIP + Windows EXE 均已产出。现行打包步骤只在 `docs/MAINTENANCE.md` §3：输出目录用 `mktemp -d` 独占创建（秒级时间戳加 `mkdir -p` 不算唯一，同名就失败或换新目录，不复用旧目录）；清理、`tsc`、Vite、产物校验、`electron-builder` 任一步失败都立即停止；归档用 `noclobber` 独占写入，复制失败或产物为空不得视为交付成功。
 - **Windows 适配**：koffi 打包问题已修复（`@koromix/koffi-win32-x64@3.1.0` + asarUnpack）
 
 ---
@@ -132,7 +132,7 @@
 - **Electron 闪退真因修正**：旧判断"dist 是 Node wrapper 混入的坏 Electron v24"是**误判**；真因是 `ELECTRON_RUN_AS_NODE=1` 环境变量让 Electron 以 Node 模式启动（`--version` 输出 v24.17.0）。防御已落地 `vite.config.ts`（spawn 前 `delete`），详见 `docs/归档/交接旧版/HANDOVER-20260731-驾驶舱改造与打包问题.md` §四 修正版
 - **配置项**：`crmAutoConfirmEnabled`(默认 true) · `crmAutoConfirmThreshold`(默认 0.8) · `crmAutoConfirmInvoiceDocgen`(默认 false)
 - 新 IPC：`crm:autoConfirm:run/history/undo`；新 npm script：`test:autoconfirm`
-- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程：`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），需**按 PID 定向结束**——先 `kill "$PID"`（SIGTERM）并确认退出；仅当确认仍卡住（Electron 偶发卡 UE 不可中断睡眠）再 `kill -9 "$PID"`（不影响新实例）
+- **坑**：重启 Electron 需 `env -u ELECTRON_RUN_AS_NODE npm run electron:dev`；主进程代码（services/preload/main）改动后 vite 只重建 main.js 不重启进程，必须手动结束该 dev 进程。`pkill -f "electron:dev"` 杀不掉 Electron 主进程（命令行不含该串），也不要按名称批量杀。只处理这一个 PID：先发 SIGTERM；只有该 PID 仍存活，且命令行仍是本仓库这次 dev/Electron 进程时，才可以对该 PID 执行 `kill -9`，否则跳过（PID 退出后可能被复用）。
 
 ## 2.7 文档模版复刻：报价单/合同真实模版 + 开票申请 Excel（2026-08-13）
 
@@ -3047,7 +3047,7 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 5. **单一固定 system prompt**，差异放 user prompt（API缓存）
 6. **win 只打 x64**，交叉编译前必须 `npm install @koromix/koffi-win32-x64@3.1.0 --force`
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
-8. **打包前排查残留构建进程**（按 PID 识别确认后定向结束；优先 SIGTERM，不要按名称批量 pkill）
+8. **打包前排查残留构建进程**（按 PID 识别；先 SIGTERM；只有该 PID 仍存活且仍是本仓库目标构建进程才 `kill -9`，否则跳过。不要按名称批量 pkill。步骤只以 MAINTENANCE.md §3 为准）
 9. **ffmpeg 缺失会崩**：用户需自备 `~/bin/ffmpeg`
 10. **WCDB 消息字段是 snake_case**：`is_send`/`create_time`/`message_content`/`sender_username`（不是 camelCase），用错字段名全部读到 undefined
 11. **`chatService.getSessions()` 返回 `{success, sessions[]}`** 而非裸数组，`Array.isArray()` 永远 false，需解包 `.sessions`
@@ -3056,26 +3056,13 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 
 ## 8. 打包发布
 
-详见 MAINTENANCE.md §3。快速参考：
+可执行步骤只有 `docs/MAINTENANCE.md` §3 的整段脚本。本节不重复命令，避免缩略命令绕过这些规则：
 
-```bash
-# 清理：见 MAINTENANCE.md §3「打包前排查残留构建进程」——先按 PID 识别，优先 SIGTERM，
-# 确认目标后再定向 kill；不要按名称批量 pkill，也不要递归删除 release/（历史安装包）。
-# 工具一律走项目本地二进制（普通 shell 里 tsc/vite/electron-builder 不在 PATH）；
-# 每次构建用唯一输出目录，旧包不动；产物要记录 SHA-256。
-
-# Mac
-OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-mac-arm64"; mkdir -p "$OUT"
-CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --mac --arm64 --config.directories.output="$OUT"
-find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
-
-# Windows（交叉编译；win 只打 x64）
-npm install @koromix/koffi-win32-x64@3.1.0 --save-optional --force
-OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M%S)-win-x64"; mkdir -p "$OUT"
-CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --win --x64 --config.directories.output="$OUT"
-find "$OUT" -maxdepth 1 -type f -exec shasum -a 256 {} +
-# 归档回 release/ 前先检查目标不存在，不覆盖同名旧包（片段见 MAINTENANCE.md §3）
-```
+- 残留构建进程：先 SIGTERM。只有同一个 PID 仍存活，且命令行仍是本仓库的 `electron-builder` / `app-builder` / `vite` / `esbuild`，才对这一个 PID 执行 `kill -9`；否则跳过。不要按名称批量杀。
+- 清理、`tsc`、`vite build`、`scripts/verify-electron-bundle.cjs`、`electron-builder` 用 `&&` 串成与 `package.json` 的 `build` 相同的链，末尾 `|| exit 1`。任一步失败立即停止，不能拿旧产物继续打包。
+- 输出目录用 `mktemp -d` 独占创建。秒级时间戳加 `mkdir -p` 不算唯一；同名或创建失败就停，或者由 `mktemp` 换一个新目录，绝不复用旧目录。
+- 归档用 `noclobber` 独占创建目标，并核对非空和 SHA-256。目标已存在、复制失败、产物为空或校验不一致都是失败，不得写成交付成功。
+- Mac 用 `--mac --arm64` 与 `mac-arm64`。Windows 先安装与 `koffi` 精确一致的 `@koromix/koffi-win32-x64@3.1.0`（失败就停止），再把同一整段改成 `--win --x64` 与 `win-x64`。代理变量写在同一整段上。沙箱只把父目录改成 `/tmp`。不要另跑一条 `electron-builder`。
 
 ---
 
