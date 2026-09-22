@@ -42,11 +42,30 @@ AI 调用一律按需触发：早间简报(每天首次打开)/「AI 识别这�
 ## 3. 启动与打包（最常踩坑，务必照做）
 - **调试**：`npm run dev` —— 仅开发期。3011 会话规模下渲染进程易崩，**不要用于验收/日常**。
 - **正式运行/验收**：用打包版，不用 dev。
-- **打包前必杀残留**（否则 electron-builder 的 packaging 阶段死锁、2 分钟不写盘）：
+- **打包前排查残留构建进程（先识别、后定向结束；不要按名称批量杀）**：上一次构建异常中断时，残留在 packaging 阶段的 `electron-builder` / `app-builder` 进程会占住产物文件，表现为长时间不写盘（约 2 分钟 0 字节）。**禁止 `pkill -9 -f "vite|…|WeFlow|…|Electron|…"` 这类名称匹配批量结束**——它会连带杀掉正在运行的 WeFlow 打包版（验收用的就是它）、其它项目的 vite/esbuild、以及其它 Electron 应用，可能造成未保存数据丢失。排查步骤：
   ```bash
-  pkill -9 -f "vite|esbuild|rolldown|WeFlow|Electron|electron-builder|app-builder"; sleep 3
-  rm -rf release dist dist-electron
+  cd "/Users/yang/weflow优化/WeFlow"                 # 仓库根，按实际路径替换
+  REPO="$PWD"
+  # ① 只列出「命令行里带本仓库路径」的构建进程清单——先看清有哪些，不要直接杀
+  ps -Ao pid,ppid,lstart,command | grep -E "electron-builder|app-builder|vite|esbuild" | grep -F "$REPO" | grep -v grep
+  # ② 逐个确认目标确属本仓库这次构建（必要时看它占用了哪些本仓库文件）
+  ps -o pid,ppid,lstart,command -p <PID>
+  lsof -p <PID> | grep -F "$REPO"
+  # ③ 优先正常退出（SIGTERM），等它自行收尾并确认真的退出
+  kill <PID>; sleep 5; ps -p <PID> >/dev/null && echo "仍在运行 → 回到 ② 再确认" || echo "已退出"
+  # ④ 仅在确认仍残留、且确属本仓库构建进程时，对这「一个」PID 定向强制结束（逐个进行）
+  kill -9 <PID>
   ```
+  注意：打包版 `WeFlow.app` 自身的运行实例，命令行不含上述构建命令，**不属于**残留构建进程——不要为了打包去结束用户正在使用的实例。
+- **不要递归删除整个 `release/`**（里面有历史安装包，删掉不可恢复）：
+  - `dist` / `dist-electron` 是**可再生**目录，`npm run build` 已自行清理（`scripts/clean-dist-electron.cjs` 清空 `dist-electron/` 并删除 `electron/`、`shared/` 源码旁的过期 `.js`；`vite build` 默认清空其输出目录 `dist`）——**不需要手工 `rm -rf`**。
+  - **新构建输出到独立目录，旧产物原地保留**（推荐，也便于回滚对比）：
+    ```bash
+    node scripts/clean-dist-electron.cjs && tsc && vite build && node scripts/verify-electron-bundle.cjs
+    OUT="$HOME/weflow-release/$(date +%Y-%m-%d-%H%M)"
+    CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --arm64 --config.directories.output="$OUT"
+    ```
+  - 若确实要用默认 `release/`：先把已有安装包改名留档（`mv`，不要 `rm`）再构建——electron-builder 会覆盖同名的 `release/WeFlow-<version>-Setup.*` 与 `release/mac-arm64/`。
 - **mac（Apple Silicon）**：`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac` → 出 dmg+zip（未签名，单机自用足够）。快速验证可加 `--dir` 只出 .app。
 - **⚠️ GitHub 下载 electron 超时（600s Timeout awaiting request）**：加镜像 `ELECTRON_MIRROR=https://cdn.npmmirror.com/binaries/electron/` 前缀再跑（2026-08 实测 mac/win 均通）。**注意镜像只覆盖 electron zip**——electron dist 下完后 `got` 还会请求 electron-builder-binaries 组件（winCodeSign 等），该请求不走 `ELECTRON_MIRROR`，无代理时同样 600s 卡死（2026-08-29 实测，症状：卡在 `unpacking default Electron distribution` 后，DEBUG 日志才有 `downloaded progress=100%`）；解法 = 构建时带系统代理（本机 Bitz Net）：
   ```bash

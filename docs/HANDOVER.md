@@ -3047,7 +3047,7 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 5. **单一固定 system prompt**，差异放 user prompt（API缓存）
 6. **win 只打 x64**，交叉编译前必须 `npm install @koromix/koffi-win32-x64@3.1.0 --force`
 7. **koffi 版本必须精确匹配**（当前 3.1.0），`^` 会导致 Mismatched native Koffi modules
-8. **打包前必杀残留进程**（否则 packaging 阶段死锁）
+8. **打包前排查残留构建进程**（按 PID 识别确认后定向结束；优先 SIGTERM，不要按名称批量 pkill）
 9. **ffmpeg 缺失会崩**：用户需自备 `~/bin/ffmpeg`
 10. **WCDB 消息字段是 snake_case**：`is_send`/`create_time`/`message_content`/`sender_username`（不是 camelCase），用错字段名全部读到 undefined
 11. **`chatService.getSessions()` 返回 `{success, sessions[]}`** 而非裸数组，`Array.isArray()` 永远 false，需解包 `.sessions`
@@ -3059,9 +3059,9 @@ Caddy 对渲染后配置的实际 `validate`**（明确标注为**跨平台配�
 详见 MAINTENANCE.md §3。快速参考：
 
 ```bash
-# 清理
-pkill -9 -f "vite|esbuild|rolldown|WeFlow|Electron|electron-builder|app-builder"; sleep 3
-rm -rf release dist dist-electron
+# 清理：见 MAINTENANCE.md §3「打包前排查残留构建进程」——先按 PID 识别，优先 SIGTERM，
+# 确认目标后再定向 kill；不要按名称批量 pkill，也不要递归删除 release/（历史安装包），
+# 新构建用 --config.directories.output=<独立目录> 输出。
 
 # Mac
 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --arm64
